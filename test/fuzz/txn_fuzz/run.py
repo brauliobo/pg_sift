@@ -17,6 +17,7 @@ VARIANTS = [('plain', PLAIN), ('scan', SCAN), ('default', ['SET sift.enable_agg 
 RESET = ['sift.enable_agg', 'sift.agg_force', 'sift.enable_col_scan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'enable_seqscan', 'max_parallel_workers_per_gather',
          'parallel_setup_cost', 'parallel_tuple_cost', 'min_parallel_table_scan_size', 'min_parallel_index_scan_size']
 ERRORS = collections.Counter()      # the statement errors of the runs, by message: a generator that raises many of one kind wastes the script
+ENV = re.compile(r'Disk quota|No space left|could not resize shared memory|out of memory|too many open files')   # the machine, not sift
 CRASH = re.compile(r'server closed the connection|connection to server was lost|terminating connection|crash of another server|server process .* was terminated')
 
 
@@ -101,6 +102,9 @@ def run(c, acts, db, stop_at_first=True):
                         continue
                     nchecks += 1
                     out = s.run(check_sql(c, a))
+                    if any(ENV.search(l) for l in out):
+                        fail = (i, 'ENVIRONMENT: ' + ' | '.join(l for l in out if ENV.search(l))[:300])
+                        break
                     d = compare(out)
                     if d:
                         fail = (i, d)

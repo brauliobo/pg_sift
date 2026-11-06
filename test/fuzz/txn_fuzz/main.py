@@ -7,7 +7,7 @@ import time
 
 from .gen import Config, config, script, setup_sql
 from .run import ERRORS, build_base, check_sql, release_prepared, run
-from .session import psql
+from .session import drop_db, psql
 from .shrink import shrink, write
 
 
@@ -33,6 +33,7 @@ def main(doc):
     ap.add_argument('--stop-after', type=int, default=0, help='stop after this many failing seeds (0: all seeds)')
     ap.add_argument('--budget', type=int, default=0, help='stop starting seeds after this many seconds (0: no limit)')
     ap.add_argument('--repro', default='', help='replay the .json of a reproducer')
+    ap.add_argument('--keep', action='store_true', help='keep the databases of the seeds (a run of thousands of seeds fills a tmpfs)')
     ap.add_argument('--show', action='store_true', help='print every statement')
     ap.add_argument('--selftest', action='store_true', help='no server: every seed from 0 to 39 generates a script (the lint job)')
     a = ap.parse_args()
@@ -75,14 +76,18 @@ def main(doc):
                 print('   ', x['s'], x['t'], x.get('sql', '')[:200].replace('\n', ' '))
         fail, nchecks, nerr = run(c, acts, db)
         print(f"seed {seed}: {'FAIL' if fail else 'ok'} {len(acts)} actions, {nchecks} checks, {nerr} statement errors, {time.time() - t0:.0f} s [{c.keytype} {c.rows} track={c.track} wbuf={c.wbuf} vacuum={c.vacuum} trigger={c.trigger}]", flush=True)
+        if fail and fail[1].startswith('ENVIRONMENT'):
+            sys.exit(f'txn_fuzz: seed {seed}: {fail[1]}')
         if fail:
             failed += 1
             print(f'  action {fail[0]}: {fail[1][:600]}', flush=True)
             if not a.no_shrink:
                 c2, acts2 = shrink(c, acts, fail[0], f'{a.db}_s{seed}')
                 print(f"  shrunk to {len(acts2)} actions: {write(a.out, c2, acts2, fail[1])}.sql", flush=True)
-            if a.stop_after and failed >= a.stop_after:
-                break
+        if not a.keep:
+            drop_db(db, f'{a.db}_s{seed}_tpl', f'{a.db}_s{seed}_w')
+        if fail and a.stop_after and failed >= a.stop_after:
+            break
     for e, n in ERRORS.most_common(8):
         print(f'  {n:5} statement errors: {e}')
     print(f'txn_fuzz: {failed} failing seeds')

@@ -58,6 +58,9 @@ CREATE INDEX t_c ON t USING sift_col (k, tenant, amount){opts};
     s += "VACUUM (FREEZE, ANALYZE) t;\n" if c.vacuum else "ANALYZE t;\n"
     s += f"""CREATE FUNCTION tf_one() RETURNS int LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; RETURN 0; END $$;
 CREATE FUNCTION tf_bump(kk {kt}) RETURNS int LANGUAGE plpgsql AS $$ BEGIN UPDATE t SET amount = amount + 1 WHERE k = kk; RETURN 0; END $$;
+CREATE SEQUENCE tf_seq START 70000000;
+CREATE FUNCTION tf_ins(kk {kt}) RETURNS int LANGUAGE plpgsql AS $$ BEGIN INSERT INTO t (k, tenant, amount) VALUES ({c.key("nextval('tf_seq')")}, 3, 3); RETURN 0; END $$;
+CREATE FUNCTION tf_del(kk {kt}) RETURNS int LANGUAGE plpgsql AS $$ BEGIN DELETE FROM t WHERE k = (SELECT min(k) FROM t WHERE k > kk); RETURN 0; END $$;
 """
     if c.trigger == 'after' and c.spi:
         s += """CREATE FUNCTION tf_trg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF pg_trigger_depth() = 1 AND NEW.amount % 7 = 0 THEN UPDATE t SET pad = pad + 1 WHERE k = NEW.k; END IF; RETURN NULL; END $$;
@@ -120,9 +123,9 @@ class Gen:
         p = self.pred()
         d = r.randint(1, 900)
         kinds = ['upd_amount'] * 5 + ['upd_tenant'] * 2 + ['upd_pad', 'upd_both', 'upd_key', 'upd_vol', 'delete', 'delete', 'insert', 'insert', 'upsert', 'merge', 'copy', 'cte_upd', 'cte_del',
-                 'bump', 'do_exc', 'do_spi', 'upd_amount']
+                 'bump', 'do_exc', 'do_spi', 'upd_amount', 'nested', 'nested']
         w = r.choice(kinds)
-        if not c.spi and w in ('upd_vol', 'bump', 'do_exc', 'do_spi'):
+        if not c.spi and w in ('upd_vol', 'bump', 'do_exc', 'do_spi', 'nested'):
             w = 'upd_amount'
         if not c.oc and w == 'upsert':
             w = 'insert'
@@ -168,6 +171,11 @@ class Gen:
             self.moved += 1
             e = f"k + {MOVED + self.moved * 1000}" if c.keytype == 'int' else f"k || '_{self.moved}'"
             return f"WITH d AS (DELETE FROM t WHERE {self.pred(True)} RETURNING *) INSERT INTO t (k, tenant, amount) SELECT {e}, tenant, amount + 1 FROM d"
+        if w == 'nested':
+            f = r.choice(['tf_ins', 'tf_del', 'tf_bump'])
+            return r.choice([f"UPDATE t SET amount = amount + {d} + {f}(k) WHERE {self.pred(True)}", f"DELETE FROM t WHERE {self.pred(True)} AND {f}(k) = 0",
+                             f"INSERT INTO t (k, tenant, amount) SELECT {self.k('i')}, i % 10, i + {f}({self.k('i')}) FROM generate_series({self.nxt}, {self.nxt + 60}) i",
+                             f"WITH u AS (UPDATE t SET pad = pad + 1 WHERE {self.pred(True)} RETURNING k) SELECT sum({f}(k)) FROM u"])
         if w == 'bump':
             return f"SELECT sum(tf_bump(k)) FROM t WHERE {self.pred(True)}"
         if w == 'do_exc':
@@ -257,7 +265,7 @@ class Gen:
             elif r.random() < 0.12:
                 self.b_step()
             elif not self.intxn:
-                w = r.choice(['begin'] * 6 + ['auto'] * 3 + ['vacuum', 'promote', 'reconnect'])
+                w = r.choice(['begin'] * 6 + ['auto'] * 3 + ['vacuum', 'promote', 'reconnect', 'maint'])
                 if w == 'begin':
                     self.sql('A', 'BEGIN' + r.choice(['', '', ' ISOLATION LEVEL REPEATABLE READ', ' ISOLATION LEVEL READ COMMITTED']))
                     self.intxn = True
@@ -269,6 +277,10 @@ class Gen:
                     self.check('A')
                 elif w == 'promote':
                     self.sql('A', "SELECT sift.col_promote('t_c')")
+                    self.check('A')
+                elif w == 'maint':
+                    self.sql(r.choice(['A', 'B']), r.choice(['REINDEX INDEX t_c', 'VACUUM FULL t', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')",
+                                                              "ALTER INDEX t_c SET (track_changes = 'off')", 'ANALYZE t']))
                     self.check('A')
                 else:
                     self.out.append({'s': 'A', 't': 'reconnect'})

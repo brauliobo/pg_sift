@@ -78,3 +78,7 @@ def psql(db, text, check=True):
 
 def create_db(name, template=None):
     psql('postgres', f'DROP DATABASE IF EXISTS {name} WITH (FORCE); CREATE DATABASE {name}' + (f' TEMPLATE {template}' if template else ''))
+
+
+def drop_db(*names):
+    psql('postgres', ''.join(f'DROP DATABASE IF EXISTS {n} WITH (FORCE);' for n in names), check=False)
