@@ -134,7 +134,7 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 | P3-6 | bm25/dict.c:block_begin, block_next, find_block | correct; `pos_len` points into the shared buffer: take/read_varint |
 | P3-7 | bm25/pos.c:pos_next, pos_window, pos_ckpt; bm25/posting.c:BLOB_NG/BLOB_KEYS; bm25/segment.c:docmap; core/store.c:check_dir; bm25/wbuf.c:rec_at | correct; macros become `sift_span_u32le_at`, rest for uniformity |
 | P3-8 | real range checks: nd_get DICT, unit_emit, sift_cc_decode_bits, sparse_valid | plain bound or `max32`, not Span |
-| P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` is left since 2.0.2 (463951f, 0ddff29); Span `read_varint` for the bounded ones |
+| P4-1 | core/varint.h:sift_get_varint (bm25/bitmap.c 86,470,504,608,909) | unbounded, safe only by 64 pad bytes (F-BM25-1): no caller of the unbounded `sift_get_varint` was left since 2.0.2 (463951f, 0ddff29), and the function is deleted; Span `read_varint` for the bounded ones |
 | P4-2 | core/varint.h:sift_get_varint64_n, bm25/pos.c:get_v32, sift_post_positions | last-byte overflow bits dropped, `want*=2` wraps above 2 GB: reject |
 | P4-3 | col/unit.c:sift_cunit_chunk; col/seg/seg.c:sift_cseg_unit_fill; col/scan/scan.c 584, 621, 871 | XX000 to DATA_CORRUPTED (F-COL-2: done for `sift_cunit_chunk`); `off+len` Assert only; scattered `c.n` checks into sift_cunit_chunk |
 

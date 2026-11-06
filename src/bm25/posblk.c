@@ -50,21 +50,6 @@ bw_unary(BitWriter *w, uint32 q)
 	bw_put(w, (uint64) 1 << q, q + 1);
 }
 
-static inline void
-bw_rice(BitWriter *w, uint32 g, int kr)
-{
-	uint32		q = g >> kr;
-	uint64		r = g & (((uint64) 1 << kr) - 1);
-
-	if (q + 1 + kr <= 32)
-		bw_put(w, r << (q + 1) | (uint64) 1 << q, q + 1 + kr);
-	else
-	{
-		bw_unary(w, q);
-		bw_put(w, r, kr);
-	}
-}
-
 /*
  * The Rice parameter of n gaps that add up to sum: the best of the three around the one their mean says, by the bits a geometric
  * distribution of that mean needs; *bits: the bits of all their codes, at most

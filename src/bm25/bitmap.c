@@ -67,7 +67,6 @@ uint64_t sift_popcount(const uint8_t *p, size_t n) { return sift_k->popcount(p, 
 uint64_t sift_grp_count(const sift_grp *g) { return g->n ? g->n : sift_k->count_mask(g, NULL); }
 uint64_t sift_grp_count_mask(const sift_grp *g, const uint64_t mask[4]) { return sift_k->count_mask(g, mask); }
 uint32_t sift_grp_tids(const sift_grp *g, const uint64_t *mask, sift_tid *out) { return sift_k->tids(g, mask, out); }
-void sift_grp_and(const sift_grp *a, const sift_grp *b, const uint64_t *mask, sift_grp *o, uint8_t *buf) { sift_k->and2(a, b, mask, o, buf); }
 uint64_t sift_grp_and_count(const sift_grp *a, const sift_grp *b) { return sift_k->and_count(a, b); }
 uint32_t sift_grp_ranks(const sift_grp *src, const sift_grp *sub, uint32_t *rank) { return sift_k->ranks(src, sub, rank); }
 

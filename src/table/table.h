@@ -40,10 +40,8 @@
 /* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
 #if PG_VERSION_NUM >= 180000
 #define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull, 0)
-#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup, 0)
 #else
 #define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull)
-#define sift_tbl_minimal_from_heap_tuple(tup)				minimal_tuple_from_heap_tuple(tup)
 #endif
 
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */

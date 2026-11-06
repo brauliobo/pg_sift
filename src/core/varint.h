@@ -17,19 +17,6 @@ sift_put_varint(uint8_t *p, uint64_t x)
 	return p;
 }
 
-/* Reads a varint known to be complete; returns the end */
-static inline const uint8_t *
-sift_get_varint(const uint8_t *p, uint64_t *x)
-{
-	*x = 0;
-	for (int s = 0;; s += 7)
-	{
-		*x |= (uint64_t) (*p & 0x7f) << s;
-		if (!(*p++ & 0x80))
-			return p;
-	}
-}
-
 /* Reads a varint of at most maxshift / 7 + 1 bytes from [p, end); NULL when it runs past end or is longer */
 static inline const uint8_t *
 sift_get_varint_upto(const uint8_t *p, const uint8_t *end, uint64_t *x, int maxshift)
