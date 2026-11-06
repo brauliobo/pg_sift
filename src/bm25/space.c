@@ -12,6 +12,9 @@
 #include "common/int.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
+#include "commands/defrem.h"
+#include "nodes/parsenodes.h"
+#include "postmaster/autovacuum.h"
 #include "postmaster/bgworker.h"
 #include "replication/walsender.h"
 #include "replication/walsender_private.h"
@@ -19,6 +22,8 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "tcop/pquery.h"
+#include "utils/portal.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -41,6 +46,8 @@
 /* VACUUM's truncation of a heap gives back at least this many blocks, or a 16th of the relation */
 #define TRUNCATE_MIN_BLOCKS	1000
 #define TRUNCATE_FRACTION	16
+
+static bool space_worth(int64 blocks, BlockNumber nblocks);
 
 static SiftExtent *
 bitmap_extents(Bitmapset *set, int *n)
@@ -140,22 +147,93 @@ cut_lock(Relation rel)
  * worker asks once: it holds the maintenance lock between its steps and the next step asks again.
  */
 static bool
-cut_lock_try(Relation rel)
+cut_lock_try(Relation rel, int *waited_ms)
 {
 	LOCKMODE	mode = cut_lock(rel);
 	int			wait_ms = LockTimeout > 0 ? Min(LockTimeout, CUT_LOCK_WAIT_MS) : CUT_LOCK_WAIT_MS;
+	int			waited;
 
 	if (mode == AccessExclusiveLock && MyBackendType == B_BG_WORKER)
 		wait_ms = 0;
 
-	for (int waited = 0;; waited += CUT_LOCK_NAP_MS)
+	for (waited = 0;; waited += CUT_LOCK_NAP_MS)
 	{
 		if (ConditionalLockRelation(rel, mode))
-			return true;
+			break;
 		if (waited >= wait_ms)
+		{
+			*waited_ms = waited;
 			return false;
+		}
 		CHECK_FOR_INTERRUPTS();
 		pg_usleep(CUT_LOCK_NAP_MS * 1000L);
+	}
+	return true;
+}
+
+/* Is the statement being run a VACUUM (VERBOSE)? An index access method is told DEBUG2 whatever the options (IndexVacuumInfo.message_level), so the statement is looked at */
+static bool
+vacuum_verbose(void)
+{
+	ListCell   *lc;
+
+	if (ActivePortal == NULL)
+		return false;
+	foreach(lc, ActivePortal->stmts)
+	{
+		PlannedStmt *ps = lfirst(lc);
+
+		if (IsA(ps, PlannedStmt) && ps->utilityStmt != NULL && IsA(ps->utilityStmt, VacuumStmt))
+			foreach_node(DefElem, opt, ((VacuumStmt *) ps->utilityStmt)->options)
+				if (strcmp(opt->defname, "verbose") == 0)
+					return defGetBoolean(opt);
+	}
+	return false;
+}
+
+/*
+ * A cut that does not happen says so once per VACUUM, with the blocks that stay in the file: at INFO under VACUUM VERBOSE, and at LOG in an autovacuum that logs
+ * (log_autovacuum_min_duration >= 0). The worker's DEBUG1 stays.
+ */
+static int
+skip_level(int elevel)
+{
+	if (elevel != DEBUG2)
+		return elevel;
+	if (AmAutoVacuumWorkerProcess() && Log_autovacuum_min_duration >= 0)
+		return LOG;
+	return vacuum_verbose() ? INFO : elevel;
+}
+
+typedef enum CutSkip
+{
+	SKIP_STANDBY,
+	SKIP_LOCK,
+	SKIP_ONLINE_LOCK,
+	SKIP_SNAPSHOT
+} CutSkip;
+
+/* why: what kept the cut; blocks: the free blocks that stay in the file; waited: the ms the lock was asked for (SKIP_LOCK) */
+static void
+cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 blocks, int waited)
+{
+	const char *name = RelationGetRelationName(rel);
+
+	elevel = skip_level(elevel);
+	switch (why)
+	{
+		case SKIP_STANDBY:
+			ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams: %lld free blocks stay", what, name, (long long) blocks)));
+			break;
+		case SKIP_LOCK:
+			ereport(elevel, (errmsg("%s \"%s\": not truncating, a lock is held on it (waited %d ms): %lld free blocks stay", what, name, waited, (long long) blocks)));
+			break;
+		case SKIP_ONLINE_LOCK:
+			ereport(elevel, (errmsg("index \"%s\": not truncating, a lock is held on it: %lld free blocks stay", name, (long long) blocks)));
+			break;
+		case SKIP_SNAPSHOT:
+			ereport(elevel, (errmsg("index \"%s\": %lld free blocks stay, held by a snapshot that may still read them", name, (long long) blocks)));
+			break;
 	}
 }
 
@@ -163,14 +241,16 @@ cut_lock_try(Relation rel)
 static bool
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
+	int			waited;
+
 	if (cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
-		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
+		cut_skipped(rel, what, elevel, SKIP_STANDBY, sift_store_free_stats(rel).blocks, 0);
 		return false;
 	}
-	if (!cut_lock_try(rel))
+	if (!cut_lock_try(rel, &waited))
 	{
-		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
+		cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited);
 		return false;
 	}
 	return true;
@@ -199,7 +279,15 @@ online_cut(Relation index, int elevel)
 				UnlockRelation(index, ExclusiveLock);
 			}
 			else
-				ereport(elevel, (errmsg("index \"%s\": stopping truncate due to conflicting lock request", RelationGetRelationName(index))));
+				cut_skipped(index, "index", elevel, SKIP_ONLINE_LOCK, sift_store_free_stats(index).blocks, 0);
+		}
+		else
+		{
+			/* what the horizon holds back is cut by a later VACUUM, once the snapshots that may read it are gone */
+			SiftFreeStats fs = sift_store_free_stats(index);
+
+			if (space_worth(fs.blocks - fs.reusable, RelationGetNumberOfBlocks(index)))
+				cut_skipped(index, "index", elevel, SKIP_SNAPSHOT, fs.blocks - fs.reusable, 0);
 		}
 	}
 	PG_FINALLY();
