@@ -532,7 +532,7 @@ sift_col_track_reconcile(Relation index)
 bool
 sift_col_track_own(const SiftTombLog *log)
 {
-	return log->chan.flags == SIFT_TOMB_COMPLETE && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
+	return log->chan.flags == SIFT_TOMB_CURRENT && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
 }
 
 /*
