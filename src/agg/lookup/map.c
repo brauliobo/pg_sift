@@ -134,17 +134,7 @@ col_ref_id(MapTab *m, MapCol *mc, Datum d)
 	mc->hv[mc->n] = hv;
 	mc->slot[h] = ++mc->n;
 	if (mc->n * 2 > mc->nslot)
-	{
-		pfree(mc->slot);
-		mc->nslot *= 2;
-		mc->slot = MemoryContextAllocZero(m->cxt, mc->nslot * sizeof(uint32));
-		for (uint32 id = 1; id <= mc->n; id++)
-		{
-			for (h = mc->hv[id - 1] & (mc->nslot - 1); mc->slot[h]; h = (h + 1) & (mc->nslot - 1))
-				;
-			mc->slot[h] = id;
-		}
-	}
+		SIFT_SLOT_REHASH(id, mc->slot, mc->nslot, MemoryContextAllocZero(m->cxt, mc->nslot * sizeof(uint32)), mc->n, mc->hv[id - 1]);
 	return mc->n;
 }
 

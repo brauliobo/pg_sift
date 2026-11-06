@@ -48,18 +48,7 @@ intern_id(AggExec *ex, Intern *t, const char *b, uint32 len)
 	t->hv[t->n] = hv;
 	t->slot[h] = ++t->n;
 	if (t->n * 2 > t->nslot)
-	{
-		pfree(t->slot);
-		t->nslot *= 2;
-		t->slot = MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32));
-		for (uint32 id = 1; id <= t->n; id++)
-		{
-			h = t->hv[id - 1] & (t->nslot - 1);
-			while (t->slot[h])
-				h = (h + 1) & (t->nslot - 1);
-			t->slot[h] = id;
-		}
-	}
+		SIFT_SLOT_REHASH(id, t->slot, t->nslot, MemoryContextAllocZero(ex->cxt, t->nslot * sizeof(uint32)), t->n, t->hv[id - 1]);
 	return t->n;
 }
 

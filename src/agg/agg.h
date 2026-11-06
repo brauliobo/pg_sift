@@ -44,6 +44,24 @@ sift_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
+/*
+ * An open-addressing table of ids (1..n, 0 = empty) doubled when it fills: slot is allocated again by alloc (it sees the new nslot) and the ids go back in order,
+ * each from the slot start gives for id i, probing on by one.
+ */
+#define SIFT_SLOT_REHASH(i, slot, nslot, alloc, n, start) \
+	do { \
+		pfree(slot); \
+		(nslot) *= 2; \
+		(slot) = (alloc); \
+		for (uint32 i = 1; i <= (n); i++) \
+		{ \
+			uint32 h_ = (start) & ((nslot) - 1); \
+			while ((slot)[h_]) \
+				h_ = (h_ + 1) & ((nslot) - 1); \
+			(slot)[h_] = i; \
+		} \
+	} while (0)
+
 /* the array arr of cap elements, grown to twice that when its n elements fill it */
 #define SIFT_GROW(arr, n, cap) \
 	do { \

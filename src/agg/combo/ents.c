@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "agg/agg.h"
 #include "agg/combo/int.h"
 #include "core/hash.h"
 
@@ -117,18 +118,8 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	if (direct)
 		combo_dir_set(cs, v[0], cs->nent);
 	if (cs->nent * 2 > cs->nht)
-	{
-		pfree(cs->ht);
-		cs->nht *= 2;
-		cs->ht = MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32));
-		for (uint32 x = 0; x < cs->nent; x++)
-		{
-			h = combo_hash(&cs->vid[(size_t) x * cs->ninputs], cs->ninputs, cs->null_input[x]) & (cs->nht - 1);
-			while (cs->ht[h])
-				h = (h + 1) & (cs->nht - 1);
-			cs->ht[h] = x + 1;
-		}
-	}
+		SIFT_SLOT_REHASH(id, cs->ht, cs->nht, MemoryContextAllocZero(cs->cxt, cs->nht * sizeof(uint32)), cs->nent,
+						 combo_hash(&cs->vid[(size_t) (id - 1) * cs->ninputs], cs->ninputs, cs->null_input[id - 1]));
 	return cs->nent - 1;
 }
 

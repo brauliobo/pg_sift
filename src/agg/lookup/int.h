@@ -93,19 +93,7 @@ kd_int(KeyDict *d, int64 v, MemoryContext cxt)
 	d->ival[d->n] = v;
 	d->slot[h] = ++d->n;
 	if (d->n * 2 > d->nslot)
-	{
-		pfree(d->slot);
-		d->nslot *= 2;
-		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
-		for (uint32 i = 1; i <= d->n; i++)
-		{
-			int64		x = d->ival[i - 1];
-
-			for (h = kd_int_slot(d, x); d->slot[h]; h = (h + 1) & (d->nslot - 1))
-				;
-			d->slot[h] = i;
-		}
-	}
+		SIFT_SLOT_REHASH(i, d->slot, d->nslot, MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32)), d->n, kd_int_slot(d, d->ival[i - 1]));
 	return d->n;
 }
 
@@ -162,17 +150,7 @@ kd_text(KeyDict *d, const char *b, uint32 len, MemoryContext cxt)
 	d->hv[d->n] = hv;
 	d->slot[h] = ++d->n;
 	if (d->n * 2 > d->nslot)
-	{
-		pfree(d->slot);
-		d->nslot *= 2;
-		d->slot = MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32));
-		for (uint32 i = 1; i <= d->n; i++)
-		{
-			for (h = d->hv[i - 1] & (d->nslot - 1); d->slot[h]; h = (h + 1) & (d->nslot - 1))
-				;
-			d->slot[h] = i;
-		}
-	}
+		SIFT_SLOT_REHASH(i, d->slot, d->nslot, MemoryContextAllocZero(cxt, d->nslot * sizeof(uint32)), d->n, d->hv[i - 1]);
 	return d->n;
 }
 
