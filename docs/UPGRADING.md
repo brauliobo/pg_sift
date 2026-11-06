@@ -135,7 +135,10 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    maintenance worker that a write asks for re-baselines it (`ShareUpdateExclusiveLock` only). Triggers enabled for the origin only (what `ENABLE TRIGGER ALL` leaves, `tgenabled = 'O'`) are enabled for all sessions (`'A'`) by the worker, which asks
    for the lock of `ENABLE TRIGGER` without waiting; triggers you disabled (`'D'`) stay disabled and the reads keep checking the heap. 300,000 rows churned and not vacuumed: the second statement of a grouped count costs 38.1 M instructions and 918 blocks
    while the log is not vouched, 29.7 M and 467 when it is; after the repair it is 33.9 M and 585 (the repaired log is a little larger, a `VACUUM` or a merge shrinks it).
-   - *Format:* none, no minor changes; answers are right before and after. *`REINDEX`:* not needed. *Off:* none for the repair; `ALTER INDEX x SET (track_changes = 'off')` drops the log and its triggers for an index that should not have them.
+   - *Format:* none, no minor changes; answers are right before and after. *An older library:* tried with 4.1.1 on an index that 4.2 repaired (`ALTER TABLE .. DISABLE TRIGGER ALL`, `ENABLE TRIGGER ALL`, a `VACUUM`, the
+     worker on: `sift.col_tracking` true, true, true, true and the triggers `'A'` again): it reads and writes the index without an error, its aggregates equal the heap's before and after its own writes and
+     `sift.col_verify` is clean, but it does not take the log for complete (`sift.col_tracking`: `triggers`, `complete` and `heap_free` false), so its reads check the heap as they did before the repair; the repair
+     itself is the re-baseline of 4.1.2 and later. *`REINDEX`:* not needed. *Off:* none for the repair; `ALTER INDEX x SET (track_changes = 'off')` drops the log and its triggers for an index that should not have them.
 
 6. **`sift.refusal_actions()` returns what to change for each refusal slug** (the statement, the index or a setting, the hint of the notice of `sift.explain_refusals`): `sift.explain_why(q) w JOIN sift.refusal_actions() a USING (slug)`.
    It is a new function; `sift.refusal_slugs()` keeps its three columns, and `pg_sift--4.1--4.2.sql` drops or replaces no function, so a view, a default or a function of yours that reads the objects of 4.1 does not
