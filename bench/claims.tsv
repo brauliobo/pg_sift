@@ -425,3 +425,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 348 M instructions and 56 ms	percentile_disc_int	300000	sift	default	exec_ms	56.3	30	CHANGELOG 4.2 line of the sorted runs of a spilled ordered set, run 9613590a4f40-20261106T043334Z-c738, records in program-scale/realq42b/records/osaruns-cases-after.rec (before: osaruns-cases-before.rec)
 229 M instructions and 33 ms	mode_histogram	300000	sift	default	instr_m	229	10	CHANGELOG 4.2 line of the sorted runs of a spilled ordered set, run 9613590a4f40-20261106T043334Z-c738, records in program-scale/realq42b/records/osaruns-cases-after.rec (before: osaruns-cases-before.rec)
 229 M instructions and 33 ms	mode_histogram	300000	sift	default	exec_ms	32.6	30	CHANGELOG 4.2 line of the sorted runs of a spilled ordered set, run 9613590a4f40-20261106T043334Z-c738, records in program-scale/realq42b/records/osaruns-cases-after.rec (before: osaruns-cases-before.rec)
+-	agg_probe_anti	200000	picked	default	exec_ms	1.35	25	bench case agg_probe_anti, 200,000 orders, 600,000 items, records in program-scale/realq42b/wp26
+-	agg_probe_anti	200000	picked	default	instr_m	31.7	10	bench case agg_probe_anti, records in program-scale/realq42b/wp26
+-	agg_probe_anti	200000	native	default	exec_ms	53.0	25	bench case agg_probe_anti, native plan, records in program-scale/realq42b/wp26
+-	agg_probe_anti	200000	native	default	instr_m	703	10	bench case agg_probe_anti, native plan, records in program-scale/realq42b/wp26

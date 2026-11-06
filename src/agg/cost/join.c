@@ -799,14 +799,14 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		double		rows,
 					row_cost;
 
-		/* Correlated children run once per distinct input, with their native path's cost. */
+		/* Correlated children run once per distinct input, with their native path's cost: for the tuples that reach the join, not the rows that are aggregated (a condition on what the child gives, NOT EXISTS, drops most of them after it ran) */
 		if (jc->j.params != NIL)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
 			double		probe = child_probe_ops(jc),
 						run = probe > 0 ? probe * cpu_operator_cost : AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
-			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
+			double		native = combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), false) * run;
 
 			/*
 			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
