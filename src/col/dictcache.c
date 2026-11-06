@@ -215,10 +215,11 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 
 /*
  * What a scan keeps of a leaf of a segment whatever few units it reads is the entry of the leaf at a unit number past the last unit: the zone arrays (min, max, sums,
- * counts, flags, filters of every unit) at UINT32_MAX - 1, the small-set summaries of the units (sets.c) at UINT32_MAX - 3 (UINT32_MAX - 2 is the bisect table's). They are found without the header: a scan has
+ * counts, flags, filters of every unit) at UINT32_MAX - 1, the small-set summaries of the units (sets.c) at UINT32_MAX - 3, the bisect table at UINT32_MAX - 2. They are found without the header: a scan has
  * opened the segment, whose head was checked against it.
  */
 #define ZONES_UNIT	(UINT32_MAX - 1)
+#define BISECT_UNIT	(UINT32_MAX - 2)
 #define SETS_UNIT	(UINT32_MAX - 3)
 
 static void *
@@ -475,21 +476,10 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	return dict_keep(seg, col, &k, cx, d);
 }
 
-#define BISECT_UNIT		(UINT32_MAX - 2)
-
 SiftCBisect *
 sift_cseg_bisect_find(SiftColSegment *seg, int col)
 {
-	DictKey		k;
-	DictEnt    *e;
-
-	if (cache == NULL)
-		return NULL;
-	dict_key(&k, seg, col, BISECT_UNIT);
-	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
-		return NULL;
-	dict_pin(e, seg->mcxt);
-	return e->obj;
+	return leaf_find(seg, col, BISECT_UNIT);
 }
 
 SiftCBisect *
