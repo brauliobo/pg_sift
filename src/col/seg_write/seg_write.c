@@ -370,8 +370,6 @@ sift_colw_memory(const SiftColSegWriter *w)
 void
 sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 {
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	SiftSegHeaderData h = {0};
 	StringInfoData schema;
 	SiftExtent *ext;
@@ -495,10 +493,6 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	h.sb_hi = w->sb_hi;
 	h.dictroot_n = w->nsb;
 	h.nextents = n;
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, w->gen);
-	memcpy(hdr, &h, offsetof(SiftSegHeaderData, extents));
-	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
 	blocks = 1 + h.live_npages;
 	for (int i = 0; i < n; i++)
 		blocks += ext[i].nblocks;
@@ -506,7 +500,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = w->format;
-	entry->header_blk = sift_wt_write_page(w->wt, page.data);
+	entry->header_blk = sift_wt_write_seghdr(w->wt, &h, ext, n);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
 	if (w->anyver)

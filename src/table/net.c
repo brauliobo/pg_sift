@@ -35,8 +35,6 @@ net_write(Relation rel, const SiftSegEntry *entry)
 	int			nadd,
 				nlist = 0,
 				nrelease = 0;
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	SiftSegEntry fresh = *entry;
 	SiftMaintSwitch sw_dir = {.old = &entry->gen,.nold = 1,.neu = &fresh};
 	uint32		left = keep_pages;
@@ -70,12 +68,7 @@ net_write(Relation rel, const SiftSegEntry *entry)
 		sift_cseg_close(seg);
 		return 0;
 	}
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, entry->gen);
-	memcpy(hdr, old, offsetof(SiftSegHeaderData, extents));
-	hdr->nextents = nlist;
-	memcpy(hdr->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
-	fresh.header_blk = sift_wt_write_page(wt, page.data);
+	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist);
 	release[nrelease++] = (SiftExtent) {entry->header_blk, 1};
 	fresh.flags |= SIFT_SEG_NET;
 	fresh.bytes = entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;

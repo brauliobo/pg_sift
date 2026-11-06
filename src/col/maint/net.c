@@ -34,8 +34,6 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			nadd,
 				nlist = 0,
 				nrelease = 0;
-	PGIOAlignedBlock page;
-	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
 	SiftSegEntry fresh = *st->entry;
 	SiftMaintSwitch sw_dir = {.old = &st->entry->gen,.nold = 1,.neu = &fresh};
 	uint32		left = keep_pages;
@@ -66,12 +64,7 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	if (nlist > (int) SIFT_MAX_EXTENTS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the net pre-aggregates need %d extents, the header holds %d", nlist, (int) SIFT_MAX_EXTENTS),
 						errhint("Merge the segments first (sift.col_merge) so that the segment is written in fewer extents.")));
-	sift_page_init(page.data, SIFT_PT_SEGHEADER, st->entry->gen);
-	memcpy(hdr, old, offsetof(SiftSegHeaderData, extents));
-	hdr->nextents = nlist;
-	memcpy(hdr->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
-	fresh.header_blk = sift_wt_write_page(wt, page.data);
+	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist);
 	release[nrelease++] = (SiftExtent) {st->entry->header_blk, 1};
 	fresh.flags |= SIFT_SEG_NET;
 	fresh.bytes = st->entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;
