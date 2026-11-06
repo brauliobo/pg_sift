@@ -54,6 +54,22 @@ sift_str_type(Oid t)
 		} \
 	} while (0)
 
+/* the integer that sorts as a value of an integer, date or timestamp type does (a key of the global order, of a spilled group) */
+static inline int64
+sift_int_key(Oid typid, Datum d)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(d);
+		default:
+			return DatumGetInt64(d);
+	}
+}
+
 #ifdef SIFT_TESTING
 extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_prepass_nodes */
 #define SIFT_SKIP_CONST_LIST(n, ret) \

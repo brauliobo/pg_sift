@@ -53,7 +53,6 @@ typedef struct AggSpill
 
 /* spill.c */
 extern bool spill_over(AggExec *ex);
-extern int64 spill_datum_int(Oid typid, Datum d);
 extern Datum spill_int_datum(Oid typid, int64 v);
 extern bool spill_lead_value(AggExec *ex, uint32 g, int64 *v);
 extern bool spill_lead_zoned(AggExec *ex);

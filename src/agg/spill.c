@@ -152,22 +152,7 @@ set_new(int depth, int n)
 	return set;
 }
 
-/* the integer that sorts as a value of an integer, date or timestamp type does, and the value of that type for it */
-int64
-spill_datum_int(Oid typid, Datum d)
-{
-	switch (typid)
-	{
-		case INT2OID:
-			return DatumGetInt16(d);
-		case INT4OID:
-		case DATEOID:
-			return DatumGetInt32(d);
-		default:
-			return DatumGetInt64(d);
-	}
-}
-
+/* the value of that type for an integer that sorts as it does (sift_int_key is the integer for a value) */
 Datum
 spill_int_datum(Oid typid, int64 v)
 {
@@ -193,7 +178,7 @@ spill_lead_value(AggExec *ex, uint32 g, int64 *v)
 
 	if (isnull)
 		return false;
-	*v = spill_datum_int(ex->spec->key[j].typid, d);
+	*v = sift_int_key(ex->spec->key[j].typid, d);
 	return true;
 }
 

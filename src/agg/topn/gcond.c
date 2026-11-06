@@ -267,7 +267,7 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 
 		if (isnull)
 			return false;
-		return p->kind == STG_STR ? gcond_str_test(p, d) : gcond_cmp(p->op, heap_key(p->typid, d), p->val);
+		return p->kind == STG_STR ? gcond_str_test(p, d) : gcond_cmp(p->op, sift_int_key(p->typid, d), p->val);
 	}
 	for (int i = 0; i < p->nchild; i++)
 		if (gcond_test(p->child[i], slot) == (p->kind == STG_OR))

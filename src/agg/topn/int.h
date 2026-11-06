@@ -14,6 +14,7 @@
 #include "utils/memutils.h"
 #include "utils/tuplesort.h"
 
+#include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/topn.h"
 #include "agg/kern.h"
@@ -644,29 +645,13 @@ gcond_cmp(int op, int64 key, int64 val)
 	}
 }
 
-/* The value of the key as the entries of the global order hold it */
-static inline int64
-heap_key(Oid typid, Datum d)
-{
-	switch (typid)
-	{
-		case INT2OID:
-			return DatumGetInt16(d);
-		case INT4OID:
-		case DATEOID:
-			return DatumGetInt32(d);
-		default:
-			return DatumGetInt64(d);
-	}
-}
-
 extern int64 numeric_gkey(int scale, Datum d);
 
 /* The key j of a heap row as the entries of the global order hold it */
 static inline int64
 gkey_of(const SiftTopN *t, int j, Datum d)
 {
-	return t->gtyp[j] == NUMERICOID ? numeric_gkey(t->gscale[j], d) : heap_key(t->gtyp[j], d);
+	return t->gtyp[j] == NUMERICOID ? numeric_gkey(t->gscale[j], d) : sift_int_key(t->gtyp[j], d);
 }
 
 /* The sign of a row of the first key (a NULL, or the entry `code` of dictionary d) against the entry bar, by the first key alone: < 0 before it, > 0 after it */

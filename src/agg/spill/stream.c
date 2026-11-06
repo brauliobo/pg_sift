@@ -76,7 +76,7 @@ step_value(AggExec *ex, int64 z)
 
 	if (k->kind == SAK_LEAF)
 		return z;
-	return spill_datum_int(k->typid, key_input_datum(ex, ki, spill_int_datum(k->typid, z), &isnull));
+	return sift_int_key(k->typid, key_input_datum(ex, ki, spill_int_datum(k->typid, z), &isnull));
 }
 
 static int
