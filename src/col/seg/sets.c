@@ -3,6 +3,7 @@
  * presence bits, the HyperLogLog sketches, the sorted runs and the key
  * tables; and the pruning of units by them
  */
+#include "core/cmp.h"
 #include "core/host.h"
 #include "col/hll.h"
 #include "col/ktab.h"
@@ -341,10 +342,21 @@ set_may_pass(const SiftCSet *s, const SiftCTest *t, const int64 *codes, int ncod
 		case SIFT_CT_RANGE:
 			return sift_cset_may_hold(s, t->lo, t->hi);
 		case SIFT_CT_SET:
-			for (uint32 i = 0; i < t->nset; i++)
-				if (sift_cset_may_hold(s, t->set[i], t->set[i]))
-					return true;
-			return false;
+			{
+				/* the list is ascending: only the members within the unit's keys are asked for, found by a bisection of the list */
+				int64		lo,
+							hi;
+				uint32		i = 0,
+							b = t->nset;
+				bool		span = sift_cset_span(s, &lo, &hi);
+
+				if (span)
+					SIFT_BISECT(uint32, m, i, b, t->set[m] < lo);
+				for (; i < t->nset && (!span || t->set[i] <= hi); i++)
+					if (sift_cset_may_hold(s, t->set[i], t->set[i]))
+						return true;
+				return false;
+			}
 		default:					/* LUT */
 			if (ncodes >= 0)
 			{

@@ -439,3 +439,4 @@ agg_mode_text_groups	`mode() WITHIN GROUP`	events	-	Custom Scan \(SiftAgg\)	nati
 percentile_distinct_values	`percentile_disc`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 agg_window_rank	keeps in the scan the rows of rank <= N of each group	events	-	array_agg\(rk_fact\.id ORDER BY.*\[rank <= 3\]	native	-	ms,minstr	faster33	no	-
 agg_probe_anti	the child's rows are loaded once instead of a probe of its table for each outer row	events	-	Lookup Joins: pa_items \(anti\)	native	-	ms,minstr	faster33	no	-
+set_list_unit_span	`IN` list of 75 keys	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

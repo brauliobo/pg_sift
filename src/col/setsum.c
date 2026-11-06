@@ -655,6 +655,29 @@ sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi)
 	}
 }
 
+bool
+sift_cset_span(const SiftCSet *s, int64 *lo, int64 *hi)
+{
+	switch (s->kind)
+	{
+		case SIFT_CSET_PRES:
+			*lo = s->base;
+			*hi = (int64) ((uint64) s->base + s->nbits - 1);
+			return true;
+		case SIFT_CSET_RUNS:
+			*lo = (int64) ((uint64) s->base + runs_start(s, 0));
+			*hi = (int64) ((uint64) s->base + runs_last(s, runs_nr(s) - 1));
+			return true;
+		case SIFT_CSET_EXACT:
+		case SIFT_CSET_PLIST:
+			*lo = (int64) ((uint64) s->base + exact_at(s, 0));
+			*hi = (int64) ((uint64) s->base + exact_at(s, s->n - 1));
+			return true;
+		default:
+			return false;
+	}
+}
+
 void
 sift_cset_members(const SiftCSet *s, int64 *out)
 {
