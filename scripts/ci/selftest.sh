@@ -224,6 +224,11 @@ if [[ $MODE == --selftest ]]; then
 		{ grep -q 'peak total' "$ST/stats/out" && [[ ! -s $ST/stats/err ]]; } || { echo "FAIL: the footprint sampler ended by its $how without its report or with output on stderr: $(head -c 200 "$ST/stats/err")"; bad=1; }
 		rm -f "$ST/stats/logs/stats.stop"
 	done
+	# the jobs that build older releases are all in the first shard (the workflow caches those builds for each shard), in every tier and layout
+	for lay in quick:3 quick:4 full:5; do
+		bad_pin=$(for k in 2 3; do (( k <= ${lay#*:} )) && SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^tap-shell-(compat_matrix|old_lib_refusal|replica_mixed|pg_upgrade)/ {print $1}'; done)
+		[[ -z $bad_pin ]] || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards puts jobs that build older releases outside the first shard: $bad_pin"; bad=1; }
+	done
 	# the weights of scripts/ci-times.py are the median of the runs, not the newest (one hosted run is noisy)
 	out=$(python3 -I "$REPO/scripts/ci-times.py" --selftest 2>&1) || { echo "FAIL: scripts/ci-times.py --selftest: $out"; bad=1; }
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)

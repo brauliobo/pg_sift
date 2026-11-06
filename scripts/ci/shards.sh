@@ -2,6 +2,14 @@
 # The jobs are cut by weight (weights.sh: the seconds of a lane each took in a hosted run): the heaviest job goes to the shard with the least load so far, which balances the shards to
 # within a few percent (--selftest checks it, and that the shards are the plan exactly once). Shard 1 runs the checks of the harness. Before PostgreSQL 18 the jobs that run after the
 # pool (flavor installs, serial) are all the last shard's; the quick tier gives them a shard of their own.
+# The jobs that build older releases (the scripts of test/t that call build_old or scripts/old-lib-check.sh, and pg_upgrade) all go to the first shard: the workflow caches the built releases
+# for each shard, so a job that moved to another shard when the weights changed built them cold (compat_matrix 721 s and old_lib_refusal 525 s beside 190 and 79 warm, hosted run 42142749980)
+pinned() { # ID: whether the job is one of them
+	local n
+	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -l -E 'build_old|old-lib-check' "$REPO"/test/t/*.sh 2>/dev/null | sed 's|.*/||; s|\.sh$||' | tr '\n' ' ')pg_upgrade "
+	for n in $OLDLIB_TESTS; do [[ $1 == "tap-shell-$n" || $1 == "tap-shell-${n}_"* ]] && return 0; done
+	return 1
+}
 # shard_loads N POOL: SHARD_OF[job] (0-based shard of the pool) and LOAD[k] for the jobs of the pool, heaviest first, ties in queue order
 declare -A SHARD_OF
 shard_loads() {
@@ -9,11 +17,12 @@ shard_loads() {
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
 	[[ $MODE == full ]] && for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id" "${SIFT_CI_DEEP:-}"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT )); }; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || ! pinned "$id" || { weight_of "$id" "${SIFT_CI_DEEP:-}"; SHARD_OF[$id]=0 LOAD[0]=$(( LOAD[0] + WEIGHT )); }; done
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
-	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 }
 # --plan with SIFT_CI_SHARD=all/N (full tier): the plans of the N shards in one run, each line prefixed with the number of its shard (--selftest asks for them all)
 if [[ -n $PLAN && $MODE == full && ${SIFT_CI_SHARD:-} =~ ^all/([0-9]+)$ ]]; then
