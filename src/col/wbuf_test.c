@@ -701,6 +701,7 @@ sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	sift_cwbuf_reads_prepare();
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
 		{
