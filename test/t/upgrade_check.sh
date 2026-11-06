@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 92
+plan 98
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -265,4 +265,18 @@ check "to 4.1: an index with the leaf of document_present is a blocker that says
 check "to 4.1: the index with document_present = off is ok" test -z "$(row "$out" blocker dp_off)"
 q v42 "ALTER INDEX dp_col SET (document_present = off)" "REINDEX INDEX dp_col" >/dev/null
 check "to 4.1: the advice makes it readable, and to 4.2 nothing blocks" test -z "$(row "$(uc --to 4.1 v42)" blocker dp_col)" -a "$(uc --to 4.2 v42 | grep -c '^blocker')" == 0
+# 4.2 removed latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup from sift.eval_methods: where a role, a database or the server file sets one, the check says so with the command that removes it
+# (each q is a session of its own: the library is not loaded when the ALTER runs, which is why the older value is stored)
+q postgres "CREATE ROLE ev_role" "CREATE DATABASE ev_db" >/dev/null
+q postgres "ALTER ROLE ev_role SET sift.eval_methods = 'unit_rewrite'" "ALTER DATABASE ev_db SET sift.eval_methods = 'penalty_maintenance, -snapshot_masks'" >/dev/null
+q postgres "ALTER ROLE ev_role IN DATABASE ev_db SET sift.eval_methods = 'skip_trigger_lookup'" "ALTER DATABASE v42 SET sift.eval_methods = 'penalty_maintenance'" >/dev/null
+q postgres "ALTER SYSTEM SET sift.eval_methods = 'latest_hint'" >/dev/null
+out=$(uc v42)
+check "a role that sets a removed method is a blocker with the ALTER ROLE .. RESET that removes it" grep -q -E '^blocker +sift\.eval_methods .*set by ALTER ROLE ev_role .*ALTER ROLE ev_role RESET sift\.eval_methods' <<<"$out"
+check "a database that sets one next to the method that stays is a blocker with the ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.eval_methods .*penalty_maintenance, -snapshot_masks, set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.eval_methods' <<<"$out"
+check "a role in a database is one with ALTER ROLE .. IN DATABASE .. RESET" grep -q -E '^blocker +sift\.eval_methods .*ALTER ROLE ev_role IN DATABASE ev_db RESET sift\.eval_methods' <<<"$out"
+check "a line of postgresql.auto.conf is one that says to ALTER SYSTEM RESET" grep -q -E '^blocker +sift\.eval_methods .*postgresql\.auto\.conf.*ALTER SYSTEM RESET sift\.eval_methods' <<<"$out"
+check "four findings, and the method that stays alone (penalty_maintenance) is none" test "$(grep -c -E '^blocker +sift\.eval_methods' <<<"$out")" == 4
+q postgres "ALTER SYSTEM RESET sift.eval_methods" "ALTER ROLE ev_role RESET sift.eval_methods" "ALTER DATABASE ev_db RESET sift.eval_methods" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.eval_methods" "ALTER DATABASE v42 RESET sift.eval_methods" >/dev/null
+check "after the commands nothing is left" test "$(uc v42 | grep -c 'sift\.eval_methods')" == 0
 finish

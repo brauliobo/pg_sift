@@ -189,6 +189,8 @@ BEGIN
 		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'warn'; advice := NULL;
 		IF r.name LIKE 'sift.test\_%' THEN
 			kind := 'test'; advice := 'a setting of the test build only: remove it';
+		ELSIF r.name = 'sift.eval_methods' THEN
+			CONTINUE;		-- the removed names are the blockers below
 		ELSIF r.unknown THEN
 			advice := 'the loaded library does not define it (removed, renamed or from another build): remove it, or PostgreSQL ignores it with a warning';
 		ELSIF r.vartype = 'bool' AND r.boot_val = 'on' AND lower(r.value) IN ('off', 'false', 'no', '0', 'f', 'n') THEN
@@ -198,6 +200,32 @@ BEGIN
 		ELSE
 			CONTINUE;
 		END IF;
+		RETURN NEXT;
+	END LOOP;
+
+	-- 4.2 removed latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup (also with a leading -) from sift.eval_methods: a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that names one fails
+	-- once the 4.2 library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
+	FOR r IN SELECT x.scope, x.value, x.cmd FROM (
+				SELECT 'server (' || s.source || ')' AS scope, s.setting AS value,
+					   'remove it from postgresql.conf, or ALTER SYSTEM RESET sift.eval_methods when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd
+				FROM pg_settings s WHERE s.name = 'sift.eval_methods' AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user', 'session', 'client')
+				UNION ALL
+				SELECT 'file ' || f.sourcefile || ':' || f.sourceline, f.setting,
+					   'remove the line (ALTER SYSTEM RESET sift.eval_methods when the file is postgresql.auto.conf), then SELECT pg_reload_conf()'
+				FROM pg_file_settings f WHERE f.name = 'sift.eval_methods'
+				UNION ALL
+				SELECT concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
+					   substr(c, strpos(c, '=') + 1),
+					   'ALTER ' || CASE WHEN d.setrole <> 0 THEN 'ROLE ' || quote_ident(ro.rolname) || CASE WHEN d.setdatabase <> 0 THEN ' IN DATABASE ' || quote_ident(db.datname) ELSE '' END
+									    WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET sift.eval_methods'
+				FROM pg_db_role_setting d LEFT JOIN pg_roles ro ON ro.oid = d.setrole LEFT JOIN pg_database db ON db.oid = d.setdatabase, unnest(d.setconfig) c
+				WHERE c LIKE 'sift.eval_methods=%'
+			 ) x
+			 WHERE x.value ~* '(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)'
+			 ORDER BY x.scope
+	LOOP
+		object := 'sift.eval_methods'; kind := 'setting'; detected := format('sift.eval_methods = %s, set by %s', r.value, r.scope); status := 'blocker';
+		advice := 'the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET: ' || r.cmd;
 		RETURN NEXT;
 	END LOOP;
 
