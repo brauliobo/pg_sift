@@ -100,6 +100,10 @@ sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcx
 	uint32		nall = 0;
 	uint64		rows = 0;
 
+	/* a rescan reuses the source of an earlier lookup that found too many rows: its batches return the rows of the buffers, listing them again would return them twice */
+	*n = 0;
+	if (!(src->flags & SIFT_COLO_NOWBUF))
+		return NULL;
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		ItemPointerData *t;

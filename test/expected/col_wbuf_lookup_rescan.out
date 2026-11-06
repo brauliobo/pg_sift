@@ -1,0 +1,32 @@
+-- An index scan that is rescanned (the inner side of a nested loop) reads the rows of the write buffers once. The equality on a plain column finds them in their records;
+-- a lookup that keeps more than a quarter of the buffers (kind k3 below) has the source load the buffers instead, and the next scan, of a kind that keeps few (k2),
+-- reuses that source: it listed the rows a second time.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+CREATE TABLE rs (id int, parent_id int, kind text, grp int) WITH (autovacuum_enabled = false);
+INSERT INTO rs SELECT i, i % 10, 'k' || (i % 5), i % 12 FROM generate_series(1, 600) i;
+CREATE INDEX rs_col ON rs USING sift_col (id, parent_id, kind, grp);
+NOTICE:  sift_col index "rs_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = parent_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_col');
+VACUUM (FREEZE, ANALYZE) rs;
+-- the buffer holds the new versions of 8 rows: 6 of kind k3, 2 of kind k2
+UPDATE rs SET grp = 99 WHERE id IN (3, 8, 13, 18, 23, 28, 2, 7);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+SET max_parallel_workers_per_gather = 0;
+SELECT k.kind, count(*) AS rows, (SELECT count(*) FROM rs WHERE parent_id IN (3, 8, 2, 7) AND rs.kind = k.kind) AS expected
+FROM (VALUES (1, 'k3'), (2, 'k2')) k(o, kind),
+     LATERAL (SELECT 1 FROM rs e WHERE e.parent_id IN (3, 8, 2, 7) AND e.kind = k.kind OFFSET 0) e
+GROUP BY k.kind ORDER BY k.kind;
+ kind | rows | expected 
+------+------+----------
+ k2   |  120 |      120
+ k3   |  120 |      120
+(2 rows)
+
+DROP TABLE rs;
+DROP EXTENSION pg_sift;
