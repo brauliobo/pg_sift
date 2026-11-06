@@ -84,7 +84,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
-	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_row_key_on(index));
+	sift_colb_publish(index, segs, nsegs, !info->ii_Concurrent && sift_col_track_on(index));
 	sift_colb_free(b);
 	return res;
 }
@@ -136,7 +136,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
-	if (sift_col_row_key_on(index))
+	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);
 		sift_col_track_install(heap, index, info->ii_Concurrent);

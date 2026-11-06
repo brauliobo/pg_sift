@@ -22,7 +22,8 @@ asked_by_reads() { for _ in $(seq 12); do reads 3; for _ in $(seq 10); do [[ $(v
 # $1 batches of 10 grouped reads of the whole table in one session, a naptime apart: the look of the tick is once per naptime
 reads() { sql rd "SET sift.enable_agg = on" "SET max_parallel_workers_per_gather = 0" \
 	"DO \$\$ BEGIN FOR b IN 1..$1 LOOP FOR i IN 1..10 LOOP PERFORM key, count(*), sum(v) FROM facts GROUP BY key; END LOOP; PERFORM pg_sleep(0.25); END LOOP; END \$\$" >/dev/null; }
-churn() { sql rd "UPDATE facts SET v = v + 1 WHERE id % 2 = $1" >/dev/null; }
+# 900 rows: a transaction that writes 1000 rows or 0.1% of the table to the index asks for the VACUUM itself when it commits (col/vacreq.c, MIN_VETTED), which this test is not about
+churn() { sql rd "UPDATE facts SET v = v + 1 WHERE id % 2 = $1 AND id <= 1800" >/dev/null; }
 
 base=$(vacuums)
 churn 0

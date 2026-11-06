@@ -106,6 +106,37 @@ map_in_keys(AggExec *ex, int ci, int *att, Oid *typ, Datum **vals)
  */
 static bool map_index_covers(Relation idx, const SiftAggJoin *j);
 
+/*
+ * The entries a key has in the btree, where the statistics of the table say nothing (never analyzed): the index is asked for a few of the keys of the list, evenly spread,
+ * and the entries it holds for them counted (the entries only, no heap row; a key with more than MAP_PILOT_CAP is counted as that many).
+ */
+#define MAP_PILOT_KEYS	4
+#define MAP_PILOT_CAP	256
+
+static double
+map_pilot_rows(AggExec *ex, Relation rel, Relation idx, Oid typ, const Datum *vals, int nv)
+{
+	int			n = Min(nv, MAP_PILOT_KEYS);
+	double		entries = 0;
+	RegProcedure eq = get_opcode(get_opfamily_member(idx->rd_opfamily[0], typ, typ, BTEqualStrategyNumber));
+	IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, 1);
+
+	for (int i = 0; i < n; i++)
+	{
+		ScanKeyData sk;
+		int			seen = 0;
+
+		ScanKeyEntryInitialize(&sk, 0, 1, BTEqualStrategyNumber, typ, InvalidOid, eq, vals[(int64) i * nv / n]);
+		index_rescan(iscan, &sk, 1, NULL, 0);
+		while (seen < MAP_PILOT_CAP && index_getnext_tid(iscan, ForwardScanDirection) != NULL)
+			seen++;
+		entries += seen;
+	}
+	index_endscan(iscan);
+	return n > 0 ? entries / n : 0;
+}
+
+
 static Relation
 map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const Datum *val, bool own)
 {
@@ -116,11 +147,12 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 	Oid			typ = InvalidOid;
 	double		nkey,
 				rpk,
-				tuples = Max(rel->rd_rel->reltuples, 1.0),
+				tuples = Max(sift_agg_table_rows(RelationGetRelid(rel)), 1.0),
 				pages = RelationGetNumberOfBlocks(rel),
 				bprice = HUGE_VAL,
 				allvis = rel->rd_rel->relallvisible / Max(pages, 1.0);
-	bool		bcov = false;
+	bool		heap = rel->rd_rel->relam == HEAP_TABLE_AM_OID,
+				bcov = false;
 	int			att = 0,
 				cd = map_keyed_dependent(ex, ci, &att, &typ),
 				nv = 0;
@@ -169,7 +201,9 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 		}
 		cov = map_index_covers(idx, j);
 		r = sift_agg_key_rows(RelationGetRelid(rel), att, ta, n - 1, tuples, idx->rd_index->indisunique && idx->rd_index->indnkeyatts == 1);
-		price = r * sift_agg_entry_ops(cov ? allvis : 0);
+		if (r <= 0 && dm == NULL && nv > 0 && n == 1)
+			r = map_pilot_rows(ex, rel, idx, typ, vals, nv);
+		price = r * sift_agg_entry_ops(cov ? allvis : 0, heap);
 		if (r > 0 && price < bprice)
 		{
 			if (best)
@@ -188,7 +222,7 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 		return NULL;
 	nkey = Min(dm ? dm->kd[0].n : nv, tuples);
 	cols = map_load_cols_possible(rel, j, &nnum);
-	if (!sift_agg_probe_pays(nkey, nkey * rpk, pages, bcov ? allvis : 0, sift_agg_whole_ops(tuples, pages, cols, nnum, !cols && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))))
+	if (!sift_agg_probe_pays(nkey, nkey * rpk, pages, bcov ? allvis : 0, heap, sift_agg_whole_ops(tuples, pages, cols, nnum, !cols && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))))
 	{
 		index_close(best, AccessShareLock);
 		return NULL;

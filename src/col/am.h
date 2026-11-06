@@ -58,6 +58,7 @@ typedef struct SiftColRel
 	int			ncut;
 	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
+	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
@@ -70,10 +71,14 @@ extern void sift_col_log_create(Relation index);
 /* The log to append to (made when the index has none): no read of the directory, for the writer of many tombstones */
 extern struct SiftTombLog *sift_col_log_appender(Relation index);
 /* The tombstones of the replaced entries that a statement holds back (col/supersede.c): written before the log is read, before commit and before a savepoint starts, dropped when the transaction or the savepoint aborts */
+extern void sift_col_batch_hook(void);
+extern void sift_col_tomb_hold_tid(Relation index, ItemPointer tid);
 extern void sift_col_tombs_flush(void);
 extern void sift_col_tombs_discard(void);
 /* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
+extern bool sift_col_track_ctid(Relation index);
+extern bool sift_col_track_on(Relation index);
 extern Oid	sift_col_repack_origin(Relation rel);
 extern void sift_col_row_key_check(Relation index);
 extern void sift_col_row_key_prepare(Relation heap, Relation index);
@@ -98,6 +103,7 @@ extern PGDLLIMPORT bool sift_test_no_supersede;
 extern PGDLLIMPORT bool sift_test_tombs_at_once;
 extern PGDLLIMPORT bool sift_test_supersede_scan;
 extern PGDLLIMPORT bool sift_test_no_track;
+extern PGDLLIMPORT bool sift_test_no_chain_root;
 extern PGDLLIMPORT bool sift_test_no_log_reap;
 extern PGDLLIMPORT bool sift_test_no_log_hide;
 extern PGDLLIMPORT uint64 sift_test_col_log_hidden_count;
@@ -369,6 +375,7 @@ extern void sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n,
 extern bool sift_col_autovacuum_enabled(Relation heap);
 extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
+extern void sift_col_vacuum_note_insert(Relation index, Relation heap);
 extern bool sift_col_rewrite_tick(Relation index, double owed);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);

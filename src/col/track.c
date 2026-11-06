@@ -10,8 +10,10 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/relation.h"
 #include "access/htup_details.h"
+#include "catalog/pg_am_d.h"
 #include "access/skey.h"
 #include "access/sysattr.h"
 #include "access/stratnum.h"
@@ -33,6 +35,7 @@
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -50,6 +53,7 @@ PG_FUNCTION_INFO_V1(sift_col_stamps);
 
 #ifdef SIFT_TESTING
 bool		sift_test_no_track = false;
+bool		sift_test_no_chain_root = false;
 #endif
 
 /*
@@ -78,7 +82,7 @@ track_function(bool missing_ok)
 }
 
 static void
-read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2])
+read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2], bool row)
 {
 	Relation	trel = table_open(TriggerRelationId, AccessShareLock);
 	ScanKeyData key;
@@ -98,7 +102,7 @@ read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2])
 			h->n++;
 			h->witness = HeapTupleHeaderGetRawXmin(tp->t_data);
 			h->ok = tg->tgrelid == heapoid && tg->tgfoid == funcoid && tg->tgenabled == TRIGGER_FIRES_ALWAYS && !tg->tgdeferrable &&
-				(tg->tgtype & (TRIGGER_TYPE_ROW | TRIGGER_TYPE_BEFORE | TRIGGER_TYPE_INSTEAD)) == 0 && tg->tgattr.dim1 == 0;
+				(tg->tgtype & (TRIGGER_TYPE_BEFORE | TRIGGER_TYPE_INSTEAD)) == 0 && ((tg->tgtype & TRIGGER_TYPE_ROW) != 0) == row && tg->tgattr.dim1 == 0;
 		}
 	}
 	systable_endscan(scan);
@@ -106,7 +110,7 @@ read_trigger(Oid heapoid, Oid funcoid, Oid toid, HearTrig t[2])
 }
 
 static void
-find_triggers(Oid heapoid, Relation index, HearTrig t[2])
+find_triggers(Oid heapoid, Relation index, HearTrig t[2], bool row)
 {
 	Relation	drel;
 	ScanKeyData key[2];
@@ -127,7 +131,7 @@ find_triggers(Oid heapoid, Relation index, HearTrig t[2])
 		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
 
 		if (d->classid == TriggerRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0)
-			read_trigger(heapoid, funcoid, d->objid, t);
+			read_trigger(heapoid, funcoid, d->objid, t, row);
 	}
 	systable_endscan(scan);
 	table_close(drel, AccessShareLock);
@@ -139,7 +143,7 @@ channel_read(Relation heap, Relation index, bool present[2], bool ok[2], uint32 
 {
 	HearTrig	t[2];
 
-	find_triggers(RelationGetRelid(heap), index, t);
+	find_triggers(RelationGetRelid(heap), index, t, sift_col_track_ctid(index));
 	for (int i = 0; i < 2; i++)
 	{
 		present[i] = t[i].n > 0;
@@ -184,6 +188,7 @@ create_trigger(Relation heap, Relation index, bool update)
 	CreateTrigStmt *stmt = makeNode(CreateTrigStmt);
 	TriggerTransition *tt = makeNode(TriggerTransition);
 	Oid			funcoid = track_function(false);
+	bool		row = sift_col_track_ctid(index);
 	ObjectAddress trig,
 				idx;
 
@@ -194,10 +199,10 @@ create_trigger(Relation heap, Relation index, bool update)
 	stmt->relation = makeRangeVar(get_namespace_name(RelationGetNamespace(heap)), pstrdup(RelationGetRelationName(heap)), -1);
 	stmt->funcname = list_make2(makeString("sift"), makeString(HEAR_FUNCTION));
 	stmt->args = list_make1(makeString(psprintf("%u", RelationGetRelid(index))));
-	stmt->row = false;
+	stmt->row = row;
 	stmt->timing = TRIGGER_TYPE_AFTER;
 	stmt->events = update ? TRIGGER_TYPE_UPDATE : TRIGGER_TYPE_DELETE;
-	stmt->transitionRels = list_make1(tt);
+	stmt->transitionRels = row ? NIL : list_make1(tt);
 	trig = CreateTriggerFiringOn(stmt, "", RelationGetRelid(heap), InvalidOid, InvalidOid, InvalidOid, funcoid, InvalidOid, NULL, true, false, TRIGGER_FIRES_ALWAYS);
 	ObjectAddressSet(idx, RelationRelationId, RelationGetRelid(index));
 	recordDependencyOn(&trig, &idx, DEPENDENCY_AUTO);
@@ -208,7 +213,7 @@ drop_triggers(Relation heap, Relation index)
 {
 	HearTrig	t[2];
 
-	find_triggers(RelationGetRelid(heap), index, t);
+	find_triggers(RelationGetRelid(heap), index, t, false);
 	for (int i = 0; i < 2; i++)
 		if (OidIsValid(t[i].oid))
 		{
@@ -293,7 +298,11 @@ sift_col_track_check(Relation heap, Relation index)
 {
 	const char *why;
 
-	if (!sift_col_row_key_on(index) || (why = sift_col_track_deaf(heap)) == NULL)
+	if (sift_col_track_ctid(index) && heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("track_changes: table \"%s\" is not a heap table", RelationGetRelationName(heap)),
+						errdetail("track_changes = 'ctid' tombstones the heap address of a row version."),
+						errhint("WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.")));
+	if (!sift_col_track_on(index) || (why = sift_col_track_deaf(heap)) == NULL)
 		return;
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("track_changes: table \"%s\" cannot be tracked", RelationGetRelationName(heap)),
 					errdetail("%s.", why),
@@ -318,7 +327,7 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
 		return;
 	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == oheap)
 	{
-		find_triggers(oheap, orig, t);
+		find_triggers(oheap, orig, t, sift_col_track_ctid(orig));
 		if (t[0].ok && t[0].n == 1 && t[1].ok && t[1].n == 1)
 		{
 			witness[0] = t[0].witness;
@@ -381,7 +390,7 @@ sift_col_track_deafened(Oid relid)
 	{
 		Relation	index = index_open(ioid, RowExclusiveLock);
 
-		if (sift_col_is_index(index) && sift_col_row_key_on(index))
+		if (sift_col_is_index(index) && sift_col_track_on(index))
 		{
 			SiftTombLog *log = sift_col_log(index);
 
@@ -416,7 +425,7 @@ sift_col_track_reconcile(Relation index)
 
 	/* an ALTER INDEX of any other option must not hold the writers of the table out: lock it only to install or to drop */
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	if (sift_col_row_key_on(index))
+	if (sift_col_track_on(index))
 	{
 		done = channel_as_asked(heap, index, sift_col_log(index));
 		table_close(heap, AccessShareLock);
@@ -426,6 +435,9 @@ sift_col_track_reconcile(Relation index)
 		sift_col_track_check(heap, index);
 		sift_col_track_install(heap, index, false);
 		table_close(heap, NoLock);
+		if (sift_col_track_ctid(index))
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": track_changes = ctid queues about 42 bytes a changed row", sift_col_final_name(index)),
+							 errhint("Before a huge UPDATE or DELETE: ALTER INDEX %s SET (track_changes = 'off'), then 'ctid' again.", sift_col_final_name(index))));
 		return;
 	}
 	channel_read(heap, index, present, ok, witness);
@@ -450,10 +462,10 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 	SiftTombLog *log;
 	SiftColRel *r;
 
-	if (!sift_col_row_key_on(index))
+	if (!sift_col_track_on(index))
 		return false;
 	r = sift_col_rel(index);
-	if (!OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1])) || sift_col_track_deaf(heap) != NULL)
+	if ((r->rowkey && !OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1]))) || sift_col_track_deaf(heap) != NULL)
 		return false;
 	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_COMPLETE)
 		return false;
@@ -494,7 +506,105 @@ trigger_index(Trigger *trig)
 	return OidIsValid(index) ? index : atooid(trig->tgargs[0]);
 }
 
-/* sift.col_track_old_rows(): the statement trigger of the option; its argument is the oid of the index it was made for (trigger_index says which one it serves now) */
+/*
+ * What the row triggers of track_changes = ctid remember: the index of the trigger now firing (the catalog is asked once, not for each row), and the roots of the chains of the page
+ * of the last version they ended. The entries of the index are at the address of the root of a HOT chain, and a version that was made by a HOT update is not: the roots of a page are read once
+ * for the versions of it that a statement ends. The index is kept until a relcache invalidation names it, the roots until the transaction ends, because a command number is not the same in the next one.
+ */
+static struct
+{
+	Oid			trigger;
+	Oid			index;
+	Oid			rel;
+	RelFileNumber relnumber;
+	BlockNumber blk;
+	CommandId	cid;
+	bool		roots_read;
+	bool		hooked;
+	OffsetNumber roots[MaxHeapTuplesPerPage];
+} rowmemo;
+
+static void
+rowmemo_reset(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT || event == XACT_EVENT_PREPARE)
+		rowmemo.roots_read = false;
+}
+
+/* REINDEX CONCURRENTLY swaps what the trigger depends on from the old index to the new one, and invalidates both: the next row asks the catalog again */
+static void
+rowmemo_inval(Datum arg, Oid relid)
+{
+	if (relid == InvalidOid || relid == rowmemo.index)
+		rowmemo.trigger = InvalidOid;
+}
+
+static OffsetNumber
+chain_root(Relation heap, ItemPointer tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumber(tid);
+	CommandId	cid = GetCurrentCommandId(false);
+	OffsetNumber root;
+
+	if (!rowmemo.roots_read || rowmemo.rel != RelationGetRelid(heap) || rowmemo.relnumber != heap->rd_locator.relNumber || rowmemo.blk != blk || rowmemo.cid != cid)
+	{
+		Buffer		buf = ReadBuffer(heap, blk);
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		heap_get_root_tuples(BufferGetPage(buf), rowmemo.roots);
+		UnlockReleaseBuffer(buf);
+		rowmemo.rel = RelationGetRelid(heap);
+		rowmemo.relnumber = heap->rd_locator.relNumber;
+		rowmemo.blk = blk;
+		rowmemo.cid = cid;
+		rowmemo.roots_read = true;
+	}
+	root = rowmemo.roots[ItemPointerGetOffsetNumber(tid) - 1];
+	return OffsetNumberIsValid(root) ? root : ItemPointerGetOffsetNumber(tid);
+}
+
+/*
+ * The row trigger of track_changes = ctid (AFTER UPDATE and AFTER DELETE, for each row): a tombstone for the address of the version the statement ended, held with the transaction's others
+ * (sift_col_tomb_hold_tid). A version made by a HOT update has no entry and its predecessor's entry stays right (the indexed columns are the same), so that update writes nothing; any other
+ * update writes the entry of its new version at its aminsert, which this tombstone ends the old one for.
+ */
+static Datum
+track_row(TriggerData *td)
+{
+	Relation	index;
+	ItemPointerData tid;
+
+#ifdef SIFT_TESTING
+	if (sift_test_no_track)
+		return PointerGetDatum(NULL);
+#endif
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && HeapTupleHeaderIsHeapOnly(td->tg_newtuple->t_data))
+		return PointerGetDatum(NULL);
+	tid = td->tg_trigtuple->t_self;
+	if (HeapTupleHeaderIsHeapOnly(td->tg_trigtuple->t_data)
+#ifdef SIFT_TESTING
+		&& !sift_test_no_chain_root
+#endif
+		)
+		ItemPointerSetOffsetNumber(&tid, chain_root(td->tg_relation, &tid));
+	if (!rowmemo.hooked)
+	{
+		RegisterXactCallback(rowmemo_reset, NULL);
+		CacheRegisterRelcacheCallback(rowmemo_inval, (Datum) 0);
+		rowmemo.hooked = true;
+	}
+	if (rowmemo.trigger != td->tg_trigger->tgoid)
+	{
+		rowmemo.index = trigger_index(td->tg_trigger);
+		rowmemo.trigger = td->tg_trigger->tgoid;
+	}
+	index = index_open(rowmemo.index, RowExclusiveLock);
+	sift_col_tomb_hold_tid(index, &tid);
+	index_close(index, NoLock);
+	return PointerGetDatum(NULL);
+}
+
+/* sift.col_track_old_rows(): the trigger of the option; its argument is the oid of the index it was made for (trigger_index says which one it serves now). For a key column it is a statement trigger with the old rows, for track_changes = ctid a row trigger */
 Datum
 sift_col_track_old_rows(PG_FUNCTION_ARGS)
 {
@@ -503,9 +613,11 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 				heap;
 	AttrNumber	hatt;
 
+	if (CALLED_AS_TRIGGER(fcinfo) && TRIGGER_FIRED_AFTER(td->tg_event) && TRIGGER_FIRED_FOR_ROW(td->tg_event) && !TRIGGER_FIRED_BY_INSERT(td->tg_event))
+		return track_row(td);
 	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_AFTER(td->tg_event) || TRIGGER_FIRED_FOR_ROW(td->tg_event) || td->tg_oldtable == NULL)
 		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-						errmsg("sift.col_track_old_rows is the statement trigger of an index option: AFTER, FOR EACH STATEMENT, with an old table")));
+						errmsg("sift.col_track_old_rows is the trigger of an index option: AFTER UPDATE or DELETE, FOR EACH STATEMENT with an old table, or FOR EACH ROW")));
 	heap = td->tg_relation;
 	index = index_open(trigger_index(td->tg_trigger), RowExclusiveLock);
 #ifdef SIFT_TESTING
@@ -541,7 +653,7 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 bool
 sift_col_track_incomplete(Relation index)
 {
-	SiftTombLog *log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
+	SiftTombLog *log = sift_col_track_on(index) ? sift_col_log(index) : NULL;
 
 	return log != NULL && log->chan.flags != SIFT_TOMB_COMPLETE;
 }
@@ -563,8 +675,8 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 	if (!sift_col_is_index(index))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
-	v[0] = BoolGetDatum(sift_col_row_key_on(index));
+	log = sift_col_track_on(index) ? sift_col_log(index) : NULL;
+	v[0] = BoolGetDatum(sift_col_track_on(index));
 	v[1] = BoolGetDatum(log != NULL && channel_as_asked(heap, index, log));
 	v[2] = BoolGetDatum(log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE);
 	v[3] = BoolGetDatum(sift_col_track_ok(index, heap, NULL));

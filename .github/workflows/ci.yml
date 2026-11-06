@@ -8,7 +8,7 @@ name: ci
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
-# The full tier is four shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
+# The full tier is five shards on each of PostgreSQL 18 and 17 (the deep one nine and five, cut by the weights of scripts/weights-deep.tsv that scripts/ci-times.py writes from a run, the full entries first so that the account's 20 concurrent jobs go to the long ones; the jobs that install a library flavor end the last shard of 17), about 100 lane minutes a shard.
 # A deep run does not repeat the x86 quick shards on 17 and 18: its full tier has the same jobs at full scale; the quick shards of AArch64 and 19 stay, with the release-library list on 18.
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a `ci-full` pull request, the quick tier
 # of a push, the nightly run and a dispatch.
@@ -150,7 +150,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || 90 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || matrix.tier == 'full' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -163,9 +163,24 @@ jobs:
 
       - uses: ./.github/actions/apt-limits
 
+      # one cache for each major and flavour of the entry, renewed every week (a package that left the mirror is no longer asked for); the first job of the entry to finish saves it
+      # the packages apt downloads (scripts/apt-install.sh) are kept there: a mirror that stalls holds an install for minutes, and the server with its development files is 90 MB of it
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg${{ matrix.pg }}${{ matrix.git && '-git' || '' }}${{ matrix.cassert && '-assert' || '' }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg${{ matrix.pg }}${{ matrix.git && '-git' || '' }}${{ matrix.cassert && '-assert' || '' }}-${{ runner.os }}-${{ runner.arch }}-
+
       # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
       - name: PGDG repository
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           scripts/pgdg-repo.sh
 
@@ -177,14 +192,27 @@ jobs:
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
 
-      # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm): the newest cache of the branch, saved under this commit
-      - name: Cache the compiler
+      # the compiler cache of the build and of the 8-page flavour of the scaling gate (58 s cold, 3 s warm). The key is the compiler and the sources the objects come from, so a commit that
+      # changes none of them (tests, docs, workflows) finds its cache and saves nothing new, and any other restores the newest cache of the branch or of main (caches of the default branch
+      # are read by every branch) and saves its own. The first job of the entry to finish saves it, a failed run included: the objects are the cost, not the tests
+      - name: Key of the compiler cache
+        id: ccache
         if: ${{ !matrix.git && !matrix.cassert }}
-        uses: actions/cache@v5
+        run: |
+          prefix="ccache-pg${{ matrix.pg }}-$RUNNER_OS-$RUNNER_ARCH-gcc$(gcc -dumpfullversion)-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=${prefix}${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the compiler
+        id: ccache-cache
+        if: ${{ !matrix.git && !matrix.cassert }}
+        uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          restore-keys: ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          key: ${{ steps.ccache.outputs.key }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.prefix }}
+            ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
       - name: Get PostgreSQL 19
@@ -280,13 +308,20 @@ jobs:
           SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
-          # a job that hangs is stopped with the end of its log after 45 minutes: the limit of the workflow (90) ends the whole shard, and its logs are lost
-          CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '2700' || '' }}
+          # a job that hangs is stopped with the end of its log after 30 minutes (15 in the quick tier, scripts/ci/config.sh): the limit of the workflow ends the whole shard, and its logs are lost
+          CI_JOB_TIMEOUT: ${{ matrix.tier == 'full' && !(github.event_name == 'schedule' || inputs.deep == true) && '1800' || '' }}
 
       # the first hosted run says whether the compiler wrappers took: a cache of 0 hits on a warm key means the build did not go through them
       - name: Compiler cache statistics
         if: ${{ !cancelled() && !matrix.git && !matrix.cassert }}
         run: ccache -s
+
+      - name: Keep the compiler cache
+        if: ${{ !cancelled() && steps.ccache-cache.outcome == 'success' && steps.ccache-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.key }}
 
       - name: Keep the older releases
         if: ${{ !cancelled() && steps.oldlib-cache.outcome == 'success' && steps.oldlib-cache.outputs.cache-hit != 'true' }}

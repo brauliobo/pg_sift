@@ -22,8 +22,13 @@ if [[ $MODE == full ]]; then
 	# The deep tier cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		once_on_18 && {
-			job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
-			job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+			# the mutants and the queries are cut in slices (3 and 2) so that no job is longer than 12 minutes: the whole run was 30 minutes of one lane
+			for k in 1 2 3; do
+				job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/3 --docs 4000 --queries 40 --rounds 1 --minimize 1
+			done
+			for k in 1 2; do
+				job difftest-$k difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --query-slice $k/2 --docs 4000 --queries 100 --rounds 3
+			done
 			job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
 		}
 	elif (( PG_MAJOR >= 18 )); then
@@ -89,9 +94,12 @@ if [[ $MODE == full ]]; then
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
 	job tools-build tools-build 0 "$S/check-tools-build.sh"
 else
+	# As in the full tier, a job that exercises no code of its own major (the engine of the corpus, the fuzz harnesses, the hardened build of the decoders) runs on PostgreSQL 18 only; the
+	# builds for arm64 and for an older or newer major run the regression, TAP and pushdown differential tests
+	once_on_18() { (( PG_MAJOR == 18 )); }
 	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
 	# visit every stage, the write buffers, the promotion and the merge
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
+	once_on_18 && job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
 	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
 	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard, or forces a
@@ -112,16 +120,20 @@ else
 			echo "$t"
 		done
 	}
-	flavor_job release-library-regress release-library-regress "$S/release-library-check.sh" $(release_library_tests)
+	# two jobs of every other test: each builds the library (3 s with the compiler cache warm, 60 cold) and the longer one was 283 to 406 s of a lane
+	rl=($(release_library_tests))
+	for k in 1 2; do
+		flavor_job release-library-regress-$k release-library-regress "$S/release-library-check.sh" $(for (( i = k - 1; i < ${#rl[@]}; i += 2 )); do echo "${rl[i]}"; done)
+	done
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
-	job fuzz fuzz 1 env FZ_SECS=2 FZ_GQUANT_N=10 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1 ${SIFT_FUZZ_TARGETS:-}
-	flavor_job hardened hardened "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
-	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
+	once_on_18 && job fuzz fuzz 1 env FZ_SECS=2 FZ_GQUANT_N=10 FZ_KERNELS_MILLIONS=0.05 FZ_GRID_STRIDE=7 FZ_CODEC_ITERS=100 FZ_ANALYZE_ITERS=5000 "$S/fuzz.sh" --budget 1 ${SIFT_FUZZ_TARGETS:-}
+	once_on_18 && flavor_job hardened hardened "$S/hardened.sh" colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors
+	once_on_18 && job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" \
 		--docs 1000 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 	# the mutants are checked on the built corpus (round 0): all 8 die there, and the rounds with DML, promotion, merge and REINDEX without a bug are the job difftest
-	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 0 --minimize 0 \
+	once_on_18 && job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 0 --minimize 0 \
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
@@ -134,8 +146,8 @@ else
 	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
-	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
-	job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
+	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
+	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown

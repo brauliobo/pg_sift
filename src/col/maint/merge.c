@@ -396,7 +396,19 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	}
 	if (keyed)
 	{
-		if (work)
+		OverlayEv	ev;
+
+		if (maint_overlay_asked)
+		{
+			/* the overlays alone, whatever else holds a dead row or has no cut, and nothing after them: the pass ends when they are one (the rule asks again when the next ones pile up) */
+			memset(take, false, v->n);
+			if (maint_overlay_steps > 0 && maint_overlay_set(index, v, take, &ev))
+			{
+				*cut = false;
+				maint_overlay_steps--;
+			}
+		}
+		else if (work)
 			memset(take, true, v->n);
 		else if (maint_part_kb > 0 && !maint_after_build)
 			*paced = pick_key_window(v, take);

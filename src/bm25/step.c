@@ -327,6 +327,7 @@ doctext_open(Relation index)
 		return NULL;
 #endif
 	d = palloc0(sizeof(DocText));
+	SIFT_TEST_GATE(sift_test_worker_gate && MyBackendType == B_BG_WORKER, 7);
 	d->heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	d->info = BuildIndexInfo(index);
 	d->estate = CreateExecutorState();

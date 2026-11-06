@@ -217,6 +217,7 @@ sift_col_maint_worker_main(Datum main_arg)
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
+		sift_lock_table_of_index(indexoid, RowExclusiveLock);
 		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
@@ -277,6 +278,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
+		sift_lock_table_of_index(indexoid, RowExclusiveLock);
 		index = try_index_open(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{

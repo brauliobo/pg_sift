@@ -17,6 +17,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
+#include "pgstat.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -81,10 +82,7 @@ leaf_vtype(const SiftColDef *def)
 	return SCV_I32;
 }
 
-/*
- * A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word;
- * with no SQL type no expression matches it. money is one int64 and is read as such.
- */
+/* A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word; with no SQL type no expression matches it. money is one int64, read as such. */
 static bool
 leaf_hidden(const SiftColDef *def)
 {
@@ -329,6 +327,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->index = index;
 	src->snapshot = snapshot;
 	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
+	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too: maint/rewrite.c overlay_worth reads it */
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);

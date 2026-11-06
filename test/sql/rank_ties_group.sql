@@ -4,6 +4,8 @@
 -- cutoffs of the score, phrases and prefixes (whose scores the text decides: those candidates are verified as they come) and a consumer that drops hits.
 CREATE EXTENSION pg_sift;
 \ir test/sift_plan.sql
+-- no worker merges the promoted segments before the count of them below (a slow runner let it)
+SET sift.async_maintenance = off;
 SELECT sift.version() IS NOT NULL AS library_loaded;
 
 -- the score of a one-term search is a function of the length of the document, and the lengths are 3 to 8 words, so the groups are large

@@ -66,6 +66,20 @@ extern int	maint_part_kb_for(uint64 bytes);
 
 extern bool	maint_is_partition(const SiftSegEntry *e);
 
+/* The overlays of a key-cut index in partitions: what a merge of the small ones into one would rewrite and spare the reads (maint_overlay_set) */
+typedef struct OverlayEv
+{
+	int			n;				/* the overlays taken */
+	uint64		rows;			/* their rows: what the merge rewrites */
+	double		sum;			/* the width of the key ranges of their units, each overlay's added: the units a read of a random key opens in them */
+	double		cover;			/* the width of the key ranges of their units in all: the units it would open in the merged one */
+} OverlayEv;
+
+extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
+/* set by a rule that found the overlays due: the rewrite then takes them alone */
+extern bool	maint_overlay_asked;
+extern int	maint_overlay_steps;
+
 extern void	maint_throttle(SiftWriteTarget *wt);
 
 extern uint32	maint_floor_rows(Relation index);
