@@ -13,7 +13,7 @@ import os, re, subprocess, sys
 # two spaces: psql reads it as the same command, and its echo can be told from a "\\set ECHO none" of the test (an included file has one), which stays in the output
 CTRL = "\\set  ECHO none"
 RESTORE = "\\set ECHO all"
-BIND = re.compile(r"^\s*(prepare(?!\s+transaction)|declare|listen|load)\b|\bcreate\s+(global\s+|local\s+)?temp(orary)?\b|\bpg_(try_)?advisory_lock(_shared)?\s*\(|\bset_config\s*\(", re.I)
+BIND = re.compile(r"^\s*(prepare(?!\s+transaction)|declare|listen|load)\b|\bcreate\s+(global\s+|local\s+)?temp(orary)?\b|\bpg_(try_)?advisory_lock(_shared)?\s*\(|\bset_config\s*\(|\bpg_temp\b", re.I)
 G_META = re.compile(r"\\(g\w*|crosstabview|watch)\b")
 RUNS_QUERY = re.compile(r"\\(d\w*|z|l\+?|sf\+?|sv\+?|dp)\b")
 COPY_STDIN = re.compile(r"^\s*copy\b.*\bfrom\s+stdin", re.I | re.S)
