@@ -39,7 +39,12 @@ INSERT INTO types (name, coltype, idxdef, rowkey, itemkey) VALUES
   ('partial',         'int4',        '(k) WHERE v IS NOT NULL','g::int4',                                                  'o.n::int4'),
   ('include',         'int4',        '(k) INCLUDE (v)',        'g::int4',                                                  'o.n::int4'),
   ('hash',            'int4',        'USING hash (k)',         'g::int4',                                                  'o.n::int4'),
-  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4');
+  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4'),
+  -- an integer column compared with the key of another integer type, and keys beyond the range of the column (no entry equals them)
+  ('int2 key int4',   'int2',        '(k)',                    'g::int2',                                                  'o.n::int4 + CASE WHEN o.n::int % 4 = 0 THEN 65536 ELSE 0 END'),
+  ('int4 key int8',   'int4',        '(k)',                    'g::int4',                                                  'o.n::int8 + CASE WHEN o.n::int % 4 = 0 THEN 4294967296 ELSE 0 END'),
+  ('int8 key int2',   'int8',        '(k)',                    'g::int8',                                                  'o.n::int2'),
+  ('int8 desc key int4', 'int8',     '(k DESC)',               'g::int8',                                                  'o.n::int4');
 DO $$
 DECLARE t record;
 BEGIN
@@ -57,34 +62,38 @@ UPDATE types SET cond = 'k = (' || itemkey || ')' WHERE cond IS NULL;
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE;
 SELECT t.name, p.* FROM types t, LATERAL probe_check(case_query('lk_' || t.ord, t.cond)) p ORDER BY t.ord;
-       name       | pushed | direct | vs_child | vs_native 
-------------------+--------+--------+----------+-----------
- int2             | t      | t      |        0 |         0
- int4             | t      | t      |        0 |         0
- int8             | t      | t      |        0 |         0
- int8 desc        | t      | t      |        0 |         0
- int4 nulls first | t      | t      |        0 |         0
- date             | t      | t      |        0 |         0
- timestamptz      | t      | t      |        0 |         0
- numeric          | t      | t      |        0 |         0
- float8           | t      | t      |        0 |         0
- interval         | t      | t      |        0 |         0
- bool             | t      | t      |        0 |         0
- bytea            | t      | t      |        0 |         0
- text             | t      | t      |        0 |         0
- text C           | t      | t      |        0 |         0
- text pattern     | t      | t      |        0 |         0
- varchar          | t      | t      |        0 |         0
- bpchar           | t      | t      |        0 |         0
- name             | t      | t      |        0 |         0
- int4 array       | t      | t      |        0 |         0
- text array       | t      | t      |        0 |         0
- int4 expression  | t      | t      |        0 |         0
- partial          | t      | t      |        0 |         0
- include          | t      | t      |        0 |         0
- hash             | t      | f      |        0 |         0
- brin             | t      | f      |        0 |         0
-(25 rows)
+        name        | pushed | direct | vs_child | vs_native 
+--------------------+--------+--------+----------+-----------
+ int2               | t      | t      |        0 |         0
+ int4               | t      | t      |        0 |         0
+ int8               | t      | t      |        0 |         0
+ int8 desc          | t      | t      |        0 |         0
+ int4 nulls first   | t      | t      |        0 |         0
+ date               | t      | t      |        0 |         0
+ timestamptz        | t      | t      |        0 |         0
+ numeric            | t      | t      |        0 |         0
+ float8             | t      | t      |        0 |         0
+ interval           | t      | t      |        0 |         0
+ bool               | t      | t      |        0 |         0
+ bytea              | t      | t      |        0 |         0
+ text               | t      | t      |        0 |         0
+ text C             | t      | t      |        0 |         0
+ text pattern       | t      | t      |        0 |         0
+ varchar            | t      | t      |        0 |         0
+ bpchar             | t      | t      |        0 |         0
+ name               | t      | t      |        0 |         0
+ int4 array         | t      | t      |        0 |         0
+ text array         | t      | t      |        0 |         0
+ int4 expression    | t      | t      |        0 |         0
+ partial            | t      | t      |        0 |         0
+ include            | t      | t      |        0 |         0
+ hash               | t      | f      |        0 |         0
+ brin               | t      | f      |        0 |         0
+ int2 key int4      | t      | t      |        0 |         0
+ int4 key int8      | t      | t      |        0 |         0
+ int8 key int2      | t      | t      |        0 |         0
+ int8 desc key int4 | t      | t      |        0 |         0
+(29 rows)
 
 -- duplicate keys, versions and dead entries. Three rows per key (the match of a LIMIT 1 is the first visible entry of the key in index order); an index on w too, so that
 -- a change of w is not a HOT update and leaves the old entry of k in the index until a VACUUM
@@ -416,6 +425,31 @@ SELECT * FROM step_io('all rows, dead versions', 'lk_io', 'k = o.n::int', 'OFFSE
           step           | pushed | direct | ios | vs_child | vs_native 
 -------------------------+--------+--------+-----+----------+-----------
  all rows, dead versions | t      | t      | t   |        0 |         0
+(1 row)
+
+-- the child's filter on an index column rejects an entry before the heap is asked about it (a row of a dead version no more than a visible one); and keys of another integer type
+SELECT * FROM step_io('filter on an index column, dead versions', 'lk_io', $c$k = o.n::int AND v ~ 'u$'$c$);
+                   step                   | pushed | direct | ios | vs_child | vs_native 
+------------------------------------------+--------+--------+-----+----------+-----------
+ filter on an index column, dead versions | t      | t      | t   |        0 |         0
+(1 row)
+
+SELECT * FROM step_io('filter rejects every entry', 'lk_io', $c$k = o.n::int AND v = 'none'$c$);
+            step            | pushed | direct | ios | vs_child | vs_native 
+----------------------------+--------+--------+-----+----------+-----------
+ filter rejects every entry | t      | t      | t   |        0 |         0
+(1 row)
+
+SELECT * FROM step_io('key of a wider integer type', 'lk_io', 'k = o.n::int8');
+            step             | pushed | direct | ios | vs_child | vs_native 
+-----------------------------+--------+--------+-----+----------+-----------
+ key of a wider integer type | t      | t      | t   |        0 |         0
+(1 row)
+
+SELECT * FROM step_io('key of a narrower integer type', 'lk_io', 'k = o.n::int2');
+              step              | pushed | direct | ios | vs_child | vs_native 
+--------------------------------+--------+--------+-----+----------+-----------
+ key of a narrower integer type | t      | t      | t   |        0 |         0
 (1 row)
 
 DELETE FROM lk_io WHERE k % 11 = 0 AND w = 1;

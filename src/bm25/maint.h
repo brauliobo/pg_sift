@@ -88,6 +88,7 @@ extern bool sift_maint_wait_quiet(int max_active);
 
 /* The common start of a worker: context of its errors, signals, connection to the database of the request; returns the index OID */
 extern Oid	sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx);
+extern void sift_lock_table_of_index(Oid indexoid, LOCKMODE lock);
 
 /* The outcome of one maintenance step */
 typedef enum SiftStepResult
@@ -178,6 +179,7 @@ extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool autom
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);
+extern bool sift_maint_register_worker_oid(Oid indexoid, const char *function);
 
 /* Returns blocks returned to the free list */
 extern int64 sift_maint_orphan_sweep(Relation index);

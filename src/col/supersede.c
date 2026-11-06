@@ -185,6 +185,14 @@ tomb_hold(Relation index, const SiftTomb *ent)
 		flush_slot(h);
 }
 
+/* A row trigger (track_changes = ctid): the entry at the address of a version a statement ended, held with the others of the transaction */
+void
+sift_col_tomb_hold_tid(Relation index, ItemPointer tid)
+{
+	sift_col_batch_hook();
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(tid), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE});
+}
+
 /*
  * The entry a new version replaces is the same for every sift index of the table that has the key column: the first one finds it with the probe of the unique index, the others
  * of the same row version take it from here (the new address, the transaction and the command say which row version it is).

@@ -156,8 +156,6 @@ static bool
 probe_sub(Query *sub)
 {
 	RangeTblEntry *rte;
-	HeapTuple	tp;
-	double		rows;
 
 	if (sub->commandType != CMD_SELECT || sub->jointree == NULL || sub->hasAggs || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasDistinctOn || sub->hasSubLinks ||
 		sub->groupClause != NIL || sub->groupingSets != NIL || sub->distinctClause != NIL || sub->havingQual != NULL || sub->limitCount != NULL || sub->limitOffset != NULL ||
@@ -169,12 +167,7 @@ probe_sub(Query *sub)
 	if (contain_volatile_functions((Node *) sub->jointree) || contain_volatile_functions((Node *) sub->targetList) ||
 		contain_vars_of_level((Node *) sub->jointree, 2) || contain_vars_of_level((Node *) sub->targetList, 2))
 		return false;
-	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rte->relid));
-	if (!HeapTupleIsValid(tp))
-		return false;
-	rows = ((Form_pg_class) GETSTRUCT(tp))->reltuples;
-	ReleaseSysCache(tp);
-	return rows >= PROBE_MIN_ROWS;
+	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS;
 }
 
 /* the parameter of the sub-select's column in an IN's test expression, replaced by the column */
@@ -345,6 +338,10 @@ fold_from(Query *q)
 	return true;
 }
 
+static bool keys_level(Query *q);
+static bool reads_scan_table(Query *q);
+static bool item_reads_scan(RangeTblEntry *rte);
+
 bool
 probe_sublinks(Query *q, bool apply)
 {
@@ -353,7 +350,7 @@ probe_sublinks(Query *q, bool apply)
 	bool		changed = false;
 
 	if (!sift_agg_probe_rewrite || !q->hasSubLinks || q->commandType != CMD_SELECT || q->jointree == NULL || q->jointree->fromlist == NIL || q->setOperations != NULL ||
-		q->rowMarks != NIL)
+		q->rowMarks != NIL || keys_level(q))
 		return false;
 	found = probe_found(q);
 	if (found == NIL || !apply)
@@ -515,6 +512,21 @@ refs(Node *n, Index rti)
 	return r;
 }
 
+/* the items other than RTI that the expression reads (Vars of this query level) */
+static bool
+partners_walker(Node *n, Bitmapset **partners)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+	{
+		if (((Var *) n)->varlevelsup == 0)
+			*partners = bms_add_member(*partners, ((Var *) n)->varno);
+		return false;
+	}
+	return expression_tree_walker(n, partners_walker, partners);
+}
+
 /* the conjunct of the ON as the sub-select reads it: the Vars of the table are its own, those of the others the query around it's */
 static Node *
 child_vars(Node *n, Index *rti)
@@ -607,25 +619,80 @@ scan_table(Oid relid)
 	return found;
 }
 
+/* does the query read a table that has a column index (a scan), in its own tables, its sub-selects and the CTEs it names or reads? The query is the first of flat_levels (as at the call
+ * from flatten_query), and the levels follow a sub-select or a CTE body into it */
+static bool
+reads_scan_table(Query *q)
+{
+	foreach_node(RangeTblEntry, r, q->rtable)
+		if ((r->rtekind == RTE_RELATION && scan_table(r->relid)) || ((r->rtekind == RTE_SUBQUERY || r->rtekind == RTE_CTE) && item_reads_scan(r)))
+			return true;
+	foreach_node(CommonTableExpr, cte, q->cteList)
+	{
+		bool		found;
+
+		flat_levels = lcons(cte->ctequery, flat_levels);
+		found = reads_scan_table(castNode(Query, cte->ctequery));
+		flat_levels = list_delete_first(flat_levels);
+		if (found)
+			return true;
+	}
+	return false;
+}
+
+/* does a sub-select or a CTE reference of the first level of flat_levels read a table with a column index? A CTE that cannot be found is taken as one that does */
+static bool
+item_reads_scan(RangeTblEntry *rte)
+{
+	List	   *saved = flat_levels;
+	bool		found;
+
+	if (rte->rtekind == RTE_SUBQUERY)
+	{
+		flat_levels = lcons(rte->subquery, flat_levels);
+		found = reads_scan_table(rte->subquery);
+		flat_levels = list_delete_first(flat_levels);
+		return found;
+	}
+	if (!rte->self_reference && rte->ctelevelsup < list_length(saved))
+		foreach_node(CommonTableExpr, cte, ((Query *) list_nth(saved, rte->ctelevelsup))->cteList)
+			if (strcmp(cte->ctename, rte->ctename) == 0 && !cte->cterecursive)
+			{
+				flat_levels = lcons(cte->ctequery, list_copy_tail(saved, rte->ctelevelsup));
+				found = reads_scan_table(castNode(Query, cte->ctequery));
+				flat_levels = saved;
+				return found;
+			}
+	return true;
+}
+
+/* a query level that reads no table with a column index and no column of the query around it: it names keys, no scan reads it, and PostgreSQL plans its joins and sub-selects as written
+ * (a probe made there leaves a table with no join condition of its own once the level is flattened into the statement that reads it) */
+static bool
+keys_level(Query *q)
+{
+	return !reads_scan_table(q) && !contain_vars_of_level((Node *) q, 1);
+}
+
+/* a CTE, a sub-select or a VALUES list that reads no table with a column index: the keys a statement names, which no scan reads */
+static bool
+keys_item(RangeTblEntry *rte)
+{
+	return rte->rtekind == RTE_VALUES || ((rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE) && !item_reads_scan(rte));
+}
+
 /* a plain table with many rows that no row-level policy restricts */
 static bool
 join_table(Query *q, Node *n)
 {
 	RangeTblEntry *rte;
-	HeapTuple	tp;
-	double		rows;
 
 	if (!IsA(n, RangeTblRef))
 		return false;
 	rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable);
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL)
 		return false;
-	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rte->relid));
-	if (!HeapTupleIsValid(tp))
-		return false;
-	rows = ((Form_pg_class) GETSTRUCT(tp))->reltuples;
-	ReleaseSysCache(tp);
-	return rows >= PROBE_MIN_ROWS && !scan_table(rte->relid);
+	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS && !scan_table(rte->relid);
 }
 
 /* what is left of the ON, or of the WHERE of a FROM list, after the sub-select took its conjuncts */
@@ -655,6 +722,7 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 	Node	  **slot = join_slot(c);
 	Node	   *on = *slot;
 	bool		tie = false;
+	Bitmapset  *partners = NULL;
 
 	c->child = c->rest = NIL;
 	c->used = NULL;
@@ -667,7 +735,12 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 
 		if (r.outer || checkExprHasSubLink(a) || contain_volatile_functions(a) || contain_agg_clause(a))
 			return false;
-		tie |= r.table && join_tie(rte, c->rti, a);
+		if (r.table && join_tie(rte, c->rti, a))
+		{
+			tie = true;
+			partners_walker(a, &partners);
+			partners = bms_del_member(partners, c->rti);
+		}
 		if (r.table || type == JOIN_LEFT)
 			c->child = lappend(c->child, a);
 		else
@@ -675,6 +748,20 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 	}
 	if (!tie)
 		return false;
+	/*
+	 * A table that an inner join ties only to a CTE (the keys a statement names) is probed by those keys by the planner's own nested loop, and
+	 * as a lateral child of the CTE it leaves the CTE with no join condition of its own once the statement is flattened into the query that
+	 * reads the table's columns (the scan finds no lookup to key it by): the keys' CTE is the driver, the table the one joined by them.
+	 */
+	if (type == JOIN_INNER && !bms_is_empty(partners))
+	{
+		bool		driven = true;
+
+		for (int m = -1; (m = bms_next_member(partners, m)) >= 0;)
+			driven &= keys_item(rt_fetch(m, q->rtable));
+		if (driven)
+			return false;
+	}
 	foreach_node(RangeTblEntry, r, q->rtable)
 	{
 		/* the items of a FROM list are in an order that a lateral reference to the table needs: the table goes last */
@@ -863,7 +950,7 @@ sift_agg_probe_joins(Query *q, bool apply)
 	bool		changed = false;
 	ProbeJoin	c = {0};
 
-	if (!sift_agg_probe_rewrite || q->commandType != CMD_SELECT || q->jointree == NULL || q->setOperations != NULL || q->rowMarks != NIL)
+	if (!sift_agg_probe_rewrite || q->commandType != CMD_SELECT || q->jointree == NULL || q->setOperations != NULL || q->rowMarks != NIL || keys_level(q))
 		return false;
 	while (join_find(q, (Node *) q->jointree, &c))
 	{

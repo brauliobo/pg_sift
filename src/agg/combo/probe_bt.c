@@ -511,13 +511,15 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 
 			if (dp->ioss)
 			{
+				dp_load(dp, dp->tup[t]);
+				if (sink->keep && !sink->keep(sink))
+					continue;
 				if (!VM_ALL_VISIBLE(dp->hrel, ItemPointerGetBlockNumber(&tid), &dp->vmbuf))
 				{
 					if (!table_index_fetch_tuple(dp->fetch, &tid, dp->snap, dp->tslot, &call_again, &all_dead))
 						continue;
 					SIFT_INVARIANT(!call_again, "an index-only probe found a heap fetch that needs another call");
 				}
-				dp_load(dp, dp->tup[t]);
 				if (sink->row(sink))
 				{
 					k->n++;

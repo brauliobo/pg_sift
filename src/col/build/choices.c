@@ -373,9 +373,9 @@ d_track(Derive *d)
 	AttrNumber	pk;
 	const char *why;
 
-	if (sift_col_row_key_on(d->index))
+	if (sift_col_track_on(d->index))
 	{
-		add(d, "sift-col-index-installed-two-statement-triggers", pstrdup(rk), NULL);
+		add(d, sift_col_track_ctid(d->index) ? "sift-col-index-installed-row-triggers" : "sift-col-index-installed-two-statement-triggers", pstrdup(rk), NULL);
 		if (sift_col_track_incomplete(d->index))
 			add(d, "track-changes-concurrent", pstrdup(rk), NULL);
 	}
@@ -551,6 +551,7 @@ static const struct
 	{"order-array-listed", d_order_arrays},
 	{"order-layout", d_order_layout},
 	{"sift-col-index-installed-two-statement-triggers", d_track},
+	{"sift-col-index-installed-row-triggers", d_track},
 	{"sift-col-index-does-not-track-changes", d_track},
 	{"track-changes-concurrent", d_track},
 	{"key-cut-advised", d_key_cut_advice},

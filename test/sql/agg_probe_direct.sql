@@ -37,7 +37,12 @@ INSERT INTO types (name, coltype, idxdef, rowkey, itemkey) VALUES
   ('partial',         'int4',        '(k) WHERE v IS NOT NULL','g::int4',                                                  'o.n::int4'),
   ('include',         'int4',        '(k) INCLUDE (v)',        'g::int4',                                                  'o.n::int4'),
   ('hash',            'int4',        'USING hash (k)',         'g::int4',                                                  'o.n::int4'),
-  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4');
+  ('brin',            'int4',        'USING brin (k)',         'g::int4',                                                  'o.n::int4'),
+  -- an integer column compared with the key of another integer type, and keys beyond the range of the column (no entry equals them)
+  ('int2 key int4',   'int2',        '(k)',                    'g::int2',                                                  'o.n::int4 + CASE WHEN o.n::int % 4 = 0 THEN 65536 ELSE 0 END'),
+  ('int4 key int8',   'int4',        '(k)',                    'g::int4',                                                  'o.n::int8 + CASE WHEN o.n::int % 4 = 0 THEN 4294967296 ELSE 0 END'),
+  ('int8 key int2',   'int8',        '(k)',                    'g::int8',                                                  'o.n::int2'),
+  ('int8 desc key int4', 'int8',     '(k DESC)',               'g::int8',                                                  'o.n::int4');
 DO $$
 DECLARE t record;
 BEGIN
@@ -165,6 +170,11 @@ UPDATE lk_io SET v = v || 'u' WHERE k % 3 = 0;
 SELECT * FROM step_io('entries of dead versions', 'lk_io', 'k = o.n::int');
 SELECT * FROM step_io('entries marked dead', 'lk_io', 'k = o.n::int');
 SELECT * FROM step_io('all rows, dead versions', 'lk_io', 'k = o.n::int', 'OFFSET 0');
+-- the child's filter on an index column rejects an entry before the heap is asked about it (a row of a dead version no more than a visible one); and keys of another integer type
+SELECT * FROM step_io('filter on an index column, dead versions', 'lk_io', $c$k = o.n::int AND v ~ 'u$'$c$);
+SELECT * FROM step_io('filter rejects every entry', 'lk_io', $c$k = o.n::int AND v = 'none'$c$);
+SELECT * FROM step_io('key of a wider integer type', 'lk_io', 'k = o.n::int8');
+SELECT * FROM step_io('key of a narrower integer type', 'lk_io', 'k = o.n::int2');
 DELETE FROM lk_io WHERE k % 11 = 0 AND w = 1;
 SELECT * FROM step_io('deleted rows', 'lk_io', 'k = o.n::int');
 INSERT INTO lk_io SELECT g, 'late' || g, 0, 0 FROM generate_series(0, 299, 4) g;

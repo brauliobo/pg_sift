@@ -13,7 +13,7 @@ line states (a design note, a page): its note says where it is made, and it is c
 statement is the name of the statement, and may be narrowed to one table state and one mode of the records, `name@dataset#variant` (either part optional): a statement measured on
 several table states or under several index options has a claim for each.
 
-arm is heap, btree, gin, sift or picked (the plan the planner chose); metric is exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks (warm hit + read of every kind) or cold_blocks
+arm is heap, btree, gin, sift, native (the normal plan, sift.enable_agg = off) or picked (the plan the planner chose); metric is exec_ms, plan_ms, wall_ms, instr_m, est_cost, blocks (warm hit + read of every kind) or cold_blocks
 (blocks read after the eviction), heap_blocks (warm hit + read of the heap alone).
 """
 import os

@@ -68,8 +68,9 @@ The cases of these changes, measured with `bench/bench cases --rows 300000` on t
 | `group_passes_upfront`: `GROUP BY` one integer column whose groups are several times hash memory (1 MB) | 14.3 ms · 107 M · 1,194 | 94.5 ms · 849 M · 4,105 | 6.6x |
 | `group_direct_arrays_passes`: `GROUP BY` two integer columns whose direct arrays are more than hash memory (2 MB) | 40.1 ms · 392 M · 5,065 | 162 ms · 1,643 M · 4,105 | 4.0x |
 | `group_spill_two_keys`: `GROUP BY` two columns whose groups outgrow hash memory (64 kB) and spill from the start | 106 ms · 831 M · 303 | 180 ms · 1,970 M · 4,105 | 1.7x |
+| `group_join_dim_filter_keys`: the keys of a filtered table joined to a grouped sub-select, looked up before the groups are made (one name, groups of 10 rows) | 0.34 ms · 1.27 M · 32 | 9.2 ms · 112.8 M · 182 | 27x |
 
-`group_direct_arrays_passes` touches more buffers than the sequential scan (5,065 against 4,105): its gain is the time and the instructions, not the IO. The gain of the spill is the smallest of the table because the groups go to partitions and are merged back, which a larger `work_mem` avoids. What the 4.1 changes do not do is in the [release notes](docs/releases/v4.1.0.md#known-issues).
+The row of `group_join_dim_filter_keys` was measured on tip e8cd177d0 (run e8cd177d0886-20261105T194357Z-7e16), the same way, with the whole statement timed from the client (planning included: 0.24 ms of the 0.34 ms) and the other plan being PostgreSQL's own with `sift.enable_agg = off` on the same table and indexes (the b-tree of the key, an index-only scan of the vacuumed table). `group_direct_arrays_passes` touches more buffers than the sequential scan (5,065 against 4,105): its gain is the time and the instructions, not the IO. The gain of the spill is the smallest of the table because the groups go to partitions and are merged back, which a larger `work_mem` avoids. What the 4.1 changes do not do is in the [release notes](docs/releases/v4.1.0.md#known-issues).
 
 ## At a glance
 

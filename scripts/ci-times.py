@@ -3,17 +3,17 @@
 
   scripts/ci-times.py RUN...              one table per run: every job (queue, run, test step, lanes, lane minutes, the longest
                                           tests) and the slowest tests of the full tier
-  scripts/ci-times.py --weights RUN...    scripts/weights-deep.tsv from the passing jobs of the runs (the newest run that passed a job wins:
+  scripts/ci-times.py --weights [--tier quick|full] RUN...    scripts/weights-*.tsv from the passing jobs of the runs (the newest run that passed a job wins:
                                           name the runs oldest first; a major that passed a job in no run gets the mean of its sibling slices)
 
 The job logs come from `gh api` and are kept in --cache (default $TMPDIR/ci-times) so that a run is fetched once. The test times are the
-`ci: ID STATUS Ns lane L` lines scripts/ci.sh prints; a failed job is left out of the weights (--fail-fast ends it early).
+`ci: STATUS ID N s (LANE)` lines scripts/ci.sh prints; a failed job is left out of the weights (--fail-fast ends it early).
 """
 import argparse, json, os, re, statistics, subprocess, tempfile
 from collections import defaultdict
 from datetime import datetime
 
-JOB_LINE = re.compile(r'ci: (\S+)\s+(PASS|FAIL)\s+(\d+)s lane (\S+)')
+JOB_LINE = re.compile(r'ci: (PASS|FAIL) (\S+) (\d+) s \((\w+)\)')
 WALL_LINE = re.compile(r'wall (\d+)s \((\d+) lanes\)')
 PG_NAME = re.compile(r'PostgreSQL (\d+)')
 
@@ -47,8 +47,13 @@ def full_tier(job):
     return 'full tier' in job['name']
 
 
+def quick_tier(job):
+    # the shards of the quick tier on x86-64 and PostgreSQL 17 and 18 (the other jobs run the same tests on a flavor of the server)
+    return job['name'].startswith('PostgreSQL') and not re.search('full tier|arm64|assertions|git', job['name'])
+
+
 def parse(log):
-    jobs = [(m[1], m[2], int(m[3])) for m in JOB_LINE.finditer(log)]
+    jobs = [(m[2], m[1], int(m[3])) for m in JOB_LINE.finditer(log)]
     wall = WALL_LINE.search(log)
     return jobs, (int(wall[1]), int(wall[2])) if wall else (0, 0)
 
@@ -90,12 +95,12 @@ def report(run, cache):
         print(f'| {secs} | {test} | {name} |')
 
 
-def weights(runs, cache, floor):
+def weights(runs, cache, floor, in_tier):
     per = {17: defaultdict(list), 18: defaultdict(list)}
     for run in runs:
         for j in run_jobs(run)['jobs']:
             m = PG_NAME.search(j['name'])
-            if not full_tier(j) or not m:
+            if not in_tier(j) or not m:
                 continue
             for test, status, secs in parse(job_log(run, j['databaseId'], cache))[0]:
                 if status == 'PASS':
@@ -120,12 +125,13 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', nargs='+', type=int)
     ap.add_argument('--weights', action='store_true')
+    ap.add_argument('--tier', choices=('quick', 'full'), default='full', help='the jobs the weights come from (--weights)')
     ap.add_argument('--floor', type=int, default=20, help='seconds under which a job weighs the default (--weights)')
     ap.add_argument('--cache', default=os.path.join(tempfile.gettempdir(), 'ci-times'))
     a = ap.parse_args()
     os.makedirs(a.cache, exist_ok=True)
     if a.weights:
-        weights(a.runs, a.cache, a.floor)
+        weights(a.runs, a.cache, a.floor, quick_tier if a.tier == 'quick' else full_tier)
     else:
         for r in a.runs:
             report(r, a.cache)

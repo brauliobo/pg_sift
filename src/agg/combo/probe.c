@@ -20,6 +20,8 @@
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_opfamily.h"
+#include "catalog/pg_type.h"
 #include "executor/nodeIndexscan.h"
 #include "nodes/nodeFuncs.h"
 #include "portability/instr_time.h"
@@ -57,6 +59,12 @@ dp_reads_params(Node *n, void *context)
 	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
 		return true;
 	return expression_tree_walker(n, dp_reads_params, context);
+}
+
+static bool
+dp_int_type(Oid t)
+{
+	return t == INT2OID || t == INT4OID || t == INT8OID;
 }
 
 /*
@@ -180,7 +188,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 		int			i = sk->sk_attno - 1;
 
 		if (sk->sk_strategy != BTEqualStrategyNumber || (sk->sk_flags & ~SK_ISNULL) != 0 || i < 0 || i >= dp->nk || seen[i] ||
-			sk->sk_subtype != irel->rd_opcintype[i])
+			(sk->sk_subtype != irel->rd_opcintype[i] && !(dp_int_type(sk->sk_subtype) && dp_int_type(irel->rd_opcintype[i]))))
 			return false;
 		seen[i] = true;
 		dp->keyat[i] = s;
@@ -222,6 +230,9 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 			default:
 				break;
 		}
+		/* an integer column compared with the key of another integer type (a smallint column and a literal): the integers themselves are compared (dp_key) */
+		if (dp->skeys[dp->keyat[i]].sk_subtype != irel->rd_opcintype[i] && (c->kind != DC_INT || irel->rd_opfamily[i] != INTEGER_BTREE_FAM_OID))
+			return false;
 	}
 	dp->snap = dp->estate->es_snapshot;
 	if (dp->snap == NULL || dp->ec1 == NULL || (dp->nrkeys > 0 && dp->rctx == NULL))
@@ -249,7 +260,12 @@ combo_probe_on(AggExec *ex, int ci)
 		{
 			dp->bcxt = AllocSetContextCreate(ex->cxt, "sift direct probe", ALLOCSET_DEFAULT_SIZES);
 			if (dp->ioss)
+			{
+				/* ExecutorEnd resets the executor state's slot table after this node's context is deleted */
+				MemoryContextSwitchTo(dp->estate->es_query_cxt);
 				dp->tslot = ExecAllocTableSlot(&dp->estate->es_tupleTable, RelationGetDescr(dp->hrel), table_slot_callbacks(dp->hrel) PG19_SLOT_FLAGS);
+				MemoryContextSwitchTo(ex->cxt);
+			}
 			dp->ignore_dead = !TransactionStartedDuringRecovery();
 			for (int i = 0; i < DP_MAX_LEVELS; i++)
 				dp->lv[i].hik = palloc(BLCKSZ / 2);
@@ -352,9 +368,14 @@ dp_key(AggExec *ex, int ci, DProbe *dp, DKey *k, uint32 e)
 		{
 			a->d = datumCopy(sk->sk_argument, c->byval, c->len);
 			if (c->kind == DC_INT)
-				a->i = c->len == 2 ? DatumGetInt16(a->d) : c->len == 4 ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
+				a->i = sk->sk_subtype == INT2OID ? DatumGetInt16(a->d) : sk->sk_subtype == INT4OID ? DatumGetInt32(a->d) : DatumGetInt64(a->d);
 		}
 		MemoryContextSwitchTo(old);
+		if (c->kind == DC_INT && c->len < 8 && (a->i < -(INT64CONST(1) << (c->len * 8 - 1)) || a->i >= (INT64CONST(1) << (c->len * 8 - 1))))
+		{
+			k->state = DKS_ROWS;	/* the key is beyond the range of the column: no entry equals it */
+			return;
+		}
 	}
 	dp_abbrev(dp, k);
 }
@@ -376,6 +397,17 @@ combo_sink_begin(DSink *s, DKey *k)
 	k->start = cs->ex->cs[cs->ci].map->nrow;
 }
 
+/* an index-only entry the child's filter rejects needs no visibility check */
+static bool
+combo_sink_keep(DSink *s)
+{
+	DProbe	   *dp = ((ComboSink *) s)->dp;
+
+	ResetExprContext(dp->ec1);
+	dp->ec1->ecxt_scantuple = dp->scan;
+	return ExecQual(dp->qual, dp->ec1);
+}
+
 static bool
 combo_sink_row(DSink *s)
 {
@@ -388,10 +420,13 @@ combo_sink_row(DSink *s)
 	TupleTableSlot *slot = dp->scan;
 	MemoryContext old;
 
-	ResetExprContext(dp->ec1);
-	dp->ec1->ecxt_scantuple = dp->scan;
-	if (!ExecQual(dp->qual, dp->ec1))
-		return false;
+	if (!dp->ioss)
+	{
+		ResetExprContext(dp->ec1);
+		dp->ec1->ecxt_scantuple = dp->scan;
+		if (!ExecQual(dp->qual, dp->ec1))
+			return false;
+	}
 	if (dp->p1)
 		slot = ExecProject(dp->p1);
 	if (dp->p2)
@@ -438,7 +473,7 @@ combo_probe_flush(AggExec *ex, int ci)
 			ord[nprobe++] = &dp->keys[p];
 	if (nprobe > 0)
 	{
-		ComboSink	sink = {{combo_sink_begin, combo_sink_row}, ex, ci, dp};
+		ComboSink	sink = {{combo_sink_begin, combo_sink_keep, combo_sink_row}, ex, ci, dp};
 
 		dp->fetch = sift_table_index_fetch_begin(dp->hrel);
 		ex->probe_direct += dp_batch(dp, ord, nprobe, &sink.s);

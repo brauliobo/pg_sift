@@ -14,6 +14,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/plancat.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -319,9 +320,9 @@ joins_counted(AggCtx *c)
 
 /* the operators a row of a keyed load costs, the page visits apart; `entries_only`: the share of them taken from the entries of the btree */
 double
-sift_agg_entry_ops(double entries_only)
+sift_agg_entry_ops(double entries_only, bool heap)
 {
-	return AGG_PROBE_ROW - entries_only * AGG_PROBE_IOS;
+	return heap ? AGG_PROBE_ROW - entries_only * AGG_PROBE_IOS : AGG_PROBE_ROW_AM;
 }
 
 /*
@@ -330,11 +331,12 @@ sift_agg_entry_ops(double entries_only)
  * whose rows come from the entries of a btree that holds the columns (all-visible pages of a covering index): no heap fetch, no page visit.
  */
 double
-sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only)
+sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only, bool heap)
 {
 	double		visited = pages * (1.0 - exp(-entries / Max(pages, 1.0)));
 
-	return keys * AGG_PROBE_KEY + entries * sift_agg_entry_ops(entries_only) + visited * (1.0 - entries_only) * heap_visit_ops(pages);
+	entries_only = heap ? entries_only : 0;
+	return keys * AGG_PROBE_KEY + entries * sift_agg_entry_ops(entries_only, heap) + visited * (1.0 - entries_only) * heap_visit_ops(pages);
 }
 
 /*
@@ -352,9 +354,26 @@ sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_o
 
 /* a keyed load pays while it costs less than the table read whole (`whole`, from sift_agg_whole_ops) */
 bool
-sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole)
+sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, bool heap, double whole)
 {
-	return sift_agg_keyed_ops(keys, entries, pages, entries_only) < whole;
+	return sift_agg_keyed_ops(keys, entries, pages, entries_only, heap) < whole;
+}
+
+/*
+ * The rows the planner expects of a table: pg_class.reltuples is -1 until a VACUUM or an ANALYZE has run (a table just loaded), which a decision on the size of a
+ * lookup table read as none. The planner's own estimate takes the density of the pages from the row width then, and a known density times the pages now.
+ */
+double
+sift_agg_table_rows(Oid relid)
+{
+	Relation	rel = relation_open(relid, NoLock);
+	BlockNumber pages;
+	double		tuples,
+				allvis;
+
+	estimate_rel_size(rel, NULL, &pages, &tuples, &allvis);
+	relation_close(rel, NoLock);
+	return tuples;
 }
 
 /* the rows a value of column att has: the rows of the table over the distinct values its statistics say; 0 when they say nothing */
@@ -451,6 +470,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
 	const SiftAggJoin *j = &jc->j;
 	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
+	bool		heap = get_rel_relam(relid) == HEAP_TABLE_AM_OID;
 	double		tuples = Max(jrel->tuples, 1.0),
 				rpk = 0,
 				best = HUGE_VAL;
@@ -470,7 +490,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 			ta[n++] = ii->indexkeys[col];
 		cov = index_covers(ii, j);
 		r = sift_agg_key_rows(relid, att, ta, n, tuples, ii->unique && ii->nkeycolumns == 1);
-		price = r * sift_agg_entry_ops(cov ? jrel->allvisfrac : 0);
+		price = r * sift_agg_entry_ops(cov ? jrel->allvisfrac : 0, heap);
 		if (r > 0 && price < best)
 		{
 			best = price;
@@ -481,7 +501,7 @@ join_keys_pay(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, int att, double keys, doub
 	if (rpk <= 0)
 		return false;
 	keys = Min(keys, tuples);
-	if (!sift_agg_probe_pays(keys, keys * rpk, jrel->pages, *entries_only, join_whole_ops(c, s, jc)))
+	if (!sift_agg_probe_pays(keys, keys * rpk, jrel->pages, *entries_only, heap, join_whole_ops(c, s, jc)))
 		return false;
 	*rows = keys * rpk;
 	return true;
@@ -663,7 +683,7 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	}
 	if ((probes = join_probe_keys(c, s, jc, &prows, &only)) > 0)
 	{
-		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only) / Max(prows, 1.0);
+		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only, get_rel_relam(planner_rt_fetch(jc->rti, c->root)->relid) == HEAP_TABLE_AM_OID) / Max(prows, 1.0);
 		return Max(prows, 1.0);
 	}
 	*row_cost = join_whole_ops(c, s, jc) / tuples;

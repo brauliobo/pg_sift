@@ -30,7 +30,8 @@ for s in "${ORDER[@]}" leakcheck; do
 	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
 	for id in ${bad:-}; do
 		pat='^not ok'; [[ $id != installcheck-* ]] || pat='^(not ok|@@|[-+][^-+])'
-		[[ $id != installcheck-* && $id != tap-* ]] || grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400 | sed "s/^/$red    /; s/\$/$off/"
+		if [[ $id == installcheck-* || $id == tap-* ]]; then grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400
+		else tail -n 15 "$LOG/$id.log" 2>/dev/null | cut -c1-400; fi | sed "s/^/$red    /; s/\$/$off/"   # any other job (isolation, a differential test): the end of its log, the hosted log is all there is of it
 	done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
@@ -49,9 +50,9 @@ if (( failed )); then
 fi
 # the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
 if [[ -n ${STATS:-} ]]; then
-	kill "$STATS" 2>/dev/null
+	touch "$LOG/stats.stop"
 	for _ in {1..20}; do kill -0 "$STATS" 2>/dev/null || break; sleep 1; done
-	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler ignored TERM for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
+	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler did not end for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
 	wait "$STATS" 2>/dev/null
 	cat "$LOG/stats.txt"
 fi

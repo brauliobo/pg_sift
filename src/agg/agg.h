@@ -49,13 +49,14 @@ extern int64 sift_agg_plan_passes;	/* SIFT_TESTING: the runs of the planner that
 extern int64 sift_agg_key_lists;	/* SIFT_TESTING: the selectivities of a key list the plan computed */
 extern int64 sift_agg_outer_walks;	/* SIFT_TESTING: the walks for references to a query above that the plan made */
 struct SiftAggJoin;
-extern double sift_agg_entry_ops(double entries_only);
-extern double sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only);
+extern double sift_agg_entry_ops(double entries_only, bool heap);
+extern double sift_agg_keyed_ops(double keys, double entries, double pages, double entries_only, bool heap);
 extern double sift_agg_whole_ops(double tuples, double pages, bool cols, int nnum, bool keys_only);
-extern bool sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, double whole);
+extern bool sift_agg_probe_pays(double keys, double entries, double pages, double entries_only, bool heap, double whole);
 extern int sift_agg_trail_cond(const struct SiftAggJoin *j, int att, Oid opfamily, Oid collation);
 extern double sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, double tuples, bool unique);
 extern double sift_agg_rows_per_key(unsigned int relid, int att, double tuples);
+extern double sift_agg_table_rows(Oid relid);
 extern PGDLLIMPORT double sift_plan_scale;
 extern PGDLLIMPORT double sift_agg_scale_horizon;
 extern PGDLLIMPORT bool sift_agg_two_level_on;

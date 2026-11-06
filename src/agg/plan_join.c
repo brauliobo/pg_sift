@@ -413,7 +413,15 @@ order_inner_lookups(AggCtx *c, List *pending, List *quals, List **ordered, Relid
 				break;
 			}
 		if (next == NULL)
+		{
+			char	   *waiting = "";
+
+			if (sift_explain_refusals)
+				foreach_ptr(JoinCtx, jc, pending)
+					waiting = psprintf("%s%s%s", waiting, *waiting ? ", " : "", planner_rt_fetch(jc->rti, c->root)->eref->aliasname);
+			agg_refused_f(JOIN_CONDITION, "no inner join can be looked up first: each of %s needs a table that no earlier lookup reaches, or a key the scan cannot evaluate", waiting);
 			return false;
+		}
 		*ordered = lappend(*ordered, next);
 		*done = bms_add_member(*done, next->rti);
 		pending = list_delete_ptr(pending, next);

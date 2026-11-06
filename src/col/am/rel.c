@@ -284,6 +284,7 @@ build_rel(Relation index, MemoryContext mcxt)
 				r->rowkey_attno = a;
 		r->rowkey = true;
 	}
+	r->track = r->rowkey || sift_col_track_ctid(index);
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);

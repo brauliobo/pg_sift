@@ -88,7 +88,7 @@ The quickstart used only defaults. These settings change behaviour or disk forma
 |---|---|---|
 | `sift.enable_col_scan` | off | plan a `sift_col` index built with the `sift.col_*_ops` classes as a bitmap index scan for queries that return rows ([COL-SCAN.md](COL-SCAN.md)) |
 | `sift.parallel_scan` | off | let the planner add parallel BM25 scans and counts |
-| `sift.col_auto_merge` | on | a background worker vacuums the table after churn and, after the `VACUUM`, merges a `sift_col` index that churn has scattered (within 5% of the WAL the server writes; `off` stops it) |
+| `sift.col_auto_merge` | on | a background worker vacuums the table after churn, after a build or a bulk load that leaves its pages out of the visibility map, and, after the `VACUUM`, merges a `sift_col` index that churn has scattered (within 5% of the WAL the server writes; `off` stops it) |
 | `sift.table_async_promote` | off | write-path variant of `sift_table` (no gain measured on a 4-client insert loop) |
 | `sift.table_bulk_groups` | on | `COPY`, `CREATE TABLE AS` and `REFRESH MATERIALIZED VIEW` write column groups straight away |
 | `sift.explain_refusals` | off | report why a query kept the normal plan |

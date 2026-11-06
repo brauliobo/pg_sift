@@ -21,7 +21,8 @@ sql av "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind tex
 vacuumed() { sql av "SELECT coalesce(extract(epoch FROM last_vacuum)::text, '-') FROM pg_stat_user_tables WHERE relname = 'facts'"; }
 # the scan the churn slows down; the rows it checked in the heap
 SCAN="SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind"
-vetted() { sql av "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.* \([0-9][0-9]*\) vetted by heap.*/\1/p' | grep . || echo 0; }
+# (statements to run first, in the same session: the rows checked right after a rebuild, before the worker it asked has vacuumed)
+vetted() { sql av "$@" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.* \([0-9][0-9]*\) vetted by heap.*/\1/p' | grep . || echo 0; }
 # until a scan checks few rows: a VACUUM leaves a page not all-visible when it could not take its cleanup lock or the commit of its rows was not flushed yet
 # (the hint bits wait for it), and the scan that finds them asks for the next, a few naptimes later
 cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 2000 ]] && return 0; sleep 0.2; done; return 1; }
@@ -74,8 +75,7 @@ repaired() { cheap && [[ $(groups on) == "$(groups off)" ]]; }
 sql av "CREATE INDEX facts_key ON facts (key)" >/dev/null
 for rebuild in "CLUSTER facts USING facts_key" "VACUUM FULL facts"; do
 	sleep 2
-	sql av "$rebuild" >/dev/null
-	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted)" -gt 20000
+	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted "$rebuild")" -gt 20000
 	check "$rebuild: the worker vacuums the table, the next scan checks few rows and answers as the heap does" repaired
 done
 check "the index verifies" test "$(sql av "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
