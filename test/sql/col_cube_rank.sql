@@ -2,6 +2,7 @@
 -- values in a unit has no histogram there, so the columns that fit come first (the option preagg is written as 'auto: a, b', which a rebuild keeps), and
 -- the answers are the plain plan's. Without the option the columns keep their order.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -18,14 +19,7 @@ VACUUM (FREEZE, ANALYZE) cr;
 
 CREATE FUNCTION cr_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'preagg=%'), 'not set') $$;
-CREATE FUNCTION cr_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION cr_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_other_scans_off(q, push) $$;
 CREATE TABLE cr_q (n int, q text);
 INSERT INTO cr_q VALUES
 	(1, 'SELECT l2, count(*), sum(v) FROM cr GROUP BY 1'),
@@ -72,4 +66,5 @@ SELECT cr_option('cr_few_col');
 
 DROP TABLE cr, cr_q, cr_few;
 DROP FUNCTION cr_option(text), cr_rows(text, bool), cr_check(), pa_units(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

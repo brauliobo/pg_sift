@@ -2,6 +2,7 @@
 -- one in 64 rows of the table apiece, scattered over the heap. The segment keeps the plain order of the column as well (the second slot of the leaf, column format minor 31), so
 -- WHERE g = x ORDER BY ts LIMIT n reads the entries of x, and a scan that does not pin g reads the plain order as before. 'off' and a column of the user's are theirs.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -23,17 +24,7 @@ SELECT min(format) AS format FROM sift.col_segments('ag_i') WHERE kind = 'immuta
 SELECT sift.col_verify('ag_i');
 
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read an array
-CREATE FUNCTION ag_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION ag_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(q) $$;
 
 -- the group pinned (the array of x), and not (the plain order), both directions and the pages after a key
 SELECT w, result, count(*) FROM (
@@ -86,4 +77,5 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 
 DROP TABLE ag;
 DROP FUNCTION ag_chk(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

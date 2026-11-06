@@ -2,6 +2,7 @@
 -- confirmed without the heap when their page is all-visible and the unit's liveness says the row is live (the dead rows of a unit are listed once); the others are fetched.
 -- The rows are the plan's without the extension after deleted, updated (HOT and not), rolled back and vacuumed rows, and for a cursor opened before the update.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -18,20 +19,7 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
 SET sift.test_topn_heads = off;
 
 -- the rows are the plan's without the extension, in order; the answer says 'skipped' when the scan fetched no more than the LIMIT and an eighth of the OFFSET more, 'fetched' when it fetched more
-CREATE FUNCTION od_chk(q text, lim int, off int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; fetches int := -1; ka text; kb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		used := used OR pl LIKE '%Global Order%';
-		IF pl LIKE '%heap fetches%' THEN fetches := substring(pl from '([0-9]+) heap fetches')::int; END IF;
-	END LOOP;
-	EXECUTE 'SELECT string_agg(id || '':'' || n || '':'' || s, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ka;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(id || '':'' || n || '':'' || s, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO kb;
-	RETURN CASE WHEN ka IS DISTINCT FROM kb THEN 'DIFFERS ' || q WHEN NOT used THEN 'units' WHEN fetches <= lim + off / 8 THEN 'skipped' ELSE 'fetched' END;
-END $$;
+CREATE FUNCTION od_chk(q text, lim int, off int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_offset_check_heap_fetches(q, lim, off) $$;
 
 CREATE FUNCTION od_all(lim int DEFAULT 10, offs int[] DEFAULT ARRAY[1500, 6000]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT od_chk(format('SELECT id, n, s FROM od ORDER BY %s %s LIMIT %s OFFSET %s', k, d, lim, o), lim, o) AS result, count(*)
@@ -69,4 +57,5 @@ SELECT * FROM od_all();
 DROP FUNCTION od_all(int, int[]), od_chk(text, int, int);
 DROP TABLE od;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

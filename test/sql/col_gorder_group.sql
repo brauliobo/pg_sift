@@ -2,6 +2,7 @@
 -- (WHERE g = x ORDER BY k LIMIT n) reads the entries of that group only; the rows with no group are not in them, a query that does not pin the group reads the units. The answers are
 -- the heap's through NULL keys, NULL groups, ties, both directions, ranges and pages after a key, DML, a promotion, a merge and a REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -23,17 +24,7 @@ SELECT sift.col_verify('gg_i');
 ANALYZE gg;
 
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the array of the group
-CREATE FUNCTION gg_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION gg_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(q) $$;
 
 CREATE FUNCTION gg_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', c, w, d, nl, l)), 1::bigint
@@ -90,16 +81,7 @@ DROP FUNCTION gg_plan(text);
 
 -- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
 -- keys, ties, a range, deleted and updated rows and a write buffer give the heap's answer)
-CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE q INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
-	EXECUTE q INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
-END $$;
+CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_min_max_with_plan_scale(q) $$;
 CREATE FUNCTION gg_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
    FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['k', 't']) c,
@@ -161,4 +143,5 @@ CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_tex
 
 DROP TABLE gg CASCADE;
 DROP FUNCTION gg_chk(text), gg_all(), gg_mm(text), gg_mm_all();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

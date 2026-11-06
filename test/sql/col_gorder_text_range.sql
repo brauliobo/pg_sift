@@ -3,6 +3,7 @@
 -- leaf, and read n entries. The answers are the heap's through ties, NULLs, the empty string, accents and case, both directions, OFFSET, DML, a write buffer, a promotion, a merge and a REINDEX,
 -- under the C collation and under a locale (a prefix is a range of the bytes: under a locale it reads the units).
 CREATE EXTENSION pg_sift CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -23,17 +24,7 @@ SELECT sift.col_verify('tr_i');
 ANALYZE tr;
 
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
-CREATE FUNCTION tr_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION tr_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
 
 -- the conditions: a bound that is a stored string, one between two, one before all and one after all, a prefix that matches a few, many and none
 CREATE TABLE trq (cond text);
@@ -83,4 +74,5 @@ SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10'
 
 DROP TABLE tr, trq, trs CASCADE;
 DROP FUNCTION tr_chk(text), tr_all(int), tr_str(int);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift CASCADE;

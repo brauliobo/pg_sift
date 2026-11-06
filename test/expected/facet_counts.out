@@ -3,6 +3,7 @@
 -- SiftAgg disabled), the facet function with the planner's own plan (sift.enable_agg off), and a hand-written GROUP BY of the same
 -- snapshot as the oracle; the three results are compared as sets of rows, after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 CREATE TABLE fc (id serial PRIMARY KEY, title text, brand text, category int, price numeric(10,2), qty int, added date, ts timestamp,
 				 active bool, tags text[], pad text DEFAULT repeat('x', 700));
@@ -25,15 +26,7 @@ DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fc_col');
 VACUUM (ANALYZE) fc;
 -- the plans that are not SiftAgg are disabled for the pushed run; the planner's own choice with sift.enable_agg off is the other
-CREATE FUNCTION fc_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-	PERFORM set_config('sift.enable_agg', pushed::text, true);
-	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
-	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
-	PERFORM set_config('sift.enable_scan', (NOT pushed)::text, true);
-	PERFORM set_config('sift.enable_count', (NOT pushed)::text, true);
-END $$;
+CREATE FUNCTION fc_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_scan_and_count_off(pushed) $$;
 -- the oracle of a terms facet: a GROUP BY of the column, the first sz values by count then value, the rest as one row, NULL as missing
 CREATE FUNCTION fc_terms(name text, col text, wh text, sz int DEFAULT NULL, miss bool DEFAULT false) RETURNS text LANGUAGE sql AS $$
 	SELECT format($f$ SELECT * FROM (WITH g AS (SELECT (%1$s)::text v, count(*) c FROM fc WHERE %3$s GROUP BY %1$s),
@@ -618,4 +611,5 @@ SELECT * FROM fc_stage('parallel');
 
 DROP FUNCTION fc_mode(bool), fc_terms(text, text, text, int, bool), fc_check(regclass, text, jsonb, text, text, text), fc_stage(text, regclass);
 DROP TABLE fc, fc_q, fcn, fct;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

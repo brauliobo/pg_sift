@@ -1,6 +1,7 @@
 -- The global order of a text column names the strings of its ranks by their dictionary codes (column format minor 42) and does not keep a second copy of them: the index is smaller, the
 -- answers are the heap's, and the segments written with the strings (the order before minor 42) are read, merged and rewritten beside them.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -35,17 +36,7 @@ ANALYZE tp;
 ANALYZE ts;
 
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
-CREATE FUNCTION tp_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION tp_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
 CREATE FUNCTION tp_all(t text) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT tp_chk(format('SELECT %1$s FROM %6$s ORDER BY %1$s %2$s %3$s LIMIT %4$s OFFSET %5$s', c, d, nl, l, o, t)), 1::bigint
    FROM unnest(ARRAY['a', 'b']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 20, 3000]) l, unnest(ARRAY[0, 11, 2500]) o $$;
@@ -98,4 +89,5 @@ SELECT format FROM sift.col_segments('tp_i') WHERE kind = 'immutable';
 DROP FUNCTION tp_chk(text), tp_all(text), tp_range(text), tp_str(int);
 DROP TABLE tp, ts, tm, tq, tz;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

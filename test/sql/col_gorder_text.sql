@@ -3,6 +3,7 @@
 -- strings, accents, case and punctuation, both directions, NULLS FIRST and LAST, OFFSET, DML, a write buffer, a promotion, a merge and a REINDEX; a sort under another
 -- collation than the column's, a text that is a unit's inline string, and an expression of the column read the units.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -26,17 +27,7 @@ SELECT sift.col_verify('tt_i');
 ANALYZE tt;
 
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
-CREATE FUNCTION tt_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(coalesce(x::text, ''null''), '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION tt_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
 
 -- the key of every row is output, so equal strings (which come in any order) give the same answer
 CREATE FUNCTION tt_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
@@ -141,4 +132,5 @@ DROP TABLE tc;
 
 DROP TABLE tt, tl CASCADE;
 DROP FUNCTION tt_chk(text), tt_all(), tt_str(int);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

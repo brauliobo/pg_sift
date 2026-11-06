@@ -4,6 +4,7 @@
 -- a segment without the array keeps the scan that reads the units; a filter on another column is tested on the heap row of each entry, and the units read when it passes too few of them. Conditions of the query on the key bound the part of
 -- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -86,16 +87,7 @@ DROP FUNCTION gt_plan(text);
 
 -- min(x) and max(x) are the first row, in the order of x, of the rows where x is not NULL: the scan reads the array for it, and the answer is the heap's whatever the type, the
 -- NULLs, the ties, a range or a filter on another column (tested on the heap row of each entry)
-CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE q INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
-	EXECUTE q INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
-END $$;
+CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_min_max_with_plan_scale(q) $$;
 CREATE FUNCTION gt_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gt_mm(format('SELECT %s(%s) FROM gt WHERE %s', f, c, w)), count(*)
    FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c,
@@ -140,17 +132,7 @@ GROUP BY 1 ORDER BY 1;
 
 -- more keys: the array gives the rows in the order of the first key, the groups of rows that share a value of it are put in order by the keys that follow, which the heap row
 -- holds, until the groups make the n rows; a page after a key (a row comparison, or its expansion) reads the array from the key
-CREATE FUNCTION gt_ks(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; ra text; rb text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
-END $$;
+CREATE FUNCTION gt_ks(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(q) $$;
 SELECT result, count(*) FROM (
 	SELECT gt_ks(format('SELECT id, %1$s FROM gt %2$s ORDER BY %1$s %3$s, id %4$s LIMIT %5$s OFFSET %6$s', c, w, d, d2, l, o)) AS result
 	FROM (VALUES ('b', ''), ('b', 'WHERE (b, id) > (250, 5000)'), ('b', 'WHERE b > 250 OR (b = 250 AND id > 5000)'), ('b', 'WHERE (b, id) <= (40, 20000)'), ('b', 'WHERE b = 77'),
@@ -184,4 +166,5 @@ SELECT gt_chk('t', 'DESC', 'LAST', 1) AS keycut_1, gt_chk('t', 'DESC', 'LAST', 1
 
 DROP TABLE gt CASCADE;
 DROP FUNCTION gt_chk(text, text, text, int, text, int), gt_all(int[]), gt_off(int[]), gt_mm(text), gt_mm_all();
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

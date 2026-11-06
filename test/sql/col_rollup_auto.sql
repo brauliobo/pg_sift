@@ -2,6 +2,7 @@
 -- table at CREATE INDEX: the columns that fit the cube's histograms, the fewest values first, as the largest nested set that fits in most of the sampled stretches,
 -- recorded as 'auto: a, b' (a REINDEX keeps it, ALTER INDEX SET (rollup_dims = 'auto') decides again). Not a default. The answers are the plain plan's.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -16,14 +17,7 @@ VACUUM (FREEZE, ANALYZE) ra;
 
 CREATE FUNCTION ra_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'rollup_dims=%'), 'not set') $$;
-CREATE FUNCTION ra_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION ra_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_other_scans_off(q, push) $$;
 CREATE TABLE ra_q (n int, q text);
 INSERT INTO ra_q VALUES
 	(1, 'SELECT a, b, count(*), sum(v) FROM ra GROUP BY 1, 2'),
@@ -76,4 +70,5 @@ SELECT ra_option('ra_few_col');
 
 DROP TABLE ra, ra_q, ra_few;
 DROP FUNCTION ra_option(text), ra_rows(text, bool), ra_check(), pa_units(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

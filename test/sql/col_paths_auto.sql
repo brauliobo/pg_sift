@@ -1,6 +1,7 @@
 -- The paths of the jsonb columns of an index with no paths option (or paths = 'auto') are read once, at CREATE INDEX, from a sample of their documents
 -- (sift.suggest_paths), written to the option as 'auto: spec' so that a rebuild keeps them, and said in a NOTICE. The answers are the plain plan's, and an index with paths written by hand is untouched.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -12,24 +13,8 @@ VACUUM (FREEZE, ANALYZE) pa;
 
 CREATE FUNCTION pa_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'paths=%'), 'not set') $$;
-CREATE FUNCTION pa_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
-CREATE FUNCTION pa_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%SiftAgg%' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION pa_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_other_scans_off(q, push) $$;
+CREATE FUNCTION pa_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_with_scans_off(q) $$;
 CREATE TABLE pa_q (n int, q text);
 INSERT INTO pa_q VALUES
 	(1, 'SELECT doc->''meta''->>''lang'', count(*) FROM pa GROUP BY 1'),
@@ -89,4 +74,5 @@ SELECT sift.col_verify('pa_re_col', true);
 
 DROP TABLE pa, pa_q, pa_few, pa_empty, pa_re;
 DROP FUNCTION pa_option(text), pa_rows(text, bool), pa_pushed(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
