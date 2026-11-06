@@ -291,8 +291,8 @@ combo_probe_defer(AggExec *ex, int ci, uint32 e)
 		MemoryContext old = MemoryContextSwitchTo(dp->bcxt);
 
 		dp->cap = Max(dp->cap * 2, 256);
-		dp->pend = dp->pend ? repalloc(dp->pend, dp->cap * sizeof(uint32)) : palloc(dp->cap * sizeof(uint32));
-		dp->keys = dp->keys ? repalloc(dp->keys, dp->cap * sizeof(DKey)) : palloc(dp->cap * sizeof(DKey));
+		SIFT_REGROW(dp->pend, dp->cap * sizeof(uint32));
+		SIFT_REGROW(dp->keys, dp->cap * sizeof(DKey));
 		MemoryContextSwitchTo(old);
 	}
 	dp->pend[dp->npend++] = e;

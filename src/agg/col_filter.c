@@ -78,7 +78,7 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	if (t->nvals > src->fcap)
 	{
 		src->fcap = Max(t->nvals, 2 * src->fcap);
-		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
+		SIFT_REGROW_IN(src->cxt, src->fvals, src->fcap * sizeof(SiftColValue));
 	}
 	pred = sift_aggfilt_str_pred(t, src->fvals, t->leaf);
 	if (src->lay->leaf[t->leaf].parent >= 0)

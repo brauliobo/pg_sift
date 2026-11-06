@@ -147,7 +147,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 	{
 		uint32		cap = Max(Max(pv->nmemo * 2, out + 1), 256);
 
-		pv->memo = pv->memo ? repalloc(pv->memo, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, pv->memo, cap * sizeof(uint32));
 		memset(pv->memo + pv->nmemo, 0xFF, (cap - pv->nmemo) * sizeof(uint32));
 		pv->nmemo = cap;
 	}
@@ -177,7 +177,7 @@ prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
 	{
 		uint32		cap = Max(Max(pv->nrep * 2, id), 64);
 
-		pv->rep = pv->rep ? repalloc(pv->rep, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		SIFT_REGROW_IN(cs->cxt, pv->rep, cap * sizeof(uint32));
 		memset(pv->rep + pv->nrep, 0xFF, (cap - pv->nrep) * sizeof(uint32));
 		pv->nrep = cap;
 	}

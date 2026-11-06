@@ -692,10 +692,9 @@ dp_walk(DProbe *dp, DKey *k, Buffer buf, OffsetNumber off, DSink *sink)
 			if (nt + np > dp->captids)
 			{
 				dp->captids = Max(dp->captids * 2, nt + np + 64);
-				dp->tids = dp->tids ? repalloc(dp->tids, dp->captids * sizeof(ItemPointerData)) :
-					MemoryContextAlloc(dp->bcxt, dp->captids * sizeof(ItemPointerData));
+				SIFT_REGROW_IN(dp->bcxt, dp->tids, dp->captids * sizeof(ItemPointerData));
 				if (dp->ioss)
-					dp->tup = dp->tup ? repalloc(dp->tup, dp->captids * sizeof(IndexTuple)) : MemoryContextAlloc(dp->bcxt, dp->captids * sizeof(IndexTuple));
+					SIFT_REGROW_IN(dp->bcxt, dp->tup, dp->captids * sizeof(IndexTuple));
 			}
 			if (dp->ioss)
 			{

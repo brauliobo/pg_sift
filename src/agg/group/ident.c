@@ -17,8 +17,7 @@ ident_add(AggExec *ex, KeyState *k, int64 v)
 	if (k->nident == k->capident)
 	{
 		k->capident = Max(k->capident * 2, 64);
-		k->idval = k->idval ? repalloc(k->idval, k->capident * sizeof(int64)) :
-			MemoryContextAlloc(ex->tcxt, k->capident * sizeof(int64));
+		SIFT_REGROW_IN(ex->tcxt, k->idval, k->capident * sizeof(int64));
 	}
 	k->idval[k->nident++] = v;
 	return k->nident;

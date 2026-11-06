@@ -42,8 +42,8 @@ zone_push(ZoneOff *z, int64 from, int64 off)
 	if (z->n == z->cap)
 	{
 		z->cap = z->cap ? z->cap * 2 : 16;
-		z->from = z->from ? repalloc(z->from, z->cap * sizeof(int64)) : MemoryContextAlloc(z->cxt, z->cap * sizeof(int64));
-		z->off = z->off ? repalloc(z->off, z->cap * sizeof(int64)) : MemoryContextAlloc(z->cxt, z->cap * sizeof(int64));
+		SIFT_REGROW_IN(z->cxt, z->from, z->cap * sizeof(int64));
+		SIFT_REGROW_IN(z->cxt, z->off, z->cap * sizeof(int64));
 	}
 	z->from[z->n] = from;
 	z->off[z->n++] = off;

@@ -249,7 +249,7 @@ combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 
 			while (cap <= row[i])
 				cap *= 2;
-			cs->byrow = cs->byrow ? repalloc(cs->byrow, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (Size) cap * sizeof(uint32));
+			SIFT_REGROW_IN(cs->cxt, cs->byrow, (Size) cap * sizeof(uint32));
 			memset(cs->byrow + cs->nbyrow, 0, (Size) (cap - cs->nbyrow) * sizeof(uint32));
 			cs->nbyrow = cap;
 		}

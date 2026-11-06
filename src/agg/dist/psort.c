@@ -95,7 +95,7 @@ ps_write_run(PairSort *s)
 	if (s->nruns == s->runcap)
 	{
 		s->runcap = s->runcap ? s->runcap * 2 : 8;
-		s->runlen = s->runlen ? repalloc(s->runlen, s->runcap * sizeof(uint64)) : MemoryContextAlloc(s->cxt, s->runcap * sizeof(uint64));
+		SIFT_REGROW_IN(s->cxt, s->runlen, s->runcap * sizeof(uint64));
 	}
 	ps_strip(s);
 	BufFileWrite(s->runs, s->buf, s->n * sizeof(uint64));
@@ -111,7 +111,7 @@ ps_room(PairSort *s)
 	{
 		uint64		cap = Min(s->cap ? s->cap * 2 : PS_START, s->maxcap);
 
-		s->buf = s->buf ? repalloc_huge(s->buf, cap * sizeof(uint64)) : MemoryContextAllocHuge(s->cxt, cap * sizeof(uint64));
+		SIFT_REGROW_HUGE_IN(s->cxt, s->buf, cap * sizeof(uint64));
 		s->cap = cap;
 		return;
 	}

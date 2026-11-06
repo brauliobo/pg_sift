@@ -297,9 +297,9 @@ spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows)
 	if (m->n == m->cap)
 	{
 		m->cap = m->cap ? m->cap * 2 : 16;
-		m->ids = m->ids ? repalloc(m->ids, (Size) m->cap * sa->npair * sizeof(uint32)) : palloc((Size) m->cap * sa->npair * sizeof(uint32));
-		m->first = m->first ? repalloc(m->first, m->cap * sizeof(uint32)) : palloc(m->cap * sizeof(uint32));
-		m->count = m->count ? repalloc(m->count, m->cap * sizeof(uint32)) : palloc(m->cap * sizeof(uint32));
+		SIFT_REGROW(m->ids, (Size) m->cap * sa->npair * sizeof(uint32));
+		SIFT_REGROW(m->first, m->cap * sizeof(uint32));
+		SIFT_REGROW(m->count, m->cap * sizeof(uint32));
 	}
 	e = m->n++;
 	memcpy(&m->ids[(Size) e * sa->npair], ids, sa->npair * sizeof(uint32));

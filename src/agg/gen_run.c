@@ -347,7 +347,7 @@ gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint
 	if (st->ntcap < (uint32) nsel)
 	{
 		st->ntcap = nsel;
-		st->ctouch = st->ctouch ? repalloc(st->ctouch, nsel * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, nsel * sizeof(uint32));
+		SIFT_REGROW_IN(ex->cxt, st->ctouch, nsel * sizeof(uint32));
 	}
 	memset(ex->fwin, 0, nsel);
 	for (int j = 0; j < nsel; j++)
@@ -478,7 +478,7 @@ gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
 		t->cap = t->cap ? t->cap * 2 : Min(4, (uint32) st->g->topn);
 		if (ties == SIFT_TOPN_ROWS)
 			t->cap = Min(t->cap, (uint32) st->g->topn);
-		t->row = t->row ? repalloc(t->row, t->cap * sizeof(GenBest *)) : palloc(t->cap * sizeof(GenBest *));
+		SIFT_REGROW(t->row, t->cap * sizeof(GenBest *));
 	}
 	nb = palloc0(GEN_BEST_SIZE(n));
 	for (int k = 0; k < n; k++)

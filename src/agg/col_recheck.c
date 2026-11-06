@@ -160,8 +160,8 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		k->gen = src->ugen;
 		k->taken = false;
 		k->nrow = nrow;
-		k->flag = k->flag ? repalloc(k->flag, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
-		k->cand = k->cand ? repalloc(k->cand, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->cxt, k->flag, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->cxt, k->cand, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
 		{
@@ -215,7 +215,7 @@ recheck_pending(ColSource *src)
 	for (uint32 v = 0; v < nw; v++)
 		for (uint64 b = k->cand[v]; b; b &= b - 1)
 			ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
-	k->tid = k->tid ? repalloc(k->tid, m * sizeof(ItemPointerData)) : MemoryContextAlloc(src->cxt, m * sizeof(ItemPointerData));
+	SIFT_REGROW_IN(src->cxt, k->tid, m * sizeof(ItemPointerData));
 	sift_col_row_tids(&src->unit, ords, m, k->tid);
 	pfree(ords);
 	k->npend = m;

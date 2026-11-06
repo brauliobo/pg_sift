@@ -48,8 +48,8 @@ first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableS
 	if (m->nrow > o->cap)
 	{
 		o->cap = Max(o->cap * 2, 1024);
-		o->val = o->val ? repalloc(o->val, o->cap * f->nord * sizeof(int64)) : MemoryContextAlloc(o->cx, o->cap * f->nord * sizeof(int64));
-		o->isnull = o->isnull ? repalloc(o->isnull, o->cap * f->nord) : MemoryContextAlloc(o->cx, o->cap * f->nord);
+		SIFT_REGROW_IN(o->cx, o->val, o->cap * f->nord * sizeof(int64));
+		SIFT_REGROW_IN(o->cx, o->isnull, o->cap * f->nord);
 	}
 	for (int i = 0; i < f->nord; i++)
 	{

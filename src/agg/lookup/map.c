@@ -23,16 +23,16 @@ static void
 map_grow_to(MapTab *m, uint32 cap)
 {
 	if (m->lazy)
-		m->rkey = m->rkey ? repalloc(m->rkey, (size_t) cap * sizeof(int64)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(int64));
+		SIFT_REGROW_IN(m->cxt, m->rkey, (size_t) cap * sizeof(int64));
 	else
-		m->kid = m->kid ? repalloc(m->kid, (size_t) cap * m->nkey * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * m->nkey * sizeof(uint32));
+		SIFT_REGROW_IN(m->cxt, m->kid, (size_t) cap * m->nkey * sizeof(uint32));
 	for (int c = 0; c < m->ncol; c++)
 	{
 		MapCol	   *mc = &m->mcol[c];
 
 		if (mc->byval)
 		{
-			mc->val = mc->val ? repalloc(mc->val, (size_t) cap * sizeof(Datum)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(Datum));
+			SIFT_REGROW_IN(m->cxt, mc->val, (size_t) cap * sizeof(Datum));
 			if (mc->isnull)
 			{
 				mc->isnull = repalloc(mc->isnull, cap);
@@ -40,7 +40,7 @@ map_grow_to(MapTab *m, uint32 cap)
 			}
 		}
 		else
-			mc->id = mc->id ? repalloc(mc->id, (size_t) cap * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(uint32));
+			SIFT_REGROW_IN(m->cxt, mc->id, (size_t) cap * sizeof(uint32));
 	}
 	m->cap = cap;
 }

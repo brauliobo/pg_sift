@@ -181,8 +181,7 @@ hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 	if (g >= ex->hkcap)
 	{
 		ex->hkcap = Max(ex->hkcap * 2, 1024);
-		ex->hkey = ex->hkey ? repalloc(ex->hkey, (Size) ex->hkcap * nk * sizeof(uint32)) :
-			MemoryContextAlloc(ex->tcxt, (Size) ex->hkcap * nk * sizeof(uint32));
+		SIFT_REGROW_IN(ex->tcxt, ex->hkey, (Size) ex->hkcap * nk * sizeof(uint32));
 	}
 	memcpy(&ex->hkey[(Size) g * nk], ids, nk * sizeof(uint32));
 	ex->hslot[pos] = g + 1;

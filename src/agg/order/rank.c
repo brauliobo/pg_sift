@@ -174,8 +174,8 @@ rank_key_grow(RankExec *ex, RankKey *k)
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	uint32	   *nslot = palloc0((Size) (nmask + 1) * sizeof(uint32));
 
-	k->val = k->val ? repalloc(k->val, ncap * sizeof(Datum)) : palloc(ncap * sizeof(Datum));
-	k->hash = k->hash ? repalloc(k->hash, ncap * sizeof(uint32)) : palloc(ncap * sizeof(uint32));
+	SIFT_REGROW(k->val, ncap * sizeof(Datum));
+	SIFT_REGROW(k->hash, ncap * sizeof(uint32));
 	for (uint32 i = 0; i < k->nd; i++)
 	{
 		uint32		at = k->hash[i] & nmask;
@@ -334,8 +334,8 @@ rank_fill(RankExec *ex)
 		{
 			uint64		ncap = ex->cap ? ex->cap * 2 : 1024;
 
-			ex->tup = ex->tup ? repalloc(ex->tup, ncap * sizeof(MinimalTuple)) : palloc(ncap * sizeof(MinimalTuple));
-			ex->ids = ex->ids ? repalloc(ex->ids, ncap * ex->nkeys * sizeof(uint32)) : palloc(ncap * ex->nkeys * sizeof(uint32));
+			SIFT_REGROW(ex->tup, ncap * sizeof(MinimalTuple));
+			SIFT_REGROW(ex->ids, ncap * ex->nkeys * sizeof(uint32));
 			ex->cap = ncap;
 		}
 		ex->tup[ex->nrows] = ExecCopySlotMinimalTuple(in);

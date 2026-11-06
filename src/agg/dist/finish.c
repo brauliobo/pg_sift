@@ -173,8 +173,8 @@ pairs_put(PartPairs *pp, uint32 g, uint32 v)
 	if (pp->np == pp->cap)
 	{
 		pp->cap = pp->cap ? pp->cap * 2 : 64;
-		pp->pg = pp->pg ? repalloc(pp->pg, pp->cap * sizeof(uint32)) : palloc(pp->cap * sizeof(uint32));
-		pp->pv = pp->pv ? repalloc(pp->pv, pp->cap * sizeof(uint32)) : palloc(pp->cap * sizeof(uint32));
+		SIFT_REGROW(pp->pg, pp->cap * sizeof(uint32));
+		SIFT_REGROW(pp->pv, pp->cap * sizeof(uint32));
 	}
 	pp->pg[pp->np] = g;
 	pp->pv[pp->np++] = v;
