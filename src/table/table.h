@@ -308,7 +308,6 @@ extern bool sift_tbl_scan_getnextslot(TableScanDesc scan, ScanDirection directio
 /* The next stored row version of a scan, visible to its snapshot or not (VACUUM FULL): rv->tuple is palloc'd, rv->xmin unset for a row of a column group */
 extern bool sift_tbl_scan_next_stored(TableScanDesc scan, SiftTblRowVer *rv);
 extern void sift_tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid);
-extern bool sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
 extern Size sift_tbl_parallelscan_estimate(Relation rel);
 extern Size sift_tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
 extern void sift_tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);

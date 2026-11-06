@@ -526,9 +526,3 @@ sift_tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer m
 	s->mintid = *mintid;
 	s->maxtid = *maxtid;
 }
-
-bool
-sift_tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
-{
-	return sift_tbl_scan_getnextslot(scan, direction, slot);
-}
