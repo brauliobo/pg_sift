@@ -279,10 +279,14 @@ case ${1:-} in
 	regress) shift; regress "$@" ;;
 	fresh)
 		shift
-		# one fresh run at a time on a host (every statement is a connection), and never inside one (the shim stands first in PATH of the pg_regress subshell only)
+		# at most SIFT_FRESH_RUNS (default 1, at most 4) fresh runs on a host (every statement is a connection), and never inside one (the shim stands first in PATH of the pg_regress subshell only)
 		[[ -z ${FRESH_PSQL:-}${FRESH_ACTIVE:-} ]] || { echo "pgtest: fresh runs do not nest" >&2; exit 1; }
-		exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.lock"
-		flock -n 9 || { echo "pgtest: another fresh run is at work (${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.lock)" >&2; exit 1; }
+		slot=0 got=
+		for ((slot = 0; slot < ${SIFT_FRESH_RUNS:-1} && slot < 4; slot++)); do
+			exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sift-fresh.$slot.lock"
+			if flock -n 9; then got=1; break; fi
+		done
+		[[ -n $got ]] || { echo "pgtest: ${SIFT_FRESH_RUNS:-1} fresh run(s) are at work (SIFT_FRESH_RUNS, at most 4)" >&2; exit 1; }
 		SIFT_FRESH=1 regress "$@" ;;
 	leftovers) shift; leftovers "$@" ;;
 	reset-auto-conf) reset_auto_conf "$2" ;;

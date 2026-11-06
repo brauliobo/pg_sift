@@ -14,8 +14,8 @@ From the first statement that binds the session to its backend (`PREPARE`, `DECL
 `FRESH_STATS=FILE` appends a line `new backends<TAB>statements` per run (`pgtest.sh fresh` writes it next to the results).
 
 Limits that keep it safe on a host: the shim refuses to run without `FRESH_PSQL` (the real psql, set by `pgtest.sh`), inside itself (`FRESH_ACTIVE`) or as its
-own psql, so it cannot start itself without end; `pgtest.sh fresh` does not nest and holds `$XDG_RUNTIME_DIR/sift-fresh.lock`, so one fresh run is at work
-on a host and the tests of a run follow one another. Calls of psql with a command of their own (`-c`, `-f`) are not made fresh.
+own psql, so it cannot start itself without end; `pgtest.sh fresh` does not nest and takes one of `SIFT_FRESH_RUNS` locks (`$XDG_RUNTIME_DIR/sift-fresh.N.lock`; default 1, at most 4), so no more fresh runs than that are at work
+on a host, each on a cluster of its own, and the tests of a run follow one another. Calls of psql with a command of their own (`-c`, `-f`) are not made fresh.
 
 Cost: a connection per statement, about 2 ms with the unix socket, so a file of a few hundred statements takes a second or two longer. Run it over the files
 that touch `src/agg/exec`, `src/col/am` and `src/table` (the focus of `scripts/ci.sh affected`), and over the whole suite when the lazily attached state changes.

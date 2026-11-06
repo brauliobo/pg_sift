@@ -7,7 +7,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SHIM=$REPO/scripts/fresh-psql.py
 
-plan 11
+plan 12
 STUB=$(mktemp) && printf '#!/bin/sh\ncat\n' >"$STUB" && chmod +x "$STUB"
 trap 'rm -f "$STUB"; cleanup' EXIT
 # the script the shim hands to psql, for a script on stdin
@@ -25,6 +25,8 @@ FRESH_PSQL= "$SHIM" </dev/null >/dev/null 2>&1; r1=$?
 FRESH_PSQL=$STUB FRESH_ACTIVE=1 "$SHIM" </dev/null >/dev/null 2>&1; r2=$?
 FRESH_PSQL=$SHIM "$SHIM" </dev/null >/dev/null 2>&1; r3=$?
 check "the shim refuses to run without the psql it stands for, inside itself, or as its own psql" test "$r1$r2$r3" == "111"
+LOCKS=${XDG_RUNTIME_DIR:-/tmp}
+check "no more fresh runs than SIFT_FRESH_RUNS" grep -q "at work" < <(exec 3>"$LOCKS/sift-fresh.0.lock" 4>"$LOCKS/sift-fresh.1.lock" 5>"$LOCKS/sift-fresh.2.lock" 6>"$LOCKS/sift-fresh.3.lock"; for fd in 3 4 5 6; do flock -n $fd || true; done; SIFT_FRESH_RUNS=4 "$REPO/scripts/pgtest.sh" fresh nothing 2>&1)
 check "a fresh run does not start inside another" grep -q "do not nest" < <(FRESH_PSQL=$STUB "$REPO/scripts/pgtest.sh" fresh nothing 2>&1)
 
 node_init fb 28 "autovacuum = off"
