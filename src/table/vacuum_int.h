@@ -50,11 +50,7 @@
 #include "core/cmp.h"
 
 /* The cost delay of the pass (autovacuum's, or a worker's sift.table_auto_defrag_delay): a point where the page accesses so far may make it sleep */
-#if PG_VERSION_NUM >= 180000
-#define COST_DELAY()	vacuum_delay_point(false)
-#else
-#define COST_DELAY()	vacuum_delay_point()
-#endif
+#define COST_DELAY()	sift_vacuum_delay_point()
 
 /* A growable array of TIDs: the dead rows VACUUM found, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up) */
 typedef struct TidList

@@ -111,6 +111,7 @@ extern void	maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBu
 extern void	maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats);
 
 extern void	maint_reap_overflow(Relation index, Relation heap);
+extern void	maint_roots_verify(Relation index, Relation heap);
 
 extern bool	maint_vacuum_truncates(Relation index);
 

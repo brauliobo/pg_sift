@@ -423,6 +423,8 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		ops->vacuum_log(index);
 	if (skipped && ops->vacuum_skipped)
 		ops->vacuum_skipped(index, info->heaprel);
+	if (ops->vacuum_heap)
+		ops->vacuum_heap(index, info->heaprel);
 	if (ops->vacuum_net)
 		ops->vacuum_net(index);
 	vacuum_merge(ops, index);

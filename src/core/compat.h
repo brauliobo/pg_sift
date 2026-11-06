@@ -67,6 +67,13 @@ sift_path_disable(Path *p, int nodes)
 #define sift_fallthrough	__attribute__((fallthrough))
 #endif
 
+/* The cost delay point of a VACUUM pass (18 tells it from the one of ANALYZE) */
+#if PG_VERSION_NUM >= 180000
+#define sift_vacuum_delay_point()	vacuum_delay_point(false)
+#else
+#define sift_vacuum_delay_point()	vacuum_delay_point()
+#endif
+
 /* Table AM scan flags (19): the plain heap scan options */
 #if PG_VERSION_NUM >= 190000
 #define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key, SO_NONE)

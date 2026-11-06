@@ -134,6 +134,7 @@ typedef struct SiftMaintOps
 	uint64		(*vacuum_seal) (Relation index);	/* NULL: VACUUM promotes sealed write buffers only; else it first seals an open one this worth sealing */
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 	void		(*vacuum_net) (Relation index);	/* NULL: nothing; VACUUM, before its merges: the segments with dead rows get the pre-aggregates net of them (the maintenance lock is held) */
+	void		(*vacuum_heap) (Relation index, Relation heap);	/* NULL: nothing; every VACUUM's cleanup, before the merges: what only the heap tells about the segments (the maintenance lock is held) */
 	void		(*vacuum_log) (Relation index);	/* NULL: nothing; every VACUUM's cleanup, after the seal (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
