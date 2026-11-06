@@ -424,7 +424,7 @@ wide_leaf(AggCtx *c, Node *e)
 
 /*
  * The operators on a range or a network column whose lanes the source tests (SiftSrcLeaf.shape): the operator with the column as its left
- * operand and as its right one, as the operator of SWT_* the column is on the left of (0: not offered that way, the column is read as a value).
+ * operand and as its right one, as the operator of SIFT_COLW_* the column is on the left of (0: not offered that way, the column is read as a value).
  */
 static const struct
 {
@@ -432,23 +432,23 @@ static const struct
 	int			left;
 	int			right;
 }			shape_ops[] = {
-	{F_RANGE_CONTAINS, SWT_R_CONTAINS, SWT_R_CONTAINED},
-	{F_RANGE_CONTAINED_BY, SWT_R_CONTAINED, SWT_R_CONTAINS},
-	{F_RANGE_OVERLAPS, SWT_R_OVERLAPS, SWT_R_OVERLAPS},
-	{F_RANGE_BEFORE, SWT_R_BEFORE, SWT_R_AFTER},
-	{F_RANGE_AFTER, SWT_R_AFTER, SWT_R_BEFORE},
-	{F_RANGE_OVERLEFT, SWT_R_OVERLEFT, 0},
-	{F_RANGE_OVERRIGHT, SWT_R_OVERRIGHT, 0},
-	{F_RANGE_ADJACENT, SWT_R_ADJACENT, SWT_R_ADJACENT},
-	{F_RANGE_CONTAINS_ELEM, SWT_R_ELEM, 0},
-	{F_ELEM_CONTAINED_BY_RANGE, 0, SWT_R_ELEM},
-	{F_NETWORK_SUB, SWT_N_SUB, SWT_N_SUP},
-	{F_NETWORK_SUBEQ, SWT_N_SUBEQ, SWT_N_SUPEQ},
-	{F_NETWORK_SUP, SWT_N_SUP, SWT_N_SUB},
-	{F_NETWORK_SUPEQ, SWT_N_SUPEQ, SWT_N_SUBEQ},
-	{F_NETWORK_OVERLAP, SWT_N_OVERLAP, SWT_N_OVERLAP},
-	{F_RANGE_EQ, SWT_R_EQ, SWT_R_EQ},
-	{F_NETWORK_EQ, SWT_N_EQ, SWT_N_EQ}
+	{F_RANGE_CONTAINS, SIFT_COLW_R_CONTAINS, SIFT_COLW_R_CONTAINED},
+	{F_RANGE_CONTAINED_BY, SIFT_COLW_R_CONTAINED, SIFT_COLW_R_CONTAINS},
+	{F_RANGE_OVERLAPS, SIFT_COLW_R_OVERLAPS, SIFT_COLW_R_OVERLAPS},
+	{F_RANGE_BEFORE, SIFT_COLW_R_BEFORE, SIFT_COLW_R_AFTER},
+	{F_RANGE_AFTER, SIFT_COLW_R_AFTER, SIFT_COLW_R_BEFORE},
+	{F_RANGE_OVERLEFT, SIFT_COLW_R_OVERLEFT, 0},
+	{F_RANGE_OVERRIGHT, SIFT_COLW_R_OVERRIGHT, 0},
+	{F_RANGE_ADJACENT, SIFT_COLW_R_ADJACENT, SIFT_COLW_R_ADJACENT},
+	{F_RANGE_CONTAINS_ELEM, SIFT_COLW_R_ELEM, 0},
+	{F_ELEM_CONTAINED_BY_RANGE, 0, SIFT_COLW_R_ELEM},
+	{F_NETWORK_SUB, SIFT_COLW_N_SUB, SIFT_COLW_N_SUP},
+	{F_NETWORK_SUBEQ, SIFT_COLW_N_SUBEQ, SIFT_COLW_N_SUPEQ},
+	{F_NETWORK_SUP, SIFT_COLW_N_SUP, SIFT_COLW_N_SUB},
+	{F_NETWORK_SUPEQ, SIFT_COLW_N_SUPEQ, SIFT_COLW_N_SUBEQ},
+	{F_NETWORK_OVERLAP, SIFT_COLW_N_OVERLAP, SIFT_COLW_N_OVERLAP},
+	{F_RANGE_EQ, SIFT_COLW_R_EQ, SIFT_COLW_R_EQ},
+	{F_NETWORK_EQ, SIFT_COLW_N_EQ, SIFT_COLW_N_EQ}
 };
 
 static int
@@ -468,7 +468,7 @@ shape_leaf(AggCtx *c, Node *e)
 
 /*
  * isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column, as a conjunct or its NOT,
- * or `.. IS TRUE` / `.. IS FALSE` (a NULL range passes neither, as it passes neither the function nor its NOT): the operator of SWT_R_UNARY and up, the leaf its lanes are of
+ * or `.. IS TRUE` / `.. IS FALSE` (a NULL range passes neither, as it passes neither the function nor its NOT): the operator of SIFT_COLW_R_UNARY and up, the leaf its lanes are of
  */
 static bool
 range_unary_test(AggCtx *c, Node *n, int *leaf, int *op)
@@ -491,19 +491,19 @@ range_unary_test(AggCtx *c, Node *n, int *leaf, int *op)
 	switch (func_of(n))
 	{
 		case F_ISEMPTY_ANYRANGE:
-			base = SWT_R_EMPTY;
+			base = SIFT_COLW_R_EMPTY;
 			break;
 		case F_LOWER_INF_ANYRANGE:
-			base = SWT_R_LOWER_INF;
+			base = SIFT_COLW_R_LOWER_INF;
 			break;
 		case F_UPPER_INF_ANYRANGE:
-			base = SWT_R_UPPER_INF;
+			base = SIFT_COLW_R_UPPER_INF;
 			break;
 		case F_LOWER_INC_ANYRANGE:
-			base = SWT_R_LOWER_INC;
+			base = SIFT_COLW_R_LOWER_INC;
 			break;
 		case F_UPPER_INC_ANYRANGE:
-			base = SWT_R_UPPER_INC;
+			base = SIFT_COLW_R_UPPER_INC;
 			break;
 		default:
 			return false;
@@ -532,7 +532,7 @@ shape_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 			else
 				return false;
 			side = leaf_of(c, *leaf)->shape;
-			at = *op >= SWT_N_SUB && *op != SWT_R_EQ;
+			at = *op >= SIFT_COLW_N_SUB && *op != SIFT_COLW_R_EQ;
 			*argtype = exprType(*operand);
 			return (side == 2) == at;
 		}
@@ -562,7 +562,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 		return true;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
 	{
-		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SWT_NOTNULL : SWT_ISNULL;
+		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SIFT_COLW_NOTNULL : SIFT_COLW_ISNULL;
 		return (*leaf = wide_leaf(c, strip_relabel((Node *) ((NullTest *) n)->arg))) >= 0 && lane_type(leaf_of(c, *leaf)->wtypid);
 	}
 	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && (*op = builtin_cmp(((OpExpr *) n)->opno, &lt, &rt)) >= 0)
@@ -590,7 +590,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 			return false;
 		l = strip_relabel(linitial(sa->args));
 		r = strip_relabel(lsecond(sa->args));
-		*op = sa->useOr ? SWT_IN : SWT_NOTIN;
+		*op = sa->useOr ? SIFT_COLW_IN : SIFT_COLW_NOTIN;
 		*operand = r;
 		*argtype = rt;
 		return (*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r) && wide_type_is(lt, leaf_of(c, *leaf)->wtypid) && rt == lt;

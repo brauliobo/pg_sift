@@ -132,37 +132,9 @@ typedef struct SiftSrcStrTest
 } SiftSrcStrTest;
 
 /*
- * A test of a conjunct on a wide leaf: SWT_* ops are the comparison operators of SiftCmpOp (0..5) and the four below. vals are the operands in
+ * A test of a conjunct on a wide leaf: the ops are the comparison operators of SiftCmpOp (0..5) and the other SIFT_COLW_* (col/col.h: IN, NOT IN, the NULL tests, the operators of a range or a network). vals are the operands in
  * the type of the leaf (a NULL operand is isnull[i]; an IN or NOT IN list has nvals of them, a comparison one, a NULL test none).
  */
-#define SWT_IN			6
-#define SWT_NOTIN		7
-#define SWT_ISNULL		8
-#define SWT_NOTNULL		9
-/* the operators of a leaf with shape != 0, the leaf on the left (SIFT_COLW_R_*, SIFT_COLW_N_* of col/col.h are the same numbers); the operand is a range, an element of its subtype, or a network */
-#define SWT_R_CONTAINS	16
-#define SWT_R_CONTAINED	17
-#define SWT_R_OVERLAPS	18
-#define SWT_R_BEFORE	19
-#define SWT_R_AFTER		20
-#define SWT_R_OVERLEFT	21
-#define SWT_R_OVERRIGHT	22
-#define SWT_R_ADJACENT	23
-#define SWT_R_ELEM		24
-#define SWT_N_SUB		25
-#define SWT_N_SUBEQ		26
-#define SWT_N_SUP		27
-#define SWT_N_SUPEQ		28
-#define SWT_N_OVERLAP	29
-#define SWT_R_EQ		30
-#define SWT_N_EQ		31
-/* the operators of a range with no operand (SIFT_COLW_R_EMPTY ... of col/col.h are the same numbers) */
-#define SWT_R_UNARY		32
-#define SWT_R_EMPTY		32
-#define SWT_R_LOWER_INF	34
-#define SWT_R_UPPER_INF	36
-#define SWT_R_LOWER_INC	38
-#define SWT_R_UPPER_INC	40
 
 typedef struct SiftSrcWideTest
 {

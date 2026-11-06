@@ -370,7 +370,7 @@ typedef enum SiftColWVerdict
 
 /*
  * The operators on the head of a range or a network (col/shape.c) as ops of sift_colw_test, with the head on the left and the operand (a range, an
- * element of its subtype, a network) on the right; the same numbers as SWT_* of agg/colsrc.h.
+ * element of its subtype, a network) on the right.
  */
 #define SIFT_COLW_SHAPE_FIRST	16
 #define SIFT_COLW_R_CONTAINS	16		/* @> a range */

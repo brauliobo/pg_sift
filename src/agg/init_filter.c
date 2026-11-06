@@ -815,7 +815,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 	bool		byval;
 	char		align;
 
-	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL || p->op >= SWT_R_UNARY)
+	if (p->op == SIFT_COLW_ISNULL || p->op == SIFT_COLW_NOTNULL || p->op >= SIFT_COLW_R_UNARY)
 		return;
 	e = operand_state(ex, p->expr);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
@@ -824,7 +824,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 	nulls[0] = isnull;
 	if (isnull)
 		vals[0] = (Datum) 0;
-	else if (p->op == SWT_IN || p->op == SWT_NOTIN)
+	else if (p->op == SIFT_COLW_IN || p->op == SIFT_COLW_NOTIN)
 		deconstruct_array(DatumGetArrayTypePCopy(d), p->argtype, len, byval, align, &vals, &nulls, &t->nvals);
 	else
 		vals[0] = datumCopy(d, byval, len);

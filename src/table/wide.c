@@ -174,25 +174,25 @@ wide_pass(const TblWide *w, bool isnull, Datum d)
 {
 	bool		found = false;
 
-	if (w->op == SWT_ISNULL || w->op == SWT_NOTNULL)
-		return isnull == (w->op == SWT_ISNULL);
-	if (w->op == SWT_NOTIN && w->nvals == 0)
+	if (w->op == SIFT_COLW_ISNULL || w->op == SIFT_COLW_NOTNULL)
+		return isnull == (w->op == SIFT_COLW_ISNULL);
+	if (w->op == SIFT_COLW_NOTIN && w->nvals == 0)
 		return true;
 	if (isnull)
 		return false;
-	if (w->op < SWT_IN)
+	if (w->op < SIFT_COLW_IN)
 		return !w->isnull[0] && cmp_holds(w->op, DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[0])));
 	for (int k = 0; k < w->nvals; k++)
 	{
 		if (w->isnull[k])
 		{
-			if (w->op == SWT_NOTIN)
+			if (w->op == SIFT_COLW_NOTIN)
 				return false;
 			continue;
 		}
 		found |= DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[k])) == 0;
 	}
-	return w->op == SWT_IN ? found : !found;
+	return w->op == SIFT_COLW_IN ? found : !found;
 }
 
 bool

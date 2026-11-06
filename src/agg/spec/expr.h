@@ -100,7 +100,7 @@ typedef enum SiftAggPredKind
 	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
-	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide): a conjunct keeps the rows that pass, any other place (a branch of OR, a FILTER, a CASE) gets the rows that pass as a bitmap of the unit, the executor does not evaluate it */
+	SAP_WIDE,					/* leaf op operand (SIFT_COLW_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide): a conjunct keeps the rows that pass, any other place (a branch of OR, a FILTER, a CASE) gets the rows that pass as a bitmap of the unit, the executor does not evaluate it */
 	SAP_LEAFCMP,				/* leaf op leaf2: two scalar leaves of one row (int2/int4, int8, date, timestamp or float columns of one type class and width); NULL on either side is not true */
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
@@ -117,7 +117,7 @@ typedef struct SiftAggPred
 	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE, SAP_WIDE; SAP_ANY_ELEM: the array leaf; SAP_ELEM_ROW: the element leaf */
 	int			leaf2;			/* SAP_ELEM_ROW: the leaf of the row, -1 otherwise */
 	int			wslot;			/* SAP_WIDE: its place in SiftAggSpec.wide, the number of its test at the source */
-	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT, 2 = in order; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
+	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT, 2 = in order; SAP_TYPE: the types; SAP_WIDE: SIFT_COLW_* (agg/colsrc.h) */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
 	Node	   *cal;			/* SAP_LUT of an equality of a periodic calendar step (extract(hour FROM ts) = 14, to_char(ts, 'MM') = '03'): List (f(placeholder), operand), whose ranges the source tests first (init_filter.c); SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
