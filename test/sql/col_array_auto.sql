@@ -19,6 +19,29 @@ SELECT count(*) FROM aa WHERE mid @> ARRAY['m7', 'n3'];
 SELECT count(*) FROM aa WHERE ids && ARRAY[5, 99999];
 SELECT rep, count(*) FROM aa GROUP BY 1 ORDER BY 1 LIMIT 3;
 
+-- an array that repeats (rep: 15 different arrays in 12,000 rows, mid: 1,100) gets its elements beside the image too: an element test over the image costs the same
+-- instructions a row whatever the number of different arrays, the elements about a fiftieth of that. Element tests run on the elements and give the rows of the normal plan
+EXPLAIN (COSTS OFF) SELECT count(*) FROM aa WHERE rep @> ARRAY['r2'];
+CREATE FUNCTION agree(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  EXECUTE 'SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (' || q || ') r' INTO a;
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (' || q || ') r' INTO b;
+  RETURN a IS NOT DISTINCT FROM b;
+END $$;
+SELECT agree(q) AS same_rows, q FROM unnest(ARRAY[
+  $q$SELECT count(*) FROM aa WHERE rep @> ARRAY['r2']$q$,
+  $q$SELECT count(*) FROM aa WHERE rep && ARRAY['s1', 'r4']$q$,
+  $q$SELECT count(*) FROM aa WHERE rep <@ ARRAY['r1', 's0', 's2', 'r3']$q$,
+  $q$SELECT count(*) FROM aa WHERE 'n3' = ANY (mid)$q$,
+  $q$SELECT count(*) FROM aa WHERE mid @> ARRAY['m7', 'n3']$q$,
+  $q$SELECT count(*) FROM aa WHERE ids && ARRAY[5, 99999]$q$,
+  $q$SELECT e, count(*) FROM aa, unnest(rep) e GROUP BY 1$q$,
+  $q$SELECT rep, count(*) FROM aa GROUP BY 1$q$
+]) AS t(q);
+
 -- a table too small for a sample gets neither
 CREATE TABLE ab AS SELECT i AS id, ARRAY['a' || i] AS uniq FROM generate_series(1, 500) i;
 CREATE INDEX ab_col ON ab USING sift_col (id, uniq);
@@ -37,5 +60,6 @@ SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
 ALTER INDEX aa_col SET (paths = '');
 REINDEX INDEX aa_col;
 SELECT leaf, path FROM sift.col_leaves('aa_col') ORDER BY leaf;
+DROP FUNCTION agree(text);
 DROP TABLE aa, ab, ac;
 DROP EXTENSION pg_sift;

@@ -161,7 +161,8 @@ cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
 #define ARR_SAMPLE_ROWS		4096
 #define ARR_SAMPLE_ELEMS	200000
 #define ARR_SET_BITS		19
-#define ARR_DIR_BYTES		1.5
+#define ARR_INT_BYTES		0.1		/* bytes an element of an integer array costs beyond log2(distinct elements) / 8 (measured: 0.09 at 20, 500 and 20,000 distinct elements) */
+#define ARR_TEXT_BYTES		1.0		/* the same for text, where the point directory lists the rows of a value (measured 0.1 for common values, 1.0 for values of ten rows) */
 
 typedef struct ArrSet
 {
@@ -174,6 +175,7 @@ typedef struct ArrCand
 	int			idx;			/* its place in the index */
 	AttrNumber	hatt;
 	Oid			elem;
+	uint64		seen;			/* rows read */
 	uint64		rows;			/* arrays read (not NULL) */
 	uint64		elems;			/* elements read, NULL ones too */
 	uint64		bytes;			/* bytes of the arrays read */
@@ -230,6 +232,7 @@ arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, in
 			bool	   *nulls;
 			int			ne;
 
+			c->seen++;
 			if (isnull)
 				continue;
 			a = DatumGetArrayTypeP(d);
@@ -268,33 +271,23 @@ arr_elem_type(Oid elem)
 }
 
 /*
- * An array column whose arrays repeat keeps its image (GROUP BY, DISTINCT and = read one code a row). An element test over the image decodes, hashes and
- * interns each distinct array of the dictionary, ARR_IMAGE_INSTR instructions an array (311.6 M instructions for 196,999 distinct arrays of 1,000,000 rows, 8.0 M
- * with the directory of the elements), where the elements cost about ARR_ELEM_ROW_INSTR a row. The elements are kept beside the image when the default formula
- * says so: speedup S, benefit R log2(S) / log2(1.05) with R = 1 (a common class) against G / 3 + W / 5, W
- * the build's write cost, taken as G (the same bytes are written), G at most ARR_AUTO_GROWTH_PCT% and the saving at least 100,000 instructions. The distinct arrays
- * are the statistics' when the table has them (a sample of a few thousand rows sees few repeats), else the sample's.
+ * An array column whose arrays repeat keeps its image (GROUP BY, DISTINCT and = read one code a row). An element test over the image goes through the generic
+ * row-wise path, ARR_IMAGE_ROW_INSTR instructions a row (measured 175 to 247 with 441 distinct arrays in 100,000 to 300,000 rows, int and text, and about 310 with 197,000 distinct
+ * in 1,000,000), where the elements cost about ARR_ELEM_ROW_INSTR a row. The elements are kept beside the image when the default formula says so: speedup S, benefit R
+ * log2(S) / log2(1.05) with R = 1 (a common class) against G / 3 + W / 5, W the build's write cost, taken as G (the same bytes are written), G at most
+ * ARR_AUTO_GROWTH_PCT% and the saving at least 100,000 instructions. The cost is per row, not per distinct array, so the number of distinct arrays does not enter.
  */
-#define ARR_IMAGE_INSTR		1500
+#define ARR_IMAGE_ROW_INSTR	150
 #define ARR_ELEM_ROW_INSTR	5
 
 static bool
 arr_both_pays(Relation heap, const ArrCand *c, double growth)
 {
 	double		total = keycols_heap_rows(heap),
-				ndistinct,
-				corr,
-				distinct = (double) c->arrs.n / c->rows * total,
-				saved,
-				base,
-				speedup;
-	int32		width;
+				saved = total * c->rows / c->seen * ARR_IMAGE_ROW_INSTR,
+				base = total * ARR_ELEM_ROW_INSTR,
+				speedup = (base + saved) / base;
 
-	if (keycols_col_stats(heap, c->hatt, &ndistinct, &corr, &width))
-		distinct = Max(distinct, ndistinct < 0 ? -ndistinct * total : ndistinct);
-	saved = distinct * ARR_IMAGE_INSTR;
-	base = total * ARR_ELEM_ROW_INSTR;
-	speedup = (base + saved) / base;
 	return growth <= ARR_AUTO_GROWTH_PCT && saved >= 100000 && speedup >= 1.05 &&
 		log2(speedup) / log2(1.05) >= growth / 3 + growth / 5;
 }
@@ -345,13 +338,15 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 		const ArrCand *c = &cand[k];
 		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c->idx)->attname);
 		double		elem_row,
-					image_row;
+					image_row,
+					nonnull;
 		bool		alone = c->arrs.n * 100 > c->rows * ARR_DISTINCT_PCT;
 
 		if (c->rows < 100 || c->elems == 0)
 			continue;
-		elem_row = (double) c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + ARR_DIR_BYTES);
-		image_row = (double) c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
+		nonnull = (double) c->rows / c->seen;
+		elem_row = nonnull * c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + (c->elem == INT2OID || c->elem == INT4OID || c->elem == INT8OID ? ARR_INT_BYTES : ARR_TEXT_BYTES));
+		image_row = nonnull * c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
 		if (alone)
 		{
 			/* nearly every array different: the image shares nothing and the elements, far smaller, stand in its place */
