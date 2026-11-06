@@ -5,6 +5,7 @@
 #include "col/point.h"
 #include "col/wbuf.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "col/scan/gmem.h"
 
 /*
@@ -452,7 +453,7 @@ static GOrdPart *gpart;
 static uint32
 gpart_slot(const GOrdPart *p, int64 val)
 {
-	uint32		i = (uint32) (((uint64) val * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & p->mask;
+	uint32		i = (uint32) (sift_fib64((uint64) val) >> 32) & p->mask;
 
 	while (p->gid[i] != 0 && p->gval[i] != val)
 		i = (i + 1) & p->mask;

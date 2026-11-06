@@ -10,6 +10,7 @@
 #include "catalog/pg_statistic.h"
 #include "col/am.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "col/autocut/autocut_int.h"
 
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
@@ -134,7 +135,7 @@ pagg_unit_bytes(const Track *tr, int ntr, const uint32 *rows, uint32 n, int nlea
 		for (uint32 i = 0; i < n && groups <= AUTOCUT_PAGG_GROUPS; i++)
 		{
 			int64		x = tr[t].nl[rows[i]] ? PG_INT64_MIN : tr[t].v[rows[i]];
-			uint32		h = (uint32) (((uint64) x * UINT64CONST(0x9E3779B97F4A7C15)) >> (64 - PAGG_SLOT_BITS));
+			uint32		h = (uint32) (sift_fib64((uint64) x) >> (64 - PAGG_SLOT_BITS));
 
 			while (used[h] && seen[h] != x)
 				h = (h + 1) & (PAGG_SLOTS - 1);

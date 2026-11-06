@@ -18,6 +18,7 @@
 #include "col/point.h"
 #include "col/setsum.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "core/popcount.h"
 
 static inline uint32
@@ -238,7 +239,7 @@ distinct_offsets(const SiftCPaggCol *c, int64 lo, uint64 cap, uint32 *nd)
 		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
 			continue;
 		d = (uint64) c->key[i] - (uint64) lo + 1;
-		for (h = (uint32) ((d * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & (size - 1); slot[h] != 0 && slot[h] != d; h = (h + 1) & (size - 1))
+		for (h = (uint32) (sift_fib64(d) >> 32) & (size - 1); slot[h] != 0 && slot[h] != d; h = (h + 1) & (size - 1))
 			;
 		if (slot[h] == 0)
 		{

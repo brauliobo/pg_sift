@@ -5,6 +5,7 @@
  */
 #include "core/host.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"
 
 typedef struct RuBuild
@@ -84,10 +85,10 @@ ru_tuples(RuBuild *b)
 			}
 			else
 				k[j] = b->dc[j]->key[i];
-			h = (h ^ (uint64) k[j]) * UINT64CONST(0x9E3779B97F4A7C15);
+			h = (h ^ (uint64) k[j]) * SIFT_FIB64;
 			h ^= h >> 31;
 		}
-		h = (h ^ nm) * UINT64CONST(0x9E3779B97F4A7C15);
+		h = (h ^ nm) * SIFT_FIB64;
 		pos = (uint32) (h >> 24) & mask;
 		for (;;)
 		{
@@ -271,7 +272,7 @@ ru_distinct(const SiftCPaggCol *c, uint32 n, uint32 limit, int64 *hk, uint8 *hu,
 			continue;
 		}
 		k = c->key[i];
-		h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+		h = (uint32) (sift_fib64((uint64) k) >> 40) & mask;
 		while (hu[h] && hk[h] != k)
 			h = (h + 1) & mask;
 		if (!hu[h])

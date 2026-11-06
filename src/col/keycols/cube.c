@@ -10,6 +10,7 @@
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
 #include "col/shred_pg.h"
+#include "core/hash.h"
 
 /*
  * Which plain columns take the dimensions of the cube. It holds SIFT_PAGG_MAX_DIMS of them (the calendar cells of the dates among them) and the default gives
@@ -52,7 +53,7 @@ cube_key(Datum d, bool isnull, const Form_pg_attribute att)
 	if (isnull)
 		return 1;
 	if (att->attbyval)
-		k = (uint64) DatumGetInt64(d) * UINT64CONST(0x9E3779B97F4A7C15);
+		k = sift_fib64((uint64) DatumGetInt64(d));
 	else if (att->attlen == -1)
 	{
 		struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
@@ -247,7 +248,7 @@ arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, in
 				if (nulls[i])
 					continue;
 				if (byval)
-					arr_set_add(&c->els, (uint64) DatumGetInt64(vals[i]) * UINT64CONST(0x9E3779B97F4A7C15));
+					arr_set_add(&c->els, sift_fib64((uint64) DatumGetInt64(vals[i])));
 				else
 				{
 					text	   *t = DatumGetTextPP(vals[i]);
@@ -445,7 +446,7 @@ rows_cells(const uint64 *a, const uint64 *b, uint32 rows, uint32 limit, uint64 *
 	memset(tab, 0, ROWS_SLOTS * sizeof(uint64));
 	for (uint32 r = 0; r < rows && cells <= limit; r++)
 	{
-		uint64		h = ((a[r] ^ (b[r] * UINT64CONST(0xC2B2AE3D27D4EB4F))) * UINT64CONST(0x9E3779B97F4A7C15)) | 1;
+		uint64		h = sift_fib64(a[r] ^ (b[r] * UINT64CONST(0xC2B2AE3D27D4EB4F))) | 1;
 
 		for (uint32 at = (uint32) (h >> 40) & (ROWS_SLOTS - 1);; at = (at + 1) & (ROWS_SLOTS - 1))
 		{

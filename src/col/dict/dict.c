@@ -5,6 +5,7 @@
  */
 #include "core/host.h"
 #include "core/limits.h"
+#include "core/hash.h"
 #include "col/dict/dict_int.h"
 
 SiftCDict *
@@ -39,7 +40,7 @@ cdict_hash(const char *s, uint32 len)
 {
 	const unsigned char *p = (const unsigned char *) s,
 			   *end = p + len;
-	uint64		h[4] = {len * UINT64CONST(0x9E3779B97F4A7C15), UINT64CONST(0xC2B2AE3D27D4EB4F), UINT64CONST(0x165667B19E3779F9), UINT64CONST(0x27D4EB2F165667C5)};
+	uint64		h[4] = {len * SIFT_FIB64, UINT64CONST(0xC2B2AE3D27D4EB4F), UINT64CONST(0x165667B19E3779F9), UINT64CONST(0x27D4EB2F165667C5)};
 	uint64		x;
 
 	if (len < 64)
@@ -48,17 +49,17 @@ cdict_hash(const char *s, uint32 len)
 		for (int k = 0; k < 4; k++)
 		{
 			memcpy(&x, p + 8 * k, sizeof(x));
-			h[k] = (h[k] ^ x) * UINT64CONST(0xFF51AFD7ED558CCD);
+			h[k] = (h[k] ^ x) * SIFT_FMIX64_A;
 			h[k] ^= h[k] >> 32;
 		}
 	for (int k = 0; k < 4; k++)
 	{
 		memcpy(&x, end - 32 + 8 * k, sizeof(x));
-		h[k] = (h[k] ^ x) * UINT64CONST(0xFF51AFD7ED558CCD);
+		h[k] = (h[k] ^ x) * SIFT_FMIX64_A;
 		h[k] ^= h[k] >> 32;
 	}
 	x = h[0] ^ (h[1] << 17 | h[1] >> 47) ^ (h[2] << 31 | h[2] >> 33) ^ (h[3] << 47 | h[3] >> 17);
-	x *= UINT64CONST(0xC4CEB9FE1A85EC53);
+	x *= SIFT_FMIX64_B;
 	return (uint32) (x ^ x >> 32);
 }
 

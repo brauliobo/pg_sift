@@ -2,6 +2,7 @@
  * col/point.c - the point directory of a leaf in a segment (col/point.h). Portable (core/host.h only).
  */
 #include "core/host.h"
+#include "core/hash.h"
 
 #include "col/point.h"
 #include "col/preagg.h"
@@ -34,14 +35,7 @@ sift_cpoint_syntax(const char *opt)
 uint64
 sift_cpoint_hash(int64 key)
 {
-	uint64		x = (uint64) key;
-
-	x ^= x >> 33;
-	x *= UINT64CONST(0xff51afd7ed558ccd);
-	x ^= x >> 33;
-	x *= UINT64CONST(0xc4ceb9fe1a85ec53);
-	x ^= x >> 33;
-	return x;
+	return sift_fmix64((uint64) key);
 }
 
 uint32

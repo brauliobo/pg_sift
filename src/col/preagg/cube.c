@@ -4,6 +4,7 @@
  * emitted as the cube blob
  */
 #include "core/host.h"
+#include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"
 
 /* Work areas of one unit's cube, sized by the group cap */
@@ -169,7 +170,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 				gp = &hg[k - dc->lo];
 			else
 			{
-				uint32		h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+				uint32		h = (uint32) (sift_fib64((uint64) k) >> 40) & mask;
 
 				while (hg[h] >= 0 && hk[h] != k)
 					h = (h + 1) & mask;

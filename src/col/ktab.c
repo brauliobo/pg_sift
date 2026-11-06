@@ -9,6 +9,7 @@
 
 #include "col/ktab.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 #define KT_MEAS		SIFT_KTAB_MEAS
 #define KT_NONE		UINT32_MAX
@@ -105,7 +106,7 @@ sift_ktab_spec(const SiftColSchema *s, SiftCPaggSpec *spec)
 static inline uint32
 slot_of(int64 k, uint32 mask)
 {
-	return (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & mask;
+	return (uint32) (sift_fib64((uint64) k) >> 40) & mask;
 }
 
 /* Doubles the groups and the hash table */
