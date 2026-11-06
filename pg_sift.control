@@ -1,5 +1,5 @@
 comment = 'Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search'
-default_version = '4.1'
+default_version = '4.2'
 module_pathname = '$libdir/pg_sift'
 schema = sift
 relocatable = false

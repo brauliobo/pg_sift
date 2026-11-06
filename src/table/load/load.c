@@ -56,7 +56,7 @@ load_groups(Relation rel)
 {
 	if (!IsUnderPostmaster || IsInParallelMode() || !ActiveSnapshotSet() || RelationUsesLocalBuffers(rel))
 		return 1;
-	return Max(1, Min(Min(1 + max_parallel_maintenance_workers, LOAD_MAX_GROUPS), maintenance_work_mem / (LOAD_SBS * sift_tbl_write_buffer_limit)));
+	return Max(1, Min(Min(1 + max_parallel_maintenance_workers, LOAD_MAX_GROUPS), maintenance_work_mem / (LOAD_SBS * sift_tbl_opt_int(sift_tbl_rel(rel), SIFT_TBLOPT_WRITE_BUFFER_LIMIT))));
 }
 
 /* Does the load of this table hand its groups to workers that stay for the command? */
@@ -158,7 +158,7 @@ end_run(Load *ld, Relation rel, SiftTblRel *st, bool parallel, bool more)
 		}
 	}
 	sift_tbl_refresh(rel, st);
-	if (sift_tbl_inline_promote)
+	if (sift_tbl_opt_bool(st, SIFT_TBLOPT_INLINE_PROMOTE))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 }
 
@@ -197,7 +197,7 @@ stream_row(Load *ld, Relation rel, SiftTblRel *st, const Datum *values, const bo
 	MemoryContext old;
 	SiftColRow	row;
 
-	if (ld->open && (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes()))
+	if (ld->open && (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes(ld)))
 		stream_end_unit(ld);
 	if (!ld->open)
 	{
@@ -359,6 +359,7 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 	if (!ld->refused)
 	{
 		MemoryContextSwitchTo(cxt);
+		ld->unit_kb = ld->run.limit_kb = sift_tbl_opt_int(sift_tbl_rel(rel), SIFT_TBLOPT_WRITE_BUFFER_LIMIT);
 		ld->run.vers = !frozen;
 		ld->ring_ok = sift_tbl_load_from_copy && !load_row_work_unsafe_in_parallel_mode(rel);
 		(void) layout_of(rel, st);
@@ -436,7 +437,7 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool 
 		{
 			if (!ld->open)
 				reserve_run(ld, rel, st);
-			else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes())
+			else if (ld->n >= LOAD_SB_ROWS || ld->bytes >= load_unit_bytes(ld))
 			{
 				load_end_unit(ld);
 				if (ld->run.units == ld->maxunits)

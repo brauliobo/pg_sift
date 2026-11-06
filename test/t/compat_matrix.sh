@@ -346,7 +346,8 @@ sift.async_maintenance = off'
 		# pg_dump writes CREATE EXTENSION without a version: a server that has the 3.2 files only restores the database at 3.2, and every index with an option of
 		# 3.3 fails to be created (the tables, the other indexes and the data come through)
 		qd() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir mx)/sock" -p "$(port mx)" -U postgres -d "$db" "${@/#/--command=}"; }
-		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
+		# (4.2 added sift.table_option_values, whose key type has its input and output functions in the 4.2 library only: an older library cannot copy the table out, so the dump leaves its data out)
+		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres --exclude-table-data=sift.table_option_values -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
 		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
 		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
 		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)

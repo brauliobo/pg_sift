@@ -430,7 +430,7 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
 		dead = e->ndocs - sift_cseg_live_rows(seg);
 		sift_cseg_close(seg);
-		if (dead * 100 > (uint64) e->ndocs * sift_tbl_dead_rewrite_pct && dead * best_docs > best_dead * e->ndocs)
+		if (dead * 100 > (uint64) e->ndocs * sift_tbl_opt_int(st, SIFT_TBLOPT_DEAD_REWRITE_PCT) && dead * best_docs > best_dead * e->ndocs)
 		{
 			sel[0] = *e;
 			best_dead = dead;
@@ -456,7 +456,7 @@ static int
 merge_adjacent(Relation rel, SiftTblRel *st, SiftSegEntry *sel, int n)
 {
 	const SiftTblLayout *l = layout_of(rel, st);
-	uint64		small = (uint64) sift_tbl_write_buffer_limit * 1024 / 2,
+	uint64		small = (uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024 / 2,
 				room = 2 * small;
 	SiftSegEntry *all = palloc(Max(st->dir.nsegs, 1) * sizeof(SiftSegEntry));
 	int			na = 0,
@@ -495,7 +495,7 @@ bool		sift_tbl_coalesce = false;
 static int
 merge_pick(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 {
-	SiftMergePolicy pol = {(uint64) sift_tbl_write_buffer_limit * 1024, SIFT_MERGE_FANIN, no_dead};
+	SiftMergePolicy pol = {(uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024, SIFT_MERGE_FANIN, no_dead};
 	int			n = sift_merge_pick(rel, &pol, &st->dir, false, sel);
 
 	if (n == 0)

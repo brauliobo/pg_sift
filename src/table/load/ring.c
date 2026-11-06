@@ -278,7 +278,7 @@ bool
 load_ring_start(Load *ld, Relation rel, SiftTblRel *st)
 {
 	int			nworkers = Min(max_parallel_maintenance_workers, LOAD_MAX_GROUPS - 1);
-	Size		cap = (Size) LOAD_RING_UNITS * sift_tbl_write_buffer_limit * 1024 / 4 * 5;
+	Size		cap = (Size) LOAD_RING_UNITS * ld->unit_kb * 1024 / 4 * 5;
 	int			nslots = Max(2, Min(Min(nworkers + 1, RING_SLOTS_MAX), (int) (((Size) maintenance_work_mem * 1024) / cap)));
 	Size		head = MAXALIGN(offsetof(LoadRing, slots) + nslots * sizeof(LoadSlot));
 	SiftParLeader *ldr;

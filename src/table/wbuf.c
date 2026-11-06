@@ -48,9 +48,9 @@ swap_wbuf(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 }
 
 static uint32
-wbuf_vcap(void)
+wbuf_vcap(const SiftTblRel *st)
 {
-	uint32		pages = Min((uint64) sift_tbl_write_buffer_limit * 1024 / BLCKSZ, SIFT_TBL_MAX_WBUF_PAGES);
+	uint32		pages = Min((uint64) sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) * 1024 / BLCKSZ, SIFT_TBL_MAX_WBUF_PAGES);
 
 	return Max(1, pages / SIFT_TBL_VBLOCKS_SB) * SIFT_TBL_VBLOCKS_SB;
 }
@@ -75,7 +75,7 @@ again:
 	if ((act ? act->gen : 0) == seen)
 	{
 		SwapArg		arg = {0};
-		uint32		vcap = wbuf_vcap();
+		uint32		vcap = wbuf_vcap(st);
 		uint64		gen,
 					vbase = TYPEALIGN(SIFT_TBL_VBLOCKS_SB, Max(SIFT_TBL_NEXT_VBLOCK(&st->dir.meta), (uint64) sift_tbl_vblock_floor));
 		Buffer		hbuf,
@@ -93,7 +93,7 @@ again:
 			UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 			waited = true;
 			(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
-								   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
+								   sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE) ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 			goto again;
 		}
 		if (st->dir.nsegs >= sift_tbl_max_segments - 2)
@@ -101,7 +101,7 @@ again:
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift_table \"%s\" has %d segments", RelationGetRelationName(rel), st->dir.nsegs),
 					 errdetail("Too many write buffers waiting for promotion: a write buffer that holds a deleted row VACUUM has not seen, or a speculative insertion, is promoted only after that is settled, and about %d MB of rows are in write buffers like that.",
-							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_write_buffer_limit / 1024)),
+							   (int) ((uint64) (sift_tbl_max_segments - 2) * sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT) / 1024)),
 					 errhint("Run VACUUM on the table, or end the transaction that wrote them.")));
 		if (act)
 			old = *act;
@@ -144,7 +144,7 @@ again:
 		sift_lane_flag_sealed_pages(rel, &old);
 	}
 	sift_tbl_refresh(rel, st);
-	if (old.gen && sift_tbl_inline_promote && !sift_tbl_settle_async(rel, st))
+	if (old.gen && sift_tbl_opt_bool(st, SIFT_TBLOPT_INLINE_PROMOTE) && !sift_tbl_settle_async(rel, st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 	if (old.gen)
 		sift_tbl_auto_defrag_tick(rel, st);
@@ -364,15 +364,15 @@ static BlockNumber
 write_overflow(Relation rel, SiftTblRel *st, uint64 gen, MinimalTuple mtup)
 {
 	uint32		npg = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD;
-	bool		wide = npg >= wbuf_vcap();	/* the page table of a buffer cannot list its pages: they are tail pages */
+	bool		wide = npg >= wbuf_vcap(st);	/* the page table of a buffer cannot list its pages: they are tail pages */
 	BlockNumber *blks;
 	BlockNumber first = InvalidBlockNumber;
 
-	if (wide && !sift_tbl_wide_rows)
+	if (wide && !sift_tbl_opt_bool(st, SIFT_TBLOPT_WIDE_ROWS))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row of sift_table \"%s\" is too large: %u bytes", RelationGetRelationName(rel), mtup->t_len),
-				 errdetail("A row has to fit one write buffer of %u kB.", sift_tbl_write_buffer_limit),
+				 errdetail("A row has to fit one write buffer of %d kB.", sift_tbl_opt_int(st, SIFT_TBLOPT_WRITE_BUFFER_LIMIT)),
 				 errhint("Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.")));
 	blks = palloc(npg * sizeof(BlockNumber));
 	if (wide && !mark_wide(rel, st, gen))
@@ -436,7 +436,7 @@ sift_tbl_append(Relation rel, SiftTblRel *st, MinimalTuple mtup, TransactionId x
 				continue;
 			}
 			ovf_gen = st->tgt_gen;
-			wide = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD >= wbuf_vcap();
+			wide = (mtup->t_len + OVF_PAYLOAD - 1) / OVF_PAYLOAD >= wbuf_vcap(st);
 		}
 		buf = sift_lane_read_locked(rel, st->tgt_blk, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);

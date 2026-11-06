@@ -342,6 +342,27 @@ Autovacuum is the other trigger and needs none of this: its dead-row threshold i
 - Types: every type, exactly (section 7, layout of a group): typed leaves for what the engine stores natively, opaque `SIFT_COLS_VAR` leaves
   for the rest, an `exceptions` leaf for the values a typed leaf would change.
 
+### 8.1 Options of one table
+
+A table access method has no reloptions before PostgreSQL 20 (`CREATE TABLE .. USING sift_table WITH (x = 1)` and `ALTER TABLE .. SET (x = 1)` refuse a name the access method does not know), so the settings that act on one table can be set for it with functions:
+
+| function | |
+|---|---|
+| `sift.table_set_option(rel regclass, name text, value text)` | sets the option; the value is checked as `SET` checks the setting of the same name (type, range, unit, the check of `compression` and `backpressure`), and the canonical text is stored |
+| `sift.table_get_option(rel, name)` | the value in force: the table's own, else the setting |
+| `sift.table_reset_option(rel, name DEFAULT NULL)` | takes one option (all when NULL) off the table |
+| `sift.table_options(rel DEFAULT NULL)` | one row for each option of each `sift_table` the caller may see: `name`, `value`, `source` (`table`, `setting` when the `sift.table_*` setting is not at its built-in default, `default`), the built-in `default` |
+
+The name of an option is the name of its setting without `sift.table_`: `write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes`. The policies that bound the I/O and the load of the whole server (`auto_defrag_delay`, `auto_defrag_wal_rate`, `auto_defrag_max_active`) are not options of a table.
+
+- **Precedence.** An option of the table beats the setting, whatever the setting's source (server, database, role, session `SET`), as a reloption beats the server default in PostgreSQL (`fillfactor`, `autovacuum_*`). To test a setting on a table that has the option, `sift.table_reset_option` the option first; `table_options.source` says which one is in force.
+- **Who.** The owner of the table (or a member of the owning role, or a superuser) sets and resets, as for `ALTER TABLE`; no superuser is needed. A role with any privilege on the table reads. Nobody needs a privilege on `sift.table_option_values`.
+- **When.** A statement running keeps the values it started with; the next statement of every session, and of a standby after it replays the change, uses the new ones. Segments are self-describing, so a change affects only the segments written afterwards. The setter takes a `SHARE UPDATE EXCLUSIVE` lock on the table (reads and writes go on; a VACUUM of the table waits for it).
+- **Where they are kept.** In `sift.table_option_values (rel sift.tblref, name, value)`, an ordinary table of the extension that `pg_dump` writes with the database. `sift.tblref` is the OID of the table, written as its qualified name, so a restore, a `pg_upgrade` and a standby find the rows again; a name that is not in the database reads as no table and its row is skipped, so a restore that leaves a table out (`pg_dump -T`, an excluded schema) does not fail on its options. `DROP TABLE`, `DROP SCHEMA` and `DROP OWNED` delete the rows (an event trigger; with `event_triggers = off` a row can remain, unreadable, and the dump never writes it). `RENAME`, `SET SCHEMA`, `TRUNCATE`, `VACUUM FULL`, `CLUSTER`, `REINDEX` and a crash keep them (the OID does not change); `SET ACCESS METHOD` away from `sift_table` hides them and back restores them.
+- **What does not carry them.** A dump of one table (`pg_dump -t`) does not write the table of options (it is data of the extension, as are the settings of an index in `WITH`); logical replication does not replicate it (neither does `ALTER TABLE .. SET`).
+- **Cost.** The options are read once when a backend first builds the entry of the table in its cache (one probe of the primary key; 328,000 instructions the first time a backend opens the table of options, 4,000 to 8,000 for each table after that and each time the table's entry is rebuilt), and are a bit test and an array read after. A statement that has the entry costs the same as before (insert of one row 64,300 instructions, a grouped read of 20,000 rows 299,000, with and without options, with 1 and with 1,000 tables with options).
+- **PostgreSQL 20.** When an access method can have reloptions, the names become `ALTER TABLE t SET (write_buffer_limit = '8MB')` and these functions stay as wrappers over that statement (same names, signatures and results); the update script of that release copies the rows into reloptions.
+
 ---
 
 ## 9. Limits

@@ -200,6 +200,9 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
   `unrecognized parameter`, and the restore goes on without that index. A `sift_table` with a row too large for a write buffer page (3.3 stores it, 3.2 refuses it with
   `row of sift_table "t" is too large`) restores no row at all: its `COPY` fails as a whole. These are the only errors (tested); a dump without them restores clean, and an index without an option is built at the 3.2 defaults. Reset the option before the dump
   (`ALTER INDEX x RESET (option)`) or edit the statement, and keep such a table out of a dump for 3.2.
+- **pg_dump of a catalog at 4.2 under an older library.** 4.2 added `sift.table_option_values`, the per-table options of a `sift_table`, whose key type `sift.tblref` has its input and output functions in the 4.2 library only:
+  `pg_dump` fails with `could not find function "sift_tblref_out"` while it copies that table out (even when it is empty). Leave its data out, `pg_dump --exclude-table-data=sift.table_option_values`, and set the options again
+  with 4.2 (`sift.table_options()` lists them before the downgrade); the options are the only thing a downgrade to a release before 4.2 loses.
 - **Going forward again.** Install the 3.3 files and restart. A database downgraded in place is at 3.3 in the catalog already: `ALTER EXTENSION pg_sift UPDATE` has nothing to do. Run
   `ALTER EVENT TRIGGER sift_table_ddl_check ENABLE` and `ALTER EVENT TRIGGER sift_table_repack_guard ENABLE`, then `ALTER SYSTEM RESET sift.col_format_minor` and `SELECT pg_reload_conf()` so writes carry
   the 3.3 sections again; what was rewritten at minor 6 stays at 6 until a `REINDEX` or `VACUUM FULL` (the preflight without `--to` and `sift.upgrade_commands()` list them). A database restored at 3.2

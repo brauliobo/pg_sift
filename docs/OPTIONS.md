@@ -2573,7 +2573,7 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 
 <!-- sift-upgrade:start -->
 Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_case_filter`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
 
-| Option | 3.7 | 4.1 | Column format | What a 3.7 user gets after the update |
+| Option | 3.7 | 4.2 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
 | `sift(merge_fanin)` | 8 | 4 |  | After ALTER EXTENSION UPDATE an index that did not set merge_fanin merges at 4 segments of a size tier from its next merge (8 in 3.7), so it keeps fewer segments and writes more while it ingests; no REINDEX. An index that set the option keeps its value; ALTER INDEX .. SET (merge_fanin = 8) keeps the old policy. |
 | `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |

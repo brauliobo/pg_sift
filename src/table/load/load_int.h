@@ -45,11 +45,11 @@
 /* sift.test_load_unit_bytes (a testing build) takes the place of the write buffer limit as the bytes of a unit and sets the parallel start at its multiples, so that a small load reaches the ring */
 #ifdef SIFT_TESTING
 #define load_budget()	(sift_test_load_segment_kb > 0 ? (Size) sift_test_load_segment_kb * 1024 : Max((Size) maintenance_work_mem * 1024 / 2, (Size) 64 << 20))
-#define load_unit_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 : (Size) sift_tbl_write_buffer_limit * 1024)
+#define load_unit_bytes(ld)	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 : (Size) (ld)->unit_kb * 1024)
 #define load_parallel_bytes()	(sift_test_load_unit_bytes > 0 ? (Size) sift_test_load_unit_bytes * 1024 * LOAD_SBS : LOAD_PARALLEL_BYTES)
 #else
 #define load_budget()	Max((Size) maintenance_work_mem * 1024 / 2, (Size) 64 << 20)
-#define load_unit_bytes()	((Size) sift_tbl_write_buffer_limit * 1024)
+#define load_unit_bytes(ld)	((Size) (ld)->unit_kb * 1024)
 #define load_parallel_bytes()	LOAD_PARALLEL_BYTES
 #endif
 
@@ -69,6 +69,7 @@ typedef struct LoadRun
 	uint64		first;
 	int			units;
 	int			per;			/* units of a group: LOAD_SBS, fewer when the units are shared out between the participants */
+	int			limit_kb;		/* the write buffer limit of the table, which the participants use as the leader read it */
 	uint32		urows[LOAD_MAX_UNITS];
 	Size		uoff[LOAD_MAX_UNITS + 1];
 } LoadRun;
@@ -78,6 +79,7 @@ typedef struct Load
 	Oid			relid;
 	SubTransactionId subid;		/* the (sub)transaction whose xid the rows carry */
 	bool		refused;		/* the table keeps the write buffers (sift_tbl_bulk_refusal) */
+	int			unit_kb;		/* the write buffer limit of the table: a unit stops at its bytes */
 	bool		open;			/* a run of superblocks is reserved */
 	MemoryContext cxt;
 	TupleDesc	desc;

@@ -148,7 +148,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 				space,
 				writing;
 
-	if (!sift_tbl_auto_defrag || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG) || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress())
 		return;
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
@@ -177,7 +177,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
 	dead = dead_wanted(st, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
-	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_auto_defrag_free_pct && sift_maint_space_worth(fs.blocks, nblocks) &&
+	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_FREE_PCT) && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
 	{
@@ -200,7 +200,7 @@ sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st)
 {
 	int64		now;
 
-	if (!sift_tbl_auto_defrag || IsInParallelMode())
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG) || IsInParallelMode())
 		return;
 	now = GetCurrentTimestamp();
 	if (now - st->defrag_at < (int64) sift_maintenance_naptime * 1000)
@@ -261,14 +261,17 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 
 	*r = (SiftTblMaintain) {.busy = true};
 	pass_cleared = false;
-	merge_cap = sift_tbl_auto_defrag_budget > 0 ? (uint64) sift_tbl_auto_defrag_budget << 20 : PG_UINT64_MAX;
 	StartTransactionCommand();
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock) && (rel = try_table_open(relid, NoLock)) != NULL)
 	{
 		if (sift_tbl_is_table(rel) && ConditionalLockPage(rel, SIFT_WORKER_LOCK_BLKNO, ExclusiveLock))
 		{
 			SiftTblRel *st = sift_tbl_rel(rel);
+			int			budget = sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_BUDGET);
 
+			merge_cap = budget > 0 ? (uint64) budget << 20 : PG_UINT64_MAX;
+			if (pass != PASS_SETTLE)
+				sift_tbl_coalesce = sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_COALESCE);
 			sift_tbl_refresh(rel, st);
 			if (pass == PASS_SETTLE)
 			{
@@ -277,7 +280,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 			}
 			else if (dead_wanted(st, removable_tombs(rel, st), worker_tombs, table_scans(rel) - Min(table_scans(rel), worker_scans)))
 			{
-				if (sift_tbl_auto_defrag_indexes)
+				if (sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_INDEXES))
 					background_vacuum(rel, r);
 				else
 					sift_tbl_maintain(rel, true, true, r);
@@ -325,7 +328,6 @@ maint_worker(Datum main_arg, WorkerPass first)
 	{
 		pass_max_active = sift_tbl_auto_defrag_max_active;
 		pass_wal_rate = (uint64) sift_tbl_auto_defrag_wal_rate << 10;
-		sift_tbl_coalesce = sift_tbl_auto_defrag_coalesce;
 	}
 
 	if (!sift_maint_wait_quiet(pass_max_active))
@@ -379,7 +381,7 @@ bool
 sift_tbl_settle_async(Relation rel, SiftTblRel *st)
 {
 	/* under pressure the writer settles itself: it never depends on the worker to stay inside the directory */
-	if (!sift_tbl_async_promote || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_ASYNC_PROMOTE) || !sift_async_maintenance || maintaining || !IsUnderPostmaster || RecoveryInProgress() || dir_pressure(st))
 		return false;
 	if (sift_maint_request_worker(rel, "sift_tbl_settle_worker_main"))
 		st->settle_horizon = GetOldestNonRemovableTransactionId(rel);

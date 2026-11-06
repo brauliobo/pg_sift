@@ -47,7 +47,7 @@
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
-static bool sift_tbl_hot_update = true;
+bool		sift_tbl_hot_update = true;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
 
@@ -256,9 +256,11 @@ insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions op
 	SiftTblRel *st;
 	Datum	   *values;
 
-	if (bistate == NULL || !sift_tbl_bulk_groups)
+	if (bistate == NULL)
 		return false;
 	st = sift_tbl_rel(rel);
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_BULK_GROUPS))
+		return false;
 	sift_tbl_ensure_init(rel);
 	sift_tbl_layout_ready(rel, st);
 	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
@@ -459,7 +461,7 @@ index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple 
 	SiftTblRowVer rv;
 	bool		same = true;
 
-	if (!sift_tbl_hot_update || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
+	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_HOT_UPDATE) || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
 		!sift_tbl_fetch_row(rel, st, otid, &rv))
 		return false;
 	for (int attr = -1; same && (attr = bms_next_member(attrs, attr)) >= 0;)

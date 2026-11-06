@@ -42,7 +42,7 @@ make_room(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh(rel, st);
 	if (st->dir.nsegs >= sift_tbl_max_segments - 2 || dir_backpressure(st))
 		(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), true,
-							   sift_tbl_backpressure ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
+							   sift_tbl_opt_int(st, SIFT_TBLOPT_BACKPRESSURE) ? SIFT_TBL_ROOM_STEPS : SIFT_TBL_SETTLE_STEPS);
 }
 
 /*
@@ -87,7 +87,7 @@ load_publish_all(Relation rel, SiftTblRel *st, Published *pub)
 		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		done += part.n;
 		sift_tbl_refresh(rel, st);
-		if (sift_tbl_inline_promote)
+		if (sift_tbl_opt_bool(st, SIFT_TBLOPT_INLINE_PROMOTE))
 			(void) sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 	}
 }
@@ -107,7 +107,7 @@ load_write_group(const LoadRun *r, const char *rows, Relation rel, int g, SiftSe
 	MemoryContext rowcx = AllocSetContextCreate(cx, "sift_table load row", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SealWriter	sw = {rel, l, layout_policy(rel, l), cx, sift_cbatch_create(cx, l->schema), NULL, NULL,
-		(uint64) LOAD_SBS * sift_tbl_write_buffer_limit * 1024, tbl_col_format(r->vers)};
+		(uint64) LOAD_SBS * r->limit_kb * 1024, tbl_col_format(r->vers)};
 	Datum	   *values = palloc(desc->natts * sizeof(Datum));
 	bool	   *isnull = palloc(desc->natts * sizeof(bool));
 

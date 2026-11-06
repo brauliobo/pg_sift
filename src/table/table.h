@@ -152,6 +152,7 @@ typedef struct SiftTblRel
 	int64		defrag_at;
 	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
 	TransactionId settle_horizon;	/* the oldest xmin when this backend last asked for the settling of closed write buffers: they wait for it to move */
+	struct SiftTblOpts *opts;	/* the options set on this table (sift.table_set_option), read with the cache entry */
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
@@ -534,6 +535,39 @@ extern PGDLLIMPORT int sift_test_bitmap_bulk_rows;
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
 extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);
 extern void sift_tbl_load_finish(Relation rel);
+
+/*
+ * The per-table options (table/options.c, docs/COL-TAM.md section 8): the sift.table_* settings that one table can override with sift.table_set_option. The
+ * rows live in sift.table_option_values and are read with the cache entry of the table (sift_tbl_rel), so a use is a bit test and an array read; the setting
+ * answers where the table sets nothing. Every id is the setting of the same name without the prefix.
+ */
+typedef enum SiftTblOptId
+{
+	SIFT_TBLOPT_WRITE_BUFFER_LIMIT,
+	SIFT_TBLOPT_WIDE_ROWS,
+	SIFT_TBLOPT_INLINE_PROMOTE,
+	SIFT_TBLOPT_ASYNC_PROMOTE,
+	SIFT_TBLOPT_BACKPRESSURE,
+	SIFT_TBLOPT_HOT_UPDATE,
+	SIFT_TBLOPT_BULK_GROUPS,
+	SIFT_TBLOPT_DICT_LOOKUP,
+	SIFT_TBLOPT_KEY_TABLE,
+	SIFT_TBLOPT_COMPRESSION,
+	SIFT_TBLOPT_DEAD_REWRITE_PCT,
+	SIFT_TBLOPT_AUTO_DEFRAG,
+	SIFT_TBLOPT_AUTO_DEFRAG_FREE_PCT,
+	SIFT_TBLOPT_AUTO_DEFRAG_BUDGET,
+	SIFT_TBLOPT_AUTO_DEFRAG_COALESCE,
+	SIFT_TBLOPT_AUTO_DEFRAG_INDEXES,
+	SIFT_TBLOPT_N
+} SiftTblOptId;
+
+extern bool sift_tbl_opt_bool(const SiftTblRel *st, SiftTblOptId id);
+extern int	sift_tbl_opt_int(const SiftTblRel *st, SiftTblOptId id);
+extern const char *sift_tbl_opt_str(const SiftTblRel *st, SiftTblOptId id);
+/* Reads the options of the table into its new cache entry (from sift_tbl_rel) */
+extern void sift_tbl_opts_load(SiftTblRel *st);
+extern PGDLLIMPORT bool sift_tbl_hot_update;
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
