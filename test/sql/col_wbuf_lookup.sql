@@ -176,6 +176,29 @@ INSERT INTO wl_q (w) VALUES ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 30
 :check;
 DROP FUNCTION wl_candidates(text);
 
+-- the records of an aborted update stay in this backend's cache of the leaf after VACUUM removed their rows and truncated the empty tail of the heap under them: the lookup does not
+-- hand the heap a block past the end of the file
+CREATE TABLE wt (k text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO wt SELECT 'c' || i, i % 10, i FROM generate_series(1, 12000) i;
+CREATE INDEX wt_c ON wt USING sift_col (k, tenant, amount);
+VACUUM (FREEZE, ANALYZE) wt;
+BEGIN;
+UPDATE wt SET amount = amount + 624 WHERE tenant = 3;
+ROLLBACK;
+SET sift.enable_agg = on;
+SET sift.agg_force = on;
+SET sift.enable_col_scan = on;
+SET max_parallel_workers_per_gather = 0;
+SELECT k, tenant, amount FROM wt WHERE k IN ('c228', 'c9937', 'c10001', 'c5583', 'c3764', 'c8804', 'c40000007') ORDER BY k;
+VACUUM wt;
+SELECT pg_relation_size('wt') / 8192 < 70 AS truncated;
+SELECT k, tenant, amount FROM wt WHERE k IN ('c228', 'c9937', 'c10001', 'c5583', 'c3764', 'c8804', 'c40000007') ORDER BY k;
+RESET sift.enable_agg;
+RESET sift.agg_force;
+RESET sift.enable_col_scan;
+RESET max_parallel_workers_per_gather;
+DROP TABLE wt;
+
 DROP TABLE wl CASCADE;
 DROP FUNCTION wl_idx(text);
 DROP FUNCTION wl_bmp(text);

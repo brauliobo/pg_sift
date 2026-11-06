@@ -40,6 +40,8 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.7.0 SIFT_TMP="$TAPDIR/old-lib-inc" SIFT_PORT=$((SIFT_PORT + 20)) "$REPO/scripts/old-lib-check.sh" include 2>&1)
 	# and the key-cut units of 3.6 (the chunk table after the directory) beside the table first of this tree
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-kc" SIFT_PORT=$((SIFT_PORT + 18)) "$REPO/scripts/old-lib-check.sh" keyed 2>&1)
+	# and the logs of 4.0.0 to 4.1.1, which may count row versions that were updated: this tree re-baselines them, and the older library reads the result as the heap
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.1.0 SIFT_TMP="$TAPDIR/old-lib-track" SIFT_PORT=$((SIFT_PORT + 21)) "$REPO/scripts/old-lib-check.sh" track 2>&1)
 fi
 if ((rc == 77)); then
 	echo "1..0 # SKIP $(grep -h '^SKIP ' <<<"$out" | head -1 | sed 's/^SKIP //')"

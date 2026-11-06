@@ -204,6 +204,8 @@ close_scan(SiftScanState *ss)
 	ss->filter = NULL;
 	ss->vis_open = false;
 	MemoryContextReset(ss->cxt);
+	/* what a rescan must keep is not a child of what it resets (a recheck after it works in a context that is gone) */
+	SIFT_INVARIANT(MemoryContextGetParent(ss->tmpcx) == ss->css.ss.ps.state->es_query_cxt, "the recheck context of a scan does not outlive its rescan");
 	ss->started = ss->done = ss->empty = false;
 	ss->kcx = NULL;
 	ss->krows = NULL;

@@ -257,7 +257,15 @@ set_find(const BatchSet *s, uint32 sb, bool *found)
 static void
 set_note(BatchSet *s, const Held *h)
 {
-	if (s->xbad || h->xmin == s->xlast)
+	if (s->xbad)
+		return;
+	/* before the xlast shortcut: xlast starts as InvalidTransactionId, which the first record without an inserter would match */
+	if (h->xst == XST_NONE)
+	{
+		s->xbad = true;
+		return;
+	}
+	if (h->xmin == s->xlast)
 		return;
 	s->xlast = h->xmin;
 	if (h->xst == XST_COMMITTED)

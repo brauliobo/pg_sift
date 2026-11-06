@@ -27,6 +27,13 @@ StaticAssertDecl(SIFT_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TOMB_LOC
  * transaction from which the log is complete, and the identity (the xmin of the catalog row) of the two statement triggers that feed it.
  */
 #define SIFT_TOMB_COMPLETE		0x0001
+/*
+ * Set by a library that has the fix of the command-id bugs of 4.0.0 to 4.1.1 (a row version ended by a statement whose command id moved got no tombstone): the log of an index written
+ * by an earlier one has COMPLETE alone, is checked against the heap and given the flag (sift_col_track_rebaseline), and no read takes it for complete before. An earlier library
+ * compares the flags with COMPLETE alone, so it takes a log with both for incomplete and checks the heap, which is right.
+ */
+#define SIFT_TOMB_FIXED			0x0002
+#define SIFT_TOMB_CURRENT		(SIFT_TOMB_COMPLETE | SIFT_TOMB_FIXED)
 
 typedef struct SiftTombChan
 {
