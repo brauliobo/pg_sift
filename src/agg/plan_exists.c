@@ -837,7 +837,7 @@ out_walker(Node *n, OutWalk *w)
 			w->aggs = lappend(w->aggs, n);
 		return false;
 	}
-	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, WindowFunc) || IsA(n, SubPlan) || IsA(n, SubLink))
+	if (IsA(n, Var) || IsA(n, PlaceHolderVar) || IsA(n, WindowFunc) || IsA(n, SubLink))
 	{
 		w->bad = true;
 		return false;

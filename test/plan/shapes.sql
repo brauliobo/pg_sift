@@ -162,6 +162,14 @@ SELECT parent_id, count(*) AS n, sum(amount) AS total FROM events WHERE deleted_
 -- expect: scan 0.090 0.36
 SELECT kind, parent_id, count(*) AS n FROM events GROUP BY 1, 2 HAVING NOT EXISTS (SELECT 1 FROM parents p WHERE p.id = events.parent_id AND p.name < 'parent 3') ORDER BY 1, 2;
 
+-- name: output_lookup_subselect
+-- expect: scan 0.060 0.24
+SELECT parent_id, count(*) AS n, (SELECT p.name FROM parents p WHERE p.id = events.parent_id) AS name FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
+
+-- name: having_correlated_count
+-- expect: scan 0.063 0.25
+SELECT parent_id, count(*) AS n FROM events GROUP BY 1 HAVING count(*) > (SELECT count(*) FROM parents p WHERE p.id = events.parent_id) * 10 ORDER BY 1;
+
 -- name: join_other_fact_filter
 -- expect: scan 0.23 0.93
 SELECT d.tier, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id

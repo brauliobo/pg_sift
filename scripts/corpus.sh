@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The corpus gate (test/corpus/README.md): the 307 statements of test/corpus/cases.sql on the lab of test/corpus/lab.sql (20000 events), each in a new backend with sift off
+# The corpus gate (test/corpus/README.md): the 312 statements of test/corpus/cases.sql on the lab of test/corpus/lab.sql (20000 events), each in a new backend with sift off
 # and on, the rows equal, and the plan slug of each (the Custom Scan (Sift...) nodes and the verdict of sift.explain_why per arm) the one pinned in test/corpus/plans.tsv.
 #
 #   scripts/corpus.sh [--only GLOB] [--rows N] [--update] [--keep]

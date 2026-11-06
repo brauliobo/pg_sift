@@ -1,7 +1,7 @@
 -- A HAVING condition with a sub-select that reads no aggregate is a condition of the rows of a plain GROUP BY (PostgreSQL moves the ones without a sub-select to WHERE itself):
--- the rows it drops are not grouped, and the sub-select is a semi or anti join the scan answers. `scan` says the aggregate is in the scan (a HAVING with a sub-select kept it
--- out), `rows_same` that the rows are those of sift off. What must stay (an aggregate in the condition, a volatile function, grouping sets, no GROUP BY) keeps its HAVING and
--- gives the same rows; a HAVING of several conditions moves the ones of the rows only.
+-- the rows it drops are not grouped, and the sub-select is a semi or anti join the scan answers. `scan` says the aggregate is in the scan, `rows_same` that the rows are those of sift off (the plan may test the
+-- condition on the groups instead, as the node does for a sub-select since agg_output_subplan: the rewrite is the plan of the cheaper of the two). What must stay (an aggregate in the condition,
+-- a volatile function, grouping sets, no GROUP BY) keeps its HAVING and gives the same rows; a HAVING of several conditions moves the ones of the rows only.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

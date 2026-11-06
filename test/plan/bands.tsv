@@ -162,6 +162,7 @@ table	float_sum_unrounded	scan	0.071	0.28
 table	global	scan	0.033	0.13
 table	groups_over_threshold	scan	0.072	0.23
 table	having	either	0.042	0.17
+table	having_correlated_count	scan	0.020	0.079
 table	having_in_parents	scan	0.060	0.24
 table	having_not_exists_parents	scan	0.043	0.17
 table	in_active_parents	scan	0.080	0.23
@@ -203,6 +204,7 @@ table	not_exists_in_table	scan	0.071	0.29
 table	one_day	either	0.92	3.7
 table	one_key	scan	0.069	0.21
 table	one_parent_narrow	normal	0.65	2.6
+table	output_lookup_subselect	scan	0.020	0.079
 table	parent_key	scan	0.069	0.21
 table	partition_pruned	either	any	any
 table	partitions_count	either	0.056	0.22
@@ -419,6 +421,7 @@ tabletuned	float_sum_unrounded	scan	0.021	0.084
 tabletuned	global	scan	0.0093	0.037
 tabletuned	groups_over_threshold	scan	0.019	0.060
 tabletuned	having	either	0.012	0.047
+tabletuned	having_correlated_count	scan	0.0059	0.023
 tabletuned	having_in_parents	scan	0.016	0.064
 tabletuned	having_not_exists_parents	scan	0.017	0.068
 tabletuned	in_active_parents	scan	0.022	0.067
@@ -460,6 +463,7 @@ tabletuned	not_exists_in_table	scan	0.017	0.068
 tabletuned	one_day	either	0.88	3.5
 tabletuned	one_key	scan	0.019	0.060
 tabletuned	one_parent_narrow	normal	0.64	2.5
+tabletuned	output_lookup_subselect	scan	0.0058	0.023
 tabletuned	parent_key	scan	0.019	0.060
 tabletuned	partition_pruned	scan	0.12	0.48
 tabletuned	partitions_count	either	0.019	0.074
@@ -676,6 +680,7 @@ tuned	float_sum_unrounded	scan	0.037	0.15
 tuned	global	scan	0.016	0.063
 tuned	groups_over_threshold	scan	0.033	0.11
 tuned	having	either	0.19	0.77
+tuned	having_correlated_count	scan	0.056	0.22
 tuned	having_in_parents	scan	0.027	0.11
 tuned	having_not_exists_parents	scan	0.025	0.100
 tuned	in_active_parents	scan	0.038	0.12
@@ -717,6 +722,7 @@ tuned	not_exists_in_table	scan	0.027	0.11
 tuned	one_day	either	0.83	3.4
 tuned	one_key	scan	0.033	0.11
 tuned	one_parent_narrow	scan	0.49	1.9
+tuned	output_lookup_subselect	scan	0.045	0.18
 tuned	parent_key	scan	0.033	0.11
 tuned	partition_pruned	either	any	any
 tuned	partitions_count	either	0.046	0.18

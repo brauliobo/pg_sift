@@ -249,7 +249,7 @@ c3_having_in_list	SiftAgg	single:t
 c3_having_exists_kind	SiftAgg	single:t
 c3_having_max_recent	SiftAgg	-
 c3_having_avg_region	SiftAgg	-
-c3_having_corr_count	-	-
+c3_having_corr_count	SiftAgg	-
 c3_having_not_exists_deleted	SiftAgg	single:t
 c3_having_select_scalar	SiftAgg	-
 c3_having_avg_of_groups	SiftAgg	-
@@ -306,3 +306,8 @@ c3_gs_count_distinct	SiftAgg	distinct:f:distinct_set,single:t
 c3_gs_join_rollup	SiftAgg	single:t
 c3_gs_rollup_avg	SiftAgg	single:t
 c3_gs_wide_rollup	SiftAgg	single:t
+c3_select_lookup	SiftAgg	single:t
+c3_select_exists	SiftAgg	single:t
+c3_having_outer_agg_sub	SiftAgg	-
+c3_having_not_in_count	SiftAgg	-
+c3_rollup_subselect	SiftAgg	-

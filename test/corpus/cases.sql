@@ -1,4 +1,4 @@
--- The corpus: 307 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 312 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -666,3 +666,14 @@ select a.type, a.region, count(*), sum(e.amount) from events e join dim_a a on a
 select kind_id, status, avg(amount), avg(qty), max(score) from events where kind_id <= 12 group by rollup (kind_id, status);
 -- @case c3_gs_wide_rollup | gsets | rollup over the wide table
 select tenant_id, status, sum(m01), sum(m02), sum(n01), count(*) from wide where tenant_id <= 12 group by rollup (tenant_id, status);
+-- ===================== correlated sub-selects in the select list and HAVING of a grouped query
+-- @case c3_select_lookup | subq | a dimension column looked up by the group key
+select kind_id, count(*), sum(amount), (select k.name from kinds k where k.id = events.kind_id) from events group by 1;
+-- @case c3_select_exists | subq | EXISTS of the group key in the select list
+select dim_a_id, count(*), exists (select 1 from dim_b b where b.dim_a_id = events.dim_a_id and b.deleted_at is null) from events group by 1;
+-- @case c3_having_outer_agg_sub | subq | HAVING a sub-select over an aggregate of the outer query
+select kind_id, sum(qty) from events group by 1 having (select count(*) from kinds where id <= sum(qty) / 1000) > 2;
+-- @case c3_having_not_in_count | subq | HAVING an aggregate NOT IN a list
+select region, count(*) from events group by 1 having count(*) not in (select count(*) from kinds where enabled);
+-- @case c3_rollup_subselect | subq | a sub-select in the output of a ROLLUP
+select kind_id, region, count(*), (select count(*) from kinds) from events where kind_id < 5 group by rollup (kind_id, region);
