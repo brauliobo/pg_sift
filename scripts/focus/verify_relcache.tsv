@@ -1,0 +1,1 @@
+verify_relcache	src/col/chunk.c:istr_split src/col/enc.c:chunk_encode_istr src/col/enc.c:istr_zone

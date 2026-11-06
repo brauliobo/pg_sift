@@ -175,7 +175,6 @@ while IFS='|' read -r want name ours theirs; do
 done <<'EOF2'
 0|Makefile|TESTING_REGRESS += a|TESTING_REGRESS += a\nTESTING_REGRESS += b
 1|Makefile|CFLAGS = -O2|CFLAGS = -O3
-0|focus.tsv|a|a\nb
 EOF2
 # a name or a row that is in the list twice after the merge is kept once, in the place of its first appearance
 mkdir -p "$T/dedupe"

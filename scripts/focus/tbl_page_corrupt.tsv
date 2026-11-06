@@ -1,0 +1,1 @@
+tbl_page_corrupt	src/table/funcs.c:page_rec_found src/table/funcs.c:sift_test_tbl_page_rec src/table/funcs.c:sift_test_tbl_page_rec_end

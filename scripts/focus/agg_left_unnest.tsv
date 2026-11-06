@@ -1,0 +1,1 @@
+agg_left_unnest	src/agg/dist/add.c:dist_wide_mode src/agg/dist/add.c:dist_word src/agg/leaf/json.c:json_path_leaf src/agg/plan.c:left_each_key src/agg/plan.c:left_lateral src/agg/spec_preagg.c:add_leaf src/agg/spec_preagg.c:pred_dims src/col/jsonb.c:set_key src/col/shred.c:intern_key

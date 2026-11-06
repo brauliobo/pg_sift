@@ -1,0 +1,1 @@
+col_overlay_merge	src/agg/col.c:col_open_flags src/col/maint/overlay.c:maint_overlay_set src/col/maint/rewrite.c:maint_rewrite_check src/col/maint/rewrite.c:overlay_worth

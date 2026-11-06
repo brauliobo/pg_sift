@@ -15,7 +15,7 @@
 # Steps: (1) when the PR head does not hold the tip, merge the tip into the branch, unless GitHub says the PR merges cleanly onto the tip and the required checks of the head are
 # green or still running: a merge-up restarts them, and with a landing every few minutes the tip is always newer than any head (the semantic breakage between PRs that do not conflict
 # is caught by the checks of the batch pull request into main). A conflict only in what both sides add to (CHANGELOG, bench/cases.tsv, bench/results/*.tsv,
-# the list lines of any Makefile, and the lists every split of a source file adds a row to: scripts/focus.tsv, focus-pins.tsv, moved-sources.tsv, static.baseline, areas.tsv, src/portable.list, src/portable-col.list; rows of both sides are kept, sorted again when the list was sorted, and a change of an existing row is exit 2) or in a generated file is resolved; any other is exit 2. The CHANGELOG is
+# the list lines of any Makefile, and the lists every split of a source file adds a row to: scripts/focus-pins.tsv, moved-sources.tsv, static.baseline, areas.tsv, src/portable.list, src/portable-col.list; rows of both sides are kept, sorted again when the list was sorted, and a change of an existing row is exit 2) or in a generated file is resolved; any other is exit 2. The CHANGELOG is
 # checked after every merge (no marker left, no line of Unreleased twice, no entry moved out of Unreleased or lost): a broken one is exit 2 and nothing is pushed. If the tip
 # moved while the gates ran, it is merged again (three rounds; the gates run once, the checks of the pushed head are the rest). (2) After a merge: scripts/lint.sh. (3) The privacy gate on
 # the added lines, the commit messages and the PR title and body, and the focus-table row of every new test/sql file. (4) A push, always after a merge of the tip: GitHub
@@ -84,7 +84,7 @@ resolve_conflicts() {
 		case $f in
 			CHANGELOG.md|bench/cases.tsv|bench/results/*.tsv)
 				sed -i '/^<<<<<<< /d;/^=======$/d;/^>>>>>>> /d' "$f"; git add "$f"; [[ $f != CHANGELOG.md ]] || CL=1 ;;
-			Makefile|*/Makefile|scripts/focus.tsv|scripts/focus-pins.tsv|scripts/static.baseline|scripts/moved-sources.tsv|scripts/areas.tsv|src/portable.list|src/portable-col.list)
+			Makefile|*/Makefile|scripts/focus-pins.tsv|scripts/static.baseline|scripts/moved-sources.tsv|scripts/areas.tsv|src/portable.list|src/portable-col.list)
 				# both sides only add list lines (TESTING_REGRESS += ..., rows of a list: every split of a source file adds its row to the same lists): keep both once, sorted again when the
 				# list was sorted at the merge base; a hunk that changes a line of the base, and anything else, is the owner's
 				git checkout -q --conflict=diff3 -- "$f"
@@ -255,12 +255,11 @@ worker() {
 	meta_hits=$(privacy_range "origin/$base" "$cand" 2>&1); prc=$?
 	[[ $prc == 0 ]] || { head -n 5 <<<"$meta_hits"; red "privacy red (rc $prc)"; }
 	privacy_text <<<"$meta" >/dev/null 2>&1 || red "privacy red in the title or body of #$pr"
-	if git cat-file -e "$cand:scripts/focus.tsv" 2>/dev/null; then
-		tests=$(git diff --name-only --diff-filter=A "$(git merge-base "origin/$base" "$cand")" "$cand" -- test/sql | sed 's#.*/##; s/\.sql$//' | sort)
-		rows=$(git show "$cand:scripts/focus.tsv" | cut -f1 | grep -v '^[#=]' | sort)
-		missing=$(comm -23 <(echo "$tests" | grep .) <(echo "$rows") | tr '\n' ' ')
-		[[ -z $missing ]] || red "no row in scripts/focus.tsv for: $missing(run scripts/focus-gen.sh NAME... and commit scripts/focus.tsv)"
-	fi
+	missing=
+	for t in $(git diff --name-only --diff-filter=A "$(git merge-base "origin/$base" "$cand")" "$cand" -- test/sql | sed 's#.*/##; s/\.sql$//'); do
+		git cat-file -e "$cand:scripts/focus/$t.tsv" 2>/dev/null || missing+="$t "
+	done
+	[[ -z $missing ]] || red "no scripts/focus/NAME.tsv for: $missing(run scripts/focus-gen.sh NAME... and commit scripts/focus/)"
 
 	if [[ -n $dry ]]; then
 		if (( push )); then echo "dry run: would push the merge-up to $br, then wait for the required checks ($required)"; else echo "dry run: required checks ($required): $(checks_verdict "$head" "$required")"; fi

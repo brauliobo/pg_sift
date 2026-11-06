@@ -1,0 +1,1 @@
+agg_zone_or	src/agg/col.c:col_split src/agg/col.c:zone_tree src/agg/pred_in.c:pred_lut_fill src/col/codec/filter.c:filter_rle src/col/codec/filter.c:set_range src/col/ctest.c:bits_fill src/col/scan.c:prune_zone src/col/scan.c:sift_col_unit_split src/col/setsum.c:exact_at src/col/setsum.c:put_list

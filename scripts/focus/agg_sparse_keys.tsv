@@ -1,0 +1,1 @@
+agg_sparse_keys	src/agg/group/ident.c:ident_go_wide src/agg/group/ident.c:ident_wide_id src/agg/plan.c:add_sets src/agg/plan.c:key_of_ref src/col/setsum.c:distinct_offsets src/col/setsum.c:exact_at src/col/setsum.c:put_list src/core/cmp.h:sift_cmp_u64

@@ -1,0 +1,1 @@
+tbl_limits	src/table/am.c:tbl_finish_bulk_insert src/table/funcs.c:sift_table_space src/table/load.c:find_load src/table/load.c:sift_tbl_load_finish src/table/scan.c:scan_version_tuple src/table/seg.c:sift_table_paths_check src/table/wbuf.c:sift_tbl_rowver src/table/wbuf.c:sift_tbl_rowver_tuple

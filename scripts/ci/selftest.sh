@@ -79,20 +79,20 @@ if [[ $MODE == --selftest ]]; then
 		done <<<"$PLAN_OUT"
 	done
 	[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
-	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
+	# the focus table (one file scripts/focus/NAME.tsv for each test, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
 	# tests that execute a function, the tests of the area for a hot function or a change outside functions
-	focus_rows=$(cut -f1 "$REPO/scripts/focus.tsv" | grep -v '^[#=]' | sort)
+	focus_rows=$(cat "$REPO"/scripts/focus/*.tsv | cut -f1 | grep -v '^=' | sort)
 	focus_missing=$(comm -23 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
-	[[ -z $focus_missing ]] || { echo "FAIL: focus: no row in scripts/focus.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
+	[[ -z $focus_missing ]] || { echo "FAIL: focus: no scripts/focus/NAME.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
 	focus_stale=$(comm -13 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
-	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus.tsv has rows for $(echo $focus_stale), which are not tests"; bad=1; }
-	read -r focus_t focus_tok _ < <(awk -F'\t' '!/^[#=]/ && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus has files for $(echo $focus_stale), which are not tests"; bad=1; }
+	read -r focus_t focus_tok _ < <(awk -F'\t' '$1 != "=hot" && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO"/scripts/focus/*.tsv)
 	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
-	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus.tsv")
+	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus/_hot.tsv")
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	# a function of a file split into a folder (scripts/moved-sources.tsv) selects the tests of the row made for the old file, with and without the prefix a split gave it
 	read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")
-	mv_fn=$(grep -o "$mv_old:[A-Za-z_0-9]*" "$REPO/scripts/focus.tsv" | head -1 | cut -d: -f2)
+	mv_fn=$(cat "$REPO"/scripts/focus/*.tsv | grep -o "$mv_old:[A-Za-z_0-9]*" | head -1 | cut -d: -f2)
 	[[ -z $mv_fn || ( $(focus_regex "${mv_new}x.c:${mv_pre}${mv_fn}") == "$(focus_regex "$mv_old:$mv_fn")" && $(focus_regex "$mv_old:$mv_fn") != '^(coverage|isolation-emulated)$' ) ]] || { echo "FAIL: focus: a function of a file split into a folder does not select the tests of the row of the old file ($mv_old:$mv_fn)"; bad=1; }
 	[[ $(focus_regex src/agg/accum.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger

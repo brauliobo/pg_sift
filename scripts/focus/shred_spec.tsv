@@ -1,0 +1,1 @@
+shred_spec	src/col/shred_spec.c:sift_shred_spec_deparse src/col/shred_test.c:sift_test_shred_spec

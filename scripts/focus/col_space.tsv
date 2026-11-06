@@ -1,0 +1,1 @@
+col_space	src/agg/preagg/unit.c:preagg_hist_hdim src/bm25/segment_sql.c:sift_maintenance_busy src/col/am.c:sift_col_alter_check src/col/am.c:sift_col_paths_redecide src/col/maint.c:clean_apart src/col/maint.c:sift_col_index_info src/col/seg.c:sift_cseg_preagg_units src/col/wbuf.c:flag_row

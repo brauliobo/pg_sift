@@ -1,0 +1,1 @@
+agg_lookup_load	src/agg/combo/keys.c:combo_filter_rows src/agg/cost/join.c:join_index_usable src/agg/lookup/kept.c:kept_cond_bad src/agg/lookup/map.c:map_index src/agg/update/chunk.c:semi_stage src/col/setsum.c:distinct_offsets

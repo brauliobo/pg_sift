@@ -11,7 +11,7 @@ if [[ $MODE == --areas-regex ]]; then
 fi
 # --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in three), full (it is all of it)
 # focus_regex TOKEN...: the jobs of `affected --focus`. A token is FILE or FILE:FUNCTION (FUNCTION * : a change outside any function); the regression tests that
-# execute the function (scripts/focus.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
+# execute the function (scripts/focus/NAME.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
 # change outside functions, scripts/areas.tsv as ever for the other files. A function no row has is new or run by no test: its callers are the other tokens.
 focus_regex() {
 	local t f rest=() star=() sel names extra
@@ -29,8 +29,7 @@ focus_regex() {
 	done
 	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
 		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
-		/^#/ { next }
-		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
+		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO"/scripts/focus/*.tsv)
 	# the tests pinned to a file (scripts/focus-pins.tsv): they print numbers of its functions, which a function every test executes (the =hot row) does not name
 	sel+=$'\n'$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); want[p[1]] = 1 } }
 		/^#/ { next }
