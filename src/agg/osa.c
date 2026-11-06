@@ -75,6 +75,7 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 #define OSA_SIGN	(UINT64CONST(1) << 63)
 
@@ -107,13 +108,7 @@ key_f8(uint64 k)
 static inline uint64
 osa_hash(uint32 sid, uint64 key)
 {
-	uint64		x = key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F));
-
-	x ^= x >> 33;
-	x *= UINT64CONST(0xFF51AFD7ED558CCD);
-	x ^= x >> 33;
-	x *= UINT64CONST(0xC4CEB9FE1A85EC53);
-	return x ^ (x >> 33);
+	return sift_fmix64(key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F)));
 }
 
 Osa *

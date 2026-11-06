@@ -15,6 +15,7 @@
 
 #include "agg/intids.h"
 #include "core/testrng.h"
+#include "core/hash.h"
 
 PG_FUNCTION_INFO_V1(sift_test_intids);
 
@@ -29,12 +30,9 @@ typedef struct RefMap
 static uint32
 ref_id(RefMap *m, int64 k, uint32 next)
 {
-	uint64		x = (uint64) k;
 	uint32		h;
 
-	x = (x ^ (x >> 33)) * UINT64CONST(0xFF51AFD7ED558CCD);
-	x = (x ^ (x >> 33)) * UINT64CONST(0xC4CEB9FE1A85EC53);
-	for (h = (uint32) (x ^ (x >> 33)) & (m->nslot - 1); m->id[h]; h = (h + 1) & (m->nslot - 1))
+	for (h = (uint32) sift_fmix64((uint64) k) & (m->nslot - 1); m->id[h]; h = (h + 1) & (m->nslot - 1))
 		if (m->key[h] == k)
 			return m->id[h];
 	m->key[h] = k;
