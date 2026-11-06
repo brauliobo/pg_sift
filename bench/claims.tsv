@@ -403,3 +403,6 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 4.47 million instructions	col_wbuf_read_priced_set	200000	sift	default	instr_m	4.47	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
 120.3 million instructions	col_wbuf_read_priced_all	200000	sift	buffered	instr_m	120.3	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
 19.2 million instructions	col_wbuf_read_priced_all	200000	sift	default	instr_m	19.2	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+-	point_pk	200000	picked	default	plan_ms	0.025	40	bench case point_pk, 600,000 rows, planning of a lookup by primary key, records in program-scale/realq42b/wp03
+-	point_pk	200000	native	default	plan_ms	0.023	40	bench case point_pk, native plan, records in program-scale/realq42b/wp03
+-	point_pk	200000	picked	default	instr_m	0.105	40	bench case point_pk, execution only, records in program-scale/realq42b/wp03

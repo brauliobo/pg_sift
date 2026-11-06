@@ -596,36 +596,13 @@ join_tie(RangeTblEntry *rte, Index rti, Node *a)
 	return false;
 }
 
-/* does the table have a column index (sift_col) or is it a sift_table? The scan reads such a table: it is not one to probe */
-static bool
-scan_table(Oid relid)
-{
-	Relation	rel = relation_open(relid, NoLock);
-	Oid			col = get_am_oid("sift_col", true),
-				tab = get_am_oid("sift_table", true);
-	bool		found = OidIsValid(tab) && rel->rd_rel->relam == tab;
-
-	if (!found && OidIsValid(col))
-		foreach_oid(ioid, RelationGetIndexList(rel))
-		{
-			Relation	idx = index_open(ioid, AccessShareLock);
-
-			found = idx->rd_rel->relam == col;
-			index_close(idx, AccessShareLock);
-			if (found)
-				break;
-		}
-	relation_close(rel, NoLock);
-	return found;
-}
-
 /* does the query read a table that has a column index (a scan), in its own tables, its sub-selects and the CTEs it names or reads? The query is the first of flat_levels (as at the call
  * from flatten_query), and the levels follow a sub-select or a CTE body into it */
 static bool
 reads_scan_table(Query *q)
 {
 	foreach_node(RangeTblEntry, r, q->rtable)
-		if ((r->rtekind == RTE_RELATION && scan_table(r->relid)) || ((r->rtekind == RTE_SUBQUERY || r->rtekind == RTE_CTE) && item_reads_scan(r)))
+		if ((r->rtekind == RTE_RELATION && has_column_source(r->relid)) || ((r->rtekind == RTE_SUBQUERY || r->rtekind == RTE_CTE) && item_reads_scan(r)))
 			return true;
 	foreach_node(CommonTableExpr, cte, q->cteList)
 	{
@@ -692,7 +669,7 @@ join_table(Query *q, Node *n)
 	rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable);
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL)
 		return false;
-	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS && !scan_table(rte->relid);
+	return sift_agg_table_rows(rte->relid) >= PROBE_MIN_ROWS && !has_column_source(rte->relid);
 }
 
 /* what is left of the ON, or of the WHERE of a FROM list, after the sub-select took its conjuncts */

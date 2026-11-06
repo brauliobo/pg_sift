@@ -259,11 +259,23 @@ case_filter_walker(Node *n, void *context)
 	return expression_tree_walker(n, case_filter_walker, context);
 }
 
+/* an aggregate is in the level itself (hasAggs) or in one below it, which a sub-link, a CTE or a sub-select leads to: a statement with none of them is not walked */
+static bool
+may_hold_aggs(Query *q)
+{
+	if (q->hasAggs || q->hasSubLinks || q->cteList != NIL)
+		return true;
+	foreach_node(RangeTblEntry, r, q->rtable)
+		if (r->rtekind == RTE_SUBQUERY)
+			return true;
+	return false;
+}
+
 /* does a query tree hold an aggregate of that shape? A walk that builds nothing, asked before the tree is copied for the rewrite */
 bool
 sift_agg_case_filter_calls(Query *q)
 {
-	return sift_agg_case_filter_enabled && case_filter_walker((Node *) q, NULL);
+	return sift_agg_case_filter_enabled && may_hold_aggs(q) && case_filter_walker((Node *) q, NULL);
 }
 
 void
