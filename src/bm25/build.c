@@ -58,12 +58,7 @@ void
 sift_test_phase_wait(int phase)
 {
 	if (sift_test_phase_gate > 0)
-	{
-		Datum		key = Int64GetDatum(sift_test_phase_gate + phase);
-
-		DirectFunctionCall1(pg_advisory_lock_int8, key);
-		DirectFunctionCall1(pg_advisory_unlock_int8, key);
-	}
+		sift_test_hold(sift_test_phase_gate + phase);
 }
 #endif
 char *

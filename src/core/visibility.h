@@ -88,6 +88,7 @@ extern PGDLLIMPORT bool sift_test_merge_gate;
 extern PGDLLIMPORT bool sift_test_worker_gate;
 extern PGDLLIMPORT bool sift_test_release_gate;
 extern void sift_test_wait(int key);
+extern void sift_test_hold(int64 key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
 #else
 #define SIFT_TEST_GATE(flag, key) ((void) 0)

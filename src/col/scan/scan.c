@@ -32,19 +32,6 @@ sift_col_jitter(void)
 	if (sift_test_col_jitter_us > 0)
 		pg_usleep(pg_prng_uint64_range(&pg_global_prng_state, 0, sift_test_col_jitter_us));
 }
-
-/* Holds a scan, with the directory version it read, until the test releases the lock: what runs meanwhile (VACUUM, DML) is after the open for the scan */
-void
-sift_col_open_gate(void)
-{
-	if (sift_test_col_open_gate > 0)
-	{
-		Datum		key = Int64GetDatum(sift_test_col_open_gate);
-
-		DirectFunctionCall1(pg_advisory_lock_int8, key);
-		DirectFunctionCall1(pg_advisory_unlock_int8, key);
-	}
-}
 #endif
 
 static void

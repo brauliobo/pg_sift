@@ -33,20 +33,6 @@ int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a tabl
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
 int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
 
-#ifdef SIFT_TESTING
-void
-sift_tbl_gate(int number)
-{
-	if (number > 0)
-	{
-		Datum		key = Int64GetDatum(number);
-
-		DirectFunctionCall1(pg_advisory_lock_int8, key);
-		DirectFunctionCall1(pg_advisory_unlock_int8, key);
-	}
-}
-#endif
-
 typedef struct CacheEnt
 {
 	Oid			relid;

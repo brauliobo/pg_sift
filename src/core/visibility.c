@@ -52,6 +52,17 @@ sift_test_wait(int key)
 	LockRelease(&tag, ShareLock, false);
 }
 
+/* Waits until the test lets go of the advisory lock of this number (the one-argument int8 form; 0 or less: no gate) */
+void
+sift_test_hold(int64 key)
+{
+	if (key > 0)
+	{
+		DirectFunctionCall1(pg_advisory_lock_int8, Int64GetDatum(key));
+		DirectFunctionCall1(pg_advisory_unlock_int8, Int64GetDatum(key));
+	}
+}
+
 /* Widens the window between the liveness a scan has read and the map it reads: a test holds the lock, runs the VACUUM, and lets go */
 static void
 test_pause(void)

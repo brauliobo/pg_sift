@@ -36,6 +36,7 @@
 #include "col/seg.h"
 #include "core/store.h"
 #include "core/tomb.h"
+#include "core/visibility.h"
 
 /* A merge or a defrag replaced the rows the statement was reading: it fails with a serialization failure and is retried (the arguments are errmsg's) */
 #define SIFT_TBL_RETRY(...) \
@@ -510,7 +511,7 @@ extern PGDLLIMPORT int sift_tbl_init_gate;
 extern PGDLLIMPORT int sift_tbl_seal_gate;
 #ifdef SIFT_TESTING
 /* Test only: waits for the advisory lock of this number to be free (0 = no gate), so that a test holds a window open */
-extern void sift_tbl_gate(int number);
+#define sift_tbl_gate(number)	sift_test_hold(number)
 #else
 #define sift_tbl_gate(number)	((void) 0)
 #endif
