@@ -1,7 +1,7 @@
 -- doc ? 'k' on the document of an index that declares the path k is pushed into the aggregate scan: the rows whose k holds a value of any JSON type (a JSON null too) are the
 -- rows with the key, and the documents that are no object (an array holding the string, the string itself) say that of themselves, which the leaf does not store: the source
 -- reads those rows again from the heap. Every query runs with and without the pushdown and the rows must be the same, for the documents of every JSON type at the root, for the
--- keys present, absent and JSON null (?& of keys that are leaves is several ?, ?| keeps the normal plan), through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
+-- keys present, absent and JSON null (?& and ?| of keys that are leaves are several ?, a key that is no leaf keeps the normal plan; agg_jsonb_key_forms has the forms), through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
 -- is, and after the VACUUM that flags the old ones.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

@@ -174,9 +174,9 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 			   *leaves;
 	int			m = -1;
 
-	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TYPE && !typeof_keeps_unstorable(c, s->pred[i]))
-			typed = bms_add_member(typed, s->pred[i]->leaf);
+	foreach_ptr(SiftAggPred, p, c->types)
+		if (!typeof_keeps_unstorable(c, p))
+			typed = bms_add_member(typed, p->leaf);
 	leaves = bms_union(c->used, c->func_ovf);
 	for (int j = 0; j < c->nvleaf; j++)
 		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && vleaf_source(c, j) >= 0)
@@ -248,12 +248,19 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse_limit(SHAPE_WIDTH, combos, sift_limit(combos, SIFT_AGG_MAX_COMBOS), "%d value combinations", list_length(c->combos));
 	if (list_length(c->joins) > sift_limit(joins, SIFT_AGG_MAX_JOINS))
 		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
-	typeof_reads(c, s);
+	/* the rows of a document that is no object read as NULL in the leaf of a key test (doc ? 'k'), which only that test may read */
+	if (bms_overlap(c->haskey, c->read))
+		return agg_refuse_on(ERROR_PARITY, "a key test (?) of a path whose value the query reads too: the leaf is NULL for a document that is no object");
+	typeof_reads(c);
 	s->npreds_total = c->npred;
 	s->nwide = c->nwide;
 	s->wide = palloc(Max(c->nwide, 1) * sizeof(SiftAggPred *));
 	for (int i = 0; i < c->nwide; i++)
 		s->wide[i] = list_nth(c->wide, i);
+	s->ntype = list_length(c->types);
+	s->type_leaf = palloc(Max(s->ntype, 1) * sizeof(int));
+	for (int i = 0; i < s->ntype; i++)
+		s->type_leaf[i] = ((SiftAggPred *) list_nth(c->types, i))->leaf;
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);

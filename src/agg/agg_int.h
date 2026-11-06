@@ -235,7 +235,7 @@ typedef struct AggExec
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
 	int			npoint_elem;	/* the element tests the source may answer exactly (str_init) */
-	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
+	int			ntype;			/* the SAP_TYPE tests: the source keeps the rows of the types of a conjunct, and gives those of the others as a bitmap (type_init) */
 	bool		recheck;		/* the source reads again the rows that hold a value a leaf cannot store (spec->recheck, recheck_init) */
 	bool		recheck_late;	/* ... and a row that holds one raises where it reaches the aggregate, after the lookups (SRK_CAST), not after its own conjuncts */
 	bool		recheck_after_late;	/* ... a row whose list SQL cannot read (SRK_RECORDSET) raises after the conjuncts that may raise, which drop or fail it first (check_overflow_after_late) */

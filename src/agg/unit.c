@@ -371,7 +371,7 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 /* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 6% it costs what it saves (a 90-day window of 15 years, 3%: 157 against 113 million instructions; an eighth of the rows costs 1.5% more than a sixteenth) */
 #define NARROW_RATIO	16
 
-/* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
+/* the rows whose value has one of the JSON types of each SAP_TYPE conjunct (the others are row_bitmap's); false when none is left */
 static bool
 type_filters(AggExec *ex, uint64 *rmask)
 {

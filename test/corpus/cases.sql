@@ -723,3 +723,11 @@ select kind_id, sum(qty) from events group by 1 having (select count(*) from kin
 select region, count(*) from events group by 1 having count(*) not in (select count(*) from kinds where enabled);
 -- @case c3_rollup_subselect | subq | a sub-select in the output of a ROLLUP
 select kind_id, region, count(*), (select count(*) from kinds) from events where kind_id < 5 group by rollup (kind_id, region);
+-- @case c3_jsonb_key_filter | pred | counts and sums of the documents that have a key or one of two, by tenant
+select tenant_id, count(*) filter (where attrs ? 'a') k, sum(qty) filter (where attrs ?| array['a', 'b']) q, count(*) filter (where attrs ?& array['a', 'b']) kb from events group by 1;
+-- @case c3_jsonb_key_or | pred | the documents that have a key or a small dimension
+select count(*), sum(qty) from events where attrs ? 'a' or dim_a_id < 50;
+-- @case c3_jsonb_key_case | pred | a sum by the key of the document in a CASE
+select sum(case when attrs ? 'a' then qty else 0 end), sum(case when attrs ? 'b' then amount end) from events;
+-- @case c3_jsonb_key_not_true | pred | the documents that do not have the key, a NULL document among them
+select count(*) filter (where (attrs ? 'a') is not true), count(*) filter (where (attrs ? 'a' or attrs ? 'b') is not true) from events;

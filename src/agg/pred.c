@@ -793,11 +793,11 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 		st->rowmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
 		if (p->kind == SAP_ANY_ELEM)
 			(p->op == 2 ? elem_seq_rows : any_elem_rows) (ex, p, st->rowmask);
-		else if (p->kind == SAP_WIDE)
+		else if (p->kind == SAP_WIDE || p->kind == SAP_TYPE)
 		{
 			memset(st->rowmask, 0, ((nrow + 63) / 64 + PADW) * sizeof(uint64));	/* the source reads the words past the rows */
 			fill_ones(st->rowmask, nrow);
-			if (!sift_colsrc_filter_wide(ex->src, &ex->unit, p->wslot, st->rowmask))
+			if (!(p->kind == SAP_WIDE ? sift_colsrc_filter_wide(ex->src, &ex->unit, p->wslot, st->rowmask) : sift_colsrc_filter_types(ex->src, &ex->unit, p->leaf, p->op, st->rowmask)))
 				clear_words(st->rowmask, nrow);
 			if (p->negated)
 			{
@@ -898,6 +898,7 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_ANY_ELEM:
 		case SAP_WIDE:
+		case SAP_TYPE:
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
 			break;
 		case SAP_LEAFCMP:
@@ -910,9 +911,8 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			eval_tid(ex, p, start, n, out);
 			break;
 		case SAP_MATCHED:
-		case SAP_TYPE:
 		case SAP_ELEM_EXISTS:
-			SIFT_INVARIANT(false, "sift: the types of a leaf are tested by the source, an element existence test by the joined tuples");
+			SIFT_INVARIANT(false, "sift: an element existence test is made by the joined tuples");
 	}
 	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT || p->kind == SAP_STEP))
 		or_poison(ex, p, start, n, out);

@@ -334,3 +334,7 @@ c3_select_exists	SiftAgg	single:t
 c3_having_outer_agg_sub	SiftAgg	-
 c3_having_not_in_count	SiftAgg	-
 c3_rollup_subselect	SiftAgg	-
+c3_jsonb_key_filter	SiftAgg	single:t
+c3_jsonb_key_or	SiftAgg	single:t
+c3_jsonb_key_case	SiftAgg	single:t
+c3_jsonb_key_not_true	SiftAgg	single:t

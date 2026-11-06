@@ -149,7 +149,8 @@ typedef struct AggCtx
 	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
 	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
 	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
-	Bitmapset  *haskey;			/* the leaves of a conjunct doc ? 'k' (compile_haskey): the source reads again the documents that are no object */
+	Bitmapset  *haskey;			/* the leaves of a test doc ? 'k' (compile_haskey): the source reads again the documents that are no object */
+	List	   *types;			/* SiftAggPred: every SAP_TYPE test of the spec, wherever it is in the predicates */
 	List	   *rec_funcs;		/* RecFunc: the jsonb_to_recordset calls of the EXISTS tests over a list, which read its columns as the call of the FROM does */
 	int			cast_pending;	/* 1 + the leaf match_leaf just resolved from the cast of a jsonb_each member's jsonb value to a number (0: none), which the use_leaf that follows takes */
 	Bitmapset  *cast_ok;		/* leaves read through such a cast ... */
@@ -412,7 +413,7 @@ extern SiftAggPred *compile_wide(AggCtx *c, Node *n);
 extern SiftAggPred *compile_tid(AggCtx *c, Node *n);
 extern bool types_guard_reads(AggCtx *c);
 extern bool typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p);
-extern void typeof_reads(AggCtx *c, SiftAggSpec *s);
+extern void typeof_reads(AggCtx *c);
 
 extern JoinCtx *join_of_var(AggCtx *c, Node *n);
 extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod, Oid pcoll);

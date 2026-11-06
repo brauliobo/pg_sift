@@ -828,11 +828,11 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
-/* is the predicate an AND / OR of the source's tests (SAP_WIDE), the rows that pass of each a bitmap? */
+/* is the predicate an AND / OR of the source's tests (SAP_WIDE, SAP_TYPE), the rows that pass of each a bitmap? */
 static bool
 source_tests_only(const SiftAggPred *p)
 {
-	if (p->kind == SAP_WIDE)
+	if (p->kind == SAP_WIDE || p->kind == SAP_TYPE)
 		return true;
 	if (p->kind != SAP_AND && p->kind != SAP_OR)
 		return false;
@@ -848,10 +848,26 @@ complement_tests(SiftAggPred *p)
 {
 	if (p->kind == SAP_WIDE)
 		p->negated = !p->negated;
+	else if (p->kind == SAP_TYPE)
+		p->op = SIFT_SRC_JT_ALL & ~p->op;	/* the types are all there are, a missing key and a NULL document among them */
 	else
 		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
 	for (int i = 0; i < p->nchild; i++)
 		complement_tests(p->child[i]);
+}
+
+/* NOT of a key test (doc ? 'k') of a document column that is NOT NULL: the test is never NULL, so its negation keeps the rows of the other types; a nullable document has no leaf that tells it from a missing key */
+static SiftAggPred *
+compile_not_haskey(AggCtx *c, BoolExpr *b)
+{
+	Node	   *t = strip_relabel(linitial(b->args));
+	SiftAggPred *p = compile_haskey(c, t);
+
+	if (p == NULL || !target_not_null(c, linitial(func_args(t))))
+		return NULL;
+	complement_tests(p);
+	p->desc = psprintf("NOT %s", p->desc);
+	return p;
 }
 
 SiftAggPred *
@@ -878,6 +894,8 @@ compile_pred(AggCtx *c, Node *n)
 		return p;
 	}
 	if ((norm = pred_normalize(c, n)) != NULL && (p = compile_pred(c, norm)) != NULL)
+		return p;
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR && (p = compile_not_haskey(c, (BoolExpr *) n)) != NULL)
 		return p;
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
@@ -913,6 +931,8 @@ compile_pred(AggCtx *c, Node *n)
 	if (IsA(n, ScalarArrayOpExpr) && (p = compile_in(c, (ScalarArrayOpExpr *) n)) != NULL)
 		return p;
 	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
+		return p;
+	if ((p = compile_haskey(c, n)) != NULL)
 		return p;
 	if ((p = compile_wide(c, n)) != NULL)
 		return p;

@@ -757,19 +757,19 @@ recheck_init(AggExec *ex)
 }
 
 /*
- * The conjuncts on the JSON type of a leaf's path (SAP_TYPE) are the source's: it keeps the rows of the types and raises for one whose value
- * it cannot give. The other rows may hold such a value in this leaf, which its reads then give as NULL.
+ * The tests on the JSON type of a leaf's path (SAP_TYPE) are the source's: a conjunct keeps the rows of the types and raises for one whose value
+ * it cannot give, any other place (a branch of OR, a FILTER, a CASE) gets the rows of the types as a bitmap of the unit (row_bitmap). The other rows
+ * may hold such a value in this leaf, which its reads then give as NULL.
  */
 void
 type_init(AggExec *ex)
 {
+	for (int i = 0; i < ex->spec->ntype; i++)
+		sift_colsrc_tolerate_ovf(ex->src, ex->spec->type_leaf[i]);
 	for (int i = 0; i < ex->spec->npred; i++)
 		if (ex->spec->pred[i]->kind == SAP_TYPE)
-		{
-			sift_colsrc_tolerate_ovf(ex->src, ex->spec->pred[i]->leaf);
 			ex->pushed[i] = true;
-			ex->ntype++;
-		}
+	ex->ntype = ex->spec->ntype;
 }
 
 /* A numeric leaf that only sums and averages read is given to the executor as one integer and scale for each row, where the source can (SiftSrcDict.numrec) */

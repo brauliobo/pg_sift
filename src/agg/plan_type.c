@@ -196,6 +196,22 @@ types_need_kinds(uint32 types, bool astext)
 		(astext && vals != 0 && vals != (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN));
 }
 
+/* the test of the JSON types (SIFT_SRC_JT_*) of a leaf, which nothing else of the query may read as a value unless it is a conjunct (typeof_reads) */
+static SiftAggPred *
+type_pred(AggCtx *c, int leaf, uint32 types)
+{
+	SiftAggPred *p = new_pred(c, SAP_TYPE);
+
+	p->leaf = leaf;
+	p->level = leaf_level(c, leaf);
+	p->op = types;
+	c->used = bms_add_member(c->used, leaf);
+	c->rec_bad = bms_add_member(c->rec_bad, leaf);
+	c->txt_bad = bms_add_member(c->txt_bad, leaf);
+	c->types = lappend(c->types, p);
+	return p;
+}
+
 /*
  * A test of the JSON type of a leaf's path as a conjunct of the query (typeof_test): the source keeps the rows whose type is one of the types,
  * a stored value by the type of the leaf and the values it could not hold by the type the chunk kept for them (SAP_TYPE). Not as a branch of OR:
@@ -213,29 +229,29 @@ compile_typeof(AggCtx *c, Node *n)
 	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
 		!source_can_types(c) || (c->stats.nokinds[leaf] && types_need_kinds(types, leaf_of(c, leaf)->astext)))
 		return NULL;
-	p = new_pred(c, SAP_TYPE);
-	p->leaf = leaf;
-	p->level = leaf_level(c, leaf);
-	c->used = bms_add_member(c->used, leaf);
-	c->rec_bad = bms_add_member(c->rec_bad, leaf);
-	c->txt_bad = bms_add_member(c->txt_bad, leaf);
-	p->op = types;
+	p = type_pred(c, leaf, types);
 	p->desc = expr_text(c, n);
 	return p;
 }
 
-/* the constant keys of doc ? 'k' or doc ?& array['a', 'b'] */
+/* the constant keys of doc ? 'k', doc ?| array['a', 'b'] or doc ?& array['a', 'b'] */
 static List *
 exists_keys(Node *n)
 {
 	Node	   *k = strip_relabel(lsecond(func_args(n)));
 	List	   *keys = NIL;
 
-	if (func_of(n) == F_JSONB_EXISTS_ALL)
+	if (func_of(n) == F_JSONB_EXISTS_ALL || func_of(n) == F_JSONB_EXISTS_ANY)
 		return path_keys(k, &keys) ? keys : NIL;
 	if (IsA(k, Const) && !((Const *) k)->constisnull)
 		keys = list_make1(makeString(TextDatumGetCString(((Const *) k)->constvalue)));
 	return keys;
+}
+
+static bool
+is_key_test(Node *n)
+{
+	return func_of(n) == F_JSONB_EXISTS || func_of(n) == F_JSONB_EXISTS_ANY || func_of(n) == F_JSONB_EXISTS_ALL;
 }
 
 /* the leaf of the key k of the document of attribute att: the one compile_typeof tests, -1 when there is none */
@@ -258,9 +274,8 @@ typedef struct HasKeyReads
 {
 	AggCtx	   *c;
 	int			att;
-	const char *key;
-	int			tests;			/* the tests doc ? 'key' */
-	bool		other;			/* the document, or the member of the key, read in any other way */
+	List	   *keys;			/* the keys of the test */
+	bool		other;			/* the document, or the member of one of the keys, read in any other way */
 } HasKeyReads;
 
 static bool
@@ -272,63 +287,60 @@ haskey_reads(Node *n, HasKeyReads *w)
 		return false;
 	if (IsA(n, Query))
 		return query_tree_walker((Query *) n, haskey_reads, w, 0);
-	if ((func_of(n) == F_JSONB_EXISTS || func_of(n) == F_JSONB_EXISTS_ALL) && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
-	{
-		List	   *keys = exists_keys(n);
-
-		foreach_ptr(String, k, keys)
-			w->tests += strcmp(strVal(k), w->key) == 0;
+	if (is_key_test(n) && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
 		return false;
-	}
 	r = (JsonRef) {0};
 	if (json_access(w->c, n, &r) && r.att == w->att)
 	{
-		w->other |= r.path == NIL || strcmp(strVal(linitial(r.path)), w->key) == 0;
+		w->other |= r.path == NIL;
+		if (r.path != NIL)
+			foreach_ptr(String, k, w->keys)
+				w->other |= strcmp(strVal(k), strVal(linitial(r.path))) == 0;
 		return false;
 	}
 	return expression_tree_walker(n, haskey_reads, w);
 }
 
 /*
- * A conjunct `doc ? 'k'` on the document of an index that declares the path k as a leaf: the key exists where the leaf holds a value of any JSON
- * type (a JSON null too), which is the type test of compile_typeof, and in a document that is no object where it is an array holding the string
- * or the string itself, which the leaf does not store (it is the overflow of the array or the string, whose reads are NULL): the source reads
- * those rows again from the heap (SRK_HASKEY). The leaf is read by this test alone: another read of the document or of the key would see the
- * NULL of such a row.
+ * A test `doc ? 'k'`, `doc ?| array[..]` or `doc ?& array[..]` on the document of an index that declares each path as a leaf, in the WHERE or in any place of a
+ * predicate (a FILTER, an OR, a CASE): the key exists where the leaf holds a value of any JSON type (a JSON null too), which is the type test of compile_typeof, and
+ * in a document that is no object where it is an array holding the string or the string itself, which the leaf does not store (it is the overflow of the array or the
+ * string, whose reads are NULL): the source reads those rows again from the heap (SRK_HASKEY). The leaf is read by such tests alone, and only they hand over a bitmap
+ * of the rows (row_bitmap): another read of the document or of a key would see the NULL of such a row.
  */
 SiftAggPred *
 compile_haskey(AggCtx *c, Node *n)
 {
 	JsonRef		r = {0};
-	Node	   *key;
 	HasKeyReads w = {c};
-	int			leaf;
+	Oid			fid;
 	SiftAggPred *p;
 
 	n = strip_relabel(n);
-	if (func_of(n) != F_JSONB_EXISTS || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL)
-		return NULL;
-	key = strip_relabel(lsecond(func_args(n)));
-	if (!IsA(key, Const) || ((Const *) key)->constisnull || !source_can_types(c) || c->search || !OidIsValid(c->indexoid) ||
-		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+	fid = func_of(n);
+	if (!is_key_test(n) || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL || !source_can_types(c) || c->search ||
+		!OidIsValid(c->indexoid) || !sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true) || (w.keys = exists_keys(n)) == NIL)
 		return NULL;
 	w.att = r.att;
-	w.key = TextDatumGetCString(((Const *) key)->constvalue);
-	leaf = haskey_leaf(c, r.att, w.key);
-	if (leaf < 0 || c->stats.nokinds[leaf] || bms_is_member(leaf, c->used))
-		return NULL;
 	haskey_reads((Node *) c->root->parse, &w);
-	if (w.other || w.tests != 1)
+	if (w.other)
 		return NULL;
-	p = new_pred(c, SAP_TYPE);
-	p->leaf = leaf;
-	p->level = leaf_level(c, leaf);
-	c->used = bms_add_member(c->used, leaf);
-	c->rec_bad = bms_add_member(c->rec_bad, leaf);
-	c->txt_bad = bms_add_member(c->txt_bad, leaf);
-	c->haskey = bms_add_member(c->haskey, leaf);
-	p->op = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE;
-	p->desc = expr_text(c, n);
+	p = list_length(w.keys) > 1 ? new_junction(c, fid == F_JSONB_EXISTS_ALL ? SAP_AND : SAP_OR, list_length(w.keys)) : NULL;
+	for (int i = 0; i < list_length(w.keys); i++)
+	{
+		int			leaf = haskey_leaf(c, r.att, strVal(list_nth(w.keys, i)));
+		SiftAggPred *t;
+
+		if (leaf < 0 || c->stats.nokinds[leaf] || (bms_is_member(leaf, c->used) && !bms_is_member(leaf, c->haskey)))
+			return NULL;
+		t = type_pred(c, leaf, SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE);
+		t->desc = p == NULL ? expr_text(c, n) : psprintf("%s ? '%s'", leaf_name(c, leaf), strVal(list_nth(w.keys, i)));
+		c->haskey = bms_add_member(c->haskey, leaf);
+		if (p == NULL)
+			return t;
+		p->child[i] = t;
+	}
+	junction_done(p);
 	return p;
 }
 
@@ -756,9 +768,9 @@ typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p)
 
 /* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
 void
-typeof_reads(AggCtx *c, SiftAggSpec *s)
+typeof_reads(AggCtx *c)
 {
-	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_TYPE && bms_is_member(s->pred[i]->leaf, c->read))
-			s->pred[i]->op |= SIFT_SRC_JT_READ;
+	foreach_ptr(SiftAggPred, p, c->types)
+		if (bms_is_member(p->leaf, c->read))
+			p->op |= SIFT_SRC_JT_READ;
 }

@@ -40,6 +40,8 @@ typedef struct SiftAggSpec
 	SiftAggPred **pred;
 	int			nwide;			/* the tests the source runs (SAP_WIDE), wherever they are in the predicates, by wslot */
 	SiftAggPred **wide;
+	int			ntype;			/* the leaves of the SAP_TYPE tests, wherever they are in the predicates */
+	int		   *type_leaf;
 	int			nkeys;
 	SiftAggKey *key;
 	int			naggs;

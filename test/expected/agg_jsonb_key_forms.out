@@ -1,0 +1,577 @@
+-- doc ? 'k', doc ?| array[..] and doc ?& array[..] on the document of an index that declares the paths as leaves are answered by the index wherever the test is: a branch of an OR
+-- or an AND, the FILTER of an aggregate, a CASE (a FILTER and its IS NOT TRUE), NOT and IS NOT TRUE, not only as a conjunct of the WHERE. The source gives the rows that pass as a bitmap
+-- of the unit and never reads the value of the leaf, so the leaf must not be read besides (such a query keeps the normal plan, and so does a NOT of a document that may be NULL:
+-- no leaf tells a NULL document from a missing key). Every query runs with and without the scan and the rows (or the error) must be the same, for documents of every JSON type
+-- at the root, a JSON null and a NULL document, keys with a null value, nested keys (not a match), the empty key, a key of non ASCII letters, values the leaf cannot hold and
+-- large documents. The empty key cannot be declared as a path: its tests keep the normal plan.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET sift.agg_force = on;
+SET sift.col_auto_merge = off;
+CREATE FUNCTION shape(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS
+$$ SELECT (ARRAY['{"k":1}', '{"k":null}', '{"j":1}', '{}', '["k"]', '["j"]', '["j","k",1]', '[1,{"k":2}]', '"k"', '"j"', '5', 'true', 'null', '[]',
+	'{"k":{"a":1}}', '{"k":[1]}', '{"k":"str"}', '{"k":1.5}', '{"k":true}', '{"j":1,"k":null}', '["k","k"]', '"kk"', '{"K":1}', '{"k":2,"j":3}',
+	'{"":1}', '{"é":1}', '{"a":{"k":1}}', '["é"]', '[""]', '"é"', '{"j":2,"":null}', '{"é":null,"k":3}'])[1 + i % 32]::jsonb
+	|| CASE WHEN i % 97 = 0 AND (i % 32) IN (0, 2, 3) THEN jsonb_build_object('pad', repeat('x', 3000)) ELSE '{}' END $$;
+-- a document column that may be NULL, and one that is NOT NULL (NOT of a test needs that)
+CREATE TABLE kn (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO kn SELECT i, i % 5, shape(i) FROM generate_series(1, 3200) i;
+INSERT INTO kn VALUES (3201, 0, NULL), (3202, 1, NULL);
+CREATE INDEX kn_col ON kn USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4, doc."é" int4');
+CREATE TABLE kc (id int, g int, doc jsonb NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO kc SELECT i, i % 5, shape(i) FROM generate_series(1, 3200) i;
+CREATE INDEX kc_col ON kc USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4, doc."é" int4');
+-- the segments of an older library, which do not flag the documents that are a string or an array: every NULL slot is read again
+CREATE TABLE ko (id int, g int, doc jsonb NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO ko SELECT i, i % 5, shape(i) FROM generate_series(1, 3200) i;
+SET sift.test_no_roots = on;
+CREATE INDEX ko_col ON ko USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4, doc."é" int4');
+RESET sift.test_no_roots;
+VACUUM ANALYZE kn, kc, ko;
+CREATE FUNCTION kf_rows(q text, push bool) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE r jsonb;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT jsonb_agg(to_jsonb(q) ORDER BY to_jsonb(q)::text) FROM (%s) q', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN to_jsonb('error: ' || SQLERRM);
+END $$;
+CREATE FUNCTION kf_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a jsonb; b jsonb; l text; pushed bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		pushed := pushed OR l LIKE '%SiftAgg%';
+	END LOOP;
+	a := kf_rows(q, true);
+	b := kf_rows(q, false);
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || left(coalesce(a::text, '-'), 70) ELSE 'DIFFERENT' END || CASE WHEN pushed THEN ' pushed' ELSE ' normal' END;
+END $$;
+CREATE TABLE kf_q (n text PRIMARY KEY, q text);
+INSERT INTO kf_q VALUES
+	('01 where',             'SELECT count(*), sum(id) FROM @ WHERE doc ? ''k'''),
+	('02 filter',            'SELECT count(*) FILTER (WHERE doc ? ''k''), count(*) FROM @'),
+	('03 two filters',       'SELECT count(*) FILTER (WHERE doc ? ''k''), sum(id) FILTER (WHERE doc ? ''j''), avg(id) FILTER (WHERE doc ? ''k'') FROM @'),
+	('04 case sum else 0',   'SELECT sum(CASE WHEN doc ? ''k'' THEN id ELSE 0 END) FROM @'),
+	('05 case count',        'SELECT count(CASE WHEN doc ? ''k'' THEN 1 END), count(CASE WHEN doc ? ''k'' THEN NULL ELSE 1 END) FROM @'),
+	('06 case avg',          'SELECT avg(CASE WHEN doc ? ''k'' THEN id END), avg(CASE WHEN doc ? ''k'' THEN id ELSE 0 END) FROM @'),
+	('07 or',                'SELECT count(*) FROM @ WHERE doc ? ''k'' OR g = 1'),
+	('08 or two keys',       'SELECT count(*) FROM @ WHERE doc ? ''k'' OR doc ? ''j'''),
+	('09 and or',            'SELECT count(*) FROM @ WHERE (doc ? ''k'' OR doc ? ''j'') AND g <> 2'),
+	('10 filter and',        'SELECT count(*) FILTER (WHERE doc ? ''k'' AND g = 2), count(*) FILTER (WHERE doc ? ''k'' OR g = 2) FROM @'),
+	('11 not',               'SELECT count(*) FROM @ WHERE NOT (doc ? ''k'')'),
+	('12 not in a filter',   'SELECT count(*) FILTER (WHERE NOT (doc ? ''k'')), count(*) FILTER (WHERE NOT (doc ? ''j'') AND g = 1) FROM @'),
+	('13 is not true',       'SELECT count(*) FROM @ WHERE (doc ? ''k'') IS NOT TRUE'),
+	('14 is not true filter', 'SELECT count(*) FILTER (WHERE (doc ? ''k'') IS NOT TRUE), count(*) FILTER (WHERE (doc ? ''k'' OR doc ? ''j'') IS NOT TRUE) FROM @'),
+	('15 any where',         'SELECT count(*) FROM @ WHERE doc ?| array[''k'', ''j'']'),
+	('16 any filter',        'SELECT count(*) FILTER (WHERE doc ?| array[''k'', ''j'']), sum(id) FILTER (WHERE doc ?| array[''k'', ''j'', ''k'']) FROM @'),
+	('17 all filter',        'SELECT count(*) FILTER (WHERE doc ?& array[''k'', ''j'']), count(*) FILTER (WHERE doc ?& array[''k'', ''k'']) FROM @'),
+	('18 all or',            'SELECT count(*) FROM @ WHERE doc ?& array[''k'', ''j''] OR g = 3'),
+	('19 not any',           'SELECT count(*) FROM @ WHERE NOT (doc ?| array[''k'', ''j''])'),
+	('20 not all',           'SELECT count(*) FROM @ WHERE NOT (doc ?& array[''k'', ''j''])'),
+	('21 case any',          'SELECT sum(CASE WHEN doc ?| array[''k'', ''j''] THEN 1 ELSE 0 END), sum(CASE WHEN doc ?& array[''k'', ''j''] THEN id ELSE 0 END) FROM @'),
+	('22 groups',            'SELECT g, count(*) FILTER (WHERE doc ? ''k''), sum(CASE WHEN doc ? ''j'' THEN id ELSE 0 END) FROM @ GROUP BY g'),
+	('23 groups where',      'SELECT g, count(*) FROM @ WHERE doc ? ''k'' OR doc ? ''j'' GROUP BY g'),
+	('24 empty key',         'SELECT count(*) FILTER (WHERE doc ? ''''), count(*) FILTER (WHERE doc ?| array['''', ''k'']) FROM @'),
+	('25 unicode key',       'SELECT count(*) FILTER (WHERE doc ? ''é''), count(*) FILTER (WHERE doc ?& array[''é'', ''k'']), count(*) FROM @ WHERE doc ? ''é'' OR g = 0'),
+	('26 undeclared key',    'SELECT count(*) FILTER (WHERE doc ? ''zz''), count(*) FROM @'),
+	('27 one undeclared',    'SELECT count(*) FROM @ WHERE doc ? ''k'' OR doc ? ''zz'''),
+	('28 any one undeclared', 'SELECT count(*) FILTER (WHERE doc ?| array[''k'', ''zz'']) FROM @'),
+	('29 read of the key',   'SELECT sum((doc ->> ''k'')::numeric) FILTER (WHERE doc ? ''k'') FROM @'),
+	('30 read of the key in a case', 'SELECT sum(CASE WHEN doc ? ''k'' THEN (doc -> ''k'')::numeric ELSE 0 END) FROM @'),
+	('31 read of the document', 'SELECT count(*) FILTER (WHERE doc ? ''k''), count(doc) FROM @'),
+	('32 read of another key', 'SELECT count(*) FILTER (WHERE doc ? ''k''), sum((doc ->> ''j'')::int) FROM @'),
+	('33 type test beside',  'SELECT count(*) FILTER (WHERE doc ? ''k'' OR jsonb_typeof(doc -> ''k'') = ''number'') FROM @'),
+	('34 type test forms',   'SELECT count(*) FILTER (WHERE jsonb_typeof(doc -> ''k'') = ''number''), count(*) FILTER (WHERE jsonb_typeof(doc -> ''k'') IS NULL), count(*) FROM @ WHERE jsonb_typeof(doc -> ''k'') = ''string'' OR g = 1'),
+	('35 type case',         'SELECT sum(CASE WHEN jsonb_typeof(doc -> ''k'') IN (''number'', ''null'') THEN id ELSE 0 END) FROM @'),
+	('36 type guard read',   'SELECT sum(CASE WHEN jsonb_typeof(doc -> ''k'') = ''number'' THEN (doc ->> ''k'')::numeric ELSE 0 END) FROM @'),
+	('37 key in an output',  'SELECT count(*) FILTER (WHERE doc ? ''k''), bool_or(doc ? ''k'') FROM @'),
+	('38 no document',       'SELECT count(*) FILTER (WHERE doc IS NULL OR doc ? ''k'') FROM @');
+CREATE FUNCTION kf_run(tbl text) RETURNS TABLE (n text, verdict text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY EXECUTE format('SELECT n, kf_check(replace(q, ''@'', %L)) FROM kf_q ORDER BY n', tbl);
+END $$;
+-- the document that may be NULL: a NULL document has no key, and NOT of the test of it is NULL, which keeps no row
+SELECT * FROM kf_run('kn');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2240000, "count": 1400}] pushed
+ 02 filter                    | same [{"count": 3202}] pushed
+ 03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
+ 04 case sum else 0           | same [{"sum": 2240000}] pushed
+ 05 case count                | same [{"count": 1802}] normal
+ 06 case avg                  | same [{"avg": 699.5627732667083073}] normal
+ 07 or                        | same [{"count": 1761}] pushed
+ 08 or two keys               | same [{"count": 1800}] pushed
+ 09 and or                    | same [{"count": 1440}] pushed
+ 10 filter and                | same [{"count": 1760}] pushed
+ 11 not                       | same [{"count": 1800}] normal
+ 12 not in a filter           | same [{"count": 500}] normal
+ 13 is not true               | same [{"count": 1802}] pushed
+ 14 is not true filter        | same [{"count": 1402}] pushed
+ 15 any where                 | same [{"count": 1800}] pushed
+ 16 any filter                | same [{"sum": 2878200, "count": 1800}] pushed
+ 17 all filter                | same [{"count": 1400}] pushed
+ 18 all or                    | same [{"count": 880}] pushed
+ 19 not any                   | same [{"count": 1400}] normal
+ 20 not all                   | same [{"count": 2900}] normal
+ 21 case any                  | same [{"sum": 480000}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 223000, "count": 280}, {"g": 1, "sum": 223640, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 360}, {"g": 1, "count": 360}, {"g": 2, "count": 360 pushed
+ 24 empty key                 | same [{"count": 1700}] normal
+ 25 unicode key               | same [{"count": 961}] pushed
+ 26 undeclared key            | same [{"count": 3202}] normal
+ 27 one undeclared            | same [{"count": 1400}] normal
+ 28 any one undeclared        | same [{"count": 1400}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"{\"a\": 1}\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb object to type numeric" normal
+ 31 read of the document      | same [{"count": 3200}] normal
+ 32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
+ 33 type test beside          | same [{"count": 1400}] normal
+ 34 type test forms           | same [{"count": 721}] pushed
+ 35 type case                 | same [{"sum": 962700}] pushed
+ 36 type guard read           | same [{"sum": 750.0}] normal
+ 37 key in an output          | same [{"count": 1400, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1402}] normal
+(38 rows)
+
+-- the document that is NOT NULL: NOT of the test is the complement
+SELECT * FROM kf_run('kc');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2240000, "count": 1400}] pushed
+ 02 filter                    | same [{"count": 3200}] pushed
+ 03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
+ 04 case sum else 0           | same [{"sum": 2240000}] pushed
+ 05 case count                | same [{"count": 1800}] normal
+ 06 case avg                  | same [{"avg": 700.0000000000000000}] normal
+ 07 or                        | same [{"count": 1760}] pushed
+ 08 or two keys               | same [{"count": 1800}] pushed
+ 09 and or                    | same [{"count": 1440}] pushed
+ 10 filter and                | same [{"count": 1760}] pushed
+ 11 not                       | same [{"count": 1800}] pushed
+ 12 not in a filter           | same [{"count": 500}] pushed
+ 13 is not true               | same [{"count": 1800}] pushed
+ 14 is not true filter        | same [{"count": 1400}] pushed
+ 15 any where                 | same [{"count": 1800}] pushed
+ 16 any filter                | same [{"sum": 2878200, "count": 1800}] pushed
+ 17 all filter                | same [{"count": 1400}] pushed
+ 18 all or                    | same [{"count": 880}] pushed
+ 19 not any                   | same [{"count": 1400}] pushed
+ 20 not all                   | same [{"count": 2900}] pushed
+ 21 case any                  | same [{"sum": 480000}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 223000, "count": 280}, {"g": 1, "sum": 223640, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 360}, {"g": 1, "count": 360}, {"g": 2, "count": 360 pushed
+ 24 empty key                 | same [{"count": 1700}] normal
+ 25 unicode key               | same [{"count": 960}] pushed
+ 26 undeclared key            | same [{"count": 3200}] normal
+ 27 one undeclared            | same [{"count": 1400}] normal
+ 28 any one undeclared        | same [{"count": 1400}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"{\"a\": 1}\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb object to type numeric" normal
+ 31 read of the document      | same [{"count": 3200}] normal
+ 32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
+ 33 type test beside          | same [{"count": 1400}] normal
+ 34 type test forms           | same [{"count": 720}] pushed
+ 35 type case                 | same [{"sum": 962700}] pushed
+ 36 type guard read           | same [{"sum": 750.0}] normal
+ 37 key in an output          | same [{"count": 1400, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1400}] normal
+(38 rows)
+
+SELECT * FROM kf_run('ko');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2240000, "count": 1400}] pushed
+ 02 filter                    | same [{"count": 3200}] pushed
+ 03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
+ 04 case sum else 0           | same [{"sum": 2240000}] pushed
+ 05 case count                | same [{"count": 1800}] normal
+ 06 case avg                  | same [{"avg": 700.0000000000000000}] normal
+ 07 or                        | same [{"count": 1760}] pushed
+ 08 or two keys               | same [{"count": 1800}] pushed
+ 09 and or                    | same [{"count": 1440}] pushed
+ 10 filter and                | same [{"count": 1760}] pushed
+ 11 not                       | same [{"count": 1800}] pushed
+ 12 not in a filter           | same [{"count": 500}] pushed
+ 13 is not true               | same [{"count": 1800}] pushed
+ 14 is not true filter        | same [{"count": 1400}] pushed
+ 15 any where                 | same [{"count": 1800}] pushed
+ 16 any filter                | same [{"sum": 2878200, "count": 1800}] pushed
+ 17 all filter                | same [{"count": 1400}] pushed
+ 18 all or                    | same [{"count": 880}] pushed
+ 19 not any                   | same [{"count": 1400}] pushed
+ 20 not all                   | same [{"count": 2900}] pushed
+ 21 case any                  | same [{"sum": 480000}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 223000, "count": 280}, {"g": 1, "sum": 223640, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 360}, {"g": 1, "count": 360}, {"g": 2, "count": 360 pushed
+ 24 empty key                 | same [{"count": 1700}] normal
+ 25 unicode key               | same [{"count": 960}] pushed
+ 26 undeclared key            | same [{"count": 3200}] normal
+ 27 one undeclared            | same [{"count": 1400}] normal
+ 28 any one undeclared        | same [{"count": 1400}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"{\"a\": 1}\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb object to type numeric" normal
+ 31 read of the document      | same [{"count": 3200}] normal
+ 32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
+ 33 type test beside          | same [{"count": 1400}] normal
+ 34 type test forms           | same [{"count": 720}] pushed
+ 35 type case                 | same [{"sum": 962700}] pushed
+ 36 type guard read           | same [{"sum": 750.0}] normal
+ 37 key in an output          | same [{"count": 1400, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1400}] normal
+(38 rows)
+
+-- writes the index holds in its buffer: new rows of every shape, rows that change their shape, deleted rows
+DO $$
+DECLARE t text;
+BEGIN
+	FOREACH t IN ARRAY ARRAY['kn', 'kc', 'ko'] LOOP
+		EXECUTE format('INSERT INTO %I SELECT i, i %% 5, shape(i + 7) FROM generate_series(3301, 3500) i', t);
+		EXECUTE format('UPDATE %I SET doc = shape(id + 5) WHERE id %% 7 = 0', t);
+		EXECUTE format('DELETE FROM %I WHERE id %% 11 = 0', t);
+	END LOOP;
+END $$;
+SELECT * FROM kf_run('kn');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3093}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1738}] normal
+ 06 case avg                  | same [{"avg": 748.1338506304558681}] normal
+ 07 or                        | same [{"count": 1706}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] normal
+ 12 not in a filter           | same [{"count": 483}] normal
+ 13 is not true               | same [{"count": 1738}] pushed
+ 14 is not true filter        | same [{"count": 1352}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] normal
+ 20 not all                   | same [{"count": 2804}] normal
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3093}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 699}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1356}] normal
+(38 rows)
+
+SELECT * FROM kf_run('kc');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3092}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1737}] normal
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 07 or                        | same [{"count": 1705}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] pushed
+ 12 not in a filter           | same [{"count": 483}] pushed
+ 13 is not true               | same [{"count": 1737}] pushed
+ 14 is not true filter        | same [{"count": 1351}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] pushed
+ 20 not all                   | same [{"count": 2804}] pushed
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3092}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 698}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1355}] normal
+(38 rows)
+
+SELECT * FROM kf_run('ko');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3092}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1737}] normal
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 07 or                        | same [{"count": 1705}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] pushed
+ 12 not in a filter           | same [{"count": 483}] pushed
+ 13 is not true               | same [{"count": 1737}] pushed
+ 14 is not true filter        | same [{"count": 1351}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] pushed
+ 20 not all                   | same [{"count": 2804}] pushed
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3092}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 698}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1355}] normal
+(38 rows)
+
+-- promoted and vacuumed
+SELECT sift.col_promote('kn_col'), sift.col_promote('kc_col'), sift.col_promote('ko_col');
+ col_promote | col_promote | col_promote 
+-------------+-------------+-------------
+           1 |           1 |           1
+(1 row)
+
+VACUUM kn, kc, ko;
+SELECT * FROM kf_run('kn');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3093}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1738}] normal
+ 06 case avg                  | same [{"avg": 748.1338506304558681}] normal
+ 07 or                        | same [{"count": 1706}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] normal
+ 12 not in a filter           | same [{"count": 483}] normal
+ 13 is not true               | same [{"count": 1738}] pushed
+ 14 is not true filter        | same [{"count": 1352}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] normal
+ 20 not all                   | same [{"count": 2804}] normal
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3093}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 699}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1356}] normal
+(38 rows)
+
+SELECT * FROM kf_run('kc');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3092}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1737}] normal
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 07 or                        | same [{"count": 1705}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] pushed
+ 12 not in a filter           | same [{"count": 483}] pushed
+ 13 is not true               | same [{"count": 1737}] pushed
+ 14 is not true filter        | same [{"count": 1351}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] pushed
+ 20 not all                   | same [{"count": 2804}] pushed
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3092}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 698}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1355}] normal
+(38 rows)
+
+SELECT * FROM kf_run('ko');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 2313978, "count": 1355}] pushed
+ 02 filter                    | same [{"count": 3092}] pushed
+ 03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
+ 04 case sum else 0           | same [{"sum": 2313978}] pushed
+ 05 case count                | same [{"count": 1737}] normal
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 07 or                        | same [{"count": 1705}] pushed
+ 08 or two keys               | same [{"count": 1741}] pushed
+ 09 and or                    | same [{"count": 1392}] pushed
+ 10 filter and                | same [{"count": 1701}] pushed
+ 11 not                       | same [{"count": 1737}] pushed
+ 12 not in a filter           | same [{"count": 483}] pushed
+ 13 is not true               | same [{"count": 1737}] pushed
+ 14 is not true filter        | same [{"count": 1351}] pushed
+ 15 any where                 | same [{"count": 1741}] pushed
+ 16 any filter                | same [{"sum": 2971499, "count": 1741}] pushed
+ 17 all filter                | same [{"count": 1355}] pushed
+ 18 all or                    | same [{"count": 845}] pushed
+ 19 not any                   | same [{"count": 1351}] pushed
+ 20 not all                   | same [{"count": 2804}] pushed
+ 21 case any                  | same [{"sum": 492720}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 238575, "count": 277}, {"g": 1, "sum": 226165, "count pushed
+ 23 groups where              | same [{"g": 0, "count": 355}, {"g": 1, "count": 345}, {"g": 2, "count": 349 pushed
+ 24 empty key                 | same [{"count": 1642}] normal
+ 25 unicode key               | same [{"count": 927}] pushed
+ 26 undeclared key            | same [{"count": 3092}] normal
+ 27 one undeclared            | same [{"count": 1355}] normal
+ 28 any one undeclared        | same [{"count": 1355}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"[1]\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb array to type numeric" normal
+ 31 read of the document      | same [{"count": 3092}] normal
+ 32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
+ 33 type test beside          | same [{"count": 1355}] normal
+ 34 type test forms           | same [{"count": 698}] pushed
+ 35 type case                 | same [{"sum": 987683}] pushed
+ 36 type guard read           | same [{"sum": 714.0}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 38 no document               | same [{"count": 1355}] normal
+(38 rows)
+
+-- the workers test the same: the scan plans two workers, and the rows are the same
+CREATE TABLE kp (id int, g int, doc jsonb NOT NULL) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO kp SELECT i, i % 5, shape(i) FROM generate_series(1, 12000) i;
+CREATE INDEX kp_col ON kp USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4, doc."é" int4');
+VACUUM ANALYZE kp;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+CREATE FUNCTION kf_workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; g bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		g := g OR l LIKE '%Workers Planned: 2%';
+	END LOOP;
+	RETURN g;
+END $$;
+SELECT kf_workers('SELECT count(*) FILTER (WHERE doc ? ''k''), sum(id) FILTER (WHERE doc ?| array[''k'', ''j'']) FROM kp') AS workers_planned;
+ workers_planned 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM kf_run('kp');
+              n               |                                      verdict                                       
+------------------------------+------------------------------------------------------------------------------------
+ 01 where                     | same [{"sum": 31500000, "count": 5250}] pushed
+ 02 filter                    | same [{"count": 12000}] pushed
+ 03 two filters               | same [{"avg": 6000.0000000000000000, "sum": 15743250, "count": 5250}] pushed
+ 04 case sum else 0           | same [{"sum": 31500000}] pushed
+ 05 case count                | same [{"count": 6750}] normal
+ 06 case avg                  | same [{"avg": 2625.0000000000000000}] normal
+ 07 or                        | same [{"count": 6600}] pushed
+ 08 or two keys               | same [{"count": 6750}] pushed
+ 09 and or                    | same [{"count": 5400}] pushed
+ 10 filter and                | same [{"count": 6600}] pushed
+ 11 not                       | same [{"count": 6750}] pushed
+ 12 not in a filter           | same [{"count": 1875}] pushed
+ 13 is not true               | same [{"count": 6750}] pushed
+ 14 is not true filter        | same [{"count": 5250}] pushed
+ 15 any where                 | same [{"count": 6750}] pushed
+ 16 any filter                | same [{"sum": 40493250, "count": 6750}] pushed
+ 17 all filter                | same [{"count": 5250}] pushed
+ 18 all or                    | same [{"count": 3300}] pushed
+ 19 not any                   | same [{"count": 5250}] pushed
+ 20 not all                   | same [{"count": 10875}] pushed
+ 21 case any                  | same [{"sum": 6750000}] pushed
+ 22 groups                    | same [{"g": 0, "sum": 3146250, "count": 1050}, {"g": 1, "sum": 3148650, "co pushed
+ 23 groups where              | same [{"g": 0, "count": 1350}, {"g": 1, "count": 1350}, {"g": 2, "count": 1 pushed
+ 24 empty key                 | same [{"count": 6375}] normal
+ 25 unicode key               | same [{"count": 3600}] pushed
+ 26 undeclared key            | same [{"count": 12000}] normal
+ 27 one undeclared            | same [{"count": 5250}] normal
+ 28 any one undeclared        | same [{"count": 5250}] normal
+ 29 read of the key           | same "error: invalid input syntax for type numeric: \"{\"a\": 1}\"" normal
+ 30 read of the key in a case | same "error: cannot cast jsonb object to type numeric" normal
+ 31 read of the document      | same [{"count": 12000}] normal
+ 32 read of another key       | same [{"sum": 2625, "count": 5250}] pushed
+ 33 type test beside          | same [{"count": 5250}] normal
+ 34 type test forms           | same [{"count": 2700}] pushed
+ 35 type case                 | same [{"sum": 13510125}] pushed
+ 36 type guard read           | same [{"sum": 2812.5}] normal
+ 37 key in an output          | same [{"count": 5250, "bool_or": true}] normal
+ 38 no document               | same [{"count": 5250}] normal
+(38 rows)
+
+DROP TABLE kf_q;
+DROP FUNCTION kf_run(text), kf_check(text), kf_rows(text, bool), kf_workers(text);
+DROP TABLE kn, kc, ko, kp;
+DROP FUNCTION shape(int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

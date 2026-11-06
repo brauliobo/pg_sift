@@ -117,7 +117,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		List	   *pre = array_eq_conjuncts(c, e, &complete);
 		SiftAggPred *p = NULL;
 
-		if (!complete && (p = compile_typeof(c, e)) == NULL && (p = compile_haskey(c, e)) == NULL)
+		if (!complete && (p = compile_typeof(c, e)) == NULL)
 			p = compile_wide(c, e);
 		if (!complete && p == NULL)
 			p = compile_tid(c, e);
