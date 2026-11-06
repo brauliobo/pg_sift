@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 19
+plan 21
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -79,6 +79,14 @@ lat=$(session "SET enable_seqscan = off" "$LQ")
 check "a lateral aggregate over the elements as the first statement of a session runs in the scan" test "$(scans "$lat")" -ge 1
 latoff=$(session "SET sift.enable_agg = off" "SET enable_seqscan = off" "$LQ")
 check "and returns the rows of the normal plan" test "$(grep -v '^scans|' <<<"$lat")" == "$(grep -v '^scans|' <<<"$latoff")"
+# a scrollable cursor is planned with the Materialize that its backward fetches need, which a plan made again from the text would lack (an assert build stops at ExecInitNestLoop)
+scroll=$(session "DO \$\$ DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; BEGIN
+	OPEN c SCROLL FOR SELECT v.g, x.id FROM generate_series(0, 8) v(g), LATERAL (SELECT id FROM lfacts WHERE g = v.g ORDER BY id LIMIT 1) x;
+	LOOP FETCH NEXT FROM c INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r::text; END LOOP;
+	LOOP FETCH PRIOR FROM c INTO r; EXIT WHEN NOT FOUND; bwd := r::text || bwd; END LOOP;
+	RAISE WARNING 'cursor: %', CASE WHEN fwd = bwd AND fwd <> '' THEN 'backward is the same' ELSE 'DIFFERS' END; END \$\$" 2>&1)
+check "a scrollable cursor as the first statement of a session is not planned again, and fetches backward what it fetched forward" test "$(grep -c 'backward is the same' <<<"$scroll")" == 1
+check "the server is up" test "$(sql af "SELECT 1")" == 1
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir af)/postgres.log")" == 0
 
 finish

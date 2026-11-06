@@ -677,7 +677,8 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	if (!late_checked)
 	{
 		late_checked = true;
-		if (!hook_ran)
+		/* a plan made again from the text has no cursor options: a scrollable cursor (backward) or a plan that is marked and restored needs the Materialize the planner added for it */
+		if (!hook_ran && !(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)))
 		{
 			PlannedStmt *fresh = replan(queryDesc);
 
