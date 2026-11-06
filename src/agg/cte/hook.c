@@ -21,6 +21,7 @@
 #include "tcop/tcopprot.h"
 
 #include "agg/agg.h"
+#include "bm25/planner.h"
 #include "core/sql.h"
 #include "agg/cte/int.h"
 #include "col/am.h"
@@ -684,6 +685,8 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 
 			if (fresh != NULL)
 				queryDesc->plannedstmt = fresh;
+			else
+				sift_finish_plan(queryDesc->plannedstmt, false);
 			/* a prepared statement keeps no plan made without the hook */
 			ResetPlanCache();
 		}

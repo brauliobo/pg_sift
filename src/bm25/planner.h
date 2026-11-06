@@ -73,6 +73,9 @@ extern bool sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query);
 /* Does the index answer queries as the analyzer of index `analyzer` (InvalidOid: the default one) does? */
 extern bool sift_index_serves(Oid indexoid, Oid analyzer);
 
+/* bm25/planner_post.c: the finished plan, node by node (scans: the ones of the planner hook too; a plan made without the hook only has the first kind of fix) */
+extern void sift_finish_plan(PlannedStmt *stmt, bool scans);
+
 /* true if expr is sift.score(ctid) / sift.max_score(ctid) of rel relid */
 extern bool sift_is_score_expr(Node *expr, Index relid, bool *is_max);
 

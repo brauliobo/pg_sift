@@ -90,8 +90,6 @@ extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
 /* bm25/planner_ties.c: a scan whose rows go to an incremental sort under a LIMIT is told to hand out the group tied with the last */
 extern void sift_tie_node(Plan *plan);
 
-/* bm25/planner_post.c: the finished plan, node by node */
-extern void sift_finish_plan(PlannedStmt *stmt, bool scans);
 
 /* bm25/planner_path.c */
 extern bool any_list_too_long(PlannerInfo *root, ScanCand *c, const ScanCost *sc);
