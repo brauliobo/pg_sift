@@ -36,7 +36,8 @@ def remember(state, t):
     """The statement that sets the session's value of a setting is all a new connection needs: an earlier SET ROLE of a role that is dropped since would fail"""
     k = setting(t)
     state.pop(k, None)
-    state[k] = t + ";\n"
+    # a SET that failed in the test (out of range, unknown) fails again at every connection: replayed in a block that keeps its error to itself
+    state[k] = "DO $sift_fresh$ BEGIN EXECUTE $sift_stmt$%s$sift_stmt$; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % t
     if k == "session authorization":
         state.pop("role", None)
 
@@ -118,6 +119,9 @@ def transform(text, restore=RESTORE, load=""):
                         end_stmt()
                     break
                 else:
+                    echo_set = re.match(r"\\set\s+ECHO\s+(\w+)", m)
+                    if echo_set:
+                        restore = "\\set ECHO " + echo_set.group(1)
                     if re.match(r"\\(c|connect)\b", m):
                         state.clear()
                     elif re.match(r"\\(if|i|ir|include\w*)\b", m):

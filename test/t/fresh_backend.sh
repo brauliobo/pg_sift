@@ -7,7 +7,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SHIM=$REPO/scripts/fresh-psql.py
 
-plan 13
+plan 14
 STUB=$(mktemp) && printf '#!/bin/sh\ncat\n' >"$STUB" && chmod +x "$STUB"
 trap 'rm -f "$STUB"; cleanup' EXIT
 # the script the shim hands to psql, for a script on stdin
@@ -17,10 +17,10 @@ connects() { fed "$1" | grep -c '^\\connect$'; }
 check "a statement outside a transaction block gets a connection of its own" test "$(connects $'SELECT 1;\nSELECT 2;')" == 2
 check "the statements of a transaction block share one" test "$(connects $'BEGIN;\nSELECT 1;\nSELECT 2;\nCOMMIT;\nSELECT 3;')" == 2
 check "from the first statement that binds the session (PREPARE) on there is no new connection" test "$(connects $'SELECT 1;\nPREPARE p AS SELECT 1;\nEXECUTE p;\nSELECT 2;')" == 2
-check "the SET of the session is replayed after the connection" test "$(fed $'SET work_mem = 1000;\nSELECT 1;' | grep -c '^SET work_mem')" == 2
+check "the SET of the session is replayed after the connection" test "$(fed $'SET work_mem = 1000;\nSELECT 1;' | grep -c 'SET work_mem = 1000')" == 2
 last_block() { fed "$1" | awk '/^\\connect$/ {buf = ""; next} {buf = buf $0 "\n"} END {printf "%s", buf}'; }
 check "only the last SET of a setting is replayed (a SET ROLE of a role dropped since would fail)" test "$(last_block $'CREATE ROLE r;\nSET ROLE r;\nRESET ROLE;\nSET work_mem = 1000;\nSET work_mem = 2000;\nDROP ROLE r;\nSELECT 1;' | grep -cE 'ROLE|1000')|$(last_block $'SET work_mem = 1000;\nSET work_mem = 2000;\nSELECT 1;' | grep -c 'work_mem = 2000')" == "0|1"
-check "a \\set ECHO none of the test stays in the output" test "$(FRESH_PSQL=$STUB "$SHIM" -a <<<$'\\set ECHO none\nSELECT 1;' | grep -c '^.set ECHO none$')" == 1
+check "the echo a new connection restores is the one the test set last" test "$(FRESH_PSQL=$STUB "$SHIM" -a <<<$'\\set ECHO none\nSELECT 1;' | grep -c 'ECHO all')" == 0
 check "FRESH_LOAD loads the library first in every new backend" test "$(FRESH_LOAD=pg_sift fed $'SELECT 1;\nSELECT 2;' | grep -c "^LOAD 'pg_sift';")" == 2
 FRESH_PSQL= "$SHIM" </dev/null >/dev/null 2>&1; r1=$?
 FRESH_PSQL=$STUB FRESH_ACTIVE=1 "$SHIM" </dev/null >/dev/null 2>&1; r2=$?
@@ -44,4 +44,6 @@ fresh $'CREATE EXTENSION pg_sift;\nCREATE TABLE ev (id int, k int);\nINSERT INTO
 warm=$(sql fb "SET sift.enable_agg = on" "SET sift.agg_force = on" "SELECT 'x', count(*) FROM ev GROUP BY k ORDER BY k" "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans'" | tail -1)
 cold=$(fresh $'SET sift.enable_agg = on;\nSET sift.agg_force = on;\nSELECT \'x\', count(*) FROM ev GROUP BY k ORDER BY k;\nSELECT \'scans\', value FROM sift.stats() WHERE name = \'scans\';' | tail -1)
 check "a statement of a new backend sees none of the counters of the one before" test "$warm" != "$cold" -a "$cold" == "scans|0"
+out=$(fresh $'SET work_mem = \'nope\';\nSELECT 1;\nSELECT 2;' 2>&1)
+check "a SET the test saw fail does not fail again at every new connection" test "$(grep -c ERROR <<<"$out")" == 1
 finish
