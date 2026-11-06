@@ -2,8 +2,11 @@
 # The release, from a green head to the published assets and the AUR, in one command.
 #
 #   scripts/release.sh VERSION [--dry-run] [--resume] [--skip-ci]
+#   scripts/release.sh VERSION --ext-version
 #   scripts/release.sh --selftest
 #
+# A patch release of 4.2 or later moves the extension version with it (pg_sift.control, SIFT_MODULE_VERSION, an empty update script into it and an empty one back to the minor, so that
+# the next minor needs the one script of its own): `scripts/release.sh VERSION --ext-version` makes that commit on the tree to release; the preflight stops on a tree without it.
 # It does not run the test matrix again: GitHub CI is the gate. In this order, stopping at the first failure:
 #   vocabulary the private wording vocabulary is readable (NEUTRAL_VOCAB_FILE, or the text in NEUTRAL_VOCAB): without it the release stops, a dry run too
 #   preflight  clean tree on main, equal to origin/main; the notes (docs/releases/vVERSION.md), CHANGELOG, control and SQL scripts are in place
@@ -24,15 +27,38 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-VERSION='' DRY='' RESUME='' SKIPCI='' SELFTEST=''
+VERSION='' DRY='' RESUME='' SKIPCI='' SELFTEST='' EXTVER=''
 for a in "$@"; do
-	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; --selftest) SELFTEST=1 ;; -h|--help) sed -n '2,20p' "$0"; exit 0 ;; -*) sed -n '2,20p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
+	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; --selftest) SELFTEST=1 ;; --ext-version) EXTVER=1 ;; -h|--help) sed -n '2,20p' "$0"; exit 0 ;; -*) sed -n '2,20p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
 done
+die() { echo "release: $*" >&2; exit 1; }
 # A tag is never cut without the wording gate: a vocabulary that is not readable stops the release (a dry run too: one that passes is one that can be released), and the lint of
 # the release commit requires it. The CI of the repository has no such vocabulary and checks only the structure of the wording.
 vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} && -r $NEUTRAL_VOCAB_FILE ]]; }; }
-# the extension version of a release is its MAJOR.MINOR, or MAJOR.MINOR.N when a patch release carries SQL (an update script into it): ext_version_ok CONTROL_VERSION MAJOR.MINOR
-ext_version_ok() { [[ $1 == "$2" || $1 == "$2".[0-9]* ]]; }
+# the extension version of a release: its MAJOR.MINOR for the first (and for every patch of a minor before 4.2, whose patch releases kept it, or carried SQL: MAJOR.MINOR.N), MAJOR.MINOR.PATCH
+# for a patch release of 4.2 or later: ext_version_ok CONTROL_VERSION MAJOR.MINOR PATCH
+before_42() { [[ $1 != 4.2 && $(printf '%s\n' "$1" 4.2 | sort -V | head -n 1) == "$1" ]]; }
+ext_version_ok() {
+	(( $3 == 0 )) && { [[ $1 == "$2" ]]; return; }
+	before_42 "$2" && { [[ $1 == "$2" || $1 == "$2".[0-9]* ]]; return; }
+	[[ $1 == "$2.$3" ]]
+}
+# the commit of --ext-version: the update script from the control's version into VERSION, the one back to MAJOR.MINOR, the control and the library's version string
+ext_bump() {
+	local from to=$VERSION hdr
+	(( PATCH >= 1 )) || die "the extension version of $VERSION is $MM: only a patch release moves it"
+	! before_42 "$MM" || die "the $MM line keeps its extension version"
+	[[ -z $(git -C "$REPO" status --porcelain) ]] || die "the tree is not clean"
+	from=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
+	[[ $from != "$to" ]] || die "pg_sift.control is at $to already"
+	hdr() { printf '\\echo Use "ALTER EXTENSION pg_sift UPDATE TO '"'%s'"'" to load this file. \\quit\n\n-- %s\n' "$1" "$2"; }
+	hdr "$to" "The patch release $to changes no SQL object: this script only moves the extension version." >"$REPO/sql/pg_sift--$from--$to.sql"
+	hdr "$MM" "From a patch release back to $MM, so that the script of the next minor (from $MM) serves every patch release before it." >"$REPO/sql/pg_sift--$to--$MM.sql"
+	sed -i "s/^default_version *=.*/default_version = '$to'/" "$REPO/pg_sift.control"
+	sed -i "s/^\(#define SIFT_MODULE_VERSION[[:space:]]*\)\"[^\"]*\"/\1\"$to\"/" "$REPO/src/core/ops.h"
+	git -C "$REPO" add pg_sift.control src/core/ops.h "sql/pg_sift--$from--$to.sql" "sql/pg_sift--$to--$MM.sql"
+	git -C "$REPO" commit -q -m "release: $to: the extension version" && echo "release: the extension version is $to: sql/pg_sift--$from--$to.sql and sql/pg_sift--$to--$MM.sql, committed"
+}
 lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/lint.sh ); }
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
@@ -46,19 +72,54 @@ selftest() {
 	chk fail "an unreadable file is none" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/missing" bash -c "$(declare -f vocabulary); vocabulary"
 	chk pass "a readable file is one" env -u NEUTRAL_VOCAB NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f vocabulary); vocabulary"
 	chk pass "the text of a vocabulary is one" env -u NEUTRAL_VOCAB_FILE NEUTRAL_VOCAB="$(cat "$t/voc")" bash -c "$(declare -f vocabulary); vocabulary"
-	# the extension version of a release: its minor, or a patch of it (an update script goes into it); not another minor, a prefix of the digits, or a non-number
-	local c mm want
-	while IFS=' ' read -r c mm want; do
-		chk "$want" "ext_version_ok $c $mm" bash -c "$(declare -f ext_version_ok); ext_version_ok \"\$1\" \"\$2\"" _ "$c" "$mm"
-	done <<<"4.0 4.0 pass
-4.0.3 4.0 pass
-4.0.12 4.0 pass
-4.1 4.0 fail
-4.00 4.0 fail
-4.01 4.0 fail
-4.0. 4.0 fail
-4.0.x 4.0 fail
-4 4.0 fail"
+	# the extension version of a release: the minor for its first release; for a patch release of 4.2 or later the version of the release, before 4.2 the minor or a patch of it (an update
+	# script goes into it); not another minor, a prefix of the digits, or a non-number
+	local c mm n want
+	while IFS=' ' read -r c mm n want; do
+		chk "$want" "ext_version_ok $c $mm $n" bash -c "$(declare -f before_42 ext_version_ok); ext_version_ok \"\$1\" \"\$2\" \"\$3\"" _ "$c" "$mm" "$n"
+	done <<<"4.0 4.0 0 pass
+4.0.3 4.0 3 pass
+4.0.12 4.0 12 pass
+4.0 4.0 3 pass
+4.1 4.1 4 pass
+4.0.3 4.0 0 fail
+4.1 4.0 3 fail
+4.00 4.0 3 fail
+4.01 4.0 3 fail
+4.0. 4.0 3 fail
+4.0.x 4.0 3 fail
+4 4.0 3 fail
+4.2 4.2 0 pass
+4.2 4.2 1 fail
+4.2.1 4.2 1 pass
+4.2.1 4.2 2 fail
+4.2.2 4.2 1 fail
+4.2.12 4.2 12 pass
+4.2.1 4.2 12 fail
+4.2.1 4.2 0 fail
+4.3.1 4.3 1 pass
+4.3 4.3 1 fail
+4.10.2 4.10 2 pass
+4.10 4.10 2 fail
+5.0.1 5.0 1 pass"
+	# --ext-version: the update script into the version and the one back to the minor, the control and the library's version string, one commit; not for a line before 4.2, a minor or a dirty tree
+	local g=$t/ext gid=(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t)
+	mkdir -p "$g/scripts" "$g/src/core" "$g/sql" && cp "$0" "$g/scripts/release.sh"
+	printf "default_version = '4.2'\n" >"$g/pg_sift.control"; printf '#define SIFT_MODULE_VERSION\t\t"4.2"\n' >"$g/src/core/ops.h"; touch "$g/sql/pg_sift--4.1--4.2.sql"
+	( cd "$g" && git init -q && git add -A && env "${gid[@]}" git commit -q -m base )
+	ext() { ( cd "$g" && env "${gid[@]}" scripts/release.sh "$@" ) >"$t/ext.out" 2>&1; }
+	ext 4.2.1 --ext-version
+	chk pass "--ext-version 4.2.1 commits the scripts, the control and the library's version" bash -c 'cd "$1" && grep -qx "default_version = .4.2.1." pg_sift.control && grep -q "SIFT_MODULE_VERSION.*\"4.2.1\"" src/core/ops.h &&
+		[[ $(head -n 1 sql/pg_sift--4.2--4.2.1.sql) == *"UPDATE TO '"'4.2.1'"'\" to load this file."* && $(head -n 1 sql/pg_sift--4.2.1--4.2.sql) == *"UPDATE TO '"'4.2'"'\" to load"* ]] &&
+		[[ $(git log -1 --format=%s) == "release: 4.2.1: the extension version" && -z $(git status --porcelain) ]]' _ "$g"
+	ext 4.2.2 --ext-version
+	chk pass "--ext-version 4.2.2 goes on from 4.2.1" bash -c 'cd "$1" && [[ -f sql/pg_sift--4.2.1--4.2.2.sql && -f sql/pg_sift--4.2.2--4.2.sql ]]' _ "$g"
+	ext 4.3.0 --ext-version
+	chk pass "a minor has no extension version of its own to move" grep -q "only a patch release" "$t/ext.out"
+	ext 4.1.9 --ext-version
+	chk pass "a line before 4.2 keeps its extension version" grep -q "keeps its extension version" "$t/ext.out"
+	echo dirty >"$g/dirty"; ext 4.2.3 --ext-version
+	chk pass "--ext-version stops on a tree that is not clean" grep -q "not clean" "$t/ext.out"
 	# the release itself, without a vocabulary: it stops at once, before any scratch clone or state exists
 	v=$(env -u NEUTRAL_VOCAB -u NEUTRAL_VOCAB_FILE RELEASE_STATE="$t/state" RELEASE_TMP="$t" SIFT_RELEASE_SCOPED=1 "$0" 9.9.9 --dry-run 2>&1); local rc=$?
 	chk pass "a dry run without a vocabulary exits 1 and says why" bash -c '[[ $1 == 1 && $2 == *vocabulary* && ! -e $3/state ]]' _ "$rc" "$v" "$t"
@@ -70,12 +131,14 @@ selftest() {
 	drop_figure_waivers "$t/allow"
 	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"
 	((! bad)) || exit 1
-	echo "release: selftest ok (the vocabulary is required for a release and its lint, the bump drops the figure waivers)"
+	echo "release: selftest ok (the vocabulary is required for a release and its lint, the bump drops the figure waivers, the extension version of a patch release)"
 }
 [[ -z $SELFTEST ]] || { selftest; exit; }
-[[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
+[[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
+MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} PATCH=${BASH_REMATCH[3]}
+[[ -z $EXTVER ]] || { ext_bump; exit; }
 vocabulary || { echo "release: no wording vocabulary: set NEUTRAL_VOCAB_FILE to a readable file (or NEUTRAL_VOCAB to its text); a release is never cut, nor a dry run passed, without the gate that reads it" >&2; exit 1; }
-MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} TAG=v$VERSION
+TAG=v$VERSION
 # the whole run in 2 cores and 12 GB, whatever the caller did
 if [[ -z ${SIFT_RELEASE_SCOPED:-} ]] && command -v systemd-run >/dev/null; then
 	exec systemd-run --user --scope -q -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue -p CPUQuota=200% env SIFT_RELEASE_SCOPED=1 "$0" "$@"
@@ -87,7 +150,6 @@ MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
 CI_SKIPPED='ci: SKIPPED by --skip-ci (no green full-scope run required)'
 GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
-die() { echo "release: $*" >&2; exit 1; }
 soft() { if [[ -n $DRY ]]; then log "dry run, would stop: $*"; else die "$*"; fi; }	# a precondition of the real release, a note in a dry run
 
 if [[ -f $MAN && -z $RESUME ]]; then die "$MAN exists: --resume continues that release, removing $STATE starts over"; fi
@@ -126,12 +188,13 @@ preflight() {
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ ! -f $R/$notes ]] || grep -qi "^## $f extension" "$R/$notes" || soft "$notes has no '$f' section"; done
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	ext=$(control_version)
-	ext_version_ok "$ext" "$MM" || die "pg_sift.control default_version is $ext, not $MM or $MM.N"
+	ext_version_ok "$ext" "$MM" "$PATCH" || die "pg_sift.control default_version is $ext, not the extension version of $VERSION (from 4.2 a patch release moves it: scripts/release.sh $VERSION --ext-version)"
 	[[ -f $R/sql/pg_sift--$ext.sql ]] || compgen -G "$R/sql/pg_sift--*--$ext.sql" >/dev/null || die "sql/pg_sift--$ext.sql is missing, and no update script goes into $ext"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version unless it carries SQL)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
 	[[ $pm == "$ext" ]] || [[ -f $R/sql/pg_sift--$pm--$ext.sql ]] || die "sql/pg_sift--$pm--$ext.sql is missing: the upgrade from $PREV has no script"
+	[[ $ext == "$MM" ]] || before_42 "$MM" || [[ -f $R/sql/pg_sift--$ext--$MM.sql ]] || die "sql/pg_sift--$ext--$MM.sql is missing: the next minor has no path from $ext"
 }
 
 # ---------- the checks
@@ -229,7 +292,7 @@ check_package() {
 # versions: every place that names the release agrees (VERSION: the check after the bump, where the files carry it)
 check_versions() {
 	local f bad=()
-	ext_version_ok "$(control_version)" "$MM" || bad+=("pg_sift.control")
+	ext_version_ok "$(control_version)" "$MM" "$PATCH" || bad+=("pg_sift.control")
 	[[ $(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") == "$VERSION" ]] || bad+=("packaging/PKGBUILD pkgver")
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ $(<"$R/$f/VERSION") == "$VERSION" ]] || bad+=("$f/VERSION"); done
 	grep -q "release-$VERSION-blue" "$R/README.md" || bad+=("README.md badge")
