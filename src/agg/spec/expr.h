@@ -248,6 +248,8 @@ typedef struct SiftAggVx
 #define SIFT_AGG_MAX_GARGS		FUNC_MAX_ARGS	/* arguments of a generic aggregate: as many as PostgreSQL allows */
 #define SIFT_AGG_MAX_GLEAVES	4		/* leaves one argument expression reads */
 
+#define SIFT_AGG_TOPN_MAX		1000	/* rows of a group that SiftAggGen.topn keeps: the binary search and the shift of a row's place are for a few */
+
 typedef struct SiftAggGenArg
 {
 	Oid			typid;
@@ -272,6 +274,7 @@ typedef struct SiftAggGen
 	const char *serial;			/* why no workers keep partial states for the leader to merge with the aggregate's combine function (through its serial and deserial functions when the state is internal); NULL: they can */
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
+	int			topn;			/* array_agg(x ORDER BY ..) that the query reads only through a slice [1:topn]: a group keeps its first topn rows as the rows pass, in memory (no tuplesort; sorted is false) */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
 	int			hll;			/* sift.approx_count_distinct of a plain leaf: the leaf whose units' stored sketches the aggregate merges (agg/approx.c), else -1 */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */

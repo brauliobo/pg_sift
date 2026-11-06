@@ -144,6 +144,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 	put_int(p, g->ordered);
 	put_int(p, g->sorted);
 	put_int(p, g->first);
+	put_int(p, g->topn);
 	put_int(p, g->hyp);
 	put_str(p, g->serial);
 	put_int(p, g->hll);
@@ -573,6 +574,7 @@ get_gen(Unpack *u)
 	g->ordered = get_int(u);
 	g->sorted = get_int(u);
 	g->first = get_int(u);
+	g->topn = get_int(u);
 	g->hyp = get_int(u);
 	g->serial = get_str(u);
 	if (!*g->serial)

@@ -366,6 +366,113 @@ gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint
 	}
 }
 
+/*
+ * topn: the first rows of a group by the ORDER BY of the call, in the order of the call, kept as the rows pass: a row that comes after the group's last
+ * of topn rows is dropped after the compare of its sort keys (the values of the other arguments are read only for a row that is kept), and a row that
+ * stays goes in at the place a binary search of the kept rows gives it, after the rows it ties with, which are the ones the group met first. When the
+ * scan has ended, the rows of each group go through the transition function, in order, and then the final function (gen_flush_topn).
+ */
+typedef struct GenTop
+{
+	uint32		n;
+	uint32		cap;
+	GenBest   **row;
+} GenTop;
+
+static void
+gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
+{
+	GenTop	   *t = (GenTop *) DatumGetPointer(acc->v[gid]);
+	int			n = st->g->nargs;
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+	uint32		lo = 0,
+				hi;
+	GenBest    *nb;
+	MemoryContext old;
+
+	for (int i = 0; i < st->nfk; i++)
+		gen_arg(ex, st, in, j, st->fkey[i], &args[st->fkey[i]], &nulls[st->fkey[i]]);
+	if (t != NULL && t->n == (uint32) st->g->topn && gen_first_cmp(st, args, nulls, t->row[t->n - 1]) >= 0)
+		return;
+	for (int k = 0; k < n; k++)
+		if (!st->iskey[k])
+			gen_arg(ex, st, in, j, k, &args[k], &nulls[k]);
+	old = MemoryContextSwitchTo(st->tcx);
+	if (t == NULL)
+	{
+		t = palloc0(sizeof(GenTop));
+		acc->v[gid] = PointerGetDatum(t);
+	}
+	hi = t->n;
+	while (lo < hi)
+	{
+		uint32		mid = (lo + hi) / 2;
+
+		if (gen_first_cmp(st, args, nulls, t->row[mid]) < 0)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	if (t->n == (uint32) st->g->topn)
+		gen_best_free(st, t->row[--t->n]);
+	if (t->n == t->cap)
+	{
+		t->cap = t->cap ? Min(t->cap * 2, (uint32) st->g->topn) : Min(4, (uint32) st->g->topn);
+		t->row = t->row ? repalloc(t->row, t->cap * sizeof(GenBest *)) : palloc(t->cap * sizeof(GenBest *));
+	}
+	nb = palloc0(GEN_BEST_SIZE(n));
+	for (int k = 0; k < n; k++)
+		if (gen_stored(st->g, k))
+		{
+			GEN_BEST_NULL(nb, n, k) = nulls[k];
+			nb[k] = nulls[k] ? (Datum) 0 : datumCopy(args[k], st->abyval[k], st->alen[k]);
+		}
+	memmove(&t->row[lo + 1], &t->row[lo], (t->n - lo) * sizeof(GenBest *));
+	t->row[lo] = nb;
+	t->n++;
+	MemoryContextSwitchTo(old);
+}
+
+/* the scan has ended: the rows each group kept go through the transition function in order, then its final function */
+static void
+gen_flush_topn(AggExec *ex, int ai)
+{
+	GenSt	   *st = ex->gst[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap;
+	int			n = st->g->nargs;
+	Datum		args[SIFT_AGG_MAX_GARGS];
+	bool		nulls[SIFT_AGG_MAX_GARGS];
+
+	for (uint32 g = 0; g < ngr; g++)
+	{
+		GenTop	   *t = (GenTop *) DatumGetPointer(acc->v[g]);
+
+		if (t == NULL)
+			continue;
+		acc->v[g] = (Datum) 0;
+		for (uint32 r = 0; r < t->n; r++)
+		{
+			const GenBest *b = t->row[r];
+
+			for (int k = 0; k < st->g->ntrans; k++)
+			{
+				bool		stored = gen_stored(st->g, k);
+
+				args[k] = stored ? b[k] : st->argk[k];
+				nulls[k] = stored ? GEN_BEST_NULL(b, n, k) : st->argknull[k];
+			}
+			gen_advance(ex, st, acc, g, args, nulls);
+			ResetExprContext(ex->lutcx);
+		}
+		gen_final(ex, st, acc, g);
+		acc->v[g] = (Datum) 0;
+		ReScanExprContext(st->cx);
+	}
+	MemoryContextReset(st->tcx);
+}
+
 /* the tuples of the chunk: DISTINCT collects the pairs, WITHIN GROUP sorts the values by group, the others advance the states */
 void
 gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
@@ -420,6 +527,12 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 				gen_args(ex, st, &in, j, args, nulls);
 				gen_best_set(st, acc, gid, args, nulls);
 			}
+			ResetExprContext(ex->lutcx);
+			continue;
+		}
+		if (g->topn)
+		{
+			gen_top(ex, st, acc, &in, j, gid);
 			ResetExprContext(ex->lutcx);
 			continue;
 		}
@@ -632,6 +745,8 @@ gen_flush(AggExec *ex)
 			gen_flush_first(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->mode)
 			gen_mode_flush(ex, ai);
+		else if (ex->gst[ai] && ex->gst[ai]->g->topn)
+			gen_flush_topn(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->tmode)
 			gen_flush_ordered(ex, ai);
 		else if (ex->gst[ai] && ex->gst[ai]->g->distinct)

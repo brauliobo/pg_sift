@@ -1,8 +1,7 @@
--- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn <= N` for N > 1 on NOT NULL partition columns of a table whose keys hold
--- many rows is a probe of the table for each key: `(SELECT DISTINCT k ..) g, LATERAL (SELECT .. WHERE k = g.k ORDER BY o LIMIT N)`, the window over the N rows of a key on top
--- (agg/latest.c, topn_lateral), where the plan with the sort of every row is the other choice. A nullable partition column, a table of fewer than 100,000 rows, a key of fewer than 100 and any other shape keep
--- the arrays or the window. Every statement runs with sift on and off and the rows are compared (md5 of the sorted rows; the orders have no ties); `topn` says the plan has
--- a top-N of the key, `in_scan` that the scan ran.
+-- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn <= N` for N > 1 is the groups' arrays cut at N inside the group,
+-- `(SELECT k, (array_agg(c ORDER BY o))[1:N] a FROM t GROUP BY k) g, LATERAL unnest(g.a)` (agg/latest.c), where the scan keeps only the first N rows of each group
+-- as the rows pass (SiftAggGen.topn, agg/gen_run.c) and the plan with the sort of every row is the other choice. Every statement runs with sift on and off and the rows are
+-- compared (md5 of the sorted rows; the orders have no ties); `sliced` says the plan holds the first rows of the groups (a pushed array_agg[1:N]), `in_scan` that the scan ran.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -42,12 +41,28 @@ INSERT INTO shapes (name, q) VALUES
   ('second row only',       $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 2$q$),
   ('first row',             $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 1$q$);
 
-CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, topn bool, same bool) LANGUAGE plpgsql AS
+-- a slice a[1:n] or an element a[n] of an array_agg with ORDER BY that the query writes itself is read the same way; the aggregate read whole anywhere is not
+INSERT INTO shapes (name, q) VALUES
+  ('slice',                 $q$SELECT grp, (array_agg(id ORDER BY amount DESC NULLS LAST, id))[1:3] FROM wt GROUP BY grp$q$),
+  ('element',               $q$SELECT grp, (array_agg(id ORDER BY ts, id))[2] FROM wt GROUP BY grp$q$),
+  ('element past the group', $q$SELECT grp, (array_agg(id ORDER BY ts, id))[900] FROM wt GROUP BY grp$q$),
+  ('two slices',            $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], (array_agg(id ORDER BY ts, id))[1:4] FROM wt GROUP BY grp$q$),
+  ('slice and whole',       $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], cardinality(array_agg(id ORDER BY ts, id)) FROM wt GROUP BY grp$q$),
+  ('slice with a filter',   $q$SELECT grp, (array_agg(id ORDER BY ts, id) FILTER (WHERE amount > 100))[1:3] FROM wt GROUP BY grp$q$),
+  ('text and NULLs first',  $q$SELECT grp, (array_agg(note ORDER BY gn NULLS FIRST, id DESC))[1:3] FROM wt GROUP BY grp$q$),
+  ('ties',                  $q$SELECT grp, (array_agg(amount ORDER BY amount))[1:5] FROM wt GROUP BY grp$q$),
+  ('descending, NULLs first', $q$SELECT grp, (array_agg(amount ORDER BY amount DESC NULLS FIRST))[1:5] FROM wt GROUP BY grp$q$),
+  ('slice of a join',       $q$SELECT d.label, (array_agg(w.id ORDER BY w.ts, w.id))[1:3] FROM wt w JOIN dim d ON d.grp = w.grp GROUP BY d.label$q$),
+  ('slice in HAVING',       $q$SELECT grp FROM wt GROUP BY grp HAVING (array_agg(id ORDER BY ts, id))[1:2] = ARRAY[(SELECT min(id) FROM wt WHERE ts = 0), 1]$q$),
+  ('no group',              $q$SELECT (array_agg(id ORDER BY ts, id))[1:3] FROM wt$q$),
+  ('many groups, a growing table', $q$SELECT ts, (array_agg(note ORDER BY id))[1:2], (array_agg(grp ORDER BY id))[1:2] FROM wt GROUP BY ts$q$);
+
+CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, sliced bool, same bool) LANGUAGE plpgsql AS
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
   in_scan := plan LIKE '%Custom Scan (SiftAgg)%';
-  topn := plan LIKE '%Top-N:%';
+  sliced := plan LIKE '%array_agg(%[1:%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);

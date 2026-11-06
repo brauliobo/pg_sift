@@ -138,6 +138,7 @@
 #define AGG_STAT_ROW		1.0	/* a row of a variance, standard deviation, correlation or regression of float8 or int columns: the kernel of a chunk adds it up in place, about 10 ns where the transition function took 40 to 90 (agg/gen_stat.c) */
 #define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
 #define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */
+#define AGG_GEN_TOPN		1.0		/* a row of an array_agg that the query reads through a slice: the compare of its sort keys with the group's last kept row, the values read and the place found when it stays */
 #define AGG_GEN_FIRST		1.0		/* a row of a DISTINCT ON column: the compare of its sort keys with the best row of the group, the value read when it wins */
 #define AGG_GEN_FIRST_KEY	1.2		/* ... and each sort key's compare */
 #define AGG_GEN_FOLLOW		0.3		/* a row of the other DISTINCT ON columns: the answer of the first one */

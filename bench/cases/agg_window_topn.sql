@@ -1,4 +1,4 @@
--- the first three rows of each key with row_number() ... WHERE rn <= 3: a probe of the table for each key (a top-3 of the key) instead of the sort of every row
+-- the first three rows of each key with row_number() ... WHERE rn <= 3: the groups' arrays cut at 3 inside the group, of which the scan keeps the three best rows of each key instead of the sort of every row
 -- label: `SELECT * FROM (SELECT id, grp, amount, row_number() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST, id) rn FROM wn_fact WHERE grp <= 200) t WHERE rn <= 3` over 600,000 rows and 2,000 keys
 -- ordered: no
 --@ setup

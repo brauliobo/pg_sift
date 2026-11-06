@@ -1,8 +1,7 @@
--- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn <= N` for N > 1 on NOT NULL partition columns of a table whose keys hold
--- many rows is a probe of the table for each key: `(SELECT DISTINCT k ..) g, LATERAL (SELECT .. WHERE k = g.k ORDER BY o LIMIT N)`, the window over the N rows of a key on top
--- (agg/latest.c, topn_lateral), where the plan with the sort of every row is the other choice. A nullable partition column, a table of fewer than 100,000 rows, a key of fewer than 100 and any other shape keep
--- the arrays or the window. Every statement runs with sift on and off and the rows are compared (md5 of the sorted rows; the orders have no ties); `topn` says the plan has
--- a top-N of the key, `in_scan` that the scan ran.
+-- `SELECT .. FROM (SELECT .., row_number() OVER (PARTITION BY k ORDER BY o) rn FROM t) s WHERE rn <= N` for N > 1 is the groups' arrays cut at N inside the group,
+-- `(SELECT k, (array_agg(c ORDER BY o))[1:N] a FROM t GROUP BY k) g, LATERAL unnest(g.a)` (agg/latest.c), where the scan keeps only the first N rows of each group
+-- as the rows pass (SiftAggGen.topn, agg/gen_run.c) and the plan with the sort of every row is the other choice. Every statement runs with sift on and off and the rows are
+-- compared (md5 of the sorted rows; the orders have no ties); `sliced` says the plan holds the first rows of the groups (a pushed array_agg[1:N]), `in_scan` that the scan ran.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -40,12 +39,27 @@ INSERT INTO shapes (name, q) VALUES
   ('rank stays',            $q$SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY amount, id) rn FROM wt) t WHERE rn <= 3$q$),
   ('second row only',       $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 2$q$),
   ('first row',             $q$SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn = 1$q$);
-CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, topn bool, same bool) LANGUAGE plpgsql AS
+-- a slice a[1:n] or an element a[n] of an array_agg with ORDER BY that the query writes itself is read the same way; the aggregate read whole anywhere is not
+INSERT INTO shapes (name, q) VALUES
+  ('slice',                 $q$SELECT grp, (array_agg(id ORDER BY amount DESC NULLS LAST, id))[1:3] FROM wt GROUP BY grp$q$),
+  ('element',               $q$SELECT grp, (array_agg(id ORDER BY ts, id))[2] FROM wt GROUP BY grp$q$),
+  ('element past the group', $q$SELECT grp, (array_agg(id ORDER BY ts, id))[900] FROM wt GROUP BY grp$q$),
+  ('two slices',            $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], (array_agg(id ORDER BY ts, id))[1:4] FROM wt GROUP BY grp$q$),
+  ('slice and whole',       $q$SELECT grp, (array_agg(id ORDER BY ts, id))[1:2], cardinality(array_agg(id ORDER BY ts, id)) FROM wt GROUP BY grp$q$),
+  ('slice with a filter',   $q$SELECT grp, (array_agg(id ORDER BY ts, id) FILTER (WHERE amount > 100))[1:3] FROM wt GROUP BY grp$q$),
+  ('text and NULLs first',  $q$SELECT grp, (array_agg(note ORDER BY gn NULLS FIRST, id DESC))[1:3] FROM wt GROUP BY grp$q$),
+  ('ties',                  $q$SELECT grp, (array_agg(amount ORDER BY amount))[1:5] FROM wt GROUP BY grp$q$),
+  ('descending, NULLs first', $q$SELECT grp, (array_agg(amount ORDER BY amount DESC NULLS FIRST))[1:5] FROM wt GROUP BY grp$q$),
+  ('slice of a join',       $q$SELECT d.label, (array_agg(w.id ORDER BY w.ts, w.id))[1:3] FROM wt w JOIN dim d ON d.grp = w.grp GROUP BY d.label$q$),
+  ('slice in HAVING',       $q$SELECT grp FROM wt GROUP BY grp HAVING (array_agg(id ORDER BY ts, id))[1:2] = ARRAY[(SELECT min(id) FROM wt WHERE ts = 0), 1]$q$),
+  ('no group',              $q$SELECT (array_agg(id ORDER BY ts, id))[1:3] FROM wt$q$),
+  ('many groups, a growing table', $q$SELECT ts, (array_agg(note ORDER BY id))[1:2], (array_agg(grp ORDER BY id))[1:2] FROM wt GROUP BY ts$q$);
+CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, sliced bool, same bool) LANGUAGE plpgsql AS
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
   in_scan := plan LIKE '%Custom Scan (SiftAgg)%';
-  topn := plan LIKE '%Top-N:%';
+  sliced := plan LIKE '%array_agg(%[1:%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);
@@ -55,29 +69,42 @@ BEGIN
   RETURN NEXT;
 END $$;
 SELECT s.name, c.* FROM shapes s, LATERAL shape_check(s.q) c ORDER BY s.ord;
-          name          | in_scan | topn | same 
-------------------------+---------+------+------
- top 3                  | t       | t    | t
- top 2 ascending        | t       | t    | t
- bound on the left      | t       | t    | t
- more than a group      | f       | f    | t
- two partition columns  | t       | t    | t
- condition inside       | t       | t    | t
- condition outside      | t       | t    | t
- row number read        | t       | t    | t
- partition not read     | t       | t    | t
- order by an expression | t       | t    | t
- order by the partition | t       | t    | t
- nullable partition     | t       | f    | t
- join inside            | f       | f    | t
- join outside           | t       | t    | t
- aggregate on top       | t       | t    | t
- nothing left           | t       | t    | t
- keys of one row        | t       | f    | t
- rank stays             | f       | f    | t
- second row only        | f       | f    | t
- first row              | t       | f    | t
-(20 rows)
+             name             | in_scan | sliced | same 
+------------------------------+---------+--------+------
+ top 3                        | t       | t      | t
+ top 2 ascending              | t       | t      | t
+ bound on the left            | t       | t      | t
+ more than a group            | t       | f      | t
+ two partition columns        | t       | t      | t
+ condition inside             | t       | t      | t
+ condition outside            | t       | t      | t
+ row number read              | t       | t      | t
+ partition not read           | t       | t      | t
+ order by an expression       | t       | t      | t
+ order by the partition       | t       | t      | t
+ nullable partition           | t       | t      | t
+ join inside                  | t       | t      | t
+ join outside                 | t       | t      | t
+ aggregate on top             | t       | t      | t
+ nothing left                 | t       | t      | t
+ keys of one row              | f       | f      | t
+ rank stays                   | f       | f      | t
+ second row only              | f       | f      | t
+ first row                    | t       | f      | t
+ slice                        | t       | t      | t
+ element                      | t       | t      | t
+ element past the group       | t       | t      | t
+ two slices                   | t       | t      | t
+ slice and whole              | t       | f      | t
+ slice with a filter          | t       | t      | t
+ text and NULLs first         | t       | t      | t
+ ties                         | t       | t      | t
+ descending, NULLs first      | t       | t      | t
+ slice of a join              | t       | t      | t
+ slice in HAVING              | t       | t      | t
+ no group                     | t       | t      | t
+ many groups, a growing table | t       | t      | t
+(33 rows)
 
 SELECT count(*), min(rn), max(rn) FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wt) t WHERE rn <= 3;
  count | min | max 

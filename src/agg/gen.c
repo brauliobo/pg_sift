@@ -337,6 +337,11 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		gen_first_begin(st);
 	}
 	gen_stat_pick(ex, st);
+	if (g->topn)
+	{
+		st->tcx = AllocSetContextCreate(ex->cxt, "sift agg first rows", ALLOCSET_DEFAULT_SIZES);
+		gen_first_begin(st);
+	}
 	return st;
 }
 

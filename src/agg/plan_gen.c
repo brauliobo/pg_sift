@@ -350,6 +350,68 @@ gen_desc(AggCtx *c, Aggref *a, SiftAggGen *g, const char *txt)
 	return psprintf("%s(%s%s%s)", get_func_name(a->aggfnoid), g->distinct ? "DISTINCT " : "", txt, s.data);
 }
 
+/* a slice a[1:n] or an element a[n] of a constant n: how many of the first elements the expression reads, else 0 */
+static int64
+slice_reads(SubscriptingRef *r)
+{
+	Const	   *up,
+			   *lo;
+
+	if (r->refassgnexpr != NULL || list_length(r->refupperindexpr) != 1 || list_length(r->reflowerindexpr) > 1 ||
+		!IsA(linitial(r->refupperindexpr), Const) || ((Const *) linitial(r->refupperindexpr))->constisnull)
+		return 0;
+	up = linitial(r->refupperindexpr);
+	if (up->consttype != INT4OID || DatumGetInt32(up->constvalue) < 1)
+		return 0;
+	if (r->reflowerindexpr == NIL)
+		return DatumGetInt32(up->constvalue);
+	lo = linitial(r->reflowerindexpr) ? (Const *) linitial(r->reflowerindexpr) : NULL;
+	return lo != NULL && IsA(lo, Const) && !lo->constisnull && lo->consttype == INT4OID && DatumGetInt32(lo->constvalue) == 1 ? DatumGetInt32(up->constvalue) : 0;
+}
+
+typedef struct SliceWalk
+{
+	const Aggref *agg;
+	int64		reads;			/* the most elements any slice of the aggregate reads */
+	bool		whole;			/* the aggregate is read as a whole somewhere */
+} SliceWalk;
+
+static bool
+slice_walker(Node *n, SliceWalk *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubscriptingRef) && ((SubscriptingRef *) n)->refexpr != NULL && equal(((SubscriptingRef *) n)->refexpr, w->agg))
+	{
+		int64		k = slice_reads((SubscriptingRef *) n);
+
+		if (k > 0)
+		{
+			w->reads = Max(w->reads, k);
+			return false;
+		}
+	}
+	if (IsA(n, Aggref) && equal(n, w->agg))
+	{
+		w->whole = true;
+		return true;
+	}
+	return expression_tree_walker(n, slice_walker, w);
+}
+
+/* the rows of each group an array_agg(x ORDER BY ..) is read for by the query that holds it: only its first elements (a[1:n]) in the select list, the sort and the HAVING, else 0 */
+static int
+agg_first_rows(AggCtx *c, const Aggref *a)
+{
+	SliceWalk	w = {a, 0, false};
+
+	if (a->aggfnoid != F_ARRAY_AGG_ANYNONARRAY || a->aggorder == NIL || a->aggdistinct != NIL)
+		return 0;
+	if (slice_walker((Node *) c->root->processed_tlist, &w) || slice_walker(c->root->parse->havingQual, &w) || w.reads > SIFT_AGG_TOPN_MAX)
+		return 0;
+	return (int) w.reads;
+}
+
 bool
 compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
@@ -428,6 +490,11 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
 	if (gen_stat_eligible(fns.transfn, g, plan_leaf_of, c, NULL, NULL))
 		g->cost = AGG_STAT_ROW * g->nargs;
+	if (g->sorted && !g->distinct && (g->topn = agg_first_rows(c, a)) > 0)
+	{
+		g->sorted = false;
+		g->cost = cost + AGG_GEN_TOPN + list_length(a->aggorder) * AGG_GEN_FIRST_KEY;
+	}
 	g->hll = -1;
 	/* a nondeterministic collation hashes the sort key of a string, which a unit does not hold */
 	if (g->serial == NULL && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)
@@ -443,6 +510,8 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;
 	out->desc = gen_desc(c, a, g, txt.data);
+	if (g->topn)
+		out->desc = psprintf("%s[1:%d]", out->desc, g->topn);
 	record_plan_function_dependency(c->root, a->aggfnoid);
 	foreach_node(TargetEntry, te, a->args)
 		record_deps(c->root, (Node *) te->expr);

@@ -97,6 +97,7 @@ typedef struct GenSt
 	bool	   *cnull;
 	uint32	   *ctouch;			/* the groups that have a best tuple in this chunk, and how many tuples the list holds room for */
 	uint32		ntcap;
+	MemoryContext tcx;			/* topn: the rows the groups keep */
 } GenSt;
 
 /* the best row of a group of a DISTINCT ON aggregate (the group's state until the scan ends): the values of the arguments, then their NULL flags */
