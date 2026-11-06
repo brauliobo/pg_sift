@@ -75,8 +75,7 @@ void
 sift_posbuf_grow(SiftPosBuf *out, uint32 n)
 {
 	out->cap = Max(n, Max(64, out->cap * 2));
-	out->v = out->v ? repalloc_huge(out->v, (Size) out->cap * sizeof(uint32)) :
-		MemoryContextAllocHuge(out->mcxt, (Size) out->cap * sizeof(uint32));
+	SIFT_REGROW_HUGE_IN(out->mcxt, out->v, (Size) out->cap * sizeof(uint32));
 }
 
 /* LEB128 at *pp, which the writer made */

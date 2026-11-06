@@ -105,7 +105,7 @@ memo_stem(StemMemo *m, MemoStemFn fn, void *ctx, char *w, int n)
 		else
 		{
 			m->cap = m->cap ? m->cap * 2 : 64 * 1024;
-			m->arena = m->arena ? repalloc(m->arena, m->cap) : MemoryContextAlloc(m->mcxt, m->cap);
+			SIFT_REGROW_IN(m->mcxt, m->arena, m->cap);
 		}
 	}
 	hd[0] = n;

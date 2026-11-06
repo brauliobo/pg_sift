@@ -91,8 +91,7 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 			if (pb->n > c->startcap)
 			{
 				c->startcap = Max(pb->n, 2 * c->startcap);
-				c->start = c->start ? repalloc_huge(c->start, (Size) c->startcap * sizeof(uint32)) :
-					MemoryContextAllocHuge(c->mcxt, (Size) c->startcap * sizeof(uint32));
+				SIFT_REGROW_HUGE_IN(c->mcxt, c->start, (Size) c->startcap * sizeof(uint32));
 			}
 			for (; j < pb->n; j++)
 				if (pb->v[j] >= o)

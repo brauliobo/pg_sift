@@ -279,8 +279,7 @@ bind_wbuf(SiftPlan *p)
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
-				p->mhit = p->mhit ? repalloc_huge(p->mhit, cap * sizeof(WbufHit)) :
-					MemoryContextAllocHuge(p->mcxt, cap * sizeof(WbufHit));
+				SIFT_REGROW_HUGE_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
 			}
 			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
 		}

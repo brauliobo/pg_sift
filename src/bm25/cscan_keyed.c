@@ -103,8 +103,7 @@ add_tie(KeyTop *t, const ItemPointerData *entry)
 	if (t->ntie == t->captie)
 	{
 		t->captie = Max(64, 2 * t->captie);
-		t->tie = t->tie ? repalloc_huge(t->tie, t->captie * sizeof(ItemPointerData)) :
-			MemoryContextAllocHuge(CurrentMemoryContext, t->captie * sizeof(ItemPointerData));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
 }

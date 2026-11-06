@@ -535,7 +535,7 @@ sift_segw_adopt_range(SiftSegmentWriter *w, BufFile *post, uint64 post_len, BufF
 				if (info.pos_len > poscap)
 				{
 					poscap = Max(info.pos_len, 256);
-					pos = pos ? repalloc(pos, poscap) : palloc(poscap);
+					SIFT_REGROW(pos, poscap);
 				}
 				BufFileReadExact(ent, pos, info.pos_len);
 			}

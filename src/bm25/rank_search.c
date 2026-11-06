@@ -37,8 +37,7 @@ tie_add(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 	if (tk->ntie == tk->tiecap)
 	{
 		tk->tiecap = Max(2 * tk->tiecap, 256);
-		tk->tie = tk->tie ? repalloc_huge(tk->tie, tk->tiecap * sizeof(SiftHit)) :
-			MemoryContextAllocHuge(r->plan->mcxt, tk->tiecap * sizeof(SiftHit));
+		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->tie, tk->tiecap * sizeof(SiftHit));
 	}
 	tk->tie[tk->ntie++] = (SiftHit) {.key = key,.score = score};
 }
@@ -49,8 +48,7 @@ tie_defer(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	if (tk->nlazy == tk->lazycap)
 	{
 		tk->lazycap = Max(2 * tk->lazycap, 256);
-		tk->lazy = tk->lazy ? repalloc_huge(tk->lazy, tk->lazycap * sizeof(SiftLazyHit)) :
-			MemoryContextAllocHuge(r->plan->mcxt, tk->lazycap * sizeof(SiftLazyHit));
+		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->lazy, tk->lazycap * sizeof(SiftLazyHit));
 	}
 	tk->lazy[tk->nlazy++] = (SiftLazyHit) {.key = key,.score = score,.seg = seg};
 }

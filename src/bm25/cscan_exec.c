@@ -105,7 +105,7 @@ load_semi(SiftScanState *ss)
 	if (ss->semi_done || n == 0)
 		return;
 	ss->semi_done = true;
-	ss->attr = ss->attr ? repalloc(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest)) : palloc((ss->nattr + n) * sizeof(SiftAttrTest));
+	SIFT_REGROW(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest));
 	for (int i = 0; i < n; i++)
 	{
 		Oid			reloid = DatumGetObjectId(((Const *) list_nth(ss->semi, 4 * i))->constvalue);

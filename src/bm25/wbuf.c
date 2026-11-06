@@ -484,15 +484,15 @@ asm_piece(SiftWbufReader *r, const SiftWbufDocData *d)
 		MemoryContext old = MemoryContextSwitchTo(r->mcxt);
 
 		r->asmcap = Max(2 * r->asmcap, r->nasm + d->nterms);
-		r->ahash = r->ahash ? repalloc(r->ahash, r->asmcap * sizeof(uint32)) : palloc(r->asmcap * sizeof(uint32));
-		r->atf = r->atf ? repalloc(r->atf, r->asmcap) : palloc(r->asmcap);
-		r->alen = r->alen ? repalloc(r->alen, r->asmcap) : palloc(r->asmcap);
+		SIFT_REGROW(r->ahash, r->asmcap * sizeof(uint32));
+		SIFT_REGROW(r->atf, r->asmcap);
+		SIFT_REGROW(r->alen, r->asmcap);
 		MemoryContextSwitchTo(old);
 	}
 	if (r->asmbytes + d->termbytes > r->asmbytescap)
 	{
 		r->asmbytescap = Max(2 * r->asmbytescap, r->asmbytes + d->termbytes);
-		r->aterms = r->aterms ? repalloc(r->aterms, r->asmbytescap) : MemoryContextAlloc(r->mcxt, r->asmbytescap);
+		SIFT_REGROW_IN(r->mcxt, r->aterms, r->asmbytescap);
 	}
 	memcpy(r->ahash + r->nasm, hash, d->nterms * sizeof(uint32));
 	memcpy(r->atf + r->nasm, tf, d->nterms);

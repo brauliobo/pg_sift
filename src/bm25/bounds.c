@@ -133,8 +133,7 @@ seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 			if (*nunits == *cap)
 			{
 				*cap = Max(64, 2 * *cap);
-				*units = *units ? repalloc_huge(*units, *cap * sizeof(Unit)) :
-					MemoryContextAllocHuge(p->mcxt, *cap * sizeof(Unit));
+				SIFT_REGROW_HUGE_IN(p->mcxt, *units, *cap * sizeof(Unit));
 			}
 			(*units)[(*nunits)++] = u;
 		}

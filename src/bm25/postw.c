@@ -567,7 +567,7 @@ spool_blocks(SiftPostingWriter *w)
 					to = b + 1 < nck ? ck[b + 1] : rawlen;
 
 		if (to - from > rawcap)
-			raw = raw ? repalloc_huge(raw, rawcap = to - from) : MemoryContextAllocHuge(w->mcxt, rawcap = to - from);
+			SIFT_REGROW_HUGE_IN(w->mcxt, raw, rawcap = to - from);
 		BufFileSeek(sp->pos, 0, from, SEEK_SET);
 		BufFileReadExact(sp->pos, raw, to - from);
 		resetStringInfo(&out);

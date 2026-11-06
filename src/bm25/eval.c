@@ -137,8 +137,7 @@ en_leaf(SiftPlan *p, const SiftQNode *node, Place at, const SiftQNode *phrase)
 	if (p->nleaves == p->maxleaves)
 	{
 		p->maxleaves = Max(8, 2 * p->maxleaves);
-		p->leaves = p->leaves ? repalloc(p->leaves, p->maxleaves * sizeof(EvalLeaf)) :
-			MemoryContextAlloc(p->mcxt, p->maxleaves * sizeof(EvalLeaf));
+		SIFT_REGROW_IN(p->mcxt, p->leaves, p->maxleaves * sizeof(EvalLeaf));
 	}
 	p->leaves[p->nleaves] = (EvalLeaf) {.node = node,.scoring = at.positive,.phrase = phrase,
 	.optional = phrase && !at.required};
@@ -316,8 +315,7 @@ expand_add(Expand *e, const char *term, int len, const SiftTermInfo *info)
 	if (e->n == e->cap)
 	{
 		e->cap = Max(4, 2 * e->cap);
-		e->terms = e->terms ? repalloc(e->terms, e->cap * sizeof(LeafTerm)) :
-			MemoryContextAlloc(e->plan->mcxt, e->cap * sizeof(LeafTerm));
+		SIFT_REGROW_IN(e->plan->mcxt, e->terms, e->cap * sizeof(LeafTerm));
 	}
 	t = &e->terms[e->n++];
 	t->term = MemoryContextAlloc(e->plan->mcxt, len);

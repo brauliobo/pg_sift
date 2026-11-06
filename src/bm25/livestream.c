@@ -225,7 +225,7 @@ stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *
 			if (s->poslen + len > s->poscap)
 			{
 				s->poscap = Max(s->poslen + len, Max(8192, s->poscap * 2));
-				s->pos = s->pos ? repalloc_huge(s->pos, s->poscap) : MemoryContextAllocHuge(s->dc.mcxt, s->poscap);
+				SIFT_REGROW_HUGE_IN(s->dc.mcxt, s->pos, s->poscap);
 			}
 			memcpy(s->pos + s->poslen, rec, len);
 			s->poslen += len;
@@ -579,10 +579,10 @@ collect_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (info->df > d->cap)
 	{
 		d->cap = Max(info->df, d->cap * 2);
-		d->keys = d->keys ? repalloc_huge(d->keys, d->cap * sizeof(SiftKey)) : MemoryContextAllocHuge(d->mcxt, d->cap * sizeof(SiftKey));
-		d->tf = d->tf ? repalloc_huge(d->tf, d->cap) : MemoryContextAllocHuge(d->mcxt, d->cap);
-		d->dl = d->dl ? repalloc_huge(d->dl, d->cap * sizeof(uint16)) : MemoryContextAllocHuge(d->mcxt, d->cap * sizeof(uint16));
-		d->plen = d->plen ? repalloc_huge(d->plen, d->cap * sizeof(uint32)) : MemoryContextAllocHuge(d->mcxt, d->cap * sizeof(uint32));
+		SIFT_REGROW_HUGE_IN(d->mcxt, d->keys, d->cap * sizeof(SiftKey));
+		SIFT_REGROW_HUGE_IN(d->mcxt, d->tf, d->cap);
+		SIFT_REGROW_HUGE_IN(d->mcxt, d->dl, d->cap * sizeof(uint16));
+		SIFT_REGROW_HUGE_IN(d->mcxt, d->plen, d->cap * sizeof(uint32));
 	}
 }
 
@@ -604,7 +604,7 @@ collect_postings(void *arg, const SiftKey *keys, const uint8 *tf, const uint16 *
 		if (d->poslen + len > d->poscap)
 		{
 			d->poscap = Max(d->poslen + len, d->poscap * 2);
-			d->pos = d->pos ? repalloc_huge(d->pos, d->poscap) : MemoryContextAllocHuge(d->mcxt, d->poscap);
+			SIFT_REGROW_HUGE_IN(d->mcxt, d->pos, d->poscap);
 		}
 		memcpy(d->pos + d->poslen, pos, len);
 		memcpy(d->plen + d->n, poslen, n * sizeof(uint32));

@@ -66,7 +66,7 @@ seg_sample(void *arg, const char *term, int len, uint64 post_off, uint64 nterms)
 	if (ss->n == ss->cap)
 	{
 		ss->cap = Max(16, ss->cap * 2);
-		ss->all = ss->all ? repalloc(ss->all, ss->cap * sizeof(RunSample)) : palloc(ss->cap * sizeof(RunSample));
+		SIFT_REGROW(ss->all, ss->cap * sizeof(RunSample));
 	}
 	memcpy(copy, term, len);
 	ss->all[ss->n++] = (RunSample) {.off = post_off,.len = len,.term = copy};
@@ -93,7 +93,7 @@ sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, Sift
 		sift_dict_samples(segs[i]->dict, SEG_SAMPLES, seg_sample, &ss);
 		if (ss.n > 0)
 			ss.all[ss.n - 1].vol = Max(post->off + post->len, ss.all[ss.n - 1].off) - ss.all[ss.n - 1].off + ss.terms * TERM_COST;
-		all = all ? repalloc(all, (nall + ss.n) * sizeof(RunSample)) : palloc((nall + ss.n) * sizeof(RunSample));
+		SIFT_REGROW(all, (nall + ss.n) * sizeof(RunSample));
 		memcpy(all + first, ss.all, ss.n * sizeof(RunSample));
 		nall += ss.n;
 	}

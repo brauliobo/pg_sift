@@ -138,8 +138,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 		if (f->nqsb == f->qsbcap)
 		{
 			f->qsbcap = Max(64, 2 * f->qsbcap);
-			f->qsb = f->qsb ? repalloc_huge(f->qsb, f->qsbcap * sizeof(QSb)) :
-				MemoryContextAllocHuge(f->mcxt, f->qsbcap * sizeof(QSb));
+			SIFT_REGROW_HUGE_IN(f->mcxt, f->qsb, f->qsbcap * sizeof(QSb));
 		}
 		f->qsb[f->nqsb++] = (QSb) {.sb = sb,.row = f->nrows};
 	}
@@ -148,8 +147,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	if (f->nrows == f->rowcap)
 	{
 		f->rowcap = Max(256, 2 * f->rowcap);
-		f->rows = f->rows ? repalloc_huge(f->rows, f->rowcap * ROW_BYTES) :
-			MemoryContextAllocHuge(f->mcxt, f->rowcap * ROW_BYTES);
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->rows, f->rowcap * ROW_BYTES);
 	}
 	memcpy(f->rows[f->nrows++], offmask, ROW_BYTES);
 }
@@ -294,13 +292,12 @@ add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *inf
 	if (f->nent == f->entcap)
 	{
 		f->entcap = Max(256, 2 * f->entcap);
-		f->ent = f->ent ? repalloc_huge(f->ent, f->entcap * sizeof(Entry)) :
-			MemoryContextAllocHuge(f->mcxt, f->entcap * sizeof(Entry));
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->ent, f->entcap * sizeof(Entry));
 	}
 	if (f->nterms + len > f->termcap)
 	{
 		f->termcap = Max(4096, 2 * f->termcap + len);
-		f->terms = f->terms ? repalloc_huge(f->terms, f->termcap) : MemoryContextAllocHuge(f->mcxt, f->termcap);
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->terms, f->termcap);
 	}
 	memcpy(f->terms + f->nterms, term, len);
 	f->ent[f->nent++] = (Entry) {.off = f->nterms,.len = len,.seg = seg,.info = *info};
@@ -489,8 +486,7 @@ res_add(Facets *f, Res r)
 	if (f->nres == f->rescap && (!f->bounded || f->nres < f->lim))
 	{
 		f->rescap = Max(16, Min(2 * f->rescap, f->bounded ? f->lim : PG_INT64_MAX));
-		f->res = f->res ? repalloc_huge(f->res, f->rescap * sizeof(Res)) :
-			MemoryContextAllocHuge(f->mcxt, f->rescap * sizeof(Res));
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
 	}
 	if (f->bounded)
 	{

@@ -396,15 +396,11 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (info->df > w->tcap)
 	{
 		w->tcap = Max(info->df, w->tcap * 2);
-		w->tkeys = w->tkeys ? repalloc_huge(w->tkeys, w->tcap * sizeof(SiftKey)) :
-			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(SiftKey));
-		w->ttf = w->ttf ? repalloc_huge(w->ttf, w->tcap) : MemoryContextAllocHuge(seg->mcxt, w->tcap);
-		w->tdl = w->tdl ? repalloc_huge(w->tdl, w->tcap * sizeof(uint16)) :
-			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint16));
-		w->tpoff = w->tpoff ? repalloc_huge(w->tpoff, w->tcap * sizeof(uint32)) :
-			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint32));
-		w->tplen = w->tplen ? repalloc_huge(w->tplen, w->tcap * sizeof(uint32)) :
-			MemoryContextAllocHuge(seg->mcxt, w->tcap * sizeof(uint32));
+		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tkeys, w->tcap * sizeof(SiftKey));
+		SIFT_REGROW_HUGE_IN(seg->mcxt, w->ttf, w->tcap);
+		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tdl, w->tcap * sizeof(uint16));
+		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tpoff, w->tcap * sizeof(uint32));
+		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tplen, w->tcap * sizeof(uint32));
 	}
 	c = w->verify ? sift_post_open_verified(&seg->sr, info, w->tcxt) : sift_post_open(&seg->sr, info, w->tcxt);
 	if (w->verify)
