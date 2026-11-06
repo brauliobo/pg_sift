@@ -5,7 +5,7 @@ import os
 
 from .db import create_db, data_sql, psql
 from .registry import base_of
-from .run import diverged, query_script, render_query, run_script
+from .run import diverged, query_script, render_query, run_script, split_pre
 
 # ---------- shrinking ----------
 def shrink_parts(db, qid, fam, parts, vs, nl, base):
@@ -61,6 +61,8 @@ def shrink_dml(base_db, work, hist, check):
 
 def repro_sql(seed, rows, parts_n, hist, sql, base, var):
     name, spec = var
+    pre, sql = split_pre(sql)
+    hist = hist + ([pre] if pre else [])
     return f"""-- pg_sift differential fuzz reproducer: seed {seed}, rows {rows}, partitions {parts_n}; the query returns other rows under the settings of
 -- "{name}" than under the reference (sift.enable_agg off). Run it on a database with the extension, psql -f this file.
 {data_sql(seed, rows, parts_n)}
