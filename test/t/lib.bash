@@ -54,7 +54,8 @@ not_ok() {
 	return 0
 }
 diag() { sed 's/^/# /' <<<"$*"; }
-check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
+# a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
+check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
 bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
 # sed -i in place on GNU and BSD sed (BSD's takes the next word as the suffix)

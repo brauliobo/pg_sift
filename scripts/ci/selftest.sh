@@ -229,6 +229,9 @@ if [[ $MODE == --selftest ]]; then
 		bad_pin=$(for k in 2 3; do (( k <= ${lay#*:} )) && SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^tap-shell-(compat_matrix|old_lib_refusal|replica_mixed|pg_upgrade)/ {print $1}'; done)
 		[[ -z $bad_pin ]] || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards puts jobs that build older releases outside the first shard: $bad_pin"; bad=1; }
 	done
+	# a failed check of a TAP shell test shows what the test had captured in $out
+	out=$(SIFT_NODES=docker SIFT_TMP="$ST/tl" bash -c '. "$0/test/t/lib.bash"; out="line one"$'"'"'\n'"'"'"line two"; check "x" false; check "y" true' "$REPO" 2>&1)
+	[[ $out == *"# what the check read (out):"*"# line two"*"ok 2 - y"* ]] || { echo "FAIL: a failed check of test/t/lib.bash does not show the out of the test: $out"; bad=1; }
 	# the CPU-bound jobs (HEAVY_JOBS of scripts/ci/shards.sh) are spread: no shard has two more of them than another, in every tier and layout
 	for lay in quick:3 quick:4 full:5; do
 		counts=$(for k in $(seq 1 "${lay#*:}"); do SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^(difftest|hardened|fuzz|release-library-regress|tap-shell-scaling_slope)/ && $3 == "pool" {n++} END {print n + 0}'; done | sort -n)
