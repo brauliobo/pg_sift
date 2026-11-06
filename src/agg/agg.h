@@ -8,6 +8,7 @@
 #ifndef SIFT_AGG_H
 #define SIFT_AGG_H
 
+#include "catalog/pg_type.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
@@ -28,6 +29,19 @@ sift_const_list(Node *n)
 		if (!IsA(e, Const))
 			return false;
 	return true;
+}
+
+/* the types the planner treats alike: the integers of any width, and the strings */
+static inline bool
+sift_int_type(Oid t)
+{
+	return t == INT2OID || t == INT4OID || t == INT8OID;
+}
+
+static inline bool
+sift_str_type(Oid t)
+{
+	return t == TEXTOID || t == VARCHAROID;
 }
 
 #ifdef SIFT_TESTING

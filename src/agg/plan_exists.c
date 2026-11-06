@@ -14,6 +14,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
+#include "agg/agg.h"
 #include "agg/plan_exists_int.h"
 
 /*
@@ -171,12 +172,6 @@ leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit)
 static SiftAggPred *or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b);
 static SiftAggPred *null_pred(AggCtx *c, int leaf, int op);
 
-static bool
-int_elem_type(Oid typid)
-{
-	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
-}
-
 /* the element of a list of integers is one of the literals (outside: none of them, or NULL): one IN test of the integer leaf, as `x IN (..)` is */
 static SiftAggPred *
 build_int_in(AggCtx *c, int leaf, const LitSet *set)
@@ -227,7 +222,7 @@ build_elem_in(AggCtx *c, int grp, void *arg)
 	SiftAggPred *p;
 	StringInfoData desc;
 
-	if (leaf >= 0 && int_elem_type(leaf_of(c, leaf)->typid) && leaf_of(c, leaf)->kind == SCL_SCALAR)
+	if (leaf >= 0 && sift_int_type(leaf_of(c, leaf)->typid) && leaf_of(c, leaf)->kind == SCL_SCALAR)
 		return build_int_in(c, leaf, set);
 	if (leaf < 0 || leaf_of(c, leaf)->typid != TEXTOID || !lut_leaf_ok(c, leaf))
 		return NULL;

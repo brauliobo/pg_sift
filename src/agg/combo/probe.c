@@ -31,6 +31,7 @@
 #include "utils/rel.h"
 #include "utils/uuid.h"
 
+#include "agg/agg.h"
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
 
@@ -60,12 +61,6 @@ dp_reads_params(Node *n, void *context)
 	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
 		return true;
 	return expression_tree_walker(n, dp_reads_params, context);
-}
-
-static bool
-dp_int_type(Oid t)
-{
-	return t == INT2OID || t == INT4OID || t == INT8OID;
 }
 
 /*
@@ -189,7 +184,7 @@ dp_shape(AggExec *ex, int ci, DProbe *dp)
 		int			i = sk->sk_attno - 1;
 
 		if (sk->sk_strategy != BTEqualStrategyNumber || (sk->sk_flags & ~SK_ISNULL) != 0 || i < 0 || i >= dp->nk || seen[i] ||
-			(sk->sk_subtype != irel->rd_opcintype[i] && !(dp_int_type(sk->sk_subtype) && dp_int_type(irel->rd_opcintype[i]))))
+			(sk->sk_subtype != irel->rd_opcintype[i] && !(sift_int_type(sk->sk_subtype) && sift_int_type(irel->rd_opcintype[i]))))
 			return false;
 		seen[i] = true;
 		dp->keyat[i] = s;

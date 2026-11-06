@@ -50,7 +50,7 @@ static bool
 leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
 {
 	if (lf->vtype == SCV_CODE)
-		return (typid == TEXTOID || typid == VARCHAROID) && (lf->typid == TEXTOID || lf->typid == VARCHAROID);
+		return sift_str_type(typid) && sift_str_type(lf->typid);
 	if (lf->typid != typid)
 		return false;
 	if (typid == NUMERICOID)
@@ -171,12 +171,6 @@ typedef struct ColTest
 #define TST_NE		5
 #define MAX_TESTS	8
 
-static bool
-int_family(Oid t)
-{
-	return t == INT2OID || t == INT4OID || t == INT8OID;
-}
-
 /* the operator <, <=, =, >=, > or <> of the catalog, as a TST_*; -1 for any other */
 static int
 builtin_op(Oid opno)
@@ -268,7 +262,7 @@ collect_tests(Node *n, const SiftAggJoin *j, int nleaves, const ColNeed *need, i
 
 			x->need = p;
 			x->op = o;
-			x->text = (pt == TEXTOID || pt == VARCHAROID);
+			x->text = sift_str_type(pt);
 			if (x->text)
 			{
 				struct varlena *v;
@@ -280,7 +274,7 @@ collect_tests(Node *n, const SiftAggJoin *j, int nleaves, const ColNeed *need, i
 				x->tv = VARDATA_ANY(v);
 				x->tlen = VARSIZE_ANY_EXHDR(v);
 			}
-			else if (int_family(pt) ? !int_family(cn->consttype) : (cn->consttype != pt || (pt != DATEOID && pt != TIMESTAMPOID && pt != TIMESTAMPTZOID)))
+			else if (sift_int_type(pt) ? !sift_int_type(cn->consttype) : (cn->consttype != pt || (pt != DATEOID && pt != TIMESTAMPOID && pt != TIMESTAMPTZOID)))
 				return;
 			else
 				x->iv = const_int(cn);

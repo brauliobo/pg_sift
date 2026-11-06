@@ -18,6 +18,7 @@
 #include "nodes/value.h"
 #include "storage/itemptr.h"
 
+#include "agg/agg.h"
 #include "agg/spec.h"
 #include "agg/plan_int.h"
 
@@ -182,12 +183,6 @@ sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 	return any;
 }
 
-static bool
-text_type(Oid t)
-{
-	return t == TEXTOID || t == VARCHAROID;
-}
-
 /* a text constant that is not NULL */
 static bool
 str_const(Node *n, const char **s, uint32 *len)
@@ -195,7 +190,7 @@ str_const(Node *n, const char **s, uint32 *len)
 	Const	   *k = (Const *) strip_relabel(n);
 	text	   *t;
 
-	if (!IsA(k, Const) || k->constisnull || !text_type(k->consttype))
+	if (!IsA(k, Const) || k->constisnull || !sift_str_type(k->consttype))
 		return false;
 	t = DatumGetTextPP(k->constvalue);
 	*s = VARDATA_ANY(t);
@@ -557,7 +552,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 		!get_collation_isdeterministic(sa->inputcollid))
 		return false;
 	k = (Const *) lsecond(sa->args);
-	if (!IsA(k, Const) || k->constisnull || !text_type(get_element_type(k->consttype)))
+	if (!IsA(k, Const) || k->constisnull || !sift_str_type(get_element_type(k->consttype)))
 		return false;
 	deconstruct_array(DatumGetArrayTypeP(k->constvalue), get_element_type(k->consttype), -1, false, TYPALIGN_INT, &el, &nl, &ne);
 	vals = palloc(Max(ne, 1) * sizeof(char *));
@@ -607,7 +602,7 @@ str_leaf_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrc
 	if (p->kind != SAP_LUT || p->level != 0 || p->leaf >= nbase)	/* a virtual leaf (a member by key, a count) is not stored */
 		return false;
 	lf = &lay->leaf[p->leaf];
-	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
+	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !sift_str_type(lf->typid))
 		return false;
 	out->leaf = p->leaf;
 	out->ints = NULL;
@@ -644,7 +639,7 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 		return false;
 	out->leaf = t->leaf;
 	out->ints = NULL;
-	if (t->kind == SAP_CMP && t->op == SCMP_EQ && (lf->typid == INT2OID || lf->typid == INT4OID || lf->typid == INT8OID) && IsA(t->expr, Const) &&
+	if (t->kind == SAP_CMP && t->op == SCMP_EQ && sift_int_type(lf->typid) && IsA(t->expr, Const) &&
 		!((Const *) t->expr)->constisnull && ((Const *) t->expr)->consttype == INT8OID)
 	{
 		int64	   *v = palloc(sizeof(int64));
@@ -653,7 +648,7 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SSTR_EQ,.nvals = 1,.ints = v};
 		return true;
 	}
-	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !text_type(lf->typid))
+	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !sift_str_type(lf->typid))
 		return false;
 	return str_expr_test(t, out, false) && (out->op == SSTR_EQ || out->op == SSTR_IN);
 }
