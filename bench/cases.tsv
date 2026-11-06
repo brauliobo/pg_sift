@@ -423,6 +423,9 @@ agg_case_filter	`sum`, `avg`, `min`, `max` and `count` over `CASE WHEN p THEN x`
 col_units_per_key	the merge of the small overlay segments also serves an index that is not cut into partitions	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_units_per_key__layered	ms,minstr	faster33	no	-
 agg_pred_normalize	a condition that wraps a column in `coalesce(col, c)`	events	-	Filters: amount > 	native	-	ms,minstr	faster33	no	-
 col_overlay_wide_units	the merge of the small overlay segments counts the rows of the units a request scans	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_overlay_wide_units__layered	ms,minstr	faster33	no	-
+col_wbuf_read_priced	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced__buffered	ms,minstr	faster33	no	-
+col_wbuf_read_priced_set	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced_set__buffered	ms,minstr	faster33	no	-
+col_wbuf_read_priced_all	backends that read it have paid for its promotion	orders	default	Custom Scan \(SiftAgg	native	buffered:search_path = c_col_wbuf_read_priced_all__buffered	ms,minstr	faster33	no	-
 agg_jsonb_contain_object	a containment `doc @> '{...}'` with a boolean or JSON null member on an object document	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 set_key_skew_dimension	multiplied by the skew of the column	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 group_int_expr_halves	`GROUP BY id / 2`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

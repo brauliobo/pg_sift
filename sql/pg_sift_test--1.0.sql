@@ -209,6 +209,9 @@ CREATE FUNCTION sift._test_col_wbuf_segments(index regclass, OUT gen int8, OUT k
 											OUT live int8, OUT extents int8, OUT lanes int4)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_segments' LANGUAGE C STRICT;
+-- the rows backends decoded from the open write buffer of a sift_col index, the rows it holds, and whether their promotion is due (maint_wbuf_read_due)
+CREATE FUNCTION sift._test_col_wbuf_reads(index regclass, OUT decoded int8, OUT nrows int8, OUT due bool) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_reads' LANGUAGE C STRICT;
 
 -- Column source (src/col/test/test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
 -- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the write buffers, 2 skip the visibility check.

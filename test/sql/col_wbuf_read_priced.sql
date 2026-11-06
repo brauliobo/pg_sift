@@ -1,0 +1,83 @@
+-- The open write buffer is promoted when the backends that read it have paid for it (maint_wbuf_read_due, col/maint/rewrite.c): each backend that reads the buffer decodes its rows
+-- once (5,900 instructions a row) and the sum of the rows decoded, kept by the server for the generation of the buffer (col/wbuf/reads.c), is weighed against the promotion
+-- (18,600 a row, once; a maintenance step counts at half). A buffer that is only written is never read and never promoted early; a buffer that is read twice by two backends is.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+
+CREATE TABLE wr (id int PRIMARY KEY, k int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
+CREATE TABLE wo (id int PRIMARY KEY, k int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO wr SELECT g, g % 50, g % 100 FROM generate_series(1, 3000) g;
+INSERT INTO wo SELECT g, g % 50, g % 100 FROM generate_series(1, 3000) g;
+CREATE INDEX wr_idx ON wr USING sift_col (k, amount);
+CREATE INDEX wo_idx ON wo USING sift_col (k, amount);
+VACUUM (FREEZE, ANALYZE) wr;
+VACUUM (FREEZE, ANALYZE) wo;
+-- 30,000 rows in the write buffers (over a quarter of a unit: 18,624 rows)
+INSERT INTO wr SELECT g, g % 50, g % 100 FROM generate_series(3001, 33000) g;
+INSERT INTO wo SELECT g, g % 50, g % 100 FROM generate_series(3001, 33000) g;
+
+CREATE FUNCTION wr_agg(tbl regclass, use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', use_col::text, true);
+	EXECUTE format('SELECT md5(string_agg(g::text, '','' ORDER BY k)) FROM (SELECT k, count(*) AS c, sum(amount) AS s FROM %s GROUP BY k) g', tbl) INTO r;
+	RETURN r;
+END $$;
+-- the read of the buffer through the index and the heap agree; the rows the buffer holds and the rows backends decoded, as multiples of it
+CREATE FUNCTION wr_state(tbl regclass, idx regclass) RETURNS TABLE (buffered bool, decoded_buffers numeric, due bool) LANGUAGE sql AS $$
+	SELECT nrows >= 18624, round(decoded::numeric / nullif(nrows, 0), 2), due FROM sift._test_col_wbuf_reads(idx)
+$$;
+CREATE FUNCTION wr_segments(idx regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift.col_segments(idx) WHERE kind = 'immutable' $$;
+SELECT wr_agg('wr', false) AS native \gset
+
+-- a buffer no one has read: nothing decoded, nothing due
+SELECT * FROM wr_state('wr', 'wr_idx');
+SELECT wr_segments('wr_idx') AS segments_before \gset
+
+-- the first backend that reads it decodes every row once; a second statement of it decodes none
+SELECT wr_agg('wr', true) = :'native' AS same_first;
+SELECT * FROM wr_state('wr', 'wr_idx');
+SELECT wr_agg('wr', true) = :'native' AS same_again;
+SELECT * FROM wr_state('wr', 'wr_idx');
+
+-- the second backend decodes them again: the reads have paid for the promotion
+\c -
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SELECT wr_agg('wr', true) = :'native' AS same_second;
+SELECT * FROM wr_state('wr', 'wr_idx');
+SELECT wr_segments('wr_idx') = :segments_before AS not_promoted_without_worker;
+
+-- a table that is only written
+SELECT * FROM wr_state('wo', 'wo_idx');
+
+-- with the worker on, the next backend that reads the buffer asks for its promotion: the buffer is sealed and promoted, and the new buffer has no reads
+\c -
+SET max_parallel_workers_per_gather = 0;
+SET sift.col_auto_merge = on;
+SET sift.async_maintenance = on;
+SELECT wr_agg('wr', true) = :'native' AS same_third;
+CREATE FUNCTION wr_wait(idx regclass, before bigint) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1..300 LOOP
+		IF wr_segments(idx) > before THEN RETURN true; END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT wr_wait('wr_idx', :segments_before) AS promoted;
+SELECT * FROM wr_state('wr', 'wr_idx');
+SELECT wr_agg('wr', true) = :'native' AS same_after;
+
+-- the buffer that was written and not read is still there after the worker has had the time to come
+SELECT pg_sleep(1);
+SELECT * FROM wr_state('wo', 'wo_idx');
+SELECT wr_segments('wo_idx') = 1 AS wo_not_promoted;
+
+DROP TABLE wr, wo;
+DROP FUNCTION wr_agg(regclass, bool), wr_state(regclass, regclass), wr_segments(regclass), wr_wait(regclass, bigint);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -226,6 +226,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	const char *worker = NULL;
 	TimestampTz now;
 	Relation	index;
+	bool		small,
+				decoded;
 
 	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
@@ -239,7 +241,10 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	}
 	owed_rewrite += (double) dirty_rows * PEN_DIRTY_ROW;
 	owed_vacuum += (double) vetted * PEN_VET_ROW;
-	if (!priced && vetted > 0 && vetted < MIN_VETTED)
+	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */
+	decoded = sift_cwbuf_decoded_take();
+	small = !priced && vetted > 0 && vetted < MIN_VETTED;
+	if (small && !decoded)
 		return;
 	now = GetCurrentTimestamp();
 	if (looked == indexoid && now - looked_at < (int64) sift_maintenance_naptime * 1000)
@@ -247,6 +252,13 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	looked = indexoid;
 	looked_at = now;
 	index = index_open(indexoid, AccessShareLock);
+	if (small)
+	{
+		if (sift_col_promote_tick(index))
+			sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
+		index_close(index, AccessShareLock);
+		return;
+	}
 	if (priced)
 	{
 		bool		unclean;
@@ -269,6 +281,10 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 			sift_maint_register_worker(index, worker);
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 		owed_vacuum = 0;
+	}
+	else if (sift_col_promote_tick(index))
+	{
+		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 	}
 	else if (OidIsValid(vacuum_heap_of(indexoid)) && sift_col_rewrite_tick(index, owed_rewrite))
 	{

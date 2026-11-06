@@ -397,3 +397,9 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 -	agg_window_topn	200000	picked	default	instr_m	161	10	bench case agg_window_topn, records in program-scale/realq42b/wp08
 -	agg_window_topn	200000	native	default	exec_ms	30.1	25	bench case agg_window_topn, native plan, records in program-scale/realq42b/wp08
 -	agg_window_topn	200000	native	default	instr_m	396	10	bench case agg_window_topn, native plan, records in program-scale/realq42b/wp08
+96.4 million instructions	col_wbuf_read_priced	200000	sift	buffered	instr_m	96.4	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+3.79 million instructions	col_wbuf_read_priced	200000	sift	default	instr_m	3.79	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+98.2 million instructions	col_wbuf_read_priced_set	200000	sift	buffered	instr_m	98.2	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+4.47 million instructions	col_wbuf_read_priced_set	200000	sift	default	instr_m	4.47	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+120.3 million instructions	col_wbuf_read_priced_all	200000	sift	buffered	instr_m	120.3	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec
+19.2 million instructions	col_wbuf_read_priced_all	200000	sift	default	instr_m	19.2	25	run accfd4ff41ca-20261106T020235Z-2b09, records in program-scale/records/cases-col_wbuf_read_priced-20261105.rec

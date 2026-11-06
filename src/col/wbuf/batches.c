@@ -529,6 +529,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 		{
 			memcpy(s->lane, lane, sizeof(lane));
 			s->fills++;
+			sift_cwbuf_decoded_note(index, entry->gen, f.nheld);
 			return s;
 		}
 rebuild:
@@ -538,6 +539,7 @@ rebuild:
 	fresh_read(r, s->lane, s->stamp, &f);
 	if (!set_fill(s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
+	sift_cwbuf_decoded_note(index, entry->gen, f.nheld);
 	return s;
 }
 

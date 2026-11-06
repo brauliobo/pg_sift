@@ -61,6 +61,53 @@ overlay_worth(Relation index, const OverlayEv *ev)
 	return spared > 0 && index_scans(index) * (spared * unit + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
 }
 
+/*
+ * What a row of the write buffer costs the first statement of each backend that reads it (decode, sort, dictionaries and encode of its batches: 115 M instructions for 19,619 rows,
+ * 5,900 a row) and what its promotion costs, once, in instructions and WAL (364 M instructions and 714 KB for the same rows: 18,600 a row).
+ */
+#define WBUF_READ_ROW_PRICE		5900.0
+#define WBUF_PROMOTE_ROW_PRICE	18600.0
+
+/*
+ * Have the backends that read the open write buffer paid for its promotion? The rows they decoded cost WBUF_READ_ROW_PRICE each; the promotion costs its rows once, and a
+ * maintenance step counts at half. A buffer under a quarter of a unit is not worth a segment, which costs every later read UNIT_PRICE + SEG_PRICE (the rule of
+ * sift_cwbuf_seal_vacuum). A buffer no one reads has no rows decoded, so a table that is only written never promotes before its limit.
+ */
+bool
+maint_wbuf_read_due(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	const double least = SIFT_COL_UNIT_MAX_ROWS / 4;
+	bool		due = false;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs && !due; i++)
+	{
+		double		paid;
+		uint64		nrows,
+					npages;
+
+		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
+			continue;
+		paid = (double) sift_cwbuf_decoded(index, snap->segs[i].gen) * WBUF_READ_ROW_PRICE;
+		if (paid < MAINT_HALF * WBUF_PROMOTE_ROW_PRICE * least)
+			continue;
+		sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
+		due = (double) nrows >= least && paid >= MAINT_HALF * WBUF_PROMOTE_ROW_PRICE * (double) nrows;
+	}
+	pfree(snap);
+	return due;
+}
+
+/* The worker that seals and promotes the open write buffer, when the reads of the server have paid for it (a table that opted out of autovacuum is promoted too: no VACUUM is asked) */
+bool
+sift_col_promote_tick(Relation index)
+{
+	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return false;
+	return maint_wbuf_read_due(index) && sift_maint_request_worker(index, "sift_col_read_promote_worker_main");
+}
+
 /* Do the reads of this backend owe the rewrite of the index? The rows are the directory's: no unit is read */
 bool
 maint_read_due(Relation index, double owed)

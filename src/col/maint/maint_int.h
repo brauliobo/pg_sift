@@ -130,6 +130,8 @@ extern bool	maint_rewrite_all(const char *why);
 /* the reads of a backend owe the rewrite (maint_read_due); the worker started for it takes the rewrite as due */
 extern bool	maint_read_asked;
 extern bool	maint_read_due(Relation index, double owed);
+/* the backends that read the open write buffer decoded rows that cost more than its promotion (the worker started for it seals and promotes) */
+extern bool	maint_wbuf_read_due(Relation index);
 
 extern void	maint_rewrite_request(Relation index);
 

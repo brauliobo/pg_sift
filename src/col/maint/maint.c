@@ -202,8 +202,9 @@ worker_failed(Oid indexoid, const char *name, MemoryContext cx)
 	FreeErrorData(err);
 }
 
-void
-sift_col_maint_worker_main(Datum main_arg)
+/* seal: the open write buffer is sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
+static void
+maint_worker(Datum main_arg, bool seal)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
@@ -223,6 +224,8 @@ sift_col_maint_worker_main(Datum main_arg)
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
+			if (seal && maint_wbuf_read_due(index))
+				sift_cwbuf_seal(index, true);
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
 				CHECK_FOR_INTERRUPTS();
@@ -239,6 +242,18 @@ sift_col_maint_worker_main(Datum main_arg)
 		worker_failed(indexoid, name, cx);
 	}
 	PG_END_TRY();
+}
+
+void
+sift_col_maint_worker_main(Datum main_arg)
+{
+	maint_worker(main_arg, false);
+}
+
+void
+sift_col_read_promote_worker_main(Datum main_arg)
+{
+	maint_worker(main_arg, true);
 }
 
 /*

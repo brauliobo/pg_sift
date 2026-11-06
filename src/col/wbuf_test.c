@@ -27,6 +27,7 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "col/maint/maint_int.h"
 #include "col/wbuf.h"
 #include "core/lane.h"
 
@@ -44,6 +45,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
+PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
 
 #define NCOLS		10
 #define ID_BITS		24
@@ -682,6 +684,36 @@ sift_test_col_wbuf_segments(PG_FUNCTION_ARGS)
 	}
 	relation_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/*
+ * (index regclass) -> (decoded, nrows, due): for a sift_col index, the rows the backends of the server decoded from its open write buffer, the rows the buffer holds
+ * and whether maint_wbuf_read_due asks for its promotion
+ */
+Datum
+sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = read_dir(index);
+	TupleDesc	tupdesc;
+	Datum		values[3] = {0, 0, 0};
+	bool		nulls[3] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, &snap->segs[i], &nrows, &npages);
+			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
+			values[1] = Int64GetDatum(nrows);
+		}
+	values[2] = BoolGetDatum(maint_wbuf_read_due(index));
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
 #endif							/* SIFT_TESTING */
