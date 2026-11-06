@@ -103,4 +103,12 @@ typedef struct config_enum_entry SiftEnumEntry;
 	} while (0)
 #endif
 
+/*
+ * The grow of an array that is allocated on its first use: p = p ? repalloc(p, n) : palloc(n), with n written once.
+ * _IN allocates in the given context, _HUGE_IN is the allocation above 1 GB. Macros: a hot append keeps its compare and branch.
+ */
+#define SIFT_REGROW(p, n)				((p) = (p) ? repalloc((p), (n)) : palloc(n))
+#define SIFT_REGROW_IN(cx, p, n)		((p) = (p) ? repalloc((p), (n)) : MemoryContextAlloc((cx), (n)))
+#define SIFT_REGROW_HUGE_IN(cx, p, n)	((p) = (p) ? repalloc_huge((p), (n)) : MemoryContextAllocHuge((cx), (n)))
+
 #endif							/* SIFT_HOST_H */

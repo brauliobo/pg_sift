@@ -107,7 +107,7 @@ merge_tombs(SiftTombLog *t, SiftTomb **a, uint32 *na, uint32 *cap, const SiftTom
 	if (k > *cap)
 	{
 		*cap = Max(64, Max(*cap * 2, k));
-		*a = *a ? repalloc(*a, *cap * sizeof(SiftTomb)) : MemoryContextAlloc(t->cxt, *cap * sizeof(SiftTomb));
+		SIFT_REGROW_IN(t->cxt, *a, *cap * sizeof(SiftTomb));
 	}
 	while (j > 0)
 		(*a)[--k] = i > 0 && cmp_tomb(&(*a)[i - 1], &b[j - 1]) > 0 ? (*a)[--i] : b[--j];
@@ -306,7 +306,7 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
 			capbatch = Max(64, Max(capbatch * 2, nbatch + tp->nent));
-			batch = batch ? repalloc(batch, capbatch * sizeof(SiftTomb)) : palloc(capbatch * sizeof(SiftTomb));
+			SIFT_REGROW(batch, capbatch * sizeof(SiftTomb));
 		}
 		for (uint32 i = from; i < tp->nent; i++)
 		{

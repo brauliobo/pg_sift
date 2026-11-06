@@ -294,8 +294,7 @@ scan_free(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (s->nhave + fl->n + 1 > s->maxhave)
 	{
 		s->maxhave = Max(64, 2 * (s->nhave + fl->n + 1));
-		s->have = s->have ? repalloc(s->have, s->maxhave * sizeof(SiftFreeExtent)) :
-			palloc(s->maxhave * sizeof(SiftFreeExtent));
+		SIFT_REGROW(s->have, s->maxhave * sizeof(SiftFreeExtent));
 	}
 	memcpy(s->have + s->nhave, fl->ext, fl->n * sizeof(SiftFreeExtent));
 	s->nhave += fl->n;
@@ -400,12 +399,12 @@ collect_chain(BlockNumber blk, const SiftFreeListData *fl, void *arg)
 	if (c->n + fl->n + c->npages + 1 > c->maxext)
 	{
 		c->maxext = Max(64, 2 * (c->n + (int) fl->n + c->npages + 1));
-		c->ext = c->ext ? repalloc(c->ext, c->maxext * sizeof(SiftFreeExtent)) : palloc(c->maxext * sizeof(SiftFreeExtent));
+		SIFT_REGROW(c->ext, c->maxext * sizeof(SiftFreeExtent));
 	}
 	if (c->npages + 1 > c->maxpage)
 	{
 		c->maxpage = Max(8, 2 * c->maxpage);
-		c->page = c->page ? repalloc(c->page, c->maxpage * sizeof(BlockNumber)) : palloc(c->maxpage * sizeof(BlockNumber));
+		SIFT_REGROW(c->page, c->maxpage * sizeof(BlockNumber));
 	}
 	for (uint32 i = 0; i < fl->n; i++)
 	{

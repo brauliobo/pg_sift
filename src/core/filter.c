@@ -21,8 +21,7 @@ open_sb(SiftFilter *f, uint32 sb)
 	if (f->nsb == f->capsb)
 	{
 		f->capsb = Max(64, 2 * f->capsb);
-		f->sb = f->sb ? repalloc_huge(f->sb, f->capsb * sizeof(SiftFilterSB)) :
-			MemoryContextAllocHuge(f->mcxt, f->capsb * sizeof(SiftFilterSB));
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->sb, f->capsb * sizeof(SiftFilterSB));
 	}
 	fs = &f->sb[f->nsb++];
 	memset(fs, 0, sizeof(SiftFilterSB));
@@ -37,8 +36,7 @@ new_row(SiftFilter *f)
 	if (f->nrow == f->caprow)
 	{
 		f->caprow = Max(64, 2 * f->caprow);
-		f->row = f->row ? repalloc_huge(f->row, f->caprow * sizeof(f->row[0])) :
-			MemoryContextAllocHuge(f->mcxt, f->caprow * sizeof(f->row[0]));
+		SIFT_REGROW_HUGE_IN(f->mcxt, f->row, f->caprow * sizeof(f->row[0]));
 	}
 	memset(f->row[f->nrow], 0, sizeof(f->row[0]));
 	return f->row[f->nrow++];
