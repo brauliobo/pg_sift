@@ -8,8 +8,8 @@ INSERT INTO gs_events
 SELECT g, 1 + g % 40, date '2025-01-01' + g % 60, jsonb_build_object('total', g % 10, 'grade_a', g % 7, 'grade', g % 5, 'size_b', g % 3)
 FROM generate_series(1, 20000) g;
 CREATE INDEX gs_events_col ON gs_events USING sift_col (id, dim_a_id, d, metrics_a) WITH (paths = 'metrics_a.* float8');
-NOTICE:  sift_col index "gs_events_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = metrics_a; track_changes = id
+NOTICE:  sift_col index "gs_events_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gs_events_col');
 VACUUM (FREEZE, ANALYZE) gs_events;
 CREATE FUNCTION gs_query(entity int) RETURNS text LANGUAGE sql AS $f$

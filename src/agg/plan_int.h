@@ -466,6 +466,12 @@ extern int	vleaf_source(AggCtx *c, int j);
 extern SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 
 extern SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **target);
+extern bool negate_existential(SiftAggPred *p);	/* agg/plan_not.c: NOT, IS FALSE and IS NOT TRUE of existential tests */
+extern SiftAggPred *compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target);
+extern SiftAggPred *compile_not_true(AggCtx *c, SiftAggPred *p);
+extern SiftAggPred *compile_not_haskey(AggCtx *c, BoolExpr *b);
+extern bool source_tests_only(const SiftAggPred *p);
+extern void complement_tests(SiftAggPred *p);
 extern List *array_eq_conjuncts(AggCtx *c, Node *e, bool *complete);
 extern SiftAggPred *compile_exists_post(AggCtx *c, SubPlan *sp);
 extern bool scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args);

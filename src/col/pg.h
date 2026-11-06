@@ -137,14 +137,6 @@ enum
 	SIFT_COL_ARRLEN_OFF
 };
 
-/* The values of the option document_present: the build writes on for an index with a jsonb column (auto is an index built before it, which has no leaf for the document itself) */
-enum
-{
-	SIFT_COL_PRESENT_AUTO,
-	SIFT_COL_PRESENT_ON,
-	SIFT_COL_PRESENT_OFF
-};
-
 typedef struct SiftColOptions
 {
 	int32		vl_len_;
@@ -167,7 +159,7 @@ typedef struct SiftColOptions
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
-	int			document_present;	/* SIFT_COL_PRESENT_*: every jsonb column keeps a boolean leaf that is NULL where the document is SQL NULL */
+	int			document_present;	/* offset of the "document_present" string (the jsonb columns that keep a boolean leaf, NULL where the document is SQL NULL), 0 = auto */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
@@ -203,6 +195,7 @@ extern const char *sift_col_options_preagg(Relation index);	/* "" when none (def
 extern const char *sift_col_options_rollup(Relation index);	/* "" when none (automatic) */
 extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_document_present(Relation index);	/* NULL when the option is not set: the build has not chosen yet, or an index written without it */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */

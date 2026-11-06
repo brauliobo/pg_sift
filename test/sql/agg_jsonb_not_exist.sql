@@ -49,11 +49,18 @@ INSERT INTO tests (name, cond) VALUES
   ('array contains',      $q$tags @> ARRAY[3, 4]$q$),
   ('array contained',     $q$tags <@ ARRAY[3, 4, 5]$q$),
   ('array equal',         $q$tags = ARRAY[3]$q$),
+  ('both containments',   $q$doc @> '{"b": "x"}' AND doc @> '{"n": 3}'$q$),
+  ('either containment',  $q$doc @> '{"b": "x"}' OR doc @> '{"n": 3}'$q$),
+  ('containment or g',    $q$doc @> '{"b": "x"}' OR g = 3$q$),
+  ('containment and g',   $q$doc @> '{"b": "x"}' AND g < 4$q$),
+  ('key or containment',  $q$doc ? 't' OR doc @> '{"b": "x"}'$q$),
+  ('array and key',       $q$tags && ARRAY[3] AND doc ? 't'$q$),
   ('document is null',    $q$doc IS NULL$q$),
   ('document not null',   $q$doc IS NOT NULL$q$);
 
 CREATE TABLE forms (ord serial, name text, tmpl text);
 INSERT INTO forms (name, tmpl) VALUES
+  ('where',        'SELECT count(*), sum(id) FROM %1$s WHERE %2$s'),
   ('not',          'SELECT count(*), sum(id) FROM %1$s WHERE NOT (%2$s)'),
   ('not and',      'SELECT g, count(*) FROM %1$s WHERE NOT (%2$s) AND g < 5 GROUP BY g'),
   ('filter not',   'SELECT g, count(*) FILTER (WHERE NOT (%2$s)), sum(id) FILTER (WHERE NOT (%2$s)) FROM %1$s GROUP BY g'),
@@ -64,6 +71,9 @@ INSERT INTO forms (name, tmpl) VALUES
 SELECT count(*) FROM jx WHERE NOT (doc @> '{"b": "x"}');
 CREATE TABLE qs AS SELECT row_number() OVER (ORDER BY tb.ord, t.ord, f.ord) AS n, tb.name || ': ' || t.name || ', ' || f.name AS label, format(f.tmpl, tb.name, t.cond) AS q
 FROM tests t, forms f, (VALUES (1, 'jx'), (2, 'jy'), (3, 'jo'), (4, 'jd')) tb(ord, name);
+-- the leaf of document_present: jx has a NOT NULL document and needs none, the nullable ones have it, jo is the index of a release before the option
+SELECT i.indrelid::regclass AS tbl, bool_or(l.path = 'doc#present') AS has_leaf FROM pg_index i, LATERAL sift.col_leaves(i.indexrelid) l
+WHERE i.indrelid IN ('jx'::regclass, 'jy'::regclass, 'jo'::regclass, 'jd'::regclass) AND i.indisready AND i.indexrelid::regclass::text LIKE 'j%\_col' GROUP BY 1 ORDER BY 1;
 -- jx: the column has a NOT NULL constraint; jy: it may be NULL (NULL, {} and a document of undeclared keys among the rows); jo: jy with the index of a release before
 -- document_present; jd: documents that are not objects (an array, a string, a JSON null) beside the NULL ones, which the index holds as overflow
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;

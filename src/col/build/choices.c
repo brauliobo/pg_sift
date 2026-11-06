@@ -10,7 +10,6 @@
 #include <math.h>
 #include "access/table.h"
 #include "catalog/pg_constraint.h"
-#include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -157,20 +156,10 @@ d_array_lengths(Derive *d)
 static void
 d_document_present(Derive *d)
 {
-	StringInfoData names;
+	const char *v = sift_col_options_document_present(d->index);
 
-	if (sift_col_options(d->index)->document_present != SIFT_COL_PRESENT_ON)
-		return;
-	initStringInfo(&names);
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(d->index); i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(d->index), i);
-
-		if (att->atttypid == JSONBOID)
-			appendStringInfo(&names, "%s%s", names.len ? ", " : "", NameStr(att->attname));
-	}
-	if (names.len > 0)
-		add(d, "document-present", names.data, NULL);
+	if (v != NULL && strncmp(v, "auto:", 5) == 0)
+		add(d, "document-present", pstrdup(v + 5 + strspn(v + 5, " ")), NULL);
 }
 
 /* paths = 'auto: spec': the element tokens of array columns ("name[] type", "+name[] type") are the elements of arrays, the others the paths of jsonb columns */

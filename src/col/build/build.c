@@ -94,6 +94,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
 	bool		chosen;
+	char	   *present;
 
 	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
 	sift_cwbuf_discard(RelationGetRelid(index));
@@ -124,7 +125,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #endif
 	sift_col_auto_arrlen(index);
 	sift_col_auto_paths(heap, index);
-	sift_col_auto_present(index);
+	if ((present = sift_col_present_choice(heap, index)) != NULL)
+		sift_col_set_option(index, "document_present", psprintf("auto: %s", present));
 	sift_col_auto_cube(heap, index);
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);

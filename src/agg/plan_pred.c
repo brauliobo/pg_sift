@@ -669,93 +669,6 @@ compile_junction(AggCtx *c, SiftAggPredKind kind, List *args)
 	return p;
 }
 
-/* the negation of an existential test of a document that is not NULL: an element test and a NULL test flip, an AND of them is the OR of their negations (and the reverse); false: a test of the cardinality or of the elements in order has none */
-static bool
-negate_existential(SiftAggPred *p)
-{
-	if (p->kind == SAP_AND || p->kind == SAP_OR)
-	{
-		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
-		for (int i = 0; i < p->nchild; i++)
-			if (!negate_existential(p->child[i]))
-				return false;
-	}
-	else if (p->kind == SAP_CMP || (p->kind == SAP_ANY_ELEM && p->op == 2))
-		return false;
-	else if (p->kind == SAP_ANY_ELEM || p->kind == SAP_NULL)
-		p->op ^= 1;
-	else if (p->kind == SAP_IN)
-		p->op = 1;
-	else
-		return false;
-	return true;
-}
-
-static SiftAggPred *compile_not_true(AggCtx *c, SiftAggPred *p);
-
-/*
- * NOT (a && k), NOT (a @> k), NOT (a <@ k) of an array column that may be NULL, NOT (doc @> k) of a jsonb column that may be NULL: the test is NULL for a
- * NULL document, and NOT of it keeps no row, so the rows are those of a IS NOT NULL whose elements fail the test (a NULL element never matches, so the
- * test is never NULL for another array; a document is never NULL otherwise). NULL: the index has no way to tell a NULL document (neither the lengths
- * of an array nor the leaf of option document_present), or the test is not an existential one.
- */
-static SiftAggPred *
-compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
-{
-	NullTest   *nt;
-	SiftAggPred *nn,
-			   *both;
-
-	if ((!OidIsValid(get_element_type(exprType(target))) && present_leaf(c, target) < 0) || p->level > 1)
-		return NULL;
-	nt = makeNode(NullTest);
-	nt->arg = (Expr *) target;
-	nt->nulltesttype = IS_NOT_NULL;
-	if ((nn = compile_pred(c, (Node *) nt)) == NULL || nn->level > 1)
-		return NULL;
-	if (negate_existential(p))
-		p->desc = psprintf("NOT %s", p->desc);
-	else if ((p = compile_not_true(c, compile_existential(c, strip_relabel(linitial(b->args)), &target))) == NULL)	/* p is half flipped: the test again, whose complement is the rows that fail it */
-		return NULL;
-	both = new_junction(c, SAP_AND, 2);
-	both->child[0] = nn;
-	both->child[1] = p;
-	junction_done(both);
-	return both;
-}
-
-/* the kinds whose bitmap is exactly the rows they keep (the executor or the source evaluates them), so that the complement is the rows they do not keep */
-#define BITMAP_KINDS ((1 << SAP_TRUE) | (1 << SAP_FALSE) | (1 << SAP_CMP) | (1 << SAP_IN) | (1 << SAP_NULL) | (1 << SAP_LUT) | (1 << SAP_NCMP) | (1 << SAP_LEAFCMP) | (1 << SAP_WIDE) | (1 << SAP_ANY_ELEM) | (1 << SAP_NOT_TRUE))
-
-static bool
-complementable(const SiftAggPred *p)
-{
-	if (p->level != 0 || p->late || p->pass_poison)
-		return false;
-	if (p->kind != SAP_AND && p->kind != SAP_OR)
-		return (BITMAP_KINDS >> p->kind & 1) != 0;
-	for (int i = 0; i < p->nchild; i++)
-		if (!complementable(p->child[i]))
-			return false;
-	return true;
-}
-
-/* the rows p does not keep, a NULL result among them (IS NOT TRUE); NULL when its bitmap is not exactly the rows it keeps */
-static SiftAggPred *
-compile_not_true(AggCtx *c, SiftAggPred *p)
-{
-	SiftAggPred *w;
-
-	if (p == NULL || !complementable(p))
-		return NULL;
-	w = new_pred(c, SAP_NOT_TRUE);
-	w->nchild = 1;
-	w->child = palloc(sizeof(SiftAggPred *));
-	w->child[0] = p;
-	w->desc = psprintf("(%s) IS NOT TRUE", p->desc);
-	return w;
-}
-
 static SiftAggPred *
 compile_bool(AggCtx *c, BoolExpr *b)
 {
@@ -764,6 +677,23 @@ compile_bool(AggCtx *c, BoolExpr *b)
 
 	if (b->boolop != NOT_EXPR)
 		return compile_junction(c, b->boolop == AND_EXPR ? SAP_AND : SAP_OR, b->args);
+	if (IsA(strip_relabel(linitial(b->args)), NullTest) && !((NullTest *) strip_relabel(linitial(b->args)))->argisrow)	/* NOT (x IS NULL) is x IS NOT NULL */
+	{
+		NullTest   *nt = copyObject((NullTest *) strip_relabel(linitial(b->args)));
+
+		nt->nulltesttype = nt->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
+		return compile_pred(c, (Node *) nt);
+	}
+	/* NOT (a AND b) is NOT a OR NOT b, and NOT (a OR b) is NOT a AND NOT b, with NULLs too: each NOT meets the nullable document alone */
+	if (IsA(strip_relabel(linitial(b->args)), BoolExpr) && ((BoolExpr *) strip_relabel(linitial(b->args)))->boolop != NOT_EXPR)
+	{
+		BoolExpr   *j = (BoolExpr *) strip_relabel(linitial(b->args));
+		List	   *nots = NIL;
+
+		foreach_ptr(Node, a, j->args)
+			nots = lappend(nots, makeBoolExpr(NOT_EXPR, list_make1(a), -1));
+		return compile_pred(c, (Node *) makeBoolExpr(j->boolop == AND_EXPR ? OR_EXPR : AND_EXPR, nots, -1));
+	}
 	if ((p = compile_wide(c, (Node *) b)) != NULL)
 		return p;
 	/* NOT of an existential test is its negation unless the test can be NULL (a NULL document) */
@@ -873,48 +803,6 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
-/* is the predicate an AND / OR of the source's tests (SAP_WIDE, SAP_TYPE), the rows that pass of each a bitmap? */
-static bool
-source_tests_only(const SiftAggPred *p)
-{
-	if (p->kind == SAP_WIDE || p->kind == SAP_TYPE)
-		return true;
-	if (p->kind != SAP_AND && p->kind != SAP_OR)
-		return false;
-	for (int i = 0; i < p->nchild; i++)
-		if (!source_tests_only(p->child[i]))
-			return false;
-	return true;
-}
-
-/* the rows p does not keep (IS NOT TRUE: a NULL is one), of a tree of source tests: the dual junction over the complements of the tests, De Morgan on the sets of rows that pass */
-static void
-complement_tests(SiftAggPred *p)
-{
-	if (p->kind == SAP_WIDE)
-		p->negated = !p->negated;
-	else if (p->kind == SAP_TYPE)
-		p->op = SIFT_SRC_JT_ALL & ~p->op;	/* the types are all there are, a missing key and a NULL document among them */
-	else
-		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
-	for (int i = 0; i < p->nchild; i++)
-		complement_tests(p->child[i]);
-}
-
-/* NOT of a key test (doc ? 'k') of a document column that is NOT NULL: the test is never NULL, so its negation keeps the rows of the other types; a nullable document has no leaf that tells it from a missing key */
-static SiftAggPred *
-compile_not_haskey(AggCtx *c, BoolExpr *b)
-{
-	Node	   *t = strip_relabel(linitial(b->args));
-	SiftAggPred *p = compile_haskey(c, t);
-
-	if (p == NULL || !target_not_null(c, linitial(func_args(t))))
-		return NULL;
-	complement_tests(p);
-	p->desc = psprintf("NOT %s", p->desc);
-	return p;
-}
-
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
@@ -973,6 +861,14 @@ compile_pred(AggCtx *c, Node *n)
 		p = make_leaf_pred(c, SAP_NULL, leaf);
 		p->op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL;
 		p->desc = psprintf("%s IS %sNULL", leaf_name(c, leaf), p->op ? "NOT " : "");
+		return p;
+	}
+	/* the document of a jsonb column with a NOT NULL constraint is never NULL: its index has no leaf for it */
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && exprType((Node *) ((NullTest *) n)->arg) == JSONBOID && attr_of_expr(c, strip_relabel((Node *) ((NullTest *) n)->arg)) > 0 &&
+		target_not_null(c, (Node *) ((NullTest *) n)->arg))
+	{
+		p = new_pred(c, ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SAP_TRUE : SAP_FALSE);
+		p->desc = psprintf("%s IS %sNULL", expr_text(c, (Node *) ((NullTest *) n)->arg), p->kind == SAP_TRUE ? "NOT " : "");
 		return p;
 	}
 	if (IsA(n, OpExpr) && (p = compile_cmp(c, (OpExpr *) n)) != NULL)

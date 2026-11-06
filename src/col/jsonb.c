@@ -246,6 +246,8 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	return a;
 }
 
+static bool present_wanted(Relation index, const char *attname);
+
 SiftColShredAdapter *
 sift_col_shred_create(MemoryContext mcxt, Relation index)
 {
@@ -255,30 +257,51 @@ sift_col_shred_create(MemoryContext mcxt, Relation index)
 	if (paths[0] == '\0')
 		return NULL;
 	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
-	if (sift_col_options(index)->document_present == SIFT_COL_PRESENT_ON)
-		for (int i = 1; i <= a->natts; i++)
-			if (a->attr[i].n > 0 && !a->attr[i].array)
-			{
-				ShredLeaf  *l = add_leaf(&a->attr[i], LEAF_PRESENT, -1, SIFT_COLK_SCALAR, MemoryContextStrdup(mcxt, psprintf("%s#present", a->attr[i].name)), -1, -1);
+	for (int i = 1; i <= a->natts; i++)
+		if (a->attr[i].n > 0 && !a->attr[i].array && present_wanted(index, a->attr[i].name))
+		{
+			ShredLeaf  *l = add_leaf(&a->attr[i], LEAF_PRESENT, -1, SIFT_COLK_SCALAR, MemoryContextStrdup(mcxt, psprintf("%s#present", a->attr[i].name)), -1, -1);
 
-				l->def.store = SIFT_COLS_INT;
-				l->def.type = SIFT_COLT_BOOL;
-			}
+			l->def.store = SIFT_COLS_INT;
+			l->def.type = SIFT_COLT_BOOL;
+		}
 	return a;
 }
 
-/* document_present = auto: an index with a jsonb column that has paths keeps the presence of its documents; written as 'on' before the build, so that the build, its workers and a REINDEX share one schema */
-void
-sift_col_auto_present(Relation index)
+/* does the option document_present name the jsonb column: on (all), off, auto (none yet), 'doc, attrs' or the 'auto: doc, attrs' that a build writes */
+static bool
+present_wanted(Relation index, const char *attname)
 {
-	if (sift_col_options(index)->document_present != SIFT_COL_PRESENT_AUTO || sift_col_options_paths(index)[0] == '\0')
-		return;
+	const char *v = sift_col_options_document_present(index);
+
+	if (v == NULL || pg_strcasecmp(v, "auto") == 0 || pg_strcasecmp(v, "off") == 0 || pg_strcasecmp(v, "false") == 0)
+		return false;
+	return pg_strcasecmp(v, "on") == 0 || pg_strcasecmp(v, "true") == 0 || sift_col_list_has(v, attname);
+}
+
+/*
+ * document_present unset or auto: the jsonb columns of the index that may hold a NULL document (no NOT NULL constraint on the column of the table: a CHECK or a
+ * domain that forbids NULL is not seen) keep the presence of their documents; written as 'auto: doc, attrs' before the build, so that the build, its workers and
+ * a REINDEX share one schema, and ALTER TABLE .. SET NOT NULL cannot change the layout of an index. NULL: no column needs it.
+ */
+char *
+sift_col_present_choice(Relation heap, Relation index)
+{
+	const char *v = sift_col_options_document_present(index);
+	StringInfoData names;
+
+	if ((v != NULL && pg_strcasecmp(v, "auto") != 0) || sift_col_options_paths(index)[0] == '\0')
+		return NULL;
+	initStringInfo(&names);
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid == JSONBOID)
-		{
-			sift_col_set_option(index, "document_present", "on");
-			return;
-		}
+	{
+		AttrNumber	col = index->rd_index->indkey.values[i];
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+
+		if (att->atttypid == JSONBOID && (col == 0 || !TupleDescAttr(RelationGetDescr(heap), col - 1)->attnotnull))
+			appendStringInfo(&names, "%s%s", names.len ? ", " : "", NameStr(att->attname));
+	}
+	return names.len > 0 ? names.data : NULL;
 }
 
 int

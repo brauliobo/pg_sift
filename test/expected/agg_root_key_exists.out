@@ -105,7 +105,7 @@ SELECT * FROM hk_run('hk');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1200} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} normal
+ 7 not                  | same {"count": 2200} pushed
  8 or                   | same {"count": 3040} pushed
  9 two keys             | same {"count": 600} pushed
 (16 rows)
@@ -126,7 +126,7 @@ SELECT * FROM hk_run('ho');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1200} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} normal
+ 7 not                  | same {"count": 2200} pushed
  8 or                   | same {"count": 3040} pushed
  9 two keys             | same {"count": 600} pushed
 (16 rows)
@@ -147,7 +147,7 @@ SELECT * FROM hk_run('hm');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1200} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} normal
+ 7 not                  | same {"count": 2200} pushed
  8 or                   | same {"count": 3040} pushed
  9 two keys             | same {"count": 600} pushed
 (16 rows)
@@ -168,7 +168,7 @@ SELECT * FROM hk_run('hc');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1000} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} normal
+ 7 not                  | same {"count": 2200} pushed
  8 or                   | same {"count": 3040} pushed
  9 two keys             | same {"count": 600} pushed
 (16 rows)
@@ -213,7 +213,7 @@ SELECT * FROM hk_run('hk');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -234,7 +234,7 @@ SELECT * FROM hk_run('ho');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -255,7 +255,7 @@ SELECT * FROM hk_run('hm');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -276,7 +276,7 @@ SELECT * FROM hk_run('hc');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 961} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2102} normal
+ 7 not                  | same {"count": 2102} pushed
  8 or                   | same {"count": 2900} pushed
  9 two keys             | same {"count": 576} pushed
 (16 rows)
@@ -314,7 +314,7 @@ SELECT * FROM hk_run('hk');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -335,7 +335,7 @@ SELECT * FROM hk_run('ho');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -356,7 +356,7 @@ SELECT * FROM hk_run('hm');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1198} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} normal
+ 7 not                  | same {"count": 2203} pushed
  8 or                   | same {"count": 3039} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -377,7 +377,7 @@ SELECT * FROM hk_run('hc');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 961} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2102} normal
+ 7 not                  | same {"count": 2102} pushed
  8 or                   | same {"count": 2900} pushed
  9 two keys             | same {"count": 576} pushed
 (16 rows)
@@ -409,7 +409,7 @@ SELECT * FROM hk_run('ho');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1006} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 1821} normal
+ 7 not                  | same {"count": 1821} pushed
  8 or                   | same {"count": 2773} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)
@@ -430,7 +430,7 @@ SELECT * FROM hk_run('hm');
  5 absent key           | same {"count": 0} normal
  6 second key           | same {"count": 1006} pushed
  6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 1821} normal
+ 7 not                  | same {"count": 1821} pushed
  8 or                   | same {"count": 2773} pushed
  9 two keys             | same {"count": 604} pushed
 (16 rows)

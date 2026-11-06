@@ -1,7 +1,7 @@
 -- doc ? 'k', doc ?| array[..] and doc ?& array[..] on the document of an index that declares the paths as leaves are answered by the index wherever the test is: a branch of an OR
 -- or an AND, the FILTER of an aggregate, a CASE (a FILTER and its IS NOT TRUE), NOT and IS NOT TRUE, not only as a conjunct of the WHERE. The source gives the rows that pass as a bitmap
--- of the unit and never reads the value of the leaf, so the leaf must not be read besides (such a query keeps the normal plan, and so does a NOT of a document that may be NULL:
--- no leaf tells a NULL document from a missing key). Every query runs with and without the scan and the rows (or the error) must be the same, for documents of every JSON type
+-- of the unit and never reads the value of the leaf, so the leaf must not be read besides (such a query keeps the normal plan; a NOT of a document that may be NULL reads the leaf
+-- of option document_present, which tells a NULL document from a missing key). Every query runs with and without the scan and the rows (or the error) must be the same, for documents of every JSON type
 -- at the root, a JSON null and a NULL document, keys with a null value, nested keys (not a match), the empty key, a key of non ASCII letters, values the leaf cannot hold and
 -- large documents. The empty key cannot be declared as a path: its tests keep the normal plan.
 CREATE EXTENSION pg_sift;

@@ -188,6 +188,12 @@ select count(*), sum(amount) from events where (attrs @> '{"b":"x"}') is false;
 select status, count(*) filter (where not (attrs @> '{"b":"x"}')) as other, count(*) filter (where attrs @> '{"b":"x"}') as hits from events group by 1;
 -- @case pred_jsonb_is_null | pred | jsonb column IS NULL
 select count(*) filter (where attrs is null) as no_doc, count(*) filter (where attrs is not null) as doc from events;
+-- @case pred_jsonb_contains_and_is_false | pred | jsonb containment ANDed with a comparison, IS FALSE, the column may be NULL
+select count(*), sum(amount) from events where (attrs @> '{"b":"x"}' and kind_id = 3) is false;
+-- @case agg_jsonb_not_key_exists_filter | agg | FILTER on NOT of a jsonb key test, the column may be NULL
+select status, count(*) filter (where not (attrs ? 'b')) as no_key, count(*) filter (where attrs ? 'b') as key from events group by 1;
+-- @case pred_jsonb_is_null_is_false | pred | jsonb column (IS NULL) IS FALSE
+select count(*) from events where (attrs is null) is false;
 -- @case pred_jsonb_path | pred | jsonb path value
 select attrs->>'b', count(*), avg((attrs->>'a')::float8) from events group by 1;
 -- @case pred_array_overlap | pred | int[] overlap

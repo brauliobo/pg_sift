@@ -23,7 +23,8 @@ source.c: find_source text_io_leaf recordset_recheck_ok # tests of the FROM list
 plan_gen.c: gen_leaf_ok gen_walker slice_walker arg_joined compile_gen_arg spelling_free gen_eligible compile_gen # tests of a generic aggregate and its argument: compile_gen names the aggregate
 plan_join.c: reads_outer preserved_join lookup_ready child_cols_kept pushed_into_child null_row_passes column_equality array_keys # tests of one join condition or lookup (each is tried in turn): setup_joins names join_condition
 plan_path.c: jsonb_lit path_lit # tests of a jsonpath literal: the caller names where
-plan_pred.c: false_on_absent negate_existential # a test of a compiled predicate: no refusal
+plan_pred.c: false_on_absent # a test of a compiled predicate: no refusal
+plan_not.c: negate_existential # a test of a compiled predicate: no refusal
 plan_rows.c: pg_aggregate_ok # a test of an aggregate of the rows plan: the caller names rows_shape
 plan_range_join.c: range_conds # the conditions of one range of a join on a range: false is "the range is not one this can read", and the estimate stays the planner's, no refusal
 arms.c: append_arms same_scan from_same cond_split outer_cond # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
@@ -31,7 +32,7 @@ inner.c: arm_gates arm_having_expr outer_agg # steps of the two-level shape: two
 spine.c: spine_key two_keys two_aggs spine_where null_in_arms two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 plan_jindex.c: index_qual # a condition that is no bound or point of an index scan: the table is read whole, join_filter names nothing
 plan_type.c: typeof_cmp_operands typeof_test wide_test shape_test range_unary_test types_guard_reads # tests of a jsonb_typeof, wide or range or network comparison: the caller names where
-plan_pred.c: source_tests_only complementable # a predicate that is not an AND / OR of the source's tests is not one: a question, not a refusal
+plan_not.c: source_tests_only complementable # a predicate that is not an AND / OR of the source's tests is not one: a question, not a refusal
 plan_zone.c: array_consts zone_range_read zone_meets zone_may in_list_shape # zone pruning tests: a unit that cannot be pruned is read, no refusal
 spec_lits.c: re_lits like_lits sift_pattern_lits_of call_lits sift_pattern_lits # the literals a pattern requires: false is "none that are read", and the dictionary test then runs the pattern on every string
 spec.c: sift_aggspec_ascii_fold sift_aggspec_spillable sift_parse_decimal sift_aggspec_zone_cmp sift_aggspec_span_pred str_const like_test regex_literal pattern_test str_call_test strpos_test ilike_test str_in_test str_leaf_test sift_aggspec_elem_test # tests of a compiled spec (parallel workers, string tests): a scan that cannot use workers or a kernel is not a refusal

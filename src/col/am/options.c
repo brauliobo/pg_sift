@@ -185,14 +185,14 @@ static relopt_enum_elt_def array_lengths_names[] = {
 	{(const char *) NULL}
 };
 
-static relopt_enum_elt_def document_present_names[] = {
-	{"auto", SIFT_COL_PRESENT_AUTO},
-	{"on", SIFT_COL_PRESENT_ON},
-	{"true", SIFT_COL_PRESENT_ON},
-	{"off", SIFT_COL_PRESENT_OFF},
-	{"false", SIFT_COL_PRESENT_OFF},
-	{(const char *) NULL}
-};
+static void
+sift_col_validate_document_present(const char *value)
+{
+	/* the validator also checks the default, which is NULL: the option is not set until CREATE INDEX chooses it */
+	if (value != NULL && value[strspn(value, " ")] == '\0')
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid document_present option \"%s\"", value),
+						errhint("Use auto, on, off or a list of jsonb columns: 'doc, attrs'.")));
+}
 
 static relopt_enum_elt_def dict_lookup_names[] = {
 	{"auto", SIFT_COL_DICT_AUTO},
@@ -442,10 +442,9 @@ sift_col_init(void)
 					   "The array columns of the index keep their cardinality and array_length(x, 1) as two integer columns of their own, so that cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read without the arrays (about 1 byte a row for each array column): on for every array column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; after a change the table takes no write until the REINDEX",
 					   array_lengths_names, SIFT_COL_ARRLEN_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
-	add_enum_reloption(col_relopt_kind, "document_present",
-					   "Every jsonb column of the index keeps a boolean leaf of its own that is NULL where the document is SQL NULL, so that NOT (doc @> x), (doc @> x) IS FALSE and doc IS [NOT] NULL are read from the index and not from the table (about 416 bytes per 1,000,000 rows when no document is NULL): on for every jsonb column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; after a change the table takes no write until the REINDEX",
-					   document_present_names, SIFT_COL_PRESENT_AUTO,
-					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "document_present",
+						 "The jsonb columns of the index that keep a boolean column of their own, NULL where the document is SQL NULL, so that NOT (doc @> x), (doc @> x) IS FALSE and doc IS [NOT] NULL are read from the index and not from the table (one boolean leaf per column: 928 bytes of chunks for 1,000,000 rows, the index grows 0.4% to 5.9%): on for every jsonb column with paths, off for none, 'doc, attrs' for the columns named; auto (default) is the nullable jsonb columns with paths for the index that CREATE INDEX or REINDEX builds (written as 'auto: doc, attrs'; a column with a NOT NULL constraint needs none) and none for an index built before the option; after a change the table takes no write until the REINDEX",
+						 NULL, sift_col_validate_document_present, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
 					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
 					   dict_lookup_names, SIFT_COL_DICT_AUTO,
@@ -527,7 +526,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
 	{"key_table", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, key_table)},
 	{"array_lengths", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, array_lengths)},
-	{"document_present", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, document_present)},
+	{"document_present", RELOPT_TYPE_STRING, offsetof(SiftColOptions, document_present)},
 	{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
@@ -679,6 +678,8 @@ sift_col_alter_check(Relation index)
 	sift_col_row_key_check(index);
 	sift_col_track_reconcile(index);
 }
+
+COL_OPT_STR(sift_col_options_document_present, document_present, NULL)
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
 

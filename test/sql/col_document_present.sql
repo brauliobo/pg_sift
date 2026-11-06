@@ -21,6 +21,13 @@ CREATE INDEX dq_on ON dq USING sift_col (id, g, doc) WITH (key_cut = g, paths = 
 CREATE INDEX dp_on ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
 CREATE INDEX dp_off ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4', document_present = off);
 CREATE INDEX dp_plain ON dp USING sift_col (id, g) WITH (key_cut = g);
+-- dn: one jsonb column with a NOT NULL constraint (a NOT p is exact there: auto keeps no leaf for it), one that may be NULL, one under a CHECK that forbids NULL (not seen)
+CREATE TABLE dn (id int PRIMARY KEY, g int, a jsonb NOT NULL, b jsonb, c jsonb CHECK (c IS NOT NULL));
+INSERT INTO dn SELECT i, i % 5, '{"k": 1}', CASE WHEN i % 4 = 0 THEN NULL ELSE '{"k": 2}' END, '{"k": 3}' FROM generate_series(1, 600) i;
+CREATE INDEX dn_auto ON dn USING sift_col (id, g, a, b, c) WITH (key_cut = g, paths = 'a.k int4, b.k int4, c.k int4');
+CREATE INDEX dn_notnull ON dn USING sift_col (id, g, a) WITH (key_cut = g, paths = 'a.k int4');
+CREATE INDEX dn_on ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = on);
+CREATE INDEX dn_list ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a');
 VACUUM (FREEZE, ANALYZE) dp;
 VACUUM (FREEZE, ANALYZE) dq;
 CREATE TABLE qs (n serial, q text);
@@ -35,13 +42,13 @@ INSERT INTO qs (q) VALUES
 	('SELECT count(*), sum(id) FROM dp WHERE doc IS NOT NULL AND g = 2');
 CREATE FUNCTION dp_reads() RETURNS TABLE (n int, outcome text) LANGUAGE sql AS $$ SELECT n, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n $$;
 
-CREATE FUNCTION dp_state() RETURNS TABLE (idx text, option text, leaves int, present_leaves int, verified bool) LANGUAGE sql AS $$
+CREATE FUNCTION dp_state() RETURNS TABLE (idx text, option text, leaves int, present text, verified bool) LANGUAGE sql AS $$
 	SELECT c.relname::text,
 		(SELECT option_value FROM pg_options_to_table(c.reloptions) WHERE option_name = 'document_present'),
 		(SELECT count(*)::int FROM sift.col_leaves(c.oid::regclass)),
-		(SELECT count(*)::int FROM sift.col_leaves(c.oid::regclass) WHERE path = 'doc#present' AND type = 'boolean'),
+		(SELECT string_agg(path, ', ' ORDER BY leaf) FROM sift.col_leaves(c.oid::regclass) WHERE path LIKE '%#present' AND type = 'boolean'),
 		sift.col_verify(c.oid::regclass, true)::text = ''
-	FROM pg_class c WHERE c.relname ~ '^d[pq]_' AND c.relkind = 'i' ORDER BY 1 $$;
+	FROM pg_class c WHERE c.relname ~ '^d[pqn]_' AND c.relname !~ 'pkey' AND c.relkind = 'i' ORDER BY 1 $$;
 SELECT * FROM dp_state();
 SELECT * FROM dp_reads();
 
@@ -86,7 +93,7 @@ SELECT * FROM dp_state();
 CREATE INDEX dp_auto ON dp USING sift_col (id, g, doc) WITH (key_cut = g);
 SELECT * FROM dp_state();
 
-DROP TABLE dp, dq, qs;
+DROP TABLE dp, dq, qs, dn;
 DROP FUNCTION dp_doc(int), dq_doc(int), dp_state(), dp_reads();
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
