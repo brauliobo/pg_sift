@@ -1,7 +1,7 @@
 -- doc ? 'k' on the document of an index that declares the path k is pushed into the aggregate scan: the rows whose k holds a value of any JSON type (a JSON null too) are the
 -- rows with the key, and the documents that are no object (an array holding the string, the string itself) say that of themselves, which the leaf does not store: the source
 -- reads those rows again from the heap. Every query runs with and without the pushdown and the rows must be the same, for the documents of every JSON type at the root, for the
--- keys present, absent and JSON null, through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
+-- keys present, absent and JSON null (?& of keys that are leaves is several ?, ?| keeps the normal plan), through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
 -- is, and after the VACUUM that flags the old ones.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -23,20 +23,20 @@ $$ SELECT shape(CASE WHEN i % 24 IN (8, 9, 21) THEN i + 3 ELSE i END) $$;
 CREATE TABLE hk (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO hk SELECT i, i % 5, shape(i) FROM generate_series(1, 4800) i;
 INSERT INTO hk VALUES (4801, 0, NULL);
-CREATE INDEX hk_col ON hk USING sift_col (id, g, doc) WITH (paths = 'doc.k int4');
+CREATE INDEX hk_col ON hk USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 
 -- the segments of an older library: no string root is flagged
 CREATE TABLE ho (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO ho SELECT i, i % 5, shape(i) FROM generate_series(1, 4800) i;
 SET sift.test_no_roots = on;
-CREATE INDEX ho_col ON ho USING sift_col (id, g, doc) WITH (paths = 'doc.k int4');
+CREATE INDEX ho_col ON ho USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 RESET sift.test_no_roots;
 
 -- ... one of them next to a segment that is flagged
 CREATE TABLE hm (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO hm SELECT i, i % 5, shape(i) FROM generate_series(1, 2400) i;
 SET sift.test_no_roots = on;
-CREATE INDEX hm_col ON hm USING sift_col (id, g, doc) WITH (paths = 'doc.k int4');
+CREATE INDEX hm_col ON hm USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 RESET sift.test_no_roots;
 INSERT INTO hm SELECT i, i % 5, shape(i) FROM generate_series(2401, 4800) i;
 SELECT sift.col_promote('hm_col');
@@ -45,7 +45,7 @@ SELECT sift.col_promote('hm_col');
 CREATE TABLE hc (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO hc SELECT i, i % 5, shape_nostr(i) FROM generate_series(1, 4800) i;
 SET sift.test_no_roots = on;
-CREATE INDEX hc_col ON hc USING sift_col (id, g, doc) WITH (paths = 'doc.k int4');
+CREATE INDEX hc_col ON hc USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 RESET sift.test_no_roots;
 VACUUM ANALYZE hk, ho, hm, hc;
 
@@ -76,11 +76,14 @@ INSERT INTO hk_q VALUES
 	('3 sum',          'SELECT sum(id), min(id), max(id) FROM @ WHERE doc ? ''k'''),
 	('4 groups',       'SELECT g, count(*) FROM @ WHERE doc ? ''k'' GROUP BY g'),
 	('5 absent key',   'SELECT count(*) FROM @ WHERE doc ? ''zz'''),
-	('6 undeclared',   'SELECT count(*) FROM @ WHERE doc ? ''j'''),
+	('6 second key',   'SELECT count(*) FROM @ WHERE doc ? ''j'''),
+	('6b undeclared',  'SELECT count(*) FROM @ WHERE doc ? ''zz'' OR doc ? ''q'''),
 	('7 not',          'SELECT count(*) FROM @ WHERE NOT (doc ? ''k'')'),
 	('8 or',           'SELECT count(*) FROM @ WHERE doc ? ''k'' OR g = 1'),
 	('9 two keys',     'SELECT count(*) FROM @ WHERE doc ? ''k'' AND doc ? ''j'''),
 	('10 read too',    'SELECT count(*) FROM @ WHERE doc ? ''k'' AND (doc -> ''k'') IS NOT NULL'),
+	('14 all',          'SELECT count(*) FROM @ WHERE doc ?& array[''k'', ''j'']'),
+	('15 all, one undeclared', 'SELECT count(*) FROM @ WHERE doc ?& array[''k'', ''zz'']'),
 	('11 any',         'SELECT count(*) FROM @ WHERE doc ?| array[''k'', ''zz'']'),
 	('12 type test',   'SELECT count(*) FROM @ WHERE jsonb_typeof(doc -> ''k'') IS NOT NULL'),
 	('13 no document', 'SELECT count(*) FROM @ WHERE doc IS NULL');

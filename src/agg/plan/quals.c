@@ -100,6 +100,9 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		{
 			List	   *parts = contains_conjuncts(c, q);
 
+			if (parts == NIL)
+				parts = haskey_conjuncts(c, q);
+
 			expanded = parts != NIL ? list_concat(expanded, parts) : lappend(expanded, q);
 		}
 		quals = expanded;

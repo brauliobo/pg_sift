@@ -224,6 +224,36 @@ compile_typeof(AggCtx *c, Node *n)
 	return p;
 }
 
+/* the constant keys of doc ? 'k' or doc ?& array['a', 'b'] */
+static List *
+exists_keys(Node *n)
+{
+	Node	   *k = strip_relabel(lsecond(func_args(n)));
+	List	   *keys = NIL;
+
+	if (func_of(n) == F_JSONB_EXISTS_ALL)
+		return path_keys(k, &keys) ? keys : NIL;
+	if (IsA(k, Const) && !((Const *) k)->constisnull)
+		keys = list_make1(makeString(TextDatumGetCString(((Const *) k)->constvalue)));
+	return keys;
+}
+
+/* the leaf of the key k of the document of attribute att: the one compile_typeof tests, -1 when there is none */
+static int
+haskey_leaf(AggCtx *c, int att, const char *key)
+{
+	List	   *path = list_make1(makeString(pstrdup(key)));
+
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) && typeof_type(l->typid))
+			return i;
+	}
+	return -1;
+}
+
 typedef struct HasKeyReads
 {
 	AggCtx	   *c;
@@ -242,12 +272,12 @@ haskey_reads(Node *n, HasKeyReads *w)
 		return false;
 	if (IsA(n, Query))
 		return query_tree_walker((Query *) n, haskey_reads, w, 0);
-	if (func_of(n) == F_JSONB_EXISTS && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
+	if ((func_of(n) == F_JSONB_EXISTS || func_of(n) == F_JSONB_EXISTS_ALL) && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
 	{
-		Node	   *k = strip_relabel(lsecond(func_args(n)));
+		List	   *keys = exists_keys(n);
 
-		if (IsA(k, Const) && !((Const *) k)->constisnull && strcmp(TextDatumGetCString(((Const *) k)->constvalue), w->key) == 0)
-			w->tests++;
+		foreach_ptr(String, k, keys)
+			w->tests += strcmp(strVal(k), w->key) == 0;
 		return false;
 	}
 	r = (JsonRef) {0};
@@ -272,8 +302,7 @@ compile_haskey(AggCtx *c, Node *n)
 	JsonRef		r = {0};
 	Node	   *key;
 	HasKeyReads w = {c};
-	List	   *path;
-	int			leaf = -1;
+	int			leaf;
 	SiftAggPred *p;
 
 	n = strip_relabel(n);
@@ -283,16 +312,9 @@ compile_haskey(AggCtx *c, Node *n)
 	if (!IsA(key, Const) || ((Const *) key)->constisnull || !source_can_types(c) || c->search || !OidIsValid(c->indexoid) ||
 		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
 		return NULL;
-	path = list_make1(makeString(TextDatumGetCString(((Const *) key)->constvalue)));
-	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
-	{
-		SiftSrcLeaf *l = leaf_of(c, i);
-
-		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) && typeof_type(l->typid))
-			leaf = i;
-	}
 	w.att = r.att;
-	w.key = strVal(linitial(path));
+	w.key = TextDatumGetCString(((Const *) key)->constvalue);
+	leaf = haskey_leaf(c, r.att, w.key);
 	if (leaf < 0 || c->stats.nokinds[leaf] || bms_is_member(leaf, c->used))
 		return NULL;
 	haskey_reads((Node *) c->root->parse, &w);
@@ -308,6 +330,27 @@ compile_haskey(AggCtx *c, Node *n)
 	p->op = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE;
 	p->desc = expr_text(c, n);
 	return p;
+}
+
+/* doc ?& array['a', 'b'] of keys that are all leaves of the index is doc ? 'a' AND doc ? 'b' (NIL: it is not, and stays as it is) */
+List *
+haskey_conjuncts(AggCtx *c, Node *q)
+{
+	Node	   *n = strip_relabel(q);
+	JsonRef		r = {0};
+	List	   *keys,
+			   *conj = NIL;
+
+	if (func_of(n) != F_JSONB_EXISTS_ALL || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL || (keys = exists_keys(n)) == NIL)
+		return NIL;
+	foreach_ptr(String, k, keys)
+		if (haskey_leaf(c, r.att, strVal(k)) < 0)
+			return NIL;
+	foreach_ptr(String, k, keys)
+		conj = lappend(conj, makeFuncExpr(F_JSONB_EXISTS, BOOLOID,
+										  list_make2(linitial(func_args(n)), makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(strVal(k)), false, false)),
+										  InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL));
+	return conj;
 }
 
 /* the types a wide leaf keeps as lanes (all the comparisons run on the lanes), and those it keeps as an image that is the same bytes exactly when the values are equal (= <> IN NOT IN run on it) */

@@ -406,6 +406,7 @@ extern int typeof_leaf(AggCtx *c, Node *e);
 extern bool source_can_types(AggCtx *c);
 extern SiftAggPred *compile_typeof(AggCtx *c, Node *n);
 extern SiftAggPred *compile_haskey(AggCtx *c, Node *n);
+extern List *haskey_conjuncts(AggCtx *c, Node *q);
 extern SiftAggPred *compile_wide(AggCtx *c, Node *n);
 extern SiftAggPred *compile_tid(AggCtx *c, Node *n);
 extern bool types_guard_reads(AggCtx *c);
