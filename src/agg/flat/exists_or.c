@@ -19,6 +19,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
+#include "agg/plan_int.h"
 
 /* one arm of the OR: the outer expression its key is tested against, the key column of the table, and for an array of a group the sub-select that gives the group */
 typedef struct Arm
@@ -137,14 +138,6 @@ and_list(Node *quals)
 	return list_make1(quals);
 }
 
-static Node *
-strip(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
 /* a plain table in the FROM of a query that is nothing else: its range table index, or 0 */
 static Index
 only_table(Query *q)
@@ -178,8 +171,8 @@ key_test(Node *n, Index rti, int up, Var **col, Node **expr, OpExpr **eq)
 	if (!IsA(n, OpExpr) || list_length(((OpExpr *) n)->args) != 2)
 		return false;
 	op = (OpExpr *) n;
-	sides[0] = strip(linitial(op->args));
-	sides[1] = strip(lsecond(op->args));
+	sides[0] = strip_relabel(linitial(op->args));
+	sides[1] = strip_relabel(lsecond(op->args));
 	for (int i = 0; i < 2; i++)
 	{
 		Var		   *v = IsA(sides[i], Var) ? (Var *) sides[i] : NULL;
@@ -210,8 +203,8 @@ or_arms(Node *n, List **arms)
 static bool
 group_arm(ScalarArrayOpExpr *any, Index rti, Arm *arm)
 {
-	Node	   *l = strip(linitial(any->args)),
-			   *r = strip(lsecond(any->args));
+	Node	   *l = strip_relabel(linitial(any->args)),
+			   *r = strip_relabel(lsecond(any->args));
 	SubLink    *sl;
 	Query	   *g;
 	Index		grti;
@@ -290,7 +283,7 @@ exists_arms(Query *sq, List **arms, List **conds, Index *rti_out)
 		Node	   *e;
 		OpExpr	   *o;
 
-		a = strip(a);
+		a = strip_relabel(a);
 		if (key_test(a, rti, 1, &col, &e, &o))
 		{
 			arm->col = col;

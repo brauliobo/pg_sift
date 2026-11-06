@@ -33,6 +33,7 @@
 #include "agg/agg_int.h"
 #include "agg/colsrc.h"
 #include "agg/leaf_int.h"
+#include "agg/plan_int.h"
 
 typedef struct ColNeed
 {
@@ -170,14 +171,6 @@ typedef struct ColTest
 #define TST_NE		5
 #define MAX_TESTS	8
 
-static Node *
-unrelabel(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
 static bool
 int_family(Oid t)
 {
@@ -247,8 +240,8 @@ collect_tests(Node *n, const SiftAggJoin *j, int nleaves, const ColNeed *need, i
 	if (!IsA(n, OpExpr) || list_length(((OpExpr *) n)->args) != 2 || *nt >= MAX_TESTS)
 		return;
 	op = (OpExpr *) n;
-	l = unrelabel(linitial(op->args));
-	r = unrelabel(lsecond(op->args));
+	l = strip_relabel(linitial(op->args));
+	r = strip_relabel(lsecond(op->args));
 	if (IsA(l, Param) && IsA(r, Const))
 	{
 		pm = (Param *) l;

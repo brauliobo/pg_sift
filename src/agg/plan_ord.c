@@ -28,14 +28,6 @@
 /* what one integer compare of the rank tuples costs, in operator costs: no function call */
 #define ORD_RANK_CMP	0.1
 
-static Node *
-key_relabel(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
 /* the members of a class that matter to the entry rti: the class's own and, for an arm of a UNION ALL, the one the class got for the arm (PostgreSQL 18 keeps those out of ec_members) */
 static List *
 class_members(EquivalenceClass *ec, Index rti)
@@ -62,14 +54,14 @@ pathkey_key(PathKey *pk, List *keys, Oid *sortop)
 
 	foreach_node(EquivalenceMember, em, ec->ec_members)
 	{
-		Node	   *e = key_relabel((Node *) em->em_expr);
+		Node	   *e = strip_relabel((Node *) em->em_expr);
 		int			j = 0;
 
 		if (em->em_is_child || em->em_is_const)
 			continue;
 		foreach_ptr(Node, k, keys)
 		{
-			if (equal(e, key_relabel(k)))
+			if (equal(e, strip_relabel(k)))
 			{
 				*sortop = sift_pathkey_sortop(pk, em->em_datatype);
 				return OidIsValid(*sortop) ? j : -1;
@@ -227,7 +219,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		/* the column of this sub-select the pathkey is on: the entry's Var, or for an arm of a UNION ALL the member the class got for the arm */
 		foreach_node(EquivalenceMember, em, class_members(pk->pk_eclass, rti))
 		{
-			Node	   *x = key_relabel((Node *) em->em_expr);
+			Node	   *x = strip_relabel((Node *) em->em_expr);
 
 			if (IsA(x, Var) && ((Var *) x)->varno == rti && ((Var *) x)->varlevelsup == 0)
 				attno = ((Var *) x)->varattno;
@@ -243,7 +235,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 			break;
 		tle = list_nth_node(TargetEntry, parse->targetList, attno - 1);
 		/* a column the sub-select gives as a constant is in any order */
-		if (!tle->resjunk && IsA(key_relabel((Node *) tle->expr), Const))
+		if (!tle->resjunk && IsA(strip_relabel((Node *) tle->expr), Const))
 		{
 			npk++;
 			continue;
@@ -253,21 +245,21 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 		/* a group key (even one that is a COALESCE), else COALESCE(key, constant): the NULL group sorts as the constant */
 		subst = NULL;
 		if (tle->ressortgroupref != 0 && (sgc = get_sortgroupref_clause_noerr(tle->ressortgroupref, parse->groupClause)) != NULL)
-			e = key_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
-		else if (IsA(key_relabel((Node *) tle->expr), CoalesceExpr))
+			e = strip_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
+		else if (IsA(strip_relabel((Node *) tle->expr), CoalesceExpr))
 		{
-			CoalesceExpr *ce = (CoalesceExpr *) key_relabel((Node *) tle->expr);
+			CoalesceExpr *ce = (CoalesceExpr *) strip_relabel((Node *) tle->expr);
 
 			if (list_length(ce->args) != 2 || !IsA(lsecond(ce->args), Const) || ((Const *) lsecond(ce->args))->constisnull)
 				break;
 			subst = (Const *) lsecond(ce->args);
-			e = key_relabel((Node *) linitial(ce->args));
+			e = strip_relabel((Node *) linitial(ce->args));
 		}
 		else
 			break;
 		foreach_ptr(Node, k, keys)
 		{
-			if (equal(e, key_relabel(k)))
+			if (equal(e, strip_relabel(k)))
 			{
 				found = true;
 				break;

@@ -19,6 +19,7 @@
 #include "storage/itemptr.h"
 
 #include "agg/spec.h"
+#include "agg/plan_int.h"
 
 sift_i128
 sift_pow10(int e)
@@ -179,14 +180,6 @@ sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 			*hi = Min(*hi, p->op == SCMP_LT ? k : k + 1);
 	}
 	return any;
-}
-
-static Node *
-strip_relabel(Node *n)
-{
-	while (n && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
 }
 
 static bool
