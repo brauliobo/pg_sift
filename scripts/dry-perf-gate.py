@@ -4,6 +4,7 @@
     scripts/dry-perf-gate.sh [run] [options] BASE [CAND]     BASE and CAND are commits (BASE defaults to HEAD~1, CAND to HEAD of --src)
     dry-perf-gate.sh run --worktree DIR BASE          CAND = HEAD of DIR plus its uncommitted diff
     dry-perf-gate.sh run --patch FILE BASE            CAND = BASE plus the patch
+    dry-perf-gate.sh portable [REF]                   the SQLite and MariaDB ports of REF (default HEAD) link and pass their isa-check, undefined symbols by name (about 10 s)
     dry-perf-gate.sh baseline BASE                    measure BASE against itself: the noise floor, stored under baselines/
     dry-perf-gate.sh select BASE [CAND]               which groups and cases the changed files select (no build)
     dry-perf-gate.sh list                             groups and cases
@@ -213,6 +214,71 @@ class Build:
             shutil.rmtree(d)
             (W / 'builds' / (d.name + '.use')).unlink(missing_ok=True)
             use.close()
+
+
+# --- the portable core in its other hosts -------------------------------------------------------------------------------------------------------------------------
+class PortableCheck(Build):
+    """The SQLite extension and the MariaDB UDF library of a commit: check-portable.sh (includes, and a syntax pass against the SQLite host header), then `make isa-check` of each
+    (compile, link, no POPCNT or vector instruction outside the vector objects, no symbol that only the PostgreSQL sources define). A shared library links with undefined symbols;
+    the server or the shell finds out when it loads one, which is why this runs before any workload."""
+    STEPS = (('portable includes', ['bash', 'scripts/check-portable.sh']),
+             ('sqlite', ['make', '-C', 'sqlite', '-j4', 'B={dir}/sqlite', 'isa-check']),
+             ('mariadb', ['make', '-C', 'mariadb', '-j4', 'OUT={dir}/mariadb', 'isa-check']))
+    PROBLEM = re.compile(r'undefined (symbol|reference)|error:|baseline object|popcount|does not exist|a portable file|: fatal|No such file', re.I)
+
+    def __init__(self, repo, sha, patch=None, label=''):
+        super().__init__(repo, sha, patch, label)
+        self.dir = W / 'ports' / self.key
+        self.tree = self.dir / 'src'
+
+    def ensure(self):
+        with Lock('lock-ports'):
+            (W / 'ports').mkdir(parents=True, exist_ok=True)
+            marker = self.dir / 'done.json'
+            self.pin()
+            if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE:
+                self.info = json.loads(marker.read_text())
+                return self
+            if self.dir.exists():
+                self.repo.git('worktree', 'remove', '--force', str(self.tree))
+            shutil.rmtree(self.dir, ignore_errors=True)
+            self.dir.mkdir(parents=True)
+            self.repo.git('worktree', 'prune')
+            self.repo.git('worktree', 'add', '-q', '--detach', str(self.tree), self.sha)
+            if self.patch:
+                (self.dir / 'cand.patch').write_text(self.patch)
+                sh(['git', 'apply', '--whitespace=nowarn', str(self.dir / 'cand.patch')], cwd=self.tree)
+            t0, steps, problems = time.time(), {}, []
+            for name, cmd in self.STEPS:
+                if cmd[0] == 'make' and not (self.tree / cmd[2]).exists():
+                    continue                  # a base that predates the port
+                t1 = time.time()
+                r = subprocess.run([c.format(dir=self.dir) for c in cmd], cwd=self.tree, text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
+                steps[name] = round(time.time() - t1, 1)
+                if r.returncode:
+                    lines = [l.strip()[:300] for l in (r.stdout + r.stderr).splitlines() if self.PROBLEM.search(l)]
+                    problems += [f'{name}: {l}' for l in dict.fromkeys(lines)][:12] or [f'{name}: failed ({r.returncode}): ' + (r.stderr.strip().splitlines() or ['?'])[-1][:200]]
+            self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE)
+            marker.write_text(json.dumps(self.info))
+            for old in sorted((d for d in (W / 'ports').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)[8:]:
+                use = open(W / 'builds' / (old.name + '.use'), 'a')
+                try:
+                    fcntl.flock(use, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    use.close()
+                    continue
+                self.repo.git('worktree', 'remove', '--force', str(old / 'src'))
+                shutil.rmtree(old)
+                use.close()
+        return self
+
+    def report(self):
+        i = self.info
+        return [f"portable {self.key}: {'PASS' if i['ok'] else 'FAIL'} (" + ', '.join(f'{k} {v}s' for k, v in i['steps'].items()) + ')'] + i['problems']
+
+
+def portable_relevant(paths):
+    return any(re.match(r'(src/|sqlite/|mariadb/|scripts/port-isa-check\.sh|scripts/check-portable\.sh)', p) for p in paths)
 
 
 # --- clusters -------------------------------------------------------------------------------------------------------------------------------------------------
@@ -575,12 +641,12 @@ def evidence_line(verdicts, res, meta, status):
     return (f"perf-gate {meta['base']} -> {meta['cand']} ({len(ok)} cases, groups {','.join(sorted(meta['groups']))}): "
             f"instructions:u {fmt_m(bi)} -> {fmt_m(ci)} ({(ci - bi) / bi * 100:+.3f}%, worst {worst} {verdicts[worst][2]['d_instr']:+.3f}%), "
             f"cycles:u {fmt_m(bc)} -> {fmt_m(cc)} ({(cc - bc) / bc * 100:+.2f}%, noise {noise:.1f}%), blocks {blocks('base')} -> {blocks('cand')}, WAL {wal('base')} -> {wal('cand')} B, "
-            f"text {size:+d} B, rows identical: {status}")
+            f"text {size:+d} B, rows identical{meta.get('port_note', '')}: {status}")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('cmd', choices=('run', 'baseline', 'select', 'list'), nargs='?', default='run')
+    ap.add_argument('cmd', choices=('run', 'baseline', 'select', 'list', 'portable'), nargs='?', default='run')
     ap.add_argument('base', nargs='?')
     ap.add_argument('cand', nargs='?')
     ap.add_argument('--src', default=DEFAULT_SRC, help='repository holding the commits (default: the repository of this script, or GATE_SRC)')
@@ -618,6 +684,14 @@ def main():
         for c in reg:
             print(f"{c.id:36s} {c.kind:6s} {c.src:8s} {','.join(c.groups)}")
         return 0
+    if a.cmd == 'portable':
+        (W / 'builds').mkdir(parents=True, exist_ok=True)
+        bad = 0
+        for ref in [a.base or DEFAULT_REF] + ([a.cand] if a.cand else []):
+            pc = PortableCheck(repo, repo.rev(ref), label='candidate').ensure()
+            print('\n'.join(pc.report()))
+            bad += not pc.info['ok']
+        return 1 if bad else 0
     base_sha = repo.rev(a.base or 'HEAD~1')
     patch = None
     if a.worktree:
@@ -633,6 +707,17 @@ def main():
     if a.cmd == 'baseline':
         cand_sha, patch = base_sha, None
 
+    port_note = ''
+    if a.cmd == 'run' and portable_relevant(changed_paths(repo, base_sha, cand_sha, patch)):
+        pc = PortableCheck(repo, cand_sha, patch, 'candidate').ensure()
+        print('\n'.join(pc.report()))
+        if not pc.info['ok']:
+            line = f"perf-gate {base_sha[:12]} -> {pc.key}: FAIL (the SQLite / MariaDB ports do not link or pass isa-check: {'; '.join(pc.info['problems'])[:400]})"
+            print(line)
+            if a.json:
+                Path(a.json).write_text(json.dumps(dict(status='FAIL', evidence=line, portable=pc.info), indent=1))
+            return 1
+        port_note = f", portable ok ({pc.info['secs']}s)"
     base = Build(repo, base_sha, label='base')
     cand = Build(repo, cand_sha, patch, label='candidate') if (cand_sha != base_sha or patch) else base
     if a.cmd == 'select':
@@ -647,10 +732,10 @@ def main():
     if cand is not base:
         cand.ensure()
     diff = sorted(o for o in set(base.info['objects']) | set(cand.info['objects']) if base.info['objects'].get(o) != cand.info['objects'].get(o))
-    meta = dict(base=base.key, cand=cand.key, base_text=base.info['text'], cand_text=cand.info['text'], differing_objects=diff)
+    meta = dict(port_note=port_note, base=base.key, cand=cand.key, base_text=base.info['text'], cand_text=cand.info['text'], differing_objects=diff)
     sql_changed = [p for p in changed_paths(repo, base_sha, cand_sha, patch) if p.startswith('sql/pg_sift--') or p == 'pg_sift.control']
     if a.cmd == 'run' and not diff and not sql_changed and not a.force_workload:
-        line = f"perf-gate {base.key} -> {cand.key}: PASS-IDENTICAL (all {len(base.info['objects'])} stripped object files byte-identical, text {cand.info['text'] - base.info['text']:+d} B)"
+        line = f"perf-gate {base.key} -> {cand.key}: PASS-IDENTICAL (all {len(base.info['objects'])} stripped object files byte-identical, text {cand.info['text'] - base.info['text']:+d} B{port_note})"
         print(line)
         out = dict(status='PASS-IDENTICAL', meta=meta, evidence=line)
         if a.json:

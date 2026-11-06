@@ -32,3 +32,7 @@
    Cross-checks the gate cannot make: cold device IO (tmpfs), the background maintenance worker path, concurrent backends on the shared caches, and
    sizes beyond 100k rows (`--rows N` rebuilds the template; slopes belong to scripts/scaling-gate.sh). It does not replace the covering regress tests.
 10. Run it after the covering tests pass and before landing; a lane that cannot meet the budget (about 10 minutes) uses `--runs 3` for the first look and the default for the final.
+11. Portable core in the other hosts: before any workload, a candidate that changes `src/`, `sqlite/`, `mariadb/` or the port checks is built as the SQLite extension and the MariaDB UDF
+   library (`scripts/check-portable.sh`, then `make -C sqlite isa-check` and `make -C mariadb isa-check`, no server, tmpfs, about 20 s, cached per commit) and must link with no symbol that
+   only the PostgreSQL sources define, and keep the baseline ISA. A failure names the undefined symbols (`sqlite: sift.so has undefined symbol: sift_wt_write_seghdr`) and ends the run
+   with FAIL at once (a shared library links with undefined symbols; the server or the shell finds out when it loads one). Alone: `scripts/dry-perf-gate.sh portable [REF [REF2]]`, exit 1 on FAIL.
