@@ -437,6 +437,54 @@ shape_leaf(AggCtx *c, Node *e)
 	return -1;
 }
 
+/*
+ * isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column, as a conjunct or its NOT (the first three: the other two have no negation on the lanes),
+ * or `.. IS TRUE` / `.. IS FALSE` (a NULL range passes neither, as it passes neither the function nor its NOT): the operator of SWT_R_UNARY and up, the leaf its lanes are of
+ */
+static bool
+range_unary_test(AggCtx *c, Node *n, int *leaf, int *op)
+{
+	bool		neg = false;
+	int			base;
+
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR)
+	{
+		neg = true;
+		n = strip_relabel(linitial(((BoolExpr *) n)->args));
+	}
+	else if (IsA(n, BooleanTest) && (((BooleanTest *) n)->booltesttype == IS_TRUE || ((BooleanTest *) n)->booltesttype == IS_FALSE))
+	{
+		neg = ((BooleanTest *) n)->booltesttype == IS_FALSE;
+		n = strip_relabel((Node *) ((BooleanTest *) n)->arg);
+	}
+	if (!IsA(n, FuncExpr) || list_length(func_args(n)) != 1)
+		return false;
+	switch (func_of(n))
+	{
+		case F_ISEMPTY_ANYRANGE:
+			base = SWT_R_EMPTY;
+			break;
+		case F_LOWER_INF_ANYRANGE:
+			base = SWT_R_LOWER_INF;
+			break;
+		case F_UPPER_INF_ANYRANGE:
+			base = SWT_R_UPPER_INF;
+			break;
+		case F_LOWER_INC_ANYRANGE:
+			base = SWT_R_LOWER_INC;
+			break;
+		case F_UPPER_INC_ANYRANGE:
+			base = SWT_R_UPPER_INC;
+			break;
+		default:
+			return false;
+	}
+	if (neg && base >= SWT_R_LOWER_INC)
+		return false;
+	*op = base + neg;
+	return (*leaf = shape_leaf(c, strip_relabel(linitial(func_args(n))))) >= 0 && leaf_of(c, *leaf)->shape == 1;
+}
+
 /* `column op operand` (or the commuted form) of an operator in shape_ops, the operand a constant, parameter or stable expression */
 static bool
 shape_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
@@ -482,6 +530,8 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 	*operand = NULL;
 	*argtype = InvalidOid;
 	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && shape_test(c, n, leaf, op, operand, argtype))
+		return true;
+	if (range_unary_test(c, n, leaf, op))
 		return true;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
 	{

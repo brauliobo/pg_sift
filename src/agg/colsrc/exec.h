@@ -173,6 +173,16 @@ typedef struct SiftSrcStrTest
 #define SWT_N_OVERLAP	29
 #define SWT_R_EQ		30
 #define SWT_N_EQ		31
+/* the operators of a range with no operand (SIFT_COLW_R_EMPTY ... of col/col.h are the same numbers) */
+#define SWT_R_UNARY		32
+#define SWT_R_EMPTY		32
+#define SWT_R_NONEMPTY	33
+#define SWT_R_LOWER_INF	34
+#define SWT_R_LOWER_FIN	35
+#define SWT_R_UPPER_INF	36
+#define SWT_R_UPPER_FIN	37
+#define SWT_R_LOWER_INC	38
+#define SWT_R_UPPER_INC	39
 
 typedef struct SiftSrcWideTest
 {

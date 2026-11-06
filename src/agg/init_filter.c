@@ -799,7 +799,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 	bool		byval;
 	char		align;
 
-	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL)
+	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL || p->op >= SWT_R_UNARY)
 		return;
 	e = operand_state(ex, p->expr);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);

@@ -119,6 +119,13 @@ of the rows (`id`, `r`, `ip`, `u` uuid, a 128-character note); the plain index i
 - A range the lanes do not cover (`numrange`, a range of a user type) is offered the same operators and left to the heap: the index returns every row and the heap decides.
 - The counts of the same shapes are the matrix above (`count(*)` is the aggregate pushdown, not this scan).
 
+## Tests of the lanes with no operand
+
+`isempty(r)`, `lower_inf(r)` and `upper_inf(r)` (and their `NOT`, `IS TRUE` and `IS FALSE`) in a `WHERE` conjunct are tests of the first or last position: an empty range is the position `INT64_MAX`, an infinite bound `INT64_MIN` or `INT64_MAX`.
+`lower_inc(r)` and `upper_inc(r)` read the parity of the position in the continuous ranges (`tsrange`, `tstzrange`): the lanes select the finite ranges that are not empty and PostgreSQL's function decides them. The discrete ranges
+are canonical (`[a, b)`), so `lower_inc` is true of every finite lower bound and `upper_inc` of no finite upper one; a `daterange` keeps an infinite bound as written, which is the one position the test names. A row whose bound
+does not fit a lane is decided by PostgreSQL's function, as for the operators (test `agg_range_unary`). `lower(r)` and `upper(r)` as values are not read from the lanes.
+
 ## What is not served
 
 - **Rows from an address or a lane that does not prune:** see the table above; an index scan of random addresses reads every address lane. `IN` and `= ANY (array)` on a range or a network are left to the heap.

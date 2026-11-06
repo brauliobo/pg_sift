@@ -1,4 +1,4 @@
--- The corpus: 312 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 319 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -533,7 +533,29 @@ select count(*) from spans where during && daterange('2025-01-01', '2025-03-01')
 -- @case c3_range_bounds_plain | range | the same window through the plain bounds
 select tenant_id, count(*), sum(qty) from spans where starts <= date '2025-06-15' and ends > date '2025-06-15' group by 1;
 -- @case c3_range_group_by_range | range | groups by the range itself
-select during, count(*) from spans where dim_a_id <= 20 group by 1 order by 2 desc limit 10;
+select during, count(*) from spans where dim_a_id <= 20 group by 1 order by 2 desc, 1 limit 10;
+-- @case c3_range_contains_by_tenant | range | spans that contain a day, by tenant
+select tenant_id, count(*), sum(qty) from spans where during @> date '2025-06-15' group by 1;
+-- @case c3_range_seen_overlap | range | timestamp ranges that overlap a window
+select tenant_id, count(*) from spans where seen && tstzrange('2025-02-01', '2025-02-15') group by 1;
+-- @case c3_range_contained | range | spans inside a quarter
+select count(*), avg(amount) from spans where during <@ daterange('2025-01-01', '2025-04-01');
+-- @case c3_range_adjacent | range | spans next to a day
+select tenant_id, count(*) from spans where during -|- daterange('2025-05-01', '2025-05-10') group by 1;
+-- @case c3_range_self_overlap | range | pairs of spans of an entity that overlap
+select a.dim_a_id, count(*) from spans a join spans b on b.dim_a_id = a.dim_a_id and b.id > a.id and b.during && a.during where a.dim_a_id <= 30 group by 1;
+-- @case c3_range_agg_tenant | range | the union of the spans of a tenant as a multirange
+select tenant_id, range_agg(during) from spans where dim_a_id <= 200 group by 1;
+-- @case c3_range_lower_month | range | spans by month of their start through lower()
+select date_trunc('month', lower(during)) m, count(*), sum(amount) from spans group by 1;
+-- @case c3_range_not_empty | range | non-empty spans
+select tenant_id, count(*), sum(qty) from spans where not isempty(during) group by 1;
+-- @case c3_range_upper_inf_false | range | spans with an upper bound
+select count(*), sum(amount) from spans where upper_inf(during) is false and lower_inf(during) is false;
+-- @case c3_range_lower_inc | range | spans that include their first day
+select tenant_id, count(*) from spans where lower_inc(during) group by 1;
+-- @case c3_range_seen_upper_inc | range | timestamp ranges that include their last instant (PostgreSQL decides the candidates)
+select count(*) from spans where upper_inc(seen);
 -- ===================== HAVING with sub-selects
 -- @case c3_having_scalar_avg | having | entities whose total is above ten times the average row
 select dim_a_id, sum(amount) from events group by 1 having sum(amount) > (select avg(amount) * 10 from events);

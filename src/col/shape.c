@@ -48,6 +48,8 @@ typedef struct SiftColShape
 	FmgrInfo	fn;				/* the operator as a function of (image, operand) */
 	Datum		operand;
 	bool		decided;		/* fn is set */
+	bool		unary;			/* fn is a function of the image alone (isempty, lower_inf ..) */
+	bool		negate;			/* the test is NOT fn(image) */
 } SiftColShape;
 
 /* ---- the lanes of a value ---- */
@@ -352,8 +354,76 @@ static const Oid shape_fn[] = {
 	[SIFT_COLW_N_SUPEQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_SUPEQ,
 	[SIFT_COLW_N_OVERLAP - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_OVERLAP,
 	[SIFT_COLW_R_EQ - SIFT_COLW_SHAPE_FIRST] = F_RANGE_EQ,
-	[SIFT_COLW_N_EQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_EQ
+	[SIFT_COLW_N_EQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_EQ,
+	[SIFT_COLW_R_EMPTY - SIFT_COLW_SHAPE_FIRST] = F_ISEMPTY_ANYRANGE,
+	[SIFT_COLW_R_NONEMPTY - SIFT_COLW_SHAPE_FIRST] = F_ISEMPTY_ANYRANGE,
+	[SIFT_COLW_R_LOWER_INF - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INF_ANYRANGE,
+	[SIFT_COLW_R_LOWER_FIN - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INF_ANYRANGE,
+	[SIFT_COLW_R_UPPER_INF - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
+	[SIFT_COLW_R_UPPER_FIN - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
+	[SIFT_COLW_R_LOWER_INC - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INC_ANYRANGE,
+	[SIFT_COLW_R_UPPER_INC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE
 };
+
+/*
+ * The tests of a range with no operand, on the first and last positions. A row whose lanes are an overflow is decided by PostgreSQL's function, as for the operators. The ranges of
+ * the discrete subtypes are canonical, [a, b), whenever the bound is a value: lower_inc is true of every finite lower bound and upper_inc of no finite upper one. A date that is
+ * infinity stays as written (daterange('-infinity', 'infinity', '[]')): its one position, 2 * INT32_MAX for an inclusive upper bound and the exclusive -infinity just after 2 * INT32_MIN
+ * for a lower one, is a test of its own. The continuous subtypes hold either, which the lanes only select candidates for.
+ */
+static void
+range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
+{
+	int			s = col + 1,
+				e = col + 2;
+	Oid			sub = InvalidOid;
+
+	if (op == SIFT_COLW_R_LOWER_INC || op == SIFT_COLW_R_UPPER_INC)
+		sub = lookup_type_cache(typid, TYPECACHE_RANGE_INFO)->rngelemtype->type_id;
+	sh->unary = true;
+	sh->negate = op == SIFT_COLW_R_NONEMPTY || op == SIFT_COLW_R_LOWER_FIN || op == SIFT_COLW_R_UPPER_FIN;
+	switch (op)
+	{
+		case SIFT_COLW_R_EMPTY:
+			add(sh, 0, s, SIFT_COLOP_EQ, SPAN_NONE);
+			break;
+		case SIFT_COLW_R_NONEMPTY:
+			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
+			break;
+		case SIFT_COLW_R_LOWER_INF:
+			add(sh, 0, s, SIFT_COLOP_EQ, PG_INT64_MIN);
+			break;
+		case SIFT_COLW_R_LOWER_FIN:
+			add(sh, 0, s, SIFT_COLOP_GT, PG_INT64_MIN);
+			break;
+		case SIFT_COLW_R_UPPER_INF:
+			add(sh, 0, e, SIFT_COLOP_EQ, PG_INT64_MAX);
+			break;
+		case SIFT_COLW_R_UPPER_FIN:
+			add(sh, 0, e, SIFT_COLOP_LT, PG_INT64_MAX);
+			break;
+		case SIFT_COLW_R_LOWER_INC:
+			add(sh, 0, s, SIFT_COLOP_GT, PG_INT64_MIN);
+			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
+			if (sub == DATEOID)
+				add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN + 1);
+			sh->decide_rows = sub != INT4OID && sub != INT8OID && sub != DATEOID;
+			break;
+		case SIFT_COLW_R_UPPER_INC:
+			if (sub == INT4OID || sub == INT8OID)
+				t->verdict = SIFT_COLW_NONE;
+			else if (sub == DATEOID)
+				add(sh, 0, e, SIFT_COLOP_EQ, 2 * (int64) DATEVAL_NOEND);
+			else
+			{
+				add(sh, 0, e, SIFT_COLOP_LT, PG_INT64_MAX);
+				add(sh, 0, e, SIFT_COLOP_GT, SPAN_NEVER);
+				sh->decide_rows = true;
+			}
+			break;
+	}
+}
+
 
 void
 sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, MemoryContext mcxt, SiftColWTest *t)
@@ -370,6 +440,11 @@ sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, Mem
 	t->verdict = SIFT_COLW_SHAPE;
 	t->shape = sh;
 	t->pred.col = def->id;
+	if (op >= SIFT_COLW_R_UNARY)
+	{
+		range_unary(sh, t, def->id, typid, op);
+		return;
+	}
 	if (sift_col_def_shape(def) == SIFT_COL_SHAPE_INET)
 	{
 		net_test(sh, def->id, op, operand);
@@ -436,7 +511,8 @@ decide(const SiftColUnit *unit, int col, const SiftColShape *sh, SiftColSel *row
 		uint32		len = SIFT_COL_DICT_LEN(v.dict, v.codes[k]);
 		void	   *image = memcpy(palloc(len), SIFT_COL_DICT_STR(v.dict, v.codes[k]), len);
 
-		if (!DatumGetBool(FunctionCall2(&((SiftColShape *) sh)->fn, PointerGetDatum(image), sh->operand)))
+		if (DatumGetBool(sh->unary ? FunctionCall1(&((SiftColShape *) sh)->fn, PointerGetDatum(image))
+						 : FunctionCall2(&((SiftColShape *) sh)->fn, PointerGetDatum(image), sh->operand)) == sh->negate)
 			sift_col_bit_clear(rows->bits, idx[k]);
 		pfree(image);
 	}
@@ -501,7 +577,7 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 		}
 		if (sh->decide_rows)
 		{
-			memcpy(hard->bits, res->bits, hard->nwords * sizeof(uint64));
+			or_into(hard, res);
 			memset(res->bits, 0, res->nwords * sizeof(uint64));
 		}
 	}
