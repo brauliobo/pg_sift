@@ -75,12 +75,14 @@ if [[ $MODE == full ]]; then
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)
 	# random multi-statement transactions of two sessions on a sift_col index, the plain heap plan against the scan after every statement and in a fresh backend
-	# (test/fuzz/txn_fuzz.py)
+	# (test/fuzz/txn_fuzz.py), and with --shapes the reads through cursors and prepared statements, partitioned tables and the upserts and COPY that run SQL through SPI
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		txn=1-8; (( PG_MAJOR < 18 )) || txn=9-16
 		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds $txn --stop-after 2
+		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds $txn --stop-after 2
 	elif (( PG_MAJOR >= 18 )); then
 		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
+		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-400 --stop-after 3
 	fi
 	# BM25 queries (phrase, plain, boolean) in subplans, LATERAL joins and cursors, each plan in a new backend, the heap plan against the index and the parallel plan (test/fuzz/bm25_fuzz.py)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
@@ -165,6 +167,7 @@ else
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
+	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
 	tap_shell leakcheck_gate
 	tap_perl 001_crash

@@ -5,7 +5,7 @@ import json
 import os
 
 from .gen import setup_sql
-from .run import PLAIN, SCAN, build_base, check_sql, run
+from .run import PLAIN, SCAN, build_base, check_sql, run, tx_after
 from .session import create_db, psql
 
 MAX_RUNS = 160
@@ -57,7 +57,7 @@ def shrink(c, acts, at, prefix):
         return c, acts
     final = acts[-1]
     body = ddmin(acts[:-1], final, lambda a: rp.fails(c, a))
-    for change in ({'rows': max(c.rows // 4, 1000)}, {'trigger': 'none'}, {'fillfactor': 100}, {'wbuf': False}, {'warm': False}):
+    for change in ({'rows': max(c.rows // 4, 1000)}, {'trigger': 'none'}, {'fillfactor': 100}, {'parts': 0}, {'wbuf': False}, {'warm': False}):
         c2 = dataclasses.replace(c, **change)
         if c2 != c:
             rp.template(c2)
@@ -73,15 +73,20 @@ def render_sql(c, acts, why):
     s = [f'-- txn_fuzz seed {c.seed}: {why}', f'-- config: {dataclasses.asdict(c)}',
          '-- session A runs the statements below in order; "-- [B]" lines belong to a second session open at the same time, "-- [F]" to a fresh connection that runs the check.',
          setup_sql(c), '\\c -', 'SET client_min_messages = warning;']
+    intx = {}
     for a in acts:
         tag = '' if a['s'] == 'A' else f"-- [{a['s']}] "
+        if a['t'] == 'sql':
+            intx[a['s']] = tx_after(intx.get(a['s'], False), a['sql'])
+        elif a['t'] == 'reconnect':
+            intx[a['s']] = False
         if a['t'] == 'reconnect':
             s.append(f"{tag}\\c -" if a['s'] == 'A' else f'{tag}reconnects')
         elif a['t'] == 'sql':
             s.append(a['sql'] + ';' if a['s'] == 'A' and not a['sql'].endswith('\\.') else (tag + a['sql'].replace('\n', ' ') + ';' if a['s'] != 'A' else a['sql']))
         else:
             s.append(f"{tag}-- the check: its queries under plain, then the scan (the first line that differs is the finding)")
-            s.append(check_sql(c, a))
+            s.append(check_sql(c, a, a.get('kind') == 'cursor' and intx.get(a['s'], False)))
     return '\n'.join(s) + '\n'
 
 

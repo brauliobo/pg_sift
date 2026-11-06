@@ -5,10 +5,16 @@
 #   {'s': ..., 't': 'reconnect'}   the session ends and a new backend takes its place
 
 import random
+import re
 from dataclasses import dataclass, asdict
 
 DOMAIN_B = 40_000_000       # session B writes its own rows from here: no lock waits with A
 MOVED = 50_000_000          # a row whose key changes goes here (+ a counter)
+
+
+def ix(c, text):
+    """The statement on the index t_c: on a partitioned table, the same statement on the index of each partition"""
+    return text if not c.parts else '; '.join(re.sub(r'\bt_c\b', f't_c{i}', text) for i in range(c.parts))
 
 
 @dataclass
@@ -27,6 +33,7 @@ class Config:
     trunc: bool = True  # VACUUM may truncate the heap: False runs VACUUM (TRUNCATE false)
     oc: bool = True     # INSERT .. ON CONFLICT (speculative insertion): False leaves it out
     spi: bool = True    # statements that run SQL through SPI (a volatile function, a DO block) and a trigger that updates t: False leaves them out
+    parts: int = 0      # t is hash partitioned in this many partitions, one sift_col index each (t_c0, t_c1, ..); 0: one table, one index t_c
 
     def key(self, e):
         return str(e) if self.keytype == 'int' else f"'c' || ({e})"
@@ -45,16 +52,23 @@ def setup_sql(c):
     kt = 'int' if c.keytype == 'int' else 'text'
     opts = {'auto': '', 'key': " WITH (track_changes = 'k')", 'off': " WITH (track_changes = 'off')", 'ctid': " WITH (track_changes = 'ctid')"}[c.track]
     r0 = c.rows * 6 // 10 if c.wbuf else c.rows
+    storage = f"WITH (autovacuum_enabled = false, fillfactor = {c.fillfactor})"
+    cols = f"k {kt} PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad int NOT NULL DEFAULT 0"
+    if c.parts:
+        create = f"CREATE TABLE t ({cols}) PARTITION BY HASH (k);\n" + ''.join(
+            f"CREATE TABLE t_p{i} PARTITION OF t FOR VALUES WITH (MODULUS {c.parts}, REMAINDER {i}) {storage};\n" for i in range(c.parts))
+        index = ''.join(f"CREATE INDEX t_c{i} ON t_p{i} USING sift_col (k, tenant, amount){opts};\n" for i in range(c.parts))
+    else:
+        create = f"CREATE TABLE t ({cols}) {storage};\n"
+        index = f"CREATE INDEX t_c ON t USING sift_col (k, tenant, amount){opts};\n"
     s = f"""SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
-CREATE TABLE t (k {kt} PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad int NOT NULL DEFAULT 0) WITH (autovacuum_enabled = false, fillfactor = {c.fillfactor});
-INSERT INTO t (k, tenant, amount) SELECT {c.key('i')}, i % 10, i FROM generate_series(1, {r0}) i;
-CREATE INDEX t_c ON t USING sift_col (k, tenant, amount){opts};
-"""
+{create}INSERT INTO t (k, tenant, amount) SELECT {c.key('i')}, i % 10, i FROM generate_series(1, {r0}) i;
+{index}"""
     if c.wbuf:
         s += f"INSERT INTO t (k, tenant, amount) SELECT {c.key('i')}, i % 10, i FROM generate_series({r0 + 1}, {c.rows}) i;\n"
         if c.promote:
-            s += "SELECT sift.col_promote('t_c');\n"
+            s += ix(c, "SELECT sift.col_promote('t_c');") + "\n"
     s += "VACUUM (FREEZE, ANALYZE) t;\n" if c.vacuum else "ANALYZE t;\n"
     s += f"""CREATE FUNCTION tf_one() RETURNS int LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; RETURN 0; END $$;
 CREATE FUNCTION tf_bump(kk {kt}) RETURNS int LANGUAGE plpgsql AS $$ BEGIN UPDATE t SET amount = amount + 1 WHERE k = kk; RETURN 0; END $$;
@@ -69,6 +83,15 @@ CREATE TRIGGER tf_t AFTER UPDATE ON t FOR EACH ROW EXECUTE FUNCTION tf_trg();
     elif c.trigger == 'before':
         s += """CREATE FUNCTION tf_trg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.amount % 11 = 0 THEN NEW.amount := NEW.amount + 1; END IF; RETURN NEW; END $$;
 CREATE TRIGGER tf_t BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION tf_trg();
+"""
+    elif c.trigger == 'insert' and c.spi:
+        # reads t through SPI while the statement that inserts is running (a COPY or INSERT sees its own rows by command id)
+        s += """CREATE FUNCTION tf_trg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM t WHERE k = NEW.k; IF NEW.amount % 50 = 0 THEN PERFORM sum(amount) FROM t WHERE tenant = NEW.tenant; END IF; RETURN NEW; END $$;
+CREATE TRIGGER tf_t BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION tf_trg();
+"""
+    elif c.trigger == 'stmt' and c.spi:
+        s += """CREATE FUNCTION tf_trg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM count(*) FROM nw; PERFORM sum(amount) FROM t WHERE tenant = 3; RETURN NULL; END $$;
+CREATE TRIGGER tf_t AFTER INSERT ON t REFERENCING NEW TABLE AS nw FOR EACH STATEMENT EXECUTE FUNCTION tf_trg();
 """
     return s
 
@@ -207,7 +230,11 @@ class Gen:
         return 'VACUUM ' + (f"({', '.join(opts)}) " if opts else '') + 't'
 
     def sql(self, s, text):
-        self.out.append({'s': s, 't': 'sql', 'sql': text})
+        self.out.append({'s': s, 't': 'sql', 'sql': ix(self.c, text)})
+
+    def maint_stmt(self):
+        return self.r.choice(['REINDEX INDEX t_c', 'VACUUM FULL t', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')",
+                              "ALTER INDEX t_c SET (track_changes = 'off')", 'ANALYZE t'])
 
     # ---- the script
     def b_step(self):
@@ -304,8 +331,7 @@ class Gen:
                     self.sql('A', "SELECT sift.col_promote('t_c')")
                     self.check('A')
                 elif w == 'maint':
-                    self.sql(r.choice(['A', 'B']), r.choice(['REINDEX INDEX t_c', 'VACUUM FULL t', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')",
-                                                              "ALTER INDEX t_c SET (track_changes = 'off')", 'ANALYZE t']))
+                    self.sql(r.choice(['A', 'B']), self.maint_stmt())
                     self.check('A')
                 else:
                     self.out.append({'s': 'A', 't': 'reconnect'})

@@ -2,6 +2,7 @@
 """Differential fuzz of transactions on a sift_col index (docs/AGG.md, "Transactions").
 
   test/fuzz/txn_fuzz.py [--seeds 1-20] [--actions 60] [--tracks auto,key,off,ctid] [--out DIR] [--stop-after N] [--budget SEC] [--no-shrink]
+  test/fuzz/txn_fuzz.py --shapes [--only cursor|prep|persist] [--parts 0|3] [--variants scan,default,index,workers]   cursors, prepared statements, partitions, upserts with SPI (docs/AGG.md)
   test/fuzz/txn_fuzz.py --repro DIR/txn_fuzz_N.json | --selftest
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT); max_prepared_transactions > 0 adds prepared transactions to the scripts.
