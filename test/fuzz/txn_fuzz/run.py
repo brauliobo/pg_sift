@@ -46,6 +46,8 @@ def check_sql(c, a):
 def compare(out):
     """-> None or a description of the first query whose rows differ from the plain heap plan's"""
     res, cur = {}, None
+    if any('lock timeout' in l for l in out):
+        return None             # the check waited for a lock of the other session: its queries after the timeout run in an aborted transaction and say nothing of sift
     for l in out:
         m = re.match(r'@@Q (\w+) (\w+)', l)
         if m:

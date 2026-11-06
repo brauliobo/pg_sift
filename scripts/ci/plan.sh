@@ -75,12 +75,12 @@ if [[ $MODE == full ]]; then
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)
 	# random multi-statement transactions of two sessions on a sift_col index, the plain heap plan against the scan after every statement and in a fresh backend
-	# (test/fuzz/txn_fuzz.py); --no-oc and --no-truncate until the scan stops counting the rows of an aborted INSERT .. ON CONFLICT and an index scan stops reading blocks that a VACUUM cut off (two findings of the first runs, docs/AGG.md)
+	# (test/fuzz/txn_fuzz.py)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		txn=1-8; (( PG_MAJOR < 18 )) || txn=9-16
-		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds $txn --no-oc --no-truncate --stop-after 2
+		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds $txn --stop-after 2
 	elif (( PG_MAJOR >= 18 )); then
-		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --no-oc --no-truncate --stop-after 3
+		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
 	fi
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		seeds=1-3; (( PG_MAJOR < 18 )) || seeds=4-6
@@ -158,7 +158,7 @@ else
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
-	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --no-oc --no-truncate --stop-after 2
+	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,15,192,971 --stop-after 2
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
