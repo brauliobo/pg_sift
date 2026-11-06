@@ -1,6 +1,7 @@
 -- A partitioned table is one source of Custom Scan (SiftAgg) when every partition PostgreSQL keeps carries a sift_col index of the same
 -- layout (docs/AGG.md, "Partitioned tables"). Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
@@ -31,16 +32,7 @@ SELECT NOT EXISTS (SELECT 1 FROM sift.workers WHERE index = 'pt_col'::regclass) 
 SELECT count(*) > 0 AS leaves_listed FROM sift.workers w JOIN pg_inherits h ON h.inhrelid = w.index WHERE h.inhparent = 'pt_col'::regclass;
 
 -- the plan: SiftAgg with the partitions it reads (and workers), or the normal plan
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal'; p text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Partitions:%' THEN p := ' ' || trim(split_part(l, ':', 2)); END IF;
-		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
-	END LOOP;
-	RETURN r || p;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_label_with_partitions_and_workers(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -518,4 +510,5 @@ DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP FUNCTION pt_fill(int, int);
 DROP TABLE pt, pn, pt_n, pt_q, pl, pl_n, ih_a, ih, ph, phm, phx;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

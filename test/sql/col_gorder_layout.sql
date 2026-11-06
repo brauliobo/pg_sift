@@ -3,6 +3,7 @@
 -- in a bracket, a write buffer, dead rows, updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
 -- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.test_col_gorder_ends = 64;
@@ -27,14 +28,7 @@ CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
 ANALYZE p;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -153,4 +147,5 @@ SELECT sift.col_verify('t_ix');
 
 DROP FUNCTION global_order(text), same(text), quant(text, text, float8), sweep(int, int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

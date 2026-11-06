@@ -3,6 +3,7 @@
 -- blocks, never less than four a row wanted). The answers are those of a copy of the table without an index (the oracle) over IS NULL and IS NOT NULL, equality on a column of
 -- few values, a boolean, a range of another column, ties of the key, DESC, OFFSET, rows that were updated, deleted or rolled back, the write buffer and a promotion.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
@@ -15,22 +16,8 @@ VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
-CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE a text; b text;
-BEGIN
-	EXECUTE format('SELECT string_agg(id::text, '','') FROM (%s) x', replace(q, '@', 'tt')) INTO a;
-	EXECUTE format('SELECT string_agg(id::text, '','') FROM (%s) x', replace(q, '@', 'tp')) INTO b;
-	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
-	RETURN a IS NOT DISTINCT FROM b;
-END $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
 
 CREATE TABLE tq (n int, q text);
 INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
@@ -75,4 +62,5 @@ SELECT n, same(q) AS answers FROM tq ORDER BY n;
 
 DROP TABLE tq, tt, tp;
 DROP FUNCTION global_order(text), same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift CASCADE;

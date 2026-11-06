@@ -2,18 +2,10 @@
 -- element (the same element), exactly as EXISTS over jsonb_array_elements. Maps (key.*) have the member name as a text column. Values that the
 -- declared type cannot hold overflow: the row stays a candidate and the heap decides.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
-CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE tbl regclass; a bigint; b bigint; ex bigint; mi bigint;
-BEGIN
-	SELECT indrelid::regclass INTO tbl FROM pg_index WHERE indexrelid = idx;
-	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
-	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, heapwhere) INTO b;
-	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM %s WHERE %s) z', idx, preds, tbl, heapwhere) INTO ex;
-	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM %s WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', tbl, heapwhere, idx, preds) INTO mi;
-	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
-END $$;
+CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.col_index_matches_heap(idx, preds, heapwhere) $$;
 CREATE FUNCTION jarr(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]' END $$;
 CREATE FUNCTION items_has(doc jsonb, cat text, kind text, minqty int) RETURNS bool LANGUAGE sql IMMUTABLE AS $$
 	SELECT EXISTS (SELECT 1 FROM jsonb_array_elements(jarr(doc -> 'items')) e
@@ -313,4 +305,5 @@ DROP FUNCTION items_has(jsonb, text, text, int);
 DROP FUNCTION jarr(jsonb);
 DROP FUNCTION col_cmp(regclass, text, text);
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

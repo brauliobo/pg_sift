@@ -2,6 +2,7 @@
 -- offset ends in from the array, where the units read every row; a column of 3 values (groups of a third of the table) or a column that is mostly NULL gains nothing and is left out.
 -- The rows are the table's without the index (a copy is the oracle).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
@@ -15,14 +16,7 @@ CREATE INDEX t_ix ON t USING sift_col (id, d, d3, mostly_null, k);
 SELECT 'd' = ANY (string_to_array(substr(o, 7), ', ')) AS d_chosen, 'd3' = ANY (string_to_array(substr(o, 7), ', ')) AS d3_chosen, 'mostly_null' = ANY (string_to_array(substr(o, 7), ', ')) AS mostly_null_chosen
 FROM (SELECT option_value AS o FROM pg_options_to_table((SELECT reloptions FROM pg_class WHERE relname = 't_ix')) WHERE option_name = 'order_array_columns') x;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -46,4 +40,5 @@ SELECT same('SELECT id, d FROM @ ORDER BY d DESC, id LIMIT 20 OFFSET 10000') AS 
 SELECT sift.col_verify('t_ix');
 DROP TABLE t, p;
 DROP FUNCTION global_order(text), same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

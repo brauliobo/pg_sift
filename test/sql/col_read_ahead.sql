@@ -3,6 +3,7 @@
 -- normal plan whether the scan keeps all units, a few far apart (the ranges below skip most of them) or only some rows of each, serially or with workers,
 -- and with a second segment in the index.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET sift.agg_preagg = off;
 SET sift.agg_force = on;
@@ -13,17 +14,7 @@ INSERT INTO ev SELECT i, i % 7, (i * 31) % 1000, 'p' FROM generate_series(1, 400
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RESET sift.enable_agg;
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_vs_normal_in_session(q) $$;
 
 CREATE TABLE q (name text, q text);
 INSERT INTO q VALUES
@@ -50,4 +41,5 @@ SELECT name, (same(q)).* FROM q ORDER BY name;
 
 DROP FUNCTION same(text);
 DROP TABLE q, ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

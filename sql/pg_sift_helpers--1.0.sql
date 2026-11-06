@@ -442,3 +442,81 @@ BEGIN
 	END LOOP;
 	RETURN pushed;
 END $$;
+
+-- plan_reads_global_order: true when the plan of q, run with ANALYZE, reads in Global Order
+CREATE FUNCTION sift_helpers.plan_reads_global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- ids_agree_tt_tp: the ids of q ('@' stands for the table) are the same on tables tt and tp; a difference is a NOTICE with the query
+CREATE FUNCTION sift_helpers.ids_agree_tt_tp(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT string_agg(id::text, '','') FROM (%s) x', replace(q, '@', 'tt')) INTO a;
+	EXECUTE format('SELECT string_agg(id::text, '','') FROM (%s) x', replace(q, '@', 'tp')) INTO b;
+	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+
+-- agg_rows_and_vs_normal_in_session: rows of q with the pushdown and how many differ from the normal plan, in temp tables of the session (no ON COMMIT DROP)
+CREATE FUNCTION sift_helpers.agg_rows_and_vs_normal_in_session(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
+	RESET sift.enable_agg;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
+-- agg_units_kept_share: share of the units a forced pushdown of q kept, as Units / (Units + pruned), rounded to one digit
+CREATE FUNCTION sift_helpers.agg_units_kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text; kept numeric := 0; pruned numeric := 0;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '^ *Units: ' THEN kept := substring(l from '[0-9]+')::numeric; END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned')::numeric; END IF;
+	END LOOP;
+	RETURN round(kept / nullif(kept + pruned, 0), 1);
+END $$;
+
+-- col_index_matches_heap: ok when the tids sift._test_col_tids returns for idx and preds are the ctids of the table rows that satisfy heapwhere, else the counts
+CREATE FUNCTION sift_helpers.col_index_matches_heap(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE tbl regclass; a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT indrelid::regclass INTO tbl FROM pg_index WHERE indexrelid = idx;
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM %s WHERE %s) z', idx, preds, tbl, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM %s WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', tbl, heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+
+-- plan_label_with_partitions_and_workers: SiftAgg or normal for the plan of q, with the partitions it names and ' with workers' when workers are planned
+CREATE FUNCTION sift_helpers.plan_label_with_partitions_and_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; p text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Partitions:%' THEN p := ' ' || trim(split_part(l, ':', 2)); END IF;
+		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
+	END LOOP;
+	RETURN r || p;
+END $$;
+
+-- plan_units_and_rows_lines: the Units: and Rows: lines of the EXPLAIN ANALYZE of q, trimmed
+CREATE FUNCTION sift_helpers.plan_units_and_rows_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ '^ *(Units|Rows):' THEN RETURN NEXT trim(l); END IF;
+	END LOOP;
+END $$;

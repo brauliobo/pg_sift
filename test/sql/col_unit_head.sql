@@ -2,23 +2,14 @@
 -- hold the rows of every other offset has a bitmap for each page and does not (256 pages of 140 rows: 9 kB). A key-cut unit has its chunk table first and reads its directory when a
 -- scan needs the pages or the TIDs. The answers are those of the normal plan in all of them, before and after the changes of a unit.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
-	RESET sift.enable_agg;
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_vs_normal_in_session(q) $$;
 
 -- dense pages: the head fits the first read
 CREATE TABLE uh_dense (id int, grp int, amount int, pad text) WITH (autovacuum_enabled = off);
@@ -67,4 +58,5 @@ SELECT sift.col_verify('uh_sparse_i', true);
 
 DROP FUNCTION same(text);
 DROP TABLE q, uh_dense, uh_sparse, uh_cut;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
