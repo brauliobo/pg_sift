@@ -216,9 +216,9 @@ agg_open_cost(int nparts)
 
 double		agg_read_rows;
 
-/* does the normal plan read the heap in order (a sequential scan, under a Gather or not)? Its executor takes about 4 times the estimate there (AGG_NORMAL_UNITS_MS); an index scan or a bitmap scan is priced by what it reads */
-static bool
-reads_heap_in_order(AggCtx *c)
+/* the cheapest path of the table, under its Gather when it has one: what the normal plan reads the table with */
+static Path *
+cheapest_read(AggCtx *c)
 {
 	Path	   *best = NULL;
 
@@ -227,6 +227,21 @@ reads_heap_in_order(AggCtx *c)
 			best = p;
 	if (best && IsA(best, GatherPath))
 		best = ((GatherPath *) best)->subpath;
+	return best;
+}
+
+/*
+ * Does the normal plan run at AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times the estimate), so the scan's operators are priced in its units? A plan that reads the
+ * heap in order (a sequential scan) does. A join query does when the plan reads more than AGG_JOIN_SCALAR_FLOOR units from the table, whatever the path: an index scan that reads
+ * a few rows is priced by what it reads, and the estimate of a plan of a few hundred units is no measure of its time.
+ */
+static bool
+normal_units(AggCtx *c)
+{
+	Path	   *best = cheapest_read(c);
+
+	if (c->joins != NIL)
+		return best && best->total_cost > AGG_JOIN_SCALAR_FLOOR;
 	return best && best->pathtype == T_SeqScan;
 }
 
@@ -283,13 +298,12 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/*
 	 * The scan's operators are counted at AGG_OP_NS, which is 833 cost units a millisecond; the estimate of the normal plan it is compared with runs at
 	 * AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times what the plan prices), so the same time costs the scan 4 times more units and a
-	 * scan up to 4 times faster was refused. The rows of a scan with group keys and without lookup joins, a search or a top-N, whose normal plan is a sequential scan of the heap and a hash of the groups, are
-	 * priced in the units of that plan. A lookup join keeps its price (AGG_JOIN_PROBE, AGG_FAN_ROW and the join excess of the normal plan, AGG_JOIN_NS, are fitted together),
-	 * so does a statement with a search (the normal plan's count of the index answers it in a tenth of a millisecond: search_count) one whose normal plan reads an index (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate (its sequential scan runs at 370 to 530 units a millisecond, not 210: agg_array_image_cost), and the reads of the
-	 * lookup tables are PostgreSQL's own, priced as its plans are (load_cost).
+	 * scan up to 4 times faster was refused. The whole estimate of a scan with group keys, without a search or a top-N, whose normal plan reads in those units (normal_units), is
+	 * priced in them, the load of the lookup tables included (load_cost: the rows of a lookup table through PostgreSQL's executor, priced as its plans are). A search keeps its price (the normal plan's
+	 * count of the index answers it in a tenth of a millisecond: search_count), so does one whose normal plan reads an index of a few rows (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate.
 	 */
-	k.ms = c->joins == NIL && !c->search && !s->topn && s->nkeys > 0 && reads_heap_in_order(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
-	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED * k.ms + k.load_cost + k.recheck * AGG_SCAN_SPEED;
+	k.ms = !c->search && !s->topn && s->nkeys > 0 && normal_units(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
+	k.scan_cost = ((k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost) * k.ms + k.recheck * AGG_SCAN_SPEED;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 	{

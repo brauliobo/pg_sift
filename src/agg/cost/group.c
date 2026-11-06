@@ -29,7 +29,7 @@ void
 cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = s->nworkers + 1;
-	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
+	double		load = Min(k->load_cost * k->ms * cpu_operator_cost, k->scan_cost);
 	double		merge = AGG_MERGE_GROUP;
 	double		setup = parallel_setup_cost * AGG_SETUP_FACTOR * k->ms;
 	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
