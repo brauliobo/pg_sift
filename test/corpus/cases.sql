@@ -1,4 +1,4 @@
--- The corpus: 363 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 364 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -779,5 +779,7 @@ select region, status, sum(qty) from events group by cube (region, status) havin
 select k.name, count(*) from events e join kinds k on k.id = e.kind_id group by 1 having count(*) > 400;
 -- @case having_window_over_groups | having | a window function over the groups that pass
 select region, count(*), rank() over (order by count(*) desc) from events group by 1 having sum(qty) > 8700;
+-- @case having_count_whole_row | having | HAVING count(e) of the whole row is count(*)
+select region, count(e) from events e group by 1 having count(e) > 1600;
 -- @case having_in_cte | having | a grouped CTE with a HAVING, read by an outer aggregate
 with g as (select region, count(*) c from events group by 1 having count(*) > 1600) select count(*), sum(c) from g;

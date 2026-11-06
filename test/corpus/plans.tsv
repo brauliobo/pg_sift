@@ -361,4 +361,5 @@ having_rollup_count	SiftAgg	single:t
 having_cube_sum	SiftAgg	single:t
 having_join_lookup	SiftAgg	single:t
 having_window_over_groups	SiftAgg	single:t
+having_count_whole_row	SiftAgg	single:t
 having_in_cte	SiftAgg	-
