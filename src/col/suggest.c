@@ -83,7 +83,7 @@ kid_find(Ctx *cx, SNode *n, const char *key, int len)
 	if (n->nkids == n->capkids)
 	{
 		n->capkids = n->capkids ? n->capkids * 2 : 8;
-		n->kid = n->kid ? repalloc(n->kid, n->capkids * sizeof(SNode *)) : MemoryContextAlloc(cx->tree, n->capkids * sizeof(SNode *));
+		SIFT_REGROW_IN(cx->tree, n->kid, n->capkids * sizeof(SNode *));
 	}
 	{
 		char	   *name = pnstrdup(key, len);

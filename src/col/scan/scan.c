@@ -261,7 +261,7 @@ add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bo
 	if (src->nmem == src->capmem)
 	{
 		src->capmem = Max(16, src->capmem * 2);
-		src->mem = src->mem ? repalloc(src->mem, src->capmem * sizeof(ColMem)) : MemoryContextAlloc(src->mcxt, src->capmem * sizeof(ColMem));
+		SIFT_REGROW_IN(src->mcxt, src->mem, src->capmem * sizeof(ColMem));
 	}
 	uint32		id = ++src->nmem;
 

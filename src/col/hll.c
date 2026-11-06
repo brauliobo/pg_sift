@@ -81,7 +81,7 @@ put(SiftHll *h, uint32 reg, uint32 rank)
 		if (h->n >= h->cap / 2)
 		{
 			h->cap = h->cap ? Min(h->cap * 2, 2 * SIFT_HLL_SPARSE) : 32;
-			h->e = h->e ? repalloc(h->e, h->cap * sizeof(uint32)) : MemoryContextAlloc(h->cxt, h->cap * sizeof(uint32));
+			SIFT_REGROW_IN(h->cxt, h->e, h->cap * sizeof(uint32));
 		}
 	}
 	h->e[h->n++] = ENT(reg, rank);

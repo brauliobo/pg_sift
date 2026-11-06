@@ -458,7 +458,7 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 							MemoryContext oldcxt = MemoryContextSwitchTo(dead_share.cxt);
 
 							dead_share.cap = dead_share.cap ? dead_share.cap * 2 : 1024;
-							dead_share.keys = dead_share.keys ? repalloc(dead_share.keys, dead_share.cap * sizeof(uint64)) : palloc(dead_share.cap * sizeof(uint64));
+							SIFT_REGROW(dead_share.keys, dead_share.cap * sizeof(uint64));
 							MemoryContextSwitchTo(oldcxt);
 						}
 						dead_share.keys[dead_share.n++] = sift_key_from_tid(t);

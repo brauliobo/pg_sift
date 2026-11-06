@@ -191,7 +191,7 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 	if (sl->n == sl->cap)
 	{
 		sl->cap = sl->cap ? 2 * sl->cap : 16;
-		sl->p = sl->p ? repalloc(sl->p, sl->cap * sizeof(PageStamp)) : MemoryContextAlloc(sl->cx, sl->cap * sizeof(PageStamp));
+		SIFT_REGROW_IN(sl->cx, sl->p, sl->cap * sizeof(PageStamp));
 	}
 	sl->p[sl->n++] = (PageStamp) {blk, PageGetLSN(page), used, wbuf_page_dead(sl->index, page, 0, used)};
 }

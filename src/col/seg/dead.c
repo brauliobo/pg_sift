@@ -121,7 +121,7 @@ sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey *
 	if (*ndead + nd > *room)
 	{
 		*room = Max(*room * 2, *ndead + nd);
-		*dead = *dead ? repalloc(*dead, *room * sizeof(SiftKey)) : MemoryContextAlloc(mcxt, *room * sizeof(SiftKey));
+		SIFT_REGROW_IN(mcxt, *dead, *room * sizeof(SiftKey));
 	}
 	if (e)
 	{

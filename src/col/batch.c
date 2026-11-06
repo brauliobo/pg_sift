@@ -121,7 +121,7 @@ vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
 		return;
 	while (v->n + extra > cap)
 		cap = Max(64, cap * 2);
-	v->key = v->key ? repalloc(v->key, cap * sizeof(int64)) : MemoryContextAlloc(mcxt, cap * sizeof(int64));
+	SIFT_REGROW_IN(mcxt, v->key, cap * sizeof(int64));
 	if (v->nulls)
 	{
 		v->nulls = repalloc(v->nulls, words_of(cap) * sizeof(uint64));
@@ -182,7 +182,7 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 	if (v->vb == NULL || start + len > v->vcap)
 	{
 		v->vcap = Max(Max(1024, v->vcap * 2), (Size) start + len);
-		v->vb = v->vb ? repalloc(v->vb, v->vcap) : MemoryContextAlloc(mcxt, v->vcap);
+		SIFT_REGROW_IN(mcxt, v->vb, v->vcap);
 	}
 	if (len > 0)
 		memcpy(v->vb + start, s, len);

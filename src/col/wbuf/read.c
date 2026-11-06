@@ -95,7 +95,7 @@ join_append(SiftCWbufReader *r, const uint8 *payload, Size len)
 	if (r->joinedlen + len > r->joinedcap)
 	{
 		r->joinedcap = Max(2 * r->joinedcap, r->joinedlen + len);
-		r->joined = r->joined ? repalloc(r->joined, r->joinedcap) : MemoryContextAlloc(r->mcxt, r->joinedcap);
+		SIFT_REGROW_IN(r->mcxt, r->joined, r->joinedcap);
 	}
 	memcpy(r->joined + r->joinedlen, payload, len);
 	r->joinedlen += len;
@@ -254,8 +254,7 @@ evals_reserve(SiftCWbufReader *r, Size n)
 	if (n <= r->evalcap)
 		return;
 	r->evalcap = Max(2 * r->evalcap, Max(n, 16));
-	r->evals = r->evals ? repalloc(r->evals, r->evalcap * sizeof(SiftColValue)) :
-		MemoryContextAlloc(r->mcxt, r->evalcap * sizeof(SiftColValue));
+	SIFT_REGROW_IN(r->mcxt, r->evals, r->evalcap * sizeof(SiftColValue));
 }
 
 void

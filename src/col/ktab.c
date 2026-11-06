@@ -116,7 +116,7 @@ grow(SiftCKtab *t, KtLeaf *l)
 	MemoryContext old = MemoryContextSwitchTo(t->cx);
 	uint32		cap = l->cap ? l->cap * 2 : 256;
 
-	l->grp = l->grp ? repalloc(l->grp, cap * sizeof(KtGroup)) : palloc(cap * sizeof(KtGroup));
+	SIFT_REGROW(l->grp, cap * sizeof(KtGroup));
 	memset(l->grp + l->cap, 0, (cap - l->cap) * sizeof(KtGroup));
 	l->cap = cap;
 	if (l->hg)

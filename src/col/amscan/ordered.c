@@ -437,7 +437,7 @@ ord_remember(ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 		MemoryContext old = MemoryContextSwitchTo(o->cxt);
 
 		o->cmark = Max(64, o->cmark * 2);
-		o->mark = o->mark ? repalloc(o->mark, o->cmark * sizeof(OrdMark)) : palloc(o->cmark * sizeof(OrdMark));
+		SIFT_REGROW(o->mark, o->cmark * sizeof(OrdMark));
 		MemoryContextSwitchTo(old);
 	}
 	m = &o->mark[o->nmark++];

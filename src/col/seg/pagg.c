@@ -145,7 +145,7 @@ seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 by
 	if (b1 - b0 > *cap)
 	{
 		*cap = Max(b1 - b0, 2 * *cap);
-		*buf = *buf ? repalloc(*buf, *cap) : MemoryContextAlloc(seg->mcxt, *cap);
+		SIFT_REGROW_IN(seg->mcxt, *buf, *cap);
 	}
 	seg_read(seg, at + (n + 1) * sizeof(uint64) + b0, b1 - b0, *buf);
 	*len = b1 - b0;

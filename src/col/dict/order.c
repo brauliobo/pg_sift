@@ -253,7 +253,7 @@ sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n,
 			if (len * Max(c[1].len, c[2].len) + 1 > cap)
 			{
 				cap = len * Max(c[1].len, c[2].len) + 1;
-				buf = buf ? repalloc(buf, cap) : palloc(cap);
+				SIFT_REGROW(buf, cap);
 			}
 			for (uint32 i = 0; i < len;)
 				if (i + 1 < len && p[i] == 0xC4 && p[i + 1] == 0xB0)

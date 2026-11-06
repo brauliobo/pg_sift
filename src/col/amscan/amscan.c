@@ -463,7 +463,7 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		if (sel.count > so->cap)
 		{
 			so->cap = Max(sel.count, 2 * so->cap);
-			so->tids = so->tids ? repalloc(so->tids, so->cap * sizeof(ItemPointerData)) : palloc(so->cap * sizeof(ItemPointerData));
+			SIFT_REGROW(so->tids, so->cap * sizeof(ItemPointerData));
 		}
 		sift_col_tids(&unit, &sel, so->tids);
 		sel.count = col_tomb_keep(so, scan->xs_snapshot, so->tids, sel.count);

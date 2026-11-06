@@ -161,7 +161,7 @@ sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid ca
 	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(rc->col));
 	SiftRecheckMember *m;
 
-	rc->mem = rc->mem ? repalloc(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember)) : palloc((rc->nmem + 1) * sizeof(SiftRecheckMember));
+	SIFT_REGROW(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember));
 	m = &rc->mem[rc->nmem++];
 	m->col = col;
 	m->key = pstrdup(key);
@@ -177,7 +177,7 @@ sift_shred_recheck_haskey(SiftShredRecheck *rc, int col, const char *key)
 	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(rc->col));
 	SiftRecheckMember *m;
 
-	rc->mem = rc->mem ? repalloc(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember)) : palloc((rc->nmem + 1) * sizeof(SiftRecheckMember));
+	SIFT_REGROW(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember));
 	m = &rc->mem[rc->nmem++];
 	m->col = col;
 	m->key = pstrdup(key);

@@ -709,7 +709,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		if (in->ordcap < in->n)
 		{
 			in->ordcap = Max(in->n, 2 * in->ordcap);
-			in->ord = in->ord ? repalloc(in->ord, in->ordcap * sizeof(RowRef)) : MemoryContextAlloc(m->cx, in->ordcap * sizeof(RowRef));
+			SIFT_REGROW_IN(m->cx, in->ord, in->ordcap * sizeof(RowRef));
 		}
 		for (uint32 r = 0; r < in->n; r++)
 			in->ord[r] = (RowRef) {b, r, cur};

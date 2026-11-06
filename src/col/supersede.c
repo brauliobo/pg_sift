@@ -278,7 +278,7 @@ supersede_by_scan(Relation index, Relation heap, Snapshot snap, int attno, AttrN
 		if (ncand == capcand)
 		{
 			capcand = Max(8, 2 * capcand);
-			cand = cand ? repalloc(cand, capcand * sizeof(ItemPointerData)) : palloc(capcand * sizeof(ItemPointerData));
+			SIFT_REGROW(cand, capcand * sizeof(ItemPointerData));
 		}
 		cand[ncand++] = *t;
 	}

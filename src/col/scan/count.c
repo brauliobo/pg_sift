@@ -197,7 +197,7 @@ count_entry(void *arg, SiftKey tid)
 				return;
 			}
 			e->cap = e->cap ? Min(e->cap * 2, SIFT_CORDER_MAX_ROWS) : 256;
-			e->chk = e->chk ? repalloc(e->chk, e->cap * sizeof(SiftKey)) : palloc(e->cap * sizeof(SiftKey));
+			SIFT_REGROW(e->chk, e->cap * sizeof(SiftKey));
 		}
 		e->chk[e->nchk++] = tid;
 	}

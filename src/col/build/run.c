@@ -149,7 +149,7 @@ compact(ColBuild *b)
 		in[i] = b->segs[pick[i]];
 		seg[i] = sift_cseg_open(b->index, &in[i], cx);
 		e = sift_store_immutable_extents(b->index, &in[i], &next);
-		rel = rel ? repalloc(rel, (nrel + next) * sizeof(SiftExtent)) : palloc((nrel + next) * sizeof(SiftExtent));
+		SIFT_REGROW(rel, (nrel + next) * sizeof(SiftExtent));
 		memcpy(rel + nrel, e, next * sizeof(SiftExtent));
 		nrel += next;
 	}

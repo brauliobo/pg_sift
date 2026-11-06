@@ -42,10 +42,10 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 			a->cap = Max(Max(a->cap * 2, 4096), a->n + v->n);
-			a->key = a->key ? repalloc_huge(a->key, (Size) a->cap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(int64));
-			a->row = a->row ? repalloc_huge(a->row, (Size) a->cap * sizeof(uint32)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint32));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->key, (Size) a->cap * sizeof(int64));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->row, (Size) a->cap * sizeof(uint32));
 			if (wt)
-				a->tid = a->tid ? repalloc_huge(a->tid, (Size) a->cap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint64));
+				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->tid, (Size) a->cap * sizeof(uint64));
 			MemoryContextSwitchTo(old);
 		}
 		if (a->ord && v->nulls && a->nn + v->n > a->ncap)
@@ -53,11 +53,11 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 			a->ncap = Max(Max(a->ncap * 2, 1024), a->nn + v->n);
-			a->ntid = a->ntid ? repalloc_huge(a->ntid, (Size) a->ncap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(uint64));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ntid, (Size) a->ncap * sizeof(uint64));
 			if (gv)
 			{
-				a->ngk = a->ngk ? repalloc_huge(a->ngk, (Size) a->ncap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(int64));
-				a->ngok = a->ngok ? repalloc_huge(a->ngok, (Size) a->ncap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap);
+				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ngk, (Size) a->ncap * sizeof(int64));
+				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->ngok, (Size) a->ncap);
 			}
 			MemoryContextSwitchTo(old);
 		}
@@ -66,8 +66,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 			a->gcap = a->cap;
-			a->gk = a->gk ? repalloc_huge(a->gk, (Size) a->gcap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap * sizeof(int64));
-			a->gok = a->gok ? repalloc_huge(a->gok, (Size) a->gcap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap);
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->gk, (Size) a->gcap * sizeof(int64));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->gok, (Size) a->gcap);
 			MemoryContextSwitchTo(old);
 		}
 		if (segw_elem_point(w, c))
@@ -160,7 +160,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 			}
 			else if (w->pagg.set[c] && !w->pagg.keyauto)
 			{
-				keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
+				SIFT_REGROW(keys, (Size) cols[c].n * sizeof(int64));
 				nd = sift_cset_keys(&cols[c], keys);
 				if (sift_cset_build(keys, nd, SIFT_CSET_LIMIT, &a->blobs))
 				{
@@ -180,7 +180,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 
 		if (!filter[c])
 			continue;
-		keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
+		SIFT_REGROW(keys, (Size) cols[c].n * sizeof(int64));
 		nd = sift_cset_keys(&cols[c], keys);
 		if (sift_cset_build_filter(keys, nd, left, &a->blobs))
 		{
