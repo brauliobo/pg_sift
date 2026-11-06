@@ -389,7 +389,7 @@ typedef enum SiftColWVerdict
 #define SIFT_COLW_N_OVERLAP		29		/* && */
 #define SIFT_COLW_R_EQ			30		/* = a range (only the access method scan asks for it) */
 #define SIFT_COLW_N_EQ			31		/* = a network: the node and the host bits of an IPv4 value, the rows of the node of an IPv6 one are decided by PostgreSQL's operator */
-/* tests of a range with no operand (isempty, lower_inf, upper_inf, lower_inc, upper_inc and the NOT of the first three), on the same lanes */
+/* tests of a range with no operand (isempty, lower_inf, upper_inf, lower_inc, upper_inc and the NOT of each), on the same lanes */
 #define SIFT_COLW_R_UNARY		32
 #define SIFT_COLW_R_EMPTY		32
 #define SIFT_COLW_R_NONEMPTY	33
@@ -398,7 +398,9 @@ typedef enum SiftColWVerdict
 #define SIFT_COLW_R_UPPER_INF	36
 #define SIFT_COLW_R_UPPER_FIN	37
 #define SIFT_COLW_R_LOWER_INC	38
-#define SIFT_COLW_R_UPPER_INC	39
+#define SIFT_COLW_R_LOWER_EXC	39		/* NOT lower_inc: true of an empty range and of an infinite bound */
+#define SIFT_COLW_R_UPPER_INC	40
+#define SIFT_COLW_R_UPPER_EXC	41
 #define SIFT_COL_SHAPE_PREDS	4		/* the lane tests of one alternative of a shape test */
 
 typedef struct SiftColShape SiftColShape;

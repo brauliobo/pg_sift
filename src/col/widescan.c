@@ -417,7 +417,9 @@ sift_colw_test(const SiftColDef *def, Oid typid, int op, int nvals, const Datum 
 {
 	memset(t, 0, sizeof(*t));
 	t->pred.col = def->id;
-	if (op >= SIFT_COLW_SHAPE_FIRST)
+	if (op >= SIFT_COLW_SHAPE_FIRST && nvals > 0 && isnull[0])
+		t->verdict = SIFT_COLW_NONE;	/* a test with a NULL operand is NULL for every row */
+	else if (op >= SIFT_COLW_SHAPE_FIRST)
 		sift_col_shape_test(def, typid, op, nvals > 0 ? vals[0] : (Datum) 0, mcxt, t);
 	else if (op == SIFT_COLW_ISNULL || op == SIFT_COLW_NOTNULL)
 		test_pred(t, def, op == SIFT_COLW_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL, op == SIFT_COLW_NOTNULL);

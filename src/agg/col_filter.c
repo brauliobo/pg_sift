@@ -113,6 +113,8 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 
 		sift_colw_test(sift_col_def(src->cs, t[i].leaf), src->lay->leaf[t[i].leaf].typid, t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
 		v->v.s = (const char *) &src->wtest[i];
+		if (t[i].rows)
+			continue;
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			src->wpred[src->nwpred++] = src->wtest[i].pred;
 		else if (sift_colw_alts(&src->wtest[i], alt, npred) > 0)

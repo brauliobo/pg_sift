@@ -182,7 +182,9 @@ typedef struct SiftSrcStrTest
 #define SWT_R_UPPER_INF	36
 #define SWT_R_UPPER_FIN	37
 #define SWT_R_LOWER_INC	38
-#define SWT_R_UPPER_INC	39
+#define SWT_R_LOWER_EXC	39
+#define SWT_R_UPPER_INC	40
+#define SWT_R_UPPER_EXC	41
 
 typedef struct SiftSrcWideTest
 {
@@ -191,6 +193,7 @@ typedef struct SiftSrcWideTest
 	int			nvals;
 	const Datum *vals;
 	const bool *isnull;
+	bool		rows;			/* a test whose rows the executor asks for (filter_wide on all the rows of a unit) and no conjunct: it prunes no unit */
 } SiftSrcWideTest;
 
 /* The zone of a scalar leaf in a unit: min and max of the integer-typed (SCV_I32/SCV_I64) values, dead rows included (docs/COL-SEARCH.md, top-N) */

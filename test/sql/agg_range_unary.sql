@@ -1,4 +1,4 @@
--- isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column in a WHERE conjunct (as the function, its NOT for the first three, `IS TRUE` and `IS FALSE`) are tests on
+-- isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column in a WHERE conjunct (as the function, its NOT, `IS TRUE` and `IS FALSE`) are tests on
 -- the first and last position of the range that the index keeps (col/shape.c) as the containment operators are: empty ranges, ranges with a bound that is no value, inclusive and exclusive
 -- bounds of the continuous subtypes, the canonical form of the discrete ones, NULL ranges, and a bound too large for a lane (the engine keeps those rows and PostgreSQL's function decides
 -- them) give the rows PostgreSQL gives. Each statement is run with the scan on and off; `scan` says the aggregate is in the scan.
@@ -36,14 +36,21 @@ CROSS JOIN LATERAL (VALUES
      ELSE tstzrange(timestamptz '2025-01-01 00:00+00' + i * interval '1 hour', timestamptz '2025-01-01 00:00+00' + i * interval '1 hour' + interval '3 hours',
                     CASE i % 4 WHEN 0 THEN '[]' WHEN 1 THEN '[)' WHEN 2 THEN '()' ELSE '(]' END) END)
 ) r (i4, i8, d, ts, tz);
+-- the continuous subtypes before 1970 (negative positions), at the ends of the lanes (past 2^62 microseconds a row has none: PostgreSQL decides it) and infinite, in the four forms of bounds
+INSERT INTO rg (id, ts, tz)
+SELECT 5000 + row_number() OVER (ORDER BY a.t, b.t, m.f), tsrange(a.t, b.t, m.f), tstzrange(a.t::timestamptz, b.t::timestamptz, m.f)
+FROM (VALUES (timestamp '-infinity'), ('4713-01-01 BC'), ('0100-03-04'), ('1900-01-01'), ('1969-12-31 23:59:59.999999'), ('1970-01-01'), ('2025-06-01'), ('200000-01-01'), ('infinity')) a (t)
+CROSS JOIN (VALUES (timestamp '4713-01-01 BC'), ('0100-03-04'), ('1900-01-01'), ('1969-12-31 23:59:59.999999'), ('1970-01-01'), ('2025-06-01'), ('200000-01-01'), ('infinity')) b (t)
+CROSS JOIN (VALUES ('[]'), ('[)'), ('(]'), ('()')) m (f)
+WHERE a.t < b.t OR (a.t = b.t AND m.f = '[]');
 CREATE INDEX rg_col ON rg USING sift_col (id, i4, i8, d, ts, tz);
 VACUUM (FREEZE, ANALYZE) rg;
 
 CREATE TABLE q (ord serial, col text, pred text);
 INSERT INTO q (col, pred) SELECT c, replace(p, '$', c) FROM unnest(ARRAY['i4', 'i8', 'd', 'ts', 'tz']) c CROSS JOIN
   unnest(ARRAY['isempty($)', 'NOT isempty($)', 'isempty($) IS TRUE', 'isempty($) IS FALSE', 'lower_inf($)', 'NOT lower_inf($)', 'lower_inf($) IS FALSE', 'upper_inf($)', 'NOT upper_inf($)',
-               'upper_inf($) IS TRUE', 'lower_inc($)', 'upper_inc($)', 'lower_inc($) IS TRUE', 'upper_inc($) IS TRUE', 'NOT lower_inc($)', 'lower_inc($) IS NOT TRUE',
-               'NOT isempty($) AND NOT upper_inf($)', 'lower_inc($) AND NOT upper_inc($)', 'isempty($) OR lower_inf($)']) p;
+               'upper_inf($) IS TRUE', 'lower_inc($)', 'upper_inc($)', 'lower_inc($) IS TRUE', 'upper_inc($) IS TRUE', 'NOT lower_inc($)', 'NOT upper_inc($)', 'lower_inc($) IS FALSE', 'upper_inc($) IS FALSE', 'lower_inc($) IS NOT TRUE',
+               'NOT isempty($) AND NOT upper_inf($)', 'lower_inc($) AND NOT upper_inc($)', 'NOT lower_inc($) AND NOT upper_inc($)', 'isempty($) OR lower_inf($)']) p;
 
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE r text;

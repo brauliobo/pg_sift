@@ -250,6 +250,10 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
 	typeof_reads(c, s);
 	s->npreds_total = c->npred;
+	s->nwide = c->nwide;
+	s->wide = palloc(Max(c->nwide, 1) * sizeof(SiftAggPred *));
+	for (int i = 0; i < c->nwide; i++)
+		s->wide[i] = list_nth(c->wide, i);
 	s->nvleaf = c->nvleaf;
 	memcpy(s->vleaf, c->vleaf, sizeof(c->vleaf));
 	c->used = bms_union(c->used, c->elem_used);

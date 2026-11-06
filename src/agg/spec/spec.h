@@ -38,6 +38,8 @@ typedef struct SiftAggSpec
 	uint64	   *gate;			/* per entry of leaves: the aggregates (bit j: agg[j]) that read the leaf, all of them with a FILTER; a row of a value the leaf cannot store raises only if the FILTER of one holds (0: it raises for every row) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;
+	int			nwide;			/* the tests the source runs (SAP_WIDE), wherever they are in the predicates, by wslot */
+	SiftAggPred **wide;
 	int			nkeys;
 	SiftAggKey *key;
 	int			naggs;

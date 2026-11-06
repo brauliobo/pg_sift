@@ -54,7 +54,7 @@ INSERT INTO im_q VALUES
 -- each statement returns the rows of the normal plan
 SELECT count(*) AS statements, count(*) FILTER (WHERE outcome(q, true) = outcome(q, false)) AS same FROM im_q;
 SELECT name FROM im_q WHERE outcome(q, true) <> outcome(q, false) ORDER BY name;
--- the conjuncts are tests of the source ("Wide Filters In Source"); an OR, a NOT, an ordering operator, an array column and a cast stay with the executor
+-- the conjuncts are tests of the source ("Wide Filters In Source"), and so are the branches of an OR (the source gives the rows each passes); a test of a NULL, an ordering operator, an array column and a cast stay with the executor
 CREATE FUNCTION source_tests(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
@@ -68,7 +68,8 @@ END $$;
 SELECT name FROM im_q WHERE name ~ ' (eq|ne|commuted|and|in one|not in one|in null|not in null)$' AND source_tests(q) <> 1
    OR name IN ('u in list', 'u not in list', 'u in array', 'u absent', 'b empty', 'b in empty and zero', 'i family 6', 'i mask', 'bt wrong length') AND source_tests(q) <> 1
    OR name = 'two images' AND source_tests(q) <> 2 ORDER BY name;
-SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ (or|null)$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
+SELECT name FROM im_q WHERE name ~ '^[a-z0-9]+ or$' AND source_tests(q) <> 1 ORDER BY name;
+SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ null$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
 
 DROP FUNCTION source_tests(text);
 DROP FUNCTION outcome(text, bool), pushed(text), runq(text, bool), runs_in_scan(text);

@@ -562,6 +562,18 @@ select count(*), min(lower(during)), max(upper(during)) from spans;
 select upper(during) u, count(*) from spans where dim_a_id <= 50 group by 1 order by 2 desc, 1 limit 5;
 -- @case c3_range_lower_where | range | spans that start in a month
 select tenant_id, count(*) from spans where lower(during) >= date '2025-03-01' and lower(during) < date '2025-04-01' group by 1;
+-- @case c3_range_not_lower_inc | range | spans that do not include their first day
+select tenant_id, count(*) from spans where not lower_inc(during) group by 1;
+-- @case c3_range_not_seen_upper_inc | range | timestamp ranges that do not include their last instant
+select count(*), sum(qty) from spans where not upper_inc(seen);
+-- @case c3_range_filter_pivot | range | one row of counts and sums by the shape of the range of each span
+select tenant_id, count(*) filter (where isempty(during)) e, count(*) filter (where upper_inc(seen)) u, sum(qty) filter (where lower_inc(during)) q from spans group by 1;
+-- @case c3_range_case_pivot | range | sums by a bound test of the range in a CASE
+select tenant_id, sum(case when upper_inf(during) then qty else 0 end) a, sum(case when lower_inc(seen) then amount else 0 end) b from spans group by 1;
+-- @case c3_range_or_windows | range | spans that overlap a window of dates or of instants
+select count(*), sum(qty) from spans where during && daterange('2025-01-01', '2025-02-01') or seen && tstzrange('2025-06-01', '2025-06-15');
+-- @case c3_range_not_overlap | range | spans that do not overlap a window (a NULL range is none of them)
+select count(*), sum(qty) from spans where (seen && tstzrange('2025-06-01', '2025-06-15')) is not true;
 -- ===================== HAVING with sub-selects
 -- @case c3_having_scalar_avg | having | entities whose total is above ten times the average row
 select dim_a_id, sum(amount) from events group by 1 having sum(amount) > (select avg(amount) * 10 from events);

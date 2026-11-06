@@ -91,10 +91,12 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->id);
 	put_int(p, pr->leaf);
 	put_int(p, pr->leaf2);
+	put_int(p, pr->wslot);
 	put_int(p, pr->op);
 	put_int(p, (int) pr->argtype);
 	put_int(p, pr->level);
 	put_int(p, pr->late);
+	put_int(p, pr->negated);
 	put_int(p, pr->pass_poison);
 	put_node(p, pr->expr);
 	put_node(p, pr->cal);
@@ -374,6 +376,9 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->npred);
 	for (int i = 0; i < s->npred; i++)
 		put_pred(p, s->pred[i]);
+	put_int(p, s->nwide);
+	for (int i = 0; i < s->nwide; i++)
+		put_pred(p, s->wide[i]);
 	put_int(p, s->nkeys);
 	for (int i = 0; i < s->nkeys; i++)
 	{
@@ -519,10 +524,12 @@ get_pred(Unpack *u)
 	pr->id = get_int(u);
 	pr->leaf = get_int(u);
 	pr->leaf2 = get_int(u);
+	pr->wslot = get_int(u);
 	pr->op = get_int(u);
 	pr->argtype = (Oid) get_int(u);
 	pr->level = get_int(u);
 	pr->late = get_int(u);
+	pr->negated = get_int(u);
 	pr->pass_poison = get_int(u);
 	pr->expr = get_node(u);
 	pr->cal = get_node(u);
@@ -827,6 +834,10 @@ sift_aggspec_unpack(const List *items)
 	s->pred = palloc(Max(s->npred, 1) * sizeof(SiftAggPred *));
 	for (int i = 0; i < s->npred; i++)
 		s->pred[i] = get_pred(u);
+	s->nwide = get_int(u);
+	s->wide = palloc(Max(s->nwide, 1) * sizeof(SiftAggPred *));
+	for (int i = 0; i < s->nwide; i++)
+		s->wide[i] = get_pred(u);
 	s->nkeys = get_int(u);
 	s->key = palloc0(Max(s->nkeys, 1) * sizeof(SiftAggKey));
 	for (int i = 0; i < s->nkeys; i++)

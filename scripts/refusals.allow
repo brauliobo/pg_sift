@@ -31,6 +31,7 @@ inner.c: arm_gates arm_having_expr count_aggs_walker outer_agg # steps of the tw
 spine.c: spine_key two_keys two_aggs spine_where null_in_arms two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 plan_jindex.c: index_qual # a condition that is no bound or point of an index scan: the table is read whole, join_filter names nothing
 plan_type.c: typeof_cmp_operands typeof_test wide_test shape_test range_unary_test types_guard_reads # tests of a jsonb_typeof, wide or range or network comparison: the caller names where
+plan_pred.c: source_tests_only # a predicate that is not an AND / OR of the source's tests is not one: a question, not a refusal
 plan_zone.c: array_consts zone_range_read zone_meets zone_may in_list_shape # zone pruning tests: a unit that cannot be pruned is read, no refusal
 spec_lits.c: re_lits like_lits sift_pattern_lits_of call_lits sift_pattern_lits # the literals a pattern requires: false is "none that are read", and the dictionary test then runs the pattern on every string
 spec.c: sift_aggspec_ascii_fold sift_aggspec_spillable sift_parse_decimal sift_aggspec_zone_cmp sift_aggspec_span_pred str_const like_test regex_literal pattern_test str_call_test strpos_test ilike_test str_in_test str_leaf_test sift_aggspec_elem_test # tests of a compiled spec (parallel workers, string tests): a scan that cannot use workers or a kernel is not a refusal

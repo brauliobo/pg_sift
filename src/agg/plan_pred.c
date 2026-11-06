@@ -724,6 +724,8 @@ compile_bool(AggCtx *c, BoolExpr *b)
 
 	if (b->boolop != NOT_EXPR)
 		return compile_junction(c, b->boolop == AND_EXPR ? SAP_AND : SAP_OR, b->args);
+	if ((p = compile_wide(c, (Node *) b)) != NULL)
+		return p;
 	/* NOT of an existential test is its negation unless the test can be NULL (a NULL document) */
 	if ((p = compile_existential(c, strip_relabel(linitial(b->args)), &target)) == NULL)
 		return compile_lut(c, (Node *) b);
@@ -826,6 +828,32 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
+/* is the predicate an AND / OR of the source's tests (SAP_WIDE), the rows that pass of each a bitmap? */
+static bool
+source_tests_only(const SiftAggPred *p)
+{
+	if (p->kind == SAP_WIDE)
+		return true;
+	if (p->kind != SAP_AND && p->kind != SAP_OR)
+		return false;
+	for (int i = 0; i < p->nchild; i++)
+		if (!source_tests_only(p->child[i]))
+			return false;
+	return true;
+}
+
+/* the rows p does not keep (IS NOT TRUE: a NULL is one), of a tree of source tests: the dual junction over the complements of the tests, De Morgan on the sets of rows that pass */
+static void
+complement_tests(SiftAggPred *p)
+{
+	if (p->kind == SAP_WIDE)
+		p->negated = !p->negated;
+	else
+		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
+	for (int i = 0; i < p->nchild; i++)
+		complement_tests(p->child[i]);
+}
+
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
@@ -865,6 +893,12 @@ compile_pred(AggCtx *c, Node *n)
 	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
 	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_TRUE)
 		return compile_pred(c, (Node *) ((BooleanTest *) n)->arg);
+	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_NOT_TRUE && (p = compile_pred(c, (Node *) ((BooleanTest *) n)->arg)) != NULL && source_tests_only(p))
+	{
+		complement_tests(p);
+		p->desc = psprintf("(%s) IS NOT TRUE", p->desc);
+		return p;
+	}
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0)
 	{
 		p = make_leaf_pred(c, SAP_NULL, leaf);
@@ -879,6 +913,8 @@ compile_pred(AggCtx *c, Node *n)
 	if (IsA(n, ScalarArrayOpExpr) && (p = compile_in(c, (ScalarArrayOpExpr *) n)) != NULL)
 		return p;
 	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
+		return p;
+	if ((p = compile_wide(c, n)) != NULL)
 		return p;
 	p = compile_lut(c, n);
 	if (p != NULL)

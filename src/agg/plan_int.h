@@ -197,7 +197,8 @@ typedef struct AggCtx
 	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */
 	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
 	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
-	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
+	int			nwide;			/* the tests on wide leaves (SAP_WIDE) of the spec, in wide */
+	List	   *wide;			/* SiftAggPred of them */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate (once each, at the start of the scan) */
 	bool		sub_serial;		/* one of them cannot run in a worker: a sub-plan that is not parallel safe, or the output of an ARRAY sub-select (a parameter the leader sets) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */

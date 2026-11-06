@@ -385,14 +385,12 @@ type_filters(AggExec *ex, uint64 *rmask)
 	return true;
 }
 
-/* the rows that pass each SAP_WIDE conjunct, in the order wide_init gave them to the source; false when none is left */
+/* the rows that pass each SAP_WIDE conjunct; false when none is left */
 static bool
 wide_filters(AggExec *ex, uint64 *rmask)
 {
-	int			k = 0;
-
 	for (int i = 0; i < ex->spec->npred; i++)
-		if (ex->spec->pred[i]->kind == SAP_WIDE && !sift_colsrc_filter_wide(ex->src, &ex->unit, k++, rmask))
+		if (ex->spec->pred[i]->kind == SAP_WIDE && !ex->spec->pred[i]->negated && !sift_colsrc_filter_wide(ex->src, &ex->unit, ex->spec->pred[i]->wslot, rmask))
 			return false;
 	return true;
 }

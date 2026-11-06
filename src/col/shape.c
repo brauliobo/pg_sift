@@ -50,6 +50,7 @@ typedef struct SiftColShape
 	bool		decided;		/* fn is set */
 	bool		unary;			/* fn is a function of the image alone (isempty, lower_inf ..) */
 	bool		negate;			/* the test is NOT fn(image) */
+	int			nexact;			/* with decide_rows, the first alternatives are exact: only the others are decided by fn */
 } SiftColShape;
 
 /* ---- the lanes of a value ---- */
@@ -362,7 +363,9 @@ static const Oid shape_fn[] = {
 	[SIFT_COLW_R_UPPER_INF - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
 	[SIFT_COLW_R_UPPER_FIN - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INF_ANYRANGE,
 	[SIFT_COLW_R_LOWER_INC - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INC_ANYRANGE,
-	[SIFT_COLW_R_UPPER_INC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE
+	[SIFT_COLW_R_LOWER_EXC - SIFT_COLW_SHAPE_FIRST] = F_LOWER_INC_ANYRANGE,
+	[SIFT_COLW_R_UPPER_INC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE,
+	[SIFT_COLW_R_UPPER_EXC - SIFT_COLW_SHAPE_FIRST] = F_UPPER_INC_ANYRANGE
 };
 
 /*
@@ -377,11 +380,13 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 	int			s = col + 1,
 				e = col + 2;
 	Oid			sub = InvalidOid;
+	bool		continuous;
 
-	if (op == SIFT_COLW_R_LOWER_INC || op == SIFT_COLW_R_UPPER_INC)
+	if (op >= SIFT_COLW_R_LOWER_INC)
 		sub = lookup_type_cache(typid, TYPECACHE_RANGE_INFO)->rngelemtype->type_id;
+	continuous = sub != INT4OID && sub != INT8OID && sub != DATEOID;
 	sh->unary = true;
-	sh->negate = op == SIFT_COLW_R_NONEMPTY || op == SIFT_COLW_R_LOWER_FIN || op == SIFT_COLW_R_UPPER_FIN;
+	sh->negate = op == SIFT_COLW_R_NONEMPTY || op == SIFT_COLW_R_LOWER_FIN || op == SIFT_COLW_R_UPPER_FIN || op == SIFT_COLW_R_LOWER_EXC || op == SIFT_COLW_R_UPPER_EXC;
 	switch (op)
 	{
 		case SIFT_COLW_R_EMPTY:
@@ -407,7 +412,29 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 			add(sh, 0, s, SIFT_COLOP_LT, SPAN_NONE);
 			if (sub == DATEOID)
 				add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN + 1);
-			sh->decide_rows = sub != INT4OID && sub != INT8OID && sub != DATEOID;
+			sh->decide_rows = continuous;
+			break;
+		case SIFT_COLW_R_LOWER_EXC:
+			/* the rows the test above leaves: an empty range, an infinite bound (a date also the exclusive -infinity) */
+			sh->nalt = 2;
+			if (continuous)
+			{
+				add(sh, 0, s, SIFT_COLOP_EQ, SPAN_NONE);
+				add(sh, 1, s, SIFT_COLOP_LT, SPAN_NONE);
+				sh->decide_rows = true;
+				sh->nexact = 1;
+			}
+			else
+			{
+				if (sub == DATEOID)
+				{
+					add(sh, 0, s, SIFT_COLOP_LE, 2 * (int64) DATEVAL_NOBEGIN + 1);
+					add(sh, 0, s, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOBEGIN);
+				}
+				else
+					add(sh, 0, s, SIFT_COLOP_EQ, PG_INT64_MIN);
+				add(sh, 1, s, SIFT_COLOP_EQ, SPAN_NONE);
+			}
 			break;
 		case SIFT_COLW_R_UPPER_INC:
 			if (sub == INT4OID || sub == INT8OID)
@@ -421,9 +448,22 @@ range_unary(SiftColShape *sh, SiftColWTest *t, int col, Oid typid, int op)
 				sh->decide_rows = true;
 			}
 			break;
+		case SIFT_COLW_R_UPPER_EXC:
+			if (sub == INT4OID || sub == INT8OID)
+				t->verdict = SIFT_COLW_NONNULL;
+			else if (sub == DATEOID)
+				add(sh, 0, e, SIFT_COLOP_NE, 2 * (int64) DATEVAL_NOEND);
+			else
+			{
+				sh->nalt = 2;
+				add(sh, 0, e, SIFT_COLOP_LE, SPAN_NEVER);
+				add(sh, 1, e, SIFT_COLOP_GT, SPAN_NEVER);
+				sh->decide_rows = true;
+				sh->nexact = 1;
+			}
+			break;
 	}
 }
-
 
 void
 sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, MemoryContext mcxt, SiftColWTest *t)
@@ -541,7 +581,8 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 	const SiftColShape *sh = t->shape;
 	int			col = t->pred.col;
 	SiftColSel *res,
-			   *hard;
+			   *hard,
+			   *exact = NULL;
 
 	/* the lanes alone decide a network test with one alternative (the node, then the offset on the rows it kept): the predicates narrow sel in place */
 	if (sh->nalt == 1 && !sh->decide_all && !sh->decide_rows && sift_col_def_shape(sift_col_def(unit->src, col)) == SIFT_COL_SHAPE_INET)
@@ -579,6 +620,11 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 		{
 			or_into(hard, res);
 			memset(res->bits, 0, res->nwords * sizeof(uint64));
+			if (exact)
+			{
+				andnot_into(hard, exact);
+				or_into(res, exact);
+			}
 		}
 	}
 	sift_col_sel_count(hard);

@@ -822,17 +822,20 @@ wide_init(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	SiftSrcWideTest t[SIFT_AGG_MAX_WIDE];
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-	int			n = 0;
 
+	for (int k = 0; k < s->nwide; k++)
+	{
+		t[k] = (SiftSrcWideTest) {.leaf = s->wide[k]->leaf, .op = s->wide[k]->op, .rows = true};
+		wide_operand(ex, s->wide[k], &t[k]);
+	}
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->kind == SAP_WIDE)
+		if (s->pred[i]->kind == SAP_WIDE && !s->pred[i]->negated)
 		{
-			t[n] = (SiftSrcWideTest) {.leaf = s->pred[i]->leaf, .op = s->pred[i]->op};
-			wide_operand(ex, s->pred[i], &t[n++]);
+			t[s->pred[i]->wslot].rows = false;
 			ex->pushed[i] = true;
 		}
-	SIFT_INVARIANT(n == 0 || sift_colsrc_set_wide(ex->src, t, n) == n, "sift: the source did not take the conjuncts on wide leaves");
-	ex->nwide = n;
+	SIFT_INVARIANT(s->nwide == 0 || sift_colsrc_set_wide(ex->src, t, s->nwide) == s->nwide, "sift: the source did not take the tests on wide leaves");
+	ex->nwide = s->nwide;
 	MemoryContextSwitchTo(old);
 }
 

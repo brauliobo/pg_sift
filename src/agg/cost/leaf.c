@@ -20,7 +20,7 @@
 #include "agg/cost/int.h"
 #include "agg/dist_int.h"
 
-/* does a predicate test the leaf? `values`: its values, not only its null flags, and the leaves of a combo slot */
+/* does a predicate test the leaf? `values`: its values, not only its null flags (nor the source's own tests of its lanes), and the leaves of a combo slot */
 bool
 pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
 {
@@ -33,7 +33,7 @@ pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values
 				return true;
 		return false;
 	}
-	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && p->kind == SAP_NULL))
+	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && (p->kind == SAP_NULL || p->kind == SAP_WIDE)))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
 		if (pred_uses_leaf(s, p->child[i], leaf, values))

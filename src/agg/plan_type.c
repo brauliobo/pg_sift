@@ -438,7 +438,7 @@ shape_leaf(AggCtx *c, Node *e)
 }
 
 /*
- * isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column, as a conjunct or its NOT (the first three: the other two have no negation on the lanes),
+ * isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column, as a conjunct or its NOT,
  * or `.. IS TRUE` / `.. IS FALSE` (a NULL range passes neither, as it passes neither the function nor its NOT): the operator of SWT_R_UNARY and up, the leaf its lanes are of
  */
 static bool
@@ -479,8 +479,6 @@ range_unary_test(AggCtx *c, Node *n, int *leaf, int *op)
 		default:
 			return false;
 	}
-	if (neg && base >= SWT_R_LOWER_INC)
-		return false;
 	*op = base + neg;
 	return (*leaf = shape_leaf(c, strip_relabel(linitial(func_args(n))))) >= 0 && leaf_of(c, *leaf)->shape == 1;
 }
@@ -625,8 +623,8 @@ or_equalities_as_any(Node *n)
 }
 
 /*
- * A test of a wide leaf as a conjunct of the query: the source keeps the rows that pass (SAP_WIDE) and the executor never reads the values, which
- * is why it is only a conjunct: an OR, a CASE, a FILTER or a key would have to read them.
+ * A test of a wide leaf (SAP_WIDE): the source keeps the rows that pass, as a conjunct of the query, or hands them over as the bitmap of the unit where the test is a
+ * branch of an OR, a FILTER or a CASE; the executor never reads the values. Only that: a key or a value reads them.
  */
 SiftAggPred *
 compile_wide(AggCtx *c, Node *n)
@@ -642,8 +640,9 @@ compile_wide(AggCtx *c, Node *n)
 	test = or_equalities_as_any(n);
 	if (c->nwide >= SIFT_AGG_MAX_WIDE || !wide_test(c, test, &leaf, &op, &operand, &argtype) || !source_can_wide(c))
 		return NULL;
-	c->nwide++;
 	p = new_pred(c, SAP_WIDE);
+	p->wslot = c->nwide++;
+	c->wide = lappend(c->wide, p);
 	p->leaf = leaf;
 	p->level = 0;
 	p->op = op;

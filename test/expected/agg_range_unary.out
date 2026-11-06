@@ -1,4 +1,4 @@
--- isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column in a WHERE conjunct (as the function, its NOT for the first three, `IS TRUE` and `IS FALSE`) are tests on
+-- isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column in a WHERE conjunct (as the function, its NOT, `IS TRUE` and `IS FALSE`) are tests on
 -- the first and last position of the range that the index keeps (col/shape.c) as the containment operators are: empty ranges, ranges with a bound that is no value, inclusive and exclusive
 -- bounds of the continuous subtypes, the canonical form of the discrete ones, NULL ranges, and a bound too large for a lane (the engine keeps those rows and PostgreSQL's function decides
 -- them) give the rows PostgreSQL gives. Each statement is run with the scan on and off; `scan` says the aggregate is in the scan.
@@ -35,13 +35,20 @@ CROSS JOIN LATERAL (VALUES
      ELSE tstzrange(timestamptz '2025-01-01 00:00+00' + i * interval '1 hour', timestamptz '2025-01-01 00:00+00' + i * interval '1 hour' + interval '3 hours',
                     CASE i % 4 WHEN 0 THEN '[]' WHEN 1 THEN '[)' WHEN 2 THEN '()' ELSE '(]' END) END)
 ) r (i4, i8, d, ts, tz);
+-- the continuous subtypes before 1970 (negative positions), at the ends of the lanes (past 2^62 microseconds a row has none: PostgreSQL decides it) and infinite, in the four forms of bounds
+INSERT INTO rg (id, ts, tz)
+SELECT 5000 + row_number() OVER (ORDER BY a.t, b.t, m.f), tsrange(a.t, b.t, m.f), tstzrange(a.t::timestamptz, b.t::timestamptz, m.f)
+FROM (VALUES (timestamp '-infinity'), ('4713-01-01 BC'), ('0100-03-04'), ('1900-01-01'), ('1969-12-31 23:59:59.999999'), ('1970-01-01'), ('2025-06-01'), ('200000-01-01'), ('infinity')) a (t)
+CROSS JOIN (VALUES (timestamp '4713-01-01 BC'), ('0100-03-04'), ('1900-01-01'), ('1969-12-31 23:59:59.999999'), ('1970-01-01'), ('2025-06-01'), ('200000-01-01'), ('infinity')) b (t)
+CROSS JOIN (VALUES ('[]'), ('[)'), ('(]'), ('()')) m (f)
+WHERE a.t < b.t OR (a.t = b.t AND m.f = '[]');
 CREATE INDEX rg_col ON rg USING sift_col (id, i4, i8, d, ts, tz);
 VACUUM (FREEZE, ANALYZE) rg;
 CREATE TABLE q (ord serial, col text, pred text);
 INSERT INTO q (col, pred) SELECT c, replace(p, '$', c) FROM unnest(ARRAY['i4', 'i8', 'd', 'ts', 'tz']) c CROSS JOIN
   unnest(ARRAY['isempty($)', 'NOT isempty($)', 'isempty($) IS TRUE', 'isempty($) IS FALSE', 'lower_inf($)', 'NOT lower_inf($)', 'lower_inf($) IS FALSE', 'upper_inf($)', 'NOT upper_inf($)',
-               'upper_inf($) IS TRUE', 'lower_inc($)', 'upper_inc($)', 'lower_inc($) IS TRUE', 'upper_inc($) IS TRUE', 'NOT lower_inc($)', 'lower_inc($) IS NOT TRUE',
-               'NOT isempty($) AND NOT upper_inf($)', 'lower_inc($) AND NOT upper_inc($)', 'isempty($) OR lower_inf($)']) p;
+               'upper_inf($) IS TRUE', 'lower_inc($)', 'upper_inc($)', 'lower_inc($) IS TRUE', 'upper_inc($) IS TRUE', 'NOT lower_inc($)', 'NOT upper_inc($)', 'lower_inc($) IS FALSE', 'upper_inc($) IS FALSE', 'lower_inc($) IS NOT TRUE',
+               'NOT isempty($) AND NOT upper_inf($)', 'lower_inc($) AND NOT upper_inc($)', 'NOT lower_inc($) AND NOT upper_inc($)', 'isempty($) OR lower_inf($)']) p;
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE r text;
 BEGIN
@@ -61,104 +68,124 @@ BEGIN
   RETURN NEXT;
 END $$;
 SELECT q.col, q.pred, c.* FROM q, LATERAL unary_check(q.pred) c ORDER BY q.ord;
- col |                 pred                  | scan | same |  n   
------+---------------------------------------+------+------+------
- i4  | isempty(i4)                           | t    | t    |  400
- i4  | NOT isempty(i4)                       | t    | t    | 3400
- i4  | isempty(i4) IS TRUE                   | t    | t    |  400
- i4  | isempty(i4) IS FALSE                  | t    | t    | 3400
- i4  | lower_inf(i4)                         | t    | t    |  400
- i4  | NOT lower_inf(i4)                     | t    | t    | 3400
- i4  | lower_inf(i4) IS FALSE                | t    | t    | 3400
- i4  | upper_inf(i4)                         | t    | t    |  400
- i4  | NOT upper_inf(i4)                     | t    | t    | 3400
- i4  | upper_inf(i4) IS TRUE                 | t    | t    |  400
- i4  | lower_inc(i4)                         | t    | t    | 3000
- i4  | upper_inc(i4)                         | t    | t    |    0
- i4  | lower_inc(i4) IS TRUE                 | t    | t    | 3000
- i4  | upper_inc(i4) IS TRUE                 | t    | t    |    0
- i4  | NOT lower_inc(i4)                     | f    | t    |  800
- i4  | lower_inc(i4) IS NOT TRUE             | f    | t    | 1000
- i4  | NOT isempty(i4) AND NOT upper_inf(i4) | t    | t    | 3000
- i4  | lower_inc(i4) AND NOT upper_inc(i4)   | f    | t    | 3000
- i4  | isempty(i4) OR lower_inf(i4)          | f    | t    |  800
- i8  | isempty(i8)                           | t    | t    |  200
- i8  | NOT isempty(i8)                       | t    | t    | 3600
- i8  | isempty(i8) IS TRUE                   | t    | t    |  200
- i8  | isempty(i8) IS FALSE                  | t    | t    | 3600
- i8  | lower_inf(i8)                         | t    | t    |  400
- i8  | NOT lower_inf(i8)                     | t    | t    | 3400
- i8  | lower_inf(i8) IS FALSE                | t    | t    | 3400
- i8  | upper_inf(i8)                         | t    | t    |  400
- i8  | NOT upper_inf(i8)                     | t    | t    | 3400
- i8  | upper_inf(i8) IS TRUE                 | t    | t    |  400
- i8  | lower_inc(i8)                         | t    | t    | 3200
- i8  | upper_inc(i8)                         | t    | t    |    0
- i8  | lower_inc(i8) IS TRUE                 | t    | t    | 3200
- i8  | upper_inc(i8) IS TRUE                 | t    | t    |    0
- i8  | NOT lower_inc(i8)                     | f    | t    |  600
- i8  | lower_inc(i8) IS NOT TRUE             | f    | t    |  800
- i8  | NOT isempty(i8) AND NOT upper_inf(i8) | t    | t    | 3200
- i8  | lower_inc(i8) AND NOT upper_inc(i8)   | f    | t    | 3200
- i8  | isempty(i8) OR lower_inf(i8)          | f    | t    |  600
- d   | isempty(d)                            | t    | t    |  200
- d   | NOT isempty(d)                        | t    | t    | 3600
- d   | isempty(d) IS TRUE                    | t    | t    |  200
- d   | isempty(d) IS FALSE                   | t    | t    | 3600
- d   | lower_inf(d)                          | t    | t    |  400
- d   | NOT lower_inf(d)                      | t    | t    | 3400
- d   | lower_inf(d) IS FALSE                 | t    | t    | 3400
- d   | upper_inf(d)                          | t    | t    |  400
- d   | NOT upper_inf(d)                      | t    | t    | 3400
- d   | upper_inf(d) IS TRUE                  | t    | t    |  400
- d   | lower_inc(d)                          | t    | t    | 3200
- d   | upper_inc(d)                          | t    | t    |  200
- d   | lower_inc(d) IS TRUE                  | t    | t    | 3200
- d   | upper_inc(d) IS TRUE                  | t    | t    |  200
- d   | NOT lower_inc(d)                      | f    | t    |  600
- d   | lower_inc(d) IS NOT TRUE              | f    | t    |  800
- d   | NOT isempty(d) AND NOT upper_inf(d)   | t    | t    | 3200
- d   | lower_inc(d) AND NOT upper_inc(d)     | f    | t    | 3000
- d   | isempty(d) OR lower_inf(d)            | f    | t    |  600
- ts  | isempty(ts)                           | t    | t    |  200
- ts  | NOT isempty(ts)                       | t    | t    | 3600
- ts  | isempty(ts) IS TRUE                   | t    | t    |  200
- ts  | isempty(ts) IS FALSE                  | t    | t    | 3600
- ts  | lower_inf(ts)                         | t    | t    |  400
- ts  | NOT lower_inf(ts)                     | t    | t    | 3400
- ts  | lower_inf(ts) IS FALSE                | t    | t    | 3400
- ts  | upper_inf(ts)                         | t    | t    |  400
- ts  | NOT upper_inf(ts)                     | t    | t    | 3400
- ts  | upper_inf(ts) IS TRUE                 | t    | t    |  400
- ts  | lower_inc(ts)                         | t    | t    | 1600
- ts  | upper_inc(ts)                         | t    | t    | 1600
- ts  | lower_inc(ts) IS TRUE                 | t    | t    | 1600
- ts  | upper_inc(ts) IS TRUE                 | t    | t    | 1600
- ts  | NOT lower_inc(ts)                     | f    | t    | 2200
- ts  | lower_inc(ts) IS NOT TRUE             | f    | t    | 2400
- ts  | NOT isempty(ts) AND NOT upper_inf(ts) | t    | t    | 3200
- ts  | lower_inc(ts) AND NOT upper_inc(ts)   | f    | t    |  800
- ts  | isempty(ts) OR lower_inf(ts)          | f    | t    |  600
- tz  | isempty(tz)                           | t    | t    |  200
- tz  | NOT isempty(tz)                       | t    | t    | 3600
- tz  | isempty(tz) IS TRUE                   | t    | t    |  200
- tz  | isempty(tz) IS FALSE                  | t    | t    | 3600
- tz  | lower_inf(tz)                         | t    | t    |  400
- tz  | NOT lower_inf(tz)                     | t    | t    | 3400
- tz  | lower_inf(tz) IS FALSE                | t    | t    | 3400
- tz  | upper_inf(tz)                         | t    | t    |  400
- tz  | NOT upper_inf(tz)                     | t    | t    | 3400
- tz  | upper_inf(tz) IS TRUE                 | t    | t    |  400
- tz  | lower_inc(tz)                         | t    | t    | 1400
- tz  | upper_inc(tz)                         | t    | t    | 1800
- tz  | lower_inc(tz) IS TRUE                 | t    | t    | 1400
- tz  | upper_inc(tz) IS TRUE                 | t    | t    | 1800
- tz  | NOT lower_inc(tz)                     | f    | t    | 2400
- tz  | lower_inc(tz) IS NOT TRUE             | f    | t    | 2600
- tz  | NOT isempty(tz) AND NOT upper_inf(tz) | t    | t    | 3200
- tz  | lower_inc(tz) AND NOT upper_inc(tz)   | f    | t    |  600
- tz  | isempty(tz) OR lower_inf(tz)          | f    | t    |  600
-(95 rows)
+ col |                  pred                   | scan | same |  n   
+-----+-----------------------------------------+------+------+------
+ i4  | isempty(i4)                             | t    | t    |  400
+ i4  | NOT isempty(i4)                         | t    | t    | 3400
+ i4  | isempty(i4) IS TRUE                     | t    | t    |  400
+ i4  | isempty(i4) IS FALSE                    | t    | t    | 3400
+ i4  | lower_inf(i4)                           | t    | t    |  400
+ i4  | NOT lower_inf(i4)                       | t    | t    | 3400
+ i4  | lower_inf(i4) IS FALSE                  | t    | t    | 3400
+ i4  | upper_inf(i4)                           | t    | t    |  400
+ i4  | NOT upper_inf(i4)                       | t    | t    | 3400
+ i4  | upper_inf(i4) IS TRUE                   | t    | t    |  400
+ i4  | lower_inc(i4)                           | t    | t    | 3000
+ i4  | upper_inc(i4)                           | t    | t    |    0
+ i4  | lower_inc(i4) IS TRUE                   | t    | t    | 3000
+ i4  | upper_inc(i4) IS TRUE                   | t    | t    |    0
+ i4  | NOT lower_inc(i4)                       | t    | t    |  800
+ i4  | NOT upper_inc(i4)                       | t    | t    | 3800
+ i4  | lower_inc(i4) IS FALSE                  | t    | t    |  800
+ i4  | upper_inc(i4) IS FALSE                  | t    | t    | 3800
+ i4  | lower_inc(i4) IS NOT TRUE               | t    | t    | 1152
+ i4  | NOT isempty(i4) AND NOT upper_inf(i4)   | t    | t    | 3000
+ i4  | lower_inc(i4) AND NOT upper_inc(i4)     | t    | t    | 3000
+ i4  | NOT lower_inc(i4) AND NOT upper_inc(i4) | t    | t    |  800
+ i4  | isempty(i4) OR lower_inf(i4)            | t    | t    |  800
+ i8  | isempty(i8)                             | t    | t    |  200
+ i8  | NOT isempty(i8)                         | t    | t    | 3600
+ i8  | isempty(i8) IS TRUE                     | t    | t    |  200
+ i8  | isempty(i8) IS FALSE                    | t    | t    | 3600
+ i8  | lower_inf(i8)                           | t    | t    |  400
+ i8  | NOT lower_inf(i8)                       | t    | t    | 3400
+ i8  | lower_inf(i8) IS FALSE                  | t    | t    | 3400
+ i8  | upper_inf(i8)                           | t    | t    |  400
+ i8  | NOT upper_inf(i8)                       | t    | t    | 3400
+ i8  | upper_inf(i8) IS TRUE                   | t    | t    |  400
+ i8  | lower_inc(i8)                           | t    | t    | 3200
+ i8  | upper_inc(i8)                           | t    | t    |    0
+ i8  | lower_inc(i8) IS TRUE                   | t    | t    | 3200
+ i8  | upper_inc(i8) IS TRUE                   | t    | t    |    0
+ i8  | NOT lower_inc(i8)                       | t    | t    |  600
+ i8  | NOT upper_inc(i8)                       | t    | t    | 3800
+ i8  | lower_inc(i8) IS FALSE                  | t    | t    |  600
+ i8  | upper_inc(i8) IS FALSE                  | t    | t    | 3800
+ i8  | lower_inc(i8) IS NOT TRUE               | t    | t    |  952
+ i8  | NOT isempty(i8) AND NOT upper_inf(i8)   | t    | t    | 3200
+ i8  | lower_inc(i8) AND NOT upper_inc(i8)     | t    | t    | 3200
+ i8  | NOT lower_inc(i8) AND NOT upper_inc(i8) | t    | t    |  600
+ i8  | isempty(i8) OR lower_inf(i8)            | t    | t    |  600
+ d   | isempty(d)                              | t    | t    |  200
+ d   | NOT isempty(d)                          | t    | t    | 3600
+ d   | isempty(d) IS TRUE                      | t    | t    |  200
+ d   | isempty(d) IS FALSE                     | t    | t    | 3600
+ d   | lower_inf(d)                            | t    | t    |  400
+ d   | NOT lower_inf(d)                        | t    | t    | 3400
+ d   | lower_inf(d) IS FALSE                   | t    | t    | 3400
+ d   | upper_inf(d)                            | t    | t    |  400
+ d   | NOT upper_inf(d)                        | t    | t    | 3400
+ d   | upper_inf(d) IS TRUE                    | t    | t    |  400
+ d   | lower_inc(d)                            | t    | t    | 3200
+ d   | upper_inc(d)                            | t    | t    |  200
+ d   | lower_inc(d) IS TRUE                    | t    | t    | 3200
+ d   | upper_inc(d) IS TRUE                    | t    | t    |  200
+ d   | NOT lower_inc(d)                        | t    | t    |  600
+ d   | NOT upper_inc(d)                        | t    | t    | 3600
+ d   | lower_inc(d) IS FALSE                   | t    | t    |  600
+ d   | upper_inc(d) IS FALSE                   | t    | t    | 3600
+ d   | lower_inc(d) IS NOT TRUE                | t    | t    |  952
+ d   | NOT isempty(d) AND NOT upper_inf(d)     | t    | t    | 3200
+ d   | lower_inc(d) AND NOT upper_inc(d)       | t    | t    | 3000
+ d   | NOT lower_inc(d) AND NOT upper_inc(d)   | t    | t    |  600
+ d   | isempty(d) OR lower_inf(d)              | t    | t    |  600
+ ts  | isempty(ts)                             | t    | t    |  200
+ ts  | NOT isempty(ts)                         | t    | t    | 3752
+ ts  | isempty(ts) IS TRUE                     | t    | t    |  200
+ ts  | isempty(ts) IS FALSE                    | t    | t    | 3752
+ ts  | lower_inf(ts)                           | t    | t    |  400
+ ts  | NOT lower_inf(ts)                       | t    | t    | 3552
+ ts  | lower_inf(ts) IS FALSE                  | t    | t    | 3552
+ ts  | upper_inf(ts)                           | t    | t    |  400
+ ts  | NOT upper_inf(ts)                       | t    | t    | 3552
+ ts  | upper_inf(ts) IS TRUE                   | t    | t    |  400
+ ts  | lower_inc(ts)                           | t    | t    | 1680
+ ts  | upper_inc(ts)                           | t    | t    | 1680
+ ts  | lower_inc(ts) IS TRUE                   | t    | t    | 1680
+ ts  | upper_inc(ts) IS TRUE                   | t    | t    | 1680
+ ts  | NOT lower_inc(ts)                       | t    | t    | 2272
+ ts  | NOT upper_inc(ts)                       | t    | t    | 2272
+ ts  | lower_inc(ts) IS FALSE                  | t    | t    | 2272
+ ts  | upper_inc(ts) IS FALSE                  | t    | t    | 2272
+ ts  | lower_inc(ts) IS NOT TRUE               | t    | t    | 2472
+ ts  | NOT isempty(ts) AND NOT upper_inf(ts)   | t    | t    | 3352
+ ts  | lower_inc(ts) AND NOT upper_inc(ts)     | t    | t    |  836
+ ts  | NOT lower_inc(ts) AND NOT upper_inc(ts) | t    | t    | 1436
+ ts  | isempty(ts) OR lower_inf(ts)            | t    | t    |  600
+ tz  | isempty(tz)                             | t    | t    |  200
+ tz  | NOT isempty(tz)                         | t    | t    | 3752
+ tz  | isempty(tz) IS TRUE                     | t    | t    |  200
+ tz  | isempty(tz) IS FALSE                    | t    | t    | 3752
+ tz  | lower_inf(tz)                           | t    | t    |  400
+ tz  | NOT lower_inf(tz)                       | t    | t    | 3552
+ tz  | lower_inf(tz) IS FALSE                  | t    | t    | 3552
+ tz  | upper_inf(tz)                           | t    | t    |  400
+ tz  | NOT upper_inf(tz)                       | t    | t    | 3552
+ tz  | upper_inf(tz) IS TRUE                   | t    | t    |  400
+ tz  | lower_inc(tz)                           | t    | t    | 1480
+ tz  | upper_inc(tz)                           | t    | t    | 1880
+ tz  | lower_inc(tz) IS TRUE                   | t    | t    | 1480
+ tz  | upper_inc(tz) IS TRUE                   | t    | t    | 1880
+ tz  | NOT lower_inc(tz)                       | t    | t    | 2472
+ tz  | NOT upper_inc(tz)                       | t    | t    | 2072
+ tz  | lower_inc(tz) IS FALSE                  | t    | t    | 2472
+ tz  | upper_inc(tz) IS FALSE                  | t    | t    | 2072
+ tz  | lower_inc(tz) IS NOT TRUE               | t    | t    | 2672
+ tz  | NOT isempty(tz) AND NOT upper_inf(tz)   | t    | t    | 3352
+ tz  | lower_inc(tz) AND NOT upper_inc(tz)     | t    | t    |  636
+ tz  | NOT lower_inc(tz) AND NOT upper_inc(tz) | t    | t    | 1436
+ tz  | isempty(tz) OR lower_inf(tz)            | t    | t    |  600
+(115 rows)
 
 DROP FUNCTION unary_check(text), rows_md5(text);
 DROP TABLE q, rg;

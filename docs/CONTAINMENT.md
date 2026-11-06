@@ -121,10 +121,17 @@ of the rows (`id`, `r`, `ip`, `u` uuid, a 128-character note); the plain index i
 
 ## Tests of the lanes with no operand
 
-`isempty(r)`, `lower_inf(r)` and `upper_inf(r)` (and their `NOT`, `IS TRUE` and `IS FALSE`) in a `WHERE` conjunct are tests of the first or last position: an empty range is the position `INT64_MAX`, an infinite bound `INT64_MIN` or `INT64_MAX`.
-`lower_inc(r)` and `upper_inc(r)` read the parity of the position in the continuous ranges (`tsrange`, `tstzrange`): the lanes select the finite ranges that are not empty and PostgreSQL's function decides them. The discrete ranges
+`isempty(r)`, `lower_inf(r)`, `upper_inf(r)`, `lower_inc(r)` and `upper_inc(r)` (and their `NOT`, `IS TRUE` and `IS FALSE`) in a `WHERE` conjunct are tests of the first or last position: an empty range is the position `INT64_MAX`, an infinite bound `INT64_MIN` or `INT64_MAX`.
+`lower_inc(r)` and `upper_inc(r)` (and their `NOT`) read the parity of the position in the continuous ranges (`tsrange`, `tstzrange`): the lanes select the finite ranges that are not empty and PostgreSQL's function decides them (an empty range, true of the `NOT`, needs no decision). The discrete ranges
 are canonical (`[a, b)`), so `lower_inc` is true of every finite lower bound and `upper_inc` of no finite upper one; a `daterange` keeps an infinite bound as written, which is the one position the test names. A row whose bound
 does not fit a lane is decided by PostgreSQL's function, as for the operators (test `agg_range_unary`).
+
+## The same tests in an OR, a FILTER, a CASE and `IS NOT TRUE`
+
+A test of a range, a network or a wide value (numeric of more than 18 digits, money, interval) that the source runs is not only a conjunct: as a branch of an `OR`, in the `FILTER` of an aggregate, in a `CASE` (which
+becomes a `FILTER`, and `ELSE 0` adds `IS NOT TRUE`) it is the same test, and the source gives the rows that pass as a bitmap of the unit, the executor tests nothing and reads no value ("wide filters in source" counts
+them all). `p IS NOT TRUE` is the complement of that bitmap (a NULL row is in it), and over an `AND` / `OR` of such tests the dual junction of the complements. At most eight tests are the source's in a query; the others
+are the executor's, as before. Test `agg_wide_forms`: every form of every test against the scan off, the rows equal.
 
 `lower(r)` and `upper(r)` as values (an aggregate argument, a group key, a condition) are read from the lanes too: the first position shifted back by one bit is the lower bound and the last position plus one, shifted, the upper one,
 NULL where the range is NULL, empty or has no such bound (the date infinity, which is a value, stays as written). A column with a bound too large for a lane keeps the normal plan (test `agg_range_values`).
