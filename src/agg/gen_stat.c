@@ -213,6 +213,11 @@ stat_variant(Oid fn)
 	int			which = fn == F_FLOAT8_ACCUM ? 0 : 1,
 				n = which == 0 ? 3 : 6;
 
+#if PG_VERSION_NUM >= 190000
+	/* the state of float8_regr_accum has 8 elements from 19 (it also keeps whether the inputs were constant, and then leaves Sxx, Syy and Sxy at zero): not the 6 of the steps here, the function is used */
+	if (which == 1)
+		return -1;
+#endif
 	if (known[which] == -2)
 	{
 		Datum		el[6];
