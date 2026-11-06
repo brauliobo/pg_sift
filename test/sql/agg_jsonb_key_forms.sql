@@ -44,7 +44,9 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN to_jsonb('error: ' || SQLERRM);
 END $$;
 
-CREATE FUNCTION kf_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+-- the text of an error is not printed (before PostgreSQL 18 the cast of a JSON null raises, so the first row that raises differs), only that both plans raise the same one;
+-- the plan is not printed for the forms whose plan PostgreSQL 19 changes by itself (count(doc) of a NOT NULL column is count(*), doc IS NULL of one is false)
+CREATE FUNCTION kf_check(q text, pin bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a jsonb; b jsonb; l text; pushed bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
@@ -53,11 +55,12 @@ BEGIN
 	END LOOP;
 	a := kf_rows(q, true);
 	b := kf_rows(q, false);
-	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || left(coalesce(a::text, '-'), 70) ELSE 'DIFFERENT' END || CASE WHEN pushed THEN ' pushed' ELSE ' normal' END;
+	RETURN CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' WHEN a #>> '{}' LIKE 'error: %' THEN 'same error' ELSE 'same ' || left(coalesce(a::text, '-'), 70) END ||
+		CASE WHEN NOT pin THEN '' WHEN pushed THEN ' pushed' ELSE ' normal' END;
 END $$;
 
-CREATE TABLE kf_q (n text PRIMARY KEY, q text);
-INSERT INTO kf_q VALUES
+CREATE TABLE kf_q (n text PRIMARY KEY, q text, pin bool NOT NULL DEFAULT true);
+INSERT INTO kf_q (n, q) VALUES
 	('01 where',             'SELECT count(*), sum(id) FROM @ WHERE doc ? ''k'''),
 	('02 filter',            'SELECT count(*) FILTER (WHERE doc ? ''k''), count(*) FROM @'),
 	('03 two filters',       'SELECT count(*) FILTER (WHERE doc ? ''k''), sum(id) FILTER (WHERE doc ? ''j''), avg(id) FILTER (WHERE doc ? ''k'') FROM @'),
@@ -96,9 +99,10 @@ INSERT INTO kf_q VALUES
 	('36 type guard read',   'SELECT sum(CASE WHEN jsonb_typeof(doc -> ''k'') = ''number'' THEN (doc ->> ''k'')::numeric ELSE 0 END) FROM @'),
 	('37 key in an output',  'SELECT count(*) FILTER (WHERE doc ? ''k''), bool_or(doc ? ''k'') FROM @'),
 	('38 no document',       'SELECT count(*) FILTER (WHERE doc IS NULL OR doc ? ''k'') FROM @');
+UPDATE kf_q SET pin = false WHERE n IN ('31 read of the document', '38 no document');
 CREATE FUNCTION kf_run(tbl text) RETURNS TABLE (n text, verdict text) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY EXECUTE format('SELECT n, kf_check(replace(q, ''@'', %L)) FROM kf_q ORDER BY n', tbl);
+	RETURN QUERY EXECUTE format('SELECT n, kf_check(replace(q, ''@'', %L), pin) FROM kf_q ORDER BY n', tbl);
 END $$;
 
 -- the document that may be NULL: a NULL document has no key, and NOT of the test of it is NULL, which keeps no row
@@ -151,7 +155,7 @@ SELECT kf_workers('SELECT count(*) FILTER (WHERE doc ? ''k''), sum(id) FILTER (W
 SELECT * FROM kf_run('kp');
 
 DROP TABLE kf_q;
-DROP FUNCTION kf_run(text), kf_check(text), kf_rows(text, bool), kf_workers(text);
+DROP FUNCTION kf_run(text), kf_check(text, bool), kf_rows(text, bool), kf_workers(text);
 DROP TABLE kn, kc, ko, kp;
 DROP FUNCTION shape(int);
 DROP EXTENSION pg_sift_test;
