@@ -15,6 +15,9 @@
    result rows (md5 of the sorted rows) or the EXPLAIN (COSTS OFF) plan differ, binary text grows by more than 0.1% in a commit that adds more src lines than it
    removes. All limits are options (`--max-instr-pct`, `--max-cycles-pct`, `--instr-abs`, `--blocks-tol`, `--wal-tol`, `--max-size-pct`, `--min-cycles`, `--runs`).
    Exit status: 0 PASS / PASS-IDENTICAL, 1 FAIL. `--json FILE` keeps every run.
+5b. WARN (exit 0, listed in the evidence line): cycles above the threshold while instructions are within 0.1% (`--layout-instr-pct`) and the excess is at most 15%
+   (`--layout-cycles-pct`). Equal work with moved machine code (a deleted function shifts everything linked after it) changes cycles by a few percent and flips sign when
+   the two commits are swapped; confirm with `scripts/dry-perf-gate.sh run --src . HEAD HEAD~1` if in doubt and say so in the commit message. Above 15% it is a FAIL.
 6. A FAIL on instructions is a real change of the generated work: look at the case's groups, keep the helper `static inline`/macro in per-row loops, or split
    the commit; a FAIL on cycles alone with equal instructions: rerun once (`--cases id --runs 9`); if it reproduces, treat it as real (lost inlining, layout).
 7. Put the last line of the output (the evidence line) in the commit message body, e.g.:

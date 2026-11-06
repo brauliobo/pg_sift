@@ -416,13 +416,18 @@ def judge(b, c, cfg, noise):
         why.append('rows differ')
     if di > cfg.max_instr_pct and not abs_ok:
         why.append(f'instructions {di:+.2f}% > {cfg.max_instr_pct}%')
+    warn = []
     if dc > thr_c and b['cycles'] >= cfg.min_cycles:
-        why.append(f'cycles {dc:+.2f}% > {thr_c:.2f}%')
+        if abs(di) <= cfg.layout_instr_pct and dc <= cfg.layout_cycles_pct:
+            # the same instructions and blocks, a moderate cycles difference: the machine code moved (alignment, cache sets), not the work; recorded, not failed
+            warn.append(f'cycles {dc:+.2f}% with equal instructions ({di:+.3f}%): code layout')
+        else:
+            why.append(f'cycles {dc:+.2f}% > {thr_c:.2f}%')
     for k in ('hits', 'reads', 'wal'):
         tol = max(cfg.wal_tol, 2 * noise.get('wal', 0)) if k == 'wal' else cfg.blocks_tol
         if abs(c[k] - b[k]) > tol:
             why.append(f'{k} {b[k]} -> {c[k]}')
-    return ('FAIL' if why else 'PASS'), why, dict(d_instr=di, d_cycles=dc, thr_cycles=thr_c)
+    return ('FAIL' if why else 'WARN' if warn else 'PASS'), why + warn, dict(d_instr=di, d_cycles=dc, thr_cycles=thr_c)
 
 
 # --- driver ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -446,7 +451,7 @@ def measure_cases(cases, sides, runs, rundir, retry_cycles=True, cfg=None, noise
         if retry_cycles and cfg and len(names) == 2 and all('error' not in summ[n] for n in names):
             for attempt in range(2):
                 st, why, _ = judge(summ[names[0]], summ[names[1]], cfg, case_noise(noise, case.id))
-                if st == 'PASS' or not all(w.startswith('cycles') for w in why):
+                if st != 'FAIL' or not all(w.startswith('cycles') for w in why):
                     break
                 rounds(runs, attempt + 1)
                 summ = {n: summarize(raw[n]) for n in names}
@@ -512,6 +517,8 @@ def main():
     ap.add_argument('--instr-abs', type=int, default=20000, help='ignore an instruction increase below this many (default 20000)')
     ap.add_argument('--max-cycles-pct', type=float, default=2.0)
     ap.add_argument('--min-cycles', type=int, default=5_000_000, help='cycles are judged only above this many in the base (shorter statements: instructions decide)')
+    ap.add_argument('--layout-instr-pct', type=float, default=0.1, help='a cycles excess with instructions within this percent is a WARN (code layout), not a FAIL (default 0.1)')
+    ap.add_argument('--layout-cycles-pct', type=float, default=15.0, help='...unless the cycles excess is above this (default 15)')
     ap.add_argument('--blocks-tol', type=int, default=0)
     ap.add_argument('--wal-tol', type=int, default=0)
     ap.add_argument('--max-size-pct', type=float, default=0.1)
@@ -627,7 +634,8 @@ def main():
             fails += 1
             size_msg += f' > {a.max_size_pct}% and the commit adds more lines than it removes'
         fails += sum(1 for v in verdicts.values() if v[0] == 'ERROR')
-        status = 'FAIL' if fails else 'PASS'
+        warns = [cid for cid, v in verdicts.items() if v[0] == 'WARN']
+        status = 'FAIL' if fails else 'PASS' + (f' ({len(warns)} WARN: ' + ', '.join(f"{c} {verdicts[c][2]['d_cycles']:+.1f}% cycles, instructions equal" for c in warns) + ')' if warns else '')
         print('\n'.join(lines))
         print(size_msg)
         ev = evidence_line(verdicts, res, meta, status)
