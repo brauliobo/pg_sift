@@ -155,11 +155,11 @@ SELECT k.kind, s.skew_id, count(e.id) AS n, sum(e.qty) AS q FROM (SELECT DISTINC
 LEFT JOIN events e ON e.kind = k.kind AND e.skew_id = s.skew_id GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: having_in_parents
--- expect: scan 0.042 0.17
+-- expect: scan 0.066 0.26
 SELECT parent_id, count(*) AS n, sum(amount) AS total FROM events WHERE deleted_at IS NULL GROUP BY 1 HAVING parent_id IN (SELECT id FROM parents WHERE name < 'parent 3') ORDER BY 1;
 
 -- name: having_not_exists_parents
--- expect: scan 0.034 0.13
+-- expect: scan 0.051 0.20
 SELECT kind, parent_id, count(*) AS n FROM events GROUP BY 1, 2 HAVING NOT EXISTS (SELECT 1 FROM parents p WHERE p.id = events.parent_id AND p.name < 'parent 3') ORDER BY 1, 2;
 
 -- name: output_lookup_subselect

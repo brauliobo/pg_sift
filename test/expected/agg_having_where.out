@@ -83,6 +83,37 @@ SELECT q.name, c.* FROM q, LATERAL having_check(q.sql) c ORDER BY q.ord;
  a sub-query of the form        | t    | t
 (24 rows)
 
+-- The two forms (the condition on the groups, as the node evaluates a HAVING sub-select, and on the rows) are set against each other by the totals of their plans, so they are priced in
+-- the same units: a table of 300,000 rows in 200,000 groups with a sub-select that keeps 1% of the keys reads the rows form (the node reads and groups all of them: 27.7 ms against 2.4; with the memory of a hash aggregate for the 200,000 groups and the lookup caches off)
+CREATE TABLE hv_big AS SELECT i AS id, 1 + (i::bigint * 7919 % 100) AS g100, 1 + (i::bigint * 7919 % 1000) AS g1k, 1 + (i::bigint * 7919 % 10000) AS g10k, 1 + (i::bigint * 7919 % 50000) AS g50k,
+  1 + (i::bigint * 7919 % 200000) AS k, ((i * 37) % 1000) / 10.0 AS amount, i % 50 AS qty FROM generate_series(1, 300000) i;
+CREATE TABLE hv_ids AS SELECT i AS id FROM generate_series(1, 200000) i;
+ALTER TABLE hv_big ADD PRIMARY KEY (id);
+ALTER TABLE hv_ids ADD PRIMARY KEY (id);
+CREATE INDEX hv_big_col ON hv_big USING sift_col (id, g100, g1k, g10k, g50k, k, amount, qty);
+VACUUM (FREEZE, ANALYZE) hv_big, hv_ids;
+CREATE FUNCTION having_form(q text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := '';
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  RETURN CASE WHEN plan NOT LIKE '%Custom Scan (SiftAgg)%' THEN 'normal' WHEN plan LIKE '%SubPlan%' THEN 'groups' ELSE 'rows' END;
+END $$;
+SET work_mem = '256MB';
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_share_lookups = off;
+SELECT having_form('SELECT k, count(*), sum(amount) FROM hv_big GROUP BY 1 HAVING k IN (SELECT id FROM hv_ids WHERE id <= 2000)') AS form;
+ form 
+------
+ rows
+(1 row)
+
+RESET work_mem;
+RESET sift.agg_lookup_cache_kb;
+RESET sift.agg_lookup_shared_kb;
+RESET sift.agg_share_lookups;
+DROP FUNCTION having_form(text);
+DROP TABLE hv_big, hv_ids;
 DROP FUNCTION having_check(text);
 DROP TABLE q, hv_kinds, hv_events, hv_empty;
 DROP EXTENSION pg_sift;

@@ -36,8 +36,8 @@ stock@250000	global	either	0.024	0.097
 stock@250000	groups_over_threshold	either	0.013	0.053
 stock@250000	having	either	0.067	0.27
 stock@250000	having_correlated_count	either	0.025	0.099
-stock@250000	having_in_parents	either	0.012	0.050
-stock@250000	having_not_exists_parents	either	0.0059	0.024
+stock@250000	having_in_parents	either	0.037	0.15
+stock@250000	having_not_exists_parents	either	0.016	0.066
 stock@250000	in_active_parents	either	0.050	0.20
 stock@250000	in_constants	either	0.013	0.051
 stock@250000	in_expr_key	either	0.21	0.86
@@ -59,7 +59,7 @@ stock@250000	left_cross_dims	either	0.017	0.070
 stock@250000	left_join_active	either	0.042	0.17
 stock@250000	linkanti_2000_parents	either	0.052	0.21
 stock@250000	linkanti_200_parents	either	0.021	0.084
-stock@250000	linkanti_all_parents	either	0.23	0.91
+stock@250000	linkanti_all_parents	either	0.23	0.92
 stock@250000	linkjoin_2000_parents	either	0.018	0.070
 stock@250000	linkjoin_200_parents	either	0.0099	0.040
 stock@250000	linkjoin_all_parents	either	0.039	0.16
@@ -167,9 +167,9 @@ table	float_sum_unrounded	scan	0.023	0.091
 table	global	scan	0.029	0.12
 table	groups_over_threshold	scan	0.027	0.11
 table	having	either	0.021	0.083
-table	having_correlated_count	scan	0.018	0.074
-table	having_in_parents	scan	0.026	0.10
-table	having_not_exists_parents	scan	0.016	0.062
+table	having_correlated_count	scan	0.020	0.079
+table	having_in_parents	scan	0.041	0.17
+table	having_not_exists_parents	scan	0.024	0.095
 table	in_active_parents	scan	0.065	0.26
 table	in_constants	scan	0.036	0.14
 table	in_expr_key	scan	0.072	0.29
@@ -209,7 +209,7 @@ table	not_exists_in_table	scan	0.071	0.29
 table	one_day	either	0.51	2.1
 table	one_key	scan	0.024	0.097
 table	one_parent_narrow	normal	0.61	2.4
-table	output_lookup_subselect	scan	0.019	0.074
+table	output_lookup_subselect	scan	0.020	0.079
 table	parent_key	scan	0.024	0.098
 table	partition_pruned	either	0.37	1.5
 table	partitions_count	either	0.085	0.34
@@ -299,9 +299,9 @@ table@250000	float_sum_unrounded	either	0.0069	0.028
 table@250000	global	either	0.016	0.065
 table@250000	groups_over_threshold	either	0.0083	0.033
 table@250000	having	either	0.0044	0.018
-table@250000	having_correlated_count	either	0.0039	0.015
-table@250000	having_in_parents	either	0.0078	0.031
-table@250000	having_not_exists_parents	either	0.0046	0.018
+table@250000	having_correlated_count	either	0.0087	0.035
+table@250000	having_in_parents	either	0.024	0.094
+table@250000	having_not_exists_parents	either	0.013	0.051
 table@250000	in_active_parents	either	0.033	0.13
 table@250000	in_constants	either	0.048	0.19
 table@250000	in_expr_key	either	0.13	0.54
@@ -323,7 +323,7 @@ table@250000	left_cross_dims	either	0.0085	0.034
 table@250000	left_join_active	either	0.027	0.11
 table@250000	linkanti_2000_parents	either	0.042	0.17
 table@250000	linkanti_200_parents	either	0.013	0.053
-table@250000	linkanti_all_parents	either	0.20	0.82
+table@250000	linkanti_all_parents	either	0.21	0.83
 table@250000	linkjoin_2000_parents	either	0.14	0.54
 table@250000	linkjoin_200_parents	either	0.035	0.14
 table@250000	linkjoin_all_parents	either	0.16	0.65
@@ -331,7 +331,7 @@ table@250000	linkleft_2000_parents	either	0.17	0.68
 table@250000	linkleft_200_parents	either	0.030	0.12
 table@250000	linkleft_all_parents	either	0.47	1.9
 table@250000	linksemi_2000_parents	either	0.046	0.18
-table@250000	linksemi_200_parents	either	0.013	0.054
+table@250000	linksemi_200_parents	either	0.013	0.053
 table@250000	linksemi_all_parents	either	0.28	1.1
 table@250000	mean_of_counts	either	0.0087	0.035
 table@250000	mean_of_means	either	0.0092	0.037
@@ -341,7 +341,7 @@ table@250000	not_exists_in_table	either	0.028	0.11
 table@250000	one_day	either	0.15	0.62
 table@250000	one_key	either	0.0067	0.027
 table@250000	one_parent_narrow	either	1.8	7.1
-table@250000	output_lookup_subselect	either	0.0039	0.016
+table@250000	output_lookup_subselect	either	0.0087	0.035
 table@250000	parent_key	either	0.0068	0.027
 table@250000	partition_pruned	either	0.066	0.26
 table@250000	partitions_count	either	0.011	0.043
@@ -589,12 +589,12 @@ tabletuned@250000	linkanti_2000_parents	either	0.028	0.11
 tabletuned@250000	linkanti_200_parents	either	0.011	0.045
 tabletuned@250000	linkanti_all_parents	either	0.13	0.51
 tabletuned@250000	linkjoin_2000_parents	either	0.095	0.38
-tabletuned@250000	linkjoin_200_parents	either	0.020	0.081
+tabletuned@250000	linkjoin_200_parents	either	0.020	0.082
 tabletuned@250000	linkjoin_all_parents	either	0.23	0.92
 tabletuned@250000	linkleft_2000_parents	either	0.12	0.48
 tabletuned@250000	linkleft_200_parents	either	0.017	0.068
 tabletuned@250000	linkleft_all_parents	either	0.83	3.3
-tabletuned@250000	linksemi_2000_parents	either	0.028	0.11
+tabletuned@250000	linksemi_2000_parents	either	0.029	0.11
 tabletuned@250000	linksemi_200_parents	either	0.011	0.045
 tabletuned@250000	linksemi_all_parents	either	0.13	0.52
 tabletuned@250000	mean_of_counts	either	0.0065	0.026
