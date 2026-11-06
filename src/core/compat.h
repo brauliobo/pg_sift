@@ -15,6 +15,7 @@
 #include "pgtime.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
 #include "utils/tuplestore.h"
@@ -24,6 +25,13 @@
 #include "commands/explain_state.h"
 #else
 #include "optimizer/cost.h"
+#endif
+
+/* A named point of the code where a test of an injection-points build stops a backend (test/t/maint_lock_order.sh); nothing in a server built without them */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_POINT(name)	INJECTION_POINT(name, NULL)
+#else
+#define SIFT_POINT(name)	INJECTION_POINT(name)
 #endif
 
 /*

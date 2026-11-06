@@ -112,7 +112,7 @@ sift_maint_record_failure(Oid indexoid, ErrorData *err)
 	Relation	index;
 
 	StartTransactionCommand();
-	index = try_index_open(indexoid, RowExclusiveLock);
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
 		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});

@@ -17,13 +17,15 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
-PGA=()
-[[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
+PGA=(--inject)
+[[ ${1:-} != --major ]] || { PGA+=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(store_basic store_corrupt index_build_postings phrase_positions verify_corrupt query_errors colcodec_basic col_enc
 	col_index_basic col_wbuf shred_values tbl_basic tbl_agg facets agg_numeric_const_cmp agg_subplan_lut
-	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_swap)
+	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_swap slot_owner)
 TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
+# the shell TAP tests (they skip themselves on a server without what they need): DROP TABLE beside a worker stopped by injection points
+SHTAPS=(${SIFT_ASSERT_SHTAP-maint_lock_order})
 # the logs of the servers (TAP nodes included) must be clean of what the tests do not check
 BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request|missing lock for relation'
 
@@ -52,6 +54,7 @@ scripts/pgtest.sh start
 scripts/pgtest.sh regress "${TESTS[@]}" || rc=1
 # the quick tier of the TAP tests: sift only (the GIN control needs the gin_index_check of amcheck on PostgreSQL 18) and fewer crash iterations
 if (( ! rc && ${#TAPS[@]} )); then SIFT_QUICK=1 scripts/tap.sh "${TAPS[@]}" || rc=1; fi
+for t in "${SHTAPS[@]}"; do (( rc )) || SIFT_QUICK=1 scripts/pgtest.sh tap "$t" || rc=1; done
 if grep -rEl "$BAD" "$SIFT_TMP" --include='*.log' 2>/dev/null | head -n 5 | grep .; then
 	grep -rEh "$BAD" "$SIFT_TMP" --include='*.log' | head -n 10
 	echo "assert: a server log has an assertion failure or a memory-context warning (files above)" >&2

@@ -321,7 +321,7 @@ process(const RollupReq *r)
 
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
-	index = try_index_open(r->index, RowExclusiveLock);
+	index = sift_try_open_index(r->index, RowExclusiveLock);
 	if (index != NULL && sift_col_is_index(index) && !RecoveryInProgress() && options_hash(index) == r->hash && sift_col_format_minor >= SIFT_COL_FORMAT_TAGS)
 	{
 		gen = refresh_segment(index, r->gen);

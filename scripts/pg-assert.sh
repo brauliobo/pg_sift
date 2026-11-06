@@ -7,7 +7,10 @@
 # setting, reloads the relcache entries (tests cache_discard, verify_relcache). The --valgrind
 # variant adds USE_VALGRIND, which makes the memory contexts tell valgrind about every chunk (src/backend/utils/mmgr/memdebug.c).
 #
-#   scripts/pg-assert.sh [--valgrind] [--major 17|18]     builds when missing and prints the prefix on stdout (make pg-assert)
+#   scripts/pg-assert.sh [--valgrind] [--inject] [--major 17|18]     builds when missing and prints the prefix on stdout (make pg-assert)
+#
+# --inject: a prefix of its own (<version>-assert-inject) built with --enable-injection-points, with the injection_points test module installed (the TAP tests that stop a
+# worker at a named point of its code, no sleeps: test/t/*inject*)
 #
 # The pinned minors are the ones of the distribution server this was written against (18.6; 17.11 for the 17 branch), the tarball is
 # checked against the sha256 below. Prefix: $SIFT_PG_CACHE (default ${XDG_CACHE_HOME:-~/.cache}/sift/pg)/<version>-assert[-valgrind]; the
@@ -22,10 +25,12 @@ declare -A SHA256=([18.6]=555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328
 CONTRIB="amcheck pg_walinspect pg_buffercache"
 
 VALGRIND=${PG_ASSERT_VALGRIND:-}
+INJECT=${PG_ASSERT_INJECT:-}
 MAJOR=${PG_ASSERT_MAJOR:-}
 while (( $# )); do
 	case $1 in
 		--valgrind) VALGRIND=1 ;;
+		--inject) INJECT=1 ;;
 		--major) MAJOR=$2; shift ;;
 		*) sed -n '2,15p' "$0"; exit 1 ;;
 	esac
@@ -39,10 +44,10 @@ SUM=${PG_ASSERT_SHA256:-${SHA256[$V]:-}}
 [[ -n $SUM ]] || { echo "pg-assert: no sha256 for PostgreSQL $V (PG_ASSERT_SHA256)" >&2; exit 1; }
 
 CACHE=${SIFT_PG_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/pg}
-PREFIX=$CACHE/$V-assert${VALGRIND:+-valgrind}
+PREFIX=$CACHE/$V-assert${VALGRIND:+-valgrind}${INJECT:+-inject}
 CPP="-DRANDOMIZE_ALLOCATED_MEMORY -DCATCACHE_FORCE_RELEASE${VALGRIND:+ -DUSE_VALGRIND}"
 CFLAGS_="-O1 -ggdb -fno-omit-frame-pointer"
-RECIPE="$V sha256=$SUM cassert debug tap CPPFLAGS=[$CPP] CFLAGS=[$CFLAGS_] contrib=[$CONTRIB]"
+RECIPE="$V sha256=$SUM cassert debug tap CPPFLAGS=[$CPP] CFLAGS=[$CFLAGS_] contrib=[$CONTRIB]${INJECT:+ injection-points}"
 
 mkdir -p "$CACHE/src"
 exec 9>"$CACHE/.lock"
@@ -65,11 +70,12 @@ trap 'rm -rf "$WORK"' EXIT
 	# IPC::Run, which --enable-tap-tests needs, comes from the cache scripts/tap.sh fills
 	export PERL5LIB="${XDG_CACHE_HOME:-$HOME/.cache}/sift/perl5${PERL5LIB:+:$PERL5LIB}"
 	rm -rf "$PREFIX"
-	CPPFLAGS="$CPP" CFLAGS="$CFLAGS_" ./configure --prefix="$PREFIX" --enable-cassert --enable-debug --enable-tap-tests \
+	CPPFLAGS="$CPP" CFLAGS="$CFLAGS_" ./configure --prefix="$PREFIX" --enable-cassert --enable-debug --enable-tap-tests ${INJECT:+--enable-injection-points} \
 		--without-icu --without-readline --without-zlib >configure.log 2>&1 || { tail -n 20 configure.log; exit 1; }
 	nice make -j4 -s >make.log 2>&1 || { tail -n 30 make.log; exit 1; }
 	nice make -s install >/dev/null
 	for c in $CONTRIB; do nice make -s -C contrib/$c install >/dev/null; done
+	[[ -z $INJECT ]] || nice make -s -C src/test/modules/injection_points install >/dev/null
 	install -D -m 644 src/tools/valgrind.supp "$PREFIX/share/valgrind.supp"
 } >&2
 echo "$RECIPE" >"$PREFIX/.recipe"

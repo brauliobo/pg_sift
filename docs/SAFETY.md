@@ -65,6 +65,10 @@ SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from so
 pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, `-DCATCACHE_FORCE_RELEASE` (every syscache lookup builds a fresh entry and frees it at release, so a `HeapTuple`
 kept past its `ReleaseSysCache` is garbage; found F-MCX-1), plus `-DUSE_VALGRIND` for the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`):
 - `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh): 13 regression tests and 2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11.
+  The server of the lane is built with `--enable-injection-points` (`scripts/pg-assert.sh --inject`, the prefix `<version>-assert-inject`), so a shell TAP test can stop a backend at a named point of the code without a sleep:
+  `maint_lock_order` stops a maintenance worker before and after it locks the table of its index and runs DROP TABLE beside it (no deadlock, no error, the index gone is not an error). Ownership asserts of the testing
+  build: every slot of an executor state's table is in the query memory context (checked at ExecutorEnd, self-test `slot_owner`: a table slot made in a node's context is the crash of a cold backend), and a worker holds the
+  table before the index it opens (`sift_try_open_index`: lock order of the statements, Assert on `CheckRelationOidLockedByMe`).
 - `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh): 4 tests under memcheck with the server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has
   no debug symbols runs it in a pinned Debian bookworm container (see the script header); skips when neither works.
 - Weekly and non-blocking on GitHub: .github/workflows/assert.yml. The quick tier of `ci.yml` has one assertions entry ("PostgreSQL 18 (assertions)", the 30 `installcheck-agg_*` regress
