@@ -501,7 +501,9 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	bool		reads,
 				nests,
 				swap,
+				casef,
 				split_exists;
+	Query	   *written = NULL;
 	PlannedStmt *stmt;
 
 	hook_ran = true;
@@ -516,14 +518,20 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
 	swap = reads && sift_json_build_object_calls(parse);
-	if (nests || swap || split_exists || (sift_enable_agg && has_shared_cte(parse)))
+	casef = reads && sift_agg_case_filter_calls(parse);
+	if (nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse)))
 		parse = copyObject(parse);
+	/* the statement as written is planned when the rewritten one does not run in the scan: its plan is the one PostgreSQL makes of what the user wrote */
+	if (casef)
+		written = copyObject(parse);
 	if (split_exists)
 		sift_agg_split_exists_or(parse);
 	if (reads)
 	{
 		if (swap)
 			sift_json_build_object_swap(parse);
+		if (casef)
+			sift_agg_case_filter(parse);
 		if (nests && parse->rowMarks == NIL)
 		{
 			sift_agg_preinline(parse);
@@ -534,6 +542,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+		if (written != NULL && !uses_sift_agg(stmt->planTree) && !any_sift_agg(stmt->subplans))
+			stmt = plan_flat(SIFT_PLANNER_ARGS(written));
 	}
 	PG_FINALLY();
 	{

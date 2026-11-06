@@ -1,4 +1,4 @@
--- A sum of a CASE over a column of a lookup table and a numeric measure is evaluated by PostgreSQL once per distinct pair of the
+-- An average of a CASE (ELSE 0: not an aggregate with a filter, see agg_case_filter) over a column of a lookup table and a numeric measure is evaluated by PostgreSQL once per distinct pair of the
 -- tuple's key and measure (nearly every tuple when the measure has many values): the scan is priced with those entries and loses to
 -- the normal plan, while the same CASE over an integer measure, evaluated without them, keeps the scan.
 CREATE EXTENSION pg_sift;
@@ -20,7 +20,7 @@ BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
-SELECT m AS measure, scan_used(format('SELECT d.week, s.store, sum(CASE WHEN d.name = ''Sun'' THEN s.%s END) FROM sales s JOIN days d ON d.id = s.day_id GROUP BY 1, 2', m)) AS scan
+SELECT m AS measure, scan_used(format('SELECT d.week, s.store, avg(CASE WHEN d.name = ''Sun'' THEN s.%s ELSE 0 END) FROM sales s JOIN days d ON d.id = s.day_id GROUP BY 1, 2', m)) AS scan
 FROM (VALUES ('price'), ('qty')) v(m) ORDER BY 1;
  measure | scan 
 ---------+------

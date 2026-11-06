@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 121 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 122 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 14 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
@@ -951,6 +951,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement
 - **Advice:** Leave on. It costs one more plan for the statements it applies to and is kept only where the plan with the probes is priced lower than the others.
 - **Sources:** benchmark `test:agg_probe_rewrite`; [SET-FILTERS 4](SET-FILTERS.md#4-the-lookup-table-loads-only-the-rows-it-can-match-siftagg_lookup_pushdown)
+
+#### sift.agg_case_filter
+
+`sift_col`, `sift_table` · default · since 4.2 · default on
+
+- **What it does:** sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, and sum over CASE WHEN p THEN x ELSE 0 END, run as the aggregate of x with a filter on p: the kernels of x under a test of p, not the CASE for every row
+- **Gain:** a pivot of two sums over CASE WHEN status = .. THEN amount ELSE 0 END, grouped, 300,000 events, one backend, warm: 221.8 M instructions and 31.1 ms with the setting off, 43.7 M and 3.6 ms on; the same rows
+- **Gain and cost:** 5.10x fewer instructions (178000k saved a query), index +0.0%, build +0.0%, automatic
+- **Impact:** index size: -; build, merge and writes: -; other: planning only: a walk of the statement for aggregates of that shape; the statement is planned once more as written when the rewritten one does not run in the scan
+- **When:** sift_col and sift_table statements that aggregate over CASE WHEN p THEN x [ELSE NULL | 0]: a pivot, a share of rows by condition. It does not apply where the statement is not run by the scan (it keeps the plan of the CASE as written) or where the CASE has several branches.
+- **Default:** on — the rewrite is exact for the shapes it takes (a sum with ELSE 0 keeps 0 for a group where the condition never holds, NULL for an empty input) and costs one walk of the statement; avg, min and max with ELSE 0, DISTINCT, several WHEN branches and sub-selects stay as written.
+- **Turn off:** SET sift.agg_case_filter = off (session, role, database or postgresql.conf): the CASE is evaluated for every row as written. Planning only, no REINDEX.
+- **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement.
+- **Advice:** Leave on. It changes the text the scan computes, not the rows: the result of every shape is checked against the plan without the scan.
+- **Sources:** benchmark `agg_case_filter`; [AGG](AGG.md#aggregates-over-case)
 
 #### sift.verdict_cache_kb
 
@@ -2556,7 +2571,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_case_filter`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
 
 | Option | 3.7 | 4.1 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
@@ -2569,6 +2584,7 @@ Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sif
 | `sift.agg_probe_direct` | new | on |  | On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX. |
 | `sift.agg_float_step` | new | on |  | On after ALTER EXTENSION UPDATE and a restart or reconnect; nothing is stored in the index, so no REINDEX. |
 | `sift.agg_probe_rewrite` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on, and joins and sub-selects the statement names are planned the new way from the next statement |
+| `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.table_hot_update` | on | on |  | After ALTER EXTENSION UPDATE the updates of existing tables are HOT at once; no REINDEX. Tables updated by this release cannot be read by an older one (it ignores the HOT flag of the tombstones). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 16384 kB |  | After ALTER EXTENSION UPDATE and a restart of the server the table is 16 MB of shared memory (4 MB in 3.7) unless the setting was changed; no REINDEX. A server that set the value keeps it, and 0 still turns the sharing off. |
 | `sift.eval_methods` | new | '' |  | Available after the extension library is loaded; unit_rewrite needs CREATE INDEX or REINDEX to establish its complete layout. RESET does not change existing allocation boundaries; REINDEX with it off does. Use the selection in the VACUUM session as well. Forced or space-pressure merges may restore ordinary multi-unit segments. |

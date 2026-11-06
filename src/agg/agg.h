@@ -86,6 +86,8 @@ extern MemoryContext sift_agg_memo_cx(void);
 extern uint64 sift_agg_memo_seq(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern void sift_agg_preinline(Query *q);
+extern bool sift_agg_case_filter_calls(Query *q);	/* does a query tree hold agg(CASE WHEN p THEN x [ELSE NULL | 0] END) (a read-only walk) */
+extern void sift_agg_case_filter(Query *q);	/* those aggregates as agg(x) FILTER (WHERE p) (agg/expr/casefilter.c) */
 extern void sift_agg_drop_unused_laterals(Query *q);
 extern void sift_agg_defer_lookups(Query *q);
 extern bool sift_agg_exists_or_candidate(Query *q);
@@ -108,6 +110,7 @@ extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a f
 extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */
 #define SIFT_PROBE_ALIAS "sift_probe"	/* the alias of the lateral probe agg/flat/probe.c makes of a sublink or a join */
 extern PGDLLIMPORT bool sift_agg_probe_rewrite;
+extern PGDLLIMPORT bool sift_agg_case_filter_enabled;
 extern bool sift_agg_probe_mixed;		/* ... and another rewrite was made as well */
 extern bool sift_agg_probe_applied;		/* the flattening made a lateral probe of a sublink or a join (agg/flat/probe.c): the plan is set against the one as written whatever that reads */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */

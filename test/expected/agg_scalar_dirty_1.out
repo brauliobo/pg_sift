@@ -135,8 +135,8 @@ INSERT INTO s_q VALUES
 SELECT n, pushed(q) AS pushed, outcome(q) FROM s_q ORDER BY n;
          n         | pushed |                               outcome                                
 -------------------+--------+----------------------------------------------------------------------
- case branch       | f      | same rows
- case branch drops | f      | same rows
+ case branch       | t      | same rows
+ case branch drops | t      | same rows
  sub-select        | f      | same ERR 22P02 invalid input syntax for type double precision: "abc"
  two kinds         | f      | same ERR 22023 cannot cast jsonb string to type double precision
  typeof            | f      | same rows

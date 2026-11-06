@@ -158,7 +158,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
  in list of floats  | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  may raise too      | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  or                 | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
- read in a case     | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
+ read in a case     | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  sub-select         | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  two casts          | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  two kinds          | normal | same ERR 22023 cannot cast jsonb string to type double precision

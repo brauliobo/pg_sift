@@ -418,3 +418,4 @@ agg_sum_scalar_factor	a sum of a numeric column times a value asked once	events	
 group_passes_upfront	chooses the number of passes from the planner's estimate of the groups and reads the table once for each pass	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 agg_sum_lookup_product	a sum of a numeric column times a value of a table joined by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 fresh_request_lookup	-	events	-	child direct probes	native	warm_backend:sift.enable_agg = on	ms,minstr	faster33	no	-
+agg_case_filter	`sum`, `avg`, `min`, `max` and `count` over `CASE WHEN p THEN x`	events	-	Pushed Aggregates: count\(\*\), sum\(amount\)	native	whole:sift.agg_case_filter = off	ms,minstr	faster33	no	-

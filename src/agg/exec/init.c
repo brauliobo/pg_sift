@@ -84,6 +84,10 @@ sift_agg_init(void)
 							 "Plans a join to a large table, or an EXISTS, NOT EXISTS or IN over one, with a btree on its key also as a lateral probe of the btree for each key the scan meets, and keeps that plan where it runs in the scan and costs less.",
 							 NULL, &sift_agg_probe_rewrite, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_case_filter",
+							 "Plans agg(CASE WHEN p THEN x [ELSE NULL | 0] END) of sum, avg, min, max and count as agg(x) FILTER (WHERE p), which the scan computes on the kernels of x under a test of p.",
+							 NULL, &sift_agg_case_filter_enabled, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_lookup_columns",
 							 "Loads the rows of a lookup table from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap.",
 							 NULL, &sift_agg_lookup_columns, true,

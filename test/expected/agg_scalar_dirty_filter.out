@@ -125,7 +125,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM f_q ORDER BY n;
  argument, filtered         | scan   | same rows
  argument, int4             | scan   | same ERR 22P02 invalid input syntax for type integer: "3.5"
  argument, kept             | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
- case in the argument       | normal | same rows
+ case in the argument       | scan   | same rows
  filter may raise           | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  filter of a bad leaf       | normal | same ERR 22P02 invalid input syntax for type integer: "3.5"
  filter of a leaf           | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"

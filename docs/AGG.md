@@ -32,6 +32,10 @@ Other rules:
 
 Tests `agg_correlated_children`, `agg_correlated_fanout`, `agg_derived_correlation`, `agg_append_children`, `agg_raw_value_children`, `agg_lateral_flatten`, `agg_left_each`, `agg_left_unnest`, `agg_plan_tables`, `agg_child_predicates`, `agg_lookup_dependencies`, `agg_statement_cte_children`; fixtures `pt_*`.
 
+## Aggregates over CASE
+
+`sum`, `avg`, `min`, `max` and `count` of `CASE WHEN p THEN x [ELSE NULL] END`, and `sum` of `CASE WHEN p THEN x ELSE 0 END`, are planned as the aggregate of `x` with a filter on `p` (`sift.agg_case_filter`, on by default): the scan computes `x` on its kernels under a test of `p`, where the CASE would be evaluated for every row on the generic path. The rows do not change: a sum with `ELSE 0` is still 0 for a group where `p` never holds, NULL for an empty input and for values that are all NULL (it is read as `CASE WHEN count(*) FILTER (WHERE p IS NOT TRUE) > 0 THEN coalesce(sum(x) FILTER (WHERE p), 0) ELSE sum(x) FILTER (WHERE p) END`). `avg`, `min` and `max` with `ELSE 0` (the zeros count), a numeric zero with a scale (it shows decimals), `DISTINCT`, several `WHEN` branches, a sub-select, a volatile or set-returning function in the condition or the value stay as written. A statement the scan does not run keeps the plan of the CASE as written. `test/sql/agg_case_filter.sql` checks the shapes against the plan without the scan.
+
 ## Join key filters and shared lookups
 
 An inner or semi lookup join whose key is one integer (`int8` too) or date leaf of the index (`JOIN stores s ON s.id = o.tenant_id`, `IN (SELECT ..)`, `EXISTS`) needs a row of the table with that key. The table's keys, loaded at scan start with its own conditions applied, therefore become a scan conjunct `leaf IN (keys)`: a byte table over the key range (a hash table above 4 million values), with the same test, zone pruning and source filters as an `IN` list of constants. A unit whose zone misses the range is not read (`Units Pruned`); other rows are tested as a set before a tuple is made, where the join would resolve every tuple through the combo cache. A multi-column join adds one conjunct per integer key.
