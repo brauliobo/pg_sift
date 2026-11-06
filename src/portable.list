@@ -73,6 +73,7 @@ bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
 core/cmp.h
+core/hash.h
 core/i64set.h
 core/limits.h
 core/cpu.h

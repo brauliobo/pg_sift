@@ -118,6 +118,13 @@ $(B)/span_test: tests/span_test.c $(SRC)/core/span.h $(SRC)/core/varint.h | $(B)
 span-test: $(B)/span_test
 	$(B)/span_test
 
+# the multiply-fold mixers: their outputs are pinned (group output order depends on them)
+$(B)/hash_test: tests/hash_test.c $(SRC)/core/hash.h | $(B)
+	$(CC) $(CFLAGS) -Wextra -o $@ tests/hash_test.c
+
+hash-test: $(B)/hash_test
+	$(B)/hash_test
+
 span-test-asan:
 	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/span_test
 	$(B)-asan/span_test
@@ -148,4 +155,4 @@ clean:
 
 -include $(wildcard $(B)/*.d $(B)/*/*.d)
 
-.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test

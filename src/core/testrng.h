@@ -7,13 +7,13 @@
 
 #include <stdint.h>
 
-#define SIFT_SPLITMIX_GAMMA	UINT64_C(0x9E3779B97F4A7C15)
+#include "core/hash.h"
 
 /* The output for state x (a hash of x + 1 gamma) */
 static inline uint64_t
 sift_mix64(uint64_t x)
 {
-	x += SIFT_SPLITMIX_GAMMA;
+	x += SIFT_FIB64;
 	x = (x ^ (x >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
 	x = (x ^ (x >> 27)) * UINT64_C(0x94D049BB133111EB);
 	return x ^ (x >> 31);
@@ -25,7 +25,7 @@ sift_splitmix_next(uint64_t *s)
 {
 	uint64_t	z = sift_mix64(*s);
 
-	*s += SIFT_SPLITMIX_GAMMA;
+	*s += SIFT_FIB64;
 	return z;
 }
 

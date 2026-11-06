@@ -7,6 +7,7 @@
 
 #include "core/host.h"
 #include "core/cmp.h"
+#include "core/hash.h"
 
 typedef struct SiftI64Set
 {
@@ -19,7 +20,7 @@ typedef struct SiftI64Set
 static inline uint64_t
 sift_i64set_slot(const SiftI64Set *s, int64_t k)
 {
-	return ((uint64_t) k * UINT64_C(0x9E3779B97F4A7C15)) >> s->shift;
+	return sift_fib64((uint64_t) k) >> s->shift;
 }
 
 /* the members vals[0..n) in any order, duplicates allowed */
