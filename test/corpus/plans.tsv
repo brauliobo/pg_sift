@@ -1,4 +1,4 @@
-# slug	Sift nodes of the plan	sift.explain_why per arm (t: used, f:SLUG: refused); pinned by test/corpus/run.py, rewritten by scripts/corpus.sh --update
+# slug	Sift nodes of the plan	sift.explain_why per arm (t: used, f:SLUG: refused); pinned by test/corpus/run.py, rewritten by scripts/corpus.sh --update; a node ~ leaves a cost-borderline case unpinned (rows are still compared), --update keeps it
 agg_count_star	SiftAgg	single:t
 agg_basic_five	SiftAgg	single:t
 agg_filter_clause	SiftAgg	single:t
@@ -118,7 +118,7 @@ s2_corr_regr	-	single:f:cost
 s2_bool_agg	SiftAgg	single:t
 s2_count_distinct_filter	SiftAgg	distinct:f:distinct_set,single:t
 s2_avg_nulls	SiftAgg	single:t
-s2_sum_case_pivot	-	single:f:cost
+s2_sum_case_pivot	SiftAgg	single:t
 s2_group_lower_text	SiftAgg	single:t
 s2_group_date_bin	~	cost-borderline across majors
 s2_group_substr	SiftAgg	single:t
