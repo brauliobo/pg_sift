@@ -391,6 +391,8 @@ extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);
 extern void junction_done(SiftAggPred *p);
 extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args);
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
+/* the condition n as tests of a column (plan_prednorm.c), or NULL */
+extern Node *pred_normalize(AggCtx *c, Node *n);
 extern SiftAggPred *compile_calendar_cmp(AggCtx *c, OpExpr *op);
 extern void compile_periodic(AggCtx *c, Node *n, SiftAggPred *p);
 

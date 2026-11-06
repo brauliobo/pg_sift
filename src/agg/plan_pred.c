@@ -803,7 +803,8 @@ SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
 	SiftAggPred *p;
-	Node	   *leaf_target;
+	Node	   *leaf_target,
+			   *norm;
 	int			leaf;
 
 	n = scalar_initplans(c, strip_relabel(n));
@@ -821,6 +822,8 @@ compile_pred(AggCtx *c, Node *n)
 		p->desc = psprintf("(%s)", expr_text(c, n));
 		return p;
 	}
+	if ((norm = pred_normalize(c, n)) != NULL && (p = compile_pred(c, norm)) != NULL)
+		return p;
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
 	if (IsA(n, RowCompareExpr))
