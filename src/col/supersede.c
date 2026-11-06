@@ -190,7 +190,7 @@ void
 sift_col_tomb_hold_tid(Relation index, ItemPointer tid)
 {
 	sift_col_batch_hook();
-	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(tid), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .kind = SIFT_TOMB_DELETE});
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(tid), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE});
 }
 
 /*
@@ -220,7 +220,7 @@ tomb_replaced(Relation index, TupleTableSlot *slot, AttrNumber hatt, Form_pg_att
 
 	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
 		return false;
-	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = GetCurrentCommandId(true), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .succ = succ, .kind = SIFT_TOMB_UPDATE});
 	probed_found = true;
 	probed_old = *entry;
 	return true;
@@ -321,7 +321,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	if (speculative_stmt && is_speculative(heap, newtid))
 		return;
 	if (probed.heap == RelationGetRelid(heap) && probed.att == hatt && ItemPointerEquals(&probed.newtid, newtid) && probed.xid == GetCurrentTransactionId() &&
-		probed.cid == GetCurrentCommandId(true))
+		probed.cid == sift_col_stmt_cid())
 	{
 		if (probed.found)
 			tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(&probed.old), .xid = probed.xid, .cid = probed.cid, .succ = succ, .kind = SIFT_TOMB_UPDATE});
@@ -330,6 +330,7 @@ sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPoint
 	probed_found = false;
 	uoid = sift_col_row_key_unique(heap, hatt);
 	snap = RegisterSnapshot(GetLatestSnapshot());
+	snap->curcid = sift_col_stmt_cid();
 	hint = OidIsValid(uoid) ? latest_slot(index, tc, att->attcollation, key) : NULL;
 	if (hint != NULL)
 	{
@@ -365,7 +366,7 @@ done:
 	probed.att = hatt;
 	probed.newtid = *newtid;
 	probed.xid = GetCurrentTransactionId();
-	probed.cid = GetCurrentCommandId(true);
+	probed.cid = sift_col_stmt_cid();
 	probed.found = probed_found;
 	probed.old = probed_old;
 }

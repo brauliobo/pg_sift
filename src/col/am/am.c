@@ -78,6 +78,10 @@ static int	batch_stmts;
 
 static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
 
+static CommandId batch_cid;	/* the command id the innermost statement that modifies data runs with, valid while batch_cid_set (sift_col_stmt_cid) */
+
+static bool batch_cid_set;
+
 static bool batch_inserting;	/* inside sift_col_aminsert; an error leaves it set until the (sub)transaction aborts */
 
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
@@ -123,6 +127,7 @@ batch_xact(XactEvent event, void *arg)
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
 		batch_inserting = false;
+		batch_cid_set = false;
 	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 		batch_seen = false;
@@ -145,10 +150,21 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 #define STMT_UPDATING		2
 #define STMT_WRITING		4
 
+typedef struct StmtState
+{
+	int			what;
+	CommandId	prev_cid;
+	bool		prev_set;
+} StmtState;
+
 static void
 batch_stmt_done(void *arg)
 {
-	uintptr_t	what = (uintptr_t) arg;
+	StmtState  *st = arg;
+	int			what = st->what;
+
+	batch_cid = st->prev_cid;
+	batch_cid_set = st->prev_set;
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
@@ -181,14 +197,33 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	if (speculative || updating || writing)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
+		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(StmtState));
 
+		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0);
+		st->prev_cid = batch_cid;
+		st->prev_set = batch_cid_set;
 		cb->func = batch_stmt_done;
-		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0));
+		cb->arg = st;
 		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
+		if (writing)
+		{
+			batch_cid = GetCurrentCommandId(true);
+			batch_cid_set = true;
+		}
 		batch_stmts += speculative;
 		batch_updates += updating;
 		batch_writes += writing;
 	}
+}
+
+/*
+ * The command id of the statement that writes: the one its tuples carry. A function that runs SQL (SPI) inside the statement advances the command id, and a tombstone or a
+ * probe that took the current one would no longer see the versions the statement ended (a snapshot of the command sees them, the next command's does not).
+ */
+CommandId
+sift_col_stmt_cid(void)
+{
+	return batch_cid_set ? batch_cid : GetCurrentCommandId(true);
 }
 
 /*
