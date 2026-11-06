@@ -42,21 +42,20 @@ endif
 # SIFT_TESTING=1 compiles the sift._test_* functions and installs the
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
-TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_large_docs build_parallel aggstub_% maint_% tbl_cap tbl_bulk_eligible tbl_bulk_groups tbl_vblocks tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds agg_probe_direct_columns
-TESTING_REGRESS += core_radix_sort agg_group_hash_probe agg_int_key_ids tbl_bitmap_lazy limits_registry tbl_limits_lowered tbl_bulk_parallel agg_combo_cap agg_limit_refusals agg_planner_state_error slot_owner
+TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds read_% build_limits build_pool build_page_text aggstub_% maint_% tbl_bulk_eligible tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds agg_probe_direct_columns
+TESTING_REGRESS += core_radix_sort agg_group_hash_probe agg_int_key_ids tbl_bitmap_lazy limits_registry tbl_limits_lowered agg_combo_cap agg_limit_refusals agg_planner_state_error slot_owner
 TESTING_REGRESS += col_heapfree_xmin col_tomb_stale_header col_tomb_horizon col_supersede_source col_track_update_skip include_store include_filter errors_hints agg_cte_verdict_cache col_leaf_stats col_minmax_runs agg_outer_walks_once fuzzy_seek agg_group_single_key
 TESTING_REGRESS += col_unit_generations col_track_ctid col_track_ctid_chains
 TESTING_REGRESS += col_latest_hint agg_key_list_once agg_plan_passes agg_vis_counts
 TESTING_REGRESS += col_set_list_span agg_topn_with_ties agg_root_key_exists agg_jsonb_key_forms
-TESTING_REGRESS += col_wide_values agg_par_split col_vet_lazy_offsets build_ranges merge_ranges
+TESTING_REGRESS += col_wide_values agg_par_split col_vet_lazy_offsets
 TESTING_REGRESS += lang_chain lang_memo col_wbuf_order_cache col_wbuf_big_set
 TESTING_REGRESS += bm25_wbuf_read_promote bm25_wbuf_wide_bloom tbl_wide_rows col_wildcard_keys col_read_ahead col_dead_rewrite col_tomb_log col_track_updates_supersede col_track_shared_probe col_track_default col_track_deletes col_tomb_log_cache tbl_tomb_legacy_header col_tomb_log_cache
-TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks rank_page_live rank_or_union list_slice_seek
+TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks
 TESTING_REGRESS += col_topn_unit_ends col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func col_topn_trail
 # these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/build_par.c)
-TESTING_REGRESS += agg_preagg agg_preagg_rows agg_workers_few_units col_build_peers col_merge_memory
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths col_cost_selectivity_once col_cost_keys_sorted_once agg_source_cache agg_prepass_const_list
-TESTING_REGRESS += col_gorder_chunks col_point_lazy col_point_radix col_merge_keys col_vacuum_parallel_keys col_volatile_notice agg_cal_paths col_rollup_auto col_cube_rank col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir col_point_dense col_point_many_keys col_point_tid col_run_heads col_key_cut col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_lazy_filter col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_paths_auto col_suggest_paths agg_preagg_elem agg_preagg_rollup col_rollup_refresh col_refresh parallel_build col_approx col_gorder col_topn_gorder col_gorder_group col_key_table col_dict_bisect col_key_runs tbl_key_table col_dict_count col_point_chunks col_range_order col_gorder_auto col_dict_hash col_text_tsig col_text_contains col_scan_unit_order
+TESTING_REGRESS += col_gorder_chunks col_point_lazy col_point_radix col_merge_keys col_vacuum_parallel_keys col_volatile_notice agg_cal_paths col_rollup_auto col_cube_rank col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir col_point_dense col_point_many_keys col_point_tid col_run_heads col_key_cut col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_lazy_filter col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_paths_auto col_suggest_paths agg_preagg_elem agg_preagg_rollup col_rollup_refresh col_refresh col_approx col_gorder col_topn_gorder col_gorder_group col_key_table col_dict_bisect col_key_runs tbl_key_table col_dict_count col_point_chunks col_range_order col_gorder_auto col_dict_hash col_text_tsig col_text_contains col_scan_unit_order
 TESTING_REGRESS += col_gorder_autogroup col_topn_gorder_filter col_topn_gorder_filter_text
 TESTING_REGRESS += col_key_cut_paced col_list_test_once col_key_cut_ranges
 TESTING_REGRESS += col_gorder_narrow col_gorder_ends col_gorder_layout col_gorder_fullrange col_order_layout col_gorder_dead_cache
@@ -83,6 +82,21 @@ TESTING_REGRESS += col_topn_offset agg_child_warm agg_probe_direct agg_probe_dir
 TESTING_REGRESS += col_unit_of_block agg_float_step
 TESTING_REGRESS += tbl_hot_sift_index merge_parts merge_heal
 TESTING_REGRESS += col_topn_text_offset col_gorder_text_count col_dsm_write_statements col_stmt_cid col_stmt_cid_bm25 col_track_rebaseline col_track_reindex_concurrently col_track_drop_concurrently
+# Listed although scripts/check-testing-regress.sh would not select them (each fails on the release library, so the stock-library jobs must not run it):
+# sift.test_run_docs, a setting only the testing build has
+TESTING_REGRESS += build_memory build_parallel build_runs
+# sift.test_par_workers, a setting only the testing build has
+TESTING_REGRESS += parallel_build tbl_bulk_parallel
+# sift.test_range_pieces and sift.test_range_bytes, settings only the testing build has
+TESTING_REGRESS += build_ranges merge_ranges
+# sift.test_page_text, a setting only the testing build has
+TESTING_REGRESS += build_large_docs
+# sift.grouped_min_df, a setting only the testing build has
+TESTING_REGRESS += list_slice_seek rank_or_union rank_page_live
+# sift.table_max_segments and sift.table_vblock_floor, settings only the testing build has
+TESTING_REGRESS += tbl_bulk_groups tbl_cap tbl_vblocks
+# an asserted value differs on the release library
+TESTING_REGRESS += agg_preagg agg_preagg_rows agg_workers_few_units col_build_peers col_merge_memory
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
