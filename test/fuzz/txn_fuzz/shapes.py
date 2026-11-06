@@ -26,8 +26,9 @@ def shape_config(seed, prepared, tracks, spi=True, oc=True, trunc=True, parts=No
 
 
 class ShapeGen(Gen):
-    def __init__(self, c, n, only=''):
+    def __init__(self, c, n, only='', concurrently=False):
         super().__init__(c, n)
+        self.concurrently = concurrently    # REINDEX INDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY of a second index join the maintenance statements (opt-in: it changes the scripts of a seed)
         self.r = random.Random(f'shape_act{c.seed}')
         self.only = only
         self.atx = False            # session A is in a transaction block
@@ -80,7 +81,18 @@ class ShapeGen(Gen):
         rows = list(range(lo, lo + m_)) + [last]
         return ('SAVEPOINT tfs;\nCOPY t (k, tenant, amount) FROM STDIN;\n' + '\n'.join(f"{i if c.keytype == 'int' else 'c' + str(i)}\t{i % 10}\t{i}" for i in rows) + '\n\\.\nROLLBACK TO tfs')
 
+    TRACK_OPTS = {'auto': '', 'key': " WITH (track_changes = 'k')", 'off': " WITH (track_changes = 'off')", 'ctid': " WITH (track_changes = 'ctid')"}
+
+    def concurrent_stmt(self):
+        return self.r.choice(['REINDEX INDEX CONCURRENTLY t_c', 'REINDEX INDEX CONCURRENTLY t_c',
+                              f"CREATE INDEX CONCURRENTLY t_c2 ON t USING sift_col (k, tenant, amount){self.TRACK_OPTS[self.c.track]};\nDROP INDEX t_c2"])    # DROP INDEX CONCURRENTLY of a tracked index fails by design
+
     def maint_stmt(self):
+        if self.concurrently and not self.c.parts and self.r.random() < 0.4:
+            return self.concurrent_stmt()
+        return self.shape_maint()
+
+    def shape_maint(self):
         if self.c.parts and self.det is None and self.r.random() < 0.4:
             self.det = self.r.randrange(self.c.parts)
             return f'ALTER TABLE t DETACH PARTITION t_p{self.det}'
@@ -139,6 +151,8 @@ class ShapeGen(Gen):
 
     def check(self, s):
         r = self.r
+        if self.concurrently and s == 'A' and not self.atx and not self.c.parts and r.random() < 0.15:
+            self.sql('A', self.concurrent_stmt())
         if not self.only:
             super().check(s)
         w = r.random()

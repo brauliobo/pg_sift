@@ -35,6 +35,7 @@ def main(doc):
     ap.add_argument('--variants', default='', help='the plans compared with the plain heap plan, a subset of scan,default,index,workers (default: all; what shows which plan finds a bug)')
     ap.add_argument('--shapes', action='store_true', help='the shapes of shapes.py: cursors, prepared statements, partitioned tables, upserts and COPY with SPI (another set of scripts for a seed)')
     ap.add_argument('--only', default='', choices=('',) + KINDS, help='with --shapes: the checks of one shape in place of the plain ones (what finds a bug that the plain checks find too, by this shape)')
+    ap.add_argument('--concurrently', action='store_true', help='with --shapes: REINDEX INDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY of a second index between the statements (outside a transaction block)')
     ap.add_argument('--parts', type=int, default=None, choices=(0, 3), help='with --shapes: every table partitioned (3) or none (0)')
     ap.add_argument('--stop-after', type=int, default=0, help='stop after this many failing seeds (0: all seeds)')
     ap.add_argument('--budget', type=int, default=0, help='stop starting seeds after this many seconds (0: no limit)')
@@ -50,7 +51,7 @@ def main(doc):
     def make(seed):
         if a.shapes:
             c = shape_config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate, a.parts)
-            return c, ShapeGen(c, a.actions, a.only).build()
+            return c, ShapeGen(c, a.actions, a.only, a.concurrently).build()
         c = config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate)
         return c, script(c, a.actions)
     if a.selftest:
@@ -71,6 +72,9 @@ def main(doc):
             a.shapes, a.only = True, only
             if not any(x.get('kind', 'plain') != 'plain' for seed in range(10) for x in make(seed)[1]):
                 sys.exit(f'txn_fuzz selftest: --only {only} made no check')
+        a.shapes, a.only, a.concurrently, a.parts = True, '', True, 0
+        if not any('CONCURRENTLY' in x.get('sql', '') for seed in range(10) for x in make(seed)[1]):
+            sys.exit('txn_fuzz selftest: --concurrently made no CONCURRENTLY statement')
         print(f'txn_fuzz selftest: {n} scripts')
         return 0
     prepared = int(psql('postgres', 'SHOW max_prepared_transactions')[0].strip() or 0) > 0
