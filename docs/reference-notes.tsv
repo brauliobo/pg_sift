@@ -59,3 +59,4 @@ worker_state	maint
 workers	maint		
 col_refresh	maint		
 refusal_slugs	diag		
+refusal_actions	diag		

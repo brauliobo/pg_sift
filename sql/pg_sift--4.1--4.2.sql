@@ -95,10 +95,9 @@ COMMENT ON FUNCTION sift.table_option_values_trg() IS 'Trigger of sift.table_opt
 COMMENT ON FUNCTION sift.tblref_in(cstring) IS 'Input of sift.tblref: the qualified name of a table, read as its OID here (0 for a table that is not there).';
 COMMENT ON FUNCTION sift.tblref_out(sift.tblref) IS 'Output of sift.tblref: the qualified name of the table.';
 
--- What to change for each slug that sift.explain_why and sift.stats() name: the statement, the index or a setting (the HINT of the notice of sift.explain_refusals).
--- The result of a function cannot gain a column in place.
-DROP FUNCTION sift.refusal_slugs();
-CREATE FUNCTION sift.refusal_slugs(OUT slug text, OUT class text, OUT reason text, OUT action text)
+-- What to change for each slug of sift.refusal_slugs() (the statement, the index or a setting: the HINT of the notice of sift.explain_refusals). A function of its own: the result of
+-- refusal_slugs() cannot gain a column without dropping the function, and a view that reads it would fail the update.
+CREATE FUNCTION sift.refusal_actions(OUT slug text, OUT action text)
 	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_agg_refusal_slugs' LANGUAGE C STRICT VOLATILE;
-COMMENT ON FUNCTION sift.refusal_slugs() IS 'The slugs that sift.explain_why and sift.stats() name, with their class (limit: the query has more of something than a fixed limit of the extension allows; semantic: otherwise), the reason and what to change (join it to explain_why on slug).';
+	AS 'MODULE_PATHNAME', 'sift_agg_refusal_actions' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.refusal_actions() IS 'What to change for each slug of sift.refusal_slugs(): the statement, the index or a setting (the hint of the notice of sift.explain_refusals); join it to sift.explain_why on slug';

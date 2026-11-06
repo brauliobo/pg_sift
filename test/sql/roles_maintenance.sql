@@ -58,6 +58,7 @@ SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'
 !SELECT * FROM sift.stats()
 !SELECT sift.stats_reset()
 !SELECT * FROM sift.refusal_slugs()
+!SELECT * FROM sift.refusal_actions()
 SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1
 !SELECT * FROM sift.col_rollup_counters()
 !SELECT * FROM sift.col_rollup_queue()

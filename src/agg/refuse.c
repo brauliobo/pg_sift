@@ -44,6 +44,7 @@
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
 PG_FUNCTION_INFO_V1(sift_agg_refusal_slugs);
+PG_FUNCTION_INFO_V1(sift_agg_refusal_actions);
 
 /* sift_explain_refusals: the sites note their reasons (the notice, sift.count_refusals or sift.explain_why asked for them); the notice is for the first */
 bool		sift_explain_refusals = false;
@@ -877,9 +878,26 @@ sift_agg_refusal_slugs(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
 	{
-		Datum		v[4] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
-							CStringGetTextDatum(refusals[i].text), CStringGetTextDatum(refusals[i].action)};
-		bool		n[4] = {false, false, false, false};
+		Datum		v[3] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
+							CStringGetTextDatum(refusals[i].text)};
+		bool		n[3] = {false, false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
+	}
+	return (Datum) 0;
+}
+
+/* sift.refusal_actions(): what to change for each slug of sift.refusal_slugs(). A function of its own: the result of refusal_slugs() cannot gain a column without dropping the function, which fails the update when a view reads it */
+Datum
+sift_agg_refusal_actions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
+	{
+		Datum		v[2] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].action)};
+		bool		n[2] = {false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
 	}

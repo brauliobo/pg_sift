@@ -15,7 +15,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 | 4.1.1 to 4.1.2 | library only: the extension SQL stays at 4.1, no format changes; the log of a `sift_col` index with `track_changes` that an earlier release wrote is re-checked and re-baselined on its own | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`, no `ALTER INDEX` (after `pg_upgrade`, once for each index: see the section below); going back to 4.1.1 needs nothing first ([notes](releases/v4.1.2.md)) |
 | 4.1.2 to 4.1.3 | library only: the extension SQL stays at 4.1, no format changes; `REINDEX INDEX CONCURRENTLY` of a `sift_col` index with `track_changes` no longer takes ACCESS EXCLUSIVE on the table | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back to 4.1.2 needs nothing first ([notes](releases/v4.1.3.md)) |
 | 4.1.3 to 4.1.4 | library only: the extension SQL stays at 4.1, no format changes; two wrong answers of the aggregate scan are fixed | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back needs nothing first ([notes](releases/v4.1.4.md)) |
-| a newer pg_sift from 4.1 to 4.2 | six changes of files, plans and one SQL function | [what 4.2 changes](#what-42-changes) |
+| a newer pg_sift from 4.1 to 4.2 | six changes of files, plans and one new SQL function | [what 4.2 changes](#what-42-changes) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -137,9 +137,9 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    while the log is not vouched, 29.7 M and 467 when it is; after the repair it is 33.9 M and 585 (the repaired log is a little larger, a `VACUUM` or a merge shrinks it).
    - *Format:* none, no minor changes; answers are right before and after. *`REINDEX`:* not needed. *Off:* none for the repair; `ALTER INDEX x SET (track_changes = 'off')` drops the log and its triggers for an index that should not have them.
 
-6. **`sift.refusal_slugs()` has a fourth column, `action`:** what to change for the slug (the statement, the index or a setting). A function cannot gain a column in place, so `pg_sift--4.1--4.2.sql` drops it and creates it again.
-   **A view that reads `sift.refusal_slugs()` makes `ALTER EXTENSION pg_sift UPDATE` fail** (`cannot drop function refusal_slugs() because other objects depend on it`; the update rolls back and the extension stays at 4.1): drop the view before the
-   update and create it again after it. A function of yours whose body is a string (`LANGUAGE sql` or `plpgsql`) is not a dependency and keeps working; a query that names the columns it reads keeps working. *Files, `REINDEX`:* no. *Off:* none.
+6. **`sift.refusal_actions()` returns what to change for each refusal slug** (the statement, the index or a setting, the hint of the notice of `sift.explain_refusals`): `sift.explain_why(q) w JOIN sift.refusal_actions() a USING (slug)`.
+   It is a new function; `sift.refusal_slugs()` keeps its three columns, and `pg_sift--4.1--4.2.sql` drops or replaces no function, so a view, a default or a function of yours that reads the objects of 4.1 does not
+   make `ALTER EXTENSION pg_sift UPDATE` fail (`test/t/extension_lifecycle.sh` updates a database that has a view over `sift.refusal_slugs()`). *Files, `REINDEX`, off:* not applicable.
 
 ## 3. A newer PostgreSQL major
 

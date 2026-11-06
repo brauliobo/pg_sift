@@ -147,14 +147,14 @@ SELECT slug, class FROM sift.refusal_slugs() WHERE slug IN ('shape_width', 'too_
 (4 rows)
 
 -- and what to change: every slug has a line, and a refusal of explain_why joins to it on the slug
-SELECT count(*) = count(*) FILTER (WHERE action <> '' AND action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs();
+SELECT count(*) = count(*) FILTER (WHERE action <> '' AND action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() USING (slug);
  every_slug_has_an_action 
 --------------------------
  t
 (1 row)
 
 SET sift.agg_lookup_max_kb = 1;
-SELECT w.slug, r.class, r.action <> '' AS has_action FROM sift.explain_why(spine_q()) w JOIN sift.refusal_slugs() r ON r.slug = w.slug WHERE w.arm = 'two_level';
+SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(spine_q()) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug WHERE w.arm = 'two_level';
     slug    | class | has_action 
 ------------+-------+------------
  spine_rows | limit | t
