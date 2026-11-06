@@ -219,12 +219,12 @@ EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amo
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT kind, percentile_cont(ARRAY[0.5]) WITHIN GROUP (ORDER BY amount) FROM o GROUP BY kind;
-                                             QUERY PLAN                                             
-----------------------------------------------------------------------------------------------------
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
  Custom Scan (SiftAgg)
    Index: o_col
    Group Keys: kind
-   Pushed Aggregates: percentile_cont('{0.5}'::double precision[]) WITHIN GROUP (ORDER BY o.amount)
+   Pushed Aggregates: percentile_cont(0.5) WITHIN GROUP (ORDER BY o.amount)
 (4 rows)
 
 SELECT same($$SELECT kind, percentile_cont(0.5) WITHIN GROUP (ORDER BY amount) AS c, percentile_cont(0.9) WITHIN GROUP (ORDER BY amount DESC) AS cd,

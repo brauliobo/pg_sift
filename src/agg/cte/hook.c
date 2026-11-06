@@ -368,7 +368,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_partial_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		shared_cte = has_shared_cte(parse);

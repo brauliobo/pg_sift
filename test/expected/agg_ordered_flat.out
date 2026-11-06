@@ -62,7 +62,7 @@ SELECT n, fl_plan(q) AS plan, fl_same(q) AS same FROM fl_q ORDER BY n;
  n  |   plan    |   same   
 ----+-----------+----------
   1 | scan flat | same 7
-  2 | scan      | same 7
+  2 | scan flat | same 7
   3 | scan flat | same 7
   4 | scan      | same 7
   5 | scan flat | same 7

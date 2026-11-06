@@ -437,3 +437,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 -	agg_left_partial	300000	native	default	instr_m	840	10	bench case agg_left_partial, native plan, records in program-scale/realq42b/wp26c
 10.3 M instructions and 0.94 ms	topn_with_ties	300000	sift	default	instr_m	10.28	10	CHANGELOG 4.2 line of FETCH FIRST n ROWS WITH TIES as a top-N, run b568b87b103d-20261106T062018Z-794d, records in program-scale/realq42b/records/topnties-case-after.rec; the normal plan (sift off) takes 387 M instructions, 133 M cycles and 44.2 ms in the same record
 10.3 M instructions and 0.94 ms	topn_with_ties	300000	sift	default	exec_ms	0.94	40	CHANGELOG 4.2 line of FETCH FIRST n ROWS WITH TIES as a top-N, run b568b87b103d-20261106T062018Z-794d, records in program-scale/realq42b/records/topnties-case-after.rec; the normal plan (sift off) takes 387 M instructions, 133 M cycles and 44.2 ms in the same record
+-	agg_percentile_array	300000	picked	default	exec_ms	28.0	25	bench case agg_percentile_array, 300,000 rows, 12 groups, records in program-scale/realq42b/wp27
+-	agg_percentile_array	300000	picked	default	instr_m	192	10	bench case agg_percentile_array, records in program-scale/realq42b/wp27
+-	agg_percentile_array	300000	native	default	exec_ms	78.5	25	bench case agg_percentile_array, native plan, records in program-scale/realq42b/wp27
+-	agg_percentile_array	300000	native	default	instr_m	873	10	bench case agg_percentile_array, native plan, records in program-scale/realq42b/wp27

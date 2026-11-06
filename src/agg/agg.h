@@ -107,6 +107,8 @@ extern bool sift_agg_factor_constants(Query *q, bool apply);
 extern bool sift_agg_eager_candidate(Query *q);
 extern bool sift_agg_eager_lookup(Query *q, bool apply);
 extern bool sift_agg_partial_candidate(Query *q);
+extern bool sift_agg_pct_array_candidate(Query *q);
+extern bool sift_agg_pct_arrays(Query *q, bool apply);
 extern bool sift_agg_partial_left(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */

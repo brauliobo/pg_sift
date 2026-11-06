@@ -442,3 +442,4 @@ agg_probe_anti	the child's rows are loaded once instead of a probe of its table 
 set_list_unit_span	`IN` list of 75 keys	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 agg_left_partial	the groups of the table by the keys of the join are made in the scan and joined to the pairs	events	-	Subquery Scan on e	native	-	ms,minstr	faster33	no	-
 topn_with_ties	`FETCH FIRST n ROWS WITH TIES` by an integer column	events	-	Top-N: dim_a_id DESC	native	-	ms	faster33	no	-
+agg_percentile_array	the percentiles of an array of fractions are picked from the one set of values the scan keeps	events	-	Pushed Aggregates: percentile_cont\(0.25\)	native	-	ms,minstr	faster33	no	-
