@@ -366,3 +366,7 @@ a key change of 1% 92.3 M	update_key_1pct@heapfree_default#pk/def3	100000	sift	d
 -	agg_case_filter	200000	picked	default	instr_m	153.7	10	bench case agg_case_filter, records in program-scale/realq42b/wp05
 -	agg_case_filter	200000	native	default	exec_ms	67.6	25	bench case agg_case_filter, native plan, records in program-scale/realq42b/wp05
 -	agg_case_filter	200000	native	default	instr_m	946	10	bench case agg_case_filter, native plan, records in program-scale/realq42b/wp05
+0.93 million instructions	col_units_per_key	200000	sift	layered	instr_m	0.93	25	run dd123ec2c8a8-20261106T001559Z-60bd, records in program-scale/records/cases-col_units_per_key-20261105.rec
+110 buffers	col_units_per_key	200000	sift	layered	blocks	110	25	run dd123ec2c8a8-20261106T001559Z-60bd, records in program-scale/records/cases-col_units_per_key-20261105.rec
+0.48 million instructions	col_units_per_key	200000	sift	default	instr_m	0.48	25	run dd123ec2c8a8-20261106T001559Z-60bd, records in program-scale/records/cases-col_units_per_key-20261105.rec
+31 buffers	col_units_per_key	200000	sift	default	blocks	31	25	run dd123ec2c8a8-20261106T001559Z-60bd, records in program-scale/records/cases-col_units_per_key-20261105.rec
