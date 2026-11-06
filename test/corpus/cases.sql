@@ -1,4 +1,4 @@
--- The corpus: 319 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 363 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -731,3 +731,53 @@ select count(*), sum(qty) from events where attrs ? 'a' or dim_a_id < 50;
 select sum(case when attrs ? 'a' then qty else 0 end), sum(case when attrs ? 'b' then amount end) from events;
 -- @case c3_jsonb_key_not_true | pred | the documents that do not have the key, a NULL document among them
 select count(*) filter (where (attrs ? 'a') is not true), count(*) filter (where (attrs ? 'a' or attrs ? 'b') is not true) from events;
+
+-- ===================== HAVING: conditions on the groups, after the GROUP BY (a WHERE is a condition of the rows, before it)
+-- @case having_count_gt | having | HAVING count(*) above a bound
+select region, count(*) from events group by 1 having count(*) > 1600;
+-- @case having_sum_not_selected | having | HAVING on a sum the select list does not carry
+select kind_id from events group by 1 having sum(qty) > 2800;
+-- @case having_avg_lt | having | HAVING on an average of a float with NULLs
+select status, avg(amount) from events group by 1 having avg(amount) < 500;
+-- @case having_min_max_dates | having | HAVING on a min and a max of a date, neither selected
+select region from events group by 1 having min(d) = date '2024-01-01' and max(d) >= date '2026-09-26';
+-- @case having_range_of_values | having | HAVING on the difference of a max and a min
+select tenant_id, max(score) - min(score) from events group by 1 having max(score) - min(score) >= 100;
+-- @case having_null_sum | having | HAVING sum IS NULL keeps the groups with no value
+select kind_id, sum(amount) from events where amount is null group by 1 having sum(amount) is null;
+-- @case having_filter_agg | having | HAVING on an aggregate with a FILTER
+select region, count(*) filter (where status = 'paid') p from events group by 1 having count(*) filter (where status = 'paid') > 400;
+-- @case having_percentile | having | HAVING on an ordered-set aggregate
+select region from events group by 1 having percentile_cont(0.5) within group (order by score) >= 50;
+-- @case having_array_length | having | HAVING on the length of an array_agg of distinct values
+select region from events group by 1 having cardinality(array_agg(distinct kind_id)) = 40 and count(*) > 1600;
+-- @case having_ungrouped_passes | having | HAVING without GROUP BY, the one group passes
+select count(*), sum(qty) from events having count(*) > 100;
+-- @case having_ungrouped_fails | having | HAVING without GROUP BY, the one group fails
+select count(*), sum(qty) from events having count(*) < 100;
+-- @case having_ungrouped_no_rows | having | HAVING without GROUP BY, no row: the group is there with a count of 0
+select count(*) from events where id < 0 having count(*) = 0;
+-- @case having_key_only | having | HAVING on the key only is a WHERE
+select kind_id, count(*) from events group by 1 having kind_id < 10;
+-- @case having_key_and_count | having | HAVING of a key and an aggregate: the key condition is a WHERE
+select kind_id, count(*) from events group by 1 having kind_id < 20 and count(*) > 500;
+-- @case having_where_and_having | having | WHERE changes what is added up, HAVING keeps the groups
+select region, sum(amount) from events where status = 'paid' group by 1 having sum(amount) > 200000;
+-- @case having_text_key_count | having | HAVING on a text key pattern and a count
+select label, count(*) from events group by 1 having label like 'label_1%' and count(*) > 3;
+-- @case having_date_key_count | having | HAVING on the count of the groups of a date key
+select d, count(*) from events group by 1 having count(*) > 25;
+-- @case having_top_n | having | HAVING and then the top 10 groups
+select dim_a_id, count(*) c from events group by 1 having count(*) > 20 order by c desc, 1 limit 10;
+-- @case having_with_ties | having | HAVING and then WITH TIES at the cut
+select kind_id, count(*) c from events group by 1 having count(*) > 100 order by c desc fetch first 5 rows with ties;
+-- @case having_rollup_count | having | HAVING over the groups of a ROLLUP
+select region, status, count(*) from events group by rollup (region, status) having count(*) > 300;
+-- @case having_cube_sum | having | HAVING on a sum over the groups of a CUBE
+select region, status, sum(qty) from events group by cube (region, status) having sum(qty) > 5000;
+-- @case having_join_lookup | having | HAVING over a join to a lookup
+select k.name, count(*) from events e join kinds k on k.id = e.kind_id group by 1 having count(*) > 400;
+-- @case having_window_over_groups | having | a window function over the groups that pass
+select region, count(*), rank() over (order by count(*) desc) from events group by 1 having sum(qty) > 8700;
+-- @case having_in_cte | having | a grouped CTE with a HAVING, read by an outer aggregate
+with g as (select region, count(*) c from events group by 1 having count(*) > 1600) select count(*), sum(c) from g;
