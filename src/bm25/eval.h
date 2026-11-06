@@ -12,8 +12,8 @@
  * a phrase under NOT excludes nothing, and the page match says whether the
  * candidates need the recheck.
  */
-#ifndef SIFT_EVAL_H
-#define SIFT_EVAL_H
+#ifndef SIFT_BM25_EVAL_H
+#define SIFT_BM25_EVAL_H
 
 #include "bm25/attr.h"
 #include "core/filter.h"
@@ -246,4 +246,4 @@ typedef struct SiftEstimate
 extern void sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est);
 extern void sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est);
 
-#endif							/* SIFT_EVAL_H */
+#endif							/* SIFT_BM25_EVAL_H */
