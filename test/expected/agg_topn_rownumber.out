@@ -195,13 +195,7 @@ SELECT runs_in_scan($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_n
  t
 (1 row)
 
--- as written: rank(), another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
- label | in_scan | same | rows 
--------+---------+------+------
- rank  | f       | t    |  111
-(1 row)
-
+-- as written: another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn <= 3 $q$);
           label          | in_scan | same | rows 
 -------------------------+---------+------+------

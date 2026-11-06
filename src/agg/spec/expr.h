@@ -250,6 +250,16 @@ typedef struct SiftAggVx
 
 #define SIFT_AGG_TOPN_MAX		1000	/* rows of a group that SiftAggGen.topn keeps: the binary search and the shift of a row's place are for a few */
 
+/*
+ * What an array_agg(.. ORDER BY ..) of the window rewrite (agg/latest.c) is read for, when it is not a slice a[1:n] of the query: the rows of rank <= n (the n best
+ * and every row that ties with the n-th) or of dense_rank <= n (the rows of the n best values of the sort keys). The call carries it in its parse location, which
+ * the planner and the executor of PostgreSQL leave alone (no other call has a location below -1): the aggregate stays the one PostgreSQL runs, only the scan reads the mark.
+ */
+#define SIFT_TOPN_ROWS			0
+#define SIFT_TOPN_RANK			1
+#define SIFT_TOPN_DENSE			2
+#define SIFT_TOPN_MARK(kind, n)	(-2 - (int) (((n) << 2) | (kind)))
+
 typedef struct SiftAggGenArg
 {
 	Oid			typid;
@@ -274,6 +284,7 @@ typedef struct SiftAggGen
 	const char *serial;			/* why no workers keep partial states for the leader to merge with the aggregate's combine function (through its serial and deserial functions when the state is internal); NULL: they can */
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
+	int			ties;			/* topn: SIFT_TOPN_ROWS, _RANK or _DENSE */
 	int			topn;			/* array_agg(x ORDER BY ..) that the query reads only through a slice [1:topn]: a group keeps its first topn rows as the rows pass, in memory (no tuplesort; sorted is false) */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
 	int			hll;			/* sift.approx_count_distinct of a plain leaf: the leaf whose units' stored sketches the aggregate merges (agg/approx.c), else -1 */

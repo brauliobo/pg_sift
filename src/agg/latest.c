@@ -13,6 +13,11 @@
  * aggregates where the window sorts all the rows, and a group keeps only the N rows its slice reads (SiftAggGen.topn, agg/gen_run.c): the memory is
  * N rows for each group, and the scan refuses a query whose groups would not fit the hash aggregate's memory (first_memory). Where the plan
  * is not the scan's, PostgreSQL sorts the rows of every group for its arrays: the plan is chosen by cost against the window's.
+ *
+ * rank() <= N and dense_rank() <= N (up to 1,000, N = 1 included) keep the rows that tie: the arrays are not cut (PostgreSQL would lose the ties), the aggregates
+ * carry a mark in their location (SIFT_TOPN_MARK) that only the scan reads, and the scan keeps the rows of rank <= N, or of the N best values, of each group. The
+ * window function stays in the query, over the unnested rows (rank and dense_rank of the rows that are left are the rows' own, since every row that sorts before
+ * one of them is left too), and so does the condition on it. The sort and partition expressions are arrays of their own when the sub-select does not read them.
  */
 #include "postgres.h"
 
@@ -113,7 +118,7 @@ expr_index(List *list, Node *e)
 
 /* the aggregate array_agg(e ORDER BY the window's order): the order expressions are arguments of its own, numbered from 1 */
 static Aggref *
-array_of(Expr *e, List *order, List *tlist)
+array_of(Expr *e, List *order, List *tlist, int mark)
 {
 	Aggref	   *a = makeNode(Aggref);
 	Oid			t = exprType((Node *) e);
@@ -127,7 +132,7 @@ array_of(Expr *e, List *order, List *tlist)
 	a->aggkind = AGGKIND_NORMAL;
 	a->aggsplit = AGGSPLIT_SIMPLE;
 	a->aggno = a->aggtransno = -1;
-	a->location = -1;
+	a->location = mark;
 	foreach_node(SortGroupClause, o, order)
 	{
 		SortGroupClause *c = copyObject(o);
@@ -147,7 +152,7 @@ array_of(Expr *e, List *order, List *tlist)
  * positions, and rn is the ordinal of the element. NULL (and the reason) for a column the arrays cannot hold.
  */
 static Query *
-topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **why)
+topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, int kind, const char **why)
 {
 	Query	   *g = copyObject(sub),
 			   *top = makeNode(Query);
@@ -185,7 +190,7 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 			*why = "the sub-select's columns are not in order";
 			return NULL;
 		}
-		if (te == rn || te->resjunk)
+		if (te == rn || (te->resjunk && kind == SIFT_TOPN_ROWS))
 			continue;
 		if (expr_index(keys, (Node *) te->expr) < 0 && expr_index(cols, (Node *) te->expr) < 0)
 		{
@@ -217,8 +222,8 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 		cut->reftypmod = -1;
 		cut->refupperindexpr = list_make1(makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum((int32) Min(n, PG_INT32_MAX)), false, true));
 		cut->reflowerindexpr = list_make1(makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true));
-		cut->refexpr = (Expr *) array_of(e, w->orderClause, sub->targetList);
-		te = makeTargetEntry((Expr *) cut, nkeys + foreach_current_index(e) + 1, psprintf("a%d", foreach_current_index(e) + 1), false);
+		cut->refexpr = (Expr *) array_of(e, w->orderClause, sub->targetList, kind == SIFT_TOPN_ROWS || n > SIFT_AGG_TOPN_MAX ? -1 : SIFT_TOPN_MARK(kind, n));
+		te = makeTargetEntry(kind == SIFT_TOPN_ROWS ? (Expr *) cut : cut->refexpr, nkeys + foreach_current_index(e) + 1, psprintf("a%d", foreach_current_index(e) + 1), false);
 		g->targetList = lappend(g->targetList, te);
 		gnames = lappend(gnames, makeString(te->resname));
 	}
@@ -248,10 +253,11 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 		funcs = lappend(funcs, rf);
 		unames = lappend(unames, makeString(psprintf("c%d", foreach_current_index(e) + 1)));
 	}
-	unames = lappend(unames, makeString("rn"));
+	if (kind == SIFT_TOPN_ROWS)
+		unames = lappend(unames, makeString("rn"));
 	ur->rtekind = RTE_FUNCTION;
 	ur->functions = funcs;
-	ur->funcordinality = true;
+	ur->funcordinality = kind == SIFT_TOPN_ROWS;
 	ur->lateral = true;
 	ur->inFromCl = true;
 	ur->eref = makeAlias("u", unames);
@@ -261,8 +267,16 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 		Expr	   *v;
 		int			at;
 
-		if (te->resjunk)
+		TargetEntry *t;
+
+		if (te->resjunk && kind == SIFT_TOPN_ROWS)
 			continue;
+		if (te == rn && kind != SIFT_TOPN_ROWS)
+		{
+			/* rank and dense_rank of the rows the scan kept: the window of the query over them, whose rows are all that are needed */
+			tlist = lappend(tlist, copyObject(te));
+			continue;
+		}
 		if (te == rn)
 			v = (Expr *) makeVar(2, list_length(cols) + 1, INT8OID, -1, InvalidOid, 0);
 		else if ((at = expr_index(keys, (Node *) te->expr)) >= 0)
@@ -275,7 +289,9 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 			if (exprTypmod((Node *) te->expr) != -1)
 				v = (Expr *) makeRelabelType(v, exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr), COERCE_IMPLICIT_CAST);
 		}
-		tlist = lappend(tlist, makeTargetEntry(v, te->resno, te->resname, false));
+		t = makeTargetEntry(v, te->resno, te->resname, te->resjunk);
+		t->ressortgroupref = kind == SIFT_TOPN_ROWS ? 0 : te->ressortgroupref;
+		tlist = lappend(tlist, t);
 	}
 	top->commandType = CMD_SELECT;
 	top->canSetTag = true;
@@ -284,6 +300,11 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 	linitial_node(RangeTblRef, top->jointree->fromlist)->rtindex = 1;
 	lsecond_node(RangeTblRef, top->jointree->fromlist)->rtindex = 2;
 	top->targetList = tlist;
+	if (kind != SIFT_TOPN_ROWS)
+	{
+		top->windowClause = list_make1(copyObject(w));
+		top->hasWindowFuncs = true;
+	}
 	return top;
 }
 
@@ -309,7 +330,8 @@ latest_of(Query *q, Index rti, bool apply)
 	TargetEntry *rn;
 	WindowFunc *wf;
 	WindowClause *w;
-	int			count = 0;
+	int			count = 0,
+				kind;
 
 	if (rte->rtekind == RTE_SUBQUERY)
 		sub = rte->subquery;
@@ -349,8 +371,11 @@ latest_of(Query *q, Index rti, bool apply)
 		return false;
 	wf = (WindowFunc *) rn->expr;
 
-	if (wf->winfnoid != F_ROW_NUMBER)
-		LATEST_REFUSE(!apply, psprintf("%s is not row_number", get_func_name(wf->winfnoid)));
+	kind = wf->winfnoid == F_ROW_NUMBER ? SIFT_TOPN_ROWS : wf->winfnoid == F_RANK_ ? SIFT_TOPN_RANK : wf->winfnoid == F_DENSE_RANK_ ? SIFT_TOPN_DENSE : -1;
+	if (kind < 0)
+		LATEST_REFUSE(!apply, psprintf("%s is not row_number, rank or dense_rank", get_func_name(wf->winfnoid)));
+	if (kind != SIFT_TOPN_ROWS && n > SIFT_AGG_TOPN_MAX)
+		LATEST_REFUSE(!apply, "rank or dense_rank of more than 1,000 rows");
 	count_window_funcs((Node *) sub->targetList, &count);
 	if (count != 1 || list_length(sub->windowClause) != 1)
 		LATEST_REFUSE(!apply, "the sub-select has another window function");
@@ -363,7 +388,7 @@ latest_of(Query *q, Index rti, bool apply)
 		LATEST_REFUSE(!apply, "the sub-select groups, sorts, limits, locks rows or filters the window function");
 	if (contain_volatile_functions((Node *) sub))
 		LATEST_REFUSE(!apply, "the sub-select calls a volatile function");
-	if (n > 1)
+	if (n > 1 || kind != SIFT_TOPN_ROWS)
 	{
 		const char *why;
 
@@ -386,7 +411,7 @@ latest_of(Query *q, Index rti, bool apply)
 			if (!column_source_reads(((RangeTblEntry *) linitial(sub->rtable))->relid, cols))
 				LATEST_REFUSE(!apply, "a column the sub-select reads is in no column index of its table");
 		}
-		if ((top = topn_array(sub, w, rn, n, &why)) == NULL)
+		if ((top = topn_array(sub, w, rn, n, kind, &why)) == NULL)
 			LATEST_REFUSE(!apply, why);
 	}
 	if (!apply)
@@ -413,9 +438,13 @@ latest_of(Query *q, Index rti, bool apply)
 			if (get_sortgroupref_clause_noerr(o->tleSortGroupRef, sub->sortClause) == NULL)
 				sub->sortClause = lappend(sub->sortClause, o);
 	}
-	foreach_ptr(Node, qual, firsts)
-		quals = list_delete_ptr(quals, qual);
-	q->jointree->quals = quals == NIL ? NULL : (Node *) make_ands_explicit(quals);
+	/* rank and dense_rank are computed above the rows the scan kept, which the condition then cuts */
+	if (kind == SIFT_TOPN_ROWS)
+	{
+		foreach_ptr(Node, qual, firsts)
+			quals = list_delete_ptr(quals, qual);
+		q->jointree->quals = quals == NIL ? NULL : (Node *) make_ands_explicit(quals);
+	}
 	return true;
 }
 

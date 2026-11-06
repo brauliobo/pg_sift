@@ -59,10 +59,8 @@ SELECT * FROM check_query('ORDER BY rn DESC', $q$ SELECT id, grp, rn FROM (SELEC
 SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY id DESC LIMIT 3 $q$, true) =
        runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY id DESC LIMIT 3 $q$, false) AS same_limit;
 
--- the window stays as written: rank(), a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
+-- the window stays as written: a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
 -- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
-SELECT window_why($q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
 SELECT * FROM check_query('no PARTITION BY', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);

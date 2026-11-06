@@ -367,34 +367,76 @@ gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint
 }
 
 /*
- * topn: the first rows of a group by the ORDER BY of the call, in the order of the call, kept as the rows pass: a row that comes after the group's last
- * of topn rows is dropped after the compare of its sort keys (the values of the other arguments are read only for a row that is kept), and a row that
- * stays goes in at the place a binary search of the kept rows gives it, after the rows it ties with, which are the ones the group met first. When the
- * scan has ended, the rows of each group go through the transition function, in order, and then the final function (gen_flush_topn).
+ * topn: the first rows of a group by the ORDER BY of the call, in the order of the call, kept as the rows pass: a row that comes after the group's last of
+ * topn rows is dropped after the compare of its sort keys (the values of the other arguments are read only for a row that is kept), and a row that stays
+ * goes in at the place a binary search of the kept rows gives it, after the rows it ties with, which are the ones the group met first. When the scan has
+ * ended, the rows of each group go through the transition function, in order, and then the final function (gen_flush_topn).
+ * SIFT_TOPN_RANK keeps the rows that tie with the topn-th as well (the rows of rank <= topn), and SIFT_TOPN_DENSE the rows of the topn best values of the sort
+ * keys (dense_rank <= topn): a row is dropped when it comes after the last kept row of a group that has the rows it needs, and the rows past the ties of the
+ * topn-th, or of the value after the topn best, go when a better row has taken their place.
  */
 typedef struct GenTop
 {
 	uint32		n;
 	uint32		cap;
+	uint32		distinct;			/* SIFT_TOPN_DENSE: the values of the sort keys of the rows kept */
 	GenBest   **row;
 } GenTop;
+
+/* the sort keys of two kept rows: < 0 when a comes first */
+static int
+gen_best_cmp(GenSt *st, const GenBest *a, const GenBest *b)
+{
+	int			n = st->g->nargs;
+
+	for (int i = 0; i < st->nfk; i++)
+	{
+		int			k = st->fkey[i],
+					c;
+		Datum		av = gen_stored(st->g, k) ? a[k] : st->argk[k],
+					bv = gen_stored(st->g, k) ? b[k] : st->argk[k];
+		bool		an = gen_stored(st->g, k) ? GEN_BEST_NULL(a, n, k) : st->argknull[k],
+					bn = gen_stored(st->g, k) ? GEN_BEST_NULL(b, n, k) : st->argknull[k];
+
+		if ((c = ApplySortComparator(av, an, bv, bn, &st->fsup[i])) != 0)
+			return c;
+	}
+	return 0;
+}
+
+/* the row a new one is measured against to stay: the topn-th row, or the last row of a group that holds the values of the topn best */
+static const GenBest *
+gen_top_edge(const GenSt *st, const GenTop *t)
+{
+	if (st->g->ties == SIFT_TOPN_ROWS || st->g->ties == SIFT_TOPN_RANK)
+		return t->n >= (uint32) st->g->topn ? t->row[st->g->topn - 1] : NULL;
+	return t->distinct >= (uint32) st->g->topn ? t->row[t->n - 1] : NULL;
+}
 
 static void
 gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
 {
 	GenTop	   *t = (GenTop *) DatumGetPointer(acc->v[gid]);
-	int			n = st->g->nargs;
+	int			n = st->g->nargs,
+				ties = st->g->ties;
 	Datum		args[SIFT_AGG_MAX_GARGS];
 	bool		nulls[SIFT_AGG_MAX_GARGS];
 	uint32		lo = 0,
 				hi;
+	const GenBest *edge;
+	bool		fresh;
 	GenBest    *nb;
 	MemoryContext old;
 
 	for (int i = 0; i < st->nfk; i++)
 		gen_arg(ex, st, in, j, st->fkey[i], &args[st->fkey[i]], &nulls[st->fkey[i]]);
-	if (t != NULL && t->n == (uint32) st->g->topn && gen_first_cmp(st, args, nulls, t->row[t->n - 1]) >= 0)
-		return;
+	if (t != NULL && (edge = gen_top_edge(st, t)) != NULL)
+	{
+		int			c = gen_first_cmp(st, args, nulls, edge);
+
+		if (ties == SIFT_TOPN_ROWS ? c >= 0 : c > 0)
+			return;
+	}
 	for (int k = 0; k < n; k++)
 		if (!st->iskey[k])
 			gen_arg(ex, st, in, j, k, &args[k], &nulls[k]);
@@ -414,11 +456,15 @@ gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
 		else
 			lo = mid + 1;
 	}
-	if (t->n == (uint32) st->g->topn)
+	/* the rows of a value are kept together: the row is a new value when the one before it comes first */
+	fresh = lo == 0 || gen_first_cmp(st, args, nulls, t->row[lo - 1]) != 0;
+	if (ties == SIFT_TOPN_ROWS && t->n == (uint32) st->g->topn)
 		gen_best_free(st, t->row[--t->n]);
 	if (t->n == t->cap)
 	{
-		t->cap = t->cap ? Min(t->cap * 2, (uint32) st->g->topn) : Min(4, (uint32) st->g->topn);
+		t->cap = t->cap ? t->cap * 2 : Min(4, (uint32) st->g->topn);
+		if (ties == SIFT_TOPN_ROWS)
+			t->cap = Min(t->cap, (uint32) st->g->topn);
 		t->row = t->row ? repalloc(t->row, t->cap * sizeof(GenBest *)) : palloc(t->cap * sizeof(GenBest *));
 	}
 	nb = palloc0(GEN_BEST_SIZE(n));
@@ -431,6 +477,25 @@ gen_top(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gid)
 	memmove(&t->row[lo + 1], &t->row[lo], (t->n - lo) * sizeof(GenBest *));
 	t->row[lo] = nb;
 	t->n++;
+	t->distinct += fresh;
+	if (ties == SIFT_TOPN_RANK)
+	{
+		/* the rows past the topn-th that do not tie with it */
+		while (t->n > (uint32) st->g->topn && gen_best_cmp(st, t->row[t->n - 1], t->row[st->g->topn - 1]) > 0)
+			gen_best_free(st, t->row[--t->n]);
+	}
+	else if (ties == SIFT_TOPN_DENSE && t->distinct > (uint32) st->g->topn)
+	{
+		/* the rows of the worst value, which a better one has pushed out of the topn best */
+		const GenBest *last = t->row[t->n - 1];
+		uint32		first = t->n - 1;
+
+		while (first > 0 && gen_best_cmp(st, t->row[first - 1], last) == 0)
+			first--;
+		while (t->n > first)
+			gen_best_free(st, t->row[--t->n]);
+		t->distinct--;
+	}
 	MemoryContextSwitchTo(old);
 }
 

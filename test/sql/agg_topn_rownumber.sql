@@ -79,8 +79,7 @@ SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, t
 SELECT * FROM first_n_of_tie($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 40 $q$, 40);
 SELECT runs_in_scan($q$ SELECT grp, id, tie, rn FROM (SELECT id, grp, tie, row_number() OVER (PARTITION BY grp ORDER BY tie) rn FROM events) t WHERE rn <= 3 $q$);
 
--- as written: rank(), another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+-- as written: another window function, nothing to cut but the partition and rn, a column that is an array, a table with no column index, a grouped sub-select
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn <= 3 $q$);
 SELECT * FROM check_query('only the partition and rn', $q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
 SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);

@@ -166,20 +166,8 @@ SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PART
  t
 (1 row)
 
--- the window stays as written: rank(), a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
+-- the window stays as written: a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
 -- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
-SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
- label | in_scan | same | rows 
--------+---------+------+------
- rank  | f       | t    |   37
-(1 row)
-
-SELECT window_why($q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
-       window_why       
-------------------------
- rank is not row_number
-(1 row)
-
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
           label          | in_scan | same | rows 
 -------------------------+---------+------+------

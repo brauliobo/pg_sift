@@ -401,12 +401,18 @@ slice_walker(Node *n, SliceWalk *w)
 
 /* the rows of each group an array_agg(x ORDER BY ..) is read for by the query that holds it: only its first elements (a[1:n]) in the select list, the sort and the HAVING, else 0 */
 static int
-agg_first_rows(AggCtx *c, const Aggref *a)
+agg_first_rows(AggCtx *c, const Aggref *a, int *ties)
 {
 	SliceWalk	w = {a, 0, false};
 
+	*ties = SIFT_TOPN_ROWS;
 	if (a->aggfnoid != F_ARRAY_AGG_ANYNONARRAY || a->aggorder == NIL || a->aggdistinct != NIL)
 		return 0;
+	if (a->location < -1)
+	{
+		*ties = (-a->location - 2) & 3;
+		return Min((-a->location - 2) >> 2, SIFT_AGG_TOPN_MAX);
+	}
 	if (slice_walker((Node *) c->root->processed_tlist, &w) || slice_walker(c->root->parse->havingQual, &w) || w.reads > SIFT_AGG_TOPN_MAX)
 		return 0;
 	return (int) w.reads;
@@ -490,7 +496,7 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
 	if (gen_stat_eligible(fns.transfn, g, plan_leaf_of, c, NULL, NULL))
 		g->cost = AGG_STAT_ROW * g->nargs;
-	if (g->sorted && !g->distinct && (g->topn = agg_first_rows(c, a)) > 0)
+	if (g->sorted && !g->distinct && (g->topn = agg_first_rows(c, a, &g->ties)) > 0)
 	{
 		g->sorted = false;
 		g->cost = cost + AGG_GEN_TOPN + list_length(a->aggorder) * AGG_GEN_FIRST_KEY;
@@ -511,7 +517,7 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	out->collid = a->inputcollid;
 	out->desc = gen_desc(c, a, g, txt.data);
 	if (g->topn)
-		out->desc = psprintf("%s[1:%d]", out->desc, g->topn);
+		out->desc = psprintf(g->ties == SIFT_TOPN_ROWS ? "%s[1:%d]" : g->ties == SIFT_TOPN_RANK ? "%s[rank <= %d]" : "%s[dense_rank <= %d]", out->desc, g->topn);
 	record_plan_function_dependency(c->root, a->aggfnoid);
 	foreach_node(TargetEntry, te, a->args)
 		record_deps(c->root, (Node *) te->expr);
