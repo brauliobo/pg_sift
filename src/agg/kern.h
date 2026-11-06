@@ -17,7 +17,7 @@
  * float8) and uint32 (dictionary code). Row sets are bitmaps of uint64 words, bit i of word i / 64 = row i; every
  * kernel of this table that writes a bitmap writes ceil(n / 64) whole words and leaves the bits >= n zero; every
  * kernel that reads one expects the bits >= n to be zero. The column kernels write whole SIFT_COL_SELWORDS groups of
- * words (SIFT_COL_NWORDS(n), the bits >= n zero too): the executor's bitmaps have SIFT_AGG_PADW words of slack for it.
+ * words (SIFT_COL_NWORDS(n), the bits >= n zero too): the executor's bitmaps have SIFT_COL_SELWORDS words of slack for it.
  * NULLs are handled by the caller (a predicate result is ANDed with the not-null bitmap, NULL rows are cleared from the
  * mask before a reduction), so kernels never see them.
  *
@@ -40,7 +40,6 @@
 #define SIFT_AGG_VEC		4096
 #define SIFT_AGG_VECW		(SIFT_AGG_VEC / 64)
 #define SIFT_AGG_PAD		64
-#define SIFT_AGG_PADW		8		/* words of slack after a vector's bitmap: SIFT_COL_SELWORDS */
 
 /* the op and the form of the step kernel (fstep) */
 #define SIFT_FSTEP_FLOOR	0

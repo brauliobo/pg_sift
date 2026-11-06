@@ -156,7 +156,6 @@ typedef struct SiftSrcStrTest
 #define SWT_ISNULL		8
 #define SWT_NOTNULL		9
 /* the operators of a leaf with shape != 0, the leaf on the left (SIFT_COLW_R_*, SIFT_COLW_N_* of col/col.h are the same numbers); the operand is a range, an element of its subtype, or a network */
-#define SWT_SHAPE_FIRST	16
 #define SWT_R_CONTAINS	16
 #define SWT_R_CONTAINED	17
 #define SWT_R_OVERLAPS	18
@@ -176,15 +175,10 @@ typedef struct SiftSrcStrTest
 /* the operators of a range with no operand (SIFT_COLW_R_EMPTY ... of col/col.h are the same numbers) */
 #define SWT_R_UNARY		32
 #define SWT_R_EMPTY		32
-#define SWT_R_NONEMPTY	33
 #define SWT_R_LOWER_INF	34
-#define SWT_R_LOWER_FIN	35
 #define SWT_R_UPPER_INF	36
-#define SWT_R_UPPER_FIN	37
 #define SWT_R_LOWER_INC	38
-#define SWT_R_LOWER_EXC	39
 #define SWT_R_UPPER_INC	40
-#define SWT_R_UPPER_EXC	41
 
 typedef struct SiftSrcWideTest
 {

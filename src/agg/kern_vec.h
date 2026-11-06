@@ -18,7 +18,6 @@ typedef double akv_f64 __attribute__((vector_size(AKV_VB), aligned(8), may_alias
 #define AKV_L		(AKV_VB / 8)
 #define AKV_L32		(AKV_VB / 4)
 #define AKV_LD(p)	(*(const akv_u *) (p))
-#define AKV_ST(p, x) (*(akv_u *) (p) = (x))
 
 #ifndef AKV_NO_ABSMAX
 static uint64
