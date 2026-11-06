@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 17
+plan 19
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -70,6 +70,15 @@ expm=$({ echo "SELECT 1 \\; EXPLAIN (COSTS OFF) $Q;"; } | sql af)
 check "EXPLAIN after another statement of the same query string shows the scan" test "$(grep -c SiftAgg <<<"$expm")" -ge 1
 expset=$({ echo "SET enable_seqscan = on \\; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q;"; echo "SELECT 'scans', value FROM sift.stats() WHERE name = 'scans';"; } | sql af)
 check "EXPLAIN ANALYZE after a SET of the same query string runs the scan" test "$(grep -c SiftAgg <<<"$expset")" -ge 1 -a "$(scans "$expset")" -ge 1
+# a query the scan takes whole (a lateral aggregate of the elements under an outer one, over a table that holds each key once) leaves no table in its plan: the plan made again is the scan
+sql af "CREATE TABLE lfacts (id int PRIMARY KEY, g int, items jsonb)" \
+	"INSERT INTO lfacts SELECT i, i % 9, jsonb_build_array(jsonb_build_object('qty', i % 5), jsonb_build_object('qty', i % 3)) FROM generate_series(1, 20000) i" \
+	"CREATE INDEX lfacts_col ON lfacts USING sift_col (id, g, items) WITH (paths = 'items[]{qty float8}')" "VACUUM (FREEZE, ANALYZE) lfacts" >/dev/null || bail "second setup failed"
+LQ="SELECT r.g, count(r.id) AS n, round(avg(r.q)::numeric, 6) AS q FROM (SELECT f.id, f.g, s.q FROM lfacts f LEFT JOIN LATERAL (SELECT avg(o.qty) AS q FROM jsonb_to_recordset(f.items) o(qty float8) WHERE o.qty IS NOT NULL) s ON true) r GROUP BY r.g ORDER BY 1"
+lat=$(session "SET enable_seqscan = off" "$LQ")
+check "a lateral aggregate over the elements as the first statement of a session runs in the scan" test "$(scans "$lat")" -ge 1
+latoff=$(session "SET sift.enable_agg = off" "SET enable_seqscan = off" "$LQ")
+check "and returns the rows of the normal plan" test "$(grep -v '^scans|' <<<"$lat")" == "$(grep -v '^scans|' <<<"$latoff")"
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir af)/postgres.log")" == 0
 
 finish

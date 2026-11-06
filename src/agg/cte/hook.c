@@ -574,6 +574,23 @@ reads_indexed_plan(PlannedStmt *ps)
 	return false;
 }
 
+/* does the plan run the aggregate scan? A query the scan takes whole (a lateral aggregate under an outer one) leaves no table in the range table: the scan holds it */
+static bool
+runs_agg_scan(Plan *p)
+{
+	if (p == NULL)
+		return false;
+	if (IsA(p, CustomScan) && ((CustomScan *) p)->methods == &sift_agg_plan_methods)
+		return true;
+	if (IsA(p, SubqueryScan) && runs_agg_scan(((SubqueryScan *) p)->subplan))
+		return true;
+	if (IsA(p, Append))
+		foreach_ptr(Plan, child, ((Append *) p)->appendplans)
+			if (runs_agg_scan(child))
+				return true;
+	return runs_agg_scan(p->lefttree) || runs_agg_scan(p->righttree);
+}
+
 /*
  * Without shared_preload_libraries or session_preload_libraries the library is loaded when the planner first opens a column index, which is
  * inside planner() and after it decided there was no hook: that one statement of the backend is planned without sift_planner (no inline CTE,
@@ -651,7 +668,7 @@ replan(QueryDesc *qd)
 		return NULL;
 	fresh = linitial_node(PlannedStmt, plans);
 	/* an EXPLAIN's plan has the location of its query inside the string, which another statement of the string may share: it must read what that one reads */
-	return reads_indexed_plan(fresh) ? fresh : NULL;
+	return reads_indexed_plan(fresh) || runs_agg_scan(fresh->planTree) ? fresh : NULL;
 }
 
 static void
