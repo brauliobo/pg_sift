@@ -498,6 +498,8 @@ CREATE FUNCTION sift._test_col_log_hidden(reset bool DEFAULT false) RETURNS int8
 
 CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_col_unit_tombs(index regclass, OUT segment int8, OUT unit int4, OUT keyed bool, OUT rows int4, OUT pages int4, OUT pages_any int4, OUT pages_own int4, OUT tombs int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_unit_tombs' LANGUAGE C STRICT;

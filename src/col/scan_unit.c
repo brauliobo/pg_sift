@@ -187,8 +187,8 @@ col_hf_open(SiftColSource *src)
 }
 
 /* Do tombstones delete rows of the blocks for the snapshot (a block of them to be checked in the heap) */
-static bool
-hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask)
+bool
+col_hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_hf_ignore_tombs)
@@ -249,7 +249,7 @@ col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *le
 	uint64		gone[SIFT_OFFMASK_WORDS] = {0};
 	int			n = 0;
 
-	if (!sift_tomb_deleted_offsets(src->hflog, src->snap, blk, 4096, gone, &src->hfmemo))
+	if (!col_hf_block_gone(src, blk, gone))
 		return false;
 	for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
 	{
@@ -268,7 +268,7 @@ sb_add_log(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
 	{
 		uint64		bad[SIFT_PAGEMASK_WORDS] = {0};
 
-		hf_deleted(src, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, bad);
+		col_hf_deleted(src, sb * SIFT_SB_PAGES, SIFT_SB_PAGES, bad);
 		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 			av[w] |= ~bad[w];
 		sift_col_hf_taken++;
@@ -322,7 +322,7 @@ col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber 
 {
 	if (sift_vis_range_allvisible(&src->vis, lo, hi))
 		return true;
-	if (!hf_seg(src, seg) || hf_deleted(src, lo, hi - lo + 1, NULL))
+	if (!hf_seg(src, seg) || col_hf_deleted(src, lo, hi - lo + 1, NULL))
 		return false;
 	sift_col_hf_taken++;
 	return true;
@@ -334,7 +334,7 @@ col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const Block
 	sift_vis_blocks_allvisible(&src->vis, blocks, n, bits);
 	if (hf_seg(src, seg))
 		for (uint32 i = 0; i < n; i++)
-			if (!(bits[i / 64] >> (i % 64) & 1) && !hf_deleted(src, blocks[i], 1, NULL))
+			if (!(bits[i / 64] >> (i % 64) & 1) && !col_hf_block_any(src, blocks[i]))
 			{
 				bits[i / 64] |= UINT64CONST(1) << (i % 64);
 				sift_col_hf_taken++;

@@ -113,6 +113,7 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 #endif
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
+extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool

@@ -222,6 +222,7 @@ struct SiftColSource
 	struct SiftTombLog *hflog;
 	SiftTombMemo hfmemo;		/* verdicts of the log's transactions for snap */
 	uint64		hfgen;
+	struct ColHfBlocks *hfblocks;	/* what the log says of each heap block the scan asked about (scan_unit.c), in mcxt */
 	int			hf;
 	bool		begun;			/* a begin ran: sift_col_rescan refuses */
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
@@ -398,6 +399,23 @@ extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg,
 extern void col_hf_open(SiftColSource *src);
 /* Can the rows of a unit of this segment be told visible or not by the log, without the heap (the segment is stamped for the snapshot and the log is complete) */
 extern bool col_hf_unit(SiftColSource *src, const ColUnit *cu);
+/* What the log says of a heap block, kept by the scan for the blocks it asks about again (scan_hfblocks.c) */
+#define HF_GONE		1
+#define HF_ANY		2
+
+typedef struct ColHfBlock
+{
+	BlockNumber blk;
+	bool		used;
+	uint8		have;			/* HF_GONE: gone and ok are known, HF_ANY: any is */
+	bool		ok;				/* the offsets could be decided from the log (sift_tomb_deleted_offsets) */
+	bool		any;			/* a tombstone of the block does not keep its row for the snapshot */
+	uint64		gone[SIFT_OFFMASK_WORDS];
+} ColHfBlock;
+
+extern bool col_hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *mask);
+extern bool col_hf_block_any(SiftColSource *src, BlockNumber blk);
+extern bool col_hf_block_gone(SiftColSource *src, BlockNumber blk, uint64 *gone);
 extern bool col_hf_filter_page(SiftColSource *src, BlockNumber blk, uint64 *offmask, int *left);
 
 /* The units a begin reads, [ulo, uhi), and the bits of those that a small-set summary cleared */

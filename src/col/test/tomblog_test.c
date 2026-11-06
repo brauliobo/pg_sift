@@ -25,6 +25,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_log_cache);
 PG_FUNCTION_INFO_V1(sift_test_tomb_header);
 PG_FUNCTION_INFO_V1(sift_test_col_log_hidden);
 PG_FUNCTION_INFO_V1(sift_test_hf_taken);
+PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
 PG_FUNCTION_INFO_V1(sift_test_col_unit_tombs);
 
@@ -139,6 +140,17 @@ sift_test_hf_taken(PG_FUNCTION_ARGS)
 
 	if (PG_GETARG_BOOL(0))
 		sift_col_hf_taken = 0;
+	PG_RETURN_INT64(n);
+}
+
+/* sift._test_hf_block_hits(reset bool): the asks about a heap block that the scans of this backend answered from what the scan kept of the log, not from the log */
+Datum
+sift_test_hf_block_hits(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_col_hf_block_hits;
+
+	if (PG_GETARG_BOOL(0))
+		sift_col_hf_block_hits = 0;
 	PG_RETURN_INT64(n);
 }
 
