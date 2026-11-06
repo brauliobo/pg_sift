@@ -225,6 +225,12 @@ def read_text(path):
         return ''
 
 
+def git_tip(override=None):
+    """the commit of the build: `override` (--tip), or HEAD of the work tree (a tree that holds more than the commit says so in --note, which the records carry in `harness`)"""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    return override or subprocess.run(['git', '-C', repo, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
+
+
 def host_cpus(pid):
     """the cpu quota of the server process PID: its cgroup's cpu.max against its affinity"""
     group = re.search(r'^0::(.*)$', read_text('/proc/%d/cgroup' % pid), re.M)

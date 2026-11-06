@@ -9,14 +9,12 @@
 
 import os
 import re
-import subprocess
 import time
 
 import iolib
 
 from . import runcfg
 from .measure import expand
-from .runcfg import REPO
 from .server import Fresh, server_session
 
 import records.collect as collect  # noqa: E402
@@ -27,10 +25,6 @@ ROWS = []
 RUN = {}
 SKIPPED = []
 UNAVAILABLE = []
-
-
-def tip():
-    return subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
 def table_state(case, sections=('setup', 'prepare')):
@@ -77,7 +71,7 @@ def native_arm(case, sql):
 def run_env(session, runs):
     if not RUN:
         pid = collect.backend_pid(session)
-        RUN.update(tip=tip(), run=schema.run_id(tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
+        RUN.update(tip=collect.git_tip(), run=schema.run_id(collect.git_tip()), cpus=collect.host_cpus(collect.postmaster_pid(pid)))
     # the cluster of the cases is a test cluster (scripts/pgtest.sh: no autovacuum, no automatic merge, so a state is the one the setup made): the records say so, and the report shows it
     off = 'disabled' if schema.maintenance_switches(collect.settings_of(session)) else 'default'
     return collect.Env(RUN['tip'], 'bench cases', RUN['run'], RUN['cpus'], reps=max(3, runs), cool=iolib.cool, maintenance=off, arm_budget=ARM_BUDGET)

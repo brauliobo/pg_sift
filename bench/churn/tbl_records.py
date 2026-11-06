@@ -25,7 +25,6 @@ import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 from duckdb import Session  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(HERE))
 Q1 = 'SELECT count(*), avg(n) FROM {t} WHERE key = 7'
 Q2 = 'SELECT key, count(*), sum(n) FROM {t} GROUP BY key'
 
@@ -53,10 +52,6 @@ def standby(a, primary_session, name, table):
 def stop_standby(d):
     subprocess.run(['pg_ctl', '-D', d, '-m', 'fast', 'stop'], capture_output=True)
     subprocess.run(['rm', '-rf', d])
-
-
-def tip():
-    return subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
 def build(s, table, rows):
@@ -90,7 +85,7 @@ def col_mode(a):
     s = Session(a.port, 600, None, db=a.db, host=a.host)
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
-    t = tip()
+    t = collect.git_tip()
     env = collect.Env(t, 'tbl churn col', schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool)
     n = a.rows
     s.run('CREATE TABLE h (id int PRIMARY KEY, k int, v int, pad text) WITH (fillfactor = 70, autovacuum_enabled = false)')
@@ -162,7 +157,7 @@ def main():
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
     mon = Session(a.port, 600, None, db=a.db, host=a.host)
-    t = tip()
+    t = collect.git_tip()
     pid = collect.backend_pid(s)
     env = collect.Env(t, 'tbl churn', schema.run_id(t), collect.host_cpus(collect.postmaster_pid(pid)), reps=a.reps, cool=iolib.cool, maintenance='default')
     off = copy.copy(env)

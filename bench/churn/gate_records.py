@@ -16,7 +16,6 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(HERE))
 STEPS = os.path.join(os.path.dirname(HERE), 'steps')
 sys.path[:0] = [STEPS, os.path.join(STEPS, 'records')]
 
@@ -77,7 +76,7 @@ def constants(a):
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_visibility')
     mon = Session(a.port, 600, None, db=a.db, host=a.host)
-    tip = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
+    tip = collect.git_tip()
     env = collect.Env(tip, 'gate constants', schema.run_id(tip), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='default')
     off = copy.copy(env)
     off.maintenance = 'disabled'
@@ -129,7 +128,7 @@ def window(a):
     s = Session(a.port, 600, None, db=a.db, host=a.host)
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_visibility')
-    tip = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
+    tip = collect.git_tip()
     post = collect.postmaster_pid(collect.backend_pid(s))
     env = collect.Env(tip, 'gate window', schema.run_id(tip), collect.host_cpus(post), reps=a.reps, cool=iolib.cool, maintenance='default')
     off = copy.copy(env)

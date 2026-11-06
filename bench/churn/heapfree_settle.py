@@ -14,7 +14,6 @@ the segments, the autovacuums and the seconds the settling took; `fragmentation_
 """
 import argparse
 import os
-import subprocess
 import sys
 import time
 
@@ -27,7 +26,6 @@ import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 from duckdb import Session  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(HERE))
 STATEMENTS = (('group_all_tenants', 'SELECT tenant_id, count(*), sum(counter_a) FROM {t} GROUP BY tenant_id'),
               ('one_tenant', 'SELECT count(*), sum(counter_a) FROM {t} WHERE tenant_id = 7'))
 BASE = ['SET max_parallel_workers_per_gather = 0', 'SET sift.enable_agg = on']
@@ -36,10 +34,6 @@ VARIANTS = (('default', 'w_default', ''), ('track_off', 'w_off', " WITH (track_c
 CONFIG = ('ALTER SYSTEM SET autovacuum = on', "ALTER SYSTEM SET autovacuum_naptime = '1s'", 'ALTER SYSTEM SET sift.col_auto_merge = on', 'ALTER SYSTEM SET sift.col_auto_merge_wal_pct = 5',
           'ALTER SYSTEM SET sift.table_auto_defrag = on', 'SELECT pg_reload_conf()')
 COLUMNS = 'variant state rounds updates churn_s churn_wal_bytes log_entries index_bytes table_bytes segments autovacuums settle_s fragmentation_pct'.split()
-
-
-def tip(a):
-    return a.tip or subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
 
 
 def main():
@@ -64,7 +58,7 @@ def main():
     s = Session(a.port, 600, None, db=a.db, host=a.host)
     s.run('CREATE EXTENSION pg_sift')
     s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
-    t = tip(a)
+    t = collect.git_tip(a.tip)
     harness = 'heapfree settle (autovacuum on, naptime 1s, sift.col_auto_merge on' + (', %s' % a.note if a.note else '') + ')'
     env = collect.Env(t, harness, schema.run_id(t), collect.host_cpus(collect.postmaster_pid(collect.backend_pid(s))), reps=a.reps, cool=iolib.cool, maintenance='default')
     out, state = [], []
