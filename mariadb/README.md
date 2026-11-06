@@ -443,7 +443,7 @@ its own (`start|stop|sql|destroy`).
 | `tests/version.sh` | version strings, refused manifests, the compile-time window, the CMake build |
 | `tests/live.sh` | small segments, background merge, bounded merge memory, kill -9 during a merge, log compaction |
 | `tests/stress.sh` | reader, writer, drain and merge threads at once, then index equals table |
-| `tests/regex_check.sh` | the regular expression engine against PostgreSQL's, 227,040 pattern / word pairs |
+| `tests/regex_check.sh` | the regular expression engine against PostgreSQL's, 227,040 pattern / word pairs (`ENGINE=sqlite` runs the same pairs through the SQLite host's matcher and reports how many agree) |
 | `tests/repl.sh` | primary, replica, rebuild, prune, dump restore |
 | `tests/smoke.sh` | a release library in a stock MariaDB image (`scripts/package-mariadb.sh`): version, queries, DML, merge, restart, detach |
 
