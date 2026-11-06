@@ -676,8 +676,10 @@ negate_existential(SiftAggPred *p)
 		return false;
 	else if (p->kind == SAP_ANY_ELEM || p->kind == SAP_NULL)
 		p->op ^= 1;
-	else
+	else if (p->kind == SAP_IN)
 		p->op = 1;
+	else
+		return false;
 	return true;
 }
 
