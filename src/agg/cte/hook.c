@@ -452,7 +452,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * FLAT_KEYS_MARGIN < plain->planTree->total_cost)
+	if (flatplan != NULL && (sift_agg_flat_any || sift_agg_having_moved) && flatplan->planTree->total_cost * (sift_agg_flat_any ? FLAT_KEYS_MARGIN : 1.0) < plain->planTree->total_cost)
 	{
 		discard_plan(plain_cx);
 		if (quiet)

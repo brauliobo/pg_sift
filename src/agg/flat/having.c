@@ -62,6 +62,6 @@ sift_agg_having_to_where(Query *q, bool apply)
 	}
 	q->havingQual = keep == NIL ? NULL : (Node *) make_ands_explicit(keep);
 	q->jointree->quals = (Node *) make_ands_explicit(list_concat(make_ands_implicit((Expr *) q->jointree->quals), rows));
-	sift_agg_by_cost = sift_agg_flat_any = true;
+	sift_agg_by_cost = sift_agg_having_moved = true;
 	return true;
 }

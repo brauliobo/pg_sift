@@ -157,6 +157,7 @@ read_columns(Node *n, Pulled *p)
 
 static bool flatten_query(Query *q, bool apply);
 bool		sift_agg_by_cost;
+bool		sift_agg_having_moved;
 bool		sift_agg_fence_alone;
 static bool flat_fenced;		/* a sub-select was fenced: a rewrite of its own, chosen by cost only when nothing else flattened */
 List	   *flat_levels;		/* the query level being flattened and those around it */
@@ -243,7 +244,6 @@ flatten_query(Query *q, bool apply)
 	foreach_node(RangeTblEntry, rte, q->rtable)
 		if (rte->rtekind == RTE_SUBQUERY)
 			changed |= flatten_query(rte->subquery, apply);
-	changed |= sift_agg_having_to_where(q, apply);
 	if (q->hasSubLinks)
 		query_tree_walker(q, flatten_sublinks, &sublinks, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
 	changed |= sublinks.changed;
@@ -275,6 +275,8 @@ flatten_query(Query *q, bool apply)
 	after |= sift_agg_push_dim_keys(q, apply);
 	after |= sift_agg_factor_constants(q, apply);
 	changed |= after;
+	/* last: the passes above would turn the sub-select it moves into a probe for each key, which the planner prices by the keys where a semi join of the rows costs none (having.c) */
+	changed |= sift_agg_having_to_where(q, apply);
 	/* the probes are not the only rewrite of the statement: the margin that they win by (cte/hook.c) is not asked of the others */
 	if (probed && (probe_mixed || after))
 		sift_agg_probe_mixed = true;
@@ -295,7 +297,7 @@ sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
-	sift_agg_flat_any = false;
+	sift_agg_flat_any = sift_agg_having_moved = false;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
 	sift_agg_fence_alone = false;
