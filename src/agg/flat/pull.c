@@ -157,7 +157,6 @@ read_columns(Node *n, Pulled *p)
 
 static bool flatten_query(Query *q, bool apply);
 bool		sift_agg_by_cost;
-bool		sift_agg_having_moved;
 bool		sift_agg_fence_alone;
 static bool flat_fenced;		/* a sub-select was fenced: a rewrite of its own, chosen by cost only when nothing else flattened */
 List	   *flat_levels;		/* the query level being flattened and those around it */
@@ -297,7 +296,7 @@ sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
-	sift_agg_flat_any = sift_agg_having_moved = false;
+	sift_agg_flat_any = false;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
 	sift_agg_fence_alone = false;

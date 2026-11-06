@@ -1,6 +1,6 @@
 -- The HAVING forms that are conditions of the ROWS, not of the groups. Every row of a group has the group's key, so on a plain GROUP BY a HAVING condition that reads only
 -- keys (and a sub-select that reads no aggregate) holds for a group exactly when it holds for each of its rows: it can be tested before the rows are grouped, as a WHERE. PostgreSQL does
--- that itself for a condition without a sub-select; the planner hook of sift does it for a sub-select too and keeps the cheaper plan of the two forms. Each pair sets the HAVING
+-- that itself for a condition without a sub-select; the planner hook of sift does it for a sub-select too and takes that plan for an IN and an EXISTS, whichever the cheaper (agg_having_where). Each pair sets the HAVING
 -- statement against the WHERE statement written by hand: both with the scan on (a_vs_b, as_expected) and the HAVING one against sift off (a_same_off) return the same rows.
 -- What must stay on the groups: a condition that reads an aggregate (alone or in its sub-select), grouping sets (a key is NULL in the rows of a super-aggregate, and the condition
 -- tests the NULL; a WHERE would first drop the rows and so change the totals), and no GROUP BY (the one group is there when no row is). For those the two forms differ BY DESIGN

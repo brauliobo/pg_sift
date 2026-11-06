@@ -119,7 +119,6 @@ extern PGDLLIMPORT bool sift_agg_probe_rewrite;
 extern PGDLLIMPORT bool sift_agg_case_filter_enabled;
 extern bool sift_agg_probe_mixed;		/* ... and another rewrite was made as well */
 extern bool sift_agg_probe_applied;		/* the flattening made a lateral probe of a sublink or a join (agg/flat/probe.c): the plan is set against the one as written whatever that reads */
-extern bool sift_agg_having_moved;		/* a HAVING condition of the rows moved to WHERE: a semi join the scan answers, which wins by cost alone without the margin of the keys' rewrites */
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
 extern bool sift_agg_latest_per_group(Query *q, bool apply);
 extern bool sift_agg_partition_arms(Query *q, bool apply);

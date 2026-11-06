@@ -18,7 +18,6 @@
 #include "access/htup_details.h"
 
 #include "col/pg.h"
-#include "agg/agg.h"
 #include "agg/cost/int.h"
 
 double
@@ -286,10 +285,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times what the plan prices), so the same time costs the scan 4 times more units and a
 	 * scan up to 4 times faster was refused. The rows of a scan with group keys and without lookup joins, a search or a top-N, whose normal plan is a sequential scan of the heap and a hash of the groups, are
 	 * priced in the units of that plan. A lookup join keeps its price (AGG_JOIN_PROBE, AGG_FAN_ROW and the join excess of the normal plan, AGG_JOIN_NS, are fitted together),
-	 * so does a statement with a search (the normal plan's count of the index answers it in a tenth of a millisecond: search_count) one whose normal plan reads an index (agg_in_list_cost: 0.4 ms against 2.7), a HAVING with a sub-select (the hook sets its two forms, the condition on the groups and on the rows, against each other by these totals: both in the units of the lookup joins) and an ungrouped aggregate (its sequential scan runs at 370 to 530 units a millisecond, not 210: agg_array_image_cost), and the reads of the
+	 * so does a statement with a search (the normal plan's count of the index answers it in a tenth of a millisecond: search_count) one whose normal plan reads an index (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate (its sequential scan runs at 370 to 530 units a millisecond, not 210: agg_array_image_cost), and the reads of the
 	 * lookup tables are PostgreSQL's own, priced as its plans are (load_cost).
 	 */
-	k.ms = c->joins == NIL && !c->search && !s->topn && s->nkeys > 0 && !sift_agg_having_moved && !sift_agg_having_candidate(c->root->parse) && reads_heap_in_order(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
+	k.ms = c->joins == NIL && !c->search && !s->topn && s->nkeys > 0 && reads_heap_in_order(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
 	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED * k.ms + k.load_cost + k.recheck * AGG_SCAN_SPEED;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
