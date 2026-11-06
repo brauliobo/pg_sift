@@ -358,11 +358,12 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
 }
 
 /*
- * The index that REINDEX CONCURRENTLY replaces by this copy (<name>_ccnew, <name>_ccnew1, ..., not valid yet), on the same table, when it has its two triggers: they are the ones of the
- * copy after the swap, since PostgreSQL moves what depends on the old index to the new one. InvalidOid for any other index, and for an old index that has no triggers of its own.
+ * The index that a concurrent build replaces by this copy, on the same table, when it has its two triggers: REINDEX CONCURRENTLY (<name>_ccnew, <name>_ccnew1, ..., not valid yet) and
+ * pg_repack --only-indexes (index_<oid>, in the schema of the table). They are the triggers of the index after the swap: PostgreSQL moves what depends on the old index to the new one,
+ * pg_repack swaps the files and leaves the oids. InvalidOid for any other index, and for an old index that has no triggers of its own, or another key.
  */
 static Oid
-reindex_origin(Relation heap, Relation index)
+swap_origin(Relation heap, Relation index)
 {
 	const char *name = RelationGetRelationName(index);
 	const char *p = strstr(name, "_ccnew");
@@ -370,16 +371,28 @@ reindex_origin(Relation heap, Relation index)
 	Relation	orig;
 	HearTrig	t[2];
 
-	if (p == NULL || index->rd_index->indisvalid)
+	if (p != NULL && !index->rd_index->indisvalid)
+	{
+		for (const char *d = p + strlen("_ccnew"); *d != '\0'; d++)
+			if (*d < '0' || *d > '9')
+				return InvalidOid;
+		origin = get_relname_relid(pnstrdup(name, p - name), RelationGetNamespace(index));
+	}
+	else if (strncmp(name, "index_", 6) == 0)
+	{
+		char	   *end;
+		unsigned long oid = strtoul(name + 6, &end, 10);
+
+		origin = *end == '\0' && oid != 0 ? (Oid) oid : InvalidOid;
+	}
+	else
 		return InvalidOid;
-	for (const char *d = p + strlen("_ccnew"); *d != '\0'; d++)
-		if (*d < '0' || *d > '9')
-			return InvalidOid;
-	origin = get_relname_relid(pnstrdup(name, p - name), RelationGetNamespace(index));
-	if (!OidIsValid(origin) || (orig = try_relation_open(origin, AccessShareLock)) == NULL)
+	if (!OidIsValid(origin) || origin == RelationGetRelid(index) || (orig = try_relation_open(origin, AccessShareLock)) == NULL)
 		return InvalidOid;
 	origin = InvalidOid;
-	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == RelationGetRelid(heap))
+	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == RelationGetRelid(heap) &&
+		orig->rd_index->indnkeyatts == index->rd_index->indnkeyatts &&
+		memcmp(orig->rd_index->indkey.values, index->rd_index->indkey.values, orig->rd_index->indnkeyatts * sizeof(int16)) == 0)
 	{
 		find_triggers(RelationGetRelid(heap), orig, t, sift_col_track_ctid(orig));
 		if (t[0].n == 1 && t[1].n == 1)
@@ -407,8 +420,8 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	}
 	if (channel_as_asked(heap, index, log))
 		return;
-	/* the copy of REINDEX CONCURRENTLY has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
-	if (!concurrent || !OidIsValid(reindex_origin(heap, index)))
+	/* the copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
+	if (!concurrent || !OidIsValid(swap_origin(heap, index)))
 	{
 		drop_triggers(heap, index);
 		create_trigger(heap, index, false);
