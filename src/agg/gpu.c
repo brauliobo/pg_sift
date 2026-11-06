@@ -98,7 +98,7 @@ typedef struct GpuShape
 	struct
 	{
 		int			leaf;
-		SiftSrcFilterOp op;
+		int			op;
 		int64		val;
 	}			pred[SIFT_VK_MAX_PRED];
 	int			key;					/* the leaf of the group key, -1 none */
@@ -326,12 +326,12 @@ gpu_shape(const SiftAggScan *sc, GpuShape *sh, const char **why)
 		const SiftAggPred *p = s->pred[i];
 		const SiftSrcFilter *f = &sc->pflt[i];
 
-		if (p->kind != SAP_CMP || p->level != 0 || p->late || !sc->pushed[i] || !gpu_plain_leaf(sc, p->leaf) || f->op == SSF_IN || f->op == SSF_NOTIN)
+		if (p->kind != SAP_CMP || p->level != 0 || p->late || !sc->pushed[i] || !gpu_plain_leaf(sc, p->leaf) || f->op == SIFT_COLOP_IN || f->op == SIFT_COLOP_NOTIN)
 		{
 			*why = "unsupported filter";
 			return false;
 		}
-		if (f->op == SSF_NOTNULL)
+		if (f->op == SIFT_COLOP_NOTNULL)
 		{
 			if (!gpu_dense_leaf(sh, f->leaf))
 			{
@@ -517,26 +517,26 @@ gpu_resident(GpuScan *g, const SiftSrcUnit *unit, const SiftSrcGpuUnit *gu, int 
 
 /* the key range [lo, hi] a comparison keeps; false when it keeps none */
 static bool
-gpu_cmp_range(SiftSrcFilterOp op, int64 v, int64 *lo, int64 *hi)
+gpu_cmp_range(int op, int64 v, int64 *lo, int64 *hi)
 {
 	*lo = PG_INT64_MIN;
 	*hi = PG_INT64_MAX;
 	switch (op)
 	{
-		case SSF_EQ:
-		case SSF_NE:
+		case SIFT_COLOP_EQ:
+		case SIFT_COLOP_NE:
 			*lo = *hi = v;
 			return true;
-		case SSF_LT:
+		case SIFT_COLOP_LT:
 			*hi = v;
 			return v > PG_INT64_MIN && (*hi = v - 1, true);
-		case SSF_LE:
+		case SIFT_COLOP_LE:
 			*hi = v;
 			return true;
-		case SSF_GT:
+		case SIFT_COLOP_GT:
 			*lo = v;
 			return v < PG_INT64_MAX && (*lo = v + 1, true);
-		case SSF_GE:
+		case SIFT_COLOP_GE:
 			*lo = v;
 			return true;
 		default:
@@ -549,14 +549,14 @@ gpu_cmp_range(SiftSrcFilterOp op, int64 v, int64 *lo, int64 *hi)
  * A comparison every row passes is the neutral descriptor, which tests nothing.
  */
 static bool
-gpu_pred_desc(const SiftCGpuPlan *pl, SiftSrcFilterOp op, int64 v, uint32 woff, uint32 *d)
+gpu_pred_desc(const SiftCGpuPlan *pl, int op, int64 v, uint32 woff, uint32 *d)
 {
 	int64		lo,
 				hi;
 	uint32		fl = 0,
 				fh = 0;
 	SiftCGpuRange r;
-	bool		ne = op == SSF_NE;
+	bool		ne = op == SIFT_COLOP_NE;
 
 	if (!gpu_cmp_range(op, v, &lo, &hi))
 		return false;

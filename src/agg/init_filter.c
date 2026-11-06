@@ -19,6 +19,9 @@
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 
+StaticAssertDecl(SCMP_NE + SIFT_COLOP_EQ == SIFT_COLOP_NE && SCMP_LT + SIFT_COLOP_EQ == SIFT_COLOP_LT && SCMP_LE + SIFT_COLOP_EQ == SIFT_COLOP_LE &&
+				 SCMP_GT + SIFT_COLOP_EQ == SIFT_COLOP_GT && SCMP_GE + SIFT_COLOP_EQ == SIFT_COLOP_GE, "a filter's op is its comparison plus SIFT_COLOP_EQ");
+
 /* the values of an IN set that has gaps in [in_lo, in_hi] (a bit table, or a hash table of values far apart), sorted */
 static int64 *
 set_values(const PredState *st, int *n)
@@ -472,11 +475,12 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 			/* every value passes (a NaN too: not null) or none does; the NaN rows of the others are the executor's */
 			if (st->konst == 0 || !st->nan_res)
 				return false;
-			f->op = SSF_NOTNULL;
+			f->op = SIFT_COLOP_NOTNULL;
 		}
 		else
 		{
-			f->op = (SiftSrcFilterOp) (num ? st->nop : p->op);
+			/* SCMP_x and SIFT_COLOP_x list the six comparisons in the same order */
+			f->op = (num ? st->nop : p->op) + SIFT_COLOP_EQ;
 			f->val = num ? (int64) st->cn : st->ci;
 		}
 		return true;
@@ -492,7 +496,7 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 			return false;
 		n = st->in_nvals;
 		memcpy(set, st->in_vals, n * sizeof(int64));
-		f->op = p->op ? SSF_NOTIN : SSF_IN;
+		f->op = p->op ? SIFT_COLOP_NOTIN : SIFT_COLOP_IN;
 		f->nset = n;
 		f->set = set;
 		return true;
@@ -521,23 +525,23 @@ arm_range(AggExec *ex, SiftAggPred *p, int leaf, int64 *lo, int64 *hi)
 		return false;
 	switch (f.op)
 	{
-		case SSF_EQ:
+		case SIFT_COLOP_EQ:
 			*lo = Max(*lo, f.val);
 			*hi = Min(*hi, f.val);
 			return true;
-		case SSF_LT:
-		case SSF_LE:
-			if (f.op == SSF_LT && f.val == PG_INT64_MIN)
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			if (f.op == SIFT_COLOP_LT && f.val == PG_INT64_MIN)
 				*hi = PG_INT64_MIN, *lo = PG_INT64_MAX;
 			else
-				*hi = Min(*hi, f.op == SSF_LT ? f.val - 1 : f.val);
+				*hi = Min(*hi, f.op == SIFT_COLOP_LT ? f.val - 1 : f.val);
 			return true;
-		case SSF_GT:
-		case SSF_GE:
-			if (f.op == SSF_GT && f.val == PG_INT64_MAX)
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+			if (f.op == SIFT_COLOP_GT && f.val == PG_INT64_MAX)
 				*lo = PG_INT64_MAX, *hi = PG_INT64_MIN;
 			else
-				*lo = Max(*lo, f.op == SSF_GT ? f.val + 1 : f.val);
+				*lo = Max(*lo, f.op == SIFT_COLOP_GT ? f.val + 1 : f.val);
 			return true;
 		default:
 			return false;

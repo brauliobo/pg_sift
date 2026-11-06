@@ -8,11 +8,6 @@
 #include "agg/chunkfilter.h"
 #include "agg/sel.h"
 
-static const SiftColOp filter_ops[] = {
-	[SSF_EQ] = SIFT_COLOP_EQ, [SSF_NE] = SIFT_COLOP_NE, [SSF_LT] = SIFT_COLOP_LT, [SSF_LE] = SIFT_COLOP_LE, [SSF_GT] = SIFT_COLOP_GT,
-	[SSF_GE] = SIFT_COLOP_GE, [SSF_IN] = SIFT_COLOP_IN, [SSF_NOTIN] = SIFT_COLOP_NOTIN, [SSF_NOTNULL] = SIFT_COLOP_NOTNULL
-};
-
 /* a text test as a column predicate over the constants in vals (room for t->nvals) */
 SiftColPred
 sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col)
@@ -30,8 +25,8 @@ sift_aggfilt_int(const SiftColDef *def)
 void
 sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFilter *f)
 {
-	bool		set = f->op == SSF_IN || f->op == SSF_NOTIN;
-	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
+	bool		set = f->op == SIFT_COLOP_IN || f->op == SIFT_COLOP_NOTIN;
+	int			nvals = f->op == SIFT_COLOP_NOTNULL ? 0 : set ? f->nset : 1;
 	SiftColValue *vals;
 
 	if (f->op == SSF_RANGES || f->op == SSF_RANGES_HINT)
@@ -49,7 +44,7 @@ sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFi
 	}
 	for (int i = 0; i < nvals; i++)
 		vals[i].v.i = set ? f->set[i] : f->val;
-	fl->pred[fl->n] = (SiftColPred) {col, filter_ops[f->op], nvals, vals};
+	fl->pred[fl->n] = (SiftColPred) {col, f->op, nvals, vals};
 	fl->leaf[fl->n++] = f->leaf;
 }
 

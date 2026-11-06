@@ -326,25 +326,17 @@ typedef struct SiftSrcPreagg
  * passes). A source that accepts it (set_filters) applies it exactly: the executor does not test the rows again, and the source may use
  * it to skip units (docs/COL-PLAN.md, "Filters in the source"). The text tests are SiftSrcStrTest above.
  */
-typedef enum SiftSrcFilterOp
+/* the op of a filter: a SiftColOp (IN and NOTIN carry set, the others val; NOTNULL: a value is present), or one of the unions of ranges */
+enum
 {
-	SSF_EQ,
-	SSF_NE,
-	SSF_LT,
-	SSF_LE,
-	SSF_GT,
-	SSF_GE,
-	SSF_IN,
-	SSF_NOTIN,
-	SSF_NOTNULL,				/* a value is present */
-	SSF_RANGES,					/* the union of ranges: set holds nset / 2 pairs (lo, hi), inclusive, ascending and apart, PG_INT64_MIN / PG_INT64_MAX where a side is open */
+	SSF_RANGES = SIFT_COLOP_SHAPE + 1,	/* set holds nset / 2 pairs (lo, hi), inclusive, ascending and apart, PG_INT64_MIN / PG_INT64_MAX where a side is open */
 	SSF_RANGES_HINT				/* the same, for rows the executor tests again: a unit that holds many of the ranges is left as it is */
-} SiftSrcFilterOp;
+};
 
 typedef struct SiftSrcFilter
 {
 	int			leaf;
-	SiftSrcFilterOp op;
+	int			op;
 	int64		val;			/* a comparison */
 	int			nset;			/* IN, NOTIN: the members; RANGES: twice the number of ranges */
 	const int64 *set;
