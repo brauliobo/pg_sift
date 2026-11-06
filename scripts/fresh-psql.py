@@ -23,27 +23,9 @@ def bare(t):
     return re.sub(r"--[^\n]*|/\*.*?\*/", " ", t, flags=re.S).strip()
 
 
-SETTING = re.compile(r"(?:set|reset)\s+(?:session\s+)?(session\s+authorization|time\s+zone|[\w.]+)", re.I)
-
-
-def setting(t):
-    m = SETTING.match(t)
-    k = re.sub(r"\s+", " ", m.group(1).lower()) if m else t
-    return "timezone" if k == "time zone" else k
-
-
 def remember(state, t):
-    """The SETs of the session since the last RESET of the setting, in order: the last one may be a SET that failed (a role that may not change the setting) and the value is the one before it"""
-    k = setting(t)
-    if k == "session authorization":
-        forget(state, "reset role")
-    # a SET that failed in the test fails again at every connection: replayed in a block that keeps its error to itself (also a SET ROLE of a role dropped since)
-    state.append((k, "DO $sift_fresh$ BEGIN EXECUTE $sift_stmt$%s$sift_stmt$; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % t))
-
-
-def forget(state, t):
-    k = setting(t)
-    state[:] = [e for e in state if e[0] != k]
+    """The SETs and RESETs of the session, in order: a SET can fail for the role that runs it (a setting only a superuser changes) and only the whole history leaves the value the session had. Each is replayed in a block that keeps its own error (also a SET ROLE of a role dropped since)"""
+    state.append("DO $sift_fresh$ BEGIN EXECUTE $sift_stmt$%s$sift_stmt$; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % t)
 
 
 def transform(text, restore=RESTORE, load=""):
@@ -69,7 +51,7 @@ def transform(text, restore=RESTORE, load=""):
         elif kw == "set" and not re.match(r"set\s+(local|transaction|constraints)\b", t, re.I):
             remember(state, t)
         elif kw == "reset" or kw == "discard":
-            state.clear() if re.match(r"(reset\s+all|discard)\b", t, re.I) else forget(state, t)
+            state.clear() if re.match(r"(reset\s+all|discard)\b", t, re.I) else remember(state, t)
         if BIND.search(t):
             bound = True
         copy_data = bool(COPY_STDIN.match(t))
@@ -81,7 +63,7 @@ def transform(text, restore=RESTORE, load=""):
             continue
         s = line.lstrip()
         if mode is None and not sig and s and not s.startswith(("--", "/*")) and (not s.startswith("\\") or RUNS_QUERY.match(s)) and not in_txn and not bound:
-            out.append(CTRL + "\n\\connect\n" + load + "".join(e[1] for e in state) + restore + "\n")
+            out.append(CTRL + "\n\\connect\n" + load + "".join(state) + restore + "\n")
             fresh += 1
         out.append(line)
         i, n = 0, len(line)
