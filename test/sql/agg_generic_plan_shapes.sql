@@ -1,0 +1,60 @@
+-- The plan of prepared statements under a generic plan (the parameter is not known) and a custom one. A list of 200 rows of one entity under a generic plan took the top-N
+-- scan, 3.4 times the instructions of the b-tree plan for a busy entity (4.2 against 1.2 million on 600,000 rows), whatever the entity of the execution: the price of the
+-- fetch did not follow the b-tree's (agg_cost_losers). The aggregates of an entity and of an array of entities keep the scan under both. The rows are those of sift off,
+-- and a cached generic plan is made again when the index it was made for goes and when it comes back.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE events (id int PRIMARY KEY, entity int NOT NULL, d date NOT NULL, kind int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, 1 + (500 * power((hashint4(g) & 2147483647) / 2147483648.0, 3))::int, date '2020-01-01' + (hashint4(g + 1) & 2147483647) % 2000, (hashint4(g + 2) & 2147483647) % 20, g % 1000
+FROM generate_series(1, 200000) g;
+CREATE INDEX events_entity_d ON events (entity, d);
+CREATE INDEX events_col ON events USING sift_col (id, entity, d, kind, amount) WITH (key_columns = 'entity', key_order = 'entity, d');
+VACUUM (FREEZE, ANALYZE) events;
+
+PREPARE list200(int) AS SELECT id, d, amount FROM events WHERE entity = $1 ORDER BY d DESC, id LIMIT 200;
+PREPARE by_kind(int) AS SELECT kind, count(*), sum(amount) FROM events WHERE entity = $1 GROUP BY kind;
+PREPARE since(int) AS SELECT kind, count(*), sum(amount) FROM events WHERE entity = $1 AND d >= date '2024-01-01' GROUP BY kind;
+PREPARE many(int[]) AS SELECT count(*), sum(amount) FROM events WHERE entity = ANY ($1);
+PREPARE top_all(int) AS SELECT id, d, amount FROM events ORDER BY amount DESC, id LIMIT $1;
+
+CREATE FUNCTION plan(stmt text, args text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	EXECUTE format('SET plan_cache_mode = %s', mode);
+	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) EXECUTE %s(%s)', stmt, args) LOOP
+		IF line ~ 'Custom Scan \(SiftAgg\)' THEN RETURN 'sift'; END IF;
+	END LOOP;
+	RETURN 'native';
+END $$;
+
+CREATE FUNCTION answer(stmt text, args text, sift_on bool, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SET plan_cache_mode = %s', mode);
+	EXECUTE format('SET sift.enable_agg = %s', CASE WHEN sift_on THEN 'on' ELSE 'off' END);
+	EXECUTE format('CREATE TEMP TABLE got AS EXECUTE %s(%s)', stmt, args);
+	SELECT md5(string_agg(g::text, '|' ORDER BY g::text)) INTO r FROM got g;
+	DROP TABLE got;
+	RESET sift.enable_agg;
+	RETURN r;
+END $$;
+
+SELECT stmt, mode, plan(stmt, args, mode) AS plan, answer(stmt, args, true, mode) = answer(stmt, args, false, mode) AS same_rows
+FROM (VALUES ('list200', '1'), ('list200', '300'), ('by_kind', '1'), ('since', '40'), ('many', 'ARRAY[1, 2, 17, 33]'), ('top_all', '10')) s(stmt, args),
+	(VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode)
+ORDER BY stmt, args, mode;
+
+-- a generic plan cached before the index existed is made again once it does, and the other way
+SET plan_cache_mode = force_generic_plan;
+DROP INDEX events_col;
+SELECT plan('by_kind', '1', 'force_generic_plan') AS without_index;
+CREATE INDEX events_col ON events USING sift_col (id, entity, d, kind, amount) WITH (key_columns = 'entity', key_order = 'entity, d');
+SELECT plan('by_kind', '1', 'force_generic_plan') AS with_index_again;
+
+RESET plan_cache_mode;
+DROP FUNCTION plan(text, text, text);
+DROP FUNCTION answer(text, text, bool, text);
+DROP TABLE events;
+DROP EXTENSION pg_sift;
