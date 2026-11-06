@@ -859,7 +859,7 @@ sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const
 
 	Assert(pl != NULL && pl[col].tids);
 	for (uint32 i = 0; i < n; i++)
-		if (!(nulls && (nulls[i / 64] >> (i % 64) & 1)))
+		if (!sift_col_bit_test(nulls, i))
 			e[m++] = (TidKey) {key[i], tid[i]};
 	qsort(e, m, sizeof(TidKey), tid_key_cmp);
 	for (uint32 i = 0, j; i < m && ok; i = j)

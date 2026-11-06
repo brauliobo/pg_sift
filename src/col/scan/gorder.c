@@ -223,9 +223,9 @@ gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext 
 
 		for (uint32 r = 0; r < b->nrows; r++)
 		{
-			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
-			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+			if (sift_col_bit_test(v->nulls, r))
 				pn[nn++] = (uint64) b->keys[r];
 			else
 			{

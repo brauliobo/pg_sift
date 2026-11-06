@@ -66,7 +66,7 @@ sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64
 		const SiftCVals *gv = &b->col[gcol];
 
 		for (uint32 r = 0; r < b->nrows; r++)
-			if ((gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)) || (gv->nulls && (gv->nulls[r / 64] >> (r % 64) & 1)))
+			if (sift_col_bit_test(gv->ovf, r) || sift_col_bit_test(gv->nulls, r))
 				return false;
 		total += b->nrows;
 		memrows += b->nrows;

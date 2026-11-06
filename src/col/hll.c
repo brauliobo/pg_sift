@@ -303,7 +303,7 @@ sift_hll_build(const SiftColDef *def, const SiftCPaggCol *c, const SiftCDict *di
 	{
 		int64		k = c->key[i];
 
-		if (c->nulls && (c->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->nulls, i))
 			continue;
 		if (def->store == SIFT_COLS_STR)
 			sift_hll_add(&h, sift_hll_hash_bytes(dict->bytes + dict->off[k], dict->off[k + 1] - dict->off[k]));

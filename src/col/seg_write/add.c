@@ -77,7 +77,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			for (uint32 r = 0; r < b->nrows; r++)
 				for (uint32 j = eoff[r]; j < eoff[r + 1]; j++)
 				{
-					if (v->nulls && (v->nulls[j / 64] >> (j % 64) & 1))
+					if (sift_col_bit_test(v->nulls, j))
 						continue;
 					a->key[a->n] = v->key[j];
 					a->row[a->n++] = (uint32) w->rows + r;
@@ -92,13 +92,13 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 				a->bad = true;
 				break;
 			}
-			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
+			if (sift_col_bit_test(v->nulls, i))
 			{
 				if (a->ord)
 				{
 					if (gv)
 					{
-						bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+						bool		gnull = sift_col_bit_test(gv->nulls, i);
 
 						a->ngok[a->nn] = !gnull;
 						a->ngk[a->nn] = gnull ? 0 : gv->key[i];
@@ -109,7 +109,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			}
 			if (gv)
 			{
-				bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+				bool		gnull = sift_col_bit_test(gv->nulls, i);
 
 				a->gok[a->n] = !gnull;
 				a->gk[a->n] = gnull ? 0 : gv->key[i];
@@ -302,7 +302,7 @@ segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
-				tk[c][i] = (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1)) ? 0 : w->dictmap[c][v->key[i]];
+				tk[c][i] = sift_col_bit_test(v->nulls, i) ? 0 : w->dictmap[c][v->key[i]];
 			cols[c].key = tk[c];
 		}
 		if (def->store == SIFT_COLS_INT)

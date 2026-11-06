@@ -23,22 +23,22 @@ gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, const uint32 *
 
 		for (uint32 r = cov ? cov[i] : 0; r < b->nrows; r++)
 		{
-			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
 			if (gleaf >= 0)
 			{
 				const SiftCVals *gv = &b->col[gleaf];
 
-				if ((gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)) || (gv->nulls && (gv->nulls[r / 64] >> (r % 64) & 1)))
+				if (sift_col_bit_test(gv->ovf, r) || sift_col_bit_test(gv->nulls, r))
 				{
-					if (gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1))
+					if (sift_col_bit_test(gv->ovf, r))
 						return false;
 					continue;
 				}
 				if (gv->key[r] != gval)
 					continue;
 			}
-			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+			if (sift_col_bit_test(v->nulls, r))
 				pn[(*nn)++] = (GOrdPair) {0, (uint64) b->keys[r]};
 			else
 				pv[(*nv)++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
@@ -463,7 +463,7 @@ gpart_slot(const GOrdPart *p, int64 val)
 static bool
 gpart_isnull(const SiftCVals *v, uint32 r)
 {
-	return v->nulls && (v->nulls[r / 64] >> (r % 64) & 1);
+	return sift_col_bit_test(v->nulls, r);
 }
 
 /* The rows of the buffers put in groups; false when a row is one collect refuses */
@@ -504,7 +504,7 @@ gpart_build(SiftColSource *src, int leaf, int gleaf)
 		{
 			uint32		s;
 
-			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || (gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)))
+			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || sift_col_bit_test(gv->ovf, r))
 				goto refused;
 			if (gpart_isnull(gv, r))
 			{

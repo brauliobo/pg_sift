@@ -336,7 +336,7 @@ append_wide(StringInfo buf, const SiftColDef *def, const SiftColVec *vecs, uint3
 static void
 append_value(StringInfo buf, const SiftColVec *vec, uint32 k)
 {
-	if (vec->nulls && (vec->nulls[k / 64] >> (k % 64) & 1))
+	if (sift_col_bit_test(vec->nulls, k))
 	{
 		appendStringInfoString(buf, "NULL");
 		return;
@@ -409,7 +409,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			StringInfoData buf;
 
 			initStringInfo(&buf);
-			if (sift_col_def_value_lanes(def) > 1 && !(vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1)))
+			if (sift_col_def_value_lanes(def) > 1 && !sift_col_bit_test(vec.nulls, r))
 				append_wide(&buf, def, lanes, r);
 			else if (vec.offsets)
 			{
@@ -422,7 +422,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 				}
 				appendStringInfoChar(&buf, '}');
 			}
-			else if (vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1))
+			else if (sift_col_bit_test(vec.nulls, r))
 				nulls[1] = true;
 			else
 				append_value(&buf, &vec, r);

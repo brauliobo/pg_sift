@@ -326,17 +326,17 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 
 		for (uint32 r = 0; r < seg->sbdir[u].nrows; r++)
 		{
-			uint32		n = (grp->nulls && (grp->nulls[r / 64] >> (r % 64) & 1)) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
+			uint32		n = sift_col_bit_test(grp->nulls, r) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
 
 			for (uint32 i = j; i < j + n; i++)
 			{
 				bool		dense,
 							dup = false;
 
-				if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+				if (sift_col_bit_test(col->nulls, i))
 					continue;
 				for (uint32 k = j; k < i && !dup; k++)
-					dup = !(col->nulls && (col->nulls[k / 64] >> (k % 64) & 1)) && col->key[k] == col->key[i];
+					dup = !sift_col_bit_test(col->nulls, k) && col->key[k] == col->key[i];
 				if (dup)
 					continue;
 				if (!sift_cseg_point_has(seg, c, col->key[i], base + r, &dense))
@@ -352,7 +352,7 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 	{
 		bool		dense;
 
-		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(col->nulls, i))
 			continue;
 		if (!sift_cseg_point_has(seg, c, col->key[i], base + i, &dense))
 			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
@@ -434,7 +434,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			SiftCDict  *d = sift_cseg_dict(seg, c);
 
 			for (uint32 i = 0; i < ch.n; i++)
-				if (!(ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1)))
+				if (!sift_col_bit_test(ch.nulls, i))
 				{
 					if ((uint64) vals[i] >= d->n)
 						corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->id,

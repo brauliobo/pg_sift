@@ -98,9 +98,9 @@ sift_cset_keys(const SiftCPaggCol *c, int64 *out)
 
 	for (uint32 i = 0; i < c->n; i++)
 	{
-		if (c->nulls && (c->nulls[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->nulls, i))
 			continue;
-		if (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1))
+		if (sift_col_bit_test(c->ovf, i))
 			continue;
 		out[m++] = c->key[i];
 	}
@@ -236,7 +236,7 @@ distinct_offsets(const SiftCPaggCol *c, int64 lo, uint64 cap, uint32 *nd)
 		uint64		d;
 		uint32		h;
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		d = (uint64) c->key[i] - (uint64) lo + 1;
 		for (h = (uint32) (sift_fib64(d) >> 32) & (size - 1); slot[h] != 0 && slot[h] != d; h = (h + 1) & (size - 1))
@@ -393,7 +393,7 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 	{
 		int64		k = c->key[i];
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		lo = Min(lo, k);
 		hi = Max(hi, k);
@@ -428,7 +428,7 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 	{
 		uint64		d;
 
-		if ((c->nulls && (c->nulls[i / 64] >> (i % 64) & 1)) || (c->ovf && (c->ovf[i / 64] >> (i % 64) & 1)))
+		if (sift_col_bit_test(c->nulls, i) || sift_col_bit_test(c->ovf, i))
 			continue;
 		d = (uint64) c->key[i] - (uint64) base;
 		bits[d / 64] |= UINT64CONST(1) << (d % 64);
