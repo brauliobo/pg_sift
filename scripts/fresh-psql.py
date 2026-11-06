@@ -10,7 +10,8 @@ From the first statement that binds the session (PREPARE, DECLARE, LISTEN, a tem
 backend it has: a new connection would lose what the rest of the file uses. FRESH_STATS names a file that gets one line "new backends<TAB>statements" per run."""
 import os, re, subprocess, sys
 
-CTRL = "\\set ECHO none"
+# two spaces: psql reads it as the same command, and its echo can be told from a "\\set ECHO none" of the test (an included file has one), which stays in the output
+CTRL = "\\set  ECHO none"
 RESTORE = "\\set ECHO all"
 BIND = re.compile(r"^\s*(prepare(?!\s+transaction)|declare|listen|load)\b|\bcreate\s+(global\s+|local\s+)?temp(orary)?\b|\bpg_(try_)?advisory_lock(_shared)?\s*\(|\bset_config\s*\(", re.I)
 G_META = re.compile(r"\\(g\w*|crosstabview|watch)\b")
