@@ -7,13 +7,14 @@
 #include <string.h>
 
 #include "agg/vk/int.h"
+#include "core/hash.h"
 
 #ifdef SIFT_VULKAN
 
 static uint32_t
 key_hash(const SiftVkKey *k)
 {
-	uint64_t	h = k->rel * 0x9E3779B97F4A7C15ull;
+	uint64_t	h = sift_fib64(k->rel);
 
 	h ^= (k->gen + 0x7F4A7C15ull) * 0xC2B2AE3D27D4EB4Full;
 	h ^= ((uint64_t) k->unit << 20 | k->leaf) * 0x165667B19E3779F9ull;

@@ -39,6 +39,7 @@
 #include "agg/rows.h"
 #include "core/compat.h"
 #include "core/explain.h"
+#include "core/hash.h"
 
 bool		sift_agg_rows = true;
 
@@ -319,9 +320,9 @@ pair_hash(uint32 g, int64 v)
 {
 	uint64		x = (uint64) v ^ ((uint64) g << 32) ^ g;
 
-	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	x = sift_fib64(x);
 	x ^= x >> 32;
-	x *= UINT64CONST(0xD6E8FEB86659FD93);
+	x *= SIFT_FOLD64;
 	return x ^ (x >> 32);
 }
 

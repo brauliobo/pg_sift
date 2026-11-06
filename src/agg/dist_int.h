@@ -5,6 +5,7 @@
 #define SIFT_AGG_DIST_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "core/hash.h"
 
 /* open addressing set of (group, value id) pairs; a slot holds the pair with bit 63 set, 0 is empty */
 typedef struct Dist Dist;
@@ -100,7 +101,7 @@ struct Dist
 static inline uint64
 dset_hash(uint64 x)
 {
-	x *= UINT64CONST(0x9E3779B97F4A7C15);
+	x = sift_fib64(x);
 	return x ^ (x >> 32);
 }
 

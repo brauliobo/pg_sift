@@ -5,6 +5,7 @@
 #define SIFT_AGG_INTIDS_H
 
 #include "utils/memutils.h"
+#include "core/hash.h"
 
 typedef struct IntIdEnt
 {
@@ -42,9 +43,9 @@ extern uint32 intids_slow(IntIds *x, int64 k, uint32 next);
 static inline uint32
 intids_hash(int64 k)
 {
-	uint64		x = (uint64) k * UINT64CONST(0x9E3779B97F4A7C15);
+	uint64		x = sift_fib64((uint64) k);
 
-	return (uint32) ((x ^ (x >> 29)) * UINT64CONST(0xD6E8FEB86659FD93) >> 32);
+	return (uint32) (sift_fold64(x, x >> 29) >> 32);
 }
 
 /* the id of k; a key not held takes `next` (the caller's count of ids + 1), and the caller sees that by id == next */

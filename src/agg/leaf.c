@@ -78,6 +78,7 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 #include "col/am.h"
+#include "core/hash.h"
 
 static bool
 collation_deterministic(Oid collid)
@@ -724,10 +725,10 @@ idmap_init(IdMap *m)
 static inline uint32
 idmap_hash(sift_i128 v)
 {
-	uint64		x = (uint64) v * UINT64CONST(0x9E3779B97F4A7C15) ^ (uint64) (v >> 64) * UINT64CONST(0xC2B2AE3D27D4EB4F);
+	uint64		x = sift_fib64((uint64) v) ^ (uint64) (v >> 64) * UINT64CONST(0xC2B2AE3D27D4EB4F);
 
 	x ^= x >> 31;
-	return (uint32) ((x * UINT64CONST(0xD6E8FEB86659FD93)) >> 32);
+	return (uint32) ((x * SIFT_FOLD64) >> 32);
 }
 
 static inline bool

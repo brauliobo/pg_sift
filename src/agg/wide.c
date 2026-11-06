@@ -18,13 +18,14 @@
 #include "agg/wide.h"
 #include "col/am.h"
 #include "col/wide.h"
+#include "core/hash.h"
 
 static uint32
 key_hash(const uint64 *k)
 {
-	uint64		h = (k[0] * UINT64CONST(0x9E3779B97F4A7C15)) ^ (k[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (k[2] * UINT64CONST(0x165667B19E3779F9));
+	uint64		h = sift_fib64(k[0]) ^ (k[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (k[2] * UINT64CONST(0x165667B19E3779F9));
 
-	return (uint32) ((h ^ (h >> 31)) * UINT64CONST(0xD6E8FEB86659FD93) >> 32);
+	return (uint32) (sift_fold64(h, h >> 31) >> 32);
 }
 
 static void

@@ -6,19 +6,20 @@
 #include "postgres.h"
 
 #include "agg/combo/int.h"
+#include "core/hash.h"
 
 /* the ids are small and dense: every input is multiplied in and folded, or the entries of a few hundred thousand combinations pile up in a few slots */
 static inline uint32
 combo_hash(const uint64 *v, int ninputs, bool null_input)
 {
-	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
+	uint64		h = SIFT_FIB64;
 
 	for (int p = 0; p < ninputs; p++)
 	{
-		h = (h ^ v[p]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h = sift_fold64(h, v[p]);
 		h ^= h >> 32;
 	}
-	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	h = sift_fib64(h);
 	return (uint32) (h >> 32) ^ (null_input ? 0x85EBCA6BU : 0);
 }
 

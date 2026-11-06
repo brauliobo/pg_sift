@@ -20,6 +20,7 @@
 #include "agg/agg_int.h"
 #include "agg/gen_int.h"
 #include "agg/leaf_int.h"
+#include "core/hash.h"
 
 typedef struct GenMode
 {
@@ -34,7 +35,7 @@ typedef struct GenMode
 static inline uint64
 mode_hash(uint64 k)
 {
-	k *= UINT64CONST(0x9E3779B97F4A7C15);
+	k = sift_fib64(k);
 	return k ^ (k >> 32);
 }
 

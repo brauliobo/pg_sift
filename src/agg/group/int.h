@@ -9,6 +9,7 @@
 #include "utils/float.h"
 
 #include "agg/agg_int.h"
+#include "core/hash.h"
 
 /* tuples ahead whose slot of a group or value table is prefetched: the tables outgrow the cache at millions of groups */
 #define GROUP_AHEAD 16
@@ -47,7 +48,7 @@ float_key(double d)
 static inline uint32
 wide_hash(int64 v, uint32 cap)
 {
-	return (uint32) (((uint64) v * UINT64CONST(0x9E3779B97F4A7C15)) >> (64 - __builtin_ctz(cap)));
+	return (uint32) (sift_fib64((uint64) v) >> (64 - __builtin_ctz(cap)));
 }
 
 /* the id of v in the open addressing table of an ident key, 0 when it has none yet (ident_wide_id gives it one) */

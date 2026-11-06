@@ -10,6 +10,7 @@
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
+#include "core/hash.h"
 
 /* the order columns of the rows of a first-row lookup: the value of each (NULL: 0 and isnull) */
 typedef struct FirstOrd
@@ -178,14 +179,14 @@ kd_text(KeyDict *d, const char *b, uint32 len, MemoryContext cxt)
 static inline uint32
 map_hash_ids(int nkey, const uint32 *kid)
 {
-	uint64		h = UINT64CONST(0x9E3779B97F4A7C15);
+	uint64		h = SIFT_FIB64;
 
 	for (int k = 0; k < nkey; k++)
 	{
-		h = (h ^ kid[k]) * UINT64CONST(0xD6E8FEB86659FD93);
+		h = sift_fold64(h, kid[k]);
 		h ^= h >> 32;
 	}
-	h *= UINT64CONST(0x9E3779B97F4A7C15);
+	h = sift_fib64(h);
 	return (uint32) (h >> 32);
 }
 
