@@ -10,7 +10,7 @@ How: `scripts/fresh-psql.py` stands first in `PATH` as `psql` for `pg_regress` o
 expected files apply unchanged; the first difference is what the cold backend does differently.
 
 From the first statement that binds the session to its backend (`PREPARE`, `DECLARE`, `LISTEN`, `LOAD`, a temporary table, a session advisory lock,
-`set_config`, `\if`, `\i`) the rest of the file runs in the backend it has, because a new connection would lose what the file uses afterwards.
+`set_config`, `setseed`, `\if`, `\i`) the rest of the file runs in the backend it has, because a new connection would lose what the file uses afterwards.
 `FRESH_STATS=FILE` appends a line `new backends<TAB>statements` per run (`pgtest.sh fresh` writes it next to the results).
 
 A setting of the extension (`sift.*`) is unknown to a backend that has not loaded the library, as for any extension that is not preloaded: a test that sets one

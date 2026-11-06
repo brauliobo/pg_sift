@@ -6,14 +6,14 @@ that is not inside a transaction block, replaying the session's SET / RESET firs
 shared state an earlier statement of the same backend left. The output is the psql output with the echo of the inserted lines removed: pg_regress compares it
 with the expected file as for any run, and a difference is what a cold backend does differently.
 
-From the first statement that binds the session (PREPARE, DECLARE, LISTEN, a temporary table, a session advisory lock, set_config, \\if, \\i) the script runs in the
+From the first statement that binds the session (PREPARE, DECLARE, LISTEN, a temporary table, a session advisory lock, set_config, setseed, \\if, \\i) the script runs in the
 backend it has: a new connection would lose what the rest of the file uses. FRESH_STATS names a file that gets one line "new backends<TAB>statements" per run."""
 import os, re, subprocess, sys
 
 # two spaces: psql reads it as the same command, and its echo can be told from a "\\set ECHO none" of the test (an included file has one), which stays in the output
 CTRL = "\\set  ECHO none"
 RESTORE = "\\set ECHO all"
-BIND = re.compile(r"^\s*(prepare(?!\s+transaction)|declare|listen|load)\b|\bcreate\s+(global\s+|local\s+)?temp(orary)?\b|\bpg_(try_)?advisory_lock(_shared)?\s*\(|\bset_config\s*\(|\bpg_temp\b", re.I)
+BIND = re.compile(r"^\s*(prepare(?!\s+transaction)|declare|listen|load)\b|\bcreate\s+(global\s+|local\s+)?temp(orary)?\b|\bpg_(try_)?advisory_lock(_shared)?\s*\(|\b(set_config|setseed)\s*\(|\bpg_temp\b", re.I)
 G_META = re.compile(r"\\(g\w*|crosstabview|watch)\b")
 RUNS_QUERY = re.compile(r"\\(d\w*|z|l\+?|sf\+?|sv\+?|dp)\b")
 COPY_STDIN = re.compile(r"^\s*copy\b.*\bfrom\s+stdin", re.I | re.S)
@@ -169,7 +169,8 @@ def main(argv):
     echo = "all" if any(a in ("-a", "--echo-all") or re.fullmatch(r"-[XqAtnbxa]*a[XqAtnbxa]*", a) for a in argv) else "queries" if "-e" in argv else "none"
     # FRESH_LOAD=LIBRARY: the library is loaded first in every new backend, as shared_preload_libraries / session_preload_libraries would (a setting of the extension is
     # unknown before the library is loaded: a test that sets or shows one differs in the default mode, by design)
-    load = "LOAD '%s';\n" % os.environ["FRESH_LOAD"] if os.environ.get("FRESH_LOAD") else ""
+    # a role that is not a superuser cannot LOAD: it meets the library as it does without the option
+    load = "DO $sift_fresh$ BEGIN EXECUTE 'LOAD ''%s'''; EXCEPTION WHEN OTHERS THEN NULL; END $sift_fresh$;\n" % os.environ["FRESH_LOAD"] if os.environ.get("FRESH_LOAD") else ""
     script, fresh, stmts = transform(sys.stdin.read(), "\\set ECHO " + echo, load)
     p = subprocess.run([real] + argv, input=script.encode(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        env=dict(os.environ, FRESH_ACTIVE="1"))
