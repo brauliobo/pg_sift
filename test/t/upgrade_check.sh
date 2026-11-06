@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 88
+plan 92
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -250,4 +250,19 @@ node_start uc || bail "restart failed"
 out=$(uc clean); rc=$?
 check "an index in a newer format is unreadable and blocks" grep -q -E '^blocker +refused_idx +index +unreadable +sift index "refused_idx" has on-disk format 1\.9.*REINDEX' <<<"$out"
 check "the others are still checked, and the exit is 1" test $rc -eq 1 -a "$(grep -c '^ok' <<<"$out")" -ge "$objects"
+# 4.2 writes two things that every release before it refuses: the buffer of a BM25 index that took an insert (format 1.6) and the boolean leaf of a jsonb column that may hold a NULL
+# document (option document_present); a release before 4.2 reads an index that has neither, and one with document_present = off
+q postgres "CREATE DATABASE v42" >/dev/null
+q v42 "CREATE EXTENSION pg_sift" \
+	"CREATE TABLE bm (id int, body text)" "INSERT INTO bm SELECT g, 'alpha w' || g % 50 FROM generate_series(1, 2000) g" "CREATE INDEX bm_idx ON bm USING sift (body)" \
+	"INSERT INTO bm SELECT g, 'beta' FROM generate_series(2001, 2100) g" \
+	"CREATE TABLE dp (id int PRIMARY KEY, doc jsonb)" "INSERT INTO dp SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE jsonb_build_object('b', 'x' || g % 3) END FROM generate_series(1, 3000) g" \
+	"CREATE INDEX dp_col ON dp USING sift_col (id, doc) WITH (paths = 'doc.b astext')" \
+	"CREATE INDEX dp_off ON dp USING sift_col (id, doc) WITH (paths = 'doc.b astext', document_present = off)" >/dev/null || bail "setup of v42 failed"
+out=$(uc --to 4.1 v42)
+check "to 4.1: a BM25 index that took an insert (write buffer format 6, format 1.6) is a blocker" test -n "$(row "$out" blocker bm_idx)"
+check "to 4.1: an index with the leaf of document_present is a blocker that says to turn the option off and REINDEX" grep -q -E '^blocker +dp_col .*ALTER INDEX dp_col SET \(document_present = off\), then REINDEX INDEX dp_col' <<<"$out"
+check "to 4.1: the index with document_present = off is ok" test -z "$(row "$out" blocker dp_off)"
+q v42 "ALTER INDEX dp_col SET (document_present = off)" "REINDEX INDEX dp_col" >/dev/null
+check "to 4.1: the advice makes it readable, and to 4.2 nothing blocks" test -z "$(row "$(uc --to 4.1 v42)" blocker dp_col)" -a "$(uc --to 4.2 v42 | grep -c '^blocker')" == 0
 finish

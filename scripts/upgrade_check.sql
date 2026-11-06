@@ -32,6 +32,7 @@ DECLARE
 	hi int;
 	need text;
 	adv text;
+	dpl boolean;
 BEGIN
 	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
 		RAISE EXCEPTION 'target must be a release such as 3.1, not "%"', target;
@@ -85,14 +86,19 @@ BEGIN
 				CONTINUE;
 		END;
 		-- the first release that reads it
-		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
+		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 6 THEN '4.2' WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
+		-- 4.2: the boolean leaf of a jsonb column that may hold a NULL document (option document_present, the columns it chose or was given): a release before 4.2 refuses the index
+		dpl := r.amname = 'sift_col' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'document_present=%' AND o <> 'document_present=off' AND o !~ '^document_present=auto:? *$');
+		IF dpl AND string_to_array(need, '.')::int[] < ARRAY[4, 2] THEN need := '4.2'; END IF;
 		detected := format('format %s.%s', maj, mnr) ||
 				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;
 		status := 'ok'; advice := NULL;
 		IF tgt IS NOT NULL AND string_to_array(need, '.')::int[] > string_to_array(tgt, '.')::int[] THEN
 			status := 'blocker';
-			IF r.amname = 'sift' THEN
+			IF dpl THEN
+				adv := format('ALTER INDEX %s SET (document_present = off), then REINDEX INDEX %s writes the layout that %s reads (the forms NOT, IS FALSE and IS NULL of its jsonb columns read the table again)', r.rel, r.rel, tgt);
+			ELSIF r.amname = 'sift' THEN
 				adv := format('%s cannot read this format: drop the index and CREATE INDEX it again with that release, or keep this library', tgt);
 			ELSIF hi = 5 THEN
 				adv := format('a schema with wide leaves is written for 3.2 and later at every setting: drop the index before going back to %s', tgt);
