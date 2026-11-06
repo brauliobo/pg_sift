@@ -396,6 +396,12 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		MemoryContextSwitchTo(old);
 		return;
 	}
+	if (st->stat)
+	{
+		gen_stat_chunk(ex, st, acc, &in, ok, nsel);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	for (int j = 0; j < nsel; j++)
 	{
 		uint32		gid = ex->gid[j];

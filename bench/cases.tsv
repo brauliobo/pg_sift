@@ -432,3 +432,5 @@ group_int_expr_halves	`GROUP BY id / 2`	events	-	Custom Scan \(SiftAgg\)	native	
 group_bigint_key_dense	an `int`, `bigint`, `date`, `timestamp` or `timestamptz` column	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 agg_window_topn	`row_number() OVER (PARTITION BY key ORDER BY ..) <= N` over NOT NULL partition columns is a probe of the table for each key	events	-	Top-N: amount DESC NULLS LAST	native	-	ms,minstr	faster33	no	-
 point_pk	a lookup of one row by its primary key	events	-	Index Scan using pk_fact_pkey	native	-	ms,minstr	faster33	no	-
+agg_stat_variance_groups	`stddev`, `variance`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_stat_corr_groups	`corr`, `regr_slope`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

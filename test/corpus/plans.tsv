@@ -114,7 +114,7 @@ arch_graph_two_hop	-	distinct:f:distinct_set,single:f:cost
 arch_facets_three	SiftAgg	-
 arch_facets_one_query	SiftAgg	single:t
 s2_stddev_variance	SiftAgg	single:t
-s2_corr_regr	-	single:f:cost
+s2_corr_regr	SiftAgg	single:t
 s2_bool_agg	SiftAgg	single:t
 s2_count_distinct_filter	SiftAgg	distinct:f:distinct_set,single:t
 s2_avg_nulls	SiftAgg	single:t

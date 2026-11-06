@@ -1,0 +1,103 @@
+-- The statistics aggregates (var_*, stddev_*, covar_*, corr, regr_*) of float8, int4 and int2 columns run in a kernel that updates PostgreSQL's own transition state
+-- (agg/gen_stat.c): the rows agree with the normal plan to 11 digits on a large mean with a tiny variance, on tiny and huge values, with NULLs in one column of a pair,
+-- NaN and infinities, groups of one row, groups of a few rows, a FILTER, and the error a sum that overflows raises.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '256MB';
+SET sift.agg_force = on;
+CREATE TABLE s (id int, g int, big float8, tiny float8, wide float8, spec float8, huge float8, i4 int, i2 smallint, y float8) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO s SELECT i, i % 7,
+	1e9 + (i % 13) * 0.001,
+	(i % 10) * 1e-12,
+	((i * 7919 % 2001) - 1000)::float8 * 1e10,
+	CASE WHEN i % 7 = 5 AND i % 97 = 0 THEN 'NaN'::float8 WHEN i % 7 = 6 AND i % 101 = 0 THEN 'Infinity'::float8 WHEN i % 7 = 4 AND i % 103 = 0 THEN '-Infinity'::float8
+		WHEN i % 11 = 0 THEN NULL ELSE (i % 50) * 0.25 END,
+	CASE WHEN i % 7 = 3 AND i % 500 = 0 THEN 1.7e308 ELSE 1 END,
+	CASE WHEN i % 9 = 0 THEN NULL ELSE (i * 37 % 1000) - 500 END,
+	(i % 300 - 150)::smallint,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE sqrt(i) + (i % 5) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX s_col ON s USING sift_col (id, g, big, tiny, wide, spec, huge, i4, i2, y);
+NOTICE:  sift_col index "s_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('s_col');
+VACUUM ANALYZE s;
+-- 11 digits, NaN and infinities by their text, a NULL by NULL
+CREATE FUNCTION st_close(a jsonb, b jsonb) RETURNS bool LANGUAGE sql AS $$
+	SELECT coalesce(bool_and(a->k IS NOT DISTINCT FROM b->k OR (jsonb_typeof(a->k) = 'number' AND jsonb_typeof(b->k) = 'number'
+		AND abs((a->>k)::float8 - (b->>k)::float8) <= 1e-11 * greatest(abs((a->>k)::float8), abs((b->>k)::float8)))), true)
+	FROM jsonb_object_keys(a) k $$;
+CREATE FUNCTION st_rows(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
+DECLARE r jsonb[];
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+-- the rows of the scan against the normal plan's, or the error both raise
+CREATE FUNCTION st_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a jsonb[]; b jsonb[]; ea text; eb text;
+BEGIN
+	BEGIN a := st_rows(q, true); EXCEPTION WHEN OTHERS THEN ea := SQLERRM; END;
+	BEGIN b := st_rows(q, false); EXCEPTION WHEN OTHERS THEN eb := SQLERRM; END;
+	IF ea IS NOT NULL OR eb IS NOT NULL THEN
+		RETURN CASE WHEN ea IS NOT DISTINCT FROM eb THEN 'both fail: ' || ea ELSE 'errors differ: ' || coalesce(ea, '-') || ' / ' || coalesce(eb, '-') END;
+	END IF;
+	IF cardinality(a) IS DISTINCT FROM cardinality(b) THEN RETURN 'rows differ in number'; END IF;
+	FOR i IN 1..coalesce(cardinality(a), 0) LOOP
+		IF NOT st_close(a[i], b[i]) THEN RETURN 'differs: ' || a[i]::text || ' vs ' || b[i]::text; END IF;
+	END LOOP;
+	RETURN 'same ' || coalesce(cardinality(a), 0);
+END $$;
+CREATE FUNCTION st_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE TABLE st_q (n int, q text);
+INSERT INTO st_q VALUES
+	(1, 'SELECT g AS k, variance(big) AS a, stddev(big) AS b, var_pop(big) AS c, stddev_pop(big) AS d FROM s GROUP BY g'),
+	(2, 'SELECT g AS k, variance(tiny) AS a, stddev_samp(tiny) AS b, var_pop(tiny) AS c FROM s GROUP BY g'),
+	(3, 'SELECT g AS k, variance(wide) AS a, stddev_pop(wide) AS b FROM s GROUP BY g'),
+	(4, 'SELECT g AS k, variance(spec) AS a, stddev(spec) AS b, var_pop(spec) AS c FROM s GROUP BY g'),
+	(5, 'SELECT g AS k, variance(huge) AS a FROM s WHERE g <> 3 GROUP BY g'),
+	(6, 'SELECT g AS k, variance(huge) AS a FROM s GROUP BY g'),
+	(7, 'SELECT g AS k, variance(i4) AS a, stddev(i4) AS b, var_pop(i4) AS c, stddev_pop(i2) AS d, variance(i2) AS e FROM s GROUP BY g'),
+	(8, 'SELECT g AS k, corr(big, y) AS a, covar_pop(big, y) AS b, covar_samp(wide, y) AS c FROM s GROUP BY g'),
+	(9, 'SELECT g AS k, regr_slope(y, wide) AS a, regr_intercept(y, wide) AS b, regr_r2(y, big) AS c, regr_count(y, i4) AS d, regr_avgx(y, big) AS e FROM s GROUP BY g'),
+	(10, 'SELECT g AS k, corr(i4, y) AS a, regr_sxx(i2, y) AS b, regr_syy(i4, i2) AS c, regr_sxy(y, i4) AS d FROM s GROUP BY g'),
+	(11, 'SELECT g AS k, corr(spec, y) AS a, covar_pop(spec, big) AS b FROM s GROUP BY g'),
+	(12, 'SELECT id AS k, variance(big) AS a, stddev_pop(y) AS b, corr(big, y) AS c, regr_count(big, y) AS d FROM s WHERE id <= 3000 GROUP BY id'),
+	(13, 'SELECT g AS k, stddev(big) FILTER (WHERE id % 3 = 0) AS a, corr(y, wide) FILTER (WHERE id % 5 <> 0) AS b, variance(i4) FILTER (WHERE i2 > 0) AS c FROM s GROUP BY g'),
+	(14, 'SELECT 1 AS k, variance(big) AS a, stddev(y) AS b, corr(wide, y) AS c, variance(i4) AS d FROM s'),
+	(15, 'SELECT g AS k, variance(y) AS a, count(*) AS n, sum(y) AS s, avg(i4) AS m FROM s WHERE id < 50 GROUP BY g'),
+	(16, 'SELECT g AS k, variance(big) AS a FROM s WHERE id < 0 GROUP BY g');
+SELECT n, st_scan(q) AS scan, st_same(q) AS same FROM st_q ORDER BY n;
+ n  | scan |                  same                   
+----+------+-----------------------------------------
+  1 | t    | same 7
+  2 | t    | same 7
+  3 | t    | same 7
+  4 | t    | same 7
+  5 | t    | same 6
+  6 | t    | both fail: value out of range: overflow
+  7 | t    | same 7
+  8 | t    | same 7
+  9 | t    | same 7
+ 10 | t    | same 7
+ 11 | t    | same 7
+ 12 | t    | same 3000
+ 13 | t    | same 7
+ 14 | t    | same 1
+ 15 | t    | same 7
+ 16 | t    | same 0
+(16 rows)
+
+DROP TABLE st_q;
+DROP FUNCTION st_close(jsonb, jsonb), st_rows(text, bool), st_same(text), st_scan(text);
+DROP TABLE s;
+DROP EXTENSION pg_sift;

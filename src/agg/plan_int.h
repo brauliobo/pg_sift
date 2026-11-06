@@ -310,6 +310,8 @@ extern int	agg_index_pick;		/* the column index of the scanned table the stage p
 extern int	agg_index_usable;	/* ... and how many of them the stage has met (a table with several is scanned through the first that gives a plan) */
 
 extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
+/* gen_stat.c: does the chunk kernel run the aggregate (the planner prices it by it) */
+extern bool gen_stat_eligible(Oid fn, const SiftAggGen *g, const SiftSrcLeaf *(*leaf) (void *arg, int id), void *arg, int *smode, Oid *sint);
 extern int leaf_level(AggCtx *c, int id);
 extern const char *leaf_name(AggCtx *c, int id);
 extern int	agg_child_planning;

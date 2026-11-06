@@ -225,6 +225,12 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *ma
 	return true;
 }
 
+static const SiftSrcLeaf *
+plan_leaf_of(void *c, int id)
+{
+	return leaf_of((AggCtx *) c, id);
+}
+
 /* the function's own cost in operator costs (its procost, or the planner support function's estimate) */
 static double
 fn_cost(AggCtx *c, Oid fn)
@@ -420,6 +426,8 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
 	g->cost = AGG_GEN_ROW + fn_cost(c, fns.transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
+	if (gen_stat_eligible(fns.transfn, g, plan_leaf_of, c, NULL, NULL))
+		g->cost = AGG_STAT_ROW * g->nargs;
 	g->hll = -1;
 	/* a nondeterministic collation hashes the sort key of a string, which a unit does not hold */
 	if (g->serial == NULL && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)

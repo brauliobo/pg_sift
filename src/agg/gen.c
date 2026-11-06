@@ -329,6 +329,7 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		st->has_final = false;
 		gen_first_begin(st);
 	}
+	gen_stat_pick(ex, st);
 	return st;
 }
 
@@ -439,7 +440,7 @@ gen_arg(AggExec *ex, GenSt *st, const GenIn *in, int j, int k, Datum *arg, bool 
 }
 
 /* initialize_aggregate */
-static void
+void
 gen_state_init(GenSt *st, AggAcc *acc, uint32 g)
 {
 	acc->nf[g] = GEN_INIT;
