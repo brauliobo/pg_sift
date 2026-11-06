@@ -1,0 +1,66 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s1r s2w s1qk s1e
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1r: SELECT count(*) AS first_read FROM iso_own_k WHERE id = 'c1';
+first_read
+----------
+         1
+(1 row)
+
+step s2w: 
+	UPDATE iso_own_k SET amount = amount + 142 WHERE id IN ('c1003', 'c1016', 'c1029', 'c1042');
+	DELETE FROM iso_own_k WHERE id IN ('c4010', 'c4020');
+	INSERT INTO iso_own_k SELECT 'c' || i, i % 10, i FROM generate_series(4501, 4520) i;
+
+step s1qk: SELECT iso_own_same('iso_own_k');
+iso_own_same                             
+-----------------------------------------
+iso_own_k: scan agrees, index scan agrees
+(1 row)
+
+step s1e: ROLLBACK;
+
+starting permutation: s1b s1r s2w s1reindex s1qk s1e
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1r: SELECT count(*) AS first_read FROM iso_own_k WHERE id = 'c1';
+first_read
+----------
+         1
+(1 row)
+
+step s2w: 
+	UPDATE iso_own_k SET amount = amount + 142 WHERE id IN ('c1003', 'c1016', 'c1029', 'c1042');
+	DELETE FROM iso_own_k WHERE id IN ('c4010', 'c4020');
+	INSERT INTO iso_own_k SELECT 'c' || i, i % 10, i FROM generate_series(4501, 4520) i;
+
+step s1reindex: REINDEX INDEX iso_own_k_c;
+step s1qk: SELECT iso_own_same('iso_own_k');
+iso_own_same                             
+-----------------------------------------
+iso_own_k: scan agrees, index scan agrees
+(1 row)
+
+step s1e: ROLLBACK;
+
+starting permutation: s1b s1r s2w s1cluster s1qk s1e
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1r: SELECT count(*) AS first_read FROM iso_own_k WHERE id = 'c1';
+first_read
+----------
+         1
+(1 row)
+
+step s2w: 
+	UPDATE iso_own_k SET amount = amount + 142 WHERE id IN ('c1003', 'c1016', 'c1029', 'c1042');
+	DELETE FROM iso_own_k WHERE id IN ('c4010', 'c4020');
+	INSERT INTO iso_own_k SELECT 'c' || i, i % 10, i FROM generate_series(4501, 4520) i;
+
+step s1cluster: CLUSTER iso_own_k USING iso_own_k_pkey;
+step s1qk: SELECT iso_own_same('iso_own_k');
+iso_own_same                             
+-----------------------------------------
+iso_own_k: scan agrees, index scan agrees
+(1 row)
+
+step s1e: ROLLBACK;

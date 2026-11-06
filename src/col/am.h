@@ -90,6 +90,7 @@ extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_deafened(Oid relid);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
+extern bool sift_col_track_own(const struct SiftTombLog *log);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
 extern bool sift_col_updates_supersede(void);
 extern bool sift_col_writing(void);

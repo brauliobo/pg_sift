@@ -439,6 +439,17 @@ sift_col_track_reconcile(Relation index)
 }
 
 /*
+ * Did this transaction make the log complete (the baseline of CREATE INDEX, REINDEX or ALTER INDEX)? The baseline tombstones carry its xid and the command that ran it, and the
+ * transaction sees them as its own deletes from its next command on, whatever snapshot it reads with: a REPEATABLE READ snapshot taken before the baseline still sees the versions
+ * that a transaction committed since had ended (the baseline stamps them dead now), and the log would hide them. The reads of that transaction check the heap.
+ */
+bool
+sift_col_track_own(const SiftTombLog *log)
+{
+	return log->chan.flags == SIFT_TOMB_COMPLETE && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
+}
+
+/*
  * May a read take the log for the whole truth about which entries are live: the log was made complete, the triggers are the ones that did it, and the table still has its unique index on the key. With a snapshot, also that it is an MVCC one that sees the transaction that made the log complete.
  */
 bool
@@ -462,8 +473,9 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 		return false;
 	if (snap == NULL)
 		return true;
-	return snap->snapshot_type == SNAPSHOT_MVCC &&
-		(TransactionIdIsCurrentTransactionId(log->chan.base_xid) || (!XidInMVCCSnapshot(log->chan.base_xid, snap) && sift_xid_state(log->chan.base_xid) == SIFT_XID_COMMITTED));
+	/* not the transaction that made the log (REINDEX, ALTER INDEX): its snapshot may be older than the baseline, which ends versions that snapshot still sees (sift_col_track_own) */
+	return snap->snapshot_type == SNAPSHOT_MVCC && !sift_col_track_own(log) &&
+		!XidInMVCCSnapshot(log->chan.base_xid, snap) && sift_xid_state(log->chan.base_xid) == SIFT_XID_COMMITTED;
 }
 
 /*
