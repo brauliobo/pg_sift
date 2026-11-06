@@ -15,18 +15,13 @@ cte.c: key_list_walker body_guessed # predicates of the cost model and the walke
 join.c: join_lut lookup_counted extern_param_walker rel_has_param_qual join_index_usable # predicates of the cost model and the walkers it uses: no refusal
 leaf.c: pred_uses_leaf leaf_read_whole leaf_filtered leaf_copy_only leaf_values_used leaf_tested leaf_compared_only # predicates of the cost model and the walkers it uses: no refusal
 plan_exists.c: exists_scan dep_walker out_walker # shape tests of the EXISTS rewrite: the caller names from_shape or where
-bucket.c: step_walker # walkers and tests of an expression the scan evaluates (the calendar ones classify it for the cells of a unit: sift_aggexpr_cal returns SAC_NOT, SAC_ZONE or SAC_FINE): the caller names group_key, aggregate, where or output_expr
-cal.c: utc_spelling utc_shadowed_walker is_num_cast is_utc_conversion cal_unit cal_part cal_ptype_walker cal_tree calendar_units_walker # walkers and tests of an expression the scan evaluates (the calendar ones classify it for the cells of a unit: sift_aggexpr_cal returns SAC_NOT, SAC_ZONE or SAC_FINE): the caller names group_key, aggregate, where or output_expr
-nx.c: nx_put nx_leaf nx_const nx_walk compile_int8_arith nx_raises int2_arith_safe # walkers and tests of an expression the scan evaluates (the calendar ones classify it for the cells of a unit: sift_aggexpr_cal returns SAC_NOT, SAC_ZONE or SAC_FINE): the caller names group_key, aggregate, where or output_expr
-walk.c: outer_ref_walker walk_memo_get cte_owner_correlated subplan_runs_at_start array_initplan_ok leaf_walker single_leaf safe_int_divisor raising_walker leaf_stats_range # walkers and tests of an expression the scan evaluates (the calendar ones classify it for the cells of a unit: sift_aggexpr_cal returns SAC_NOT, SAC_ZONE or SAC_FINE): the caller names group_key, aggregate, where or output_expr
 part.c: part_preagg_common exec_param_walker mentions_key hash_clause_handled part_prune_clauses part_has_index # tests of the FROM list (outer joins are tried both ways round) and of a recordset: the caller names from_shape, outer_join or partition_source
 reads.c: unconditional leaf_read count_leaf_reads others_first filtered_reads pred_reads_leaf pred_reads_any pred_reads_set list_read_by_tuple_tests # tests of the FROM list (outer joins are tried both ways round) and of a recordset: the caller names from_shape, outer_join or partition_source
 recheck.c: member_casts # tests of the FROM list (outer joins are tried both ways round) and of a recordset: the caller names from_shape, outer_join or partition_source
 scan.c: right_only scan_preserved scan_semi_tree # tests of the FROM list (outer joins are tried both ways round) and of a recordset: the caller names from_shape, outer_join or partition_source
 source.c: find_source text_io_leaf recordset_recheck_ok # tests of the FROM list (outer joins are tried both ways round) and of a recordset: the caller names from_shape, outer_join or partition_source
 plan_gen.c: gen_leaf_ok gen_walker arg_joined compile_gen_arg spelling_free gen_eligible compile_gen # tests of a generic aggregate and its argument: compile_gen names the aggregate
-plan_join.c: reads_outer index_qual preserved_join lookup_ready order_inner_lookups child_cols_kept pushed_into_child null_row_passes column_equality array_keys # tests of one join condition or lookup (each is tried in turn): setup_joins names join_condition
-plan_leaf.c: has_exec_param_walker paths_equal path_keys json_access reads_preserved_only reads_full_lookup # tests of a jsonb path and of the side of a join an expression reads: the caller names the slug
+plan_join.c: reads_outer index_qual preserved_join lookup_ready child_cols_kept pushed_into_child null_row_passes column_equality array_keys # tests of one join condition or lookup (each is tried in turn): setup_joins names join_condition
 plan_path.c: jsonb_lit path_lit # tests of a jsonpath literal: the caller names where
 plan_pred.c: false_on_absent negate_existential # a test of a compiled predicate: no refusal
 plan_rows.c: pg_aggregate_ok # a test of an aggregate of the rows plan: the caller names rows_shape
@@ -52,3 +47,13 @@ plan_cal.c: cal_func period_func # tests of whether a comparison is a calendar s
 base.c: agg_base # the refusal is the one agg_base_once noted (the unnest retry keeps it when it fails too)
 paths.c: has_subquery_rte normal_under_floor # the test of whether the arms are worth planning at all (a normal plan too cheap for any scan): no arm is tried, so none refuses; sift.explain_why plans them all
 drop.c: column_key input_key sort_entry ord_append ord_has # walks of a finished plan that tell whether a Sort can go: a plan that does not fit is left as it is, no refusal
+join.c: index_covers join_keys_pay # cost tests of a keyed load (does the btree cover the columns it reads, does the load pay): a no leaves the join to the scan of its table, no arm is refused
+keys.c: agg_unique_keys_first lookup_add # a cost test of the unique b-tree against the scan, and the room for a column among the lookups of a top-N: a no leaves the plan as it is, no arm is refused
+model.c: btree_presorts # whether a b-tree gives the first key of the order: the top-N is priced with or without it, no arm is refused
+rank.c: rank_varied sort_keys_ok # tests of whether a sort is worth the rank sort of SiftSort: a sort that fails them is left to PostgreSQL's, no arm is refused
+shape.c: topn_one_leaf # whether the scan reads one partition whose order array it can walk: a top-N that fails it is priced as the scan of units it also is, no arm is refused
+plan_ord.c: has_sorted_agg # a test of the aggregates of a path (an ORDER BY or DISTINCT of their own): the caller names the refusal
+paths.c: has_correlated_children # a test of the path for the plan of a correlated child: the caller decides what it means for the arm, no refusal is recorded here
+plan_prednorm.c: widening # a test of whether a comparison widens the type of its column: a comparison that does stays an expression of the leaf, no arm is refused
+spec.c: sift_aggspec_gstream sift_aggspec_ord_range # tests of whether a spilled scan can give its groups in the order of the ORDER BY: a no spills the groups and sorts them, no arm is refused
+plan_contains.c: path_declared # a lookup of the leaf at a path of a jsonb column: the caller says the path is undeclared and runs the containment on the leaves, no arm is refused

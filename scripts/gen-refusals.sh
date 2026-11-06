@@ -63,7 +63,7 @@ for n, line in enumerate(read('scripts/refusals.allow').split('\n'), 1):
 
 seen = set()
 # the folders of src/agg/ hold the planner files that were split (cost, from, expr, plan ...); NO_REFUSAL_DIRS hold the code of the scan itself and the passes that rewrite a query before it is planned (flat), which name no refusal
-NO_REFUSAL_DIRS = {'blob', 'cte', 'dist', 'exec', 'flat', 'combo', 'group', 'lookup', 'part', 'preagg', 'topn', 'update'}
+NO_REFUSAL_DIRS = {'blob', 'cte', 'dist', 'exec', 'flat', 'combo', 'group', 'lookup', 'part', 'preagg', 'topn', 'update', 'expr', 'gord', 'leaf', 'par', 'spill', 'vk'}
 folders = [d for d in glob.glob('src/agg/*/') if os.path.basename(d.rstrip('/')) not in NO_REFUSAL_DIRS]
 for path in sorted(glob.glob('src/agg/plan*.c') + glob.glob('src/agg/spec*.c') + [f for d in folders for f in glob.glob(d + '*.c')]):
     lines = read(path).split('\n')

@@ -28,6 +28,7 @@ CHECKS=(
 	'docs		scripts/lint-cache.sh docs . -- python3 scripts/gen-docs.py --check'
 	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'
 	'errors		scripts/check-errors.sh'
+	'refusals	scripts/gen-refusals.sh --check'
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'

@@ -234,6 +234,12 @@ Every label that `src/` raises is named in a document. The ones not described wh
 | Label | Node | What it counts or says |
 |---|---|---|
 | `Sets Summed From One` | `SiftAgg` | grouping sets whose groups were added from the finest set's at the end of the scan (the sets all lie inside one of them and every aggregate adds exactly: counts, integer and numeric sums and averages, min, max); absent when each set had its own pass |
+| `Sort Method`, `Distinct Values`, `Sort Memory` | `SiftSort` (`ANALYZE`) | how the sort ran: `rank` (the keys replaced by the ranks of their distinct values: the number of distinct values of each key, and the kB the ranks held) or `tuplesort (reason)` when the ranks did not pay |
+| `Shared Dictionaries` | `SiftAgg` (`ANALYZE`) | the dictionaries of text columns this scan took from the shared memory of the server (`hits`) and the ones it had to parse itself (`misses`); absent when it used none |
+| `Rows Decided By The Log` | `SiftAgg` (`ANALYZE`) | of the rows vetted by the heap, those the tombstone log decided without a heap page |
+| `Group Pass Restarts` | `SiftAgg` (`ANALYZE`) | times a group pass of a spilled scan was started again with a smaller share of the groups because its table outgrew the memory it was given |
+| `Units Read From Their Ends` | `SiftTopN` (`ANALYZE`) | units of a top-N whose rows are in the order of the key, read from the end the order asks for |
+| `Ranker Searches` | `SiftScan` (ranked) | searches of the index the ranker made when it made more than one |
 | `Blocks Scored`, `Blocks Skipped` | `SiftScan` (ranked) | posting blocks the ranked evaluation scored, and those it skipped without scoring |
 | `Limit Hint` | `SiftScan` (ranked) | the `LIMIT k` the planner gave the scan |
 | `Include Tests` | `SiftScan` (ranked) | tests of INCLUDE columns the ranker applies before it scores (a comparison, `IN`, `IS [NOT] NULL`, a boolean, and one for each small joined table whose keys it was given) |
