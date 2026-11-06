@@ -1,7 +1,10 @@
-"""What the generators of scripts/ (gen-options.sh, gen-limits.sh, gen-reference.sh, gen-messages.sh) share: reading C source and writing markdown cells.
+"""What the generators of scripts/ (gen-options.sh, gen-limits.sh, gen-reference.sh, gen-messages.sh, gen-refusals.sh) share: reading C source, writing markdown cells, collecting errors.
 They import it with `sys.path.insert(0, 'scripts')` from the repository root (they run as `python3 -I -`, which has no script directory)."""
 import functools
 import re
+import sys
+
+errors = []   # what a generator found wrong; exit_on_errors prints it
 
 
 @functools.lru_cache(maxsize=None)   # the selftests of the generators parse the same sources many times
@@ -77,3 +80,20 @@ def testing_lines(text):
         if any(stack):
             out.add(n)
     return out
+
+
+def err(msg):
+    errors.append(msg)
+
+
+def read(path):
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
+def exit_on_errors(prefix=''):
+    """print every error to stderr, one line each, and exit 1"""
+    if errors:
+        for e in errors:
+            print(prefix + e, file=sys.stderr)
+        sys.exit(1)

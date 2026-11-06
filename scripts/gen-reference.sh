@@ -28,11 +28,10 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import esc, norm
+from genlib import err, errors, esc, exit_on_errors, norm, read
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
-errors = []
 
 GROUPS = [
     ('search', 'Search and ranking', 'The `sift` index (BM25): the operator, ranking, query helpers, facets and the inspection of the index.'),
@@ -45,15 +44,6 @@ GROUP_KEYS = [g[0] for g in GROUPS]
 KINDS = {'function': ('function', 'functions'), 'view': ('view', 'views'), 'table': ('table', 'tables'), 'opclass': ('operator class', 'operator classes'),
          'operator': ('operator', 'operators')}
 USAGE_SETTINGS = 'maintenance-and-operations'
-
-
-def err(msg):
-    errors.append(msg)
-
-
-def read(path):
-    with open(os.path.join(ROOT, path), encoding='utf-8') as f:
-        return f.read()
 
 
 # ---- SQL: statements with the comments gone and every dollar-quoted body a plain string ----
@@ -456,9 +446,6 @@ elif not errors:
         f.write(ref + '\n')
     with open(os.path.join(ROOT, 'README.md'), 'w', encoding='utf-8') as f:
         f.write(new_readme)
-if errors:
-    for e in errors:
-        print('reference: ' + e, file=sys.stderr)
-    sys.exit(1)
+exit_on_errors('reference: ')
 print('reference: ok, %d objects listed, %d internal' % (len(rows), len(internal)))
 PY

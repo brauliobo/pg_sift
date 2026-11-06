@@ -24,7 +24,7 @@ import re
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import split_args, strip_comments
+from genlib import err, errors, exit_on_errors, read, split_args, strip_comments
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
@@ -32,16 +32,6 @@ SRC = os.path.join(ROOT, 'src')
 CONST = {'CHAR_BIT': 8, 'FUNC_MAX_ARGS': 100, 'MaxHeapTuplesPerPage': 291, 'BLCKSZ': 8192, 'PG_UINT16_MAX': 65535,
          'PG_UINT32_MAX': 4294967295, 'PG_INT32_MAX': 2147483647}
 LIMIT_NAME = re.compile(r'_MAX_|_LIMIT')
-errors = []
-
-
-def err(msg):
-    errors.append(msg)
-
-
-def read(path):
-    with open(path, encoding='utf-8') as f:
-        return f.read()
 
 
 # ---- the sources: every #define, the sift_limit() sites ----
@@ -256,9 +246,6 @@ if mode == '--check':
 elif not errors:
     with open(docpath, 'w', encoding='utf-8') as f:
         f.write(doc + '\n')
-if errors:
-    for e in errors:
-        print('limits: ' + e, file=sys.stderr)
-    sys.exit(1)
+exit_on_errors('limits: ')
 print('limits: ok, %d limits registered, %d macros with a reason to have no row' % (len(rows), len(allow)))
 PY

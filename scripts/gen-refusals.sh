@@ -21,14 +21,11 @@ import glob
 import os
 import re
 import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, 'scripts')
+from genlib import errors, exit_on_errors, read
 
 mode = sys.argv[1]
-errors = []
-
-
-def read(path):
-    with open(path, encoding='utf-8') as f:
-        return f.read()
 
 
 # ---- the table ----
@@ -130,8 +127,6 @@ for doc in DOCS:
             with open(doc, 'w', encoding='utf-8') as f:
                 f.write(new)
 
-if errors:
-    print('\n'.join(errors), file=sys.stderr)
-    sys.exit(1)
+exit_on_errors()
 print('refusals: ok, %d slugs (%d limits), %d functions that name none' % (len(slugs), sum(1 for s in slugs if s[3]), len(allow)))
 PY
