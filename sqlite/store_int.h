@@ -2,8 +2,8 @@
  * store_int.h - what store.c (the cache and the pages), dir.c (the manifest) and stream.c (the stream reader and writer) share:
  * the state of a store and the helpers that more than one of them calls.
  */
-#ifndef SIFT_STORE_INT_H
-#define SIFT_STORE_INT_H
+#ifndef SIFT_SQ_STORE_INT_H
+#define SIFT_SQ_STORE_INT_H
 
 #include "api.h"
 
@@ -111,4 +111,4 @@ close_blobs(SqStore *st)
 	st->blob = st->wblob = NULL;
 }
 
-#endif							/* SIFT_STORE_INT_H */
+#endif							/* SIFT_SQ_STORE_INT_H */

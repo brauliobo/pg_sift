@@ -2,8 +2,8 @@
  * core/store_int.h - shared between the files of the page and extent store (store.c, freelist.c, writer.c, reader.c,
  * relocate.c, verify.c).
  */
-#ifndef SIFT_STORE_INT_H
-#define SIFT_STORE_INT_H
+#ifndef SIFT_CORE_STORE_INT_H
+#define SIFT_CORE_STORE_INT_H
 
 #include "access/transam.h"
 #include "datatype/timestamp.h"

@@ -1,8 +1,8 @@
 /*
  * table/store_int.h - shared between the files of the layout of a sift_table (store.c and the files that hold the rest of it).
  */
-#ifndef SIFT_STORE_INT_H
-#define SIFT_STORE_INT_H
+#ifndef SIFT_TBL_STORE_INT_H
+#define SIFT_TBL_STORE_INT_H
 
 #include "table/table.h"
 
@@ -27,4 +27,4 @@ find_seg(const SiftDirSnapshot *dir, bool (*pred) (const SiftSegEntry *), SiftSe
 	return NULL;
 }
 
-#endif							/* SIFT_STORE_INT_H */
+#endif							/* SIFT_TBL_STORE_INT_H */

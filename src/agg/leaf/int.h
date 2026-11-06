@@ -3,8 +3,8 @@
  * The leaves of the column source that an expression of the query reads, and the functions the files call each other by (the ones other directories
  * call are in agg/plan_int.h).
  */
-#ifndef SIFT_AGG_LEAF_INT_H
-#define SIFT_AGG_LEAF_INT_H
+#ifndef SIFT_AGG_LEAF_DIR_INT_H
+#define SIFT_AGG_LEAF_DIR_INT_H
 
 #include "agg/plan_int.h"
 
