@@ -62,6 +62,13 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(verdict(list(lifted.items()), 'flat')[2], 'FAIL')
         self.assertEqual(measure([lifted, self.flat], per_size=True)[0], 'PASS')
 
+    def test_the_buffers_of_a_first_plan_are_judged_by_what_each_unit_adds_not_by_the_slope_over_a_floor(self):
+        # units/one_unit[first-plan buffers] before and after 519785ad8 folded the leaf statistics: the floor fell by 57 %, the growth (0.07 to 0.09 a unit) stayed
+        before = dict(zip(SIZES, [1056, 1092, 1158, 1307, 1582]))
+        after = dict(zip(SIZES, [453, 487, 561, 778, 1154]))
+        zones = dict(zip(SIZES, [453, 487 + 150, 561 + 450, 778 + 1200, 1154 + 3000]))
+        self.assertEqual([verdict(list(p.items()), 'plan')[2] for p in (before, after, zones)], ['PASS', 'PASS', 'FAIL'])
+
 
 if __name__ == '__main__':
     unittest.main()
