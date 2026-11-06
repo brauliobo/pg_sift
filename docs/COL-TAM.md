@@ -205,7 +205,7 @@ Planner: no custom path is needed for a plain scan (AM costs through `relation_e
 | physical standby (hot standby reads) | works | the same snapshot rules (`XidInMVCCSnapshot` with the standby's snapshot), `sift_store_check_page` turns a page recycled under a standby query into a serialization failure to retry (P5; `hot_standby_feedback` avoids it). No recovery conflicts are raised by generic WAL. |
 | `pg_basebackup`, PITR, `pg_rewind` | works | block-level WAL, no extra requirement unless the logical record is on (then every node preloads). |
 | `pg_upgrade` | works | files copied; BLCKSZ 8192; the format major/minor in the metapage is checked on open (a newer minor asks for `VACUUM FULL`). |
-| `pg_dump` / restore | works | `COPY` of the live rows through the scan, `CREATE TABLE ... USING sift_table`, indexes and constraints recreated; `ALTER TABLE ... SET (...)` options dumped as reloptions. `pg_dump --no-table-access-method` restores into heap. |
+| `pg_dump` / restore | works | `COPY` of the live rows through the scan, `CREATE TABLE ... USING sift_table`, indexes and constraints recreated; the per-table options (section 8.1) are the rows of `sift.table_option_values`, which `pg_dump` writes with the database. `pg_dump --no-table-access-method` restores into heap. |
 | logical replication, publisher | works with the hybrid record | requires preload; UPDATE/DELETE need a replica identity; partitioned tables and `publish_via_partition_root` as for heap. |
 | logical replication, subscriber | works | the apply worker uses the AM callbacks. |
 | `wal_level = minimal` | works | new relfilenodes skip WAL and are synced at commit by the core (`RelationNeedsWAL`). |

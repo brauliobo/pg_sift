@@ -80,20 +80,23 @@ RESET sift.enable_agg;
 (`EXPLAIN` lines are shortened; figures are from PostgreSQL 18.6 with default `shared_buffers`.) When a query keeps the normal plan, `SET sift.explain_refusals = on`
 says why ([USAGE.md](USAGE.md#why-a-query-kept-the-normal-plan)).
 
-## 5. The opt-in switches
+## 5. The switches worth knowing
 
-The quickstart used only defaults. These settings change behaviour or disk format, so you turn them on yourself (`SHOW` in a session that has used the extension prints the default) ([USAGE.md](USAGE.md#maintenance-and-operations) has the full list):
+The quickstart used only defaults, and pg_sift is meant to be used with them ([TUNING.md](TUNING.md) is the page for the few options worth touching). Two short lists: what is off until you turn it on, and what is on and has the switch that gives it up (`SHOW` in a session that has used the extension prints the value; [USAGE.md](USAGE.md#maintenance-and-operations) has the full list):
+
+| Off by default | What it does when you turn it on |
+|---|---|
+| `sift.parallel_scan` | let the planner add parallel BM25 scans and counts |
+| `sift.table_async_promote` | write-path variant of `sift_table` (no gain measured on a 4-client insert loop) |
+| `sift.explain_refusals` | report why a query kept the normal plan |
 
 | Setting | Default | What it does |
 |---|---|---|
-| `sift.enable_col_scan` | off | plan a `sift_col` index built with the `sift.col_*_ops` classes as a bitmap index scan for queries that return rows ([COL-SCAN.md](COL-SCAN.md)) |
-| `sift.parallel_scan` | off | let the planner add parallel BM25 scans and counts |
+| `sift.enable_col_scan` | on | plan a `sift_col` index built with the `sift.col_*_ops` classes as a bitmap index scan for queries that return rows ([COL-SCAN.md](COL-SCAN.md)) |
 | `sift.col_auto_merge` | on | a background worker vacuums the table after churn, after a build or a bulk load that leaves its pages out of the visibility map, and, after the `VACUUM`, merges a `sift_col` index that churn has scattered (within 5% of the WAL the server writes; `off` stops it) |
-| `sift.table_async_promote` | off | write-path variant of `sift_table` (no gain measured on a 4-client insert loop) |
 | `sift.table_bulk_groups` | on | `COPY`, `CREATE TABLE AS` and `REFRESH MATERIALIZED VIEW` write column groups straight away |
-| `sift.explain_refusals` | off | report why a query kept the normal plan |
 | `sift.agg_lookup_shared_kb` | -1 (the smaller of the cache of a backend and 5% of `shared_buffers`) | shared memory that lets backends reuse the lookup tables a `SiftAgg` join loaded |
-| `sift.col_format_minor` | 15 (the newest 3.3 writes) | a 3.2 library cannot read the `sift_table` tables and the indexes with new options that 3.3 writes at this setting: lower it (6 for 3.2, 4 for 3.1, 3 for 3.0) before writing what an older release must read ([SUPPORT.md](SUPPORT.md#format-minors-and-the-downgrade-rule)) |
+| `sift.col_format_minor` | 15 | the column format the segments are written in: lower it (6 for 3.2, 4 for 3.1, 3 for 3.0) before writing what an older release must read; a 3.2 library cannot read the `sift_table` tables or the indexes with the newer options at 15 ([SUPPORT.md](SUPPORT.md#format-minors-and-the-downgrade-rule)) |
 
 `ALTER SYSTEM` or `ALTER DATABASE ... SET` make a setting stick; `sift.enable_agg = off` is the way back to plain PostgreSQL at any time.
 
