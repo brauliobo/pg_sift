@@ -186,7 +186,7 @@ BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
 	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' WHEN plan ~ 'Index Scan' THEN 'btree' ELSE 'other' END;
 END $$;
--- no plan is a top-N when the limit is a sub-select or a volatile function, or has ties, or a constant past the cap
+-- no plan is a top-N when the limit is a sub-select or a volatile function, or a constant past the cap (a limit with ties is one: limit_ties)
 SELECT ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') AS limit_const,
 	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT (SELECT 10)') AS limit_subquery,
 	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT (random() * 0 + 10)::int') AS limit_volatile,

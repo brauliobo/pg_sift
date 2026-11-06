@@ -136,7 +136,7 @@ s2_win_rn_top1_per_kind	SiftAgg	-
 s2_win_sum_over_group	SiftAgg	-
 s2_win_lag_per_entity	SiftAgg	-
 s2_topn_multi_order	SiftAgg	topn:t
-s2_topn_ties	-	topn:f:topn_shape
+s2_topn_ties	SiftAgg	topn:t
 s2_topn_group_limit	SiftAgg	single:t
 s2_topn_text_order	-	topn:f:cost
 s2_topn_offset_deep	SiftAgg	topn:t
