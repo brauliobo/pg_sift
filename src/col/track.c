@@ -351,6 +351,38 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
 }
 
 /*
+ * The index that REINDEX CONCURRENTLY replaces by this copy (<name>_ccnew, <name>_ccnew1, ..., not valid yet), on the same table, when it has its two triggers: they are the ones of the
+ * copy after the swap, since PostgreSQL moves what depends on the old index to the new one. InvalidOid for any other index, and for an old index that has no triggers of its own.
+ */
+static Oid
+reindex_origin(Relation heap, Relation index)
+{
+	const char *name = RelationGetRelationName(index);
+	const char *p = strstr(name, "_ccnew");
+	Oid			origin;
+	Relation	orig;
+	HearTrig	t[2];
+
+	if (p == NULL || index->rd_index->indisvalid)
+		return InvalidOid;
+	for (const char *d = p + strlen("_ccnew"); *d != '\0'; d++)
+		if (*d < '0' || *d > '9')
+			return InvalidOid;
+	origin = get_relname_relid(pnstrdup(name, p - name), RelationGetNamespace(index));
+	if (!OidIsValid(origin) || (orig = try_relation_open(origin, AccessShareLock)) == NULL)
+		return InvalidOid;
+	origin = InvalidOid;
+	if (orig->rd_rel->relkind == RELKIND_INDEX && orig->rd_rel->relam == index->rd_rel->relam && orig->rd_index->indrelid == RelationGetRelid(heap))
+	{
+		find_triggers(RelationGetRelid(heap), orig, t, sift_col_track_ctid(orig));
+		if (t[0].n == 1 && t[1].n == 1)
+			origin = RelationGetRelid(orig);
+	}
+	relation_close(orig, AccessShareLock);
+	return origin;
+}
+
+/*
  * Installs the two triggers and makes the log complete: unless all is in place already (a new baseline whenever a trigger is new or another row). A NOTICE says it.
  */
 void
@@ -368,10 +400,14 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	}
 	if (channel_as_asked(heap, index, log))
 		return;
-	drop_triggers(heap, index);
-	create_trigger(heap, index, false);
-	create_trigger(heap, index, true);
-	CommandCounterIncrement();
+	/* the copy of REINDEX CONCURRENTLY has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
+	if (!concurrent || !OidIsValid(reindex_origin(heap, index)))
+	{
+		drop_triggers(heap, index);
+		create_trigger(heap, index, false);
+		create_trigger(heap, index, true);
+		CommandCounterIncrement();
+	}
 	/* writers run beside a concurrent build: what they ended before the triggers is not known, so the log is not complete */
 	if (concurrent)
 	{
