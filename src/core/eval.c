@@ -7,7 +7,7 @@
 
 static char *methods;
 static unsigned enabled;
-static const char *const names[] = {"penalty_maintenance", "snapshot_masks", "unit_rewrite", "latest_hint"};
+static const char *const names[] = {"penalty_maintenance", "unit_rewrite", "latest_hint"};
 
 static bool
 check_methods(char **value, void **extra, GucSource source)
