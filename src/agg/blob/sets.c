@@ -202,7 +202,7 @@ blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
 		o->sort = NULL;
 	}
 	else
-		for (uint64 i = 0; i < o->cap; i++)
+		for (uint64 i = 0; i < OSA_SPAN(o); i++)
 			if (o->slot[i].sid1)
 			{
 				OsaRec		rec = {sid2g[o->slot[i].sid1 - 1], 0, o->slot[i].key, o->slot[i].cnt};

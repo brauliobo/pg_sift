@@ -436,3 +436,4 @@ point_pk	a lookup of one row by its primary key	events	-	Index Scan using pk_fac
 agg_stat_variance_groups	`stddev`, `variance`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 agg_stat_corr_groups	`corr`, `regr_slope`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 agg_mode_text_groups	`mode() WITHIN GROUP`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+percentile_distinct_values	`percentile_disc`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

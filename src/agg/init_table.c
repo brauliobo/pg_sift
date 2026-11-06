@@ -609,7 +609,7 @@ table_init(AggExec *ex)
 			get_typlenbyval(a->argtype, &ex->xlen[i], &ex->xbyval[i]);
 		}
 		if (is_ordered_agg(a))
-			ex->osa[i] = a->share == i ? osa_new(ex) : ex->osa[a->share];
+			ex->osa[i] = a->share == i ? osa_new(ex, i) : ex->osa[a->share];
 		if (a->num.n && (a->kind == SAA_COUNT_DISTINCT || a->distinct))
 			idmap_init(&ex->amap[i]);
 		if (a->kind == SAA_GEN)

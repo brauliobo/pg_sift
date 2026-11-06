@@ -35,12 +35,18 @@ typedef struct Osa
 	uint64		cap;
 	uint64		n;
 	uint64		maxn;
+	uint64		rows;			/* values added while the histogram was a hash */
+	bool		flat;			/* nearly every value was new: the pairs are appended to slot[0, n), equal ones side by side (not for a mode()) */
+	bool		noflat;
 	uint32		nsid;
 	uint64		next;			/* read position in the compacted histogram */
 	Tuplesortstate *sort;
 	TupleTableSlot *put;
 	TupleTableSlot *get;
 } Osa;
+
+/* the slots to walk: the whole hash, or the pairs appended to a flat array */
+#define OSA_SPAN(o)	((o)->flat ? (o)->n : (o)->cap)
 
 typedef struct OsaRun
 {
@@ -53,7 +59,7 @@ typedef struct OsaRun
 #pragma GCC visibility push(hidden)
 
 /* osa.c */
-Osa *osa_new(AggExec *ex);
+Osa *osa_new(AggExec *ex, int ai);
 void osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt);
 void osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void osa_sort(Osa *o);

@@ -170,6 +170,7 @@ typedef struct AggExec
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
 	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
+	int			n_osa_flat;
 	uint32		n_gpruned;		/* groups dropped by the top-N of the aggregate (agg/gtopn.c) */
 	struct GKey *gtop;			/* the n best sort keys of the groups so far (a spilled scan returns its partitions one by one) */
 	int			ngtop;

@@ -318,6 +318,7 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	if (part_flush_on(ex))
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	sift_explain_int(&ln, "Ordered Sets Spilled", NULL, "ordered sets spilled", c->n_osa_spilled, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Ordered Sets Flat", NULL, "ordered sets of distinct values", c->n_osa_flat, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Table Spills", NULL, "group table spills", c->n_spills, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Passes", NULL, "group passes", c->n_passes, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Group Pass Restarts", NULL, "group pass restarts", c->n_pass_restarts, SIFT_XI_OPT);

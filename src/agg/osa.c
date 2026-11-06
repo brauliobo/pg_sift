@@ -117,9 +117,12 @@ osa_hash(uint32 sid, uint64 key)
 }
 
 Osa *
-osa_new(AggExec *ex)
+osa_new(AggExec *ex, int ai)
 {
 	Osa		   *o = MemoryContextAllocZero(ex->tcxt, sizeof(Osa));
+
+	for (int j = 0; j < ex->spec->naggs; j++)
+		o->noflat |= ex->spec->agg[j].share == ai && is_ordered_agg(&ex->spec->agg[j]) && osa_is_mode(&ex->spec->agg[j]);
 
 	o->cap = 1024;
 	o->slot = MemoryContextAllocZero(ex->tcxt, o->cap * sizeof(OsaSlot));
@@ -151,12 +154,59 @@ osa_spill(AggExec *ex, Osa *o)
 
 	agg_pair_sort(2, TUPLESORT_NONE, &o->sort, &o->put, &o->get);
 	MemoryContextSwitchTo(old);
-	for (uint64 i = 0; i < o->cap; i++)
+	for (uint64 i = 0; i < OSA_SPAN(o); i++)
 		if (o->slot[i].sid1)
 			osa_put(o, o->slot[i].sid1 - 1, o->slot[i].key, o->slot[i].cnt);
 	pfree(o->slot);
 	o->slot = NULL;
+	o->flat = false;
 	ex->n_osa_spilled++;
+}
+
+/*
+ * A histogram of values that are nearly all distinct (prices, times) is a hash that costs a probe, a slot and a rehash for every value and
+ * saves nothing: after OSA_FLAT_MIN pairs, when four in five values added were new, the pairs are appended to a plain array instead. The
+ * readers walk the pairs (OSA_SPAN) and weigh each by its count, so equal values side by side are what they would find in one slot; a mode() counts
+ * runs of one slot, which is why it keeps the hash. The array has no load factor to keep, so it holds work_mem / 16 pairs where the
+ * hash held a quarter of that.
+ */
+#define OSA_FLAT_MIN	8192
+
+static void
+osa_flat_start(AggExec *ex, Osa *o)
+{
+	uint64		w = 0;
+
+	for (uint64 i = 0; i < o->cap; i++)
+		if (o->slot[i].sid1)
+			o->slot[w++] = o->slot[i];
+	o->flat = true;
+	ex->n_osa_flat++;
+}
+
+/* cnt of the value (sid, key) appended to the array: it grows to the memory work_mem allows, and past that the values go to the sort */
+static void
+osa_flat_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint32 cnt)
+{
+	uint64		room = (uint64) work_mem * 1024 / sizeof(OsaSlot);
+
+	if (o->n >= o->cap)
+	{
+		OsaSlot    *old = o->slot;
+		uint64		ncap = Min(o->cap * 2, room);
+
+		if (ncap <= o->cap)
+		{
+			osa_spill(ex, o);
+			osa_put(o, sid, key, cnt);
+			return;
+		}
+		o->slot = MemoryContextAlloc(ex->tcxt, ncap * sizeof(OsaSlot));
+		memcpy(o->slot, old, o->n * sizeof(OsaSlot));
+		pfree(old);
+		o->cap = ncap;
+	}
+	o->slot[o->n++] = (OsaSlot) {key, sid + 1, cnt};
 }
 
 static void
@@ -188,6 +238,12 @@ osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 		osa_put(o, sid, key, 1);
 		return;
 	}
+	if (o->flat)
+	{
+		osa_flat_add(ex, o, sid, key, 1);
+		return;
+	}
+	o->rows++;
 	for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
 		if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
 		{
@@ -202,7 +258,12 @@ osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 	}
 	o->slot[h] = (OsaSlot) {key, sid + 1, 1};
 	if (++o->n * 2 > o->cap)
-		osa_grow(ex, o);
+	{
+		if (!o->noflat && o->n >= OSA_FLAT_MIN && o->n * 5 > o->rows * 4)
+			osa_flat_start(ex, o);
+		else
+			osa_grow(ex, o);
+	}
 }
 
 /* cnt more of the value (sid, key): the counts of a partial table, a slot holds at most UINT32_MAX */
@@ -219,6 +280,14 @@ osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
 			osa_put(o, sid, key, cnt);
 			return;
 		}
+		if (o->flat)
+		{
+			take = (uint32) Min(cnt, (uint64) UINT32_MAX);
+			osa_flat_add(ex, o, sid, key, take);
+			cnt -= take;
+			continue;
+		}
+		o->rows += cnt;
 		h = osa_hash(sid, key) & (o->cap - 1);
 		for (; o->slot[h].sid1; h = (h + 1) & (o->cap - 1))
 			if (o->slot[h].sid1 == sid + 1 && o->slot[h].key == key && o->slot[h].cnt != UINT32_MAX)
@@ -235,7 +304,12 @@ osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
 		{
 			o->slot[h] = (OsaSlot) {key, sid + 1, take};
 			if (++o->n * 2 > o->cap)
-				osa_grow(ex, o);
+			{
+				if (!o->noflat && o->n >= OSA_FLAT_MIN && o->n * 5 > o->rows * 4)
+					osa_flat_start(ex, o);
+				else
+					osa_grow(ex, o);
+			}
 		}
 		cnt -= take;
 	}
@@ -318,13 +392,13 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 				own->i[g] = ++o->nsid;
 			sid[m] = own->i[g] - 1;
 			key[m] = ik ? ik[b + k] : f8_key(x[b + k]);
-			h[m] = osa_hash(sid[m], key[m]) & (cap - 1);
-			if (o->slot)
+			h[m] = o->flat ? 0 : osa_hash(sid[m], key[m]) & (cap - 1);
+			if (o->slot && !o->flat)
 				__builtin_prefetch(&o->slot[h[m]]);
 			m++;
 		}
 		for (int k = 0; k < m; k++)
-			osa_add(ex, o, sid[k], key[k], o->cap == cap && o->slot ? h[k] : osa_hash(sid[k], key[k]) & (o->cap - 1));
+			osa_add(ex, o, sid[k], key[k], o->flat || (o->cap == cap && o->slot) ? h[k] : osa_hash(sid[k], key[k]) & (o->cap - 1));
 	}
 }
 
@@ -350,7 +424,7 @@ osa_sort(Osa *o)
 		tuplesort_performsort(o->sort);
 		return;
 	}
-	for (uint64 i = 0; i < o->cap; i++)
+	for (uint64 i = 0; i < OSA_SPAN(o); i++)
 		if (o->slot[i].sid1)
 			o->slot[w++] = o->slot[i];
 	qsort(o->slot, w, sizeof(OsaSlot), osa_cmp);
@@ -548,7 +622,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 	OsaPick    *pick = palloc(s->naggs * sizeof(OsaPick));
 	OsaSlot    *by;
 
-	for (uint64 i = 0; i < o->cap; i++)
+	for (uint64 i = 0; i < OSA_SPAN(o); i++)
 		if (o->slot[i].sid1)
 			start[o->slot[i].sid1 - 1 + 1]++, w++;
 	for (uint32 g = 0; g < o->nsid; g++)
@@ -558,7 +632,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 		uint32	   *at = palloc((o->nsid + 1) * sizeof(uint32));
 
 		memcpy(at, start, (o->nsid + 1) * sizeof(uint32));
-		for (uint64 i = 0; i < o->cap; i++)
+		for (uint64 i = 0; i < OSA_SPAN(o); i++)
 			if (o->slot[i].sid1)
 				by[at[o->slot[i].sid1 - 1]++] = o->slot[i];
 		pfree(at);
