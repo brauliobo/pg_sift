@@ -24,58 +24,14 @@ net_write(Relation rel, const SiftSegEntry *entry)
 {
 	SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_SHARED);
 	SiftColSegment *seg = sift_cseg_open(rel, entry, CurrentMemoryContext);
-	const SiftSegHeaderData *old = seg->hdr;
-	uint64		at;
-	uint32		keep_pages = seg->sr.npages - sift_cseg_net_pages(seg, &at);
-	StringInfo	net = sift_cseg_net_build(seg);
-	SiftStreamWriter *sw;
-	SiftExtent *add,
-			   *list,
-			   *release;
-	int			nadd,
-				nlist = 0,
-				nrelease = 0;
-	SiftSegEntry fresh = *entry;
-	SiftMaintSwitch sw_dir = {.old = &entry->gen,.nold = 1,.neu = &fresh};
-	uint32		left = keep_pages;
-	uint64		blocks = 0;
+	int			nextents;
+	uint64		pages = sift_col_net_write(wt, seg, entry, &nextents);
 
-	sift_cseg_net_finish(net, at);
-	sw = sift_sw_begin(wt, entry->gen);
-	sift_sw_write(sw, net->data, net->len);
-	add = sift_sw_finish(sw, &nadd);
-	list = palloc((old->nextents + nadd) * sizeof(SiftExtent));
-	release = palloc((old->nextents + 1) * sizeof(SiftExtent));
-	for (uint32 e = 0; e < old->nextents; e++)
-	{
-		uint32		n = Min(old->extents[e].nblocks, left);
-
-		left -= n;
-		if (n > 0)
-			list[nlist++] = (SiftExtent) {old->extents[e].start, n};
-		if (n < old->extents[e].nblocks)
-			release[nrelease++] = (SiftExtent) {old->extents[e].start + n, old->extents[e].nblocks - n};
-	}
-	for (int i = 0; i < nadd; i++)
-	{
-		list[nlist++] = add[i];
-		blocks += add[i].nblocks;
-	}
-	if (nlist > (int) SIFT_MAX_EXTENTS)
-	{
-		/* the segment is written in too many extents for the header to list the sidecar: it stays as it is (a rewrite writes it in fewer) */
+	/* the segment is written in too many extents for the header to list the sidecar: it stays as it is (a rewrite writes it in fewer) */
+	if (pages == 0)
 		sift_wt_abort(wt);
-		sift_cseg_close(seg);
-		return 0;
-	}
-	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist);
-	release[nrelease++] = (SiftExtent) {entry->header_blk, 1};
-	fresh.flags |= SIFT_SEG_NET;
-	fresh.bytes = entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;
-	sift_wt_finish(wt);
-	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw_dir,.release = release,.nrelease = nrelease,.extra = InvalidBuffer});
 	sift_cseg_close(seg);
-	return blocks + 1;
+	return pages;
 }
 
 /* The column segments that have dead rows the net pre-aggregates they hold do not know get new ones (VACUUM, with the maintenance lock held) */

@@ -429,6 +429,7 @@ extern bool sift_cseg_net_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *
 extern StringInfo sift_cseg_net_build(SiftColSegment *seg);
 extern void sift_cseg_net_finish(StringInfo net, uint64 at);
 extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
+extern uint64 sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, int *nextents);
 extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);
