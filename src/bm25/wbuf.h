@@ -51,9 +51,6 @@ extern uint64 sift_wbuf_seal(Relation index, bool force);
 /* Seals the active segment once it holds a quarter of write_buffer_limit (VACUUM); returns the sealed gen or 0 */
 extern uint64 sift_wbuf_seal_vacuum(Relation index);
 
-/* Re-sets the sealed flag on every lane tail of a sealed segment (idempotent) */
-extern void sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry);
-
 /* Doc view into reader memory, valid until the next sift_wbuf_next */
 typedef struct SiftWbufDoc
 {
@@ -93,8 +90,6 @@ extern int64 sift_wbuf_bulkdelete(Relation index, const SiftSegEntry *entry,
 								 IndexBulkDeleteCallback cb, void *cbstate,
 								 IndexBulkDeleteResult *stats);
 
-/* Extents owned by a write buffer (header and data pages), for release after promotion */
-extern SiftExtent *sift_wbuf_pages(Relation index, const SiftSegEntry *entry, int *n);
 
 /* Docs (deleted ones included), tokens and pages of a write buffer; scans every page */
 extern void sift_wbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *ndocs, uint64 *sum_dl,

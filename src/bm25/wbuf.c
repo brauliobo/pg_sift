@@ -88,12 +88,6 @@ limit_pages(Relation index)
 
 static bool has_docs(Relation index, const SiftSegEntry *entry);
 
-void
-sift_wbuf_flag_sealed(Relation index, const SiftSegEntry *entry)
-{
-	sift_lane_flag_sealed(index, entry);
-}
-
 uint64
 sift_wbuf_seal(Relation index, bool force)
 {
@@ -564,12 +558,6 @@ has_docs(Relation index, const SiftSegEntry *entry)
 
 	sift_wbuf_close(r);
 	return any;
-}
-
-SiftExtent *
-sift_wbuf_pages(Relation index, const SiftSegEntry *entry, int *n)
-{
-	return sift_lane_extents(index, entry, n);
 }
 
 static int

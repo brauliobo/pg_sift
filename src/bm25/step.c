@@ -517,8 +517,8 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
 
-	sift_wbuf_flag_sealed(index, sealed);
-	pages = sift_wbuf_pages(index, sealed, &npages);
+	sift_lane_flag_sealed(index, sealed);
+	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed);
 	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
