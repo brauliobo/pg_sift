@@ -34,6 +34,9 @@
 
 planner_hook_type prev_planner_hook;
 static ExecutorStart_hook_type prev_executor_start;
+#ifdef SIFT_TESTING
+static ExecutorEnd_hook_type prev_executor_end;
+#endif
 
 /* sift_planner has planned a statement of this backend */
 static bool hook_ran;
@@ -678,6 +681,52 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	}
 }
 
+#ifdef SIFT_TESTING
+/*
+ * ExecutorEnd resets the executor state's slot table after the nodes' contexts are deleted: every slot of it must live in the
+ * query context, the one that outlives them (a slot in a node's context is read freed, which a release build does silently:
+ * the cold-backend crash of a table slot made in the wrong context).
+ */
+static bool
+slots_in_query_cxt(EState *estate)
+{
+	foreach_ptr(TupleTableSlot, slot, estate->es_tupleTable)
+		if (GetMemoryChunkContext(slot) != estate->es_query_cxt)
+			return false;
+	return true;
+}
+
+static void
+sift_executor_end(QueryDesc *queryDesc)
+{
+	SIFT_INVARIANT(queryDesc->estate == NULL || slots_in_query_cxt(queryDesc->estate), "a slot of the executor state's table is not in the query memory context");
+	if (prev_executor_end)
+		prev_executor_end(queryDesc);
+	else
+		standard_ExecutorEnd(queryDesc);
+}
+
+PG_FUNCTION_INFO_V1(sift_test_slot_owner);
+
+/* Whether the check above accepts an executor state whose table holds a slot made in the query context (wrong = false) or in a context of a node (wrong = true) */
+Datum
+sift_test_slot_owner(PG_FUNCTION_ARGS)
+{
+	EState	   *estate = CreateExecutorState();
+	MemoryContext node = AllocSetContextCreate(estate->es_query_cxt, "slot owner test", ALLOCSET_SMALL_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(PG_GETARG_BOOL(0) ? node : estate->es_query_cxt);
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(NULL, &TTSOpsVirtual);
+	bool		ok;
+
+	MemoryContextSwitchTo(estate->es_query_cxt);
+	estate->es_tupleTable = lappend(estate->es_tupleTable, slot);
+	MemoryContextSwitchTo(old);
+	ok = slots_in_query_cxt(estate);
+	FreeExecutorState(estate);
+	PG_RETURN_BOOL(ok);
+}
+#endif
+
 void
 sift_aggcte_init(void)
 {
@@ -685,5 +734,9 @@ sift_aggcte_init(void)
 	planner_hook = sift_planner;
 	prev_executor_start = ExecutorStart_hook;
 	ExecutorStart_hook = sift_executor_start;
+#ifdef SIFT_TESTING
+	prev_executor_end = ExecutorEnd_hook;
+	ExecutorEnd_hook = sift_executor_end;
+#endif
 	sift_key_first_init();
 }

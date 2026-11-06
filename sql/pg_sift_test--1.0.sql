@@ -523,3 +523,7 @@ CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_bl
 -- compares, the compares through the opclass's order function, the pages read from the buffer manager, the compares that read the columns one by one (a NULL among the compared columns).
 CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8, OUT tuple_compares int8, OUT column_compares int8, OUT generic_compares int8, OUT page_reads int8, OUT slow_compares int8)
 	RETURNS record AS 'MODULE_PATHNAME', 'sift_test_probe_stats' LANGUAGE C STRICT;
+
+-- Executor end (src/agg/cte/hook.c): whether the check of the executor state's slot table accepts a slot made in the query context (false) or in a context of a node (true)
+CREATE FUNCTION sift._test_slot_owner(in_node_cxt bool) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_slot_owner' LANGUAGE C STRICT;

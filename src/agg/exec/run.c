@@ -780,25 +780,10 @@ stats_run(AggExec *c)
 		sift_stats_preagg_miss(rel, "unit_without_rollup", true, c->n_rollup_miss);
 }
 
-#ifdef SIFT_TESTING
-/* ExecutorEnd resets the executor state's slot table after the node's contexts are deleted: no slot of it may live in one (a testing build errors, a release build reads freed memory) */
-static void
-check_slots_outlive(AggExec *ex)
-{
-	foreach_ptr(TupleTableSlot, slot, ex->css.ss.ps.state->es_tupleTable)
-		for (MemoryContext cx = GetMemoryChunkContext(slot); cx != NULL; cx = MemoryContextGetParent(cx))
-			SIFT_INVARIANT(cx != ex->cxt, "a slot of the executor state's table lives in the node's memory context");
-}
-#endif
-
 static void
 agg_end(CustomScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
-
-#ifdef SIFT_TESTING
-	check_slots_outlive(ex);
-#endif
 
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
