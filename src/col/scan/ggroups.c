@@ -7,12 +7,6 @@
 #include "core/cmp.h"
 #include "col/scan_int.h"
 
-static int
-gorder_cmp_i64(const void *a, const void *b)
-{
-	return pg_cmp_s64(*(const int64 *) a, *(const int64 *) b);
-}
-
 /* The ascending values a (na) and b (nb) as one ascending run of each value once, in out; the length */
 static uint64
 gorder_merge_runs(const int64 *a, uint64 na, const int64 *b, uint64 nb, int64 *out)
@@ -120,7 +114,7 @@ sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64
 			for (uint32 r = 0; r < b->nrows; r++)
 				run[m++] = b->col[gcol].key[r];
 		}
-		qsort(run, m, sizeof(int64), gorder_cmp_i64);
+		qsort(run, m, sizeof(int64), sift_cmp_i64);
 		n = gorder_merge_runs(acc, n, run, m, tmp);
 		t = acc;
 		acc = tmp;

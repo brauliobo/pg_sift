@@ -12,6 +12,7 @@
 #include "storage/fd.h"
 #include "col/build/build_int.h"
 #include "col/runs.h"
+#include "core/cmp.h"
 
 bool		sift_col_build_key_ranges = true;
 
@@ -33,15 +34,6 @@ struct ColSpill
 	BufFile   **file;
 	uint64	   *rows;
 };
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
 
 /* the values of a leaf that are bytes (v.s, len), not a number */
 static bool
@@ -275,7 +267,7 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 		(void) table_index_build_range_scan(heap, b->index, info, false, false, false, start, Min(SIFT_SB_PAGES, nblocks - start), sample_cb, &sm, NULL);
 	}
 	MemoryContextDelete(sm.cx);
-	qsort(sm.keys, sm.n, sizeof(int64), cmp_i64);
+	qsort(sm.keys, sm.n, sizeof(int64), sift_cmp_i64);
 	b->ksample = sm.keys;
 	b->nksample = sm.n;
 }
