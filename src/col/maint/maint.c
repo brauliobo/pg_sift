@@ -224,7 +224,6 @@ maint_worker(Datum main_arg, bool seal)
 			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
-			sift_cwbuf_reads_prepare();
 			if (seal && maint_wbuf_read_due(index))
 				sift_cwbuf_seal(index, true);
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */

@@ -19,4 +19,14 @@ extern void *sift_dsm_join(const char *name, Size size, SiftDsmInit init);
 /* NULL (and *failed set, so that the backend does not try again) where the table could not be had; `what` names what is not shared, `guc` the setting that turns it off (NULL: none) */
 extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail);
 
+#ifdef SIFT_TESTING
+#define SIFT_DSM_DEFERRED_MAX	8
+typedef struct SiftDsmDeferred
+{
+	char		name[48];
+	int64		n;
+} SiftDsmDeferred;
+extern SiftDsmDeferred sift_dsm_deferred[SIFT_DSM_DEFERRED_MAX];
+#endif
+
 #endif

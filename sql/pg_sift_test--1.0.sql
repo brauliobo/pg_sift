@@ -498,6 +498,8 @@ CREATE FUNCTION sift._test_col_log_hidden(reset bool DEFAULT false) RETURNS int8
 
 CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dsm_deferred(OUT name text, OUT asks int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dsm_deferred' LANGUAGE C;
 CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 

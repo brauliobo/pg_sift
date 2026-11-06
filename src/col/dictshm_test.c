@@ -7,12 +7,15 @@
 
 #include <sys/statvfs.h>
 #include "common/hashfn.h"
+#include "funcapi.h"
 #include "lib/ilist.h"
 #include "storage/bufmgr.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
 #include "storage/spin.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 #include "agg/stats.h"
 #include "col/dictshm_int.h"
 #include "col/dictshm.h"
@@ -155,6 +158,25 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	if (got == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(res));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_dsm_deferred);
+
+/* sift._test_dsm_deferred(): the shared tables this backend went without because a statement was writing, and how many times it asked (col/dsmreg.c) */
+Datum
+sift_test_dsm_deferred(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < SIFT_DSM_DEFERRED_MAX && sift_dsm_deferred[i].n > 0; i++)
+	{
+		Datum		v[2] = {CStringGetTextDatum(sift_dsm_deferred[i].name), Int64GetDatum(sift_dsm_deferred[i].n)};
+		bool		nulls[2] = {false, false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */

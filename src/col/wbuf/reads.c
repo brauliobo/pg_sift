@@ -46,22 +46,19 @@ reads_init(SIFT_DSM_INIT_ARGS)
 	SpinLockInit(&s->mutex);
 }
 
-/*
- * The registry attaches in a subtransaction, whose commit advances the command id: that cannot happen under a statement that writes (the supersede of an aminsert reads the
- * buffer, and a row updated twice by one transaction keeps its middle version when the id moves between the two). So the table is attached where no statement is running yet:
- * the planner (sift_col_amcostestimate) and the maintenance worker. A backend that has not been there notes and reads nothing.
- */
-void
-sift_cwbuf_reads_prepare(void)
+/* NULL where the table is not had yet: sift_dsm_attach goes without it under a write statement (the aminsert supersede reads the buffer too) and tries again in the next statement */
+static Reads *
+reads_get(void)
 {
 	if (reads == NULL && !reads_failed)
 		reads = sift_dsm_attach(READS_NAME, sizeof(Reads), reads_init, &reads_failed, "the reads of the write buffers", NULL, false);
+	return reads;
 }
 
 void
 sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows)
 {
-	Reads	   *s = reads;
+	Reads	   *s = reads_get();
 	ReadsEnt   *e = NULL;
 
 	if (s == NULL || rows == 0)
@@ -99,7 +96,7 @@ sift_cwbuf_decoded_take(void)
 uint64
 sift_cwbuf_decoded(Relation index, uint64 gen)
 {
-	Reads	   *s = reads;
+	Reads	   *s = reads_get();
 	uint64		rows = 0;
 
 	if (s == NULL)

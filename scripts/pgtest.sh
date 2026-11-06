@@ -13,6 +13,8 @@
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
 #                                in one database per call (contrib_regression_<first>) and an output directory $SIFT_TMP/regress/<t> per test (parallel
 #                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
+#                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) one at a time on a quiet cluster: a session
+#                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)

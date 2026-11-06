@@ -19,7 +19,6 @@
 #include "utils/selfuncs.h"
 #include "col/pg.h"
 #include "col/am.h"
-#include "col/wbuf.h"
 #include "col/amscan/amscan_int.h"
 
 /*
@@ -200,8 +199,6 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 			   *narrowed = NULL;
 	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
-
-	sift_cwbuf_reads_prepare();
 
 	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one; IS [NOT] NULL tests a bit, as a comparison does */
 	foreach_node(IndexClause, ic, path->indexclauses)
