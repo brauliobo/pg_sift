@@ -180,6 +180,21 @@ leaf_fold(Relation index, const SiftDirSnapshot *dir, SiftColLeafStats *st, Sift
 		if (shared)
 			sift_col_leafshm_write(index->rd_locator.relNumber, fs[nimm], ncols, st, pre, zs);
 	}
+	/* the share of the rows in entries that do not say their string roots are flagged (SIFT_SEG_ROOTS): the test doc ? 'k' reads their NULL slots again from the heap */
+	{
+		double		total = 0,
+					rootless = 0;
+
+		for (int i = 0; i < dir->nsegs; i++)
+			if (dir->segs[i].kind != SIFT_SEG_TOMB)
+			{
+				total += dir->segs[i].ndocs;
+				if (!(dir->segs[i].flags & SIFT_SEG_ROOTS))
+					rootless += dir->segs[i].ndocs;
+			}
+		for (int c = 0; c < ncols; c++)
+			st[c].rootless = sift_col_def_has_kinds(&d->cols[c]) && total > 0 ? rootless / total : 0;
+	}
 	/* what the segments that are not immutable (a write buffer, a segment of an older format) say is not in the record: it is of the directory in hand */
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].kind != SIFT_SEG_TOMB && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
@@ -215,7 +230,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		dir = &own;
 	}
 	for (int i = 0; i < dir->nsegs; i++)
-		stamp = stamp * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
+		stamp = stamp * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1 + ((dir->segs[i].flags & SIFT_SEG_ROOTS) ? 1000003 : 0);	/* a rewrite of a segment changes its format, and the kinds it keeps */
 	if (leaf_cache == NULL)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};

@@ -123,6 +123,7 @@ typedef struct SiftSrcStats
 	double		ovf_frac[SIFT_COLSRC_MAX_LEAVES];	/* of the rows of a unit flagged with an overflow value of the leaf, the share a scan reads again from the heap, from a sample of the flagged units (negative: none could be sampled); of the rows, for an element leaf: its share times the elements of a row */
 	bool		ovf[SIFT_COLSRC_MAX_LEAVES];	/* some unit holds values the leaf cannot store (overflow): reading it raises an error, a numeric leaf's NaNs apart */
 	bool		jnull[SIFT_COLSRC_MAX_LEAVES];	/* some unit may hold a JSON null in the leaf (a write buffer, or a segment that cannot tell it from a missing key, may): its cast to a number raises before PostgreSQL 18 */
+	double		rootless[SIFT_COLSRC_MAX_LEAVES];	/* the share of the rows that lie where a document that is a string cannot be told from a missing key (doc ? 'k' reads them again from the heap) */
 	bool		nokinds[SIFT_COLSRC_MAX_LEAVES];	/* some segment may not tell a JSON null from a missing key in the leaf, or the type of an astext value: a test that needs it raises the REINDEX error */
 } SiftSrcStats;
 

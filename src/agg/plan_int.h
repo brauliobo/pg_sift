@@ -149,6 +149,7 @@ typedef struct AggCtx
 	int			rec_pending;	/* 1 + the leaf func_var_leaf just resolved from a column of jsonb_to_recordset (0: none), which the use_leaf that follows takes */
 	Bitmapset  *rec_ok;			/* leaves read as a column of jsonb_to_recordset ... */
 	Bitmapset  *rec_bad;		/* ... and the leaves read in any other way */
+	Bitmapset  *haskey;			/* the leaves of a conjunct doc ? 'k' (compile_haskey): the source reads again the documents that are no object */
 	List	   *rec_funcs;		/* RecFunc: the jsonb_to_recordset calls of the EXISTS tests over a list, which read its columns as the call of the FROM does */
 	int			cast_pending;	/* 1 + the leaf match_leaf just resolved from the cast of a jsonb_each member's jsonb value to a number (0: none), which the use_leaf that follows takes */
 	Bitmapset  *cast_ok;		/* leaves read through such a cast ... */
@@ -404,6 +405,7 @@ extern void compile_periodic(AggCtx *c, Node *n, SiftAggPred *p);
 extern int typeof_leaf(AggCtx *c, Node *e);
 extern bool source_can_types(AggCtx *c);
 extern SiftAggPred *compile_typeof(AggCtx *c, Node *n);
+extern SiftAggPred *compile_haskey(AggCtx *c, Node *n);
 extern SiftAggPred *compile_wide(AggCtx *c, Node *n);
 extern SiftAggPred *compile_tid(AggCtx *c, Node *n);
 extern bool types_guard_reads(AggCtx *c);

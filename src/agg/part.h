@@ -87,6 +87,7 @@ typedef struct SiftPartStats
 					ovf,
 					nokinds,
 					jnull;
+		double		rootless;
 	}			leaf[FLEXIBLE_ARRAY_MEMBER];
 } SiftPartStats;
 

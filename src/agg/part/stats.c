@@ -53,6 +53,7 @@ sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves)
 		p->leaf[i].gord_bygroup = s->gord_bygroup[i];
 		p->leaf[i].ovf = s->ovf[i];
 		p->leaf[i].nokinds = s->nokinds[i];
+		p->leaf[i].rootless = s->rootless[i];
 		p->leaf[i].jnull = s->jnull[i];
 	}
 	return p;
@@ -102,6 +103,7 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 		tot->ndistinct[i] = Max(tot->ndistinct[i], s->leaf[i].ndistinct);
 		tot->ovf[i] |= s->leaf[i].ovf;
 		tot->nokinds[i] |= s->leaf[i].nokinds;
+		tot->rootless[i] = Max(tot->rootless[i], s->leaf[i].rootless);
 		tot->jnull[i] |= s->leaf[i].jnull;
 	}
 	tot->nrows += s->nrows;

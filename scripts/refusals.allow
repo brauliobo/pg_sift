@@ -57,3 +57,4 @@ paths.c: has_correlated_children # a test of the path for the plan of a correlat
 plan_prednorm.c: widening # a test of whether a comparison widens the type of its column: a comparison that does stays an expression of the leaf, no arm is refused
 spec.c: sift_aggspec_gstream sift_aggspec_ord_range # tests of whether a spilled scan can give its groups in the order of the ORDER BY: a no spills the groups and sorts them, no arm is refused
 plan_contains.c: path_declared # a lookup of the leaf at a path of a jsonb column: the caller says the path is undeclared and runs the containment on the leaves, no arm is refused
+plan_type.c: haskey_reads # a walk of the query for the reads of the document and of the key leaf besides the test doc ? 'k': compile_haskey says no, and the conjunct stays the normal plan's

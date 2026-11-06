@@ -224,6 +224,92 @@ compile_typeof(AggCtx *c, Node *n)
 	return p;
 }
 
+typedef struct HasKeyReads
+{
+	AggCtx	   *c;
+	int			att;
+	const char *key;
+	int			tests;			/* the tests doc ? 'key' */
+	bool		other;			/* the document, or the member of the key, read in any other way */
+} HasKeyReads;
+
+static bool
+haskey_reads(Node *n, HasKeyReads *w)
+{
+	JsonRef		r = {0};
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, haskey_reads, w, 0);
+	if (func_of(n) == F_JSONB_EXISTS && json_access(w->c, linitial(func_args(n)), &r) && r.att == w->att && r.path == NIL)
+	{
+		Node	   *k = strip_relabel(lsecond(func_args(n)));
+
+		if (IsA(k, Const) && !((Const *) k)->constisnull && strcmp(TextDatumGetCString(((Const *) k)->constvalue), w->key) == 0)
+			w->tests++;
+		return false;
+	}
+	r = (JsonRef) {0};
+	if (json_access(w->c, n, &r) && r.att == w->att)
+	{
+		w->other |= r.path == NIL || strcmp(strVal(linitial(r.path)), w->key) == 0;
+		return false;
+	}
+	return expression_tree_walker(n, haskey_reads, w);
+}
+
+/*
+ * A conjunct `doc ? 'k'` on the document of an index that declares the path k as a leaf: the key exists where the leaf holds a value of any JSON
+ * type (a JSON null too), which is the type test of compile_typeof, and in a document that is no object where it is an array holding the string
+ * or the string itself, which the leaf does not store (it is the overflow of the array or the string, whose reads are NULL): the source reads
+ * those rows again from the heap (SRK_HASKEY). The leaf is read by this test alone: another read of the document or of the key would see the
+ * NULL of such a row.
+ */
+SiftAggPred *
+compile_haskey(AggCtx *c, Node *n)
+{
+	JsonRef		r = {0};
+	Node	   *key;
+	HasKeyReads w = {c};
+	List	   *path;
+	int			leaf = -1;
+	SiftAggPred *p;
+
+	n = strip_relabel(n);
+	if (func_of(n) != F_JSONB_EXISTS || !json_access(c, linitial(func_args(n)), &r) || r.as_text || r.att <= 0 || r.path != NIL)
+		return NULL;
+	key = strip_relabel(lsecond(func_args(n)));
+	if (!IsA(key, Const) || ((Const *) key)->constisnull || !source_can_types(c) || c->search || !OidIsValid(c->indexoid) ||
+		!sift_colsrc_can_recheck(get_rel_relam(c->indexoid), true))
+		return NULL;
+	path = list_make1(makeString(TextDatumGetCString(((Const *) key)->constvalue)));
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) && typeof_type(l->typid))
+			leaf = i;
+	}
+	w.att = r.att;
+	w.key = strVal(linitial(path));
+	if (leaf < 0 || c->stats.nokinds[leaf] || bms_is_member(leaf, c->used))
+		return NULL;
+	haskey_reads((Node *) c->root->parse, &w);
+	if (w.other || w.tests != 1)
+		return NULL;
+	p = new_pred(c, SAP_TYPE);
+	p->leaf = leaf;
+	p->level = leaf_level(c, leaf);
+	c->used = bms_add_member(c->used, leaf);
+	c->rec_bad = bms_add_member(c->rec_bad, leaf);
+	c->txt_bad = bms_add_member(c->txt_bad, leaf);
+	c->haskey = bms_add_member(c->haskey, leaf);
+	p->op = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE;
+	p->desc = expr_text(c, n);
+	return p;
+}
+
 /* the types a wide leaf keeps as lanes (all the comparisons run on the lanes), and those it keeps as an image that is the same bytes exactly when the values are equal (= <> IN NOT IN run on it) */
 static bool
 lane_type(Oid t)

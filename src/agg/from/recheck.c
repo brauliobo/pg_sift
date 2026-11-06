@@ -293,8 +293,11 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	Bitmapset  *list = NULL;
 	int			grp;
-	SiftSrcRecheck scalar = scalar_recheck(c, s, m);
+	SiftSrcRecheck scalar;
 
+	if (bms_is_member(m, c->haskey))
+		return SRK_HASKEY;
+	scalar = scalar_recheck(c, s, m);
 	if (scalar != SRK_NONE)
 		return scalar;
 	if (leaf_recheck(c, m) == SRK_NONE)

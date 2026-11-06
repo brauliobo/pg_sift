@@ -246,6 +246,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->ovf, src->ovf, b);
 	memcpy(dst->jnull, src->jnull, b);
 	memcpy(dst->nokinds, src->nokinds, b);
+	memcpy(dst->rootless, src->rootless, d);
 }
 
 /*

@@ -349,6 +349,7 @@ typedef enum SiftSrcRecheck
 	SRK_CAST,					/* a member of jsonb_each read only through the cast of its jsonb value to the leaf's number type: a value of another JSON type raises where the row reaches the aggregate */
 	SRK_RECORDSET_LAZY,			/* a spec's SRK_RECORDSET whose error the EXISTS test of the list raises when it reaches the row, not the rows' conjuncts (the source is given SRK_RECORDSET) */
 	SRK_CAST_TESTED,			/* a spec's SRK_CAST that a conjunct of the members casts too: the cast of the conjunct raises first, for every row that reaches the members, so the error is raised before they are tested (the source is given SRK_CAST) */
+	SRK_HASKEY,					/* the top-level key of the test doc ? 'key' (key): the rows whose document is no object, which the leaf stores as the overflow of a path that leads nowhere, are read again to tell a document that has the key (a string equal to it, an array holding it) from one that has not */
 	SRK_IOCAST					/* a path of the document read only as `(doc ->> 'k')::T`, T the leaf's type: the text of the scalar through the input function of T, which raises where the row reaches the aggregate (the source is given SRK_TEXT) */
 } SiftSrcRecheck;
 

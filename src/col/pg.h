@@ -109,6 +109,7 @@ extern struct SiftShredRecheck *sift_col_shred_recheck_create(MemoryContext mcxt
 extern void sift_col_shred_recheck_set(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode);
 /* the value column i of a map is read as the cast of the member of one key to the type cast (an Oid) */
 extern void sift_col_shred_recheck_member(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key, Oid cast);
+extern void sift_col_shred_recheck_haskey(struct SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key);
 
 /* ---------------------------------------------------------------------------
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)

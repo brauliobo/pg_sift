@@ -443,6 +443,9 @@ extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
 
 /* The overflow bits of the chunk of leaf col, *n slots (the rows of a top level leaf, the elements of the unit for a child leaf); NULL when the leaf holds no overflow value. Valid until the next unit */
 extern const uint64 *sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n);
+extern bool sift_col_unit_roots(const SiftColUnit *unit);
+extern bool sift_col_ovf_none_slots(const SiftColUnit *unit, int col, uint64 *bits);
+extern const uint64 *sift_col_null_slots(const SiftColUnit *unit, int col, uint32 *n);
 
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);

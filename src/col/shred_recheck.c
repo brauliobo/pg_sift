@@ -171,6 +171,51 @@ sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid ca
 	MemoryContextSwitchTo(old);
 }
 
+void
+sift_shred_recheck_haskey(SiftShredRecheck *rc, int col, const char *key)
+{
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(rc->col));
+	SiftRecheckMember *m;
+
+	rc->mem = rc->mem ? repalloc(rc->mem, (rc->nmem + 1) * sizeof(SiftRecheckMember)) : palloc((rc->nmem + 1) * sizeof(SiftRecheckMember));
+	m = &rc->mem[rc->nmem++];
+	m->col = col;
+	m->key = pstrdup(key);
+	m->keylen = strlen(key);
+	m->cast = InvalidOid;
+	rc->col[col] = SRC_HASKEY;
+	MemoryContextSwitchTo(old);
+}
+
+/* a document that is no object says, for each key tested with ?, whether it has it: a string equal to the key, an array holding that string */
+static void
+root_has_keys(SiftShred *sh, const JsonbValue *v, const SiftShredRecheck *rc)
+{
+	for (int i = 0; i < rc->nmem; i++)
+	{
+		const SiftRecheckMember *m = &rc->mem[i];
+		bool		has = false;
+
+		if (rc->col[m->col] != SRC_HASKEY)
+			continue;
+		if (v->type == jbvString)
+			has = v->val.string.len == m->keylen && memcmp(v->val.string.val, m->key, m->keylen) == 0;
+		else if (v->type == jbvBinary && JsonContainerIsArray(v->val.binary.data))
+		{
+			JsonbIterator *it = JsonbIteratorInit(v->val.binary.data);
+			JsonbValue	e;
+			JsonbIteratorToken tok;
+
+			while (!has && (tok = JsonbIteratorNext(&it, &e, true)) != WJB_DONE)
+				has = tok == WJB_ELEM && e.type == jbvString && e.val.string.len == m->keylen && memcmp(e.val.string.val, m->key, m->keylen) == 0;
+			while (tok != WJB_DONE && (tok = JsonbIteratorNext(&it, &e, true)) != WJB_DONE)
+				;
+		}
+		if (has)
+			sift_shred_root_has(sh, m->key, m->keylen);
+	}
+}
+
 /* the error of a cast of a jsonb value that is no number: its type is named as jsonb_float8, jsonb_int4 and jsonb_int8 name it */
 static void
 cast_error(SiftShredRecheck *rc, const JsonbValue *v, Oid to)
@@ -236,7 +281,13 @@ sift_shred_recheck_value(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *r
 		case SIFT_SHRED_T_LEAF:
 			return recheck_leaf(sh, v, rc, id);
 		case SIFT_SHRED_T_OBJECT:
-			/* a key of an array is NULL, as for `->` and a record column */
+			/* a document that is no object: a key of it is NULL, as for `->` and a record column, but for the keys tested with ?, which a string or an array can have */
+			if (sift_shred_at_root(sh) && (arr || v->type != jbvBinary))
+			{
+				if (rc->nmem > 0)
+					root_has_keys(sh, v, rc);
+				return true;
+			}
 			if (!arr)
 				return false;
 			sift_shred_null(sh);

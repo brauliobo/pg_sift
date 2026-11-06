@@ -66,6 +66,7 @@ typedef struct SiftColLeafStats
 	bool		has_ovf;		/* some unit's zone is flagged with an overflow value (a dead row's too, until the segment is rewritten) */
 	bool		inl;			/* some unit stores its strings inline: no dictionary describes them */
 	bool		has_jnull;		/* some unit's zone is flagged SIFT_COLZ_JNULL: a NULL slot of the leaf is a JSON null (a segment written before the flag does not say) */
+	double		rootless;		/* the share of the rows of the index that lie in a segment or a write buffer without SIFT_SEG_ROOTS (a leaf of a jsonb path): a document that is a string cannot be told from a missing key in it */
 	bool		nokinds;		/* some segment of column format below SIFT_COL_FORMAT_KINDS holds NULL slots (or astext values) of the leaf: a JSON null and a missing key, or the type of a value, cannot be told in it */
 } SiftColLeafStats;
 

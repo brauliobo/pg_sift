@@ -445,3 +445,4 @@ topn_with_ties	`FETCH FIRST n ROWS WITH TIES` by an integer column	events	-	Top-
 agg_percentile_array	the percentiles of an array of fractions are picked from the one set of values the scan keeps	events	-	Pushed Aggregates: percentile_cont\(0.25\)	native	-	ms,minstr	faster33	no	-
 agg_topn_chunk	a tuple of a topn that comes after the last kept one of its group is dropped on the first sort key alone	events	-	array_agg\(tk_events\.id ORDER BY.*\[1:5\]	native	-	ms,minstr	faster33	no	-
 agg_distinct_ordered	the distinct values of a group ordered by the argument itself are a set that is sorted once	events	-	array_agg\(DISTINCT do_events\.kind_id ORDER BY	native	-	ms,minstr	faster33	no	-
+jsonb_key_exists	`doc ? 'k'` of a document column that declares the path k	events	-	Pushed Aggregates: count\(\*\)	native	-	ms	faster33	no	-

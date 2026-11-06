@@ -30,6 +30,7 @@ typedef enum SiftRecheckCol
 	SRC_OFF,					/* as the shredder does: a value the leaf cannot store is an overflow slot */
 	SRC_JSONCAST,				/* the value of a jsonb that the query casts to the leaf's number type (a jsonb_each member): a number as the cast gives it, any other type is the error the cast raises */
 	SRC_MEMBER,					/* the value column of a map of which the query casts the member of some keys (SiftRecheckMember) as SRC_JSONCAST does: the other members are read as the shredder does, and no error */
+	SRC_HASKEY,					/* the leaf of a top-level key that the query tests with doc ? 'key': a document that is a string equal to the key or an array holding that string has the key, which the leaf says as a JSON null; a missing key and every other document say none (SiftRecheckMember) */
 	SRC_TEXTIO					/* the text of the scalar (a string as it is, a number as numeric_out prints it, true or false, a container as its JSON) through the input function of the leaf's type, as a record column of jsonb_to_recordset and (x->>'k')::type do */
 } SiftRecheckCol;
 
@@ -68,6 +69,8 @@ extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredR
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
 /* column col is read as the cast of the member of key to the type cast */
 extern void sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid cast);
+/* column col is the key of doc ? 'key' */
+extern void sift_shred_recheck_haskey(SiftShredRecheck *rc, int col, const char *key);
 
 /* The walk's hooks (col/shred_recheck.c): the value is consumed (true) or left to the plain walk (false); settle runs after either */
 extern bool sift_shred_recheck_value(SiftShred *sh, const JsonbValue *v, SiftShredRecheck *rc);

@@ -414,6 +414,48 @@ sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits)
 	return true;
 }
 
+/* Were the documents of the unit shredded with a string root flagged as an overflow (SIFT_SEG_ROOTS of its segment or lane)? A batch of memory made here was */
+bool
+sift_col_unit_roots(const SiftColUnit *unit)
+{
+	const ColUnit *cu = unit->priv;
+
+	return cu->seg == NULL ? cu->roots : (cu->seg->entry.flags & SIFT_SEG_ROOTS) != 0;
+}
+
+/* The slots of the leaf that overflowed with the type "no value" (a document that is no object, whose path leads nowhere), as a bit for each row of the unit: false when there is none */
+bool
+sift_col_ovf_none_slots(const SiftColUnit *unit, int col, uint64 *bits)
+{
+	SiftCChunk	c;
+	uint64	   *tagged;
+	bool		any = false;
+
+	if (!unit_chunk(unit->priv, col, &c) || c.ovf == NULL)
+		return false;
+	tagged = palloc((c.n + 63) / 64 * sizeof(uint64));
+	sift_cchunk_tag_bits(&c, SIFT_COLTAG_NONE, tagged);
+	for (uint32 w = 0; w < (c.n + 63) / 64; w++)
+	{
+		bits[w] = tagged[w] & c.ovf[w];
+		any |= bits[w] != 0;
+	}
+	pfree(tagged);
+	return any;
+}
+
+/* The NULL slots of the leaf, a bit for each row of the unit (NULL: none) */
+const uint64 *
+sift_col_null_slots(const SiftColUnit *unit, int col, uint32 *n)
+{
+	SiftCChunk	c;
+
+	if (!unit_chunk(unit->priv, col, &c) || c.nulls == NULL)
+		return NULL;
+	*n = c.n;
+	return c.nulls;
+}
+
 const uint64 *
 sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n)
 {

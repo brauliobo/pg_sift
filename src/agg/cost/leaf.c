@@ -211,7 +211,8 @@ double
 recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
 	double		rows = 0,
-				flagged = 0;
+				flagged = 0,
+				rootless = 0;
 
 	for (int i = 0; i < s->nleaves + s->nvleaf; i++)
 	{
@@ -233,8 +234,10 @@ recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		frac = c->stats.ovf_frac[leaf] < 0 ? AGG_RECHECK_FRAC : c->stats.ovf_frac[leaf];
 		rows = Max(rows, k->rows * c->stats.ovf_units[leaf] * frac);
 		flagged = Max(flagged, c->stats.ovf_units[leaf]);
+		if (bms_is_member(leaf, c->haskey))
+			rootless += k->rows * c->stats.rootless[leaf];	/* a segment that does not say its string roots are flagged: all its NULL slots are read again */
 	}
-	return Max(rows, k->units * flagged) * AGG_RECHECK_ROW;
+	return (Max(rows, k->units * flagged) + rootless) * AGG_RECHECK_ROW;
 }
 
 /* is the leaf one the source tests on its stored values (a comparison, IN list or null test of the query's WHERE): decoded for every row of a unit */

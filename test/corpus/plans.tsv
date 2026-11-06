@@ -169,7 +169,7 @@ s2_pred_not_equal	SiftAgg	single:t
 s2_pred_coalesce	SiftAgg	single:t
 s2_pred_func_lower	SiftAgg	single:t
 s2_pred_text_range	-	single:f:cost
-s2_pred_exists_jsonb_key	-	single:f:where
+s2_pred_exists_jsonb_key	SiftAgg	single:t
 s2_pred_array_any	SiftAgg	single:t
 s2_pred_bool_flag	SiftAgg	single:t
 s2_pred_not_null_group	SiftAgg	single:t

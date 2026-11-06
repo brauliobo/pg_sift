@@ -69,13 +69,16 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 
 	if (mode == SRK_NONE)
 		return;
-	if (key != NULL)
+	if (mode == SRK_HASKEY)
+		sift_col_shred_recheck_haskey(k->rc, r->shred, att, leaf - r->first[att], key);
+	else if (key != NULL)
 		sift_col_shred_recheck_member(k->rc, r->shred, att, leaf - r->first[att], key, cast);
 	else
 		sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
 	for (int i = 0; i < k->nleaf; i++)
 		if (k->leaf[i] == leaf)
 			return;
+	k->haskey[k->nleaf] = mode == SRK_HASKEY;
 	k->leaf[k->nleaf++] = leaf;
 }
 
@@ -105,6 +108,36 @@ recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
 }
 
 /*
+ * The rows of the key of doc ? 'key' that the heap must tell: the documents that are no object, which the leaf stores as the overflow of a path that leads nowhere. A unit of a
+ * segment that does not say its string roots are flagged (SIFT_SEG_ROOTS) stores such a document as a NULL slot like any missing key, so all its NULL slots are read again.
+ */
+static bool
+recheck_flag_haskey(ColSource *src, int leaf, uint32 nw, uint64 *rows)
+{
+	const SiftColUnit *cu = &src->unit;
+	uint64	   *none = palloc0(Max(nw, 1) * sizeof(uint64));
+	bool		any = false;
+
+	if (col_overflow(src, NULL, leaf) && sift_col_ovf_none_slots(cu, leaf, none))
+	{
+		for (uint32 w = 0; w < nw; w++)
+			rows[w] |= none[w];
+		any = true;
+	}
+	if (!sift_col_unit_roots(cu))
+	{
+		uint32		n;
+		const uint64 *nul = sift_col_null_slots(cu, leaf, &n);
+
+		for (uint32 w = 0; nul != NULL && w < nw; w++)
+			rows[w] |= nul[w];
+		any |= nul != NULL;
+	}
+	pfree(none);
+	return any;
+}
+
+/*
  * Called by `live` for the stored unit the source is at: the rows that hold such a value and are live leave `bits` and become the candidates
  * (k->cand, which the executor may narrow, col_recheck_rows), read again from the heap by the next call of col_next (recheck_pending).
  * Once per unit: the flagged rows are kept, a second call only takes them out of its bits again.
@@ -126,7 +159,9 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		k->cand = k->cand ? repalloc(k->cand, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
-			if (col_overflow(src, NULL, k->leaf[i]))
+			if (k->haskey[i])
+				any |= recheck_flag_haskey(src, k->leaf[i], nw, k->flag);
+			else if (col_overflow(src, NULL, k->leaf[i]))
 			{
 				recheck_flag_leaf(src, k->leaf[i], k->flag);
 				any = true;

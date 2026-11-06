@@ -460,6 +460,12 @@ sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, i
 }
 
 void
+sift_col_shred_recheck_haskey(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key)
+{
+	sift_shred_recheck_haskey(rc, a->attr[attno].leaf[i - a->attr[attno].base].col, key);
+}
+
+void
 sift_col_shred_recheck_member(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key, Oid cast)
 {
 	sift_shred_recheck_member(rc, a->attr[attno].leaf[i - a->attr[attno].base].col, key, cast);
