@@ -1,4 +1,4 @@
--- The corpus: 239 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 241 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -521,3 +521,9 @@ select sensor_id, date_trunc('hour', ts) h, avg(value), min(value), max(value) f
 select date_trunc('month', d) m, status, count(*), sum(amount) from events_p group by 1, 2;
 -- @case c2_eav_pivot_two | agg | pivot of two attributes
 select dim_a_id, max(value) filter (where attr = 'attr_1'), max(value) filter (where attr = 'attr_2') from eav where dim_a_id <= 3000 group by 1;
+
+-- ===================== a table left-joined to a join of two small tables
+-- @case c2_cross_kinds_regions | join | every kind and region with its count
+select k.name, r.region, count(e.id) from kinds k cross join (select distinct region from dim_a) r left join events e on e.kind_id = k.id and e.region = r.region where k.id <= 8 group by 1, 2;
+-- @case c2_cross_kinds_regions_sums | join | the same with count(*), a sum and a max, and a condition on the events
+select k.name, r.region, count(*), sum(e.qty), max(e.amount) from kinds k cross join (select distinct region from dim_a) r left join events e on e.kind_id = k.id and e.region = r.region and e.status = 'paid' group by 1, 2;

@@ -69,8 +69,8 @@ is_total(Oid f)
 }
 
 /* the aggregates whose answer is the same added up from the groups of any partition of the rows */
-static bool
-addable(Aggref *a)
+bool
+flat_addable(Aggref *a)
 {
 	char	   *name;
 
@@ -100,7 +100,7 @@ collect_walker(Node *n, Collect *c)
 	{
 		Aggref	   *a = (Aggref *) n;
 
-		if (!addable(a) || !over_union((Node *) a->args, c->p))
+		if (!flat_addable(a) || !over_union((Node *) a->args, c->p))
 			c->ok = false;
 		else if (!list_member(c->p->aggs, a))
 			c->p->aggs = lappend(c->p->aggs, a);
@@ -250,12 +250,11 @@ index_of(List *l, Node *n)
 	return -1;
 }
 
-/* the aggregate of the query above the union that adds the partial aggregate up */
-static Node *
-outer_aggregate(Push *p, Aggref *a)
+/* the aggregate that adds up the partial aggregates of the aggregate a, which the expression part holds for each group */
+Node *
+flat_add_up(Aggref *a, Node *part)
 {
 	Aggref	   *o = makeNode(Aggref);
-	Var		   *v = union_column(p, list_length(p->keys) + index_of(p->aggs, (Node *) a));
 
 	o->aggfnoid = a->aggfnoid;
 	o->aggtype = a->aggtype;
@@ -268,8 +267,8 @@ outer_aggregate(Push *p, Aggref *a)
 		o->aggtype = NUMERICOID;
 		o->aggcollid = o->inputcollid = InvalidOid;
 	}
-	o->aggargtypes = list_make1_oid(v->vartype);
-	o->args = list_make1(makeTargetEntry((Expr *) v, 1, NULL, false));
+	o->aggargtypes = list_make1_oid(exprType(part));
+	o->args = list_make1(makeTargetEntry((Expr *) part, 1, NULL, false));
 	o->aggkind = AGGKIND_NORMAL;
 	o->aggsplit = AGGSPLIT_SIMPLE;
 	o->aggno = o->aggtransno = -1;
@@ -277,6 +276,12 @@ outer_aggregate(Push *p, Aggref *a)
 	if (o->aggtype == a->aggtype)
 		return (Node *) o;
 	return coerce_to_target_type(NULL, (Node *) o, o->aggtype, a->aggtype, -1, COERCION_EXPLICIT, COERCE_IMPLICIT_CAST, -1);
+}
+
+static Node *
+outer_aggregate(Push *p, Aggref *a)
+{
+	return flat_add_up(a, (Node *) union_column(p, list_length(p->keys) + index_of(p->aggs, (Node *) a)));
 }
 
 static Node *

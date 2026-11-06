@@ -431,3 +431,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 -	agg_probe_anti	200000	native	default	instr_m	703	10	bench case agg_probe_anti, native plan, records in program-scale/realq42b/wp26
 3.4 M instructions and 0.33 ms	set_list_unit_span	300000	sift	default	instr_m	3.37	10	CHANGELOG 4.2 line of the IN list cut to the keys of a unit, run e4f48bdd9c76-20261106T045626Z-9d76, records in program-scale/realq42b/records/setspan-case-after.rec (before: setspan-case-before.rec); the scan forced with sift.agg_force
 3.4 M instructions and 0.33 ms	set_list_unit_span	300000	sift	default	exec_ms	0.33	40	CHANGELOG 4.2 line of the IN list cut to the keys of a unit, run e4f48bdd9c76-20261106T045626Z-9d76, records in program-scale/realq42b/records/setspan-case-after.rec (before: setspan-case-before.rec); the scan forced with sift.agg_force
+-	agg_left_partial	300000	picked	default	exec_ms	0.43	25	bench case agg_left_partial, 300,000 events, 20 kinds, 12 regions, records in program-scale/realq42b/wp26c
+-	agg_left_partial	300000	picked	default	instr_m	3.3	10	bench case agg_left_partial, records in program-scale/realq42b/wp26c
+-	agg_left_partial	300000	native	default	exec_ms	65.5	25	bench case agg_left_partial, native plan, records in program-scale/realq42b/wp26c
+-	agg_left_partial	300000	native	default	instr_m	840	10	bench case agg_left_partial, native plan, records in program-scale/realq42b/wp26c

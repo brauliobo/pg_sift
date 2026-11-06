@@ -149,6 +149,11 @@ WHERE e.parent_id IN (SELECT id FROM dims WHERE active) AND e.deleted_at IS NULL
 SELECT d.tier, count(*) AS n, sum(e.amount) AS total FROM events e LEFT JOIN dims d ON d.id = e.parent_id AND d.active
 WHERE e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
+-- name: left_cross_dims
+-- expect: scan 0.07 0.27
+SELECT k.kind, s.skew_id, count(e.id) AS n, sum(e.qty) AS q FROM (SELECT DISTINCT kind FROM events) k CROSS JOIN (SELECT DISTINCT skew_id FROM events WHERE skew_id <= 5) s
+LEFT JOIN events e ON e.kind = k.kind AND e.skew_id = s.skew_id GROUP BY 1, 2 ORDER BY 1, 2;
+
 -- name: join_other_fact_filter
 -- expect: scan 0.23 0.93
 SELECT d.tier, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id

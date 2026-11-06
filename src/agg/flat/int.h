@@ -49,6 +49,8 @@ extern bool group_aggregate_lateral(Query *q, bool apply);
 extern void flat_inner_items(Node *n, List **rtis, List **quals);
 extern void flat_ungroup(Query *q);
 extern bool flat_picks_rows(Node *c);
+extern bool flat_addable(Aggref *a);
+extern Node *flat_add_up(Aggref *a, Node *part);
 
 extern bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
 extern void decor_apply(Query *q, DecorJoin *r);

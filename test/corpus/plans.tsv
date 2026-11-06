@@ -238,3 +238,5 @@ c2_weblog_error_ratio_hour	SiftAgg	single:t
 c2_readings_hour_stats	SiftAgg	single:t
 c2_events_p_month_status	SiftAgg	single:t
 c2_eav_pivot_two	-	single:f:cost
+c2_cross_kinds_regions	SiftAgg	-
+c2_cross_kinds_regions_sums	SiftAgg	-

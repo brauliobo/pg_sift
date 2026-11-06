@@ -260,6 +260,7 @@ flatten_query(Query *q, bool apply)
 	flat_fenced |= fence_sublinks(q, apply);
 	/* before the joins are read as probes: the queries they move have their tables joined as written (a table read as a probe is a sub-select the keys are not looked up in) */
 	changed |= sift_agg_eager_lookup(q, apply);
+	changed |= sift_agg_partial_left(q, apply);
 	changed |= sift_agg_push_dim_keys(q, apply);
 	probe_mixed = changed;
 	probed = probe_sublinks(q, apply);
