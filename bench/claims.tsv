@@ -385,3 +385,7 @@ the heap fetch of a top-N is priced at a page of the b-tree plan with a LIMIT	en
 -	agg_jsonb_contain_object	200000	picked	default	instr_m	17.7	10	bench case agg_jsonb_contain_object, records in program-scale/realq42b/wp07
 -	agg_jsonb_contain_object	200000	native	default	exec_ms	32.2	25	bench case agg_jsonb_contain_object, native plan with a GIN index on doc, records in program-scale/realq42b/wp07
 -	agg_jsonb_contain_object	200000	native	default	instr_m	307	10	bench case agg_jsonb_contain_object, native plan, records in program-scale/realq42b/wp07
+multiplied by the skew of the column	set_key_skew_dimension	200000	picked	default	instr_m	45	25	the scan, run 228c32d696f3-20261106T013931Z-966b, records in program-scale/records/wp20-skew-20261105.rec
+multiplied by the skew of the column	set_key_skew_dimension	200000	picked	default	exec_ms	3.0	40	same run
+multiplied by the skew of the column	set_key_skew_dimension	200000	native	default	instr_m	99	25	the normal plan, same run
+multiplied by the skew of the column	set_key_skew_dimension	200000	native	default	exec_ms	19.6	40	same run

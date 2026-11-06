@@ -1,0 +1,40 @@
+-- A key set that a join passes (here the entities of a membership table joined through a dimension) holds the keys that have rows, which are the hot ones of a skewed
+-- column: PostgreSQL counts a probe of a key at the mean's rows (events / entities) and under-counts the rows the set owns. The price of the plan that probes the keys
+-- is multiplied by the skew of the column (the whole of it; it was its square root), and the scan, whose cost follows the units the keys leave, is chosen where the
+-- plan's estimate is a few times under the truth. The dimension's statistics say a table of 40 times its size (the estimate a planner starts from where a table
+-- was not analyzed again after it grew). Measured on 300,000 events of 2,000 entities, 12 keys: the hot set takes 109 million cycles with the normal plan and 7.3 with
+-- the scan, a set of cold keys 9.7 and 3.9.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE ev (id int PRIMARY KEY, entity int NOT NULL, amount int NOT NULL, pad text NOT NULL DEFAULT repeat('x', 200)) WITH (autovacuum_enabled = false);
+-- 2,000 entities, the number of an entity the square of a uniform value: entity 1 owns 2% of the rows
+INSERT INTO ev (id, entity, amount) SELECT g, 1 + (2000 * power((hashint4(g) & 2147483647) / 2147483648.0, 3))::int, g % 1000 FROM generate_series(1, 300000) g;
+CREATE INDEX ev_entity ON ev (entity);
+CREATE INDEX ev_col ON ev USING sift_col (id, entity, amount) WITH (key_columns = 'entity', key_order = 'entity');
+CREATE TABLE dim (id int PRIMARY KEY, entity int NOT NULL, grp int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dim SELECT g, 1 + g % 2000, g % 100 FROM generate_series(1, 300000) g;
+CREATE INDEX dim_entity ON dim (entity);
+CREATE TABLE dim_b (set_id int NOT NULL, entity int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dim_b SELECT 1, g FROM generate_series(1, 12) g;
+INSERT INTO dim_b SELECT 2, g FROM generate_series(1500, 1511) g;
+INSERT INTO dim_b SELECT 3 + g, g FROM generate_series(1, 30) g;
+VACUUM (FREEZE, ANALYZE) ev, dim, dim_b;
+UPDATE pg_class SET relpages = 3700638, reltuples = 12100000 WHERE oid = 'dim'::regclass;
+
+CREATE FUNCTION plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'Custom Scan \(SiftAgg\)' THEN RETURN 'sift'; END IF;
+	END LOOP;
+	RETURN 'native';
+END $$;
+
+SELECT set_id, plan(format('SELECT d.grp, count(*), sum(v.amount) FROM ev v JOIN dim d ON d.id = v.entity WHERE d.entity IN (SELECT entity FROM dim_b WHERE set_id = %s) GROUP BY 1', set_id)) AS plan
+FROM (VALUES (1), (2)) s(set_id) ORDER BY set_id;
+
+DROP FUNCTION plan(text);
+DROP TABLE ev, dim, dim_b;
+DROP EXTENSION pg_sift;

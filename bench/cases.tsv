@@ -424,3 +424,4 @@ col_units_per_key	the merge of the small overlay segments also serves an index t
 agg_pred_normalize	a condition that wraps a column in `coalesce(col, c)`	events	-	Filters: amount > 	native	-	ms,minstr	faster33	no	-
 col_overlay_wide_units	the merge of the small overlay segments counts the rows of the units a request scans	orders	default	Custom Scan \(SiftAgg	native	layered:search_path = c_col_overlay_wide_units__layered	ms,minstr	faster33	no	-
 agg_jsonb_contain_object	a containment `doc @> '{...}'` with a boolean or JSON null member on an object document	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+set_key_skew_dimension	multiplied by the skew of the column	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-

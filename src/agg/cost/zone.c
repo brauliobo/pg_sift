@@ -348,11 +348,16 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 		}
 		if (key == NULL)
 			continue;
-		/* a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's */
+		/*
+	 * a counted lookup's keys are as many as PostgreSQL says, but each has the rows of the keys a query passes, not the mean's: the keys a join passes are the ones
+	 * with rows, so the plan that probes them is under-counted by the skew of the column (the whole of it: its square root left 12 hot keys of a column of skew 7 priced
+	 * at 1.9 times the mean's rows, 282 million cycles of the normal plan against 8 million of the scan, and 108 against 7 on the test agg_set_key_skew; a set of cold keys is
+	 * 2.5 times faster with the scan as well, so the factor errs on the side of a scan that costs a few milliseconds at most)
+	 */
 		if (lookup_counted(c, jc))
 		{
 			if (sift_agg_key_skew && !groups)
-				g = sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
+				g = Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0);
 		}
 		else if (nd > keys)
 			g = groups ? nd / keys : sqrt(nd / keys);
