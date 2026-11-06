@@ -910,6 +910,13 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_TID:
 			eval_tid(ex, p, start, n, out);
 			break;
+		case SAP_NOT_TRUE:
+			eval_pred(ex, p->child[0], qlevel, start, n, out);
+			for (int w = 0; w < nw; w++)
+				out[w] = ~out[w];
+			if (n & 63)
+				out[nw - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+			break;
 		case SAP_MATCHED:
 		case SAP_ELEM_EXISTS:
 			SIFT_INVARIANT(false, "sift: an element existence test is made by the joined tuples");

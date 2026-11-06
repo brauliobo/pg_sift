@@ -172,6 +172,14 @@ select count(*) from events where note ilike 'NOTE 12%';
 select count(*) from events where note ~ '^note [0-9]{3} urgent$';
 -- @case pred_jsonb_contains | pred | jsonb containment
 select count(*) from events where attrs @> '{"b":"x","flag":true}';
+-- @case pred_jsonb_contains_not_true | pred | jsonb containment IS NOT TRUE
+select count(*) from events where (attrs @> '{"b":"x"}') is not true;
+-- @case agg_jsonb_contains_case_pivot | agg | CASE on a jsonb containment, ELSE 0
+select kind_id, sum(case when attrs @> '{"b":"x"}' then 1 else 0 end) as hits, sum(case when attrs @> '{"b":"x"}' then amount else 0 end) as hit_amount from events group by 1;
+-- @case agg_jsonb_contains_filter_not_true | agg | FILTER on a jsonb containment IS NOT TRUE
+select status, count(*) filter (where (attrs @> '{"b":"x"}') is not true) as other, count(*) filter (where attrs @> '{"b":"x"}') as hits from events group by 1;
+-- @case pred_jsonb_contains_or_not_true | pred | jsonb containment OR a comparison, IS NOT TRUE
+select count(*) from events where ((attrs @> '{"b":"x"}') or kind_id = 3) is not true and dim_a_id < 500;
 -- @case pred_jsonb_path | pred | jsonb path value
 select attrs->>'b', count(*), avg((attrs->>'a')::float8) from events group by 1;
 -- @case pred_array_overlap | pred | int[] overlap

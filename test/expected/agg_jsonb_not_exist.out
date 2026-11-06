@@ -58,21 +58,21 @@ FROM tests t, forms f, (VALUES (1, 'jx'), (2, 'jy')) tb(ord, name);
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  n  |               label                | agg_check_outcome 
 ----+------------------------------------+-------------------
-  1 | jx: text leaf, not                 | plain same
-  2 | jx: text leaf, not and             | plain same
-  3 | jx: text leaf, filter not          | plain same
-  4 | jx: integer leaf, not              | plain same
-  5 | jx: integer leaf, not and          | plain same
-  6 | jx: integer leaf, filter not       | plain same
-  7 | jx: nested text leaf, not          | plain same
-  8 | jx: nested text leaf, not and      | plain same
-  9 | jx: nested text leaf, filter not   | plain same
- 10 | jx: two keys, not                  | plain same
- 11 | jx: two keys, not and              | plain same
- 12 | jx: two keys, filter not           | plain same
- 13 | jx: contained by, not              | plain same
- 14 | jx: contained by, not and          | plain same
- 15 | jx: contained by, filter not       | plain same
+  1 | jx: text leaf, not                 | scan same
+  2 | jx: text leaf, not and             | scan same
+  3 | jx: text leaf, filter not          | scan same
+  4 | jx: integer leaf, not              | scan same
+  5 | jx: integer leaf, not and          | scan same
+  6 | jx: integer leaf, filter not       | scan same
+  7 | jx: nested text leaf, not          | scan same
+  8 | jx: nested text leaf, not and      | scan same
+  9 | jx: nested text leaf, filter not   | scan same
+ 10 | jx: two keys, not                  | scan same
+ 11 | jx: two keys, not and              | scan same
+ 12 | jx: two keys, filter not           | scan same
+ 13 | jx: contained by, not              | scan same
+ 14 | jx: contained by, not and          | scan same
+ 15 | jx: contained by, filter not       | scan same
  16 | jx: array element, not             | scan same
  17 | jx: array element, not and         | scan same
  18 | jx: array element, filter not      | scan same

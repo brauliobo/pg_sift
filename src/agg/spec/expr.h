@@ -106,7 +106,8 @@ typedef enum SiftAggPredKind
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
 	SAP_STEP,					/* boolean expression of one timestamp leaf that changes only on a boundary of a second, minute, hour or day (`step` seconds, on the session zone's clock with `zoned`): the executor evaluates it once for each such step of the data, not for each distinct timestamp */
-	SAP_MATCHED					/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
+	SAP_MATCHED,				/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
+	SAP_NOT_TRUE				/* row level: the rows child[0] does not keep (a NULL result too), the complement of its bitmap; no zone, summary or key test reads through it, so it prunes no unit */
 } SiftAggPredKind;
 
 typedef struct SiftAggPred

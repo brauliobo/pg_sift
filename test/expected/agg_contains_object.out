@@ -153,7 +153,7 @@ SELECT q, (scan_same(q)).* FROM (VALUES
  SELECT count(*) FROM co_clean WHERE doc @> '{"k": 3}' OR doc @> '{"k": 4}'    | t    | t
  SELECT count(*) FROM co_clean WHERE doc @> '{"k": 3}' AND g = 2               | t    | t
  SELECT count(*) FROM co_clean WHERE NOT doc @> '{"k": 3}'                     | f    | t
- SELECT count(*) FROM co_clean WHERE doc @> '{"k": 3}' IS NOT TRUE             | f    | t
+ SELECT count(*) FROM co_clean WHERE doc @> '{"k": 3}' IS NOT TRUE             | t    | t
  SELECT count(*) FROM co_clean WHERE doc -> 'o' @> '{"a": 1}'                  | t    | t
  SELECT count(*) FROM co_dirty WHERE doc @> '{"k": 3}' OR doc @> '{"s": "x1"}' | f    | t
  SELECT count(*) FROM co_clean WHERE '{"k": 3}' <@ doc                         | t    | t

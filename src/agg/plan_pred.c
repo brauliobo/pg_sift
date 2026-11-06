@@ -718,6 +718,38 @@ compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
 	return both;
 }
 
+/* the kinds whose bitmap is exactly the rows they keep (the executor or the source evaluates them), so that the complement is the rows they do not keep */
+#define BITMAP_KINDS ((1 << SAP_TRUE) | (1 << SAP_FALSE) | (1 << SAP_CMP) | (1 << SAP_IN) | (1 << SAP_NULL) | (1 << SAP_LUT) | (1 << SAP_NCMP) | (1 << SAP_LEAFCMP) | (1 << SAP_WIDE) | (1 << SAP_ANY_ELEM))
+
+static bool
+complementable(const SiftAggPred *p)
+{
+	if (p->level != 0 || p->late || p->pass_poison)
+		return false;
+	if (p->kind != SAP_AND && p->kind != SAP_OR)
+		return (BITMAP_KINDS >> p->kind & 1) != 0;
+	for (int i = 0; i < p->nchild; i++)
+		if (!complementable(p->child[i]))
+			return false;
+	return true;
+}
+
+/* the rows p does not keep, a NULL result among them (IS NOT TRUE); NULL when its bitmap is not exactly the rows it keeps */
+static SiftAggPred *
+compile_not_true(AggCtx *c, SiftAggPred *p)
+{
+	SiftAggPred *w;
+
+	if (p == NULL || !complementable(p))
+		return NULL;
+	w = new_pred(c, SAP_NOT_TRUE);
+	w->nchild = 1;
+	w->child = palloc(sizeof(SiftAggPred *));
+	w->child[0] = p;
+	w->desc = psprintf("(%s) IS NOT TRUE", p->desc);
+	return w;
+}
+
 static SiftAggPred *
 compile_bool(AggCtx *c, BoolExpr *b)
 {
@@ -734,7 +766,12 @@ compile_bool(AggCtx *c, BoolExpr *b)
 	if (target && !target_not_null(c, target))
 		return compile_not_array(c, b, p, target);
 	if (!negate_existential(p))
+	{
+		/* negate_existential left p half flipped: the test again, whose complement is the rows of NOT (it is never NULL here) */
+		if ((p = compile_not_true(c, compile_existential(c, strip_relabel(linitial(b->args)), &target))) != NULL)
+			return p;
 		return compile_lut(c, (Node *) b);
+	}
 	p->desc = psprintf("NOT %s", p->desc);
 	return p;
 }
@@ -875,7 +912,8 @@ compile_not_haskey(AggCtx *c, BoolExpr *b)
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
-	SiftAggPred *p;
+	SiftAggPred *p,
+			   *not_true = NULL;
 	Node	   *leaf_target,
 			   *norm;
 	int			leaf;
@@ -913,11 +951,15 @@ compile_pred(AggCtx *c, Node *n)
 	/* a predicate keeps the rows for which it is true: `x IS TRUE` selects the rows `x` does */
 	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_TRUE)
 		return compile_pred(c, (Node *) ((BooleanTest *) n)->arg);
-	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_NOT_TRUE && (p = compile_pred(c, (Node *) ((BooleanTest *) n)->arg)) != NULL && source_tests_only(p))
+	if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_NOT_TRUE && (p = compile_pred(c, (Node *) ((BooleanTest *) n)->arg)) != NULL)
 	{
-		complement_tests(p);
-		p->desc = psprintf("(%s) IS NOT TRUE", p->desc);
-		return p;
+		if (source_tests_only(p))
+		{
+			complement_tests(p);
+			p->desc = psprintf("(%s) IS NOT TRUE", p->desc);
+			return p;
+		}
+		not_true = p;
 	}
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0)
 	{
@@ -941,5 +983,9 @@ compile_pred(AggCtx *c, Node *n)
 	p = compile_lut(c, n);
 	if (p != NULL)
 		compile_periodic(c, n, p);
+	else if (not_true != NULL)
+		p = compile_not_true(c, not_true);
+	else if (IsA(n, BooleanTest) && ((BooleanTest *) n)->booltesttype == IS_FALSE)
+		p = compile_pred(c, (Node *) makeBoolExpr(NOT_EXPR, list_make1(((BooleanTest *) n)->arg), -1));	/* false is what NOT keeps */
 	return p;
 }

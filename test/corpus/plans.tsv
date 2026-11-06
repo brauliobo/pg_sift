@@ -78,6 +78,10 @@ pred_like_contains	SiftAgg	single:t
 pred_ilike	SiftAgg	single:t
 pred_regex	SiftAgg	single:t
 pred_jsonb_contains	SiftAgg	single:t
+pred_jsonb_contains_not_true	SiftAgg	single:t
+agg_jsonb_contains_case_pivot	SiftAgg	single:t
+agg_jsonb_contains_filter_not_true	SiftAgg	single:t
+pred_jsonb_contains_or_not_true	SiftAgg	single:t
 pred_jsonb_path	SiftAgg	single:t
 pred_array_overlap	SiftAgg	single:t
 pred_array_contains	SiftAgg	single:t

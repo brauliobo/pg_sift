@@ -1,0 +1,668 @@
+-- `doc @> '{...}'` and `'{...}' <@ doc` of a jsonb column in the forms that are no plain conjunct of the WHERE: NOT, IS NOT TRUE, IS FALSE, CASE (an aggregate
+-- of CASE WHEN c THEN x ELSE y END is a FILTER on c and one on `c IS NOT TRUE`), FILTER, OR and AND with another condition, a key. Every statement runs with sift
+-- on and off and the rows are compared (md5 of the sorted rows); `engaged` says the scan ran. jw holds a NULL document, a JSON null, empty and nested objects,
+-- numbers in different spellings, arrays of scalars, unicode keys, a number as the document, two long documents, and in jd the values a leaf cannot store (overflow rows); jn is the same with a NOT NULL document. A NULL document makes the containment NULL: NOT of it keeps no row, IS NOT TRUE of it
+-- keeps the row, and the index cannot tell such a document from one without the member, so the forms that need it (NOT and IS FALSE on a nullable column) stay
+-- with PostgreSQL.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE TABLE jw (id int PRIMARY KEY, g int, doc jsonb);
+INSERT INTO jw SELECT x, x % 7, CASE x % 26
+  WHEN 0 THEN NULL
+  WHEN 1 THEN 'null'
+  WHEN 2 THEN '{}'
+  WHEN 3 THEN '{"b": true}'
+  WHEN 4 THEN '{"b": "x"}'
+  WHEN 5 THEN '{"b": "y", "n": 3}'
+  WHEN 6 THEN '{"b": 1}'
+  WHEN 7 THEN '{"b": "1"}'
+  WHEN 8 THEN '{"b": 1.0, "n": 3.0}'
+  WHEN 9 THEN '{"b": null, "n": 3}'
+  WHEN 10 THEN '{"n": 4}'
+  WHEN 11 THEN '{"n": 1e2, "b": "x"}'
+  WHEN 12 THEN '{"o": {"p": "x"}}'
+  WHEN 13 THEN '{"o": {}, "b": "x"}'
+  WHEN 14 THEN '{"o": "x"}'
+  WHEN 15 THEN '{"t": ["u", "v"], "b": "x"}'
+  WHEN 16 THEN '{"t": [], "b": "x"}'
+  WHEN 17 THEN '{"t": ["w", "u", "w"]}'
+  WHEN 18 THEN '{"ключ": "значение", "b": "é", "s": "é"}'
+  WHEN 19 THEN jsonb_build_object('b', 'x', 'pad', repeat('p', 9000), 's', 'x')
+  WHEN 20 THEN jsonb_build_object('b', 'x', 'pad', repeat('q', 20000), 'o', jsonb_build_object('p', 'x'))
+  WHEN 21 THEN '{"b": false}'
+  WHEN 22 THEN '{"b": 2}'
+  WHEN 23 THEN '7'
+  WHEN 24 THEN '{"s": "x", "t": ["v"], "n": 3}'
+  ELSE '{"b": "x", "s": "x", "o": {"p": "x"}, "t": ["u"], "n": 3}' END::jsonb
+FROM generate_series(1, 12000) x;
+CREATE TABLE jn AS SELECT id, g, coalesce(doc, '{}') AS doc FROM jw;
+ALTER TABLE jn ALTER doc SET NOT NULL;
+CREATE TABLE jd AS SELECT id, g, CASE id % 26 WHEN 3 THEN '[]' WHEN 10 THEN '{"n": 3.5}' WHEN 17 THEN '{"t": "u"}' WHEN 20 THEN jsonb_build_object('b', 'x', 's', repeat('long', 40)) WHEN 21 THEN '["x"]' WHEN 22 THEN '"x"' ELSE doc END::jsonb AS doc FROM jw;
+CREATE INDEX jw_col ON jw USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.s text(8), doc.o.p astext, doc.t[] text(8)');
+CREATE INDEX jd_col ON jd USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.s text(8), doc.o.p astext, doc.t[] text(8)');
+CREATE INDEX jn_col ON jn USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.s text(8), doc.o.p astext, doc.t[] text(8)');
+VACUUM ANALYZE jw;
+VACUUM ANALYZE jn;
+VACUUM ANALYZE jd;
+CREATE TABLE tests (ord serial, name text, cond text);
+INSERT INTO tests (name, cond) VALUES
+  ('string',            $q$doc @> '{"b": "x"}'$q$),
+  ('string and integer', $q$doc @> '{"b": "x", "n": 3}'$q$),
+  ('number member',     $q$doc @> '{"b": 1}'$q$),
+  ('nested',            $q$doc @> '{"o": {"p": "x"}}'$q$),
+  ('short text leaf',   $q$doc @> '{"s": "x"}'$q$),
+  ('array element',     $q$doc @> '{"t": ["u"]}'$q$),
+  ('unicode',           $q$doc @> '{"b": "é"}'$q$),
+  ('contained by',      $q$'{"b": "x"}'::jsonb <@ doc$q$),
+  ('decimal spelling',  $q$doc @> '{"n": 3.0}'$q$),
+  ('boolean member',    $q$doc @> '{"b": true}'$q$),
+  ('json null',         $q$doc @> '{"b": null}'$q$);
+CREATE TABLE forms (ord serial, name text, tmpl text);
+INSERT INTO forms (name, tmpl) VALUES
+  ('where',                  'SELECT count(*), sum(id) FROM %1$s WHERE %2$s'),
+  ('where not',              'SELECT count(*), sum(id) FROM %1$s WHERE NOT (%2$s)'),
+  ('where is not true',      'SELECT count(*), sum(id) FROM %1$s WHERE (%2$s) IS NOT TRUE'),
+  ('where is false',         'SELECT count(*), sum(id) FROM %1$s WHERE (%2$s) IS FALSE'),
+  ('where or',               'SELECT count(*), sum(id) FROM %1$s WHERE %2$s OR g = 3'),
+  ('where not or',           'SELECT count(*), sum(id) FROM %1$s WHERE NOT (%2$s OR g = 3)'),
+  ('where is not true and',  'SELECT count(*), sum(id) FROM %1$s WHERE ((%2$s) AND g < 3) IS NOT TRUE'),
+  ('where is not true or',   'SELECT count(*), sum(id) FROM %1$s WHERE ((%2$s) OR g < 3) IS NOT TRUE AND id > 100'),
+  ('filter',                 'SELECT g, count(*) FILTER (WHERE %2$s), sum(id) FILTER (WHERE %2$s) FROM %1$s GROUP BY g'),
+  ('filter not',             'SELECT g, count(*) FILTER (WHERE NOT (%2$s)) FROM %1$s GROUP BY g'),
+  ('filter is not true',     'SELECT g, count(*) FILTER (WHERE (%2$s) IS NOT TRUE), sum(id) FILTER (WHERE (%2$s) IS NOT TRUE) FROM %1$s GROUP BY g'),
+  ('case else 0',            'SELECT g, sum(CASE WHEN %2$s THEN 1 ELSE 0 END), count(CASE WHEN %2$s THEN id END) FROM %1$s GROUP BY g'),
+  ('case else value',        'SELECT g, sum(CASE WHEN %2$s THEN id ELSE 1 END), min(CASE WHEN %2$s THEN id ELSE -id END) FROM %1$s GROUP BY g'),
+  ('case pivot',             'SELECT count(*) AS total, sum(CASE WHEN %2$s THEN 1 ELSE 0 END) AS hits, sum(CASE WHEN %2$s THEN id ELSE 0 END) AS hit_ids, max(CASE WHEN %2$s THEN id END) AS last_hit, count(CASE WHEN %2$s THEN id END) AS hit_rows FROM %1$s'),
+  ('case pivot by group',    'SELECT g, sum(CASE WHEN %2$s THEN 1 ELSE 0 END) AS hits, sum(CASE WHEN (%2$s) AND id > 500 THEN id ELSE 0 END) AS late_ids, avg(CASE WHEN %2$s THEN id END) AS mean_id FROM %1$s GROUP BY g'),
+  ('case in key',            'SELECT CASE WHEN %2$s THEN 1 ELSE 0 END AS k, count(*) FROM %1$s GROUP BY 1'),
+  ('case with filter',       'SELECT g, sum(CASE WHEN %2$s THEN id ELSE 0 END) FILTER (WHERE id %% 2 = 0) FROM %1$s GROUP BY g');
+-- jw: a nullable document; jn: NOT NULL; jd: documents that are no object, a leaf cannot store them (the scan is not used)
+CREATE TABLE qs AS SELECT row_number() OVER (ORDER BY tb.ord, t.ord, f.ord) AS n, tb.name || ': ' || t.name || ', ' || f.name AS label, format(f.tmpl, tb.name, t.cond) AS q
+FROM tests t, forms f, (VALUES (1, 'jw'), (2, 'jn'), (3, 'jd')) tb(ord, name);
+SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
+  n  |                     label                     | agg_check_outcome 
+-----+-----------------------------------------------+-------------------
+   1 | jw: string, where                             | scan same
+   2 | jw: string, where not                         | plain same
+   3 | jw: string, where is not true                 | scan same
+   4 | jw: string, where is false                    | plain same
+   5 | jw: string, where or                          | scan same
+   6 | jw: string, where not or                      | plain same
+   7 | jw: string, where is not true and             | scan same
+   8 | jw: string, where is not true or              | scan same
+   9 | jw: string, filter                            | scan same
+  10 | jw: string, filter not                        | plain same
+  11 | jw: string, filter is not true                | scan same
+  12 | jw: string, case else 0                       | scan same
+  13 | jw: string, case else value                   | plain same
+  14 | jw: string, case pivot                        | scan same
+  15 | jw: string, case pivot by group               | scan same
+  16 | jw: string, case in key                       | plain same
+  17 | jw: string, case with filter                  | scan same
+  18 | jw: string and integer, where                 | scan same
+  19 | jw: string and integer, where not             | plain same
+  20 | jw: string and integer, where is not true     | scan same
+  21 | jw: string and integer, where is false        | plain same
+  22 | jw: string and integer, where or              | scan same
+  23 | jw: string and integer, where not or          | plain same
+  24 | jw: string and integer, where is not true and | scan same
+  25 | jw: string and integer, where is not true or  | scan same
+  26 | jw: string and integer, filter                | scan same
+  27 | jw: string and integer, filter not            | plain same
+  28 | jw: string and integer, filter is not true    | scan same
+  29 | jw: string and integer, case else 0           | scan same
+  30 | jw: string and integer, case else value       | plain same
+  31 | jw: string and integer, case pivot            | scan same
+  32 | jw: string and integer, case pivot by group   | scan same
+  33 | jw: string and integer, case in key           | plain same
+  34 | jw: string and integer, case with filter      | scan same
+  35 | jw: number member, where                      | plain same
+  36 | jw: number member, where not                  | plain same
+  37 | jw: number member, where is not true          | plain same
+  38 | jw: number member, where is false             | plain same
+  39 | jw: number member, where or                   | plain same
+  40 | jw: number member, where not or               | plain same
+  41 | jw: number member, where is not true and      | plain same
+  42 | jw: number member, where is not true or       | plain same
+  43 | jw: number member, filter                     | plain same
+  44 | jw: number member, filter not                 | plain same
+  45 | jw: number member, filter is not true         | plain same
+  46 | jw: number member, case else 0                | plain same
+  47 | jw: number member, case else value            | plain same
+  48 | jw: number member, case pivot                 | plain same
+  49 | jw: number member, case pivot by group        | plain same
+  50 | jw: number member, case in key                | plain same
+  51 | jw: number member, case with filter           | plain same
+  52 | jw: nested, where                             | scan same
+  53 | jw: nested, where not                         | plain same
+  54 | jw: nested, where is not true                 | scan same
+  55 | jw: nested, where is false                    | plain same
+  56 | jw: nested, where or                          | scan same
+  57 | jw: nested, where not or                      | plain same
+  58 | jw: nested, where is not true and             | scan same
+  59 | jw: nested, where is not true or              | scan same
+  60 | jw: nested, filter                            | scan same
+  61 | jw: nested, filter not                        | plain same
+  62 | jw: nested, filter is not true                | scan same
+  63 | jw: nested, case else 0                       | scan same
+  64 | jw: nested, case else value                   | plain same
+  65 | jw: nested, case pivot                        | scan same
+  66 | jw: nested, case pivot by group               | scan same
+  67 | jw: nested, case in key                       | plain same
+  68 | jw: nested, case with filter                  | scan same
+  69 | jw: short text leaf, where                    | scan same
+  70 | jw: short text leaf, where not                | plain same
+  71 | jw: short text leaf, where is not true        | scan same
+  72 | jw: short text leaf, where is false           | plain same
+  73 | jw: short text leaf, where or                 | scan same
+  74 | jw: short text leaf, where not or             | plain same
+  75 | jw: short text leaf, where is not true and    | scan same
+  76 | jw: short text leaf, where is not true or     | scan same
+  77 | jw: short text leaf, filter                   | scan same
+  78 | jw: short text leaf, filter not               | plain same
+  79 | jw: short text leaf, filter is not true       | scan same
+  80 | jw: short text leaf, case else 0              | scan same
+  81 | jw: short text leaf, case else value          | plain same
+  82 | jw: short text leaf, case pivot               | scan same
+  83 | jw: short text leaf, case pivot by group      | scan same
+  84 | jw: short text leaf, case in key              | plain same
+  85 | jw: short text leaf, case with filter         | scan same
+  86 | jw: array element, where                      | scan same
+  87 | jw: array element, where not                  | plain same
+  88 | jw: array element, where is not true          | scan same
+  89 | jw: array element, where is false             | plain same
+  90 | jw: array element, where or                   | scan same
+  91 | jw: array element, where not or               | plain same
+  92 | jw: array element, where is not true and      | scan same
+  93 | jw: array element, where is not true or       | scan same
+  94 | jw: array element, filter                     | scan same
+  95 | jw: array element, filter not                 | plain same
+  96 | jw: array element, filter is not true         | scan same
+  97 | jw: array element, case else 0                | scan same
+  98 | jw: array element, case else value            | plain same
+  99 | jw: array element, case pivot                 | scan same
+ 100 | jw: array element, case pivot by group        | scan same
+ 101 | jw: array element, case in key                | plain same
+ 102 | jw: array element, case with filter           | scan same
+ 103 | jw: unicode, where                            | scan same
+ 104 | jw: unicode, where not                        | plain same
+ 105 | jw: unicode, where is not true                | scan same
+ 106 | jw: unicode, where is false                   | plain same
+ 107 | jw: unicode, where or                         | scan same
+ 108 | jw: unicode, where not or                     | plain same
+ 109 | jw: unicode, where is not true and            | scan same
+ 110 | jw: unicode, where is not true or             | scan same
+ 111 | jw: unicode, filter                           | scan same
+ 112 | jw: unicode, filter not                       | plain same
+ 113 | jw: unicode, filter is not true               | scan same
+ 114 | jw: unicode, case else 0                      | scan same
+ 115 | jw: unicode, case else value                  | plain same
+ 116 | jw: unicode, case pivot                       | scan same
+ 117 | jw: unicode, case pivot by group              | scan same
+ 118 | jw: unicode, case in key                      | plain same
+ 119 | jw: unicode, case with filter                 | scan same
+ 120 | jw: contained by, where                       | scan same
+ 121 | jw: contained by, where not                   | plain same
+ 122 | jw: contained by, where is not true           | scan same
+ 123 | jw: contained by, where is false              | plain same
+ 124 | jw: contained by, where or                    | scan same
+ 125 | jw: contained by, where not or                | plain same
+ 126 | jw: contained by, where is not true and       | scan same
+ 127 | jw: contained by, where is not true or        | scan same
+ 128 | jw: contained by, filter                      | scan same
+ 129 | jw: contained by, filter not                  | plain same
+ 130 | jw: contained by, filter is not true          | scan same
+ 131 | jw: contained by, case else 0                 | scan same
+ 132 | jw: contained by, case else value             | plain same
+ 133 | jw: contained by, case pivot                  | scan same
+ 134 | jw: contained by, case pivot by group         | scan same
+ 135 | jw: contained by, case in key                 | plain same
+ 136 | jw: contained by, case with filter            | scan same
+ 137 | jw: decimal spelling, where                   | scan same
+ 138 | jw: decimal spelling, where not               | plain same
+ 139 | jw: decimal spelling, where is not true       | scan same
+ 140 | jw: decimal spelling, where is false          | plain same
+ 141 | jw: decimal spelling, where or                | scan same
+ 142 | jw: decimal spelling, where not or            | plain same
+ 143 | jw: decimal spelling, where is not true and   | scan same
+ 144 | jw: decimal spelling, where is not true or    | scan same
+ 145 | jw: decimal spelling, filter                  | scan same
+ 146 | jw: decimal spelling, filter not              | plain same
+ 147 | jw: decimal spelling, filter is not true      | scan same
+ 148 | jw: decimal spelling, case else 0             | scan same
+ 149 | jw: decimal spelling, case else value         | plain same
+ 150 | jw: decimal spelling, case pivot              | scan same
+ 151 | jw: decimal spelling, case pivot by group     | scan same
+ 152 | jw: decimal spelling, case in key             | plain same
+ 153 | jw: decimal spelling, case with filter        | scan same
+ 154 | jw: boolean member, where                     | scan same
+ 155 | jw: boolean member, where not                 | plain same
+ 156 | jw: boolean member, where is not true         | plain same
+ 157 | jw: boolean member, where is false            | plain same
+ 158 | jw: boolean member, where or                  | plain same
+ 159 | jw: boolean member, where not or              | plain same
+ 160 | jw: boolean member, where is not true and     | plain same
+ 161 | jw: boolean member, where is not true or      | plain same
+ 162 | jw: boolean member, filter                    | plain same
+ 163 | jw: boolean member, filter not                | plain same
+ 164 | jw: boolean member, filter is not true        | plain same
+ 165 | jw: boolean member, case else 0               | plain same
+ 166 | jw: boolean member, case else value           | plain same
+ 167 | jw: boolean member, case pivot                | plain same
+ 168 | jw: boolean member, case pivot by group       | plain same
+ 169 | jw: boolean member, case in key               | plain same
+ 170 | jw: boolean member, case with filter          | plain same
+ 171 | jw: json null, where                          | scan same
+ 172 | jw: json null, where not                      | plain same
+ 173 | jw: json null, where is not true              | plain same
+ 174 | jw: json null, where is false                 | plain same
+ 175 | jw: json null, where or                       | plain same
+ 176 | jw: json null, where not or                   | plain same
+ 177 | jw: json null, where is not true and          | plain same
+ 178 | jw: json null, where is not true or           | plain same
+ 179 | jw: json null, filter                         | plain same
+ 180 | jw: json null, filter not                     | plain same
+ 181 | jw: json null, filter is not true             | plain same
+ 182 | jw: json null, case else 0                    | plain same
+ 183 | jw: json null, case else value                | plain same
+ 184 | jw: json null, case pivot                     | plain same
+ 185 | jw: json null, case pivot by group            | plain same
+ 186 | jw: json null, case in key                    | plain same
+ 187 | jw: json null, case with filter               | plain same
+ 188 | jn: string, where                             | scan same
+ 189 | jn: string, where not                         | scan same
+ 190 | jn: string, where is not true                 | scan same
+ 191 | jn: string, where is false                    | scan same
+ 192 | jn: string, where or                          | scan same
+ 193 | jn: string, where not or                      | scan same
+ 194 | jn: string, where is not true and             | scan same
+ 195 | jn: string, where is not true or              | scan same
+ 196 | jn: string, filter                            | scan same
+ 197 | jn: string, filter not                        | scan same
+ 198 | jn: string, filter is not true                | scan same
+ 199 | jn: string, case else 0                       | scan same
+ 200 | jn: string, case else value                   | plain same
+ 201 | jn: string, case pivot                        | scan same
+ 202 | jn: string, case pivot by group               | scan same
+ 203 | jn: string, case in key                       | plain same
+ 204 | jn: string, case with filter                  | scan same
+ 205 | jn: string and integer, where                 | scan same
+ 206 | jn: string and integer, where not             | scan same
+ 207 | jn: string and integer, where is not true     | scan same
+ 208 | jn: string and integer, where is false        | scan same
+ 209 | jn: string and integer, where or              | scan same
+ 210 | jn: string and integer, where not or          | scan same
+ 211 | jn: string and integer, where is not true and | scan same
+ 212 | jn: string and integer, where is not true or  | scan same
+ 213 | jn: string and integer, filter                | scan same
+ 214 | jn: string and integer, filter not            | scan same
+ 215 | jn: string and integer, filter is not true    | scan same
+ 216 | jn: string and integer, case else 0           | scan same
+ 217 | jn: string and integer, case else value       | plain same
+ 218 | jn: string and integer, case pivot            | scan same
+ 219 | jn: string and integer, case pivot by group   | scan same
+ 220 | jn: string and integer, case in key           | plain same
+ 221 | jn: string and integer, case with filter      | scan same
+ 222 | jn: number member, where                      | plain same
+ 223 | jn: number member, where not                  | plain same
+ 224 | jn: number member, where is not true          | plain same
+ 225 | jn: number member, where is false             | plain same
+ 226 | jn: number member, where or                   | plain same
+ 227 | jn: number member, where not or               | plain same
+ 228 | jn: number member, where is not true and      | plain same
+ 229 | jn: number member, where is not true or       | plain same
+ 230 | jn: number member, filter                     | plain same
+ 231 | jn: number member, filter not                 | plain same
+ 232 | jn: number member, filter is not true         | plain same
+ 233 | jn: number member, case else 0                | plain same
+ 234 | jn: number member, case else value            | plain same
+ 235 | jn: number member, case pivot                 | plain same
+ 236 | jn: number member, case pivot by group        | plain same
+ 237 | jn: number member, case in key                | plain same
+ 238 | jn: number member, case with filter           | plain same
+ 239 | jn: nested, where                             | scan same
+ 240 | jn: nested, where not                         | scan same
+ 241 | jn: nested, where is not true                 | scan same
+ 242 | jn: nested, where is false                    | scan same
+ 243 | jn: nested, where or                          | scan same
+ 244 | jn: nested, where not or                      | scan same
+ 245 | jn: nested, where is not true and             | scan same
+ 246 | jn: nested, where is not true or              | scan same
+ 247 | jn: nested, filter                            | scan same
+ 248 | jn: nested, filter not                        | scan same
+ 249 | jn: nested, filter is not true                | scan same
+ 250 | jn: nested, case else 0                       | scan same
+ 251 | jn: nested, case else value                   | plain same
+ 252 | jn: nested, case pivot                        | scan same
+ 253 | jn: nested, case pivot by group               | scan same
+ 254 | jn: nested, case in key                       | plain same
+ 255 | jn: nested, case with filter                  | scan same
+ 256 | jn: short text leaf, where                    | scan same
+ 257 | jn: short text leaf, where not                | scan same
+ 258 | jn: short text leaf, where is not true        | scan same
+ 259 | jn: short text leaf, where is false           | scan same
+ 260 | jn: short text leaf, where or                 | scan same
+ 261 | jn: short text leaf, where not or             | scan same
+ 262 | jn: short text leaf, where is not true and    | scan same
+ 263 | jn: short text leaf, where is not true or     | scan same
+ 264 | jn: short text leaf, filter                   | scan same
+ 265 | jn: short text leaf, filter not               | scan same
+ 266 | jn: short text leaf, filter is not true       | scan same
+ 267 | jn: short text leaf, case else 0              | scan same
+ 268 | jn: short text leaf, case else value          | plain same
+ 269 | jn: short text leaf, case pivot               | scan same
+ 270 | jn: short text leaf, case pivot by group      | scan same
+ 271 | jn: short text leaf, case in key              | plain same
+ 272 | jn: short text leaf, case with filter         | scan same
+ 273 | jn: array element, where                      | scan same
+ 274 | jn: array element, where not                  | scan same
+ 275 | jn: array element, where is not true          | scan same
+ 276 | jn: array element, where is false             | scan same
+ 277 | jn: array element, where or                   | scan same
+ 278 | jn: array element, where not or               | scan same
+ 279 | jn: array element, where is not true and      | scan same
+ 280 | jn: array element, where is not true or       | scan same
+ 281 | jn: array element, filter                     | scan same
+ 282 | jn: array element, filter not                 | scan same
+ 283 | jn: array element, filter is not true         | scan same
+ 284 | jn: array element, case else 0                | scan same
+ 285 | jn: array element, case else value            | plain same
+ 286 | jn: array element, case pivot                 | scan same
+ 287 | jn: array element, case pivot by group        | scan same
+ 288 | jn: array element, case in key                | plain same
+ 289 | jn: array element, case with filter           | scan same
+ 290 | jn: unicode, where                            | scan same
+ 291 | jn: unicode, where not                        | scan same
+ 292 | jn: unicode, where is not true                | scan same
+ 293 | jn: unicode, where is false                   | scan same
+ 294 | jn: unicode, where or                         | scan same
+ 295 | jn: unicode, where not or                     | scan same
+ 296 | jn: unicode, where is not true and            | scan same
+ 297 | jn: unicode, where is not true or             | scan same
+ 298 | jn: unicode, filter                           | scan same
+ 299 | jn: unicode, filter not                       | scan same
+ 300 | jn: unicode, filter is not true               | scan same
+ 301 | jn: unicode, case else 0                      | scan same
+ 302 | jn: unicode, case else value                  | plain same
+ 303 | jn: unicode, case pivot                       | scan same
+ 304 | jn: unicode, case pivot by group              | scan same
+ 305 | jn: unicode, case in key                      | plain same
+ 306 | jn: unicode, case with filter                 | scan same
+ 307 | jn: contained by, where                       | scan same
+ 308 | jn: contained by, where not                   | scan same
+ 309 | jn: contained by, where is not true           | scan same
+ 310 | jn: contained by, where is false              | scan same
+ 311 | jn: contained by, where or                    | scan same
+ 312 | jn: contained by, where not or                | scan same
+ 313 | jn: contained by, where is not true and       | scan same
+ 314 | jn: contained by, where is not true or        | scan same
+ 315 | jn: contained by, filter                      | scan same
+ 316 | jn: contained by, filter not                  | scan same
+ 317 | jn: contained by, filter is not true          | scan same
+ 318 | jn: contained by, case else 0                 | scan same
+ 319 | jn: contained by, case else value             | plain same
+ 320 | jn: contained by, case pivot                  | scan same
+ 321 | jn: contained by, case pivot by group         | scan same
+ 322 | jn: contained by, case in key                 | plain same
+ 323 | jn: contained by, case with filter            | scan same
+ 324 | jn: decimal spelling, where                   | scan same
+ 325 | jn: decimal spelling, where not               | scan same
+ 326 | jn: decimal spelling, where is not true       | scan same
+ 327 | jn: decimal spelling, where is false          | scan same
+ 328 | jn: decimal spelling, where or                | scan same
+ 329 | jn: decimal spelling, where not or            | scan same
+ 330 | jn: decimal spelling, where is not true and   | scan same
+ 331 | jn: decimal spelling, where is not true or    | scan same
+ 332 | jn: decimal spelling, filter                  | scan same
+ 333 | jn: decimal spelling, filter not              | scan same
+ 334 | jn: decimal spelling, filter is not true      | scan same
+ 335 | jn: decimal spelling, case else 0             | scan same
+ 336 | jn: decimal spelling, case else value         | plain same
+ 337 | jn: decimal spelling, case pivot              | scan same
+ 338 | jn: decimal spelling, case pivot by group     | scan same
+ 339 | jn: decimal spelling, case in key             | plain same
+ 340 | jn: decimal spelling, case with filter        | scan same
+ 341 | jn: boolean member, where                     | scan same
+ 342 | jn: boolean member, where not                 | plain same
+ 343 | jn: boolean member, where is not true         | plain same
+ 344 | jn: boolean member, where is false            | plain same
+ 345 | jn: boolean member, where or                  | plain same
+ 346 | jn: boolean member, where not or              | plain same
+ 347 | jn: boolean member, where is not true and     | plain same
+ 348 | jn: boolean member, where is not true or      | plain same
+ 349 | jn: boolean member, filter                    | plain same
+ 350 | jn: boolean member, filter not                | plain same
+ 351 | jn: boolean member, filter is not true        | plain same
+ 352 | jn: boolean member, case else 0               | plain same
+ 353 | jn: boolean member, case else value           | plain same
+ 354 | jn: boolean member, case pivot                | plain same
+ 355 | jn: boolean member, case pivot by group       | plain same
+ 356 | jn: boolean member, case in key               | plain same
+ 357 | jn: boolean member, case with filter          | plain same
+ 358 | jn: json null, where                          | scan same
+ 359 | jn: json null, where not                      | plain same
+ 360 | jn: json null, where is not true              | plain same
+ 361 | jn: json null, where is false                 | plain same
+ 362 | jn: json null, where or                       | plain same
+ 363 | jn: json null, where not or                   | plain same
+ 364 | jn: json null, where is not true and          | plain same
+ 365 | jn: json null, where is not true or           | plain same
+ 366 | jn: json null, filter                         | plain same
+ 367 | jn: json null, filter not                     | plain same
+ 368 | jn: json null, filter is not true             | plain same
+ 369 | jn: json null, case else 0                    | plain same
+ 370 | jn: json null, case else value                | plain same
+ 371 | jn: json null, case pivot                     | plain same
+ 372 | jn: json null, case pivot by group            | plain same
+ 373 | jn: json null, case in key                    | plain same
+ 374 | jn: json null, case with filter               | plain same
+ 375 | jd: string, where                             | plain same
+ 376 | jd: string, where not                         | plain same
+ 377 | jd: string, where is not true                 | plain same
+ 378 | jd: string, where is false                    | plain same
+ 379 | jd: string, where or                          | plain same
+ 380 | jd: string, where not or                      | plain same
+ 381 | jd: string, where is not true and             | plain same
+ 382 | jd: string, where is not true or              | plain same
+ 383 | jd: string, filter                            | plain same
+ 384 | jd: string, filter not                        | plain same
+ 385 | jd: string, filter is not true                | plain same
+ 386 | jd: string, case else 0                       | plain same
+ 387 | jd: string, case else value                   | plain same
+ 388 | jd: string, case pivot                        | plain same
+ 389 | jd: string, case pivot by group               | plain same
+ 390 | jd: string, case in key                       | plain same
+ 391 | jd: string, case with filter                  | plain same
+ 392 | jd: string and integer, where                 | plain same
+ 393 | jd: string and integer, where not             | plain same
+ 394 | jd: string and integer, where is not true     | plain same
+ 395 | jd: string and integer, where is false        | plain same
+ 396 | jd: string and integer, where or              | plain same
+ 397 | jd: string and integer, where not or          | plain same
+ 398 | jd: string and integer, where is not true and | plain same
+ 399 | jd: string and integer, where is not true or  | plain same
+ 400 | jd: string and integer, filter                | plain same
+ 401 | jd: string and integer, filter not            | plain same
+ 402 | jd: string and integer, filter is not true    | plain same
+ 403 | jd: string and integer, case else 0           | plain same
+ 404 | jd: string and integer, case else value       | plain same
+ 405 | jd: string and integer, case pivot            | plain same
+ 406 | jd: string and integer, case pivot by group   | plain same
+ 407 | jd: string and integer, case in key           | plain same
+ 408 | jd: string and integer, case with filter      | plain same
+ 409 | jd: number member, where                      | plain same
+ 410 | jd: number member, where not                  | plain same
+ 411 | jd: number member, where is not true          | plain same
+ 412 | jd: number member, where is false             | plain same
+ 413 | jd: number member, where or                   | plain same
+ 414 | jd: number member, where not or               | plain same
+ 415 | jd: number member, where is not true and      | plain same
+ 416 | jd: number member, where is not true or       | plain same
+ 417 | jd: number member, filter                     | plain same
+ 418 | jd: number member, filter not                 | plain same
+ 419 | jd: number member, filter is not true         | plain same
+ 420 | jd: number member, case else 0                | plain same
+ 421 | jd: number member, case else value            | plain same
+ 422 | jd: number member, case pivot                 | plain same
+ 423 | jd: number member, case pivot by group        | plain same
+ 424 | jd: number member, case in key                | plain same
+ 425 | jd: number member, case with filter           | plain same
+ 426 | jd: nested, where                             | plain same
+ 427 | jd: nested, where not                         | plain same
+ 428 | jd: nested, where is not true                 | plain same
+ 429 | jd: nested, where is false                    | plain same
+ 430 | jd: nested, where or                          | plain same
+ 431 | jd: nested, where not or                      | plain same
+ 432 | jd: nested, where is not true and             | plain same
+ 433 | jd: nested, where is not true or              | plain same
+ 434 | jd: nested, filter                            | plain same
+ 435 | jd: nested, filter not                        | plain same
+ 436 | jd: nested, filter is not true                | plain same
+ 437 | jd: nested, case else 0                       | plain same
+ 438 | jd: nested, case else value                   | plain same
+ 439 | jd: nested, case pivot                        | plain same
+ 440 | jd: nested, case pivot by group               | plain same
+ 441 | jd: nested, case in key                       | plain same
+ 442 | jd: nested, case with filter                  | plain same
+ 443 | jd: short text leaf, where                    | plain same
+ 444 | jd: short text leaf, where not                | plain same
+ 445 | jd: short text leaf, where is not true        | plain same
+ 446 | jd: short text leaf, where is false           | plain same
+ 447 | jd: short text leaf, where or                 | plain same
+ 448 | jd: short text leaf, where not or             | plain same
+ 449 | jd: short text leaf, where is not true and    | plain same
+ 450 | jd: short text leaf, where is not true or     | plain same
+ 451 | jd: short text leaf, filter                   | plain same
+ 452 | jd: short text leaf, filter not               | plain same
+ 453 | jd: short text leaf, filter is not true       | plain same
+ 454 | jd: short text leaf, case else 0              | plain same
+ 455 | jd: short text leaf, case else value          | plain same
+ 456 | jd: short text leaf, case pivot               | plain same
+ 457 | jd: short text leaf, case pivot by group      | plain same
+ 458 | jd: short text leaf, case in key              | plain same
+ 459 | jd: short text leaf, case with filter         | plain same
+ 460 | jd: array element, where                      | plain same
+ 461 | jd: array element, where not                  | plain same
+ 462 | jd: array element, where is not true          | plain same
+ 463 | jd: array element, where is false             | plain same
+ 464 | jd: array element, where or                   | plain same
+ 465 | jd: array element, where not or               | plain same
+ 466 | jd: array element, where is not true and      | plain same
+ 467 | jd: array element, where is not true or       | plain same
+ 468 | jd: array element, filter                     | plain same
+ 469 | jd: array element, filter not                 | plain same
+ 470 | jd: array element, filter is not true         | plain same
+ 471 | jd: array element, case else 0                | plain same
+ 472 | jd: array element, case else value            | plain same
+ 473 | jd: array element, case pivot                 | plain same
+ 474 | jd: array element, case pivot by group        | plain same
+ 475 | jd: array element, case in key                | plain same
+ 476 | jd: array element, case with filter           | plain same
+ 477 | jd: unicode, where                            | plain same
+ 478 | jd: unicode, where not                        | plain same
+ 479 | jd: unicode, where is not true                | plain same
+ 480 | jd: unicode, where is false                   | plain same
+ 481 | jd: unicode, where or                         | plain same
+ 482 | jd: unicode, where not or                     | plain same
+ 483 | jd: unicode, where is not true and            | plain same
+ 484 | jd: unicode, where is not true or             | plain same
+ 485 | jd: unicode, filter                           | plain same
+ 486 | jd: unicode, filter not                       | plain same
+ 487 | jd: unicode, filter is not true               | plain same
+ 488 | jd: unicode, case else 0                      | plain same
+ 489 | jd: unicode, case else value                  | plain same
+ 490 | jd: unicode, case pivot                       | plain same
+ 491 | jd: unicode, case pivot by group              | plain same
+ 492 | jd: unicode, case in key                      | plain same
+ 493 | jd: unicode, case with filter                 | plain same
+ 494 | jd: contained by, where                       | plain same
+ 495 | jd: contained by, where not                   | plain same
+ 496 | jd: contained by, where is not true           | plain same
+ 497 | jd: contained by, where is false              | plain same
+ 498 | jd: contained by, where or                    | plain same
+ 499 | jd: contained by, where not or                | plain same
+ 500 | jd: contained by, where is not true and       | plain same
+ 501 | jd: contained by, where is not true or        | plain same
+ 502 | jd: contained by, filter                      | plain same
+ 503 | jd: contained by, filter not                  | plain same
+ 504 | jd: contained by, filter is not true          | plain same
+ 505 | jd: contained by, case else 0                 | plain same
+ 506 | jd: contained by, case else value             | plain same
+ 507 | jd: contained by, case pivot                  | plain same
+ 508 | jd: contained by, case pivot by group         | plain same
+ 509 | jd: contained by, case in key                 | plain same
+ 510 | jd: contained by, case with filter            | plain same
+ 511 | jd: decimal spelling, where                   | plain same
+ 512 | jd: decimal spelling, where not               | plain same
+ 513 | jd: decimal spelling, where is not true       | plain same
+ 514 | jd: decimal spelling, where is false          | plain same
+ 515 | jd: decimal spelling, where or                | plain same
+ 516 | jd: decimal spelling, where not or            | plain same
+ 517 | jd: decimal spelling, where is not true and   | plain same
+ 518 | jd: decimal spelling, where is not true or    | plain same
+ 519 | jd: decimal spelling, filter                  | plain same
+ 520 | jd: decimal spelling, filter not              | plain same
+ 521 | jd: decimal spelling, filter is not true      | plain same
+ 522 | jd: decimal spelling, case else 0             | plain same
+ 523 | jd: decimal spelling, case else value         | plain same
+ 524 | jd: decimal spelling, case pivot              | plain same
+ 525 | jd: decimal spelling, case pivot by group     | plain same
+ 526 | jd: decimal spelling, case in key             | plain same
+ 527 | jd: decimal spelling, case with filter        | plain same
+ 528 | jd: boolean member, where                     | scan same
+ 529 | jd: boolean member, where not                 | plain same
+ 530 | jd: boolean member, where is not true         | plain same
+ 531 | jd: boolean member, where is false            | plain same
+ 532 | jd: boolean member, where or                  | plain same
+ 533 | jd: boolean member, where not or              | plain same
+ 534 | jd: boolean member, where is not true and     | plain same
+ 535 | jd: boolean member, where is not true or      | plain same
+ 536 | jd: boolean member, filter                    | plain same
+ 537 | jd: boolean member, filter not                | plain same
+ 538 | jd: boolean member, filter is not true        | plain same
+ 539 | jd: boolean member, case else 0               | plain same
+ 540 | jd: boolean member, case else value           | plain same
+ 541 | jd: boolean member, case pivot                | plain same
+ 542 | jd: boolean member, case pivot by group       | plain same
+ 543 | jd: boolean member, case in key               | plain same
+ 544 | jd: boolean member, case with filter          | plain same
+ 545 | jd: json null, where                          | scan same
+ 546 | jd: json null, where not                      | plain same
+ 547 | jd: json null, where is not true              | plain same
+ 548 | jd: json null, where is false                 | plain same
+ 549 | jd: json null, where or                       | plain same
+ 550 | jd: json null, where not or                   | plain same
+ 551 | jd: json null, where is not true and          | plain same
+ 552 | jd: json null, where is not true or           | plain same
+ 553 | jd: json null, filter                         | plain same
+ 554 | jd: json null, filter not                     | plain same
+ 555 | jd: json null, filter is not true             | plain same
+ 556 | jd: json null, case else 0                    | plain same
+ 557 | jd: json null, case else value                | plain same
+ 558 | jd: json null, case pivot                     | plain same
+ 559 | jd: json null, case pivot by group            | plain same
+ 560 | jd: json null, case in key                    | plain same
+ 561 | jd: json null, case with filter               | plain same
+(561 rows)
+
+-- the rows themselves, not only equal: the statements the scan runs give these counts
+SELECT count(*) AS total, count(*) FILTER (WHERE doc @> '{"b": "x"}') AS matches, count(*) FILTER (WHERE (doc @> '{"b": "x"}') IS NOT TRUE) AS not_true,
+       count(*) FILTER (WHERE NOT (doc @> '{"b": "x"}')) AS is_false, count(*) FILTER (WHERE doc IS NULL) AS null_docs FROM jw;
+ total | matches | not_true | is_false | null_docs 
+-------+---------+----------+----------+-----------
+ 12000 |    3691 |     8309 |     7848 |       461
+(1 row)
+
+SELECT count(*) FILTER (WHERE doc @> '{"b": "x"}') AS matches, count(*) FILTER (WHERE (doc @> '{"b": "x"}') IS NOT TRUE) AS not_true,
+       count(*) FILTER (WHERE NOT (doc @> '{"b": "x"}')) AS is_false FROM jn;
+ matches | not_true | is_false 
+---------+----------+----------
+    3691 |     8309 |     8309
+(1 row)
+
+DROP TABLE qs, tests, forms, jw, jn, jd;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
