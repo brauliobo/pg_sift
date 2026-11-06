@@ -284,6 +284,13 @@ Installing 4.1.1 stopped new wrong counts; it did not take away the old versions
 - A standby cannot write the log: its reads check the heap until the re-baseline of the primary reaches it by replication.
 - An earlier library that reads a log with flags 3 takes it for incomplete and checks the heap, which is right.
 - An index created, reindexed or rebuilt by `ALTER INDEX .. SET (track_changes = ..)` by 4.1.2 or later is marked at once.
+- **After `pg_upgrade`, a dump restore with triggers disabled, or `REINDEX CONCURRENTLY`, nothing is repaired by itself.** The restore recreates the triggers with a new xmin, so the witnesses of the log no longer match: every tracked `sift_col` index has flags 1, `triggers` false and `heap_free` false (damaged or not; since 4.0.0), the worker, `VACUUM` and writes change nothing, and the answers are right, taken from the heap. Run `REINDEX INDEX <index>` or `ALTER INDEX <index> SET (track_changes = '<value>')` (the value the index had: its key column, `'auto'` or `'id'`) once for every tracked `sift_col` index, one by one; the indexes that are still to do:
+
+```sql
+SELECT c.oid::regclass AS index FROM pg_class c JOIN pg_am a ON a.oid = c.relam, LATERAL sift.col_tracking(c.oid) t WHERE a.amname = 'sift_col' AND t.track_changes AND NOT t.heap_free;
+```
+
+An automatic repair for this case is planned for 4.2.
 
 ## What is tested
 

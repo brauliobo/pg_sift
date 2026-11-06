@@ -119,6 +119,7 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 #endif
 /* Pages, ranges and masks the tombstone log made all-visible where the visibility map did not (tests) */
 extern PGDLLIMPORT int64 sift_col_hf_taken;
+extern PGDLLIMPORT int64 sift_col_hf_block_hits;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool
@@ -356,6 +357,7 @@ extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
@@ -383,6 +385,7 @@ extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, 
 extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows);
 extern void sift_col_vacuum_note_insert(Relation index, Relation heap);
 extern bool sift_col_rewrite_tick(Relation index, double owed);
+extern bool sift_col_promote_tick(Relation index);
 extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_vacuum_once_worker_main(Datum main_arg);
