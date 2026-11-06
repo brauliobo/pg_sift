@@ -1,0 +1,31 @@
+# Source path -> the case groups that exercise it. First matching row wins for a file; a commit's groups are the union over its changed files
+# (git diff --name-only base..candidate, plus the sources of every object file whose stripped bytes differ). `-` means no build input (no workload runs);
+# a file no row matches falls back to `smoke` (the smallest cross-area set). Groups are the `groups` of cases.py (dry-perf-gate.sh list).
+#
+# PATH_ERE<TAB>GROUPS
+^(docs/|test/|scripts/|bench/|tools/|\.github/|packaging/|mariadb/|sqlite/|Formula/|README|CHANGELOG|CONTRIBUTING|SECURITY|NOTICE|LICENSE|META\.json|BUILD_ID|\.git)	-
+^sql/pg_sift_(test|helpers)--	-
+^pg_sift_(test|helpers)\.control$	-
+^(sql/|pg_sift\.control|Makefile)	smoke
+# --- src/agg: planner and cost (planning cost shows in the first statement and in every read), executor, kernels, leaf readers, parallel
+^src/agg/par	agg-read,agg-par,first-agg
+^src/agg/(kern|gen_|dist/|accum|dense|group|osa|vnum|wide|intids)	agg-read,agg-kernel,first-agg
+^src/agg/(plan|cost|order/cost|flat|cte|spec|pre|search|rows|sel|setfold|refuse|verdict)	agg-read,agg-plan,first-agg
+^src/agg/(topn|gtopn|gord|gorder|order)	agg-read,agg-topn,first-agg
+^src/agg/(part|from|lookup|look|combo|two|spine|update|preagg|zone|chunkfilter|blob|leaf|col|colsrc|first|latest|stub|stats|unit|memo|spill|exec|expr|vk|gpu|init|fuse|approx|back)	agg-read,first-agg
+^src/agg/	agg-read,first-agg
+# --- src/col: segment readers/scans, writers, maintenance, build
+^src/col/(scan|amscan|point|seg/|preagg_read|keycols|order|gorder|rollup|pagg|runs|unit|widescan|codec/get|codec/filter|dictcache|dictshm|leafshm)	col-read,agg-read,first-col
+^src/col/(wbuf|batch)	col-wbuf,col-read,first-col
+^src/col/(maint|seg_maint|vacreq|supersede|tomblog|track|dsmreg)	col-maint,col-wbuf
+^src/col/(build|seg_write|autocut|choices|cluster|codec_write|codec_blob|codec_policy|codec/codec|compress|delta|enc|dict/|shred|preagg/|suggest|advice|setsum|schema|types|ver|verify|hll|jsonb|gquant|ktab|rowkey|acct|chunk|am/)	col-build,col-read
+^src/col/	col-read,col-build,col-wbuf,col-maint
+# --- src/bm25
+^src/bm25/(build|runs/|merge|writer|segment|dict_write|postw|posting|docdir|inv|space|maint|parallel|wbind|liveness|livestream|blob)	bm25-build,bm25-maint,bm25-read,first-bm25
+^src/bm25/(wbuf|bitmap|facet)	bm25-read,bm25-wbuf
+^src/bm25/	bm25-read,bm25-wbuf,first-bm25
+# --- src/table (sift_table) and the shared core
+^src/table/	table,col-read,first-table
+^src/core/(reader|store|stream|span|lane|visibility|filter|eval|ops|freelist|relocate|tomb|live|writer|parbuild|jsonbuild)	smoke,table,col-read,bm25-read
+^src/core/	smoke
+^src/	smoke
