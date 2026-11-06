@@ -136,7 +136,7 @@ GROUP BY w.i, w.f ORDER BY w.i;
   9 | jsonb_typeof(doc) = 'array'                                 |      0 | same
  10 | jsonb_typeof(doc) <> 'object'                               |      0 | same
  11 | jsonb_typeof(doc) IN ('array', 'string', 'number')          |      0 | same
- 12 | doc ? 'k'                                                   |      0 | same
+ 12 | doc ? 'k'                                                   |      6 | same
  13 | NOT (doc ? 'k')                                             |      0 | same
  14 | doc @> '{"k": "a"}'                                         |      0 | same
  15 | doc @> '{"k": {}}' OR doc @> '[]'                           |      0 | same

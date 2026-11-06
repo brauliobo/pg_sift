@@ -183,7 +183,6 @@ sift_shred_recheck_haskey(SiftShredRecheck *rc, int col, const char *key)
 	m->key = pstrdup(key);
 	m->keylen = strlen(key);
 	m->cast = InvalidOid;
-	rc->col[col] = SRC_HASKEY;
 	MemoryContextSwitchTo(old);
 }
 
@@ -196,7 +195,7 @@ root_has_keys(SiftShred *sh, const JsonbValue *v, const SiftShredRecheck *rc)
 		const SiftRecheckMember *m = &rc->mem[i];
 		bool		has = false;
 
-		if (rc->col[m->col] != SRC_HASKEY)
+		if (m->cast != InvalidOid)
 			continue;
 		if (v->type == jbvString)
 			has = v->val.string.len == m->keylen && memcmp(v->val.string.val, m->key, m->keylen) == 0;

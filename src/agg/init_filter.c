@@ -738,11 +738,15 @@ recheck_init(AggExec *ex)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 		{
-			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i] == SRK_CAST_TESTED ? SRK_CAST : s->recheck[i] == SRK_IOCAST ? SRK_TEXT : s->recheck[i],
-									s->recheck[i] == SRK_HASKEY ? strVal(linitial(ex->lay->leaf[s->leaves[i]].path)) : NULL, InvalidOid);
+			SiftSrcRecheck mode = SRK_MODE(s->recheck[i]);
+
+			if (mode != SRK_HASKEY)
+				sift_colsrc_set_recheck(ex->src, s->leaves[i], mode == SRK_RECORDSET_LAZY ? SRK_RECORDSET : mode == SRK_CAST_TESTED ? SRK_CAST : mode == SRK_IOCAST ? SRK_TEXT : mode, NULL, InvalidOid);
+			if (mode == SRK_HASKEY || (s->recheck[i] & SRK_WITH_HASKEY))
+				sift_colsrc_set_recheck(ex->src, s->leaves[i], SRK_HASKEY, strVal(linitial(ex->lay->leaf[s->leaves[i]].path)), InvalidOid);
 			ex->recheck = true;
-			ex->recheck_late |= s->recheck[i] == SRK_CAST || s->recheck[i] == SRK_IOCAST;
-			if (s->recheck[i] == SRK_RECORDSET)
+			ex->recheck_late |= mode == SRK_CAST || mode == SRK_IOCAST;
+			if (mode == SRK_RECORDSET)
 				for (int k = 0; k < s->npred; k++)
 					ex->recheck_after_late |= s->pred[k]->late && s->pred[k]->level == 0;
 		}
@@ -765,7 +769,15 @@ void
 type_init(AggExec *ex)
 {
 	for (int i = 0; i < ex->spec->ntype; i++)
-		sift_colsrc_tolerate_ovf(ex->src, ex->spec->type_leaf[i]);
+	{
+		bool		reread = false;
+
+		/* a leaf the query reads beside a key test gives the value it cannot hold from the rows read again, which raise for it */
+		for (int j = 0; j < ex->spec->nleaves; j++)
+			reread |= ex->spec->leaves[j] == ex->spec->type_leaf[i] && (ex->spec->recheck[j] & SRK_WITH_HASKEY);
+		if (!reread)
+			sift_colsrc_tolerate_ovf(ex->src, ex->spec->type_leaf[i]);
+	}
 	for (int i = 0; i < ex->spec->npred; i++)
 		if (ex->spec->pred[i]->kind == SAP_TYPE)
 			ex->pushed[i] = true;

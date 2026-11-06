@@ -248,9 +248,6 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 		return agg_refuse_limit(SHAPE_WIDTH, combos, sift_limit(combos, SIFT_AGG_MAX_COMBOS), "%d value combinations", list_length(c->combos));
 	if (list_length(c->joins) > sift_limit(joins, SIFT_AGG_MAX_JOINS))
 		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
-	/* the rows of a document that is no object read as NULL in the leaf of a key test (doc ? 'k'), which only that test may read */
-	if (bms_overlap(c->haskey, c->read))
-		return agg_refuse_on(ERROR_PARITY, "a key test (?) of a path whose value the query reads too: the leaf is NULL for a document that is no object");
 	typeof_reads(c);
 	s->npreds_total = c->npred;
 	s->nwide = c->nwide;
@@ -266,6 +263,10 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	c->used = bms_union(c->used, c->elem_used);
 	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
 	finish_leaves(c, s);
+	/* the leaf of a key test (doc ? 'k') the query reads too: the rows that are no object read as NULL, and a value the leaf cannot store is for the source to read again */
+	for (int i = 0; i < s->nleaves; i++)
+		if (bms_is_member(s->leaves[i], c->haskey) && bms_is_member(s->leaves[i], c->read) && s->recheck[i] == SRK_NONE)
+			return agg_refuse_on(ERROR_PARITY, "a key test (?) of a path whose value the query reads in a way the source cannot read again");
 	if (reads_overflow(c, s) || reads_json_null_cast(c))
 		return agg_refuse(DIRTY_UNITS);
 	finish_combos(c, s);

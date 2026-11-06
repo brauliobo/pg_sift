@@ -198,7 +198,7 @@ types_need_kinds(uint32 types, bool astext)
 
 /* the test of the JSON types (SIFT_SRC_JT_*) of a leaf, which nothing else of the query may read as a value unless it is a conjunct (typeof_reads) */
 static SiftAggPred *
-type_pred(AggCtx *c, int leaf, uint32 types)
+type_pred(AggCtx *c, int leaf, uint32 types, bool key)
 {
 	SiftAggPred *p = new_pred(c, SAP_TYPE);
 
@@ -206,8 +206,12 @@ type_pred(AggCtx *c, int leaf, uint32 types)
 	p->level = leaf_level(c, leaf);
 	p->op = types;
 	c->used = bms_add_member(c->used, leaf);
-	c->rec_bad = bms_add_member(c->rec_bad, leaf);
-	c->txt_bad = bms_add_member(c->txt_bad, leaf);
+	/* the rows of a key test whose value the leaf cannot store are read again (SRK_HASKEY), as the text of the key is */
+	if (!key)
+	{
+		c->rec_bad = bms_add_member(c->rec_bad, leaf);
+		c->txt_bad = bms_add_member(c->txt_bad, leaf);
+	}
 	c->types = lappend(c->types, p);
 	return p;
 }
@@ -229,7 +233,7 @@ compile_typeof(AggCtx *c, Node *n)
 	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
 		!source_can_types(c) || (c->stats.nokinds[leaf] && types_need_kinds(types, leaf_of(c, leaf)->astext)))
 		return NULL;
-	p = type_pred(c, leaf, types);
+	p = type_pred(c, leaf, types, false);
 	p->desc = expr_text(c, n);
 	return p;
 }
@@ -275,7 +279,7 @@ typedef struct HasKeyReads
 	AggCtx	   *c;
 	int			att;
 	List	   *keys;			/* the keys of the test */
-	bool		other;			/* the document, or the member of one of the keys, read in any other way */
+	bool		other;			/* the document, or something below one of the keys, read */
 } HasKeyReads;
 
 static bool
@@ -295,7 +299,7 @@ haskey_reads(Node *n, HasKeyReads *w)
 		w->other |= r.path == NIL;
 		if (r.path != NIL)
 			foreach_ptr(String, k, w->keys)
-				w->other |= strcmp(strVal(k), strVal(linitial(r.path))) == 0;
+				w->other |= list_length(r.path) > 1 && strcmp(strVal(k), strVal(linitial(r.path))) == 0;
 		return false;
 	}
 	return expression_tree_walker(n, haskey_reads, w);
@@ -305,8 +309,9 @@ haskey_reads(Node *n, HasKeyReads *w)
  * A test `doc ? 'k'`, `doc ?| array[..]` or `doc ?& array[..]` on the document of an index that declares each path as a leaf, in the WHERE or in any place of a
  * predicate (a FILTER, an OR, a CASE): the key exists where the leaf holds a value of any JSON type (a JSON null too), which is the type test of compile_typeof, and
  * in a document that is no object where it is an array holding the string or the string itself, which the leaf does not store (it is the overflow of the array or the
- * string, whose reads are NULL): the source reads those rows again from the heap (SRK_HASKEY). The leaf is read by such tests alone, and only they hand over a bitmap
- * of the rows (row_bitmap): another read of the document or of a key would see the NULL of such a row.
+ * string, whose reads are NULL): the source reads those rows again from the heap (SRK_HASKEY), where a read of the key gives NULL too. The query may read the value of
+ * the key (`doc ->> 'k'`) if the source can read the rows with a value the leaf cannot store again as well (spec_recheck); the document itself or a path below the key stays
+ * with the normal plan.
  */
 SiftAggPred *
 compile_haskey(AggCtx *c, Node *n)
@@ -331,9 +336,9 @@ compile_haskey(AggCtx *c, Node *n)
 		int			leaf = haskey_leaf(c, r.att, strVal(list_nth(w.keys, i)));
 		SiftAggPred *t;
 
-		if (leaf < 0 || c->stats.nokinds[leaf] || (bms_is_member(leaf, c->used) && !bms_is_member(leaf, c->haskey)))
+		if (leaf < 0 || c->stats.nokinds[leaf])
 			return NULL;
-		t = type_pred(c, leaf, SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE);
+		t = type_pred(c, leaf, SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE, true);
 		t->desc = p == NULL ? expr_text(c, n) : psprintf("%s ? '%s'", leaf_name(c, leaf), strVal(list_nth(w.keys, i)));
 		c->haskey = bms_add_member(c->haskey, leaf);
 		if (p == NULL)
@@ -766,11 +771,11 @@ typeof_keeps_unstorable(AggCtx *c, const SiftAggPred *p)
 	return (p->op & SIFT_SRC_JT_READ) && (p->op & SIFT_SRC_JT_ALL & ~(stored | SIFT_SRC_JT_NULL)) != 0;
 }
 
-/* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error */
+/* a SAP_TYPE conjunct whose leaf the query reads elsewhere says so: a row it keeps with a value the leaf cannot hold is then an error, but for the key test, whose rows with such a value the source reads again */
 void
 typeof_reads(AggCtx *c)
 {
 	foreach_ptr(SiftAggPred, p, c->types)
-		if (bms_is_member(p->leaf, c->read))
+		if (bms_is_member(p->leaf, c->read) && !bms_is_member(p->leaf, c->haskey))
 			p->op |= SIFT_SRC_JT_READ;
 }

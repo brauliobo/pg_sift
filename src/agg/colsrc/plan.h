@@ -353,6 +353,10 @@ typedef enum SiftSrcRecheck
 	SRK_IOCAST					/* a path of the document read only as `(doc ->> 'k')::T`, T the leaf's type: the text of the scalar through the input function of T, which raises where the row reaches the aggregate (the source is given SRK_TEXT) */
 } SiftSrcRecheck;
 
+/* in a spec, or'd onto the read mode of a leaf that a key test (SRK_HASKEY) tests too: the source reads again the rows of both */
+#define SRK_WITH_HASKEY	0x40
+#define SRK_MODE(r)		((SiftSrcRecheck) ((r) & ~SRK_WITH_HASKEY))
+
 /* Can the source of this access method recheck its overflow rows (SiftSrcProvider.set_recheck)? */
 extern bool sift_colsrc_can_recheck(Oid relam, bool index);
 extern void sift_colsrc_set_recheck(SiftSrcSource *src, int leaf, SiftSrcRecheck mode, const char *key, Oid cast);

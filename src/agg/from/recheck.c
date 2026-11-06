@@ -288,15 +288,13 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 }
 
 /* SRK_NONE unless leaf m is read in a way the source can read again, and no conjunct of the rows reads the unnested list or its columns (it may drop a row that the error would reach first) */
-SiftSrcRecheck
-spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
+static SiftSrcRecheck
+read_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 {
 	Bitmapset  *list = NULL;
 	int			grp;
 	SiftSrcRecheck scalar;
 
-	if (bms_is_member(m, c->haskey))
-		return SRK_HASKEY;
 	scalar = scalar_recheck(c, s, m);
 	if (scalar != SRK_NONE)
 		return scalar;
@@ -350,4 +348,18 @@ spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	if (m == grp && grp != c->group && list_read_by_tuple_tests(s, grp))
 		return SRK_RECORDSET_LAZY;
 	return leaf_recheck(c, m);
+}
+
+/* How the source reads leaf m again: the key test of doc ? 'k' (SRK_HASKEY) beside the way the query reads the value, if it does, which then is not NONE (SRK_WITH_HASKEY) */
+SiftSrcRecheck
+spec_recheck(AggCtx *c, const SiftAggSpec *s, int m)
+{
+	SiftSrcRecheck read;
+
+	if (!bms_is_member(m, c->haskey))
+		return read_recheck(c, s, m);
+	if (!bms_is_member(m, c->read))
+		return SRK_HASKEY;
+	read = read_recheck(c, s, m);
+	return read == SRK_NONE ? SRK_NONE : read | SRK_WITH_HASKEY;
 }

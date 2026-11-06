@@ -77,8 +77,13 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 		sift_col_shred_recheck_set(k->rc, r->shred, att, leaf - r->first[att], mode == SRK_RECORDSET ? SRG_RECORDSET : mode == SRK_CAST ? SRC_JSONCAST : SRC_TEXTIO);
 	for (int i = 0; i < k->nleaf; i++)
 		if (k->leaf[i] == leaf)
+		{
+			k->haskey[i] |= mode == SRK_HASKEY;
+			k->read[i] |= mode != SRK_HASKEY;
 			return;
+		}
 	k->haskey[k->nleaf] = mode == SRK_HASKEY;
+	k->read[k->nleaf] = mode != SRK_HASKEY;
 	k->leaf[k->nleaf++] = leaf;
 }
 
@@ -159,13 +164,15 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 		k->cand = k->cand ? repalloc(k->cand, Max(nw, 1) * sizeof(uint64)) : MemoryContextAlloc(src->cxt, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
+		{
 			if (k->haskey[i])
 				any |= recheck_flag_haskey(src, k->leaf[i], nw, k->flag);
-			else if (col_overflow(src, NULL, k->leaf[i]))
+			if (k->read[i] && col_overflow(src, NULL, k->leaf[i]))
 			{
 				recheck_flag_leaf(src, k->leaf[i], k->flag);
 				any = true;
 			}
+		}
 		if (!any)
 			return;
 	}

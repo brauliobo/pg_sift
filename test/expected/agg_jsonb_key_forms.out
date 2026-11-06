@@ -135,7 +135,7 @@ SELECT * FROM kf_run('kn');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3200}]
  32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
- 33 type test beside          | same [{"count": 1400}] normal
+ 33 type test beside          | same [{"count": 1400}] pushed
  34 type test forms           | same [{"count": 721}] pushed
  35 type case                 | same [{"sum": 962700}] pushed
  36 type guard read           | same [{"sum": 750.0}] normal
@@ -179,7 +179,7 @@ SELECT * FROM kf_run('kc');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3200}]
  32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
- 33 type test beside          | same [{"count": 1400}] normal
+ 33 type test beside          | same [{"count": 1400}] pushed
  34 type test forms           | same [{"count": 720}] pushed
  35 type case                 | same [{"sum": 962700}] pushed
  36 type guard read           | same [{"sum": 750.0}] normal
@@ -222,7 +222,7 @@ SELECT * FROM kf_run('ko');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3200}]
  32 read of another key       | same [{"sum": 700, "count": 1400}] pushed
- 33 type test beside          | same [{"count": 1400}] normal
+ 33 type test beside          | same [{"count": 1400}] pushed
  34 type test forms           | same [{"count": 720}] pushed
  35 type case                 | same [{"sum": 962700}] pushed
  36 type guard read           | same [{"sum": 750.0}] normal
@@ -275,7 +275,7 @@ SELECT * FROM kf_run('kn');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 699}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -318,7 +318,7 @@ SELECT * FROM kf_run('kc');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -361,7 +361,7 @@ SELECT * FROM kf_run('ko');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -412,7 +412,7 @@ SELECT * FROM kf_run('kn');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 699}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -455,7 +455,7 @@ SELECT * FROM kf_run('kc');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -498,7 +498,7 @@ SELECT * FROM kf_run('ko');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 3092}]
  32 read of another key       | same [{"sum": 676, "count": 1355}] pushed
- 33 type test beside          | same [{"count": 1355}] normal
+ 33 type test beside          | same [{"count": 1355}] pushed
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
@@ -565,7 +565,7 @@ SELECT * FROM kf_run('kp');
  30 read of the key in a case | same error normal
  31 read of the document      | same [{"count": 12000}]
  32 read of another key       | same [{"sum": 2625, "count": 5250}] pushed
- 33 type test beside          | same [{"count": 5250}] normal
+ 33 type test beside          | same [{"count": 5250}] pushed
  34 type test forms           | same [{"count": 2700}] pushed
  35 type case                 | same [{"sum": 13510125}] pushed
  36 type guard read           | same [{"sum": 2812.5}] normal

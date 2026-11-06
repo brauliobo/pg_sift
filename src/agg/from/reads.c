@@ -136,6 +136,8 @@ pred_reads_any(const SiftAggPred *p, const Bitmapset *leaves)
 bool
 pred_reads_set(AggCtx *c, const SiftAggPred *p, const Bitmapset *leaves)
 {
+	if (p->kind == SAP_TYPE && bms_is_member(p->leaf, c->haskey))
+		return false;			/* a key test says whether the key is there, which the source reads again for the rows that are no object */
 	if (p->kind == SAP_COMBO || p->kind == SAP_ELEM_EXISTS || p->kind == SAP_MATCHED)
 	{
 		const ComboCtx *cb = list_nth(c->combos, p->leaf);

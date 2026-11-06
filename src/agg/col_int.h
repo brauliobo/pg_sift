@@ -46,6 +46,7 @@ typedef struct ColRecheck
 	int			nleaf;
 	int			leaf[SIFT_COLSRC_MAX_LEAVES];	/* the leaves with a mode */
 	bool		haskey[SIFT_COLSRC_MAX_LEAVES];	/* ... that are the key of doc ? 'key' (SRK_HASKEY): the rows to read again are those of a document that is no object */
+	bool		read[SIFT_COLSRC_MAX_LEAVES];	/* ... that the query reads, beside a key test or alone: the rows to read again are those that hold a value the leaf cannot store */
 	uint64		gen;			/* the unit (ColSource.ugen) the rows were collected for */
 	uint64	   *flag;			/* its flagged rows, live or not */
 	uint64	   *cand;			/* the live ones: they are read again unless the executor clears them (col_recheck_rows) */
