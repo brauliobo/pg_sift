@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a `sift_col` index with `track_changes` could give a wrong answer (rows counted twice: the old versions of rows updated by two statements of one transaction) when the first statement of a backend that needed one of the tables the backends share (the dictionaries of the index, its statistics, the choices of the planner) was an `UPDATE`, `INSERT ... ON CONFLICT DO UPDATE`, `DELETE` or `COPY`: the registry of the dynamic shared memory attaches in a subtransaction, whose commit advances the command id under the statement. A table is attached by the next statement that reads now (the statements that write go without it). Present in 4.0.0 to 4.0.3.
 - Fixed: pg_sift: a BM25 query that runs the scan again for each row of an outer query (a correlated subquery, a lateral join) and rechecks phrases (`body @@> '"dog and cat"'`) could write into memory that was not its own: the scan rescan deleted the context that the recheck of the next row worked in, and the context the backend made next took its place, so the recheck reset it. The recheck context is now a child of the query's context and ends with the scan node. Present in 4.0.0 to 4.0.3 (the code is the same in all four); 4.1.0 and 4.1.1 crashed in the first statement of a backend through the stem memo of a text search configuration, which 4.0.x does not have.
 ## 4.0.3 - 2026-11-04
 

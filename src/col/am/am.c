@@ -76,6 +76,10 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
+static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
+
+static bool batch_inserting;	/* inside sift_col_aminsert; an error leaves it set until the (sub)transaction aborts */
+
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
 
 static void
@@ -103,6 +107,7 @@ batch_xact(XactEvent event, void *arg)
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
 	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 		batch_seen = false;
@@ -117,11 +122,13 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
 	}
 }
 
 #define STMT_SPECULATIVE	1
 #define STMT_UPDATING		2
+#define STMT_WRITING		4
 
 static void
 batch_stmt_done(void *arg)
@@ -130,6 +137,7 @@ batch_stmt_done(void *arg)
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
+	batch_writes -= (what & STMT_WRITING) != 0;
 }
 
 static bool
@@ -148,22 +156,34 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
 
 	bool		updating = plan_updates(ps->planTree);
+	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
 		updating |= plan_updates(sub);
 	}
-	if (speculative || updating)
+	if (speculative || updating || writing)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
 
 		cb->func = batch_stmt_done;
-		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0));
+		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0));
 		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
 		batch_stmts += speculative;
 		batch_updates += updating;
+		batch_writes += writing;
 	}
+}
+
+/*
+ * Is a statement writing, or an aminsert running? The registry of the dynamic shared memory attaches in a subtransaction, whose commit advances the command id: that must not
+ * happen under a write (a row updated by two statements of one transaction would keep its middle version in the index), so the shared tables attach in the next statement that reads.
+ */
+bool
+sift_col_writing(void)
+{
+	return batch_inserting || batch_writes > 0 || batch_updates > 0 || batch_stmts > 0;
 }
 
 /* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_changes)? */
@@ -191,6 +211,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	 */
 	TransactionId xmin = r->rowkey && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
 
+	batch_inserting = true;
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	if (!batch_hooked)
 	{
@@ -211,6 +232,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	if (supersede)
 		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);
 	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0, 0);
+	batch_inserting = false;
 	return false;
 }
 
