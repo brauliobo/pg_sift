@@ -166,6 +166,8 @@ GATE = [
     # col
     Case('col_wbuf_group', g('col-wbuf', 'agg-read'), 'SELECT g, count(*), sum(amount) FROM wb GROUP BY g ORDER BY g', note='aggregate with an open write buffer'),
     Case('col_wbuf_point', g('col-wbuf', 'col-read'), 'SELECT count(*), sum(amount) FROM wb WHERE id = 1000005'),
+    Case('col_hll_distinct', g('col-read', 'agg-read'), 'SELECT sift.approx_count_distinct(k) FROM sc', note='the merge of the unit sketches of an index with hll_columns'),
+    Case('col_sorted_run_topn', g('col-read'), 'SELECT id, k FROM sc WHERE v > 500 ORDER BY k LIMIT 100', note='top-N read by the sorted runs of the units (order_columns)'),
     Case('col_wbuf_insert', g('col-wbuf', 'smoke'), "INSERT INTO wbp SELECT i, i % 16, i % 1000, 'common w' || i % 97 FROM generate_series(1, 3000) i", kind='once',
          pre=('TRUNCATE wbp',), plan=False),
     Case('col_promote', g('col-maint', 'col-wbuf'), "SELECT sift.col_promote('wbp_col') >= 0", kind='once', pre=FILL_WBP, plan=False),

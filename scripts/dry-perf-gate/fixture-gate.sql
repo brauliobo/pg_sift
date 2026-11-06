@@ -34,6 +34,11 @@ create index wbp_bm25 on wbp using sift (body);
 create table mt (id int, g int, amount bigint);
 create index mt_col on mt using sift_col (id, g, amount);
 
+-- the unit blobs of the sketch and sorted-run sidecars: k has 5000 values, v 1000
+create table sc (id int, k int, v int);
+insert into sc select i, (hashint4(i) & 2147483647) % 5000, i % 1000 from generate_series(1, :rows) i;
+create index sc_col on sc using sift_col (id, k, v) with (hll_columns = 'k', order_columns = 'k, v');
+
 -- sift_table: a read table and a mutable one (the layout of bench/perf/fixture.sql)
 create table seed (id int, g int, amount bigint, body text, pad text);
 alter table seed alter column pad set storage plain;
@@ -59,6 +64,6 @@ delete from dd where id % 20 = 7;
 create table tr (id int primary key, g int, amount bigint);
 create index tr_col on tr using sift_col (id, g, amount);
 
-vacuum (analyze) docs, wb, wbp, mt, seed, store, mutable, cb, cbb;
+vacuum (analyze) docs, wb, wbp, mt, sc, seed, store, mutable, cb, cbb;
 analyze dd, tr;
 checkpoint;
