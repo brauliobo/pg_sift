@@ -2,6 +2,7 @@
 -- Custom Scan (SiftAgg) with the rows of the normal plan (sift.enable_agg off). Expressions without a kernel (division, modulo,
 -- float8 comparisons, functions) are evaluated by PostgreSQL over the decoded values, also past the 38 digits of the integer programs; what PostgreSQL types as an integer sum runs as a generic aggregate.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -106,19 +107,7 @@ EXPLAIN (COSTS OFF) SELECT store, sum(qty / 2) FROM items GROUP BY store;
 (4 rows)
 
 -- the rows of the two plans
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint; b bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	SELECT count(*) INTO b FROM r_on;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0 AND b > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_rows_equal_and_not_empty(q) $$;
 SELECT same($$SELECT store, count(*) AS n, count(*) FILTER (WHERE price = 10.5) AS eq, count(*) FILTER (WHERE price < 0.005) AS lt, count(*) FILTER (WHERE price >= -0.015) AS ge,
 			  count(*) FILTER (WHERE rate <> 0.0000005) AS ne, count(*) FILTER (WHERE rate > 'NaN'::numeric) AS nan, count(*) FILTER (WHERE rate < 'Infinity'::numeric) AS inf,
 			  count(*) FILTER (WHERE price BETWEEN -5.5 AND 5.55) AS between_, count(*) FILTER (WHERE weight IN (1, 2.5, 3, -250)) AS in_, count(*) FILTER (WHERE weight NOT IN (1, NULL)) AS not_in
@@ -256,4 +245,5 @@ SELECT same($$SELECT g, max(n + 1) AS m, sum(n) AS s FROM nans GROUP BY g$$) AS 
 DROP TABLE nans;
 DROP FUNCTION same(text);
 DROP TABLE items;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

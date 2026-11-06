@@ -3,6 +3,7 @@
 -- by Custom Scan (SiftAgg) and with sift.enable_agg off, and the rows must be the same: 38-digit programs (three factors of numeric(12,2)), few groups
 -- (private accumulators) and many (direct), NULLs, negatives, a NaN, FILTER, values on both sides of the int32 and 2^62 bounds inside one chunk.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -30,17 +31,7 @@ VACUUM (ANALYZE) v;
 
 EXPLAIN (COSTS OFF) SELECT g6, sum(a * (1 - b) * (1 + c)) FROM v WHERE id <= 6000 GROUP BY g6;
 
-CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE n int;
-BEGIN
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE 'CREATE TEMP TABLE r_sift ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'CREATE TEMP TABLE r_pg ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
-	SELECT count(*) INTO n FROM ((TABLE r_sift EXCEPT ALL TABLE r_pg) UNION ALL (TABLE r_pg EXCEPT ALL TABLE r_sift)) d;
-	DROP TABLE r_sift, r_pg;
-	RETURN n = 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.agg_rows_as_json_equal(q) $$;
 
 -- the rows are compared as JSON text: the digits and the display scale of every sum, a NaN included
 CREATE TABLE cases (name text PRIMARY KEY, q text NOT NULL);
@@ -68,4 +59,5 @@ SELECT name, same(q) FROM cases ORDER BY name;
 
 DROP TABLE cases, v;
 DROP FUNCTION same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

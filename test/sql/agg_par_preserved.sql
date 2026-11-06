@@ -56,15 +56,7 @@ INSERT INTO shapes (name, q) VALUES
 	('cte lookup',        'WITH ps AS MATERIALIZED (SELECT id, nxt FROM dims WHERE id < 6) SELECT l.tag, count(*), sum(f.qty::float8), avg(f.qty::float8) FROM laned f JOIN ps ON ps.id = f.qty % 7 JOIN links l ON l.id = ps.nxt GROUP BY l.tag'),
 	('distinct filter',   'SELECT f.grp % 3, count(DISTINCT m.name) FILTER (WHERE f.qty > 100), count(DISTINCT m.w) FROM facts f LEFT JOIN dims m ON m.id = f.grp - 1 GROUP BY 1');
 
-CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	PERFORM set_config('parallel_leader_participation', leader::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_and_leader(q, push, workers, leader) $$;
 
 CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_mode_workers(q, workers) $$;
 

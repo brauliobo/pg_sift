@@ -3,6 +3,7 @@
 -- same, and the scan answers the query. Rows with no list, an empty list, a list whose elements all fail the lateral's conditions, NULL members,
 -- and rows the snapshot does not see (deleted, updated) are in the table; groups by the row id and by a column several rows share.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -26,22 +27,7 @@ DELETE FROM items WHERE id % 53 = 0;
 UPDATE items SET weight = weight + 1 WHERE id % 59 = 0;
 
 -- whether the scan answers the query, and the rows it differs by from the plan without it
-CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  SELECT count(*) INTO rows FROM r_on;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
-  END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_pushed_and_differences(q) $$;
 
 -- per row: the weight of the row, the average and count of its elements (a row with none keeps its group)
 SELECT * FROM check_same($q$SELECT i.id, max(i.weight) AS weight, avg(p.n) AS n, count(*) AS tuples, count(p.n) AS counted
@@ -98,4 +84,5 @@ SELECT * FROM check_same($q$SELECT i.id, max(i.weight) AS weight, avg(p.n) AS n
 
 DROP TABLE items;
 DROP FUNCTION check_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

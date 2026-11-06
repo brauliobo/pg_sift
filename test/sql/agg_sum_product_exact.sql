@@ -19,18 +19,7 @@ INSERT INTO p SELECT 20000 + i, 4, 1234567890123456, 8765432109876543, 12345 + i
 CREATE INDEX p_col ON p USING sift_col (g, a, b, c, price, disc, tax);
 VACUUM (FREEZE, ANALYZE) p;
 
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	SET LOCAL sift.agg_force = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_forced_differences(q) $$;
 CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_forced(q) $$;
 SET max_parallel_workers_per_gather = 0;
 

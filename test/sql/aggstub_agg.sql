@@ -1,6 +1,7 @@
 -- Custom Scan (SiftAgg) over the test column source: the plan is taken for the shapes it proves, and its rows are the ones of the
 -- normal plan (sift.enable_agg off) for aggregates, group keys, filters, NULLs and unnested arrays of objects.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
@@ -31,19 +32,7 @@ EXPLAIN (COSTS OFF) SELECT kind, string_agg(kind, ',' ORDER BY id) FROM o GROUP 
 EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM o WHERE id < 100 GROUP BY kind;
 
 -- the rows of the two plans
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE a bigint; b bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
-	SELECT count(*) INTO b FROM r_on;
-	DROP TABLE r_on, r_off;
-	RETURN a = 0 AND b > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_rows_equal_and_not_empty(q) $$;
 SELECT same($$SELECT kind, count(*) AS n, count(amount) AS c, sum(amount) AS s, avg(amount) AS a, min(amount) AS lo, max(amount) AS hi FROM o GROUP BY kind$$) AS floats;
 SELECT same($$SELECT store, count(*) AS n, sum(qty) AS s, avg(qty) AS a, min(placed) AS lo, max(placed) AS hi FROM o WHERE kind <> 'web' AND placed >= DATE '2024-03-01' GROUP BY store$$) AS ints;
 SELECT same($$SELECT note, count(*) AS n, count(DISTINCT kind) AS dk, count(DISTINCT qty) AS dq FROM o GROUP BY note$$) AS distincts;
@@ -111,4 +100,5 @@ CREATE SCHEMA public;
 GRANT USAGE ON SCHEMA public TO PUBLIC;
 RESET client_min_messages;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

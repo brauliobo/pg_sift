@@ -25,23 +25,7 @@ ANALYZE dims;
 -- the most arms one scan served in the plan
 CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.agg_arms_in_one_pass(q) $$;
 -- the rows are those of the normal plan, and those of the arms each in a scan of its own
-CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE d bigint; n bigint;
-BEGIN
-	SET sift.enable_agg = on;
-	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.agg_fuse = off;
-	EXECUTE format('CREATE TEMP TABLE r_alone AS %s', q);
-	RESET sift.agg_fuse;
-	SET sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
-	RESET sift.enable_agg;
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)
-								 UNION ALL (TABLE r_on EXCEPT ALL TABLE r_alone) UNION ALL (TABLE r_alone EXCEPT ALL TABLE r_on)) x;
-	SELECT count(*) INTO n FROM r_on;
-	DROP TABLE r_on, r_alone, r_off;
-	RETURN d = 0 AND n > 0;
-END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_fuse_agrees(q) $$;
 \set from 'FROM ev e JOIN dims d ON d.id = e.ref'
 \set lines_from 'FROM ev e JOIN dims d ON d.id = e.ref CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> ''lines'') AS l(k text, p text, v float8)'
 -- a conjunct every arm has, and others that an arm has and the other arms lack (NULL values pass neither side of them)

@@ -520,3 +520,173 @@ BEGIN
 		IF l ~ '^ *(Units|Rows):' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
+
+-- agg_fuse_agrees: q with the pushdown, with sift.agg_fuse off and with the pushdown off return the same rows, and some
+CREATE FUNCTION sift_helpers.agg_fuse_agrees(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.agg_fuse = off;
+	EXECUTE format('CREATE TEMP TABLE r_alone AS %s', q);
+	RESET sift.agg_fuse;
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)
+								 UNION ALL (TABLE r_on EXCEPT ALL TABLE r_alone) UNION ALL (TABLE r_alone EXCEPT ALL TABLE r_on)) x;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_alone, r_off;
+	RETURN d = 0 AND n > 0;
+END $$;
+
+-- agg_lookup_cache_differences: rows of q, how many differ without the lookup cache (sift.agg_lookup_cache_kb = 0) and from the normal plan
+CREATE FUNCTION sift_helpers.agg_lookup_cache_differences(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_lookup_cache_kb = 0;
+	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
+	RESET sift.agg_lookup_cache_kb;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_uncached := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_gen) UNION ALL (TABLE r_gen EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_gen, r_off;
+	RETURN NEXT;
+END $$;
+
+-- agg_pushed_and_differences: whether the plan of q has a SiftAgg scan, its rows, and how many differ from the normal plan (in a transaction)
+CREATE FUNCTION sift_helpers.agg_pushed_and_differences(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  SET LOCAL sift.enable_agg = off;
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.enable_agg = on;
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+  SELECT count(*) INTO rows FROM r_on;
+  pushed := false;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+  END LOOP;
+  DROP TABLE r_off, r_on;
+  RETURN NEXT;
+END $$;
+
+-- agg_scan_kind_rows_and_differences: SiftAgg or normal by the JSON plan of q, the rows the pushdown returns and how many differ from the normal plan
+CREATE FUNCTION sift_helpers.agg_scan_kind_rows_and_differences(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
+	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
+	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	rows_pushed := (SELECT count(*) FROM on_rows);
+	differences := (SELECT count(*) FROM ((TABLE on_rows EXCEPT TABLE off_rows) UNION ALL (TABLE off_rows EXCEPT TABLE on_rows)) d);
+	DROP TABLE on_rows, off_rows;
+	RETURN NEXT;
+END $$;
+
+-- agg_forced_differences: how many rows of q differ between the normal plan and the pushdown forced on (sift.agg_force), EXCEPT ALL
+CREATE FUNCTION sift_helpers.agg_forced_differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN d;
+END $$;
+
+-- agg_rows_equal_and_not_empty: q returns the same rows with the pushdown and without, and at least one
+CREATE FUNCTION sift_helpers.agg_rows_equal_and_not_empty(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO b FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND b > 0;
+END $$;
+
+-- agg_differences_min_10_rows: how many rows of q differ between the pushdown and the normal plan; an error when the normal plan has fewer than 10 rows
+CREATE FUNCTION sift_helpers.agg_differences_min_10_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	IF (SELECT count(*) FROM r_off) < 10 THEN RAISE EXCEPTION 'the series has few rows'; END IF;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN d;
+END $$;
+
+-- rows_agg_with_workers_and_leader: the rows of q as sorted text with the pushdown on or off, max_parallel_workers_per_gather and parallel_leader_participation set
+CREATE FUNCTION sift_helpers.rows_agg_with_workers_and_leader(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_leader_participation', leader::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- rows_agg_with_workers: the rows of q as sorted text with the pushdown on or off and max_parallel_workers_per_gather set
+CREATE FUNCTION sift_helpers.rows_agg_with_workers(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- agg_plan_has_workers: true when the plan of q with the pushdown on plans workers
+CREATE FUNCTION sift_helpers.agg_plan_has_workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Workers Planned' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- agg_filters_in_source: true when the EXPLAIN ANALYZE of q with the pushdown on says filters in source
+CREATE FUNCTION sift_helpers.agg_filters_in_source(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; s bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		s := s OR l LIKE '%filters in source%';
+	END LOOP;
+	RETURN s;
+END $$;
+
+-- agg_rows_as_json_equal: the rows of q as json are the same with the pushdown and without
+CREATE FUNCTION sift_helpers.agg_rows_as_json_equal(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE n int;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_sift ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_pg ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SELECT count(*) INTO n FROM ((TABLE r_sift EXCEPT ALL TABLE r_pg) UNION ALL (TABLE r_pg EXCEPT ALL TABLE r_sift)) d;
+	DROP TABLE r_sift, r_pg;
+	RETURN n = 0;
+END $$;

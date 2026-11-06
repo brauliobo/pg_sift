@@ -15,18 +15,7 @@ NOTICE:  sift_col index "lines_col": 1 automatic choice (rollup_dims), 1 advice 
 DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = b, c
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lines_col');
 VACUUM (FREEZE, ANALYZE) lines;
-CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE d bigint;
-BEGIN
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = on;
-	SET LOCAL sift.agg_force = on;
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
-	DROP TABLE r_on, r_off;
-	RETURN d;
-END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_forced_differences(q) $$;
 CREATE FUNCTION scanned(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_forced(q) $$;
 SET max_parallel_workers_per_gather = 0;
 SELECT scanned('SELECT g, sum(a * b * c) FROM lines GROUP BY g') AS wide_sum_scanned, scanned('SELECT sum(price * (1 - disc) * (1 + tax)) FROM lines') AS charge_scanned;
