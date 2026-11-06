@@ -7,8 +7,12 @@
 
 #include <math.h>
 
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_statistic.h"
+#include "nodes/pathnodes.h"
+#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
 #include "parser/parsetree.h"
 #include "utils/syscache.h"
 #include "access/htup_details.h"
@@ -212,6 +216,22 @@ agg_open_cost(int nparts)
 
 double		agg_read_rows;
 
+/* does a b-tree index of the table give the first key of the query's order (a top-N over it reads the rows in that order from the heap, as the scan does) */
+static bool
+btree_presorts(AggCtx *c)
+{
+	foreach_ptr(Path, p, c->rel->pathlist)
+	{
+		int			n = 0;
+
+		if (IsA(p, IndexPath) && ((IndexPath *) p)->indexinfo->relam == BTREE_AM_OID && p->pathkeys != NIL)
+			(void) pathkeys_count_contained_in(c->root->query_pathkeys, p->pathkeys, &n);
+		if (n > 0)
+			return true;
+	}
+	return false;
+}
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -319,8 +339,13 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each; those the order array or a sorted run gives come in the order of the key (the entries a walk tests too), a page in the buffers, the cache or the disk */
 	if (s->topn)
-		p->total_cost += c->topn_array || c->topn_runs ? Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE :
-			c->topn_fetch * random_page_cost * 0.5;
+	{
+		double		walk = Max(c->topn_array ? c->topn_walk : 0.0, c->topn_fetch) * heap_visit_ops(rel_pages(c)) * cpu_operator_cost * SIFT_COST_AGG_SHARE;
+		/* the pages a b-tree plan with a LIMIT reads for the same rows, at the price its own plan pays for them (PostgreSQL's pages, not the operators of the model, which a b-tree plan does not meet): the scan costs no less than it where a b-tree gives the order's first key */
+		double		pages = btree_presorts(c) ? index_pages_fetched(c->topn_fetch, Max(rel_pages(c), 1.0), 0.0, c->root) * random_page_cost * TOPN_FETCH_PAGE : 0.0;
+
+		p->total_cost += Max(c->topn_array || c->topn_runs ? walk : c->topn_fetch * random_page_cost * TOPN_FETCH_PAGE, pages);
+	}
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
 	if (c->having_sel > 0 && !s->topn)
