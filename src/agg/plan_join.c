@@ -147,7 +147,8 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
 		return agg_refuse_on(JOIN_CHILD, "the child is not a base relation of this query level, or reads the queries around it");
 	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
-		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
+		return e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION ? planned_correlated_child(c, e, rel, jc) :
+			agg_refuse_f(JOIN_CHILD, "%s (%s) reads the query's other tables, which only a sub-select or a function can do as a child", e->eref->aliasname, *what);
 	if ((jc->cpath = child_path(rel, false)) == NULL)
 		return agg_refuse_on(JOIN_CHILD, "the child has no plan the scan can run once");
 	if (!agg_lookup_fits(jc->cpath->rows, jc->cpath->pathtarget->width))

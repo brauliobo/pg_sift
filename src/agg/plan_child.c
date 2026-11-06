@@ -603,13 +603,14 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	 */
 	if (c->func_kind == FK_EACH && bare_read_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery,
 													&(BareRead) {c->func_rti, 0, c->func_key != NULL}))
-		return false;
+		return agg_refuse_f(JOIN_CHILD, "%s reads the member that the lateral unnests as a whole, which a missing member and a JSON null both leave NULL", e->eref->aliasname);
 	if (c->nsiblings > 1 && raising_walker(e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery, c))
-		return false;
+		return agg_refuse_f(JOIN_CHILD, "%s can raise an error, and the scan would run it for rows another join of the query may remove", e->eref->aliasname);
 	if (rel->baserestrictinfo != NIL && !(e->rtekind == RTE_SUBQUERY && (e->subquery->limitCount || e->subquery->limitOffset)))
-		return e->rtekind == RTE_SUBQUERY && planned_child(c, rel, jc);
+		return e->rtekind == RTE_SUBQUERY ? planned_child(c, rel, jc) :
+			agg_refuse_f(JOIN_CHILD, "%s is a function with conditions of the query on it", e->eref->aliasname);
 	if (q == NULL)
-		return false;
+		return agg_refuse_f(JOIN_CHILD, "%s is a function the scan cannot read as a query", e->eref->aliasname);
 	derived = query_tree_mutator(copyObject(q), derive_mutator, &x, 0);
 	if (x.calls != NIL && !query_tree_walker(derived, derived_column_walker, &x, 0))
 		q = derived;
@@ -629,7 +630,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 	child_params(c, jc, c->root->plan_params);
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
-		return false;
+		return agg_refuse_f(JOIN_CHILD, "%s reads no column of the query's other tables, so it has no input to run it for", e->eref->aliasname);
 	jc->j.sig = sift_agg_child_sig((Node *) q, jc->j.params);
 	child_scan_path(rel, jc);
 	if (e->rtekind == RTE_SUBQUERY)
@@ -754,8 +755,10 @@ static bool
 child_rows_fit(AggCtx *c, JoinCtx *jc)
 {
 	double		reach = child_reach(c, jc);
+	double		inputs = Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach);
 
-	return agg_lookup_fits(jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach), jc->cpath->pathtarget->width);
+	return agg_lookup_fits(jc->cpath->rows * inputs, jc->cpath->pathtarget->width) ||
+		agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "%s is estimated at %.0f rows for each of %.0f distinct inputs, of width %d", rt_fetch(jc->rti, c->root->parse->rtable)->eref->aliasname, jc->cpath->rows, inputs, jc->cpath->pathtarget->width);
 }
 
 static Node *
