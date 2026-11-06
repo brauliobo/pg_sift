@@ -427,3 +427,4 @@ agg_jsonb_contain_object	a containment `doc @> '{...}'` with a boolean or JSON n
 set_key_skew_dimension	multiplied by the skew of the column	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
 group_int_expr_halves	`GROUP BY id / 2`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 group_bigint_key_dense	an `int`, `bigint`, `date`, `timestamp` or `timestamptz` column	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+agg_window_topn	`row_number() OVER (PARTITION BY key ORDER BY ..) <= N` over NOT NULL partition columns is a probe of the table for each key	events	-	Top-N: amount DESC NULLS LAST	native	-	ms,minstr	faster33	no	-

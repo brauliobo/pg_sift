@@ -393,3 +393,7 @@ multiplied by the skew of the column	set_key_skew_dimension	200000	native	defaul
 433 M instructions and 37 ms	group_int_expr_halves	300000	sift	default	exec_ms	37	15	CHANGELOG 4.2 line of the ids of integer keys, run a17500147a45-20261106T010006Z-0e80, records in program-scale/realq42b/records/groupid-cases-after.rec (before: groupid-cases-before.rec); native is the normal plan
 237 M instructions and 17 ms	group_bigint_key_dense	300000	sift	default	instr_m	237	10	CHANGELOG 4.2 line of the ids of integer keys, run a17500147a45-20261106T010006Z-0e80, records in program-scale/realq42b/records/groupid-cases-after.rec (before: groupid-cases-before.rec); native is the normal plan
 237 M instructions and 17 ms	group_bigint_key_dense	300000	sift	default	exec_ms	17	15	CHANGELOG 4.2 line of the ids of integer keys, run a17500147a45-20261106T010006Z-0e80, records in program-scale/realq42b/records/groupid-cases-after.rec (before: groupid-cases-before.rec); native is the normal plan
+-	agg_window_topn	200000	picked	default	exec_ms	18.4	25	bench case agg_window_topn, 600,000 rows, 2,000 keys, records in program-scale/realq42b/wp08
+-	agg_window_topn	200000	picked	default	instr_m	161	10	bench case agg_window_topn, records in program-scale/realq42b/wp08
+-	agg_window_topn	200000	native	default	exec_ms	30.1	25	bench case agg_window_topn, native plan, records in program-scale/realq42b/wp08
+-	agg_window_topn	200000	native	default	instr_m	396	10	bench case agg_window_topn, native plan, records in program-scale/realq42b/wp08

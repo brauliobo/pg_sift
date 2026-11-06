@@ -18,6 +18,8 @@
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "nodes/primnodes.h"
 #include "nodes/makefuncs.h"
@@ -27,6 +29,7 @@
 #include "parser/parsetree.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
@@ -282,6 +285,186 @@ topn_array(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **w
 	return top;
 }
 
+/* a probe of a key has a cost of its own (a statement planned and run for each key): it pays against the sort of every row for keys of many rows of a big table, and not for a table of a few thousand rows, where the arrays are the form */
+#define LATERAL_MIN_ROWS_PER_KEY 100.0
+#define LATERAL_MIN_TUPLES 100000.0
+
+/* the rows of the table a key of the partition holds on average, from PostgreSQL's statistics (0: not known) */
+static double
+rows_per_key(Query *sub, WindowClause *w)
+{
+	double		nd = 1.0,
+				tuples = 0.0;
+	Oid			relid = InvalidOid;
+
+	foreach_node(SortGroupClause, k, w->partitionClause)
+	{
+		Var		   *v = (Var *) get_sortgroupclause_tle(k, sub->targetList)->expr;
+		HeapTuple	st,
+					cl;
+		double		d;
+
+		if (relid == InvalidOid)
+			relid = rt_fetch(v->varno, sub->rtable)->relid;
+		else if (relid != rt_fetch(v->varno, sub->rtable)->relid)
+			return 0.0;
+		if ((cl = SearchSysCache1(RELOID, ObjectIdGetDatum(relid))) == NULL)
+			return 0.0;
+		tuples = ((Form_pg_class) GETSTRUCT(cl))->reltuples;
+		ReleaseSysCache(cl);
+		if ((st = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(relid), Int16GetDatum(v->varattno), BoolGetDatum(false))) == NULL)
+			return 0.0;
+		d = ((Form_pg_statistic) GETSTRUCT(st))->stadistinct;
+		ReleaseSysCache(st);
+		if (d == 0.0 || tuples <= 0.0)
+			return 0.0;
+		nd *= d > 0 ? d : -d * tuples;
+	}
+	return tuples >= LATERAL_MIN_TUPLES ? tuples / Max(Min(nd, tuples), 1.0) : 0.0;
+}
+
+static int
+ptr_index(List *list, void *p)
+{
+	foreach_ptr(void, x, list)
+		if (x == p)
+			return foreach_current_index(x);
+	return -1;
+}
+
+/*
+ * The first n rows of each partition as one probe of the table for each key (a LATERAL sub-select with ORDER BY .. LIMIT n, which the scan runs as a top-n of
+ * the key): `(SELECT DISTINCT k FROM t WHERE q) g, LATERAL (SELECT c FROM t WHERE q AND k = g.k ORDER BY o LIMIT n) l`, with the window over the n rows of each
+ * key on top. The rows are those of the window's first n (the rows of a tie in o are in no order in either) and no array holds the rows of a group. Only for
+ * partition columns of the table that are NOT NULL: `k = g.k` finds no row of a NULL key, which the window keeps as one partition. NULL (and the reason) for
+ * any other query: the arrays are the form for it.
+ */
+static Query *
+topn_lateral(Query *sub, WindowClause *w, TargetEntry *rn, int64 n, const char **why)
+{
+	Query	   *keys = copyObject(sub),
+			   *child = copyObject(sub),
+			   *top = makeNode(Query);
+	RangeTblEntry *kr = makeNode(RangeTblEntry),
+			   *lr = makeNode(RangeTblEntry);
+	List	   *kcols = NIL,
+			   *ccols = NIL,
+			   *knames = NIL,
+			   *cnames = NIL,
+			   *eqs = NIL,
+			   *order = NIL,
+			   *tlist = NIL;
+
+	keys->targetList = NIL;
+	child->targetList = NIL;
+	foreach_node(SortGroupClause, k, w->partitionClause)
+	{
+		TargetEntry *te = get_sortgroupclause_tle(k, sub->targetList);
+		Var		   *v = (Var *) te->expr;
+
+		if (!IsA(v, Var) || v->varlevelsup != 0 || rt_fetch(v->varno, sub->rtable)->rtekind != RTE_RELATION ||
+			!agg_att_not_null(rt_fetch(v->varno, sub->rtable)->relid, v->varattno))
+		{
+			*why = "a partition column is not a NOT NULL column of the table";
+			return NULL;
+		}
+	}
+	foreach_node(TargetEntry, te, sub->targetList)
+	{
+		TargetEntry *c;
+
+		if (te == rn)
+			continue;
+		c = copyObject(te);
+		c->resjunk = false;
+		if (te->ressortgroupref != 0 && get_sortgroupref_clause_noerr(te->ressortgroupref, w->partitionClause) != NULL)
+		{
+			c->resno = list_length(keys->targetList) + 1;
+			c->resname = psprintf("k%d", c->resno);
+			keys->targetList = lappend(keys->targetList, c);
+			knames = lappend(knames, makeString(c->resname));
+			kcols = lappend(kcols, te);
+		}
+		else
+		{
+			c->resno = list_length(child->targetList) + 1;
+			c->resname = psprintf("c%d", c->resno);
+			child->targetList = lappend(child->targetList, c);
+			cnames = lappend(cnames, makeString(c->resname));
+			ccols = lappend(ccols, te);
+		}
+	}
+	/* an order column that is a partition column is the same for every row of a key */
+	foreach_node(SortGroupClause, o, w->orderClause)
+		if (get_sortgroupref_clause_noerr(o->tleSortGroupRef, w->partitionClause) == NULL)
+			order = lappend(order, o);
+	if (rows_per_key(sub, w) < LATERAL_MIN_ROWS_PER_KEY)
+	{
+		*why = "the table has fewer than 100,000 rows, a key of the partition holds fewer than 100, or PostgreSQL has no statistics of them";
+		return NULL;
+	}
+	if (ccols == NIL || order == NIL)
+	{
+		*why = ccols == NIL ? "the sub-select reads nothing but the partition and the row number" : "the window orders by its partition columns only";
+		return NULL;
+	}
+	keys->windowClause = NIL;
+	keys->hasWindowFuncs = false;
+	keys->distinctClause = list_copy(w->partitionClause);
+
+	child->windowClause = NIL;
+	child->hasWindowFuncs = false;
+	child->sortClause = order;
+	child->limitCount = (Node *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(n), false, FLOAT8PASSBYVAL);
+	foreach_node(SortGroupClause, k, w->partitionClause)
+	{
+		TargetEntry *te = get_sortgroupclause_tle(k, sub->targetList);
+		Var		   *outer = makeVar(1, foreach_current_index(k) + 1, exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr), 1);
+		OpExpr	   *eq = (OpExpr *) make_opclause(k->eqop, BOOLOID, false, copyObject(te->expr), (Expr *) outer, InvalidOid, exprCollation((Node *) te->expr));
+
+		set_opfuncid(eq);
+		eqs = lappend(eqs, eq);
+	}
+	child->jointree->quals = (Node *) make_ands_explicit(list_concat(child->jointree->quals ? make_ands_implicit((Expr *) child->jointree->quals) : NIL, eqs));
+
+	kr->rtekind = RTE_SUBQUERY;
+	kr->subquery = keys;
+	kr->inFromCl = true;
+	kr->eref = makeAlias("g", knames);
+	lr->rtekind = RTE_SUBQUERY;
+	lr->subquery = child;
+	lr->lateral = true;
+	lr->inFromCl = true;
+	lr->eref = makeAlias("l", cnames);
+
+	/* the sub-select's columns in their positions: a partition column of the keys, the others of the probe; the row number is the window over the rows of a key */
+	foreach_node(TargetEntry, te, sub->targetList)
+	{
+		TargetEntry *t = copyObject(te);
+		int			at;
+
+		if (te != rn)
+		{
+			Index		rti = (at = ptr_index(kcols, te)) >= 0 ? 1 : 2;
+
+			if (at < 0)
+				at = ptr_index(ccols, te);
+			t->expr = (Expr *) makeVar(rti, at + 1, exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr), 0);
+		}
+		tlist = lappend(tlist, t);
+	}
+	top->commandType = CMD_SELECT;
+	top->canSetTag = true;
+	top->rtable = list_make2(kr, lr);
+	top->jointree = makeFromExpr(list_make2(makeNode(RangeTblRef), makeNode(RangeTblRef)), NULL);
+	linitial_node(RangeTblRef, top->jointree->fromlist)->rtindex = 1;
+	lsecond_node(RangeTblRef, top->jointree->fromlist)->rtindex = 2;
+	top->targetList = tlist;
+	top->windowClause = list_make1(copyObject(w));
+	top->hasWindowFuncs = true;
+	return top;
+}
+
 #define LATEST_REFUSE(report, text) \
 	do { \
 		if (report) \
@@ -305,6 +488,7 @@ latest_of(Query *q, Index rti, bool apply)
 	WindowFunc *wf;
 	WindowClause *w;
 	int			count = 0;
+	bool		lateral = false;
 
 	if (rte->rtekind == RTE_SUBQUERY)
 		sub = rte->subquery;
@@ -381,7 +565,9 @@ latest_of(Query *q, Index rti, bool apply)
 			if (!column_source_reads(((RangeTblEntry *) linitial(sub->rtable))->relid, cols))
 				LATEST_REFUSE(!apply, "a column the sub-select reads is in no column index of its table");
 		}
-		if ((top = topn_array(sub, w, rn, n, &why)) == NULL)
+		if ((top = topn_lateral(sub, w, rn, n, &why)) != NULL)
+			lateral = true;
+		else if ((top = topn_array(sub, w, rn, n, &why)) == NULL)
 			LATEST_REFUSE(!apply, why);
 	}
 	if (!apply)
@@ -389,7 +575,8 @@ latest_of(Query *q, Index rti, bool apply)
 
 	if (top != NULL)
 	{
-		sift_agg_by_cost = true;
+		/* the arrays hold every row of the groups: the plan is chosen by cost; the probes of the keys are kept where they run in the scan */
+		sift_agg_by_cost |= !lateral;
 		if (cte != NULL)
 			cte->ctequery = (Node *) top;
 		else
