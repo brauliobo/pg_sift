@@ -7,7 +7,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SHIM=$REPO/scripts/fresh-psql.py
 
-plan 12
+plan 13
 STUB=$(mktemp) && printf '#!/bin/sh\ncat\n' >"$STUB" && chmod +x "$STUB"
 trap 'rm -f "$STUB"; cleanup' EXIT
 # the script the shim hands to psql, for a script on stdin
@@ -21,6 +21,7 @@ check "the SET of the session is replayed after the connection" test "$(fed $'SE
 last_block() { fed "$1" | awk '/^\\connect$/ {buf = ""; next} {buf = buf $0 "\n"} END {printf "%s", buf}'; }
 check "only the last SET of a setting is replayed (a SET ROLE of a role dropped since would fail)" test "$(last_block $'CREATE ROLE r;\nSET ROLE r;\nRESET ROLE;\nSET work_mem = 1000;\nSET work_mem = 2000;\nDROP ROLE r;\nSELECT 1;' | grep -cE 'ROLE|1000')|$(last_block $'SET work_mem = 1000;\nSET work_mem = 2000;\nSELECT 1;' | grep -c 'work_mem = 2000')" == "0|1"
 check "a \\set ECHO none of the test stays in the output" test "$(FRESH_PSQL=$STUB "$SHIM" -a <<<$'\\set ECHO none\nSELECT 1;' | grep -c '^.set ECHO none$')" == 1
+check "FRESH_LOAD loads the library first in every new backend" test "$(FRESH_LOAD=pg_sift fed $'SELECT 1;\nSELECT 2;' | grep -c "^LOAD 'pg_sift';")" == 2
 FRESH_PSQL= "$SHIM" </dev/null >/dev/null 2>&1; r1=$?
 FRESH_PSQL=$STUB FRESH_ACTIVE=1 "$SHIM" </dev/null >/dev/null 2>&1; r2=$?
 FRESH_PSQL=$SHIM "$SHIM" </dev/null >/dev/null 2>&1; r3=$?

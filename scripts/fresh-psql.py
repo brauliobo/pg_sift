@@ -45,7 +45,7 @@ def forget(state, t):
     state.pop(setting(t), None)
 
 
-def transform(text, restore=RESTORE):
+def transform(text, restore=RESTORE, load=""):
     out, state = [], {}
     fresh = stmts = 0
     in_txn = bound = copy_data = False
@@ -80,7 +80,7 @@ def transform(text, restore=RESTORE):
             continue
         s = line.lstrip()
         if mode is None and not sig and s and not s.startswith(("--", "/*")) and (not s.startswith("\\") or RUNS_QUERY.match(s)) and not in_txn and not bound:
-            out.append(CTRL + "\n\\connect\n" + "".join(state.values()) + restore + "\n")
+            out.append(CTRL + "\n\\connect\n" + load + "".join(state.values()) + restore + "\n")
             fresh += 1
         out.append(line)
         i, n = 0, len(line)
@@ -163,7 +163,10 @@ def main(argv):
         os.execv(real, [real] + argv)
     # the echo the caller asked for (pg_regress: -a) comes back after the silent connection
     echo = "all" if any(a in ("-a", "--echo-all") or re.fullmatch(r"-[XqAtnbxa]*a[XqAtnbxa]*", a) for a in argv) else "queries" if "-e" in argv else "none"
-    script, fresh, stmts = transform(sys.stdin.read(), "\\set ECHO " + echo)
+    # FRESH_LOAD=LIBRARY: the library is loaded first in every new backend, as shared_preload_libraries / session_preload_libraries would (a setting of the extension is
+    # unknown before the library is loaded: a test that sets or shows one differs in the default mode, by design)
+    load = "LOAD '%s';\n" % os.environ["FRESH_LOAD"] if os.environ.get("FRESH_LOAD") else ""
+    script, fresh, stmts = transform(sys.stdin.read(), "\\set ECHO " + echo, load)
     p = subprocess.run([real] + argv, input=script.encode(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        env=dict(os.environ, FRESH_ACTIVE="1"))
     sys.stdout.buffer.write(b"".join(l for l in p.stdout.splitlines(keepends=True) if l.rstrip(b"\r\n") != CTRL.encode()))
