@@ -30,8 +30,8 @@ SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host container mb spool host_stubs
-OWN      := regex regex_parse regex_exec store stubs
+HOSTC    := host container mb spool regex regex_parse regex_exec host_stubs
+OWN      := store stubs
 GLUE     := engine docs persist query feed merge
 UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
@@ -46,8 +46,8 @@ $(PORTOBJS): $(OUT)/%.o: $(SRC)/%.c | $(OUT)
 $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# the memory, error and string vocabulary of the SQLite host and its stubs, as they are (its host_regex.c, a POSIX ERE, is not used: host/regex.c is)
-SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool host_stubs)
+# the memory, error and string vocabulary of the SQLite host, its regular expression engine and its stubs, as they are
+SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool regex regex_parse regex_exec host_stubs)
 $(addsuffix .o,$(SQHOSTOBJS)): $(OUT)/%.o: $(SQHOST)/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

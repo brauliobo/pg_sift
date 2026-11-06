@@ -131,6 +131,16 @@ class Basics(TmpDb):
         self.assertEqual(ids(db, 'r?v*'), [1, 2, 3])
         self.assertEqual(ids(db, '/h.*y/'), [4])
 
+    def test_regex_advanced_syntax(self):
+        db = connect()
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none)')
+        db.executemany('INSERT INTO t(rowid, body) VALUES (?, ?)', [(1, 'abc123'), (2, 'abcabc'), (3, 'house'), (4, 'hoose'), (5, 'caf\u00e9')])
+        for q, want in (('/[a-z]+\\d+/', [1]), ('/h(?=o)[a-z]+/', [3, 4]), ('/h(?!ou)[a-z]+/', [4]), ('/ho+?se/', [4]),
+                        ('/caf./', [5]), ('/caf\\w/', [5])):
+            self.assertEqual(ids(db, q), want, msg=q)
+        with self.assertRaisesRegex(sqlite3.Error, 'back-references'):
+            ids(db, '/(abc)\\1/')
+
     def test_case_accents_unicode(self):
         db = connect()
         db.execute('CREATE VIRTUAL TABLE t USING sift(body, stemmer=none)')

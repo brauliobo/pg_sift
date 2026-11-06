@@ -69,7 +69,7 @@ The text after `MATCH` is SiftQL. Words are `AND`ed; operators are case sensitiv
 | `a b`, `a AND b`, `a OR b`, `NOT a` | boolean; precedence `NOT` > `AND` > `OR`, parentheses group; a `NOT` needs a positive term in its group |
 | `"quick brown"` | phrase (word positions are indexed unless the table has `positions=0`) |
 | `pre*`, `te?t` | prefix and wildcard (`?` one character) |
-| `/regex/` | regular expression over the indexed terms (the system's POSIX ERE, not PostgreSQL's engine) |
+| `/regex/` | regular expression over the indexed terms (PostgreSQL's advanced syntax, ASCII case and character classes) |
 | `word~1`, `word~2` | fuzzy: edit distance 1 or 2 |
 | `a^3` | boost the score of a term |
 | `{a b c}` | any of a set of words or patterns |
@@ -208,8 +208,9 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 - **Duplicates.** The `external` and contentless modes trust you not to index a rowid twice.
 - **Snippets** need the text; matching is token based, so a regex or fuzzy match is highlighted as the whole token and a phrase only where the stored
   occurrence is exact.
-- **Regular expressions** use the C library's POSIX ERE (glibc `regcomp`): the same syntax as PostgreSQL's for the common subset, with
-  different back-references and some bracket classes.
+- **Regular expressions** are PostgreSQL's advanced syntax (`\d`, `\w`, lookaround, back-references, lazy quantifiers) in the C collation: the character
+  classes and the case folding are ASCII only, a character above 127 is no letter and has no other case. `tests/regex_check.sh` of the MariaDB port
+  (the same engine) compares the matcher with PostgreSQL's on 227,040 pattern and word pairs.
 - **Analyzers** are the Snowball English stemmer and pg_sift's folding tables, not `unicode61` or ICU; on real text the matches differ from
   FTS5's by a few documents in 3 to 26 percent of queries, all through tokenization (script changes, stroke letters, soft hyphens, combining marks).
 - **Not available:** `phrase_index=pairs`, filter pushdown of other columns (SQLite applies them after the match), SQLite older than 3.38.

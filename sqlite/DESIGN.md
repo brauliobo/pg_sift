@@ -2,7 +2,7 @@
 
 Internals of the SQLite extension (`sift` for SQLite, release artifact `sift-sqlite`). Usage, installation and the headline numbers are in
 [README.md](README.md). The extension compiles the portable core of `../src` (the files of `src/portable.list`: codec, dictionary, segment writer and reader, BM25 scoring
-with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the host implementation in `host/` (`host.h`, `host.c`, `host_regex.c`) that
+with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the host implementation in `host/` (`host.h`, `host.c`, `regex.c`) that
 `src/core/host.h` selects with `-DSIFT_HOST_SQLITE`; the storage, write path, merge driver, virtual table, snippets, facets and parallel scans are new (`sq*.c`).
 
 ## Design

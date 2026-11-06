@@ -1,16 +1,13 @@
 #!/bin/bash
-# Compares mariadb/host/regex.c with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
+# Compares sqlite/host/regex.c (the matcher of the SQLite and MariaDB hosts) with the regex engine of PostgreSQL 18: every (pattern, word) pair is answered by the real
 # pg_regcomp/pg_regexec (flags and calls of src/bm25/query_analyze.c and query_match.c, through the throwaway extension tests/rx_oracle.c in a
 # private cluster under /tmp/sift-mdb-rx) and by regex_test.c linked with host/regex*.c; the answers (1, 0 or error) must
 # be identical, for REG_ADVANCED|REG_NOSUB (what the engine uses) and for REG_ADVANCED alone. The prefixes
 # pg_regprefix returns must be true prefixes of every word the pattern matches.
 #   mariadb/tests/regex_check.sh
-#   ENGINE=sqlite mariadb/tests/regex_check.sh    the same pairs through sqlite/host/host_regex.c (the C library's POSIX matcher); that engine
-#                                                 is documented as ASCII POSIX, so the count it reports is the size of the gap and is not a failure
 set -eu
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-ENGINE=${ENGINE:-mariadb}
 W=/tmp/sift-mdb-rx
 PORT=56310
 PG_INC=$(pg_config --includedir-server)
@@ -644,12 +641,8 @@ awk -F'\n' 'NR == FNR {w[n++] = $0; next} {for (i = 0; i < n; i++) print $0 "\t"
 	"$W/words.txt" "$W/pats.txt" >"$W/pairs.tsv"
 
 nice gcc -O2 -fPIC -shared -I"$PG_INC" -o "$W/rx_oracle.so" "$HERE/tests/rx_oracle.c"
-if [ "$ENGINE" = sqlite ]; then
-	nice gcc -O2 -g -Wall -I"$HERE/../sqlite/host" -o "$W/regex_test" "$HERE/../sqlite/host/host_regex.c" "$HERE/../sqlite/tests/regex_match.c"
-else
-	nice gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
-		-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/host/regex.c" "$HERE/host/regex_parse.c" "$HERE/host/regex_exec.c" "$HERE/tests/regex_test.c" -lm
-fi
+nice gcc -O2 -g -std=gnu11 -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -Wall -Wno-declaration-after-statement \
+	-I"$HERE/host" -I"$HERE/../src" -o "$W/regex_test" "$HERE/../sqlite/host/regex.c" "$HERE/../sqlite/host/regex_parse.c" "$HERE/../sqlite/host/regex_exec.c" "$HERE/tests/regex_test.c" -lm
 
 initdb -D "$W/pg" -A trust -E UTF8 --locale=C >/dev/null
 pg_ctl -D "$W/pg" -o "-k $W -p $PORT -c listen_addresses=''" -l "$W/pg.log" -w start >/dev/null
@@ -674,10 +667,6 @@ for mode in "nosub 19" "sub 3"; do
 	equal=$((equal + e))
 done
 
-if [ "$ENGINE" = sqlite ]; then
-	echo "regex checks ($ENGINE): $equal/$total equal to PostgreSQL ($(wc -l <"$W/pats.txt") patterns, $(wc -l <"$W/words.txt") words)"
-	exit 0
-fi
 "$W/regex_test" prefix "$W/words.txt" <"$W/pats.txt" >"$W/pfx.my"
 [ "$(paste "$W/pats.txt" "$W/pfx.my" | awk -F'\t' '$1 == "abc" {print $2}' | sort -u)" = "E:abc" ] || { echo "abc is not REG_EXACT"; exit 1; }
 echo "regex prefixes: $(grep -c '^[PE]:' "$W/pfx.my") of $(wc -l <"$W/pats.txt") patterns, all true prefixes of their matches"

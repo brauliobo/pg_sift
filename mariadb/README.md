@@ -443,7 +443,7 @@ its own (`start|stop|sql|destroy`).
 | `tests/version.sh` | version strings, refused manifests, the compile-time window, the CMake build |
 | `tests/live.sh` | small segments, background merge, bounded merge memory, kill -9 during a merge, log compaction |
 | `tests/stress.sh` | reader, writer, drain and merge threads at once, then index equals table |
-| `tests/regex_check.sh` | the regular expression engine against PostgreSQL's, 227,040 pattern / word pairs (`ENGINE=sqlite` runs the same pairs through the SQLite host's matcher and reports how many agree) |
+| `tests/regex_check.sh` | the regular expression engine against PostgreSQL's, 227,040 pattern / word pairs |
 | `tests/repl.sh` | primary, replica, rebuild, prune, dump restore |
 | `tests/smoke.sh` | a release library in a stock MariaDB image (`scripts/package-mariadb.sh`): version, queries, DML, merge, restart, detach |
 
@@ -461,7 +461,7 @@ are off by 1 or 2 documents of tens of thousands.
 | `host/host.h` | the host interface of the portable core (`SIFT_HOST_MARIADB` in `src/core/host.h`): the plain-C vocabulary of `sqlite/host/host.h`, whose `host.c`, `container.c`, `mb.c` and `spool.c` (memory contexts, `ereport` as `longjmp`, hash tables, strings, UTF-8, temporary files, heaps) are compiled as they are, with `host_stubs.c` (no write buffers, no kept docmap directories) |
 | `host/store.c`, `host/store.h` | `src/core/store.h` over segment files mapped as the buffer pool: the stream reader and writer, write targets |
 | `host/stubs.c` | the engine's own visibility, and the filter of a list of documents as the TID bitmap the shared filter builder reads |
-| `host/regex.c`, `host/regex_parse.c`, `host/regex_exec.c` | `pg_regcomp` / `pg_regexec` / `pg_regprefix`: a matcher for PostgreSQL's advanced regular expressions |
+| `../sqlite/host/regex.c`, `regex_parse.c`, `regex_exec.c` | `pg_regcomp` / `pg_regexec` / `pg_regprefix`: a matcher for PostgreSQL's advanced regular expressions |
 | `cli.c` | `sift_cli`: the engine without a server |
 | `Makefile`, `CMakeLists.txt` | the build (it reads `src/portable.list`) |
 | `tests/`, `bench/`, `tools/`, `test.sh`, `server.sh` | tests, the benchmark, the comparison tools, the private server |
@@ -476,8 +476,5 @@ document from a segment (`sift_seg_delete_key`: the merge deletes the engine's d
 rewrites them), the filter builder (`sift_filter_build`), the extent bookkeeping and padding of byte streams (`core/stream.c`), the CPU
 dispatch, the analyzer options. MariaDB's own: the manifest, the event log and the queue protocol (`engine.c`, `feed.c`, `sql/`), the
 local-connection host callbacks and the UDF glue (`udf.c`), the mapped store with its `MADV_POPULATE_READ`, the background merge thread, the
-live segment of a query. One implementation is kept apart on purpose: the regular expression matcher. The C library's POSIX matcher (what
-the SQLite host uses, in `sqlite/host/host_regex.c`) has no `\d`, `\w`, lookaround, back-references or lazy quantifiers and matches
-bytes, not characters; on the 5,098 comparison queries that alone made two differ from pg_sift (a `.` against a Greek letter),
-and `tests/regex_check.sh` compares this matcher with PostgreSQL's on 227,040 pattern and word pairs.
+live segment of a query. The regular expression matcher (`sqlite/host/regex*.c`, PostgreSQL's advanced syntax in the C collation) is shared with the SQLite host, and `tests/regex_check.sh` compares it with PostgreSQL's on 227,040 pattern and word pairs.
 

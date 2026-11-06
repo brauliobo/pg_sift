@@ -7,7 +7,7 @@
  *     \e \f \n \r \t \v \xH.. \uHHHH \UHHHHHHHH \0 \ooo, anchors ^ $ \A \Z, word boundaries \m \M \y \Y [[:<:]] [[:>:]]
  *   - groups, (?:), lookahead (?= (?!, lookbehind (?<= (?<!, (?#comments), alternation, * + ? {n} {n,} {n,m} and
  *     their lazy forms, back-references, the leading embedded options (?cimnpstw)
- *   - the character properties and the case folding of the C locale: ASCII only, as PostgreSQL does for the C
+ *   - the character classes and the case folding of the C locale: ASCII only, as PostgreSQL does for the C
  *     collation (a character above 127 is no letter, no digit, no space and has no other case)
  *
  * Not supported, and rejected with an error: the syntax options x (expanded), q (quoted), b and e (BRE, ERE), and

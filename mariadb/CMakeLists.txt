@@ -45,9 +45,9 @@ set(SIFT_INCDIRS ${SRC})
 file(STRINGS ${SRC}/portable.list portable REGEX "^[^#].*\\.c$")
 list(TRANSFORM portable PREPEND ${SRC}/)
 
-# the host: the C library vocabulary of sqlite/host (its host.c as it is), the matcher, the mapped store and the glue
+# the host: the C library vocabulary of sqlite/host (its host.c and its regular expression engine as they are), the mapped store and the glue
 set(HOST ${ROOT}/sqlite/host/host.c ${ROOT}/sqlite/host/container.c ${ROOT}/sqlite/host/mb.c ${ROOT}/sqlite/host/spool.c ${ROOT}/sqlite/host/host_stubs.c
-  host/regex.c host/regex_parse.c host/regex_exec.c host/store.c host/stubs.c)
+  ${ROOT}/sqlite/host/regex.c ${ROOT}/sqlite/host/regex_parse.c ${ROOT}/sqlite/host/regex_exec.c host/store.c host/stubs.c)
 set(GLUE engine.c docs.c persist.c query.c feed.c merge.c)
 set(UDF udf.c udf_host.c udf_query.c udf_drain.c)
 
