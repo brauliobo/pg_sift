@@ -53,6 +53,7 @@
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNNEST_FLOOR	100.0	/* the rows PostgreSQL expects of an unnesting function over one row (jsonb_array_elements, jsonb_each): the join of a lookup it has no statistics for is that many */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
+#define AGG_NORMAL_UNITS_MS	210.0	/* the cost units a millisecond of the normal plan takes: 190 to 230 for a grouped aggregate over 150,000 rows of any shape (3,500 to 4,630 units for 17 to 21 ms), against the 833 a millisecond is at AGG_OP_NS (the scan measured 725 to 870) */
 #define AGG_UNIT_COST		200.0
 #define TOPN_RUN_UNIT		8000.0	/* operators to read the first rows of a unit through its sorted run: the seek of the range, a window of 32 keys, their addresses (about 25 us a unit measured: 1,000,000 rows in 50 units, 1.26 ms) */
 #define TOPN_RUN_ROW		12.0	/* ... and for each row wanted past the window */

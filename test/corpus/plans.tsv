@@ -210,7 +210,7 @@ c2_cte_twice_selfjoin	SiftAgg	-
 c2_cte_two_levels	SiftAgg	-
 c2_scalar_total_in_select	SiftAgg	-
 c2_lateral_top3_amount	-	-
-c2_coalesce_measures	-	single:f:cost
+c2_coalesce_measures	SiftAgg	single:t
 c2_case_size_bands	SiftAgg	single:t
 c2_string_agg_status_entity	-	single:f:cost
 c2_jsonb_agg_entity	SiftAgg	single:t
@@ -252,12 +252,12 @@ c3_range_agg_tenant	-	single:f:cost
 c3_range_lower_month	SiftAgg	single:t
 c3_range_not_empty	SiftAgg	single:t
 c3_range_upper_inf_false	SiftAgg	single:t
-c3_range_lower_inc	-	single:f:cost
+c3_range_lower_inc	-	single:t
 c3_range_seen_upper_inc	SiftAgg	single:t
 c3_range_bounds_minmax	SiftAgg	single:t
 c3_range_upper_key	-	single:f:cost
 c3_range_lower_where	SiftAgg	single:t
-c3_range_not_lower_inc	-	single:f:cost
+c3_range_not_lower_inc	SiftAgg	single:t
 c3_range_not_seen_upper_inc	SiftAgg	single:t
 c3_range_filter_pivot	SiftAgg	single:t
 c3_range_case_pivot	SiftAgg	single:t
@@ -280,7 +280,10 @@ c3_wide_avg_mixed	SiftAgg	single:t
 c3_wide_minmax	SiftAgg	single:t
 c3_wide_count_cols	SiftAgg	single:t
 c3_wide_filter_each	SiftAgg	single:t
-c3_wide_expr_sums	-	single:f:cost
+c3_wide_expr_sums	SiftAgg	single:t
+c3_span_length_max	-	single:f:cost
+c3_span_length_expr	SiftAgg	single:t
+c3_span_length_avg_max	-	single:f:cost
 c3_wide_three_keys	SiftAgg	single:t
 c3_wide_ungrouped_many	SiftAgg	single:t
 c3_wide_stddev	SiftAgg	single:t

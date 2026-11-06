@@ -612,6 +612,12 @@ select kind_id, count(*), count(m09), count(m10), count(n09), count(m01), count(
 select tenant_id, sum(m01) filter (where status = 'new'), sum(m01) filter (where status = 'paid'), sum(m02) filter (where status = 'open'), sum(m02) filter (where status = 'closed'), count(*) filter (where status = 'shipped') from wide group by 1;
 -- @case c3_wide_expr_sums | wide | sums of products and sums of columns
 select tenant_id, sum(m01 * m02), sum(m03 + m04), sum(m05 - m06), sum(n01 * n02), sum(m07 / nullif(m08, 0)) from wide group by 1;
+-- @case c3_span_length_max | wide | the largest length of a span by tenant: a PostgreSQL-evaluated expression of two dates, priced in the units of the normal plan
+select tenant_id, max(ends - starts) from spans group by 1;
+-- @case c3_span_length_expr | wide | the largest of an expression of the length
+select tenant_id, max((ends - starts) * 2 + 1) from spans group by 1;
+-- @case c3_span_length_avg_max | wide | the average and the largest length together (the margin over the normal plan is thin)
+select tenant_id, avg(ends - starts), max(ends - starts) from spans group by 1;
 -- @case c3_wide_three_keys | wide | ten measures by three keys
 select tenant_id, status, kind_id, sum(m01), sum(m02), sum(m03), sum(m04), sum(m05), avg(n01), avg(n02), max(n03), min(n04), count(*) from wide group by 1, 2, 3;
 -- @case c3_wide_ungrouped_many | wide | twenty aggregates over the whole table

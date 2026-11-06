@@ -181,7 +181,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		k->scan_cost += k->rows * pred_num_cost(s->pred[i]);
 	k->scan_cost = Max(k->scan_cost - plain_credit(c, s, k->agg_rows), k->scan_cost * 0.1);
 	/* after the credit, which prices what the normal plan under-estimates: the rows read again from the heap are work it does not do */
-	k->scan_cost += recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
+	k->recheck = recheck_cost(c, s, k) * Max(k->zone_kept, 1.0 / k->units);
 	k->scan_cost += chunks * AGG_DIST_CHUNK;
 	k->scan_cost += scan_bytes(c, s, k->rows) * AGG_BYTE * Max(k->zone_kept, 1.0 / k->units);
 }
@@ -215,6 +215,20 @@ agg_open_cost(int nparts)
 #define AGG_WIDE_CAP		0.5
 
 double		agg_read_rows;
+
+/* does the normal plan read the heap in order (a sequential scan, under a Gather or not)? Its executor takes about 4 times the estimate there (AGG_NORMAL_UNITS_MS); an index scan or a bitmap scan is priced by what it reads */
+static bool
+reads_heap_in_order(AggCtx *c)
+{
+	Path	   *best = NULL;
+
+	foreach_ptr(Path, p, c->rel->pathlist)
+		if (best == NULL || p->total_cost < best->total_cost)
+			best = p;
+	if (best && IsA(best, GatherPath))
+		best = ((GatherPath *) best)->subpath;
+	return best && best->pathtype == T_SeqScan;
+}
 
 /* does a b-tree index of the table give the first key of the query's order (a top-N over it reads the rows in that order from the heap, as the scan does) */
 static bool
@@ -266,8 +280,16 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	cost_work(c, s, &k);
 	entries = key_entries(c, s, &k, &ids, &key_ops);
 	k.scan_cost += key_ops;
-	/* the reads of the lookup tables are PostgreSQL's own, priced as its plans are */
-	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost;
+	/*
+	 * The scan's operators are counted at AGG_OP_NS, which is 833 cost units a millisecond; the estimate of the normal plan it is compared with runs at
+	 * AGG_NORMAL_UNITS_MS a millisecond (its executor takes about 4 times what the plan prices), so the same time costs the scan 4 times more units and a
+	 * scan up to 4 times faster was refused. The rows of a scan with group keys and without lookup joins, a search or a top-N, whose normal plan is a sequential scan of the heap and a hash of the groups, are
+	 * priced in the units of that plan. A lookup join keeps its price (AGG_JOIN_PROBE, AGG_FAN_ROW and the join excess of the normal plan, AGG_JOIN_NS, are fitted together),
+	 * so does a statement with a search (the normal plan's count of the index answers it in a tenth of a millisecond: search_count) one whose normal plan reads an index (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate (its sequential scan runs at 370 to 530 units a millisecond, not 210: agg_array_image_cost), and the reads of the
+	 * lookup tables are PostgreSQL's own, priced as its plans are (load_cost).
+	 */
+	k.ms = c->joins == NIL && !c->search && !s->topn && s->nkeys > 0 && reads_heap_in_order(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
+	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED * k.ms + k.load_cost + k.recheck * AGG_SCAN_SPEED;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
 	{
@@ -298,7 +320,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 	{
-		double		pre_cost = k.units * Max(k.zone_kept, 1.0 / k.units) * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * cpu_operator_cost;
+		double		pre_cost = k.units * Max(k.zone_kept, 1.0 / k.units) * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * k.ms * cpu_operator_cost;
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}

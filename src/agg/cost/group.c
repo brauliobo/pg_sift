@@ -31,7 +31,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
 	double		merge = AGG_MERGE_GROUP;
-	double		setup = parallel_setup_cost * AGG_SETUP_FACTOR;
+	double		setup = parallel_setup_cost * AGG_SETUP_FACTOR * k->ms;
 	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
 	/*
@@ -41,28 +41,28 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	for (int j = 0; j < s->nkeys; j++)
 		merge += AGG_MERGE_KEY + (get_typbyval(s->key[j].typid) ? 0.0 : AGG_MERGE_STR);
 	if (priced)
-		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS);
+		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS * k->ms);
 	/* the participants that split the groups by a key each read every row and aggregate a share of the keys, and the leader adds their disjoint tables to its own */
-	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) *
-		(s->gpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
-		(s->gpart > 0 ? Min(k->rows_out, k->agg_rows) : tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0))) * (priced ? merge : 0.0) * AGG_SCAN_SPEED * cpu_operator_cost;
+	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * k->ms * cpu_operator_cost : 0)) *
+		(s->gpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * k->ms * cpu_operator_cost +
+		(s->gpart > 0 ? Min(k->rows_out, k->agg_rows) : tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0))) * (priced ? merge : 0.0) * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 	if (priced && s->gpart == 0)
-		k->scan_cost += Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_TABLE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
+		k->scan_cost += Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_TABLE_GROUP * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
-			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
 		{
 			double		nd = distinct_text_values(c, &s->agg[i], k);
 
-			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 			if (nd > 0)
-				k->scan_cost += s->nworkers * nd * -expm1(-k->agg_rows / tables / nd) * AGG_DIST_SEND * AGG_SCAN_SPEED * cpu_operator_cost;
+				k->scan_cost += s->nworkers * nd * -expm1(-k->agg_rows / tables / nd) * AGG_DIST_SEND * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 		}
 		/* the pairs of the sets of a joined column are at most one a row, and at most the values of each group: a column of few values sends few */
 		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
-			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 	}
 	*startup += setup * k->lift;
 	c->par_start = setup * k->lift;

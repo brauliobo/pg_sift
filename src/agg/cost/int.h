@@ -17,6 +17,8 @@ typedef struct CostAcc
 	double		units;
 	double		open_cost;
 	double		scan_cost;
+	double		recheck;		/* of the scan, the rows read again from the heap (recheck_cost): PostgreSQL's executor, in the operators of AGG_SCAN_SPEED but not of ms */
+	double		ms;				/* the operators of the scan in the units of the normal plan it is compared with (agg_cost): 1 where a lookup join or a search keeps the fitted prices */
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
 	double		cold_ops;		/* operators of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
