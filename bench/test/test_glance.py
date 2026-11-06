@@ -49,7 +49,7 @@ class Glance(unittest.TestCase):
     def test_the_charts_are_self_contained_svg_with_a_title_and_no_date(self):
         data, versions = glance.load(self.tmp)
         reps = glance.representatives(data, TABLE)
-        for svg in (glance.bars([('page', 500, 50), ('count', 200, 20)], 'Time', 'Bars.', 'milliseconds', 'baseline'), glance.slope(reps, data, None)):
+        for svg in (glance.bars([('page', 500, 50), ('count', 200, 20)], 'Time', 'Bars.', 'milliseconds', 'baseline'), glance.slope(reps, data)):
             doc = xml.dom.minidom.parseString(svg)
             self.assertTrue(doc.getElementsByTagName('title')[0].firstChild.data)
             self.assertTrue(doc.getElementsByTagName('desc')[0].firstChild.data)

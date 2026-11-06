@@ -77,7 +77,7 @@ def cases_scale(results, theme):
         prev = -99
         for yy, sid, sl in ends:
             yy = max(yy, prev + 13)
-            c.text(px + pw + 6, yy + 4, f'{sl:.2f}', 11, fill=c.color(sid) if False else c.t['ink'], weight='bold' if sid == 'sift' else None)
+            c.text(px + pw + 6, yy + 4, f'{sl:.2f}', 11, fill=c.t['ink'], weight='bold' if sid == 'sift' else None)
             prev = yy
     n_rows = (len(ids) - 1) // ncols + 1
     end = c.foot(top + n_rows * (ph + gy) - 22, [f'Data: bench/results/cases-scale.tsv, {meta.get("date", "?")}, {meta.get("cpu", "?").split(",")[0]}, one backend, medians of interleaved runs; sizes {", ".join(rows_label(n) for n in sizes)}. The slope is the least-squares slope of log time on log rows over all sizes.'])

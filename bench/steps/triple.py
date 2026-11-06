@@ -23,9 +23,6 @@ class NA(str):
     """a figure that is not there, with the reason"""
 
 
-UNMEASURED = (NA(NOT_MEASURED),) * 2   # the CPU and the IO of a result that records the time only
-
-
 def num(v):
     return 'n/a' if v is None or isinstance(v, NA) else '<0.01' if 0 < v < 0.005 else mdtable.ms(v)
 

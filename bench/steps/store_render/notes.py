@@ -69,11 +69,6 @@ def thread_line(R, tier):
     return '; '.join(out)
 
 
-def set_heading(R, tier):
-    """the line above a table of one thread budget"""
-    return f'{cpu_name(R.cpus(tier))} per container' + (f' ({thread_line(R, tier)})' if R.meta['tiers'][tier].get('threads') else '')
-
-
 def dagger(R, tier, labels):
     """the labels of the systems whose cells in this result set were read from the cache get a dagger"""
     cached = R.meta['tiers'][tier].get('cached', {})
