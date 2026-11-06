@@ -124,16 +124,7 @@ SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
 
 -- and a promotion writes them too: a column the cube holds (400 owners in bursts of 500 rows, scattered over the units) is not in the option, and the segment of a
 -- promotion reads as few units for a key as the one a REINDEX writes
-CREATE FUNCTION mk_units(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from '^ *Units: (\d+)')::int, n);
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION mk_units(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.units_read_scans_off(q) $$;
 CREATE TABLE mk3 (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE mk3 ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO mk3 SELECT i, (hashint4(i / 500) & 2147483647) % 400, i % 1000, repeat('p', 100) FROM generate_series(1, 150000) i;

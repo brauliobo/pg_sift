@@ -2,6 +2,7 @@
 -- (the first value in the order of the call wins, so DESC takes the last), NULLs, groups with no value, a FILTER, collations, a NaN, one group,
 -- and when the counts outgrow work_mem and the values go to the sort (case 16: the early rows hold the winning counts, the late rows only add distinct values).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64MB';
@@ -20,13 +21,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX m_col ON m USING sift_col (id, g, t, tc, n, b, d, f, ok);
 VACUUM ANALYZE m;
 
-CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
-DECLARE r jsonb[];
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 
 CREATE FUNCTION mo_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a jsonb[]; b jsonb[];
@@ -36,15 +31,7 @@ BEGIN
 	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(cardinality(a), 0) ELSE 'differs: ' || a::text || ' vs ' || b::text END;
 END $$;
 
-CREATE FUNCTION mo_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; r bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION mo_scan(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_pushdown_on(q) $$;
 
 CREATE TABLE mo_q (n int, q text);
 INSERT INTO mo_q VALUES
@@ -81,4 +68,5 @@ RESET client_min_messages;
 DROP TABLE mo_q;
 DROP FUNCTION mo_rows(text, bool), mo_same(text), mo_scan(text);
 DROP TABLE m;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

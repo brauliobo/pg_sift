@@ -23,14 +23,7 @@ ANALYZE t;
 ANALYZE p;
 
 CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
-CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE a text; b text;
-BEGIN
-	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 't')) INTO a;
-	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'p')) INTO b;
-	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
-	RETURN a IS NOT DISTINCT FROM b;
-END $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.same_keys_in_t_and_p(q) $$;
 CREATE FUNCTION quant(col text, ty text, f float8) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN

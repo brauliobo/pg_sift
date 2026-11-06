@@ -2,6 +2,7 @@
 -- complete) may outlive its transaction's entry in the log. A read never asks the log about such a transaction: it goes to the heap for the pages the tombstone is on, and VACUUM writes a
 -- tombstone of a committed transaction older than every snapshot as a frozen one and drops the tombstones of the transactions that aborted.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -10,25 +11,9 @@ INSERT INTO events SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
 CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
 VACUUM (FREEZE) events;
 
-CREATE FUNCTION answer(want_sift bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE q text := 'SELECT tenant_id, count(*) AS n, sum(counter_a) AS s FROM events GROUP BY tenant_id'; plan text := ''; l text; r text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		plan := plan || l || E'\n';
-	END LOOP;
-	IF (plan LIKE '%SiftAgg%') <> want_sift THEN
-		RAISE EXCEPTION 'the plan is % a SiftAgg plan: %', CASE WHEN want_sift THEN 'not' ELSE 'still' END, plan;
-	END IF;
-	EXECUTE 'SELECT coalesce(string_agg(format(''%s:%s:%s'', tenant_id, n, s), '' '' ORDER BY tenant_id), ''none'') FROM (' || q || ') q' INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION answer(want_sift bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.events_sums_with_plan_check(want_sift) $$;
 
-CREATE FUNCTION pages() RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY tenant_id' INTO j;
-	RETURN coalesce(jsonb_path_query_first(j, 'strict $.**."Heap Pages"')::int, -1);
-END $$;
+CREATE FUNCTION pages() RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.events_heap_pages() $$;
 
 -- the heap-free read and the oracle (no sift plan), and whether the heap was read
 CREATE FUNCTION chk(what text, OUT test text, OUT same_as_no_sift bool, OUT reads_heap bool) LANGUAGE plpgsql AS $$
@@ -113,4 +98,5 @@ DROP FUNCTION pages();
 DROP FUNCTION answer(bool);
 DROP TABLE events;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

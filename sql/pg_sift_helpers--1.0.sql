@@ -805,3 +805,181 @@ BEGIN
 	EXECUTE q INTO rb;
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
 END $$;
+
+-- events_sums_with_plan_check: raises when the plan of the tenant_id sums over events is (not) a SiftAgg plan as asked, else the sums as one text
+CREATE FUNCTION sift_helpers.events_sums_with_plan_check(want_sift bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE q text := 'SELECT tenant_id, count(*) AS n, sum(counter_a) AS s FROM events GROUP BY tenant_id'; plan text := ''; l text; r text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF (plan LIKE '%SiftAgg%') <> want_sift THEN
+		RAISE EXCEPTION 'the plan is % a SiftAgg plan: %', CASE WHEN want_sift THEN 'not' ELSE 'still' END, plan;
+	END IF;
+	EXECUTE 'SELECT coalesce(string_agg(format(''%s:%s:%s'', tenant_id, n, s), '' '' ORDER BY tenant_id), ''none'') FROM (' || q || ') q' INTO r;
+	RETURN r;
+END $$;
+
+-- events_heap_pages: the Heap Pages of the analyzed plan of the tenant_id sums over events, -1 when the plan has none
+CREATE FUNCTION sift_helpers.events_heap_pages() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY tenant_id' INTO j;
+	RETURN coalesce(jsonb_path_query_first(j, 'strict $.**."Heap Pages"')::int, -1);
+END $$;
+
+-- plan_siftagg_with_lookup_counts: normal or SiftAgg of the analyzed plan of q, plus the rows read, rows loaded and index scans of its Lookup line
+CREATE FUNCTION sift_helpers.plan_siftagg_with_lookup_counts(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Lookup: %' THEN r := r || ',' || concat_ws(',', substring(l from '\d+ rows read'), substring(l from '\d+ rows loaded'), substring(l from '\d+ index scans')); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- plan_siftagg_with_text_key_filters: normal or SiftAgg of the analyzed plan of q, plus the count of its text key filters
+CREATE FUNCTION sift_helpers.plan_siftagg_with_text_key_filters(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l ~ '(\d+) text key filters' THEN r := r || ' text key filters ' || substring(l from '(\d+) text key filters'); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- tk_sums_with_plan_check: the sums by tenant over tk for mode 0 (pushdown), 1 (pushdown without the heap-free read) or 2 (normal), raises when the plan is not the one asked for
+CREATE FUNCTION sift_helpers.tk_sums_with_plan_check(mode int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; plan text := ''; l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
+	PERFORM set_config('sift.test_no_heapfree', (mode = 1)::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT tenant, count(*), sum(amount) FROM tk GROUP BY tenant' LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF (plan LIKE '%SiftAgg%') <> (mode < 2) THEN
+		RAISE EXCEPTION 'the plan is not the one asked for: %', plan;
+	END IF;
+	SELECT coalesce(string_agg(format('%s:%s:%s', tenant, n, s), ' ' ORDER BY tenant), 'none') INTO r
+	FROM (SELECT tenant, count(*) AS n, sum(amount) AS s FROM tk GROUP BY tenant) q;
+	RETURN r;
+END $$;
+
+-- groups_differences_sift_vs_heap: the number of groups of g, count and sum over t that differ between the pushdown (table scans priced out) and the normal plan
+CREATE FUNCTION sift_helpers.groups_differences_sift_vs_heap(t regclass) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+  SET LOCAL sift.enable_agg = on;
+  SET LOCAL seq_page_cost = 10000;
+  EXECUTE format('CREATE TEMP TABLE by_sift ON COMMIT DROP AS SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g', t);
+  SET LOCAL sift.enable_agg = off;
+  RESET seq_page_cost;
+  EXECUTE format('CREATE TEMP TABLE by_heap ON COMMIT DROP AS SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g', t);
+  SELECT count(*) INTO n FROM ((TABLE by_sift EXCEPT TABLE by_heap) UNION ALL (TABLE by_heap EXCEPT TABLE by_sift)) d;
+  RETURN n;
+END $$;
+
+-- plan_siftagg_with_workers_label: normal or SiftAgg of the plan of q, plus ' with workers' when it plans workers
+CREATE FUNCTION sift_helpers.plan_siftagg_with_workers_label(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- same_keys_in_t_and_p: true when the keys of q over @ = t and over @ = p are the same list, NOTICE with the query when not
+CREATE FUNCTION sift_helpers.same_keys_in_t_and_p(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 't')) INTO a;
+	EXECUTE format('SELECT string_agg(k::text, '','') FROM (%s) s', replace(q, '@', 'p')) INTO b;
+	IF a IS DISTINCT FROM b THEN RAISE NOTICE '% differs: %', q, left(a, 80); END IF;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+
+-- rows_agg_with_workers_reset: the rows of q as sorted text ("" for none) with the pushdown on or off and the given workers, both settings back to on and 0 workers afterwards
+CREATE FUNCTION sift_helpers.rows_agg_with_workers_reset(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+
+-- plan_has_siftagg_pushdown_on: true when the plan of q has a SiftAgg node with the pushdown set on
+CREATE FUNCTION sift_helpers.plan_has_siftagg_pushdown_on(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- rows_agg_as_jsonb_array: the rows of q as an ordered jsonb array with the pushdown on or off
+CREATE FUNCTION sift_helpers.rows_agg_as_jsonb_array(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
+DECLARE r jsonb[];
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+
+-- plan_engaged_and_answers_same: whether the plan of q is a SiftAgg plan, and whether its md5 of the rows is the same with the pushdown on and off
+CREATE FUNCTION sift_helpers.plan_engaged_and_answers_same(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE plpgsql AS
+$$ DECLARE l text; plan text := ''; a text; b text;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  same := a IS NOT DISTINCT FROM b;
+  RETURN NEXT;
+END $$;
+
+-- units_read_scans_off: the Units count of the analyzed plan of q with the pushdown on and every table scan off
+CREATE FUNCTION sift_helpers.units_read_scans_off(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		n := coalesce(substring(l from '^ *Units: (\d+)')::int, n);
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- plan_group_keys_text: the Group Keys lines of the plan of q with the pushdown on
+CREATE FUNCTION sift_helpers.plan_group_keys_text(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Group Keys:%' THEN r := r || trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- topn_offset_rows_twice_same: 'same' when the numbered rows of q repeated for three groups are equal under the forced pushdown and the normal plan, else DIFFERS plus the query
+CREATE FUNCTION sift_helpers.topn_offset_rows_twice_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_material = off;
+	SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;
+	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO b;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERS ' || q END;
+END $$;

@@ -3,6 +3,7 @@
 -- and the array that outgrows work_mem moves to the sort.
 -- (percentiles that are not a multiple of 1/4 are left out of percentile_cont: the server's own interpolation may be built with fused multiply-adds, which this library is not)
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64MB';
@@ -19,13 +20,7 @@ FROM generate_series(1, 70000) i;
 CREATE INDEX f_col ON f USING sift_col (id, g, x, b, r, mix, nx);
 VACUUM ANALYZE f;
 
-CREATE FUNCTION fl_rows(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
-DECLARE r jsonb[];
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION fl_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 
 CREATE FUNCTION fl_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a jsonb[]; b jsonb[];
@@ -75,4 +70,5 @@ SELECT n, fl_plan(q) AS plan, fl_same(q) AS same FROM fl_q WHERE n = 9;
 DROP TABLE fl_q;
 DROP FUNCTION fl_rows(text, bool), fl_same(text), fl_plan(text);
 DROP TABLE f;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

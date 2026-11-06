@@ -33,15 +33,7 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
 
-CREATE FUNCTION fs_keys(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := '';
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Group Keys:%' THEN r := r || trim(l); END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION fs_keys(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_group_keys_text(q) $$;
 
 -- the whole table, and the rows an integer cast does not raise on
 CREATE TABLE fs_q (q text);

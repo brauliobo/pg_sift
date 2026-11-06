@@ -2,6 +2,7 @@
 -- The table against a plain hash over many shapes of keys, and the groups of keys of every integer type (negative, NULL, the ends of int64, dense and
 -- sparse, an expression of a column, a numeric expression beyond int64, NaN and -0 floats) equal to the normal plan's rows.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 
 SELECT bad, paged > 0 AS paged, hashed > 0 AS hashed, up > 0 AS up, down > 0 AS down FROM sift._test_intids(7, 400);
@@ -32,15 +33,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION d_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; r bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION d_scan(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_pushdown_on(q) $$;
 
 CREATE TABLE d_q (n int, q text);
 INSERT INTO d_q VALUES
@@ -78,4 +71,5 @@ RESET sift.test_direct_max;
 DROP TABLE d_q;
 DROP FUNCTION d_rows(text, bool), d_scan(text);
 DROP TABLE d;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

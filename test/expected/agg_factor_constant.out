@@ -2,6 +2,7 @@
 -- product is made above it. The rows must be those of the scan off, with no worker and with three, for a factor that is NULL, that has more digits than the column, a column with NaN, groups
 -- without a value, a HAVING and a filter. An average, a product of two columns and a factor that changes by row stay as they are.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE kinds (id int PRIMARY KEY, w numeric(8,3), n int);
@@ -40,16 +41,7 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan' END;
 END $$;
-CREATE FUNCTION factor_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN r;
-END $$;
+CREATE FUNCTION factor_rows(q text, scan bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_reset(q, scan, workers) $$;
 SELECT n, label, factor_plan(q) AS plan, factor_rows(q, true, 0) = factor_rows(q, false, 0) AS same, factor_rows(q, true, 3) = factor_rows(q, false, 0) AS same_workers FROM factor_q ORDER BY n;
  n  |            label             |        plan         | same | same_workers 
 ----+------------------------------+---------------------+------+--------------
@@ -99,4 +91,5 @@ DROP TABLE param_rows, param_null, param_rows_off, param_null_off;
 DROP FUNCTION factor_plan(text);
 DROP FUNCTION factor_rows(text, bool, int);
 DROP TABLE factor_q, events, kinds;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

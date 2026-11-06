@@ -2,21 +2,11 @@
 -- makes are not in the log. The log ends its completeness when the table becomes a child (the event trigger of ALTER TABLE), so that a read does not take it for complete while the table is a child
 -- or after DETACH and NO INHERIT; REINDEX gives the index a new baseline.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
-CREATE FUNCTION same_groups(t regclass) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint;
-BEGIN
-  SET LOCAL sift.enable_agg = on;
-  SET LOCAL seq_page_cost = 10000;
-  EXECUTE format('CREATE TEMP TABLE by_sift ON COMMIT DROP AS SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g', t);
-  SET LOCAL sift.enable_agg = off;
-  RESET seq_page_cost;
-  EXECUTE format('CREATE TEMP TABLE by_heap ON COMMIT DROP AS SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g', t);
-  SELECT count(*) INTO n FROM ((TABLE by_sift EXCEPT TABLE by_heap) UNION ALL (TABLE by_heap EXCEPT TABLE by_sift)) d;
-  RETURN n;
-END $$;
+CREATE FUNCTION same_groups(t regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.groups_differences_sift_vs_heap(t) $$;
 
 -- a partition
 CREATE TABLE pa (id int, g int NOT NULL, v int) PARTITION BY RANGE (id);
@@ -56,4 +46,5 @@ SELECT same_groups('ih1') AS groups_differing_after_reindex;
 
 DROP TABLE pa, pa1, ih, ih1;
 DROP FUNCTION same_groups(regclass);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

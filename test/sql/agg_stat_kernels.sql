@@ -2,6 +2,7 @@
 -- (agg/gen_stat.c): the rows agree with the normal plan to 11 digits on a large mean with a tiny variance, on tiny and huge values, with NULLs in one column of a pair,
 -- NaN and infinities, groups of one row, groups of a few rows, a FILTER, and the error a sum that overflows raises.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '256MB';
@@ -28,13 +29,7 @@ CREATE FUNCTION st_close(a jsonb, b jsonb) RETURNS bool LANGUAGE sql AS $$
 		AND abs((a->>k)::float8 - (b->>k)::float8) <= 1e-11 * greatest(abs((a->>k)::float8), abs((b->>k)::float8)))), true)
 	FROM jsonb_object_keys(a) k $$;
 
-CREATE FUNCTION st_rows(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
-DECLARE r jsonb[];
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION st_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 
 -- the rows of the scan against the normal plan's, or the error both raise
 CREATE FUNCTION st_same(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -52,15 +47,7 @@ BEGIN
 	RETURN 'same ' || coalesce(cardinality(a), 0);
 END $$;
 
-CREATE FUNCTION st_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; r bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION st_scan(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_pushdown_on(q) $$;
 
 CREATE TABLE st_q (n int, q text);
 INSERT INTO st_q VALUES
@@ -86,4 +73,5 @@ SELECT n, st_scan(q) AS scan, st_same(q) AS same FROM st_q ORDER BY n;
 DROP TABLE st_q;
 DROP FUNCTION st_close(jsonb, jsonb), st_rows(text, bool), st_same(text), st_scan(text);
 DROP TABLE s;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

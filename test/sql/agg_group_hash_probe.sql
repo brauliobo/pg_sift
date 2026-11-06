@@ -1,6 +1,7 @@
 -- The groups of 1 to 5 integer keys in hash mode (the probe is inlined for 1 to 4 keys, and a table of more than 131,072 slots prefetches the slot of a tuple): the rows are
 -- those of the normal plan, with NULL keys, a few groups (the table is forced to the hash by a limit on the direct arrays) and about 200,000.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '256MB';
@@ -19,15 +20,7 @@ BEGIN
 	RETURN r;
 END $$;
 
-CREATE FUNCTION h_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text; r bool := false;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r OR l LIKE '%Custom Scan (SiftAgg)%';
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION h_scan(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_pushdown_on(q) $$;
 
 CREATE TABLE h_q (n int, q text);
 INSERT INTO h_q VALUES
@@ -48,4 +41,5 @@ RESET sift.test_direct_max;
 DROP TABLE h_q;
 DROP FUNCTION h_rows(text, bool), h_scan(text);
 DROP TABLE h;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

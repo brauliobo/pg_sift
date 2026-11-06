@@ -2,6 +2,7 @@
 -- "Join Text Filters" of EXPLAIN ANALYZE): a unit that holds none of the keys is not read, and an inline text unit never interns or hashes the strings of the other rows.
 -- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -38,15 +39,7 @@ CREATE TABLE knone (k text);
 SELECT path, inline_chunks > 0 AS inline FROM sift.col_leaves('ev_col') WHERE path IN ('body', 'mb', 'tag') ORDER BY path;
 ANALYZE ks; ANALYZE kmb; ANALYZE ktag; ANALYZE kmany; ANALYZE knone;
 
-CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l ~ '(\d+) text key filters' THEN r := r || ' text key filters ' || substring(l from '(\d+) text key filters'); END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_text_key_filters(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_filter bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -113,4 +106,5 @@ SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM ev WHERE b
 DROP FUNCTION same(text), plan_of(text);
 DROP TABLE ev, ks, kmb, ktag, kmany, knone;
 DROP COLLATION ci_nd;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

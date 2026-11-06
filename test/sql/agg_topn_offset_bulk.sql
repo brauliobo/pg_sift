@@ -3,6 +3,7 @@
 -- and those of the walk of every entry (test_col_gorder_noskip), through ties, NULLs, ASC and DESC, NULLS FIRST and LAST, deleted, updated and vacuumed rows, new rows in the write
 -- buffer, and a second pass of the same scan (a rewind).
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -51,16 +52,7 @@ END $$;
 SELECT c, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 7000', c, c)) BETWEEN 5200 AND 7000 AS cut, ob_cut(format('SELECT id, %s FROM ob ORDER BY %s, id LIMIT 20 OFFSET 7000', c, c), true) AS walked FROM unnest(ARRAY['n', 't']) c;
 
 -- the same scan read twice by a join (the inner side is rewound, not materialized)
-CREATE FUNCTION ob_twice(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text; b text;
-BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_material = off;
-	SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off;
-	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO a;
-	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
-	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO b;
-	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERS ' || q END;
-END $$;
+CREATE FUNCTION ob_twice(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_offset_rows_twice_same(q) $$;
 
 CREATE FUNCTION ob_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT ob_chk(format('SELECT id, %s AS k FROM ob ORDER BY %s %s NULLS %s, %s, id LIMIT 20 OFFSET %s', c, c, d, nl, k2, o)) AS result, count(*)
@@ -144,4 +136,5 @@ DROP TABLE orr;
 DROP FUNCTION ob_all(), ob_filt(), ob_twice(text), ob_chk(text), ob_cut(text, bool);
 DROP TABLE ob;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

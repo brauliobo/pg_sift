@@ -15,16 +15,7 @@ INSERT INTO kr SELECT g, 1 + (hashint4(g / 100) & 2147483647) % 400, (hashint4(g
 VACUUM (FREEZE, ANALYZE) kr;
 
 CREATE FUNCTION kr_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
-CREATE FUNCTION kr_units(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from '^ *Units: (\d+)')::int, n);
-	END LOOP;
-	RETURN n;
-END $$;
+CREATE FUNCTION kr_units(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.units_read_scans_off(q) $$;
 CREATE FUNCTION kr_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'key_columns=%'), 'not set') $$;
 -- the queries of a key, a list of keys, a range, and a key with its owner

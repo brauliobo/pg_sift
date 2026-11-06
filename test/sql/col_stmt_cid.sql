@@ -4,6 +4,7 @@
 -- no longer saw the version the UPDATE ended, kept its entry, and a read counted the row twice. Every case runs the statements in a transaction, and the aggregate through the
 -- index (heap-free and checked) gives the rows of the heap (the oracle) after each statement and after the commit.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -21,21 +22,7 @@ CREATE FUNCTION bump() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE tk SE
 CREATE TRIGGER tk_bump AFTER UPDATE ON tk FOR EACH ROW WHEN (OLD.code = 'c70') EXECUTE FUNCTION bump();
 
 -- dynamic SQL: a cached plan would keep the plan of the first call whatever the settings are
-CREATE FUNCTION answer(mode int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; plan text := ''; l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
-	PERFORM set_config('sift.test_no_heapfree', (mode = 1)::text, true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT tenant, count(*), sum(amount) FROM tk GROUP BY tenant' LOOP
-		plan := plan || l || E'\n';
-	END LOOP;
-	IF (plan LIKE '%SiftAgg%') <> (mode < 2) THEN
-		RAISE EXCEPTION 'the plan is not the one asked for: %', plan;
-	END IF;
-	SELECT coalesce(string_agg(format('%s:%s:%s', tenant, n, s), ' ' ORDER BY tenant), 'none') INTO r
-	FROM (SELECT tenant, count(*) AS n, sum(amount) AS s FROM tk GROUP BY tenant) q;
-	RETURN r;
-END $$;
+CREATE FUNCTION answer(mode int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.tk_sums_with_plan_check(mode) $$;
 CREATE FUNCTION chk(what text, OUT test text, OUT free_equals_heap bool, OUT checked_equals_heap bool) LANGUAGE plpgsql AS $$
 BEGIN
 	test := what;
@@ -109,4 +96,5 @@ DROP TRIGGER tk_bump ON tk;
 DROP FUNCTION chk(text), answer(int), bump(), f_perform(), f_execute(), f_definer();
 DROP TABLE tk;
 DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

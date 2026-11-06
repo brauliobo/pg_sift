@@ -1,6 +1,7 @@
 -- The tuples of a chunk whose first sort key comes after that of the last kept tuple of their group are dropped on that key alone (agg/gen_run.c): a tuple that ties with the edge on the
 -- first key, a NULL or a NaN key (NULLS FIRST and LAST, ascending and descending), a second key that breaks the tie and a group that appears late give the rows of sift off.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tc (id int PRIMARY KEY, g int NOT NULL, x float8, y int, z int, d date);
@@ -24,21 +25,10 @@ INSERT INTO q (name, sql) VALUES
   ('dense_rank, two keys',      $q$SELECT * FROM (SELECT g, id, y, z, dense_rank() OVER (PARTITION BY g ORDER BY y DESC NULLS LAST, z) r FROM tc) t WHERE r <= 3$q$),
   ('row_number, float',         $q$SELECT * FROM (SELECT g, id, x, row_number() OVER (PARTITION BY g ORDER BY x DESC NULLS LAST, id) r FROM tc) t WHERE r <= 3$q$),
   ('filtered',                  $q$SELECT g, (array_agg(id ORDER BY x DESC NULLS LAST, id) FILTER (WHERE id % 3 = 0))[1:4] FROM tc GROUP BY g$q$);
-CREATE FUNCTION chunk_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE plpgsql AS
-$$ DECLARE l text; plan text := ''; a text; b text;
-BEGIN
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
-  PERFORM set_config('sift.enable_agg', 'on', true);
-  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
-  PERFORM set_config('sift.enable_agg', 'off', true);
-  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
-  PERFORM set_config('sift.enable_agg', 'on', true);
-  same := a IS NOT DISTINCT FROM b;
-  RETURN NEXT;
-END $$;
+CREATE FUNCTION chunk_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.plan_engaged_and_answers_same(q) $$;
 SELECT q.name, c.* FROM q, LATERAL chunk_check(q.sql) c ORDER BY q.ord;
 
 DROP FUNCTION chunk_check(text);
 DROP TABLE q, tc;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

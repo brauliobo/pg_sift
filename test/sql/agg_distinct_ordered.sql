@@ -1,6 +1,7 @@
 -- array_agg(DISTINCT x ORDER BY x) (and string_agg) with the ORDER BY the DISTINCT argument in its own ascending order, NULLs last: the distinct values of a group are the set the scan keeps and sorts, not every
 -- row in a tuplesort. Any other order (DESC, NULLS FIRST), a FILTER, an expression, a second DISTINCT aggregate and the ones beside it give the rows of sift off.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE da (id int PRIMARY KEY, g int NOT NULL, k int, s text, d date, n numeric(10, 2), b bool);
@@ -25,21 +26,10 @@ INSERT INTO q (name, sql) VALUES
   ('with a filter',            $q$SELECT g, array_agg(DISTINCT k ORDER BY k) FILTER (WHERE id % 4 = 0) FROM da GROUP BY g$q$),
   ('an expression',            $q$SELECT g, array_agg(DISTINCT k % 5 ORDER BY k % 5) FROM da GROUP BY g$q$),
   ('with a WHERE and a limit', $q$SELECT g, array_agg(DISTINCT k ORDER BY k) FROM da WHERE id > 5000 GROUP BY g ORDER BY g LIMIT 3$q$);
-CREATE FUNCTION do_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE plpgsql AS
-$$ DECLARE l text; plan text := ''; a text; b text;
-BEGIN
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
-  PERFORM set_config('sift.enable_agg', 'on', true);
-  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
-  PERFORM set_config('sift.enable_agg', 'off', true);
-  EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
-  PERFORM set_config('sift.enable_agg', 'on', true);
-  same := a IS NOT DISTINCT FROM b;
-  RETURN NEXT;
-END $$;
+CREATE FUNCTION do_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.plan_engaged_and_answers_same(q) $$;
 SELECT q.name, c.* FROM q, LATERAL do_check(q.sql) c ORDER BY q.ord;
 
 DROP FUNCTION do_check(text);
 DROP TABLE q, da;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

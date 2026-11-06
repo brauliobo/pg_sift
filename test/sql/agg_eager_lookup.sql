@@ -3,6 +3,7 @@
 -- the scan off, with no worker and with three, for keys that are NULL or that the lookup has no row for, columns and rates that are NULL, numerics of different scales and NaN. A sum that is not of a
 -- product of numerics, a lookup whose key repeats, a column of the lookup read in a group or a condition, a column compared with a constant (the normal plan reads those rows through an index) and a join that is not an inner one stay as they are.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tenants (id int PRIMARY KEY, region int NOT NULL, name text NOT NULL);
@@ -61,16 +62,7 @@ BEGIN
 	END LOOP;
 	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan, sums only' END;
 END $$;
-CREATE FUNCTION eager_rows(q text, scan bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
-	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN r;
-END $$;
+CREATE FUNCTION eager_rows(q text, scan bool, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_reset(q, scan, workers) $$;
 SELECT n, label, eager_plan(q) AS plan, eager_rows(q, false, 0) <> '' AS has_rows, eager_rows(q, true, 0) = eager_rows(q, false, 0) AS same, eager_rows(q, true, 3) = eager_rows(q, false, 0) AS same_workers FROM eager_q ORDER BY n;
 -- the order of the rows of a statement with an ORDER BY, with the scan on and off
 SELECT t.region, sum(e.amount * k.rate) AS s FROM events e JOIN tenants t ON t.id = e.tenant_id JOIN kinds k ON k.id = e.kind_id GROUP BY 1 HAVING sum(e.amount * k.rate) > 1000 ORDER BY 2 DESC LIMIT 3;
@@ -81,4 +73,5 @@ RESET sift.enable_agg;
 DROP FUNCTION eager_plan(text);
 DROP FUNCTION eager_rows(text, bool, int);
 DROP TABLE eager_q, events, tenants, kinds, kinds_dup;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

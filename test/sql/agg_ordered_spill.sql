@@ -4,6 +4,7 @@
 -- (percentile_cont is asked for multiples of 1/4 of values that are multiples of 1/8: the server's own interpolation may be built with fused multiply-adds,
 -- which this library is not)
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64kB';
@@ -19,13 +20,7 @@ FROM generate_series(1, 90000) i;
 CREATE INDEX sp_col ON sp USING sift_col (id, g, x, d, b, nx);
 VACUUM ANALYZE sp;
 
-CREATE FUNCTION sp_rows(q text, push bool) RETURNS jsonb[] LANGUAGE plpgsql AS $$
-DECLARE r jsonb[];
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT array_agg(to_jsonb(q) ORDER BY q.k) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
+CREATE FUNCTION sp_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 
 CREATE FUNCTION sp_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a jsonb[]; b jsonb[];
@@ -63,4 +58,5 @@ SELECT n, sp_plan(q) AS plan, sp_same(q) AS same FROM sp_q ORDER BY n;
 DROP TABLE sp_q;
 DROP FUNCTION sp_rows(text, bool), sp_same(text), sp_plan(text);
 DROP TABLE sp;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
