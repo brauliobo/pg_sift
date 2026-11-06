@@ -18,8 +18,8 @@ SELECT i, i % 50, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, document, jsonb_exists(document, 'flag_a'))
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 -- Documents whose root is not an object: key presence on them is the PostgreSQL rule for arrays and scalars.
 CREATE TABLE odd_facts (id int, kind text, document jsonb, payload text);
@@ -29,15 +29,15 @@ SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END,
  repeat('payload', 50)
 FROM generate_series(1, 40000) i;
 CREATE INDEX odd_facts_col ON odd_facts USING sift_col (id, kind, document, jsonb_exists(document, 'flag_a')) WITH (paths = 'document.flag_a astext');
-NOTICE:  sift_col index "odd_facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "odd_facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('odd_facts_col');
 -- The same table without the indexed call: the child needs the whole document, which the index does not hold.
 CREATE TABLE plain_facts AS SELECT id, kind, document, payload FROM facts;
 CREATE INDEX plain_facts_col ON plain_facts USING sift_col (id, kind, document)
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
-NOTICE:  sift_col index "plain_facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "plain_facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('plain_facts_col');
 -- The operator forms (? and ->>) and the type of the whole document are derived calls too; some documents are arrays.
 CREATE TABLE ops_facts AS
@@ -46,8 +46,8 @@ SELECT id, dim_a_id, kind,
 FROM facts;
 CREATE INDEX ops_facts_col ON ops_facts USING sift_col (id, dim_a_id, kind, document, (document ? 'flag_a'), (document ->> 'tag'), jsonb_typeof(document))
  WITH (paths = 'document.parts[]{category text}');
-NOTICE:  sift_col index "ops_facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "ops_facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ops_facts_col');
 VACUUM (FREEZE, ANALYZE) ops_facts;
 VACUUM (FREEZE, ANALYZE) facts;

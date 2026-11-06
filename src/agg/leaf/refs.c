@@ -62,12 +62,12 @@ leaf_name(AggCtx *c, int id)
 		appendStringInfo(&s, leaf_of(c, l->parent)->kind == SCL_OBJECT ? "%s.*.%s" : "%s[].%s", p, l->name);
 		return s.data;
 	}
-	if (l->name[0] == '#')
+	if (l->name[0] == '#' && strcmp(l->name, "#present") != 0)
 		appendStringInfoString(&s, strcmp(l->name, "#typeof") == 0 ? "jsonb_typeof(" : strcmp(l->name, "#lower") == 0 ? "lower(" : strcmp(l->name, "#upper") == 0 ? "upper(" : "jsonb_array_length(");
 	appendStringInfoString(&s, att);
 	foreach_ptr(String, k, l->path)
 		appendStringInfo(&s, ".%s", strVal(k));
-	if (l->name[0] == '#')
+	if (l->name[0] == '#' && strcmp(l->name, "#present") != 0)
 		appendStringInfoChar(&s, ')');
 	return s.data;
 }

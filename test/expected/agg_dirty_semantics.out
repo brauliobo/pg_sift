@@ -40,8 +40,8 @@ UPDATE items SET doc = '{"parts": "str"}' WHERE id = 1200;
 UPDATE items SET doc = '{"parts": [1]}' WHERE id = 1201;
 UPDATE items SET doc = '{"parts": null}' WHERE id = 1202;
 CREATE INDEX items_col ON items USING sift_col (id, kind, day, doc) WITH (paths = 'doc.parts[]{kind text, score float8}');
-NOTICE:  sift_col index "items_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "items_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
 VACUUM ANALYZE items;
 CREATE FUNCTION iq(rng text, keep text, sel text DEFAULT 't.kind, count(*), sum(t.id)') RETURNS text LANGUAGE sql AS $f$
@@ -326,8 +326,8 @@ UPDATE events SET doc = jsonb_set(doc, '{m_a}', '{"a": 1}') WHERE id = 1106;
 UPDATE events SET doc = doc - 'm_a' WHERE id = 1107;
 UPDATE events SET doc = jsonb_set(doc, '{m_a}', '1e300') WHERE id = 1108;
 CREATE INDEX events_col ON events USING sift_col (id, kind, day, doc) WITH (paths = 'doc.* float8');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM ANALYZE events;
 CREATE FUNCTION kq(rng text, sel text, key text DEFAULT 'm_a', grp text DEFAULT 't.kind') RETURNS text LANGUAGE sql AS $f$
@@ -603,8 +603,8 @@ INSERT INTO nulls SELECT i, 'cat_' || chr(97 + i % 3), i / 10, jsonb_build_objec
 UPDATE nulls SET doc = jsonb_set(doc, '{m_a}', 'null') WHERE id = 100;
 UPDATE nulls SET doc = jsonb_set(doc, '{m_b}', '"x"') WHERE id = 200;
 CREATE INDEX nulls_col ON nulls USING sift_col (id, kind, day, doc) WITH (paths = 'doc.* float8');
-NOTICE:  sift_col index "nulls_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "nulls_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nulls_col');
 VACUUM ANALYZE nulls;
 SELECT answers('SELECT t.kind, sum(CAST(r.value AS float8)), count(*) FROM nulls t LEFT JOIN LATERAL jsonb_each(t.doc) r ON r.key = $$m_a$$ WHERE t.id BETWEEN 90 AND 110 GROUP BY 1') AS json_null_member;

@@ -258,8 +258,8 @@ DROP TABLE dl;
 CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO lc SELECT g, 1 + g % 50, jsonb_build_array(jsonb_build_object('qty', g % 7, 'price', g % 11), jsonb_build_object('qty', (g + 1) % 7, 'price', (g + 3) % 11)) FROM generate_series(1, 20000) g;
 CREATE INDEX lc_idx ON lc USING sift_col (id, parent_id, parts) WITH (paths = 'parts[]{qty int4, price int4}');
-NOTICE:  sift_col index "lc_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "lc_idx": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = parts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lc_idx');
 VACUUM (FREEZE, ANALYZE) lc;
 SET max_parallel_workers_per_gather = 0;
@@ -291,8 +291,8 @@ SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE 
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
 SET sift.test_limits = 'dict_cache_kb=1';
 REINDEX INDEX lc_idx;
-NOTICE:  sift_col index "lc_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "lc_idx": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = parts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lc_idx');
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 

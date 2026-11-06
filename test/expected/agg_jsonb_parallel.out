@@ -23,8 +23,8 @@ SELECT i, i % 7,
 FROM generate_series(1, 12000) i;
 CREATE INDEX p_col ON p_t USING sift_col (id, grp, attrs, metrics_a, items)
 	WITH (paths = 'attrs.tags[] text(1024), attrs->label astext, metrics_a.* astext, items[]{kind text, n int4, score astext}');
-NOTICE:  sift_col index "p_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "p_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = attrs, metrics_a, items
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('p_col');
 VACUUM ANALYZE p_t;
 SET parallel_setup_cost = 0;

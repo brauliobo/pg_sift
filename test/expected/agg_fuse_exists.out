@@ -22,8 +22,8 @@ SELECT i, i % 52, '2026-01-01'::date + (i % 9),
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, document, jsonb_exists(document, 'flag_a'))
  WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;

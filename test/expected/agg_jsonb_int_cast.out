@@ -12,8 +12,8 @@ FROM generate_series(1, 20000) i;
 CREATE TABLE dim_a (id int, kind text);
 INSERT INTO dim_a SELECT i, CASE WHEN i % 3 = 0 THEN 'a' ELSE 'b' END FROM generate_series(1, 40) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;

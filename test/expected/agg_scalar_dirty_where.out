@@ -25,8 +25,8 @@ INSERT INTO w_t
 SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'n', i % 9, 'ok', i % 2 = 0, 't', 'k' || (i % 4), 'c', i % 3)
 FROM generate_series(1, 3000) i;
 CREATE INDEX w_t_col ON w_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.ok bool, doc.t text, doc.c int4');
-NOTICE:  sift_col index "w_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "w_t_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('w_t_col');
 -- numeric strings in the paths the conditions cast, none in doc.c
 UPDATE w_t SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
@@ -72,8 +72,8 @@ SELECT n, plan_of(q) AS plan, reread(q) AS reread, outcome(q) FROM w_q ORDER BY 
 CREATE TABLE w_z (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO w_z SELECT i, i % 3, jsonb_build_object('v', (i % 3)::float8) FROM generate_series(1, 2000) i;
 CREATE INDEX w_z_col ON w_z USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8');
-NOTICE:  sift_col index "w_z_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "w_z_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('w_z_col');
 UPDATE w_z SET doc = jsonb_set(doc, '{v}', '"9.5"') WHERE id IN (7, 1500);
 VACUUM ANALYZE w_z;

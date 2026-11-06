@@ -536,8 +536,8 @@ DROP FUNCTION explain_first(text);
 CREATE TABLE fr_docs (id int PRIMARY KEY, kind text NOT NULL, parts jsonb NOT NULL);
 INSERT INTO fr_docs SELECT i, 'k' || (i % 3), (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || ((i + j) % 8), 'sub', 's' || ((i * 7 + j * 13) % 3000), 'score', (i + j) % 5)) FROM generate_series(1, 4) j) FROM generate_series(1, 1500) i;
 CREATE INDEX fr_docs_col ON fr_docs USING sift_col (id, kind, parts) WITH (paths = 'parts[]{cat astext, sub astext, score float8}');
-NOTICE:  sift_col index "fr_docs_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "fr_docs_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = parts; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fr_docs_col');
 CREATE TABLE fr_map (id int PRIMARY KEY, kind text NOT NULL, cat text NOT NULL, sub text NOT NULL, label text);
 INSERT INTO fr_map SELECT g, 'k' || (g % 3), 'c' || (g % 8), 's' || (g % 3000), 'm' || (g % 11) FROM generate_series(1, 24000) g;

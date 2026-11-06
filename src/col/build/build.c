@@ -124,6 +124,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #endif
 	sift_col_auto_arrlen(index);
 	sift_col_auto_paths(heap, index);
+	sift_col_auto_present(index);
 	sift_col_auto_cube(heap, index);
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);

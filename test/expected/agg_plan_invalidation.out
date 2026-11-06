@@ -16,8 +16,8 @@ SELECT i, 1 + i % 50, '2025-01-01'::date + i % 40, 'cat_' || chr(97 + i % 4), i 
        jsonb_build_object('parts', jsonb_build_object('a', i % 7), 'metrics', jsonb_build_object('k', 'catg_' || chr(97 + i % 3)))
 FROM generate_series(1, 6000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind, amount, payload) WITH (paths = 'payload.parts.a int, payload.metrics.k astext');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = payload; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE dims;
@@ -81,8 +81,8 @@ SELECT * FROM chk('alter index');
 
 -- the index is rebuilt: new relation, generations start over
 REINDEX INDEX events_col;
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = payload; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT * FROM chk('reindex');
   step   | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 
@@ -127,8 +127,8 @@ SELECT * FROM chk('narrow index');
 
 DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind, amount, payload) WITH (paths = 'payload.parts.a int, payload.metrics.k astext');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = payload; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT * FROM chk('new index');
    step    | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 
@@ -138,8 +138,8 @@ SELECT * FROM chk('new index');
 
 -- the table is rewritten with another type of an indexed column (no column the queries return) and the index is built again
 ALTER TABLE events ALTER COLUMN kind TYPE varchar(20);
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = payload; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT * FROM chk('table rewrite');
      step      | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 

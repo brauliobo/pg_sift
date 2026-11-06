@@ -16,8 +16,8 @@ SELECT i, i % 50, 'k' || i % 5, date '2025-01-01' + i % 6, i % 7, i % 5, i % 3, 
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 3000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, a, b, c, d, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 -- a dimension with four key columns and seventeen value columns
 CREATE TABLE dd (id int NOT NULL, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v1 int NOT NULL, v2 int NOT NULL, v3 int NOT NULL, v4 int NOT NULL, v5 int NOT NULL, v6 int NOT NULL, v7 int NOT NULL, v8 int NOT NULL, v9 int NOT NULL, v10 int NOT NULL, v11 int NOT NULL, v12 int NOT NULL, v13 int NOT NULL, v14 int NOT NULL, v15 int NOT NULL, v16 int NOT NULL, v17 int NOT NULL) WITH (autovacuum_enabled = false);

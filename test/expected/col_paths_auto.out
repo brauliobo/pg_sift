@@ -37,8 +37,8 @@ INSERT INTO pa_q VALUES
 	(4, 'SELECT tail->>''t'', count(*) FROM pa GROUP BY 1');
 -- no paths option: decided at CREATE INDEX (a jsonb column needed paths, so this was an error): the NOTICE, the option, and the answers
 CREATE INDEX pa_auto ON pa USING sift_col (id, doc, tail);
-NOTICE:  sift_col index "pa_auto": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key;
+NOTICE:  sift_col index "pa_auto": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc, tail;
 paths = doc.count int4, doc.meta.lang text, and 4 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_auto');
 SELECT pa_option('pa_auto');
@@ -65,8 +65,8 @@ SELECT n, pa_rows(q, true) = pa_rows(q, false) AS same, pa_pushed(q) AS pushed F
 -- a rebuild keeps the paths, whatever the table holds now
 INSERT INTO pa SELECT i, jsonb_build_object('other', i), NULL FROM generate_series(3001, 6000) i;
 REINDEX INDEX pa_auto;
-NOTICE:  sift_col index "pa_auto": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key;
+NOTICE:  sift_col index "pa_auto": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc, tail;
 paths = doc.count int4, doc.meta.lang text, and 4 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_auto');
 SELECT pa_option('pa_auto');
@@ -95,8 +95,8 @@ DROP INDEX pa_auto;
 DELETE FROM pa WHERE id > 3000;
 -- paths by hand are not touched; 'auto' by name is the same as none
 CREATE INDEX pa_hand ON pa USING sift_col (id, doc) WITH (paths = 'doc.name text');
-NOTICE:  sift_col index "pa_hand": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "pa_hand": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_hand');
 SELECT pa_option('pa_hand');
       pa_option      
@@ -105,8 +105,8 @@ SELECT pa_option('pa_hand');
 (1 row)
 
 CREATE INDEX pa_none ON pa USING sift_col (id, doc) WITH (paths = 'auto');
-NOTICE:  sift_col index "pa_none": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key;
+NOTICE:  sift_col index "pa_none": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc;
 paths = doc.count int4, doc.meta.lang text, and 3 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_none');
 SELECT pa_option('pa_none');
@@ -119,8 +119,8 @@ SELECT pa_option('pa_none');
 CREATE TABLE pa_few (id int, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO pa_few SELECT i, jsonb_build_object('k' || i, i) FROM generate_series(1, 2000) i;
 CREATE INDEX pa_few_col ON pa_few USING sift_col (id, doc);
-NOTICE:  sift_col index "pa_few_col": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.* int4
+NOTICE:  sift_col index "pa_few_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc; paths = doc.* int4
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_few_col');
 SELECT pa_option('pa_few_col');
        pa_option        
@@ -144,8 +144,8 @@ SELECT pa_option('pa_empty_col');
 CREATE TABLE pa_re (id int, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO pa_re SELECT i, jsonb_build_object('a', i % 7) FROM generate_series(1, 2000) i;
 CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
-NOTICE:  sift_col index "pa_re_col": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.a int4
+NOTICE:  sift_col index "pa_re_col": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc; paths = doc.a int4
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_re_col');
 SELECT pa_option('pa_re_col');
        pa_option        
@@ -163,8 +163,9 @@ SELECT pa_option('pa_re_col');
 (1 row)
 
 REINDEX INDEX pa_re_col;
-NOTICE:  sift_col index "pa_re_col": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.b int4, doc.label text
+NOTICE:  sift_col index "pa_re_col": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc;
+paths = doc.b int4, doc.label text
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_re_col');
 SELECT pa_option('pa_re_col');
                pa_option                
@@ -176,8 +177,8 @@ DELETE FROM pa_re;
 INSERT INTO pa_re SELECT i, jsonb_build_object('c', i % 5) FROM generate_series(1, 2000) i;
 ALTER INDEX pa_re_col RESET (paths);
 REINDEX INDEX pa_re_col;
-NOTICE:  sift_col index "pa_re_col": 1 automatic choice (paths), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; paths = doc.c int4
+NOTICE:  sift_col index "pa_re_col": 2 automatic choices (document_present, paths), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc; paths = doc.c int4
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pa_re_col');
 SELECT pa_option('pa_re_col');
        pa_option        

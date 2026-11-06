@@ -11,8 +11,8 @@ CREATE TABLE dims (id int, kind text);
 INSERT INTO dims SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 6) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, grp, day, deleted_at, score, doc) WITH (paths = 'doc.k int4')
   WHERE deleted_at IS NULL AND day >= '2026-01-15';
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims;
@@ -114,8 +114,8 @@ SELECT * FROM check_all();
 (11 rows)
 
 REINDEX INDEX facts_col;
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 SELECT * FROM check_all();
          label          | scan | same |                                               outcome                                                
@@ -164,8 +164,8 @@ SELECT * FROM check_prepared('force_generic_plan');
 
 -- a full index next to the partial one: either answers a query the partial one covers
 CREATE INDEX facts_col_all ON facts USING sift_col (id, grp, day, deleted_at, score, doc) WITH (paths = 'doc.k int4');
-NOTICE:  sift_col index "facts_col_all": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col_all": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col_all');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_all();

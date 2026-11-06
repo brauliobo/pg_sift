@@ -13,8 +13,8 @@ SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360),
 FROM generate_series(1, 20000) g;
 CREATE TABLE plain_events AS SELECT * FROM events;
 CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts, doc) WITH (paths = 'doc.parts[]{cat astext, score float8}');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE plain_events; ANALYZE kinds;

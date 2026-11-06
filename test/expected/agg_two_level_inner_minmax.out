@@ -18,8 +18,8 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 70 END, i % 4,
        i % 11 = 0
 FROM generate_series(1, 12000) i;
 CREATE INDEX rv_col ON rv USING sift_col (id, grp, src, f, doc, deleted) WITH (paths = 'doc.* float8');
-NOTICE:  sift_col index "rv_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "rv_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rv_col');
 VACUUM (FREEZE, ANALYZE) rv;
 CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_is_agg_scan(q) $$;

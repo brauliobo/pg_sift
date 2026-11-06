@@ -8,13 +8,13 @@ INSERT INTO docs
 SELECT i, CASE i % 5 WHEN 0 THEN '{"k": null, "c": 1}'::jsonb WHEN 1 THEN '{"k": 2.5, "c": 2}'::jsonb WHEN 2 THEN '{"c": 3}'::jsonb ELSE jsonb_build_object('k', i % 7, 'c', i % 4) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, doc) WITH (paths = 'doc.k float8, doc.c float8');
-NOTICE:  sift_col index "docs_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "docs_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('docs_col');
 CREATE TABLE dim_b AS TABLE docs;
 CREATE INDEX members_col ON dim_b USING sift_col (id, doc) WITH (paths = 'doc.* float8');
-NOTICE:  sift_col index "members_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "members_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('members_col');
 VACUUM (FREEZE, ANALYZE) docs;
 VACUUM (FREEZE, ANALYZE) dim_b;
@@ -83,8 +83,8 @@ SELECT * FROM check_query('integer cast, leaf without one', $q$SELECT id % 3 AS 
 CREATE TABLE late (id int, doc jsonb);
 INSERT INTO late SELECT i, jsonb_build_object('c', i % 4) FROM generate_series(1, 20000) i;
 CREATE INDEX late_col ON late USING sift_col (id, doc) WITH (paths = 'doc.c float8');
-NOTICE:  sift_col index "late_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "late_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('late_col');
 VACUUM (FREEZE, ANALYZE) late;
 SELECT * FROM check_query('segments only', $q$SELECT count(*) AS n, sum((doc -> 'c')::float8) AS total FROM late$q$, false);

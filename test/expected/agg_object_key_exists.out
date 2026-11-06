@@ -19,8 +19,8 @@ INSERT INTO oe_docs SELECT i, i % 5,
   END
 FROM generate_series(1, 4500) i;
 CREATE INDEX oe_docs_col ON oe_docs USING sift_col (id, set_id, doc) WITH (paths = 'doc.flag_a astext, doc.items[]{category text, score float8}');
-NOTICE:  sift_col index "oe_docs_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "oe_docs_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oe_docs_col');
 VACUUM (FREEZE, ANALYZE) oe_docs;
 \ir test/agg_check_pushed.sql

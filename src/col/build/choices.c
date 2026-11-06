@@ -10,6 +10,7 @@
 #include <math.h>
 #include "access/table.h"
 #include "catalog/pg_constraint.h"
+#include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -151,6 +152,25 @@ d_array_lengths(Derive *d)
 	}
 	if (names.len > 0)
 		add(d, "array-lengths", names.data, NULL);
+}
+
+static void
+d_document_present(Derive *d)
+{
+	StringInfoData names;
+
+	if (sift_col_options(d->index)->document_present != SIFT_COL_PRESENT_ON)
+		return;
+	initStringInfo(&names);
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(d->index); i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(d->index), i);
+
+		if (att->atttypid == JSONBOID)
+			appendStringInfo(&names, "%s%s", names.len ? ", " : "", NameStr(att->attname));
+	}
+	if (names.len > 0)
+		add(d, "document-present", names.data, NULL);
 }
 
 /* paths = 'auto: spec': the element tokens of array columns ("name[] type", "+name[] type") are the elements of arrays, the others the paths of jsonb columns */
@@ -538,6 +558,7 @@ static const struct
 	{"key-order", d_key_order},
 	{"key-order-auto", d_key_order},
 	{"array-lengths", d_array_lengths},
+	{"document-present", d_document_present},
 	{"jsonb-paths", d_paths},
 	{"array-elements", d_paths},
 	{"key-lists", d_key_columns},

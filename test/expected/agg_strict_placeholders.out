@@ -13,8 +13,8 @@ SELECT i, i % 37, date '2026-01-01' + i % 400,
             ELSE jsonb_build_object('mhead', i % 10 + 1, 'service_staff', CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7) % 10 + 1 END) END
 FROM generate_series(1, 8000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, metrics_a) WITH (paths = 'metrics_a.* float8');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "facts_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = metrics_a; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/agg_check_query.sql

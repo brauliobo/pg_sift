@@ -54,8 +54,8 @@ UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1}' WHERE id = 141
 UPDATE facts SET doc = '{"parts": "str"}', metrics = '{"m_a": 1e12}' WHERE id = 1420;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, day, doc, metrics, jsonb_exists(doc, 'flag_a'))
  WITH (paths = 'doc.parts[]{category astext, val astext, kind astext, score float8}, metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "facts_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc, metrics; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM ANALYZE facts;
 -- EXISTS over the elements, the category of an element as the lookup of its parent's kind maps it

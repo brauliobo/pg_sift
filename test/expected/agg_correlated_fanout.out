@@ -10,8 +10,8 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE i % 52 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 13 END, jsonb_build_object('m_total', i % 10), CASE WHEN i % 101 = 0 THEN 'none' ELSE (i % 10)::text END, repeat('payload', 50)
 FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;

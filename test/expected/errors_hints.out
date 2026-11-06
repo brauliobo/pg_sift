@@ -50,7 +50,7 @@ SELECT expect(format('CREATE INDEX ON docs USING sift_col (id, payload) WITH (pa
                                                      expect                                                      
 -----------------------------------------------------------------------------------------------------------------
  54000 a sift_col index holds at most 128 columns                                                               +
-   detail: Column "payload" brings the index to 129 columns and paths.                                          +
+   detail: Column "payload" brings the index to 130 columns and paths.                                          +
    hint: Leave out the columns the queries do not read, or create several indexes: the planner picks among them.
 (1 row)
 

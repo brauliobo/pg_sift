@@ -10,8 +10,8 @@ SELECT i, date '2024-01-01' + i % 60,
 FROM generate_series(1, 50000) i;
 INSERT INTO events VALUES (50001, NULL, '{"m_total":8}');
 CREATE INDEX events_col ON events USING sift_col (id, day, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "events_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "events_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
 \ir test/agg_check_pushed.sql

@@ -13,8 +13,8 @@ SELECT i, 'k' || (abs(hashint4(i)) % 700), (i % 3000)::bigint * 1000003,
        (i % 1000) / 10.0
 FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, kind, big, doc, amount) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "ev_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE maps (kind text, label text) WITH (autovacuum_enabled = false);

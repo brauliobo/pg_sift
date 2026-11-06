@@ -25,8 +25,8 @@ INSERT INTO kinds VALUES
 CREATE TABLE m_t (id int PRIMARY KEY, grp int, m jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO m_t SELECT i, i % 5, jsonb_build_object('a', i % 10, 'b', i % 7) FROM generate_series(1, 3000) i;
 CREATE INDEX m_t_col ON m_t USING sift_col (id, grp, m) WITH (paths = 'm.* float8');
-NOTICE:  sift_col index "m_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "m_t_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = m; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('m_t_col');
 VACUUM ANALYZE m_t;
 CREATE FUNCTION m_q(id int) RETURNS text[] LANGUAGE sql AS $f$
@@ -108,8 +108,8 @@ SELECT pushed((m_q(1))[1]) AS text_cast_pushed, same((m_q(1))[1]) AS text_cast_s
 CREATE TABLE l_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO l_t SELECT i, i % 5, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('s', i % 10), jsonb_build_object('s', i % 7))) FROM generate_series(1, 3000) i;
 CREATE INDEX l_t_col ON l_t USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{s float8}');
-NOTICE:  sift_col index "l_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "l_t_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('l_t_col');
 VACUUM ANALYZE l_t;
 CREATE TABLE list_kinds (id int PRIMARY KEY, kind text, val jsonb);
@@ -153,8 +153,8 @@ SELECT pushed((l_q(1))[1]) AS dirty_length_pushed, same('SELECT grp, sum(jsonb_a
 CREATE TABLE s_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO s_t SELECT i, i % 5, jsonb_build_object('k', i % 10) FROM generate_series(1, 3000) i;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.k float8');
-NOTICE:  sift_col index "s_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "s_t_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('s_t_col');
 VACUUM ANALYZE s_t;
 INSERT INTO s_t SELECT id, 0, jsonb_build_object('k', val) FROM kinds;
@@ -184,8 +184,8 @@ FROM kinds k ORDER BY k.id;
 CREATE TABLE r_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO r_t SELECT i, i % 5, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('v', i % 10), jsonb_build_object('v', i % 7))) FROM generate_series(1, 3000) i;
 CREATE INDEX r_t_col ON r_t USING sift_col (id, grp, doc) WITH (paths = 'doc.l[]{v float8}');
-NOTICE:  sift_col index "r_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "r_t_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_t_col');
 VACUUM ANALYZE r_t;
 INSERT INTO r_t SELECT id, 0, jsonb_build_object('l', jsonb_build_array(jsonb_build_object('v', val))) FROM kinds WHERE id <> 9012;

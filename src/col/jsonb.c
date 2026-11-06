@@ -21,7 +21,8 @@ typedef enum LeafKind
 	LEAF_ROOT_COL,				/* a column of the root group */
 	LEAF_GROUP,					/* a list or map */
 	LEAF_CHILD_COL,				/* a column of a group */
-	LEAF_MAP_KEY				/* the member name of a map */
+	LEAF_MAP_KEY,				/* the member name of a map */
+	LEAF_PRESENT				/* the document itself: true, NULL where it is SQL NULL (option document_present) */
 } LeafKind;
 
 typedef struct ShredLeaf
@@ -233,7 +234,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	spec = a->spec;
 	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
 	for (int i = 1; i <= a->natts; i++)
-		a->attr[i].leaf = palloc0((spec->ncols + spec->ngroups * 2 + 1) * sizeof(ShredLeaf));
+		a->attr[i].leaf = palloc0((spec->ncols + spec->ngroups * 2 + 2) * sizeof(ShredLeaf));
 	for (int c = 0; c < spec->ncols; c++)
 		if (spec->cols[c].group == 0)
 			add_column(a, &a->attr[attr_of(a, spec->cols[c].name)], c, -1, LEAF_ROOT_COL, 0);
@@ -249,10 +250,35 @@ SiftColShredAdapter *
 sift_col_shred_create(MemoryContext mcxt, Relation index)
 {
 	const char *paths = sift_col_options_paths(index);
+	SiftColShredAdapter *a;
 
 	if (paths[0] == '\0')
 		return NULL;
-	return sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
+	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
+	if (sift_col_options(index)->document_present == SIFT_COL_PRESENT_ON)
+		for (int i = 1; i <= a->natts; i++)
+			if (a->attr[i].n > 0 && !a->attr[i].array)
+			{
+				ShredLeaf  *l = add_leaf(&a->attr[i], LEAF_PRESENT, -1, SIFT_COLK_SCALAR, MemoryContextStrdup(mcxt, psprintf("%s#present", a->attr[i].name)), -1, -1);
+
+				l->def.store = SIFT_COLS_INT;
+				l->def.type = SIFT_COLT_BOOL;
+			}
+	return a;
+}
+
+/* document_present = auto: an index with a jsonb column that has paths keeps the presence of its documents; written as 'on' before the build, so that the build, its workers and a REINDEX share one schema */
+void
+sift_col_auto_present(Relation index)
+{
+	if (sift_col_options(index)->document_present != SIFT_COL_PRESENT_AUTO || sift_col_options_paths(index)[0] == '\0')
+		return;
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid == JSONBOID)
+		{
+			sift_col_set_option(index, "document_present", "on");
+			return;
+		}
 }
 
 int
@@ -430,6 +456,14 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 				set_value(&row->val[first[i] + at->base + l], &sh->doc, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
 			else if (lf->kind == LEAF_GROUP)
 				fill_group(a, at, l, row, first[i] + at->base, mcxt);
+			else if (lf->kind == LEAF_PRESENT)
+			{
+				SiftColValue *v = &row->val[first[i] + at->base + l];
+
+				memset(v, 0, sizeof(*v));
+				v->isnull = isnull[i - 1];
+				v->v.i = 1;
+			}
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -455,7 +489,7 @@ sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, i
 
 	if (l->kind == LEAF_GROUP)
 		rc->grp[l->group] = mode;
-	else if (l->kind != LEAF_MAP_KEY)
+	else if (l->kind != LEAF_MAP_KEY && l->kind != LEAF_PRESENT)
 		rc->col[l->col] = mode;
 }
 

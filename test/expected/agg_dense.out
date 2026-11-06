@@ -36,16 +36,16 @@ SELECT i, i % 5, CASE WHEN i % 9 = 0 THEN NULL ELSE 'L' || (i % 4) END,
                   FROM generate_series(1, (i * 5) % 7) k) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX d_jcol ON d_j USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
-NOTICE:  sift_col index "d_jcol": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "d_jcol": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_jcol');
 VACUUM ANALYZE d_j;
 -- the same documents never vacuumed (no page is all-visible, so the rows that keep an element are checked against the heap), with deleted and updated rows
 CREATE TABLE d_nv (id int, grp int, label text, items jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO d_nv SELECT * FROM d_j WHERE id <= 2000 AND id <> 7;
 CREATE INDEX d_nvcol ON d_nv USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
-NOTICE:  sift_col index "d_nvcol": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "d_nvcol": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_nvcol');
 DELETE FROM d_nv WHERE id % 10 = 3;
 UPDATE d_nv SET items = '[{"k": "c1", "f": "fa", "n": 1, "x": 0.5}]' WHERE id % 10 = 4;

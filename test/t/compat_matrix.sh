@@ -210,8 +210,10 @@ sift.async_maintenance = off'
 		# a minor 3 segment stores no types: 3.1 refuses an astext leaf of it at query time with the REINDEX hint, by design
 		kind=$textkind; [[ $fmt != lo ]] || kind=text
 		q "SET sift.col_format_minor = $minor" \
-			"CREATE TABLE jt_$fmt AS TABLE jt" "CREATE INDEX jt_${fmt}_col ON jt_$fmt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" \
+			"CREATE TABLE jt_$fmt AS TABLE jt" "CREATE INDEX jt_${fmt}_col ON jt_$fmt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}', document_present = off)" \
 			"INSERT INTO jt_$fmt SELECT i, '[{\"s\":\"gift\"}]', '{\"a\":1}' FROM generate_series(4001, 4200) i" >/dev/null || bail "$ref $fmt jt"
+		# the presence of the documents (option document_present, on at CREATE INDEX) is a leaf of the layout, not a minor: the release refuses that index (its metapage does not describe the layout)
+		[[ $fmt != lo ]] || q "SET sift.col_format_minor = $minor" "CREATE TABLE jt_dp AS TABLE jt" "CREATE INDEX jt_dp_col ON jt_dp USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" >/dev/null || bail "$ref jt_dp"
 		if [[ $hastbl == yes ]]; then
 			q "SET sift.col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
@@ -268,6 +270,8 @@ sift.async_maintenance = off'
 			check "$ref still serves after the refusal" test "$(q "SELECT 1")" == 1
 		fi
 	done
+	err=$(q "SELECT sift.col_verify('jt_dp_col', true)" 2>&1)
+	check "$ref refuses the index with document_present, a layout it does not know" test "$(grep -ci 'does not describe this column layout' <<<"$err")" -ge 1
 	if [[ $hastbl == yes ]]; then
 		err=$(q "SELECT count(*), sum(length(t::text)) FROM tbl_ca t" 2>&1)
 		check "$ref refuses the sift_table tbl_ca (calendar cells, column format 8) with a format error and the hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2

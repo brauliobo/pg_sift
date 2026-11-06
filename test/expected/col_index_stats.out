@@ -9,23 +9,24 @@ INSERT INTO s SELECT i, i % 7, i % 2 = 0, 'v' || (i % 5), i / 3.0,
 FROM generate_series(1, 5000) i;
 UPDATE s SET t = NULL WHERE id % 10 = 0;
 CREATE INDEX s_col ON s USING sift_col (id, k, flag, t, f, items) WITH (paths = 'items[]{c text, q int4}');
-NOTICE:  sift_col index "s_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "s_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('s_col');
 -- leaf, path, distinct values, range, elements per row
 SELECT l.leaf, l.path, round(st.ndistinct) AS ndistinct, st.min, st.max, st.elems_per_row
 FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING (leaf) ORDER BY leaf;
- leaf |   path    | ndistinct | min | max  | elems_per_row 
-------+-----------+-----------+-----+------+---------------
-    0 | id        |      5000 |   1 | 5000 |             0
-    1 | k         |         7 |   0 |    6 |             0
-    2 | flag      |         2 |   0 |    1 |             0
-    3 | t         |         5 |   0 |    0 |             0
-    4 | f         |      5000 |   0 |    0 |             0
-    5 | items[]   |         0 |   0 |    0 |             2
-    6 | items[].c |         4 |   0 |    0 |             0
-    7 | items[].q |        12 |   0 |   11 |             0
-(8 rows)
+ leaf |     path      | ndistinct | min | max  | elems_per_row 
+------+---------------+-----------+-----+------+---------------
+    0 | id            |      5000 |   1 | 5000 |             0
+    1 | k             |         7 |   0 |    6 |             0
+    2 | flag          |         2 |   0 |    1 |             0
+    3 | t             |         5 |   0 |    0 |             0
+    4 | f             |      5000 |   0 |    0 |             0
+    5 | items[]       |         0 |   0 |    0 |             2
+    6 | items[].c     |         4 |   0 |    0 |             0
+    7 | items[].q     |        12 |   0 |   11 |             0
+    8 | items#present |         1 |   1 |    1 |             0
+(9 rows)
 
 -- rows with other values in a second segment: the text leaf reports its largest dictionary, the ranges widen (the rows still in a write buffer are not counted)
 INSERT INTO s SELECT 5000 + i, 100 + i % 3, true, 'w' || (i % 40), 1.5, '[]'::jsonb FROM generate_series(1, 2000) i;

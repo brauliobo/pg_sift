@@ -15,8 +15,8 @@ SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 110 END, CASE WHEN i % 19 = 0 
          jsonb_build_object('category', 'catg_b', 'score', CASE WHEN i % 10 = 1 THEN to_jsonb('4'::text) ELSE to_jsonb(i % 7) END)) END)
 FROM generate_series(1, 8000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, code, day, amount, document) WITH (paths = 'document.parts[]{category text,score float8}');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims;

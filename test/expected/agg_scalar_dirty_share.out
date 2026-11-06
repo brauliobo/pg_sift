@@ -27,14 +27,14 @@ BEGIN
 		EXECUTE format($t$CREATE INDEX items_%1$s_col ON items_%1$s USING sift_col (id, grp, doc) WITH (paths = 'doc.score float8, doc.parts[]{cat text, score float8}')$t$, k);
 	END LOOP;
 END $do$;
-NOTICE:  sift_col index "items_1000_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "items_1000_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_1000_col');
-NOTICE:  sift_col index "items_33_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "items_33_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_33_col');
-NOTICE:  sift_col index "items_2_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "items_2_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = doc; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_2_col');
 VACUUM ANALYZE items_1000;
 VACUUM ANALYZE items_33;

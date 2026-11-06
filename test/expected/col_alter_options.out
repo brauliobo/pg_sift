@@ -71,10 +71,10 @@ ERROR:  invalid calendar_columns option: too many dimensions
 -- the refused options changed nothing (aw_wide took its list), and the table still takes statements
 \c
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain', 'aw_wide', 'ad_dates') ORDER BY 1;
- relname  |                             reloptions                              
-----------+---------------------------------------------------------------------
+ relname  |                                       reloptions                                        
+----------+-----------------------------------------------------------------------------------------
  ad_dates | {calendar_columns=off}
- ao_paths | {"paths=metrics.* float8, parts[]{kind text}",calendar_columns=all}
+ ao_paths | {"paths=metrics.* float8, parts[]{kind text}",document_present=on,calendar_columns=all}
  ap_plain | 
  aw_wide  | {"rollup_dims=auto: c2, c9","calendar_columns=d1, d2"}
 (4 rows)

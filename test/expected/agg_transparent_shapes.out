@@ -12,8 +12,8 @@ SELECT i, i%3,
 FROM generate_series(1,10000) i;
 CREATE INDEX events_col ON events USING sift_col(id,dim_a_id,document,metrics,jsonb_exists(document,'flag'))
  WITH(paths='document.flag astext, document.entries[]{bucket text,value float8}, document.notes[]{kind text}, metrics.* float8');
-NOTICE:  sift_col index "events_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "events_col": 1 automatic choice (document_present), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = document, metrics
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE dim_a(id int, labels text[]);
 INSERT INTO dim_a VALUES(0,ARRAY['one','one','two']), (1,ARRAY[]::text[]), (2,NULL);

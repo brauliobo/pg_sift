@@ -123,7 +123,7 @@ path_below(const char *path, const char *att)
 	return keys;
 }
 
-/* the field name of a child of a group: after "[]." (list) or the member / value of a map */
+/* the field name of a child of a group: after "[]." (list) or the member / value of a map; "#present" for the leaf of the document itself */
 static void
 child_name(const char *path, bool is_map, bool is_key, char *name)
 {
@@ -134,7 +134,7 @@ child_name(const char *path, bool is_map, bool is_key, char *name)
 	else if (f)
 		strlcpy(name, f + 3, NAMEDATALEN);
 	else
-		name[0] = '\0';
+		strlcpy(name, strstr(path, "#present") ? "#present" : "", NAMEDATALEN);	/* option document_present: the leaf of a jsonb document, true or NULL */
 }
 
 /* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */
@@ -171,8 +171,7 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 		l->lossy |= def->store == SIFT_COLS_VAR;
 		if (def->parent < 0)
 			l->path = path_below(def->path, att);
-		else
-			child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
+		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
 	}
 }
 

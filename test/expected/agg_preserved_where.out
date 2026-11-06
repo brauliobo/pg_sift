@@ -13,8 +13,8 @@ SELECT i, '2026-01-01'::date + (i % 15), CASE WHEN i % 17 = 0 THEN now() END,
             ELSE jsonb_build_object('a_x', i % 10, 'a_y', i % 7, 'b_x', i % 5, 'c', (i * 3) % 11) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, deleted_at, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
+NOTICE:  sift_col index "facts_col": 2 automatic choices (document_present, track_changes)
+DETAIL:  document_present = metrics; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;

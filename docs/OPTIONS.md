@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 122 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 123 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 14 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
@@ -338,6 +338,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.7:** unchanged
 - **Advice:** Leave it. CREATE INDEX keeps the lengths of every array column and says so; array_lengths = off drops them (ALTER INDEX .. SET (array_lengths = off), then REINDEX).
 - **Sources:** benchmark `test:col_array_lengths`
+
+#### sift_col(document_present)
+
+`sift_col` · default · since 4.2 · default auto
+
+- **What it does:** a boolean column kept next to the paths of each jsonb column, NULL where the document is SQL NULL, for the planner to tell a NULL document from one without the declared paths (the next commit reads it)
+- **Gain:** no measured number yet
+- **Impact:** index size: 1,000,000 rows, 20 key groups, four paths, no NULL document: 5,095,424 to 5,398,528 bytes (+5.9%; 61 units against 58), of which 64,000 bytes of pre-aggregates (384,912 to 448,912); the chunks of the column are 928 bytes; after the merge of 1,250,000 rows with 2% NULL documents 21,454,848 to 21,536,768 bytes (+0.4%); build, merge and writes: CREATE INDEX +3.7% instructions (10,297 M to 10,681 M; 1,000,000 rows), insert of 1,000,000 rows +0.8% (30,137 M to 30,386 M), promotion +12.0% (1,154 M to 1,292 M), merge +6.1% (6,627 M to 7,028 M); cycles inside the noise (4,542 M against 4,378 M for the build); one backend, no workers; other: one boolean column for each jsonb column: 928 bytes of chunks for 1,000,000 rows, +5.9% of a freshly built index through the layout of its units and the pre-aggregates, +0.4% after a merge; a build, merge or promotion writes one more column for each jsonb column; after a change the table takes no write until the REINDEX
+- **When:** A jsonb column of a sift_col index with paths. The index keeps the column; the planner reads it from the next commit on.
+- **Default:** auto — Automatic: without the column the index cannot tell a NULL document from a document without the declared paths; the column costs 928 bytes of chunks for 1,000,000 rows without NULL documents; the NOTICE at CREATE INDEX names the columns and the off switch.
+- **Turn off:** ALTER INDEX .. SET (document_present = off), then REINDEX (or document_present = off on CREATE INDEX): the index has no leaf for the document, as before 4.2, and those forms read the table. No column format minor: the leaf is an ordinary boolean leaf of the schema; a library before 4.2 refuses the index with the message to REINDEX.
+- **Upgrade from 3.7:** An index built before is read as before: it has no leaf, so those forms read the table, and it needs no REINDEX; REINDEX (or a new index) writes the leaf. A library before 4.2 reads an index with the leaf as of another layout and says REINDEX.
+- **Advice:** Leave it. CREATE INDEX keeps the presence of the documents of every jsonb column and says so; document_present = off drops it (ALTER INDEX .. SET (document_present = off), then REINDEX).
+- **Sources:** benchmark `test:col_document_present`
 
 #### sift_col(rollup_dims)
 
@@ -2571,11 +2585,12 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_case_filter`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
+Defaults changed: sift.col_leaf_cache_kb, sift(merge_fanin) since 3.7; new: `sift.agg_probe_rewrite`, `sift.agg_case_filter`, `sift.agg_probe_direct`, `sift.agg_float_step`, `sift.col_build_key_ranges`, `sift.col_auto_merge_pass_mb`, `sift_col(document_present)`, `sift_col(key_order)`, `sift_col(order_layout)`, `sift_col(track_changes)`, `sift.eval_methods`.
 
 | Option | 3.7 | 4.2 | Column format | What a 3.7 user gets after the update |
 |---|---|---|---|---|
 | `sift(merge_fanin)` | 8 | 4 |  | After ALTER EXTENSION UPDATE an index that did not set merge_fanin merges at 4 segments of a size tier from its next merge (8 in 3.7), so it keeps fewer segments and writes more while it ingests; no REINDEX. An index that set the option keeps its value; ALTER INDEX .. SET (merge_fanin = 8) keeps the old policy. |
+| `sift_col(document_present)` | new | auto |  | An index built before is read as before: it has no leaf, so those forms read the table, and it needs no REINDEX; REINDEX (or a new index) writes the leaf. A library before 4.2 reads an index with the leaf as of another layout and says REINDEX. |
 | `sift_col(key_order)` | new | '' |  | unchanged: an index of 3.7 keeps its options; the option writes no column format of its own, the segments take the format of the options it stands for, and REINDEX writes them |
 | `sift_col(order_layout)` | new | '' | minor 41, unreadable by 3.7 | unchanged: an index of 3.7 keeps its whole orders and is read as before. The segments of an index that a promotion, merge or REINDEX writes after the update keep a chunk compact where that is a fifth smaller and has no run of 8 equal keys, which makes them column format 41: 3.7 and older refuse it, and SET sift.col_format_minor = 14 or order_layout = 'whole' and REINDEX writes what they read. |
 | `sift_col(track_changes)` | new | 'auto' | minor 43, unreadable by 3.7 | an index of 3.7 or earlier is not changed by ALTER EXTENSION UPDATE: it keeps its options, has no triggers and stays without a key until REINDEX INDEX i (the empty option is auto, which the build resolves; ALTER INDEX i SET (track_changes = '<key column>') installs the triggers and the baseline at once, and the reads check the heap for the rows written before it until the REINDEX); a new or reindexed index with a primary key writes column format minor 43, which only 4.0 and later read (sift.col_format_minor below 15 leaves it off with the NOTICE); the triggers are internal, so pg_dump does not write them and a restore creates them with the index; a pg_dump of such an index has WITH (track_changes=id, point_tid_columns=id), which a library before 4.0 refuses to restore |
