@@ -153,7 +153,7 @@ sift_store_init_meta(SiftWriteTarget *wt, const SiftOptions *opts, uint32 analyz
 	sift_store_init_meta_ex(wt, (float4) opts->k1, (float4) opts->b, analyzer_hash, 0);
 	strlcpy(wt->meta.analyzer_config, analyzer_config, sizeof(wt->meta.analyzer_config));
 	if (analyzer_config[0])
-		wt->meta.format_minor = SIFT_FORMAT_MINOR;
+		wt->meta.format_minor = SIFT_FORMAT_MINOR_CONFIG;
 }
 
 /* The blocks taken from the store, in the order of the target: adjacent runs are one */

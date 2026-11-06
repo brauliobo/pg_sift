@@ -70,9 +70,9 @@ typedef struct SiftWbufDoc
 typedef struct SiftWbufReader SiftWbufReader;
 
 /* false: the page's docs cannot match (its bloom rules them out) */
-typedef bool (*SiftWbufPageFilter) (void *arg, const uint64 *bloom);
+typedef bool (*SiftWbufPageFilter) (void *arg, const uint64 *bloom, int nwords);
 
-extern bool sift_wbuf_bloom_has(const uint64 *bloom, uint32 hash);
+extern bool sift_wbuf_bloom_has(const uint64 *bloom, int nwords, uint32 hash);
 
 /* A search read the documents of the pages the reader loaded: what the promotion of an open buffer is weighed against (bm25/maint.c) */
 extern void sift_wbuf_note_walked(const SiftWbufReader *r);

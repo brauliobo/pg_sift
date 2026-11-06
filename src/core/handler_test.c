@@ -104,6 +104,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_no_track",
 							 "Testing: the statement triggers of track_changes write no tombstone (a mutant of the tracking).",
 							 NULL, &sift_test_no_track, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_wbuf_narrow",
+							 "Testing: the write buffers of a BM25 index are opened in format 0, with the 256-bit bloom in the page header, as before SIFT_WBUF_FORMAT_WIDE.",
+							 NULL, &sift_test_wbuf_narrow, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_roots",
 							 "Testing: sift_col writes as before the string roots were flagged: a document that is a string is a missing key in every column and no segment says otherwise (SIFT_SEG_ROOTS).",
 							 NULL, &sift_test_no_roots, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

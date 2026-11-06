@@ -19,10 +19,13 @@
  * 1.4: segments of segment format 4 (below) in a BM25 index
  * 1.5: segments of segment format 5 (below) in a BM25 index, or a metapage that names the text search configuration of the stemmer: an
  *      index with either is refused by a 3.7 library with this format, not read as damaged
+ * 1.6: write buffers of buffer format 6 (SIFT_WBUF_FORMAT_WIDE, below) in a BM25 index: an older library refuses the index instead of reading a buffer page
+ *      with a header longer than it knows
  * SIFT_FORMAT_MINOR is what this build reads; a metapage starts at SIFT_FORMAT_MINOR_BASE, so that an index or table with neither is still
  * read by the 3.0 library (a sift_col index is never raised: its segment formats are the column engine's own, col/col.h)
  */
-#define SIFT_FORMAT_MINOR		5
+#define SIFT_FORMAT_MINOR		6
+#define SIFT_FORMAT_MINOR_CONFIG	5	/* what a metapage that names the text search configuration of the stemmer needs */
 #define SIFT_FORMAT_MINOR_VERS	3	/* what a sift_table with unfrozen rows needs: unchanged by 1.4 */
 #define SIFT_FORMAT_MINOR_BASE	2
 
@@ -36,6 +39,13 @@
  * is coded in blocks of SIFT_POS_EVERY postings (bm25/posblk.c). 5: the values of the INCLUDE columns of the index, a record per SB after the
  * docmap records (bm25/attr.c); a segment of an index without INCLUDE columns is written as 4.
  */
+/*
+ * The format of the write buffer of a BM25 index (the format of its directory entry; the lane of the buffer is not a segment). 0: pages with the 256-bit bloom of term hashes in
+ * their header (SiftWbufPageHeaderData), which a page of 900 terms and more fills, so that a term in no document of the buffer still reads every page. 6: the header is followed
+ * by a bloom of 8,192 bits (SiftWbufWideHeaderData), 4% false positives at 900 terms. A buffer keeps the format it was opened with; the pages of a buffer of format 0 are read as before.
+ */
+#define SIFT_WBUF_FORMAT_WIDE	6
+
 #define SIFT_SEGFMT_RANKBITS	1
 #define SIFT_SEGFMT_LIVEROWS	2
 #define SIFT_SEGFMT_PACKED		3

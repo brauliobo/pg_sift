@@ -71,15 +71,15 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* (index regclass) -> (walked, ndocs, due): the documents queries walked in the open write buffer of a sift index, the documents it holds and whether their reads have paid for its promotion */
+/* (index regclass) -> (walked, ndocs, due, format): the documents queries walked in the open write buffer of a sift index, the documents it holds and whether their reads have paid for its promotion, and the format of the buffer */
 Datum
 sift_test_wbuf_reads(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	tupdesc;
-	Datum		values[3] = {0, 0, 0};
-	bool		nulls[3] = {false};
+	Datum		values[4] = {0, 0, 0, 0};
+	bool		nulls[4] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
@@ -94,6 +94,7 @@ sift_test_wbuf_reads(PG_FUNCTION_ARGS)
 			sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
 			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
 			values[1] = Int64GetDatum(ndocs);
+			values[3] = Int32GetDatum(snap->segs[i].format);
 		}
 	values[2] = BoolGetDatum(sift_maint_wbuf_read_due(index));
 	index_close(index, AccessShareLock);

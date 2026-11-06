@@ -325,17 +325,22 @@ include() {
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
 	[[ $(psql_new -c "$ids ($(printf "$want" inc)) x") == "$OLD_MD5" ]] && pass "this tree reads the index of the older library with its answers" || fail "this tree reads the index of the older library with its answers"
-	psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
-	psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	# these two check the segment formats the older library reads: the write buffers they open are format 0 (a buffer of format 6, 4.2, makes the index 1.6, checked with w6_i below)
+	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
+	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
+	psql_new -c "CREATE TABLE w6 AS SELECT g AS id, 'common dim_a' || g % 7 AS body FROM generate_series(1, 2000) g" -c "CREATE INDEX w6_i ON w6 USING sift (body)" -c "INSERT INTO w6 SELECT g, 'common w6' FROM generate_series(2001, 2100) g" >/dev/null
 	uc=$(PGHOST=$SIFT_TMP/sock PGPORT=$SIFT_PORT PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --to 3.7 postgres 2>&1)
 	grep -qE '^blocker +inc2_i +index +format 1\.5' <<<"$uc" && pass "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns (format 1.5) as a blocker" || fail "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns as a blocker ($uc)"
 	grep -qE '^ok +inc_i +index +format 1\.4' <<<"$uc" && pass "... and the index without them, written to by this tree, as ok (format 1.4)" || fail "... and the index without them, written to by this tree, as ok ($uc)"
+	grep -qE '^blocker +w6_i +index +format 1\.6' <<<"$uc" && pass "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker" || fail "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker ($uc)"
 	[[ $(psql_new -c "$ids ($(printf "$want" inc2)) x") == "$OLD_MD5" ]] && pass "the index with INCLUDE columns answers as the older library's" || fail "the index with INCLUDE columns answers as the older library's"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
 	FORMAT_ERROR='on-disk format 1\.5'
 	expect_refused "the older library refuses an index with INCLUDE columns with the format error" "SET enable_seqscan = off; SELECT count(*) FROM inc2 WHERE body @@> 'dim_a3'"
 	expect_rows "... and reads the index it wrote, with the rows of this tree, as the heap" "$ids (SELECT id FROM inc WHERE id <= 30000 AND body ~ 'dim_a3' AND body ~ 'w7' AND category_id < 60) x" "$OLD_MD5"
+	FORMAT_ERROR='on-disk format 1\.6'
+	expect_refused "the older library refuses an index whose write buffer is format 6 with the format error" "SET enable_seqscan = off; SELECT count(*) FROM w6 WHERE body @@> 'dim_a3'"
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
 	psql_new -c "DROP INDEX inc2_i" -c "CREATE INDEX inc2_i ON inc2 USING sift (body)" >/dev/null

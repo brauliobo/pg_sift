@@ -26,6 +26,7 @@ Format major 1. The minor is what a build must read to understand an index or ta
 | 1.3 | BM25: segments of segment format 3. `sift_table`: a column group with unfrozen rows (`SIFT_SEG_VERS`) | the first such segment |
 | 1.4 | BM25: segments of segment format 4 (the position stream in blocks). A `sift_table` stays at 1.3 | the first such segment |
 | 1.5 | BM25: segments of segment format 5 (the values of the INCLUDE columns). A `sift_table` stays at 1.3 | the first such segment, of an index that names INCLUDE columns |
+| 1.6 | BM25: a write buffer of buffer format 6 (`SIFT_WBUF_FORMAT_WIDE`, below). A `sift_table` stays at 1.3 | the first such buffer: the next insert into a BM25 index after the upgrade opens one |
 
 `sift_col` indexes are never raised: their segment formats are the column engine's (section 4).
 
@@ -33,6 +34,8 @@ Metapage flags: `SIFT_COL_META_FLAG` 0x00010000 (a `sift_col` index), `SIFT_TBL_
 failure count (`SIFT_META_FAILURES_MASK`).
 
 ## 3. BM25 segments (`SiftSegEntry.format`, access method `sift`)
+
+The write buffer of a BM25 index is a lane chain whose directory entry has a format of its own (not a segment format): 0, pages with the 256-bit bloom of term hashes in the header (`SiftWbufPageHeaderData`), which a page of 900 terms and more fills, so that a term in no document of the buffer still reads every page; 6 (`SIFT_WBUF_FORMAT_WIDE`, 4.2), the same header followed by a bloom of 8,192 bits (`SiftWbufWideHeaderData`, 2 probes: bits 0..12 and 13..25 of the term hash; 4% false positives at 900 terms). A buffer keeps the format it was opened with, and a library of 4.2 reads both, so an upgrade has no manual step: the buffer open at the upgrade is read as it is and the one opened after it is format 6. The first buffer of format 6 raises the metapage to 1.6, which a library of 4.1 or older refuses (`check_meta`: it reads formats 1.0 to 1.5, REINDEX or install the release that wrote the index); nothing lowers it.
 
 | format | name | written by |
 |---|---|---|

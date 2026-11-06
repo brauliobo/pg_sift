@@ -98,6 +98,7 @@ typedef enum SiftSegKind
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
+extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
 extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
 #define SIFT_SEG_ROOTS_NOW (sift_test_no_roots ? 0 : SIFT_SEG_ROOTS)
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
@@ -259,8 +260,17 @@ typedef struct SiftWbufPageHeaderData
 	uint64		bloom[4];		/* 256-bit bloom of term hashes, 2 probes */
 } SiftWbufPageHeaderData;
 
+/* A page of a buffer of format SIFT_WBUF_FORMAT_WIDE: the header above (its small bloom is kept) and room for the wide bloom, 2 probes, which is filled once, when the page is full (a log record of the changes of the head of every append would grow with it), then the records */
+#define SIFT_WBUF_WIDE_WORDS	128
+typedef struct SiftWbufWideHeaderData
+{
+	SiftWbufPageHeaderData base;
+	uint64		wide[SIFT_WBUF_WIDE_WORDS];	/* 8,192-bit bloom of term hashes */
+} SiftWbufWideHeaderData;
+
 #define SIFT_WBUFPAGE_SEALED	0x0001
 #define SIFT_WBUFPAGE_SPANS	0x0002
+#define SIFT_WBUFPAGE_WIDE	0x0004	/* the wide bloom of the page is filled (set when the page is full: the pages being appended to have the small one) */
 
 #define SIFT_WBUF_DELETED	0x0001
 #define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */

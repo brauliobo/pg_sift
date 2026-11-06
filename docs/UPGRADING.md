@@ -106,6 +106,8 @@ are the same as before, and writes, `VACUUM` and merges work on what the old clu
 
 ## 4. An older release
 
+**A BM25 (`sift`) index written by 4.2 is not readable by 4.1 or older once it has taken an insert.** 4.2 opens the write buffer of a BM25 index in buffer format 6 (a bloom of 8,192 bits for each full page, [FORMATS.md](FORMATS.md)); the first such buffer raises the metapage of the index to minor 1.6 and nothing lowers it. A 4.1 or older library refuses the index with the format error and a `REINDEX` hint (`reads formats 1.0 to 1.5`). Upgrading takes no step: the buffer that is open at the upgrade keeps format 0 and is read as it is. To go back, install the older release and `REINDEX` the index there (the old library does not read the index, but `REINDEX` builds a new one from the table); a `sift_col` index or a `sift_table` is not affected.
+
 **A database written by the 3.3 library with its default settings can no longer be read by a 3.2 library.** An older library refuses a metapage minor or a column format it does not know, with a `REINDEX` hint
 (`old_lib_refusal`), and 3.3 writes at `sift.col_format_minor = 15` by default: a `sift_col` index created or rewritten after the update carries sections 3.2 does not know, and so does a `sift_table` with a date or timestamp
 column. Only what was written with the settings below stays at minor 4 or 6, the highest a 3.2 library reads (a segment is stamped with the lowest minor that describes its content):

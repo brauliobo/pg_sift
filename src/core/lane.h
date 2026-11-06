@@ -118,10 +118,13 @@ typedef struct SiftLaneIter
 	int			lane;			/* next lane to start */
 	BlockNumber nextblk;		/* next page of the current lane */
 	BlockNumber blk;			/* the page last copied */
+	bool		(*skip) (void *arg, Page src);	/* judged on the page in the buffer: true copies only its head (skipped is set) */
+	void	   *skip_arg;
+	bool		skipped;
 } SiftLaneIter;
 
 extern void sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry);
-/* Copies the next page of the segment to dst; false at the end */
+/* Copies the next page of the segment to dst (only the head of one that it->skip refuses); false at the end */
 extern bool sift_lane_iter_next(SiftLaneIter *it, Page dst, Size hdrsize);
 
 /*

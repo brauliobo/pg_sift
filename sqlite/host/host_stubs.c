@@ -168,7 +168,7 @@ sift_cseg_bisect_find(SiftColSegment *seg, int col)
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
 
 bool
-sift_wbuf_bloom_has(const uint64 *bloom, uint32 hash)
+sift_wbuf_bloom_has(const uint64 *bloom, int nwords, uint32 hash)
 {
 	return false;
 }
@@ -184,6 +184,11 @@ bool
 sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
 {
 	return false;
+}
+
+void
+sift_wbuf_note_walked(const SiftWbufReader *r)
+{
 }
 
 void

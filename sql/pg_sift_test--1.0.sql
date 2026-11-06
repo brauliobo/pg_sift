@@ -214,7 +214,7 @@ CREATE FUNCTION sift._test_col_wbuf_reads(index regclass, OUT decoded int8, OUT 
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_reads' LANGUAGE C STRICT;
 
 -- the documents queries walked in the open write buffer of a sift (BM25) index, the documents it holds, and whether their promotion is due (sift_maint_wbuf_read_due)
-CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool) RETURNS record
+CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool, OUT format int4) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_wbuf_reads' LANGUAGE C STRICT;
 
 -- Column source (src/col/test/test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a

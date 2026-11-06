@@ -12,9 +12,9 @@ CREATE INDEX wr_body ON wr USING sift (body);
 INSERT INTO wr SELECT i, 'alpha ' || (ARRAY['beta', 'gamma', 'delta'])[1 + i % 3] || ' ' || i FROM generate_series(201, 3200) i;
 -- written, never read: 3,000 documents in the buffer, nothing walked, nothing due
 SELECT * FROM sift._test_wbuf_reads('wr_body');
- walked | ndocs | due 
---------+-------+-----
-      0 |  3000 | f
+ walked | ndocs | due | format 
+--------+-------+-----+--------
+      0 |  3000 | f   |      6
 (1 row)
 
 -- every query walks all 3,000 documents ('alpha' is in each); half of 55,000 x 3,000 cycles is 330,000 walks of 250 cycles: 110 queries
@@ -74,9 +74,9 @@ SELECT sift.promote('wr_body');
 (1 row)
 
 SELECT * FROM sift._test_wbuf_reads('wr_body');
- walked | ndocs | due 
---------+-------+-----
-      0 |     0 | f
+ walked | ndocs | due | format 
+--------+-------+-----+--------
+      0 |     0 | f   |      6
 (1 row)
 
 SELECT count(*) FROM wr WHERE body @@> 'alpha delta';

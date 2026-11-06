@@ -506,6 +506,8 @@ sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry)
 
 	it->index = index;
 	it->entry = entry;
+	it->skip = NULL;
+	it->skipped = false;
 	it->lane = 0;
 	it->nextblk = InvalidBlockNumber;
 	sift_lane_read_header(index, entry, &hdr);
@@ -522,7 +524,20 @@ sift_lane_iter_next(SiftLaneIter *it, Page dst, Size hdrsize)
 		blk = it->head[it->lane++];
 	if (!BlockNumberIsValid(blk))
 		return false;
-	sift_lane_copy_page(it->index, it->entry, blk, dst, hdrsize);
+	if (it->skip)
+	{
+		Buffer		buf = sift_lane_read_locked(it->index, blk, BUFFER_LOCK_SHARE);
+		Page		src = BufferGetPage(buf);
+
+		sift_store_check_page(it->index, buf, SIFT_PT_WBUFDATA, it->entry->gen);
+		it->skipped = it->skip(it->skip_arg, src);
+		memcpy(dst, src, it->skipped ? SIFT_PAGE_DATA_OFFSET + hdrsize : BLCKSZ);
+		UnlockReleaseBuffer(buf);
+		if (SiftPageGetUsed(dst) < hdrsize)
+			SIFT_CORRUPT(it->index, "Write buffer block %u of segment %llu is truncated.", blk, (unsigned long long) it->entry->gen);
+	}
+	else
+		sift_lane_copy_page(it->index, it->entry, blk, dst, hdrsize);
 	it->blk = blk;
 	it->nextblk = SiftLaneHead(dst)->next;
 	return true;

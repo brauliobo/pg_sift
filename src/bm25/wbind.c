@@ -19,7 +19,7 @@
  */
 
 static bool
-node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
+node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom, int nwords)
 {
 	int			npos = 0;
 
@@ -28,7 +28,7 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 		case EN_NOTHING:
 			return false;
 		case EN_LEAF:
-			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[n->leaf].hash);
+			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[n->leaf].hash);
 		case EN_NOT:
 			return true;
 		case EN_AND:
@@ -36,13 +36,13 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 				if (n->child[i]->kind != EN_NOT)
 				{
 					npos++;
-					if (!node_may_match(p, n->child[i], bloom))
+					if (!node_may_match(p, n->child[i], bloom, nwords))
 						return false;
 				}
 			return npos > 0;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
-				if (node_may_match(p, n->child[i], bloom))
+				if (node_may_match(p, n->child[i], bloom, nwords))
 					return true;
 			return false;
 	}
@@ -50,21 +50,21 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom)
 }
 
 static bool
-wbuf_page_ok(void *arg, const uint64 *bloom)
+wbuf_page_ok(void *arg, const uint64 *bloom, int nwords)
 {
 	SiftPlan   *p = arg;
 
-	return node_may_match(p, p->root, bloom);
+	return node_may_match(p, p->root, bloom, nwords);
 }
 
 /* Pages with a term of a scoring leaf: every doc that has one counts in the document frequencies */
 static bool
-wbuf_leaf_ok(void *arg, const uint64 *bloom)
+wbuf_leaf_ok(void *arg, const uint64 *bloom, int nwords)
 {
 	const SiftPlan *p = arg;
 
 	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, p->leaves[i].hash)))
+		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[i].hash)))
 			return true;
 	return false;
 }
