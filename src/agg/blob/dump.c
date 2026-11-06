@@ -169,12 +169,6 @@ renumber(AggExec *ex, uint32 *ids, uint32 n, uint32 nold, uint32 *nused)
 	return old;
 }
 
-static uint32
-group_key_id(AggExec *ex, int j, uint32 g)
-{
-	return ex->hash ? ex->hkey[(Size) g * ex->spec->nkeys + j] : (g / ex->ks[j].mult) % ex->ks[j].cap;
-}
-
 /* the values of the ids ids[0..n) of key j, and the ids renumbered from 1 in order of use (0 stays 0): the leader gives them its own */
 static void
 blob_key_table(AggExec *ex, int j, uint32 *ids, uint32 n, StringInfo b)
@@ -210,7 +204,7 @@ blob_key(AggExec *ex, int j, const uint32 *gl, uint32 ng, StringInfo b)
 	uint32	   *ids = palloc(Max(ng, 1) * sizeof(uint32));
 
 	for (uint32 r = 0; r < ng; r++)
-		ids[r] = group_key_id(ex, j, gl[r]);
+		ids[r] = key_id(ex, j, gl[r]);
 	blob_key_table(ex, j, ids, ng, b);
 	bw_put(b, ids, (Size) ng * sizeof(uint32));
 	pfree(ids);
@@ -281,7 +275,7 @@ blob_group_hashes(AggExec *ex, const uint32 *gl, uint32 ng, uint32 *h)
 
 		for (uint32 r = 0; r < ng; r++)
 		{
-			uint32		id = group_key_id(ex, j, gl[r]),
+			uint32		id = key_id(ex, j, gl[r]),
 						kh = 0;
 
 			if (id == 0)
