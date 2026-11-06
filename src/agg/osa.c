@@ -133,33 +133,28 @@ osa_new(AggExec *ex, int ai)
 static void
 osa_put(Osa *o, uint32 sid, uint64 key, uint64 cnt)
 {
-	TupleTableSlot *t = o->put;
-
-	for (; cnt > 0; cnt--)
+	while (cnt > 0)
 	{
-		ExecClearTuple(t);
-		t->tts_values[0] = Int32GetDatum((int32) sid);
-		t->tts_values[1] = Int64GetDatum((int64) (key ^ OSA_SIGN));
-		t->tts_isnull[0] = t->tts_isnull[1] = false;
-		ExecStoreVirtualTuple(t);
-		tuplesort_puttupleslot(o->sort, t);
+		uint32		take = (uint32) Min(cnt, (uint64) UINT32_MAX);
+
+		osa_runs_put(o, sid, key, take);
+		cnt -= take;
 	}
 }
 
-/* the histogram does not fit work_mem: its pairs, and from now on every value, go through a tuplesort */
+/* the histogram does not fit work_mem: its pairs, dense, are the first run, and from now on every value is appended to the run being made */
 static void
 osa_spill(AggExec *ex, Osa *o)
 {
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+	if (!o->flat)
+	{
+		uint64		w = 0;
 
-	agg_pair_sort(2, TUPLESORT_NONE, &o->sort, &o->put, &o->get);
-	MemoryContextSwitchTo(old);
-	for (uint64 i = 0; i < OSA_SPAN(o); i++)
-		if (o->slot[i].sid1)
-			osa_put(o, o->slot[i].sid1 - 1, o->slot[i].key, o->slot[i].cnt);
-	pfree(o->slot);
-	o->slot = NULL;
-	o->flat = false;
+		for (uint64 i = 0; i < o->cap; i++)
+			if (o->slot[i].sid1)
+				o->slot[w++] = o->slot[i];
+	}
+	osa_runs_begin(ex, o);
 	ex->n_osa_spilled++;
 }
 
@@ -233,7 +228,7 @@ osa_grow(AggExec *ex, Osa *o)
 static void
 osa_add(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 h)
 {
-	if (o->sort)
+	if (o->runs)
 	{
 		osa_put(o, sid, key, 1);
 		return;
@@ -275,7 +270,7 @@ osa_add_n(AggExec *ex, Osa *o, uint32 sid, uint64 key, uint64 cnt)
 		uint64		h;
 		uint32		take;
 
-		if (o->sort)
+		if (o->runs)
 		{
 			osa_put(o, sid, key, cnt);
 			return;
@@ -419,9 +414,9 @@ osa_sort(Osa *o)
 {
 	uint64		w = 0;
 
-	if (o->sort)
+	if (o->runs)
 	{
-		tuplesort_performsort(o->sort);
+		osa_runs_sort(o);
 		return;
 	}
 	for (uint64 i = 0; i < OSA_SPAN(o); i++)
@@ -435,17 +430,8 @@ osa_sort(Osa *o)
 bool
 osa_next(Osa *o, OsaRun *r)
 {
-	bool		isnull;
-
-	if (o->sort)
-	{
-		if (!tuplesort_gettupleslot(o->sort, true, false, o->get, NULL))
-			return false;
-		r->sid = DatumGetInt32(slot_getattr(o->get, 1, &isnull));
-		r->key = (uint64) DatumGetInt64(slot_getattr(o->get, 2, &isnull)) ^ OSA_SIGN;
-		r->cnt = 1;
-		return true;
-	}
+	if (o->runs)
+		return osa_runs_next(o, r);
 	if (o->next >= o->n)
 		return false;
 	r->sid = o->slot[o->next].sid1 - 1;
@@ -776,11 +762,7 @@ osa_finish(AggExec *ex, int owner)
 						pick[ai].key[k] = r.key;
 		pos += r.cnt;
 	}
-	if (o->sort)
-	{
-		tuplesort_end(o->sort);
-		o->sort = NULL;
-	}
+	osa_runs_end(o);
 }
 
 void

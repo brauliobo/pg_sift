@@ -40,9 +40,7 @@ typedef struct Osa
 	bool		noflat;
 	uint32		nsid;
 	uint64		next;			/* read position in the compacted histogram */
-	Tuplesortstate *sort;
-	TupleTableSlot *put;
-	TupleTableSlot *get;
+	struct OsaRuns *runs;		/* spilled: sorted runs of pairs in a temporary file (osa_runs.c); slot is NULL */
 } Osa;
 
 /* the slots to walk: the whole hash, or the pairs appended to a flat array */
@@ -65,6 +63,13 @@ void osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel);
 void osa_sort(Osa *o);
 bool osa_next(Osa *o, OsaRun *r);
 void osa_finish_all(AggExec *ex);
+
+/* osa_runs.c */
+void osa_runs_begin(AggExec *ex, Osa *o);
+void osa_runs_put(Osa *o, uint32 sid, uint64 key, uint32 cnt);
+void osa_runs_sort(Osa *o);
+bool osa_runs_next(Osa *o, OsaRun *r);
+void osa_runs_end(Osa *o);
 
 #pragma GCC visibility pop
 

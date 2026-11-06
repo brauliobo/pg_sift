@@ -801,8 +801,8 @@ agg_end(CustomScanState *node)
 #endif
 
 	for (int i = 0; ex->osa && i < ex->spec->naggs; i++)
-		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
-			tuplesort_end(ex->osa[i]->sort);
+		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->runs)
+			osa_runs_end(ex->osa[i]);
 	gen_close(ex);
 	if (ex->done)
 		tuplestore_end(ex->done);

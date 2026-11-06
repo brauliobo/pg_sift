@@ -188,7 +188,7 @@ blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
 		if (own->i[g])
 			sid2g[own->i[g] - 1] = cidx[g];
 	initStringInfo(&rb);
-	if (o->sort)
+	if (o->runs)
 	{
 		osa_sort(o);
 		while (osa_next(o, &r))
@@ -198,8 +198,7 @@ blob_osa(AggExec *ex, int ai, const uint32 *cidx, uint32 n, StringInfo b)
 			appendBinaryStringInfo(&rb, (const char *) &rec, sizeof(rec));
 			hd[0]++;
 		}
-		tuplesort_end(o->sort);
-		o->sort = NULL;
+		osa_runs_end(o);
 	}
 	else
 		for (uint64 i = 0; i < OSA_SPAN(o); i++)
