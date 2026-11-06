@@ -7,42 +7,11 @@
 
 #include "col/gpu.h"
 #include "col/codec.h"
+#include "col/codec_int.h"
 #include "col/compress.h"
 #include "core/cmp.h"
 
-#define NHDR	16
 #define SIFT_CGPU_PAD	64		/* bytes after a decompressed node, as the codec leaves */
-#define RUP8(x)	(((uint64) (x) + 7) & ~(uint64) 7)
-
-static inline uint32
-rd32(const uint8 *p)
-{
-	uint32		x;
-
-	memcpy(&x, p, 4);
-	return x;
-}
-
-static inline int64
-rd64(const uint8 *p)
-{
-	int64		x;
-
-	memcpy(&x, p, 8);
-	return x;
-}
-
-/* 32-bit words of n values at width W in the vertical layout (the codec's sift_cc_words) */
-static uint64
-vwords(uint32 n, uint32 W)
-{
-	uint64		rows = ((uint64) n + 31) >> 5,
-				w = (rows / 32) * 32 * W;
-
-	if (rows % 32)
-		w += 32 * (((rows % 32) * W + 31) / 32);
-	return w;
-}
 
 static bool
 fit64(__int128 v, int64 *out)
@@ -59,49 +28,49 @@ leaf_node(const uint8 *blob, const uint8 *p, uint64 avail, uint32 n, int depth, 
 {
 	uint32		f1;
 
-	if (avail < NHDR || depth > SIFT_CC_MAXDEPTH)
+	if (avail < CC_NHDR || depth > SIFT_CC_MAXDEPTH)
 		return false;
-	f1 = rd32(p + 4);
+	f1 = get32(p + 4);
 	memset(lf, 0, sizeof(*lf));
 	lf->mul = 1;
 	switch (p[0])
 	{
 		case SIFT_CCN_CONST:
 			lf->kind = SIFT_CGL_CONST;
-			lf->base = rd64(p + 8);
-			*size = NHDR;
+			lf->base = get64(p + 8);
+			*size = CC_NHDR;
 			return true;
 		case SIFT_CCN_FORBIT:
 			lf->kind = SIFT_CGL_BIT;
 			lf->W = p[1];
 			if (lf->W < 1 || lf->W > 32)
 				return false;
-			lf->base = rd64(p + 8);
-			lf->nwords = (uint32) vwords(n, lf->W);
-			*size = NHDR + RUP8((uint64) lf->nwords * 4);
-			lf->woff = (uint32) (p - blob) + NHDR;
+			lf->base = get64(p + 8);
+			lf->nwords = (uint32) sift_cc_words(n, lf->W);
+			*size = CC_NHDR + CC_RUP8((uint64) lf->nwords * 4);
+			lf->woff = (uint32) (p - blob) + CC_NHDR;
 			return *size <= avail;
 		case SIFT_CCN_FORBYTE:
 			lf->kind = SIFT_CGL_BYTE;
 			lf->W = p[1];
 			if (lf->W != 1 && lf->W != 2 && lf->W != 4)
 				return false;
-			lf->base = rd64(p + 8);
+			lf->base = get64(p + 8);
 			lf->nwords = (uint32) (((uint64) n * lf->W + 3) / 4);
-			*size = NHDR + RUP8((uint64) n * lf->W);
-			lf->woff = (uint32) (p - blob) + NHDR;
+			*size = CC_NHDR + CC_RUP8((uint64) n * lf->W);
+			lf->woff = (uint32) (p - blob) + CC_NHDR;
 			return *size <= avail;
 		case SIFT_CCN_WRAP:
 			{
-				uint32		cl = rd32(p + 8);
+				uint32		cl = get32(p + 8);
 				uint64		isize;
 				uint8	   *buf;
 
-				*size = NHDR + RUP8(cl);
-				if (*size > avail || !sift_colz_available(p[1]) || f1 < NHDR || (f1 & 7) || f1 > (uint64) n * 9 + 4096 + 64)
+				*size = CC_NHDR + CC_RUP8((uint64) cl);
+				if (*size > avail || !sift_colz_available(p[1]) || f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) n * 9 + 4096 + 64)
 					return false;
 				buf = palloc(f1 + SIFT_CGPU_PAD);
-				if (!sift_colz_decompress(p[1], p + NHDR, cl, buf, f1) || !leaf_node(buf, buf, f1, n, depth + 1, lf, &isize) || isize != f1)
+				if (!sift_colz_decompress(p[1], p + CC_NHDR, cl, buf, f1) || !leaf_node(buf, buf, f1, n, depth + 1, lf, &isize) || isize != f1)
 				{
 					pfree(buf);
 					return false;
@@ -114,8 +83,8 @@ leaf_node(const uint8 *blob, const uint8 *p, uint64 avail, uint32 n, int depth, 
 			}
 		case SIFT_CCN_SCALE:
 			{
-				int64		sbase = rd64(p + 8),
-							mul = rd64(p + 16),
+				int64		sbase = get64(p + 8),
+							mul = get64(p + 16),
 							b,
 							m;
 				uint64		csize;
@@ -205,25 +174,25 @@ sift_cgpu_plan(const uint8 *blob, uint32 len, SiftCGpuPlan *p)
 				size;
 
 	memset(p, 0, sizeof(*p));
-	if (len < 24 + NHDR || blob[0] != SIFT_CC_MAGIC || blob[1] != SIFT_CC_VERSION || blob[2] != SIFT_CC_INT)
+	if (len < 24 + CC_NHDR || blob[0] != SIFT_CC_MAGIC || blob[1] != SIFT_CC_VERSION || blob[2] != SIFT_CC_INT)
 		return false;
-	p->n = rd32(blob + 4);
-	p->vmin = rd64(blob + 8);
-	p->vmax = rd64(blob + 16);
+	p->n = get32(blob + 4);
+	p->vmin = get64(blob + 8);
+	p->vmax = get64(blob + 16);
 	avail = len - 24;
 	if (p->n == 0 || p->n > SIFT_CC_MAXROWS)
 		return false;
 	if (root[0] != SIFT_CCN_DICT)
 		return leaf_node(blob, root, avail, p->n, 0, &p->leaf, &size);
 	{
-		uint32		d = rd32(root + 4),
-					dl = rd32(root + 8),
-					cl = rd32(root + 12);
+		uint32		d = get32(root + 4),
+					dl = get32(root + 8),
+					cl = get32(root + 12);
 		SiftCGpuLeaf dict;
 
-		if (d < 1 || d > SIFT_CGPU_DICT_MAX || avail < NHDR || (uint64) dl + cl > avail - NHDR)
+		if (d < 1 || d > SIFT_CGPU_DICT_MAX || avail < CC_NHDR || (uint64) dl + cl > avail - CC_NHDR)
 			return false;
-		if (!leaf_node(blob, root + NHDR, dl, d, 1, &dict, &size) || !leaf_node(blob, root + NHDR + dl, cl, p->n, 1, &p->leaf, &size))
+		if (!leaf_node(blob, root + CC_NHDR, dl, d, 1, &dict, &size) || !leaf_node(blob, root + CC_NHDR + dl, cl, p->n, 1, &p->leaf, &size))
 			return false;
 		p->d = d;
 		p->dval = palloc(d * sizeof(int64));
