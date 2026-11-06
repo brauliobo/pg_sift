@@ -1,4 +1,4 @@
--- A condition that wraps a column in coalesce, nullif, a boolean test, IS [NOT] DISTINCT FROM or an integer widening cast is run as tests of the column (agg/plan_prednorm.c)
+-- A condition that wraps a column in coalesce, nullif, IS [NOT] DISTINCT FROM or an integer widening cast is run as tests of the column (agg/plan_prednorm.c)
 -- instead of an expression evaluated for every row. Every statement runs with sift on and off and the rows are compared (md5 of the sorted rows); `native` says the plan
 -- lists no generic expression for the filter, `engaged` that the scan ran. The columns have NULLs, so the conditions are tested where a three-valued logic could differ: a NULL
 -- column, a NULL constant, a NOT around the condition (which keeps the expression as written), the conditions inside AND and OR, and the aggregate FILTER.
@@ -43,6 +43,7 @@ INSERT INTO shapes (name, cond) VALUES
   ('NOT not distinct',        $q$NOT (i IS NOT DISTINCT FROM 3)$q$),
   ('distinct under OR',       $q$i IS DISTINCT FROM 3 OR a > 20$q$),
   ('distinct text',           $q$t IS DISTINCT FROM 'a'$q$),
+  -- the tests of a boolean column stay lookups of its two values (native is false): the walk of a top-N tests those on the heap row (col_topn_gorder_filter), a comparison it does not
   ('bool column',             $q$b$q$),
   ('bool = true',             $q$b = true$q$),
   ('bool = false',            $q$b = false$q$),
@@ -113,18 +114,18 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(i
  NOT not distinct          | t      | t       | t
  distinct under OR         | t      | t       | t
  distinct text             | t      | t       | t
- bool column               | t      | t       | t
- bool = true               | t      | t       | t
- bool = false              | t      | t       | t
- NOT bool                  | t      | t       | t
- bool IS TRUE              | t      | t       | t
- bool IS NOT TRUE          | t      | t       | t
- bool IS FALSE             | t      | t       | t
- bool IS NOT FALSE         | t      | t       | t
- bool IS UNKNOWN           | t      | t       | t
- bool IS NOT UNKNOWN       | t      | t       | t
- NOT bool IS TRUE          | t      | t       | t
- bool AND                  | t      | t       | t
+ bool column               | f      | t       | t
+ bool = true               | f      | t       | t
+ bool = false              | f      | t       | t
+ NOT bool                  | f      | t       | t
+ bool IS TRUE              | f      | t       | t
+ bool IS NOT TRUE          | f      | t       | t
+ bool IS FALSE             | f      | t       | t
+ bool IS NOT FALSE         | f      | t       | t
+ bool IS UNKNOWN           | f      | t       | t
+ bool IS NOT UNKNOWN       | f      | t       | t
+ NOT bool IS TRUE          | f      | t       | t
+ bool AND                  | f      | t       | t
  NOT bool OR               | t      | t       | t
  widening =                | t      | t       | t
  widening <                | t      | t       | t
@@ -169,18 +170,18 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT count(*), sum(i) F
  NOT not distinct          | t      | t       | t
  distinct under OR         | t      | t       | t
  distinct text             | t      | t       | t
- bool column               | t      | t       | t
- bool = true               | t      | t       | t
- bool = false              | t      | t       | t
- NOT bool                  | t      | t       | t
- bool IS TRUE              | t      | t       | t
- bool IS NOT TRUE          | t      | t       | t
- bool IS FALSE             | t      | t       | t
- bool IS NOT FALSE         | t      | t       | t
- bool IS UNKNOWN           | t      | t       | t
- bool IS NOT UNKNOWN       | t      | t       | t
- NOT bool IS TRUE          | t      | t       | t
- bool AND                  | t      | t       | t
+ bool column               | f      | t       | t
+ bool = true               | f      | t       | t
+ bool = false              | f      | t       | t
+ NOT bool                  | f      | t       | t
+ bool IS TRUE              | f      | t       | t
+ bool IS NOT TRUE          | f      | t       | t
+ bool IS FALSE             | f      | t       | t
+ bool IS NOT FALSE         | f      | t       | t
+ bool IS UNKNOWN           | f      | t       | t
+ bool IS NOT UNKNOWN       | f      | t       | t
+ NOT bool IS TRUE          | f      | t       | t
+ bool AND                  | f      | t       | t
  NOT bool OR               | t      | t       | t
  widening =                | t      | t       | t
  widening <                | t      | t       | t

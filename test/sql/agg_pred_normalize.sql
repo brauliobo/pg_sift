@@ -1,4 +1,4 @@
--- A condition that wraps a column in coalesce, nullif, a boolean test, IS [NOT] DISTINCT FROM or an integer widening cast is run as tests of the column (agg/plan_prednorm.c)
+-- A condition that wraps a column in coalesce, nullif, IS [NOT] DISTINCT FROM or an integer widening cast is run as tests of the column (agg/plan_prednorm.c)
 -- instead of an expression evaluated for every row. Every statement runs with sift on and off and the rows are compared (md5 of the sorted rows); `native` says the plan
 -- lists no generic expression for the filter, `engaged` that the scan ran. The columns have NULLs, so the conditions are tested where a three-valued logic could differ: a NULL
 -- column, a NULL constant, a NOT around the condition (which keeps the expression as written), the conditions inside AND and OR, and the aggregate FILTER.
@@ -44,6 +44,7 @@ INSERT INTO shapes (name, cond) VALUES
   ('NOT not distinct',        $q$NOT (i IS NOT DISTINCT FROM 3)$q$),
   ('distinct under OR',       $q$i IS DISTINCT FROM 3 OR a > 20$q$),
   ('distinct text',           $q$t IS DISTINCT FROM 'a'$q$),
+  -- the tests of a boolean column stay lookups of its two values (native is false): the walk of a top-N tests those on the heap row (col_topn_gorder_filter), a comparison it does not
   ('bool column',             $q$b$q$),
   ('bool = true',             $q$b = true$q$),
   ('bool = false',            $q$b = false$q$),

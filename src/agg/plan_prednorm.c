@@ -1,14 +1,14 @@
 /*
  * agg/plan_prednorm.c - predicates written around a column as tests of the column
  *
- * A condition that wraps its column in coalesce, nullif, a boolean test or an integer widening cast reaches the scan as a generic expression, evaluated for
+ * A condition that wraps its column in coalesce, nullif, IS DISTINCT FROM or an integer widening cast reaches the scan as a generic expression, evaluated for
  * every row. Each of these is the same condition on the column itself, which the comparison kernels run. compile_pred asks for the rewritten condition first
  * and keeps the generic expression when that has no test form. A predicate keeps the rows it is true for, so every form below is exact for "true" (it
- * need not give NULL where the original does); a NOT of them is not rewritten, except NOT of the boolean column and of IS DISTINCT FROM, which never give NULL.
+ * need not give NULL where the original does); a NOT of them is not rewritten, except NOT of IS DISTINCT FROM, which never gives NULL. A boolean column's own tests are not rewritten:
+ * compile_lut runs them as lookups of the two values, which the walk of a top-N tests on the heap row, as it does not a comparison.
  *   coalesce(a, c) op k   (a op k) OR (a IS NULL AND c op k), c op k folded when both are constants
  *   nullif(a, c) op k     a op k AND a <> c            (c a non-NULL constant: a = c is not true for a NULL a, and a op k is not either)
  *   a IS [NOT] DISTINCT FROM k   a IS NULL OR a <> k;  a = k           (k NULL: a IS NOT NULL; a IS NULL)
- *   b, NOT b, b IS [NOT] TRUE|FALSE|UNKNOWN   b = true, b = false, with b IS NULL where the test is true for NULL
  *   a::int8 op k, a::int4 op k   the cross-type operator of a (int2, int4) and k (int4, int8)
  * Only a column of the table is rewritten (a path of a document keeps its own rules for the rows it reads again).
  */
@@ -62,12 +62,6 @@ op_with(OpExpr *op, int side, Node *x)
 
 	lfirst(list_nth_cell(o->args, side)) = x;
 	return (Node *) o;
-}
-
-static Node *
-bool_eq(Node *b, bool v)
-{
-	return op_on(BooleanEqualOperator, b, (Node *) makeBoolConst(v, false), InvalidOid);
 }
 
 static Node *
@@ -187,39 +181,11 @@ norm_distinct(AggCtx *c, OpExpr *d, bool negated)
 Node *
 pred_normalize(AggCtx *c, Node *n)
 {
-	Node	   *b;
-
 	if (IsA(n, OpExpr))
 		return norm_cmp(c, (OpExpr *) n);
 	if (IsA(n, DistinctExpr))
 		return norm_distinct(c, (OpExpr *) n, false);
-	if (IsA(n, Var) && exprType(n) == BOOLOID)
-		return column_of(c, n) != NULL ? bool_eq(n, true) : NULL;
-	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR)
-	{
-		Node	   *x = strip_relabel(linitial(((BoolExpr *) n)->args));
-
-		if (IsA(x, DistinctExpr))
-			return norm_distinct(c, (OpExpr *) x, true);
-		return IsA(x, Var) && exprType(x) == BOOLOID && column_of(c, x) != NULL ? bool_eq(x, false) : NULL;
-	}
-	if (IsA(n, BooleanTest) && (b = column_of(c, (Node *) ((BooleanTest *) n)->arg)) != NULL && exprType(b) == BOOLOID)
-	{
-		switch (((BooleanTest *) n)->booltesttype)
-		{
-			case IS_FALSE:
-				return bool_eq(b, false);
-			case IS_NOT_TRUE:
-				return either(bool_eq(b, false), null_test(b, IS_NULL));
-			case IS_NOT_FALSE:
-				return either(bool_eq(b, true), null_test(b, IS_NULL));
-			case IS_UNKNOWN:
-				return null_test(b, IS_NULL);
-			case IS_NOT_UNKNOWN:
-				return null_test(b, IS_NOT_NULL);
-			default:
-				return NULL;
-		}
-	}
+	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR && IsA(strip_relabel(linitial(((BoolExpr *) n)->args)), DistinctExpr))
+		return norm_distinct(c, (OpExpr *) strip_relabel(linitial(((BoolExpr *) n)->args)), true);
 	return NULL;
 }
