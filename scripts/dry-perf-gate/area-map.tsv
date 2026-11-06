@@ -1,6 +1,7 @@
 # Source path -> the case groups that exercise it. First matching row wins for a file; a commit's groups are the union over its changed files
 # (git diff --name-only base..candidate, plus the sources of every object file whose stripped bytes differ). `-` means no build input (no workload runs);
 # a file no row matches falls back to `smoke` (the smallest cross-area set). Groups are the `groups` of cases.py (dry-perf-gate.sh list).
+# A row whose pattern starts with `+` adds its groups to those of the first row that matches the file (the opt-in groups: conc, bgw).
 #
 # PATH_ERE<TAB>GROUPS
 ^(docs/|test/|scripts/|bench/|tools/|\.github/|packaging/|mariadb/|sqlite/|Formula/|README|CHANGELOG|CONTRIBUTING|SECURITY|NOTICE|LICENSE|META\.json|BUILD_ID|\.git)	-
@@ -31,3 +32,8 @@
 ^src/core/(reader|store|stream|span|lane|visibility|filter|eval|ops|freelist|relocate|tomb|live|writer|parbuild|jsonbuild)	smoke,table,col-read,bm25-read
 ^src/core/	smoke
 ^src/	smoke
+# --- opt-in groups, added to the rows above
+# conc: concurrent backends on state they share (shared dictionaries, leaf cache, lanes, tombstones, free list, visibility, scan and ring of sift_table)
++^src/(col/(dsmreg|dictshm|leafshm|rollup|wbuf/reads)|core/(lane|tomb|freelist|relocate|store|visibility|live)|table/(scan|load/)|bm25/space|agg/(verdict|back_host))	conc
+# bgw: the background maintenance workers (requests, backoff, the worker mains, what they run)
++^src/(bm25/(maint|space|step)|col/(maint/|vacreq|track|rollup)|table/vacuum|core/(writer|ops))	bgw

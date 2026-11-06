@@ -31,7 +31,10 @@ import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent / 'dry-perf-gate'     # cases.py, area-map.tsv, fixture-gate.sql, ctl.sh, selftest.sh, USAGE.md
+HERE = Path(__file__).resolve().parent / 'dry-perf-gate'     # cases.py, area-map.tsv, fixture-gate.sql, ctl.sh, selftest.sh, verdict.py, USAGE.md
+sys.dont_write_bytecode = True       # no __pycache__ in the repository
+sys.path.insert(0, str(HERE))      # python3 -I does not put the script's directory on the path
+from verdict import evidence_line, fmt_m, judge, report, spread, summarize  # noqa: E402
 W = Path(os.environ.get('GATE_ROOT', '/dev/shm/sift-perf-gate'))    # builds, data templates, run directories: tmpfs only
 STATE = Path(os.environ.get('GATE_STATE', str(Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'sift-perf-gate')))   # baselines and noise floors, kept out of git
 DEFAULT_SRC = os.environ.get('GATE_SRC', str(Path(__file__).resolve().parent.parent))
@@ -321,10 +324,10 @@ class Cluster:
         if (self.data / 'postmaster.pid').exists():
             sh(['pg_ctl', '-D', str(self.data), '-m', 'fast', '-w', 'stop'], env=self.env(), check=False)
 
-    def psql(self, sql=None, file=None, args=(), db=DB):
+    def psql(self, sql=None, file=None, args=(), db=DB, check=True):
         cmd = ['psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-d', db, *args]
         cmd += ['-f', str(file)] if file else ['-c', sql]
-        return sh(cmd, env=self.env())
+        return sh(cmd, env=self.env(), check=check)
 
 
 def manifest(d):
@@ -393,20 +396,22 @@ def area_rows():
     for line in (HERE / 'area-map.tsv').read_text().splitlines():
         if line and not line.startswith('#'):
             rx, groups = line.split('\t')
-            rows.append((re.compile(rx), [] if groups == '-' else groups.split(',')))
+            rows.append((re.compile(rx.lstrip('+')), [] if groups == '-' else groups.split(','), rx.startswith('+')))
     return rows
 
 
 def select_groups(paths):
     rows, groups, unmapped = area_rows(), set(), []
     for p in paths:
-        for rx, gs in rows:
-            if rx.search(p):
-                groups.update(gs)
-                break
-        else:
+        first = next((gs for rx, gs, extra in rows if not extra and rx.search(p)), None)
+        if first is None:
             groups.add('smoke')
             unmapped.append(p)
+        else:
+            groups.update(first)
+        for rx, gs, extra in rows:      # a `+` row adds its groups to those of the first row that matched
+            if extra and rx.search(p):
+                groups.update(gs)
     return groups, unmapped
 
 
@@ -429,7 +434,9 @@ def script(case, ctl, warm=True):
         L.append(semi(case.sql))
     if case.kind == 'evict':
         L.append('select count(*) from pg_buffercache_evict_all();')
-    L += ['\\o', 'select pg_stat_force_next_flush();', S_SQL % 'S0', '\\echo @@R', f'\\! {ctl} enable', '\\timing on', semi(case.sql), '\\timing off', f'\\! {ctl} disable',
+    L += ['\\o', 'select pg_stat_force_next_flush();', S_SQL % 'S0', '\\echo @@R', f'\\! {ctl} enable', '\\timing on', semi(case.sql), '\\timing off']
+    L += [semi(a) for a in case.after]
+    L += [f'\\! {ctl} disable',
           '\\echo @@E', 'select pg_stat_force_next_flush();', S_SQL % 'S1', '\\o /dev/null']
     L += [semi(p) for p in case.post]
     return '\n'.join(L) + '\n'
@@ -468,20 +475,20 @@ def wait_ready(perf, ctl, ack):
         os.close(fd_ack)
 
 
-def run_once(cl, case, rundir, tag):
+def under_perf(cl, rundir, work):
+    """work(env) with `perf stat` attached to the postmaster: the counters stay off until work enables them (ctl.sh, the fifo of GATE_CTL) and cover every process the postmaster
+    forks after the attach, the parallel and maintenance workers among them. Returns (what work returned, {event: count}, perf's stderr)."""
     ctl, ack, out = rundir / 'ctl', rundir / 'ack', rundir / 'perf.out'
     for f in (ctl, ack, out):
         f.unlink(missing_ok=True)
     os.mkfifo(ctl)
     os.mkfifo(ack)
-    spath = rundir / 'run.sql'
-    spath.write_text(script(case, HERE / 'ctl.sh'))
     env = {**cl.env(), 'GATE_CTL': str(ctl), 'GATE_ACK': str(ack)}
     perf = subprocess.Popen(['perf', 'stat', '-p', str(cl.pm), '-e', 'instructions:u,cycles:u', '-x,', '-o', str(out), '--control', f'fifo:{ctl},{ack}', '--delay=-1'],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
         wait_ready(perf, ctl, ack)
-        p = subprocess.run(['psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-d', DB, '-f', str(spath)], env=env, capture_output=True, text=True, timeout=600)
+        res = work(env)
     finally:
         perf.send_signal(signal.SIGINT)
         try:
@@ -489,6 +496,93 @@ def run_once(cl, case, rundir, tag):
         except subprocess.TimeoutExpired:
             perf.kill()
             perf.wait()
+    vals = {}
+    for line in out.read_text().splitlines():
+        f = line.split(',')
+        if len(f) > 2 and f[2].startswith(('instructions', 'cycles')):
+            vals[f[2].split(':')[0]] = int(f[0]) if f[0].isdigit() else None
+    return res, vals, perf.stderr.read().strip()[-150:]
+
+
+def run_once(cl, case, rundir, tag):
+    spath = rundir / 'run.sql'
+    spath.write_text(script(case, HERE / 'ctl.sh'))
+    try:
+        r = run_conc(cl, case, rundir, tag) if case.clients else run_psql(cl, spath, rundir, tag)
+    finally:
+        for stmt in case.cleanup:
+            cl.psql(stmt, check=False)
+    return r
+
+
+def conc_script(case, i, d):
+    """One of the clients of a concurrent case: warm-up, a barrier (ready.i, then the go file), the statement `loops` times, and a second barrier (done.i, then the stop file) so that no
+    backend exits or takes its statistics inside the window."""
+    wait = lambda f: f'\\! while [ ! -e {d}/{f} ]; do sleep 0.002; done'
+    L = ['\\set ON_ERROR_STOP on', BASE_SET, case.settings, '\\o /dev/null', semi(case.sql), '\\o', 'select pg_stat_force_next_flush();', S_SQL % 'S0', f'\\! touch {d}/ready.{i}',
+         wait('go'), '\\echo @@R'] + [semi(case.sql)] * case.loops + ['\\echo @@E', f'\\! touch {d}/done.{i}', wait('stop'), 'select pg_stat_force_next_flush();', S_SQL % 'S1']
+    return '\n'.join(L) + '\n'
+
+
+def await_files(d, names, procs, what, timeout=300):
+    deadline = time.time() + timeout
+    while not all((d / n).exists() for n in names):
+        if any(p.poll() not in (None, 0) for p in procs) or time.time() > deadline:
+            raise InfraError(f'concurrent clients: {what} did not arrive (exit codes {[p.poll() for p in procs]})')
+        time.sleep(0.002)
+
+
+def run_conc(cl, case, rundir, tag):
+    """`case.clients` psql backends run the statement at the same time; the window opens when all are warm and closes when all have finished."""
+    d = rundir / 'conc'
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir()
+    for i in range(case.clients):
+        (d / f'run.{i}.sql').write_text(conc_script(case, i, d))
+    ctl = HERE / 'ctl.sh'
+
+    def work(env):
+        # to files: a client whose output outgrows a pipe nobody reads before the end would block inside the window
+        procs = [subprocess.Popen(['psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-d', DB, '-f', str(d / f'run.{i}.sql')], env=env, stdout=open(d / f'out.{i}', 'w'),
+                                  stderr=open(d / f'err.{i}', 'w'), text=True) for i in range(case.clients)]
+        try:
+            await_files(d, [f'ready.{i}' for i in range(case.clients)], procs, 'the warm-up')
+            subprocess.run([str(ctl), 'enable'], env=env, check=True)
+            t0 = time.perf_counter()
+            (d / 'go').touch()
+            await_files(d, [f'done.{i}' for i in range(case.clients)], procs, 'the end of the loops')
+            ms = (time.perf_counter() - t0) * 1000
+            subprocess.run([str(ctl), 'disable'], env=env, check=True)
+            (d / 'stop').touch()
+            for p in procs:
+                p.wait(timeout=120)
+            return ms, [((d / f'out.{i}').read_text(), (d / f'err.{i}').read_text(), p.returncode) for i, p in enumerate(procs)]
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+    (ms, outs), vals, err = under_perf(cl, rundir, work)
+    r = dict(tag=tag, ok=all(o[2] == 0 for o in outs))
+    if not r['ok']:
+        r['error'] = next((o[1].strip().splitlines() or ['psql failed'])[-1][:200] for o in outs if o[2])
+        return r
+    rows, io0, io1 = [], [], []
+    for out, _, _ in outs:
+        io0.append(re.search(r'@@S0\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\S+)', out))
+        io1.append(re.search(r'@@S1\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\S+)', out))
+        rows += (out.split('@@R\n', 1)[1].split('@@E', 1)[0] if '@@R' in out else '').splitlines()
+    if not all(io0) or not all(io1) or vals.get('instructions') is None:
+        r.update(ok=False, error=f'no counters (perf={vals}) ' + err)
+        return r
+    d4 = [sum(int(b.group(k)) - int(a.group(k)) for a, b in zip(io0, io1)) for k in (1, 2, 3, 4)]
+    lsns = [lsn(m.group(5)) for m in io0], [lsn(m.group(5)) for m in io1]
+    r.update(instr=vals['instructions'], cycles=vals['cycles'], ms=ms, hits=d4[0], reads=d4[1], writes=d4[2], extends=d4[3], wal=wal_bytes(min(lsns[0]), max(lsns[1])),
+             rows=hashlib.md5('\n'.join(sorted(rows)).encode()).hexdigest()[:12], nrows=len(rows))
+    return r
+
+
+def run_psql(cl, spath, rundir, tag):
+    p, vals, err = under_perf(cl, rundir, lambda env: subprocess.run(['psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-d', DB, '-f', str(spath)], env=env, capture_output=True, text=True, timeout=600))
     r = dict(tag=tag, ok=p.returncode == 0)
     if p.returncode:
         r['error'] = (p.stderr.strip().splitlines() or ['psql failed'])[-1][:200]
@@ -500,13 +594,8 @@ def run_once(cl, case, rundir, tag):
     body = text.split('@@R\n', 1)[1].split('@@E', 1)[0] if '@@R' in text else ''
     ms = re.search(r'^Time: ([0-9.]+) ms', body, re.M)
     rows = sorted(l for l in body.splitlines() if not l.startswith('Time: '))
-    vals = {}
-    for line in out.read_text().splitlines():
-        f = line.split(',')
-        if len(f) > 2 and f[2].startswith(('instructions', 'cycles')):
-            vals[f[2].split(':')[0]] = int(f[0]) if f[0].isdigit() else None
     if not (s0 and s1 and ms) or vals.get('instructions') is None:
-        r.update(ok=False, error=f'no counters (s0={bool(s0)} s1={bool(s1)} time={bool(ms)} perf={vals}) ' + perf.stderr.read().strip()[-150:])
+        r.update(ok=False, error=f'no counters (s0={bool(s0)} s1={bool(s1)} time={bool(ms)} perf={vals}) ' + err)
         return r
     d = [int(b) - int(a) for a, b in zip(s0.groups()[:4], s1.groups()[:4])]
     r.update(instr=vals['instructions'], cycles=vals['cycles'], ms=float(ms.group(1)), hits=d[0], reads=d[1], writes=d[2], extends=d[3],
@@ -525,54 +614,6 @@ def plan_of(cl, case, rundir):
 
 # below this many cycles in the base the run-to-run spread of cycles (up to 16% in the self-compare of all cases) is larger than any layout effect: instructions decide
 MIN_CYCLES = 20_000_000
-
-
-# --- statistics and verdicts ---------------------------------------------------------------------------------------------------------------------------------
-def spread(xs):
-    return (max(xs) - min(xs)) / min(xs) * 100 if xs and min(xs) else 0.0
-
-
-def summarize(runs):
-    ok = [r for r in runs if r['ok']]
-    if not ok:
-        return dict(error=runs[-1].get('error', 'failed') if runs else 'no runs', n=0)
-    m = {k: min(r[k] for r in ok) for k in ('instr', 'cycles', 'ms')}
-    for k in ('hits', 'reads', 'writes', 'extends', 'wal'):
-        m[k] = min(r[k] for r in ok)
-        m[k + '_spread'] = max(r[k] for r in ok) - m[k]
-    m.update(instr_spread=spread([r['instr'] for r in ok]), cycles_spread=spread([r['cycles'] for r in ok]), n=len(ok),
-             rows=sorted({r['rows'] for r in ok}), nrows=ok[0]['nrows'])
-    return m
-
-
-def judge(b, c, cfg, noise, par=False):
-    """Verdict of one case from the summaries of the two sides: (status, [reasons], numbers)."""
-    why = []
-    if 'error' in b or 'error' in c:
-        return 'ERROR' if 'error' in b and 'error' in c else 'FAIL', [f"base: {b.get('error', 'ok')}; cand: {c.get('error', 'ok')}"], {}
-    di = (c['instr'] - b['instr']) / b['instr'] * 100
-    dc = (c['cycles'] - b['cycles']) / b['cycles'] * 100
-    abs_ok = c['instr'] - b['instr'] <= cfg.instr_abs
-    thr_c = max(cfg.max_cycles_pct, 1.5 * noise.get('cycles', 0), noise.get('floor', 0))
-    if b['rows'] != c['rows'] or len(c['rows']) > 1 or len(b['rows']) > 1:
-        why.append('rows differ')
-    max_instr = max(cfg.max_instr_pct, cfg.par_instr_pct) if par else cfg.max_instr_pct
-    if di > max_instr and not abs_ok:
-        why.append(f'instructions {di:+.2f}% > {max_instr}%')
-    warn = []
-    if dc > thr_c and b['cycles'] >= cfg.min_cycles:
-        if abs(di) <= cfg.layout_instr_pct and dc <= cfg.layout_cycles_pct:
-            # the same instructions and blocks, a moderate cycles difference: the machine code moved (alignment, cache sets), not the work; recorded, not failed
-            warn.append(f'cycles {dc:+.2f}% with equal instructions ({di:+.3f}%): code layout or noise')
-        else:
-            why.append(f'cycles {dc:+.2f}% > {thr_c:.2f}%')
-    for k in ('hits', 'reads', 'wal'):
-        tol = max(cfg.wal_tol, 2 * noise.get('wal', 0)) if k == 'wal' else cfg.blocks_tol
-        if par:       # the leader's blocks and the WAL of the workers vary with the split of the work
-            tol = max(tol, 16, b[k] * (cfg.par_wal_pct if k == 'wal' else cfg.par_blocks_pct) / 100)
-        if abs(c[k] - b[k]) > tol:
-            why.append(f'{k} {b[k]} -> {c[k]}')
-    return ('FAIL' if why else 'WARN' if warn else 'PASS'), why + warn, dict(d_instr=di, d_cycles=dc, thr_cycles=thr_c)
 
 
 # --- driver ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -604,46 +645,6 @@ def measure_cases(cases, sides, runs, rundir, retry_cycles=True, cfg=None, noise
         res[case.id] = dict(sides=summ, plan=plans, secs=round(time.time() - t0, 1), runs={n: [{k: v for k, v in r.items() if k != 'tag'} for r in raw[n]] for n in names})
         log(f'  {case.id:34s} {time.time() - t0:5.1f}s ' + ' '.join(f"{n}:{summ[n].get('instr', 0) / 1e6:.2f}Minstr" for n in names))
     return res
-
-
-def fmt_m(x):
-    return f'{x / 1e6:,.2f}M'
-
-
-def report(verdicts, res, args, meta):
-    lines, fails = [], 0
-    hdr = f"{'case':34s} {'instr base -> cand':>26s} {'d%':>7s} {'cycles d%':>9s} {'noise%':>6s} {'ms b/c':>12s} {'hit+read b -> c':>22s} {'wal b -> c':>16s} verdict"
-    lines.append(hdr)
-    for cid, (st, why, num) in verdicts.items():
-        r = res[cid]
-        b, c = r['sides'].get('base', {}), r['sides'].get('cand', {})
-        if 'error' in b or 'error' in c:
-            lines.append(f'{cid:34s} ERROR {b.get("error", "")} | {c.get("error", "")}')
-            fails += st == 'FAIL'
-            continue
-        lines.append(f"{cid:34s} {fmt_m(b['instr']):>12s} -> {fmt_m(c['instr']):>10s} {num['d_instr']:+7.3f} {num['d_cycles']:+9.2f} {max(b['cycles_spread'], c['cycles_spread']):6.2f} "
-                     f"{b['ms']:6.1f}/{c['ms']:<6.1f} {b['hits']:>9d}+{b['reads']:<5d}-> {c['hits']:>9d}+{c['reads']:<4d} {b['wal']:>7d}->{c['wal']:<7d} {st}" + (' ' + '; '.join(why) if why else ''))
-        fails += st == 'FAIL'
-    return lines, fails
-
-
-def evidence_line(verdicts, res, meta, status):
-    ok = [cid for cid in verdicts if 'd_instr' in verdicts[cid][2]]
-    if not ok:
-        return f"perf-gate {meta['base']} -> {meta['cand']}: {status}"
-    bi = sum(res[c]['sides']['base']['instr'] for c in ok)
-    ci = sum(res[c]['sides']['cand']['instr'] for c in ok)
-    bc = sum(res[c]['sides']['base']['cycles'] for c in ok)
-    cc = sum(res[c]['sides']['cand']['cycles'] for c in ok)
-    blocks = lambda s: sum(res[c]['sides'][s]['hits'] + res[c]['sides'][s]['reads'] for c in ok)
-    wal = lambda s: sum(res[c]['sides'][s]['wal'] for c in ok)
-    worst = max(ok, key=lambda c: verdicts[c][2]['d_instr'])
-    noise = max(max(res[c]['sides']['base']['cycles_spread'], res[c]['sides']['cand']['cycles_spread']) for c in ok)
-    size = meta['cand_text'] - meta['base_text']
-    return (f"perf-gate {meta['base']} -> {meta['cand']} ({len(ok)} cases, groups {','.join(sorted(meta['groups']))}): "
-            f"instructions:u {fmt_m(bi)} -> {fmt_m(ci)} ({(ci - bi) / bi * 100:+.3f}%, worst {worst} {verdicts[worst][2]['d_instr']:+.3f}%), "
-            f"cycles:u {fmt_m(bc)} -> {fmt_m(cc)} ({(cc - bc) / bc * 100:+.2f}%, noise {noise:.1f}%), blocks {blocks('base')} -> {blocks('cand')}, WAL {wal('base')} -> {wal('cand')} B, "
-            f"text {size:+d} B, rows identical{meta.get('port_note', '')}: {status}")
 
 
 def main():

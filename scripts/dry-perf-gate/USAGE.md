@@ -38,3 +38,12 @@
    library (`scripts/check-portable.sh`, then `make -C sqlite isa-check` and `make -C mariadb isa-check`, no server, tmpfs, about 20 s, cached per commit) and must link with no symbol that
    only the PostgreSQL sources define, and keep the baseline ISA. A failure names the undefined symbols (`sqlite: sift.so has undefined symbol: sift_wt_write_seghdr`) and ends the run
    with FAIL at once (a shared library links with undefined symbols; the server or the shell finds out when it loads one). Alone: `scripts/dry-perf-gate.sh portable [REF [REF2]]`, exit 1 on FAIL.
+12. Concurrent backends (opt-in group `conc`, selected by `src/col/{dsmreg,dictshm,leafshm,rollup,wbuf/reads}`, `src/core/{lane,tomb,freelist,relocate,store,visibility,live}`, the scan and
+   load code of sift_table, `src/bm25/space.c`, or `--groups conc`): `conc_*` runs a read in 3 backends at once after a warm-up each (a barrier opens the window when all are warm and
+   closes it when all have finished their 8 to 200 executions); instructions, cycles, hits and reads are summed over the backends, so cache and lane sharing is part of the
+   number. Tolerances as for `par`: instructions +1%, blocks +10%, WAL +3% (measured base against base: at most 0.05% on instructions).
+13. Background maintenance workers (opt-in group `bgw`, selected by the worker code of bm25, col and table, `core/writer.c`, or `--groups bgw`): `bgw_*` runs a statement that asks a worker
+   (VACUUM of a churned sift_col index, an INSERT that seals the BM25 write buffer, an INSERT into a sift_table) with the settings of the worker set on the database (a worker does not
+   read the session's), waits until the worker has finished (the case fails if it never does), and resets the settings and ends stray workers afterwards, also when the run failed.
+   The counters are those of the whole process tree: the statement and the worker together (the foreground part of each is a plain `col_vacuum`, `bm25_wbuf` insert, `table_insert`).
+

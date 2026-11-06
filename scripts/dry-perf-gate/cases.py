@@ -27,6 +27,10 @@ class Case:
     settings: str = ''         # session settings after the common ones
     par: bool = False          # workers split the work dynamically: instructions, blocks and WAL vary a little between two runs of the same code (wider tolerances)
     expect: str = ''           # a regex the plan must match (a parallel plan really launches workers): otherwise the case fails, it does not measure another plan
+    clients: int = 0           # concurrent backends running the statement `loops` times each, counters summed over them (par tolerances: the sharing of the caches varies a little)
+    loops: int = 1
+    after: tuple = ()          # statements inside the window after the measured one (the wait for a background worker)
+    cleanup: tuple = ()        # run after the window, even when the run failed (the settings of a worker case are the database's, not the session's)
     note: str = ''
 
 
@@ -181,6 +185,36 @@ GATE = [
     Case('table_vacuum', g('table'), 'VACUUM (DISABLE_PAGE_SKIPPING) mutable', kind='once', pre=RESET + ('DELETE FROM mutable WHERE id > 2048',), plan=False),
 ]
 
+# --- background maintenance workers (opt-in group `bgw`): the statement asks a worker, the window ends when the worker has finished. The counters are those of the whole process tree,
+# so they hold the statement and the worker. The settings are the database's (a worker reads those, not the session's) and are reset by `cleanup`, whatever the run did.
+NO_WORKERS = "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'"
+ASYNC_ON = ('ALTER DATABASE gate SET sift.async_maintenance = on', 'ALTER DATABASE gate SET sift.col_auto_merge = on', 'ALTER DATABASE gate SET sift.table_async_promote = on',
+            'SET sift.async_maintenance = on', 'SET sift.col_auto_merge = on', 'SET sift.table_async_promote = on')
+ASYNC_OFF = ('ALTER DATABASE gate RESET sift.async_maintenance', 'ALTER DATABASE gate RESET sift.col_auto_merge', 'ALTER DATABASE gate RESET sift.table_async_promote', NO_WORKERS)
+
+
+def wait_for(pred):
+    """A statement that polls every 0.1 s until `pred` holds (an error after 30 s: the worker did not do what the case measures)."""
+    return (f"DO $$ BEGIN FOR i IN 1..300 LOOP PERFORM pg_sleep(0.1); EXIT WHEN {pred}; END LOOP; IF NOT ({pred}) THEN RAISE EXCEPTION 'the worker did not finish'; END IF; END $$",)
+
+
+BGW = [
+    # VACUUM of a churned index asks the rewrite worker (7 segments -> 2)
+    Case('bgw_col_rewrite', g('bgw', 'col-maint'), 'VACUUM mt', kind='once', pre=(NO_WORKERS,) + FILL_MT + ('DELETE FROM mt WHERE id % 10 < 4',) + ASYNC_ON, plan=False, par=True,
+         after=wait_for("(SELECT segments FROM sift.worker_state('mt_col')) < 7 AND coalesce((SELECT NOT running FROM sift.worker_state('mt_col')), true)"), cleanup=ASYNC_OFF,
+         note='the rewrite worker VACUUM asks for'),
+    # an insert that seals the write buffer asks the promotion worker
+    Case('bgw_bm25_promote', g('bgw', 'bm25-maint', 'bm25-wbuf'), 'INSERT INTO wbp SELECT * FROM docs', kind='once', pre=(NO_WORKERS, 'TRUNCATE wbp') + ASYNC_ON, plan=False, par=True,
+         after=wait_for("coalesce((SELECT sealed = 0 AND segments = 2 FROM sift.worker_state('wbp_bm25')), false)"), cleanup=ASYNC_OFF, note='the promotion worker asked by the seal of the write buffer'),
+    # sift_table: the writer seals buffers and asks the worker that settles them into columns
+    Case('bgw_table_settle', g('bgw', 'table'), 'INSERT INTO mutable SELECT * FROM seed WHERE id <= 60000', kind='once', pre=(NO_WORKERS, 'TRUNCATE mutable') + ASYNC_ON, plan=False, par=True,
+         after=wait_for("NOT EXISTS (SELECT FROM sift.table_segments('mutable') WHERE kind = 'sealed buffer')"), cleanup=ASYNC_OFF, note='the settle worker of a sift_table'),
+]
+
+# --- concurrent backends on the shared caches (opt-in group `conc`): the same read in 3 backends at once (loops of it each); instructions, hits and reads are summed over them
+CONC_OF = {'agg_basic_five': (3, 8), 'c3_groups_label_count': (3, 8), 'acc_point_pk': (3, 200), 'bm25_top10_common': (3, 20), 'bm25_count_common': (3, 20),
+           'col_wbuf_group': (3, 8), 'bm25_wbuf_count': (3, 8), 'storage_point_lookup': (3, 200)}
+
 # first statement after eviction: the cold-read path of each family
 EVICT_OF = {'agg_basic_five': g('smoke', 'first-agg'), 'acc_point_pk': g('first-agg', 'first-col'), 'col_wbuf_group': g('first-col'), 'bm25_count_common': g('first-bm25'),
             'storage_point_lookup': g('first-table')}
@@ -195,9 +229,11 @@ def build(corpus_cases, catalog_cases):
     for name, groups in CATALOG:
         c = catalog_cases[name]
         out.append(Case(name, tuple(x for x in groups if x != 'first'), c.sql, 'catalog', 'warm', plan=True))
-    out += GATE
+    out += GATE + BGW
     by = {c.id: c for c in out}
     for cid, groups in EVICT_OF.items():
         b = by[cid]
         out.append(replace(b, id=cid + '_evict', groups=groups, kind='evict', note='first statement after eviction'))
+    for cid, (clients, loops) in CONC_OF.items():
+        out.append(replace(by[cid], id='conc_' + cid, groups=('conc',), clients=clients, loops=loops, par=True, note=f'{clients} backends at once, {loops} executions each'))
     return out
