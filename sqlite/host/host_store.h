@@ -42,7 +42,6 @@ typedef struct PageHeaderData
 typedef PageHeaderData *PageHeader;
 #define SizeOfPageHeaderData		sizeof(PageHeaderData)
 #define PageGetSpecialPointer(p)	((char *) (p) + ((PageHeader) (p))->pd_special)
-#define PageGetPageSize(p)			BLCKSZ
 
 #define InvalidBuffer				((Buffer) NULL)
 /* An empty page: the standard header, special space of specialSize at the end (storage/bufpage.h) */

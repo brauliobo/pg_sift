@@ -50,7 +50,6 @@ typedef struct { uint64 value; } FullTransactionId;
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
 #define PG_UINT64_MAX			UINT64_MAX
 #define PG_INT16_MAX			(0x7FFF)
-#define PG_INT16_MIN			(-0x7FFF - 1)
 #define PG_INT32_MAX			(0x7FFFFFFF)
 #define PG_INT32_MIN			(-0x7FFFFFFF - 1)
 #define PG_INT64_MAX			INT64_MAX
@@ -60,8 +59,6 @@ typedef struct { uint64 value; } FullTransactionId;
 #define BLCKSZ					8192
 #define FLEXIBLE_ARRAY_MEMBER
 #define MAXIMUM_ALIGNOF			8
-#define BITS_PER_BYTE			8
-#define HIGHBIT					0x80
 
 #define qsort_arg				qsort_r	/* the same (base, n, size, cmp(a, b, arg), arg) */
 #define Max(x, y)				((x) > (y) ? (x) : (y))
@@ -72,26 +69,20 @@ typedef struct { uint64 value; } FullTransactionId;
 #define MAXALIGN(len)			TYPEALIGN(MAXIMUM_ALIGNOF, (len))
 #define StaticAssertDecl(c, m)	_Static_assert(c, m)
 #define StaticAssertStmt(c, m)	_Static_assert(c, m)
-#define StaticAssertExpr(c, m)	((void) sizeof(struct { int sq_assert_: (c) ? 1 : -1; }))
 #define Assert(c)				((void) 0)
-#define AssertArg(c)			((void) 0)
 #define likely(x)				__builtin_expect((x) != 0, 1)
 #define unlikely(x)				__builtin_expect((x) != 0, 0)
 #define pg_unreachable()		__builtin_unreachable()
 #define pg_attribute_aligned(a)	__attribute__((aligned(a)))
 #define pg_attribute_always_inline __attribute__((always_inline)) inline
-#define pg_attribute_unused()	__attribute__((unused))
 #define pg_attribute_noreturn()	__attribute__((noreturn))
 #define pg_noinline				__attribute__((noinline))
 #define pg_attribute_printf(f, a) __attribute__((format(printf, f, a)))
 #define INT64CONST(x)			(x##L)
 #define UINT64CONST(x)			(x##UL)
 #define INT64_FORMAT			"%ld"
-#define UINT64_FORMAT			"%lu"
 #define CHECK_FOR_INTERRUPTS()	((void) 0)
-#define pg_attribute_cold
 #define unconstify(t, v)		((t) (v))
-#define pgstat_report_wait_start(x)	((void) 0)
 
 /* ---------- bit utilities (port/pg_bitutils.h, common/int.h) ---------- */
 
@@ -108,10 +99,7 @@ static inline uint32 pg_bswap32(uint32 x) { return __builtin_bswap32(x); }
 static inline uint64 pg_bswap64(uint64 x) { return __builtin_bswap64(x); }
 static inline int pg_cmp_u64(uint64 a, uint64 b) { return (a > b) - (a < b); }
 static inline int pg_cmp_u32(uint32 a, uint32 b) { return (a > b) - (a < b); }
-static inline bool pg_add_u64_overflow(uint64 a, uint64 b, uint64 *r) { return __builtin_add_overflow(a, b, r); }
-static inline bool pg_mul_u64_overflow(uint64 a, uint64 b, uint64 *r) { return __builtin_mul_overflow(a, b, r); }
 static inline unsigned char pg_ascii_tolower(unsigned char c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
-static inline unsigned char pg_ascii_toupper(unsigned char c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
 
 extern int pg_strcasecmp(const char *s1, const char *s2);
 extern int pg_strncasecmp(const char *s1, const char *s2, size_t n);
@@ -129,7 +117,6 @@ extern MemoryContext TopMemoryContext;
 
 #define ALLOCSET_DEFAULT_SIZES	0, 8192, 8 * 1024 * 1024
 #define ALLOCSET_SMALL_SIZES	0, 1024, 8192
-#define ALLOCSET_DEFAULT_MINSIZE 0
 #define MCXT_ALLOC_HUGE			0x01
 #define MCXT_ALLOC_NO_OOM		0x02
 #define MCXT_ALLOC_ZERO			0x04
@@ -409,7 +396,6 @@ typedef struct regex_t
 #define REG_NOMATCH		1
 #define REG_EXACT		2
 #define REG_PREFIX		3
-#define REG_ESPACE		4
 
 extern int pg_regcomp(regex_t *re, const pg_wchar *pattern, size_t len, int cflags, Oid collation);
 extern int pg_regexec(regex_t *re, const pg_wchar *data, size_t len, size_t search_start,
