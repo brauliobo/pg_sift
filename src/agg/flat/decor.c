@@ -60,7 +60,7 @@ ungroup_column(Node *n, Ungroup *u)
 }
 #endif
 
-/* the expression of the query with the columns of its grouping entry as the expressions they group by (a sub-select of it included) */
+/* the expression of the query with the columns of its grouping entry (not the last of the range table once a rewrite has added one) as the expressions they group by (a sub-select of it included) */
 Node *
 flat_ungroup_expr(Query *q, Node *n)
 {
@@ -69,8 +69,16 @@ flat_ungroup_expr(Query *q, Node *n)
 
 	if (!q->hasGroupRTE)
 		return n;
-	u.rti = list_length(q->rtable);
-	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
+	u.rti = 0;
+	foreach_node(RangeTblEntry, rte, q->rtable)
+	{
+		u.rti++;
+		if (rte->rtekind == RTE_GROUP)
+		{
+			u.exprs = rte->groupexprs;
+			break;
+		}
+	}
 	u.depth = 0;
 	return ungroup_column(n, &u);
 #else
