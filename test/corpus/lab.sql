@@ -60,7 +60,7 @@ create index events_status on events (status);
 create index events_attrs on events using gin (attrs);
 create index events_tags on events using gin (tags);
 create index events_note_trgm on events (note text_pattern_ops);
-create index events_col on events using sift_col (id, tenant_id, dim_a_id, kind_id, status, region, amount, qty, score, created_at, d, note, label, attrs)
+create index events_col on events using sift_col (id, tenant_id, dim_a_id, kind_id, status, region, amount, qty, score, created_at, d, note, label, attrs, tags)
   with (key_cut = dim_a_id, paths = 'attrs.a float8, attrs.b astext, attrs.flag astext');
 
 -- e-commerce

@@ -79,8 +79,8 @@ pred_ilike	SiftAgg	single:t
 pred_regex	SiftAgg	single:t
 pred_jsonb_contains	SiftAgg	single:t
 pred_jsonb_path	SiftAgg	single:t
-pred_array_overlap	-	single:f:where
-pred_array_contains	-	single:f:where
+pred_array_overlap	SiftAgg	single:t
+pred_array_contains	SiftAgg	single:t
 pred_or_mix	SiftAgg	single:t
 pred_correlated_scalar	SiftAgg	-
 pred_union_all_arms	-	-
@@ -142,7 +142,7 @@ s2_topn_text_order	-	topn:f:cost
 s2_topn_offset_deep	SiftAgg	topn:t
 s2_lateral_count	SiftAgg	-
 s2_lateral_jsonb_each	-	single:f:unnest_leaf
-s2_unnest_array_group	-	single:f:unnest_leaf
+s2_unnest_array_group	SiftAgg	single:t
 s2_join_self_entities	SiftAgg	single:t
 s2_exists_two_levels	-	single:f:no_source
 s2_in_subselect_agg	SiftAgg	-
@@ -170,6 +170,6 @@ s2_pred_coalesce	SiftAgg	single:t
 s2_pred_func_lower	SiftAgg	single:t
 s2_pred_text_range	-	single:f:cost
 s2_pred_exists_jsonb_key	-	single:f:where
-s2_pred_array_any	-	single:f:where
+s2_pred_array_any	SiftAgg	single:t
 s2_pred_bool_flag	SiftAgg	single:t
 s2_pred_not_null_group	SiftAgg	single:t
