@@ -111,6 +111,7 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
+		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi
 	done
 	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run

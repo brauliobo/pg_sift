@@ -149,6 +149,7 @@ start() {
 			shared_buffers = 64MB
 			max_worker_processes = 16
 			max_locks_per_transaction = 256
+			max_prepared_transactions = 8
 			autovacuum = off
 		EOF
 	fi
