@@ -51,5 +51,14 @@ select i as id, i % 16 as g, i % 1000 as g2, i as v, (i % 977) * 0.37::float8 as
 from generate_series(1, :rows) i;
 create table cbb as select id, body from docs where id <= :rows / 3;
 
+-- deleted rows no VACUUM took (autovacuum is off): reads of a pre-aggregate with the dead-row correction
+create table dd as select id, g, g2, v as amount, x, t from cb;
+create index dd_col on dd using sift_col (id, g, g2, amount, x, t);
+delete from dd where id % 20 = 7;
+-- a table whose index tracks its changes (one-column primary key): rows written under DML
+create table tr (id int primary key, g int, amount bigint);
+create index tr_col on tr using sift_col (id, g, amount);
+
 vacuum (analyze) docs, wb, wbp, mt, seed, store, mutable, cb, cbb;
+analyze dd, tr;
 checkpoint;

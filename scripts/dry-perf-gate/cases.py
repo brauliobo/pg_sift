@@ -24,6 +24,9 @@ class Case:
     pre: tuple = ()
     post: tuple = ()
     plan: bool = True          # capture EXPLAIN (COSTS OFF) of the statement and require the same plan on both sides
+    settings: str = ''         # session settings after the common ones
+    par: bool = False          # workers split the work dynamically: instructions, blocks and WAL vary a little between two runs of the same code (wider tolerances)
+    expect: str = ''           # a regex the plan must match (a parallel plan really launches workers): otherwise the case fails, it does not measure another plan
     note: str = ''
 
 
@@ -72,6 +75,21 @@ CORPUS = [
     # range lane tests
     ('c3_range_overlap_count',    g('agg-read')),
     ('c3_range_lower_month',      g('agg-read')),
+    # text predicates, CTEs, partitions, lookup joins, facets, distinct pairs
+    ('agg_group_highcard_50k',    g('agg-read')),
+    ('agg_distinct_multi',        g('agg-read', 'agg-kernel')),
+    ('pred_like_prefix',          g('agg-read')),
+    ('pred_like_contains',        g('agg-read')),
+    ('pred_ilike',                g('agg-read')),
+    ('pred_jsonb_path',           g('agg-read')),
+    ('acc_partition_all',         g('agg-read')),
+    ('c2_events_p_month_status',  g('agg-read')),
+    ('c2_cte_twice_selfjoin',     g('agg-plan', 'agg-read')),
+    ('c2_cte_two_levels',         g('agg-plan')),
+    ('s2_cte_two_aggs_join',      g('agg-plan')),
+    ('join_set_in_subselect_1000', g('agg-plan', 'agg-read')),
+    ('join_set_bigdim_cte',       g('agg-plan')),
+    ('arch_facets_one_query',     g('agg-plan', 'agg-read')),
     # point lookups, range scans, time series on sift_col
     ('acc_point_pk',              g('smoke', 'col-read', 'first')),
     ('acc_entity_list',           g('col-read')),
@@ -101,7 +119,39 @@ FILL_MT = ('TRUNCATE mt',) + tuple(
     stmt for k in range(6) for stmt in (
         f"INSERT INTO mt SELECT i, i % 16, i % 1000 FROM generate_series({k * 3000 + 1}, {k * 3000 + 3000}) i", "SELECT sift.col_promote('mt_col')"))
 
+FILL_WBP_SEGS = ('TRUNCATE wbp',) + tuple(
+    stmt for k in range(6) for stmt in (
+        f"INSERT INTO wbp SELECT i, i % 16, i % 1000, 'common w' || i % 97 || ' t' || (i::bigint * 7919) % 2000 FROM generate_series({k * 1500 + 1}, {k * 1500 + 1500}) i", "SELECT sift.promote('wbp_bm25')"))
+PAR = ('set max_parallel_workers_per_gather = 2; set parallel_setup_cost = 0; set parallel_tuple_cost = 0; set min_parallel_table_scan_size = 0; '
+       'set min_parallel_index_scan_size = 0;')
+PAR_MAINT = 'set max_parallel_maintenance_workers = 2; set min_parallel_table_scan_size = 0;'
+
 GATE = [
+    # aggregate kernels and group tables on the lab events
+    Case('agg_sum_int_expr', g('agg-kernel'), 'SELECT sum(qty * 3 + score), count(*), min(qty) FROM events'),
+    Case('agg_ts_hour_metric', g('agg-kernel', 'agg-read'), "SELECT date_trunc('hour', created_at) AS h, count(*), sum(amount) FROM events GROUP BY 1"),
+    Case('agg_group_spill', g('agg-read'), 'SELECT label, count(*), sum(amount) FROM events GROUP BY label', settings="set work_mem = '1MB';", note='a group table over work_mem'),
+    # sift_col: deleted rows no VACUUM took, the sketch, verification, rows written under change tracking
+    Case('col_dead_group', g('col-read', 'agg-read'), 'SELECT g, count(*), sum(amount) FROM dd GROUP BY g ORDER BY g', note='5% deleted rows, pre-aggregate read with the dead-row correction'),
+    Case('col_dead_group_many', g('col-read', 'agg-read'), 'SELECT g2, count(*), sum(amount), avg(x) FROM dd GROUP BY g2'),
+    Case('col_dead_count', g('col-read'), 'SELECT count(*), max(id) FROM dd'),
+    Case('col_hll_distinct', g('agg-kernel', 'col-read'), 'SELECT g, sift.approx_count_distinct(g2) FROM dd GROUP BY g ORDER BY g'),
+    Case('col_verify', g('col-maint'), "SELECT sift.col_verify('docs_col')", kind='once', plan=False),
+    Case('col_track_update', g('col-maint', 'col-wbuf'), 'UPDATE tr SET amount = amount + 1 WHERE id % 10 = 0', kind='once',
+         pre=('TRUNCATE tr', 'INSERT INTO tr SELECT i, i % 16, i % 1000 FROM generate_series(1, 20000) i', "SELECT sift.col_promote('tr_col')"), plan=False),
+    Case('col_track_delete', g('col-maint', 'col-wbuf'), 'DELETE FROM tr WHERE id % 10 = 0', kind='once',
+         pre=('TRUNCATE tr', 'INSERT INTO tr SELECT i, i % 16, i % 1000 FROM generate_series(1, 20000) i', "SELECT sift.col_promote('tr_col')"), plan=False),
+    # bm25: several terms, ranked OR, merge and vacuum of promoted segments
+    Case('bm25_and_terms', g('bm25-read'), "SELECT count(*) FROM docs WHERE body @@> 'word7 AND t17 AND clean'"),
+    Case('bm25_or_three_top20', g('bm25-read'), "SELECT id FROM docs WHERE body @@> 'word7 OR t17 OR u5' ORDER BY sift.score(ctid) DESC, id LIMIT 20"),
+    Case('bm25_merge', g('bm25-maint'), "SELECT sift.merge('wbp_bm25', true)", kind='once', pre=FILL_WBP_SEGS, plan=False),
+    Case('bm25_vacuum', g('bm25-maint'), 'VACUUM wbp', kind='once', pre=FILL_WBP_SEGS + ('DELETE FROM wbp WHERE id % 10 = 3',), plan=False),
+    # parallel workers, opt-in group `par` (workers 2: the instructions are those of the leader and its workers together)
+    Case('par_agg_group', g('par', 'agg-par'), 'SELECT label, count(*), sum(amount) FROM events GROUP BY label', settings=PAR, expect='Workers Planned', par=True),
+    Case('par_agg_wide', g('par', 'agg-par'), 'SELECT status, sum(m01), sum(m02), sum(n01), count(*) FROM wide GROUP BY status', settings=PAR, expect='Workers Planned', par=True),
+    Case('par_agg_ungrouped', g('par', 'agg-par'), 'SELECT count(*), sum(amount), avg(score) FROM events', settings=PAR, expect='Workers Planned', par=True),
+    Case('par_col_build', g('par', 'col-build'), 'CREATE INDEX cb_col ON cb USING sift_col (id, g, g2, v, x, t)', kind='once', settings=PAR_MAINT, pre=('DROP INDEX IF EXISTS cb_col',), post=('DROP INDEX cb_col',), plan=False, par=True),
+    Case('par_bm25_build', g('par', 'bm25-build'), 'CREATE INDEX cbb_bm25 ON cbb USING sift (body)', kind='once', settings=PAR_MAINT, pre=('DROP INDEX IF EXISTS cbb_bm25',), post=('DROP INDEX cbb_bm25',), plan=False, par=True),
     # float column evaluated per bucket of its values (grouping by an expression of a float8 column)
     Case('agg_group_float_floor', g('agg-kernel', 'agg-read'), 'SELECT floor(amount / 5)::int AS k, count(*), sum(qty) FROM events WHERE amount BETWEEN -1e9 AND 1e9 GROUP BY 1'),
     Case('agg_group_float_cast', g('agg-kernel'), 'SELECT (amount / 3)::int AS k, count(*), min(qty), max(qty) FROM events GROUP BY 1'),

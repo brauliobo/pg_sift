@@ -293,7 +293,7 @@ def semi(s):
 
 
 def script(case, ctl, warm=True):
-    L = ['\\set ON_ERROR_STOP on', BASE_SET, '\\o /dev/null']
+    L = ['\\set ON_ERROR_STOP on', BASE_SET, case.settings, '\\o /dev/null']
     L += [semi(p) for p in case.pre]
     if case.kind == 'warm' and warm:
         L.append(semi(case.sql))
@@ -379,10 +379,12 @@ def run_once(cl, case, rundir, tag):
 
 
 def plan_of(cl, case, rundir):
-    if not case.plan:
+    if not case.plan and not case.expect:
         return None
-    sql = BASE_SET + ' explain (costs off) ' + case.sql.rstrip(';') + ';'
-    return hashlib.md5(cl.psql(sql).encode()).hexdigest()[:12]
+    out = cl.psql(BASE_SET + case.settings + ' explain (costs off) ' + case.sql.rstrip(';') + ';')
+    if case.expect and not re.search(case.expect, out):
+        return 'MISSING:' + case.expect
+    return hashlib.md5(out.encode()).hexdigest()[:12]
 
 
 # --- statistics and verdicts ---------------------------------------------------------------------------------------------------------------------------------
@@ -403,7 +405,7 @@ def summarize(runs):
     return m
 
 
-def judge(b, c, cfg, noise):
+def judge(b, c, cfg, noise, par=False):
     """Verdict of one case from the summaries of the two sides: (status, [reasons], numbers)."""
     why = []
     if 'error' in b or 'error' in c:
@@ -414,8 +416,9 @@ def judge(b, c, cfg, noise):
     thr_c = max(cfg.max_cycles_pct, 1.5 * noise.get('cycles', 0))
     if b['rows'] != c['rows'] or len(c['rows']) > 1 or len(b['rows']) > 1:
         why.append('rows differ')
-    if di > cfg.max_instr_pct and not abs_ok:
-        why.append(f'instructions {di:+.2f}% > {cfg.max_instr_pct}%')
+    max_instr = max(cfg.max_instr_pct, cfg.par_instr_pct) if par else cfg.max_instr_pct
+    if di > max_instr and not abs_ok:
+        why.append(f'instructions {di:+.2f}% > {max_instr}%')
     warn = []
     if dc > thr_c and b['cycles'] >= cfg.min_cycles:
         if abs(di) <= cfg.layout_instr_pct and dc <= cfg.layout_cycles_pct:
@@ -425,6 +428,8 @@ def judge(b, c, cfg, noise):
             why.append(f'cycles {dc:+.2f}% > {thr_c:.2f}%')
     for k in ('hits', 'reads', 'wal'):
         tol = max(cfg.wal_tol, 2 * noise.get('wal', 0)) if k == 'wal' else cfg.blocks_tol
+        if par:       # the leader's blocks and the WAL of the workers vary with the split of the work
+            tol = max(tol, 16, b[k] * (cfg.par_wal_pct if k == 'wal' else cfg.par_blocks_pct) / 100)
         if abs(c[k] - b[k]) > tol:
             why.append(f'{k} {b[k]} -> {c[k]}')
     return ('FAIL' if why else 'WARN' if warn else 'PASS'), why + warn, dict(d_instr=di, d_cycles=dc, thr_cycles=thr_c)
@@ -450,7 +455,7 @@ def measure_cases(cases, sides, runs, rundir, retry_cycles=True, cfg=None, noise
         summ = {n: summarize(raw[n]) for n in names}
         if retry_cycles and cfg and len(names) == 2 and all('error' not in summ[n] for n in names):
             for attempt in range(2):
-                st, why, _ = judge(summ[names[0]], summ[names[1]], cfg, case_noise(noise, case.id))
+                st, why, _ = judge(summ[names[0]], summ[names[1]], cfg, case_noise(noise, case.id), case.par)
                 if st != 'FAIL' or not all(w.startswith('cycles') for w in why):
                     break
                 rounds(runs, attempt + 1)
@@ -519,6 +524,9 @@ def main():
     ap.add_argument('--min-cycles', type=int, default=5_000_000, help='cycles are judged only above this many in the base (shorter statements: instructions decide)')
     ap.add_argument('--layout-instr-pct', type=float, default=0.1, help='a cycles excess with instructions within this percent is a WARN (code layout), not a FAIL (default 0.1)')
     ap.add_argument('--layout-cycles-pct', type=float, default=15.0, help='...unless the cycles excess is above this (default 15)')
+    ap.add_argument('--par-instr-pct', type=float, default=1.0, help='instruction limit of the parallel (workers) cases (default 1.0)')
+    ap.add_argument('--par-blocks-pct', type=float, default=5.0)
+    ap.add_argument('--par-wal-pct', type=float, default=3.0)
     ap.add_argument('--blocks-tol', type=int, default=0)
     ap.add_argument('--wal-tol', type=int, default=0)
     ap.add_argument('--max-size-pct', type=float, default=0.1)
@@ -583,10 +591,10 @@ def main():
         log('the base predates test/corpus: registry and lab come from', reg_tree)
     registry = load_registry(reg_tree)
     byid = {c.id: c for c in registry}
-    if a.cmd == 'baseline':
-        groups, selected = {'all'}, registry
-    elif a.cases:
+    if a.cases:
         groups, selected = {'cases'}, [byid[x] for x in a.cases.split(',')]
+    elif a.cmd == 'baseline':
+        groups, selected = {'all'}, registry
     else:
         groups, un = (set(a.groups.split(',')), []) if a.groups else select_groups(paths)
         if un:
@@ -598,7 +606,11 @@ def main():
         print(f'perf-gate {base.key} -> {cand.key}: PASS (no build input changed: {len(diff)} objects differ, no group selected)')
         return 0
 
-    tpl = W / 'data' / f'tpl-{base.key}-r{a.rows}'
+    # the template depends on what the base library writes (its stripped objects), the extension scripts and the fixture, not on the commit id
+    fp = hashlib.sha256(json.dumps(sorted(base.info['objects'].items())).encode())
+    for f in sorted(base.tree.glob('sql/pg_sift--*.sql')) + [base.tree / 'pg_sift.control', HERE / 'fixture-gate.sql', base.tree / 'test/corpus/lab.sql']:
+        fp.update(f.read_bytes())
+    tpl = W / 'data' / f'tpl-{fp.hexdigest()[:12]}-r{a.rows}'
     with Lock('lock-template'):
         if not (tpl / 'gate.complete').exists():
             make_template(base, a.rows, tpl, reg_tree)
@@ -622,8 +634,11 @@ def main():
         verdicts = {}
         for c in selected:
             r = res[c.id]
-            st, why, num = judge(r['sides']['base'], r['sides']['cand'], cfg, case_noise(noise, c.id))
-            if r['plan']['base'] != r['plan']['cand'] and not a.allow_plan_change:
+            st, why, num = judge(r['sides']['base'], r['sides']['cand'], cfg, case_noise(noise, c.id), c.par)
+            missing = [p for p in r['plan'].values() if p and p.startswith('MISSING:')]
+            if missing:
+                st, why = 'FAIL', why + [f'the plan lacks {missing[0][8:]}: the case would measure another plan']
+            elif r['plan']['base'] != r['plan']['cand'] and not a.allow_plan_change:
                 st, why = 'FAIL', why + ['plan differs']
             verdicts[c.id] = (st, why, num)
         lines, fails = report(verdicts, res, a, meta)
@@ -643,7 +658,7 @@ def main():
         out = dict(status=status, meta=meta, evidence=ev, verdicts={k: dict(status=v[0], why=v[1], **v[2]) for k, v in verdicts.items()}, res=res, size=size_msg,
                    host=host_info(), seconds=round(time.time() - t0, 1), rows=a.rows, runs=a.runs)
         if a.cmd == 'baseline':
-            save_baseline(base.key, out)
+            save_baseline(base.key, out, partial=bool(a.cases))
         if a.json:
             Path(a.json).write_text(json.dumps(out, indent=1))
         return 1 if fails else 0
@@ -693,7 +708,7 @@ def load_noise(key):
     return {k: v if isinstance(v, dict) else {'cycles': v} for k, v in raw.items()}
 
 
-def save_baseline(key, out):
+def save_baseline(key, out, partial=False):
     d = STATE / 'baselines'
     d.mkdir(parents=True, exist_ok=True)
     noise = {}
@@ -702,9 +717,15 @@ def save_baseline(key, out):
         if 'error' not in b and 'error' not in c:
             noise[cid] = dict(cycles=round(abs(c['cycles'] - b['cycles']) / b['cycles'] * 100, 3), wal=abs(c['wal'] - b['wal']),
                               instr_pct=round(abs(c['instr'] - b['instr']) / b['instr'] * 100, 4))
+    old = json.loads((d / 'noise.json').read_text()) if (d / 'noise.json').exists() else {}
     big = sorted(v['cycles'] for cid, v in noise.items() if out['res'][cid]['sides']['base']['cycles'] >= 5_000_000)
-    noise['_machine'] = dict(cycles=big[int(0.9 * len(big))] if big else 8.0, wal=0, instr_pct=0)
+    if partial:
+        noise = {**old, **noise}      # a few cases re-measured: the other floors stay
+    else:
+        noise['_machine'] = dict(cycles=big[int(0.9 * len(big))] if big else 8.0, wal=0, instr_pct=0)
     (d / 'noise.json').write_text(json.dumps(noise, indent=1, sort_keys=True))
+    if partial:
+        return
     slim = dict(base=out['meta']['base'], host=out['host'], rows=out['rows'], runs=out['runs'], noise_pct=noise, text=out['meta']['base_text'],
                 cases={cid: v['sides']['base'] for cid, v in out['res'].items()}, plan={cid: v['plan']['base'] for cid, v in out['res'].items()})
     (d / f"{out['meta']['base']}.json").write_text(json.dumps(slim, indent=1, sort_keys=True))

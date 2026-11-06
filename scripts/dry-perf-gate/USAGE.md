@@ -26,6 +26,9 @@
 8. The base is rebuilt/re-measured when it moves (builds, objects and the data template are cached per base sha under GATE_ROOT (default /dev/shm/sift-perf-gate); 4 builds and 3
    templates are kept). `scripts/dry-perf-gate.sh baseline BASE` (about 12 minutes, full registry, base against base) stores $GATE_STATE/baselines/<sha>.{json,tsv} and noise.json (default $XDG_STATE_HOME/sift-perf-gate, never in git)
    (the per-case cycles noise floor the later runs use); run it once per integration tip, not per commit.
-9. Cross-checks the gate cannot make: parallel-worker plans (workers are 0 by default; use `--cases` with your own settings for those), cold device IO (tmpfs), and
+9. Parallel workers: the default cases run with workers 0 (deterministic). The opt-in group `par` (selected by `src/agg/par*`, `src/core/parbuild.c`, `src/col/build_par.c`, `src/bm25/parallel.c`,
+   or `--groups par`) runs `par_agg_*` (workers planned 2, checked in the plan) and `par_*_build` (2 maintenance workers); the counters are those of the leader and its workers together, and
+   the workers split the work dynamically, so those cases allow instructions +1%, blocks +5% and WAL +3% (`--par-instr-pct`, `--par-blocks-pct`, `--par-wal-pct`).
+   Cross-checks the gate cannot make: cold device IO (tmpfs), the background maintenance worker path, concurrent backends on the shared caches, and
    sizes beyond 100k rows (`--rows N` rebuilds the template; slopes belong to scripts/scaling-gate.sh). It does not replace the covering regress tests.
 10. Run it after the covering tests pass and before landing; a lane that cannot meet the budget (about 10 minutes) uses `--runs 3` for the first look and the default for the final.

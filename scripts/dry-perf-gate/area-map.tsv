@@ -7,8 +7,10 @@
 ^sql/pg_sift_(test|helpers)--	-
 ^pg_sift_(test|helpers)\.control$	-
 ^(sql/|pg_sift\.control|Makefile)	smoke
+# parallel code first (first match wins): the workers cases are the opt-in group `par`
+^src/agg/(par/|par\.c|par_int\.h)	agg-read,agg-par,par,first-agg
+^src/(core/parbuild|col/build_par|bm25/parallel)	par,col-build,bm25-build
 # --- src/agg: planner and cost (planning cost shows in the first statement and in every read), executor, kernels, leaf readers, parallel
-^src/agg/par	agg-read,agg-par,first-agg
 ^src/agg/(kern|gen_|dist/|accum|dense|group|osa|vnum|wide|intids)	agg-read,agg-kernel,first-agg
 ^src/agg/(plan|cost|order/cost|flat|cte|spec|pre|search|rows|sel|setfold|refuse|verdict)	agg-read,agg-plan,first-agg
 ^src/agg/(topn|gtopn|gord|gorder|order)	agg-read,agg-topn,first-agg
