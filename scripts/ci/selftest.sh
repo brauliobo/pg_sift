@@ -229,6 +229,12 @@ if [[ $MODE == --selftest ]]; then
 		bad_pin=$(for k in 2 3; do (( k <= ${lay#*:} )) && SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^tap-shell-(compat_matrix|old_lib_refusal|replica_mixed|pg_upgrade)/ {print $1}'; done)
 		[[ -z $bad_pin ]] || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards puts jobs that build older releases outside the first shard: $bad_pin"; bad=1; }
 	done
+	# the CPU-bound jobs (HEAVY_JOBS of scripts/ci/shards.sh) are spread: no shard has two more of them than another, in every tier and layout
+	for lay in quick:3 quick:4 full:5; do
+		counts=$(for k in $(seq 1 "${lay#*:}"); do SIFT_CI_SHARD=$k/${lay#*:} SIFT_CI_PG_MAJOR=18 "$0" --plan "${lay%:*}" | awk '$1 ~ /^(difftest|hardened|fuzz|release-library-regress|tap-shell-scaling_slope)/ && $3 == "pool" {n++} END {print n + 0}'; done | sort -n)
+		lo=$(head -1 <<<"$counts"); hi=$(tail -1 <<<"$counts")
+		(( hi - lo <= 1 )) || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards has $lo to $hi CPU-bound jobs in a shard (at most one apart)"; bad=1; }
+	done
 	# the weights of scripts/ci-times.py are the median of the runs, not the newest (one hosted run is noisy)
 	out=$(python3 -I "$REPO/scripts/ci-times.py" --selftest 2>&1) || { echo "FAIL: scripts/ci-times.py --selftest: $out"; bad=1; }
 	# the plans of the shards made all at once (SIFT_CI_SHARD=all/N) are those of a run for the shard alone, for a shard of the pool and the last one (it runs the jobs after the pool)
