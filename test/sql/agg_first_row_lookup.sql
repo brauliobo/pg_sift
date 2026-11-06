@@ -259,12 +259,12 @@ SET sift.enable_agg = off;
 CREATE TEMP TABLE plain_q AS EXECUTE first_q;
 RESET sift.enable_agg;
 SELECT count(*) AS differences FROM ((TABLE after_q EXCEPT ALL TABLE plain_q) UNION ALL (TABLE plain_q EXCEPT ALL TABLE after_q)) d;
--- EXPLAIN names the lookup, and the plan of the child that was not run
+-- EXPLAIN names the lookup, and the plan of the child that was not run (the share of all-visible pages is masked: PostgreSQL 19 sets pages all-visible as a read prunes them, so it is not a property of the fixture)
 CREATE FUNCTION explain_first(q text) RETURNS TABLE (shown text) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l LIKE '%first row tables%' OR l LIKE '%First Row Lookup%' OR l LIKE '%never executed%' OR l LIKE '%Limit%' THEN shown := trim(l); RETURN NEXT; END IF;
+    IF l LIKE '%first row tables%' OR l LIKE '%First Row Lookup%' OR l LIKE '%never executed%' OR l LIKE '%Limit%' THEN shown := regexp_replace(trim(l), '[0-9]+ % of', 'N % of'); RETURN NEXT; END IF;
   END LOOP;
 END $$;
 SELECT * FROM explain_first($q$

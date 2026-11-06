@@ -82,9 +82,10 @@ BEGIN
   same := a IS NOT DISTINCT FROM b;
   RETURN NEXT;
 END $$;
+-- PostgreSQL 19 folds coalesce(a, NULL) into a before the planner hook sees it, so that statement is native there, which the column says as it is on the other versions (the rows are the same on all)
 -- grouped by the key and ungrouped; the FILTER of an aggregate takes the same condition
-SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(id) FROM pn WHERE ' || s.cond || ' GROUP BY g') c ORDER BY s.ord;
-SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT count(*), sum(i) FROM pn WHERE ' || s.cond) c ORDER BY s.ord;
+SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting('server_version_num')::int >= 190000) AS native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(id) FROM pn WHERE ' || s.cond || ' GROUP BY g') c ORDER BY s.ord;
+SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting('server_version_num')::int >= 190000) AS native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT count(*), sum(i) FROM pn WHERE ' || s.cond) c ORDER BY s.ord;
 SELECT s.name, c.same FROM shapes s, LATERAL shape_check('SELECT g, count(*) FILTER (WHERE ' || s.cond || '), sum(i) FILTER (WHERE ' || s.cond || ') FROM pn GROUP BY g') c WHERE NOT c.same ORDER BY s.ord;
 
 -- the rows by value
