@@ -204,49 +204,4 @@ void sift_offmask_or(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t n
 void sift_offmask_andnot(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t npages);
 uint64_t sift_offmask_popcount(const uint64_t *a, size_t npages);
 
-/*
- * Fused BM25 over one result group.  Exact float32 scores with a fixed
- * operation order (build with -ffp-contract=off): for each term, in order,
- * score += w * (tf / (tf + K(dl))), w = boost * idf * (k1 + 1).  K(dl) comes
- * from a segment table indexed by tuple slot: knorm[rowstart[blk - blk0] + off - 1].
- */
-typedef struct {
-	const uint32_t *rowstart;
-	const float *knorm;
-	uint32_t blk0;
-} sift_norms;
-
-typedef struct {
-	sift_cur *cur;       /* source cursor over a blob with tf (SIFT_F_TF) */
-	float w;
-	int rel;             /* SIFT_REL_*: how the term relates to the result group */
-} sift_qterm;
-enum { SIFT_REL_ANY, SIFT_REL_SUPERSET /* AND operand */, SIFT_REL_SUBSET /* OR operand, no filter */ };
-
-#define SIFT_SCORE_BUF ((size_t)SIFT_GRP_MAXTIDS * 20 + SIFT_CUR_BUF)
-/* scores and tids of res in heap order; terms whose cursor is not on res->gid contribute 0 */
-uint32_t sift_grp_score(const sift_grp *res, const sift_qterm *t, int nt, const sift_norms *nm, float *score, sift_tid *tids, uint8_t *buf);
-
-/*
- * Top-k: document-at-a-time over groups with group-level score bounds.
- * A group whose bound sum_t w_t * ub_t / 255 is below the current k-th
- * score is skipped before any offset bitmap or tf is decoded.  filter is an
- * optional extra AND operand (predicate bitmap, liveness, ...).
- */
-typedef struct { sift_tid tid; float score; } sift_hit;
-typedef struct { uint64_t groups, skipped, scored; } sift_topk_stats;
-typedef struct {
-	sift_qterm *t;       /* rel is set by sift_topk */
-	int nt, conj;        /* conj: AND of all terms, else OR; sets every term's rel */
-	sift_cur *filter;
-	const sift_norms *nm;
-	uint32_t k;
-	int exhaustive;      /* disable bound skipping (reference runs) */
-} sift_topk_q;
-#define SIFT_TOPK_BUF (SIFT_SCORE_BUF + (size_t)SIFT_GRP_MAXTIDS * 12 + 2 * SIFT_CUR_BUF)
-uint32_t sift_topk(const sift_topk_q *q, sift_hit *hits, uint8_t *buf, sift_topk_stats *st);  /* hits sorted best first */
-
-/* Facets: counts[v] += |q AND val[v]| for every value bitmap, streaming q once */
-void sift_facets(sift_cur *q, sift_cur **val, int nv, uint64_t *counts);
-
 #endif

@@ -55,8 +55,8 @@ add_library(sift_engine OBJECT ${portable} ${HOST} ${GLUE})
 target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_INCDIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
-  # the codec's names are those of two UDFs
-  sift_count=codec_count sift_topk=codec_topk)
+  # the codec's name is that of a UDF
+  sift_count=codec_count)
 target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -Wno-declaration-after-statement
   -Wno-unused-function -Wno-misleading-indentation -fvisibility=hidden)
 # the portable x86-64 baseline; -march=x86-64 is an error on other architectures

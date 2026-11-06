@@ -20,7 +20,6 @@ typedef struct {
 	uint32_t (*tids)(const sift_grp *g, const uint64_t *mask, sift_tid *out);
 	uint32_t (*ranks)(const sift_grp *src, const sift_grp *sub, uint32_t *rank);
 	void (*vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t nwords, int op);
-	void (*bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w);
 	/* the bit of the high bits (the bytes up to end) where the h-th zero is, and the ones before it (h >= 1; no h-th zero: the bit after the last byte and all the ones) */
 	uint64_t (*ef_rank)(const uint8_t *highs, const uint8_t *end, uint64_t h, uint64_t *pos);
 } sift_kernels;
@@ -340,17 +339,8 @@ static void KFN(vop)(uint64_t *o, const uint64_t *a, const uint64_t *b, size_t n
 	}
 }
 
-/* score[pos[i]] (or score[i]) += w * (tf[i] / (tf[i] + kn[...])): the exact BM25 op order */
-static __attribute__((unused)) void KFN(bm25)(float *score, const float *kn, const float *tf, const uint32_t *pos, uint32_t n, float w)
-{
-	if (pos)
-		for (uint32_t i = 0; i < n; i++) score[pos[i]] += w * (tf[i] / (tf[i] + kn[pos[i]]));
-	else
-		for (uint32_t i = 0; i < n; i++) score[i] += w * (tf[i] / (tf[i] + kn[i]));
-}
-
 #define SIFT_KERN_TABLE                                                                                       \
 	{ KFN(popcount), KFN(and2), KFN(or2), KFN(andnot), KFN(and_count), KFN(count_mask), KFN(tids), KFN(ranks), \
-	  KFN(vop), KFN(bm25), KFN(ef_rank) }
+	  KFN(vop), KFN(ef_rank) }
 
 #endif

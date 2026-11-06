@@ -1,5 +1,5 @@
 /*
- * bm25/bitmap_int.h - shared between bitmap.c, blob.c and topk.c.
+ * bm25/bitmap_int.h - shared between bitmap.c and blob.c.
  */
 #ifndef SIFT_BITMAP_INT_H
 #define SIFT_BITMAP_INT_H

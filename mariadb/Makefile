@@ -18,12 +18,12 @@ SIFT_VERSION ?= $(shell cat $(HERE)/VERSION)
 MDB_VER := $(shell sed -n 's/^\#define MYSQL_SERVER_VERSION[[:space:]]*"\(.*\)"/\1/p' $(MDB_INC)/mysql_version.h)
 CC      ?= gcc
 
-# -Dsift_count/-Dsift_topk: the codec's names are those of two UDFs
+# -Dsift_count: the codec's name is that of a UDF
 CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -MMD -MP -Wall \
           -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation $(SIFT_BASE_ISA) \
           -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) $(SIFT_INC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
           -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
-          -Dsift_count=codec_count -Dsift_topk=codec_topk
+          -Dsift_count=codec_count
 LIBS    = -lm -lpthread -ldl
 # what the UDFs take from the server process (isa-check: nothing else may stay undefined)
 SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler

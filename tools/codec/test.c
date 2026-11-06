@@ -316,89 +316,6 @@ static void test_chunk_edges(void)
 	}
 }
 
-/* top-k and facets on small block ranges against exhaustive float scoring */
-static void test_topk(set *s, sift_tid *ref, sift_tid *tmp)
-{
-	static uint32_t rowstart[3000];
-	static float knorm[3000 * 512];
-	static uint8_t tkbuf[SIFT_TOPK_BUF];
-	static sift_hit hits[64], rh[MAXN * 3];
-	static uint8_t ub[3][MAXN];
-	uint64_t base = rnd() % 2 ? 0 : 0xffffffffull - 2999;
-	for (int i = 0; i < 3; i++) gen(&s[i], 1 + rndn(rnd() % 2 ? 300 : 20000), base, 1 + rndn(2999), 1 + rndn(291));
-	for (uint32_t p = 0; p < 3000; p++) rowstart[p] = p * 512;
-	for (uint32_t i = 0; i < 3000 * 512; i++) knorm[i] = 0.3f + (float)(rnd() % 1000) / 400.0f;
-	sift_norms nm = { rowstart, knorm, (uint32_t)base };
-	float w[3] = { 1.5f, 0.7f, 2.25f };
-	/* exact bounds: ub = ceil(255 * tf / (tf + K)) */
-	for (int i = 0; i < 3; i++)
-		for (uint32_t j = 0; j < s[i].n; j++) {
-			float tf = (float)sift_tf_quant(s[i].tf[j]), kn = knorm[rowstart[SIFT_BLK(s[i].t[j]) - base] + SIFT_OFF(s[i].t[j]) - 1];
-			ub[i][j] = (uint8_t)ceilf(255.0f * (tf / (tf + kn)));
-		}
-	for (int conj = 0; conj < 2; conj++) {
-		int nt = 2 + (int)rndn(2), filt = rnd() % 3 == 0;
-		sift_cur c[4];
-		sift_qterm qt[3];
-		static const sift_enc_opts eo[] = { { 0, 0, 0, 1 }, { SIFT_GROUPED, 0, 0, 1 }, { SIFT_LIST, 0, 0, 1 } };
-		for (int i = 0; i < nt; i++) {
-			size_t blen = sift_encode(s[i].t, s[i].tf, ub[i], s[i].n, &eo[rndn(3)], blob[i]);
-			sift_cur_blob(&c[i], blob[i], blen, cbuf[i]);
-			qt[i] = (sift_qterm){ &c[i], w[i], 0 };
-		}
-		/* filter: the last set when unused as a term, else a random superset-ish set */
-		set *fs = &s[2];
-		if (filt) sift_cur_tids(&c[3], fs->t, fs->n, cbuf[3]);
-		uint32_t k = 1 + rndn(40);
-		sift_topk_q q = { qt, nt, conj, filt ? &c[3] : NULL, &nm, k, 0 };
-		sift_topk_stats st = { 0, 0, 0 };
-		uint32_t nh = sift_topk(&q, hits, tkbuf, &st);
-		/* reference: candidate set, float scores in term order */
-		set u = { ref, NULL, 0 };
-		memcpy(ref, s[0].t, s[0].n * 8ull), u.n = s[0].n;
-		for (int i = 1; i < nt; i++) {
-			uint32_t m = conj ? ref_and(&u, &s[i], tmp) : ref_or(&u, &s[i], tmp);
-			memcpy(ref, tmp, m * 8ull), u.n = m;
-		}
-		if (filt) u.n = ref_and(&u, fs, tmp), memcpy(ref, tmp, u.n * 8ull);
-		for (uint32_t x = 0; x < u.n; x++) {
-			float sc = 0;
-			float kn = knorm[rowstart[SIFT_BLK(ref[x]) - base] + SIFT_OFF(ref[x]) - 1];
-			for (int i = 0; i < nt; i++) {
-				sift_tid *f = bsearch(&ref[x], s[i].t, s[i].n, 8, sift_cmp_u64);
-				if (f) {
-					float tf = (float)sift_tf_quant(s[i].tf[f - s[i].t]);
-					sc += w[i] * (tf / (tf + kn));
-				}
-			}
-			rh[x] = (sift_hit){ ref[x], sc };
-		}
-		/* sort reference best first: score desc, tid asc */
-		for (uint32_t x = 1; x < u.n; x++) {
-			sift_hit v = rh[x];
-			uint32_t y = x;
-			for (; y && (rh[y - 1].score < v.score || (rh[y - 1].score == v.score && rh[y - 1].tid > v.tid)); y--) rh[y] = rh[y - 1];
-			rh[y] = v;
-			if (x > 4000) break; /* bounded insertion sort; skip check below for huge sets */
-		}
-		if (u.n <= 4001) {
-			uint32_t want = u.n < k ? u.n : k;
-			int ok = nh == want;
-			for (uint32_t x = 0; ok && x < want; x++) ok = hits[x].tid == rh[x].tid && hits[x].score == rh[x].score;
-			CHECK(ok, "topk conj %d nt %d filt %d k %u: %u vs %u", conj, nt, filt, k, nh, want);
-		}
-	}
-	/* facets: counts of s[0] AND each value set */
-	sift_cur qc, vc[2], *vk[2] = { &vc[0], &vc[1] };
-	uint64_t cnt[2] = { 0, 0 };
-	size_t qlen = sift_encode(s[0].t, NULL, NULL, s[0].n, NULL, blob[0]);
-	sift_cur_blob(&qc, blob[0], qlen, cbuf[0]);
-	sift_cur_tids(&vc[0], s[1].t, s[1].n, cbuf[1]);
-	sift_cur_tids(&vc[1], s[2].t, s[2].n, cbuf[2]);
-	sift_facets(&qc, vk, 2, cnt);
-	CHECK(cnt[0] == ref_and(&s[0], &s[1], tmp) && cnt[1] == ref_and(&s[0], &s[2], tmp), "facets");
-}
-
 int main(int argc, char **argv)
 {
 	int iters = argc > 1 ? atoi(argv[1]) : 3000;
@@ -420,7 +337,6 @@ int main(int argc, char **argv)
 			test_ops(&s[0], &s[1], &s[2], ref, tmp);
 			test_chunks(&s[0], tmp);
 			if (it == 0) test_chunk_edges();
-			if (it % 4 == 0) test_topk(s, ref, tmp);
 		}
 		printf("%s: %ld checks, %ld failures\n", sift_isa_name(isa), checks - c0, fails - f0);
 	}
