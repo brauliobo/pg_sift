@@ -329,6 +329,13 @@ sift_wbuf_close(SiftWbufReader *r)
 }
 
 void
+sift_wbuf_note_walked(const SiftWbufReader *r)
+{
+	if (r->entry.kind == SIFT_SEG_WBUF_OPEN)
+		sift_maint_wbuf_walked(r->index, r->entry.gen, r->ndocs);
+}
+
+void
 sift_wbuf_totals(const SiftWbufReader *r, uint64 *ndocs, uint64 *sum_dl)
 {
 	*ndocs = r->ndocs;

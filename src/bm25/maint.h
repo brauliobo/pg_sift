@@ -212,5 +212,10 @@ extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_read_promote_worker_main(Datum main_arg);
+
+/* A search walked docs documents of the open write buffer of generation gen (bm25/maint.c): what the promotion of the buffer is weighed against */
+extern void sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs);
+extern bool sift_maint_wbuf_read_due(Relation index);
 
 #endif							/* SIFT_MAINT_H */

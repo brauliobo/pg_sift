@@ -74,6 +74,9 @@ typedef bool (*SiftWbufPageFilter) (void *arg, const uint64 *bloom);
 
 extern bool sift_wbuf_bloom_has(const uint64 *bloom, uint32 hash);
 
+/* A search read the documents of the pages the reader loaded: what the promotion of an open buffer is weighed against (bm25/maint.c) */
+extern void sift_wbuf_note_walked(const SiftWbufReader *r);
+
 extern SiftWbufReader *sift_wbuf_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt,
 									SiftWbufPageFilter filter, void *filter_arg);
 extern bool sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc);

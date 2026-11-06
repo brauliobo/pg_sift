@@ -44,6 +44,7 @@
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/ops.h"
+#include "col/wbuf.h"
 #include "core/sql.h"
 #include "core/visibility.h"
 
@@ -791,6 +792,67 @@ sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx)
 }
 
 /*
+ * What a document of the open write buffer costs each query that walks it (its page passed the bloom filter, which a 256-bit bloom on 900 and more terms a page lets nearly all
+ * pages do: 170 cycles for an absent term, 440 for a term of 5% of the documents, against 80 once it is in a segment) and what the promotion costs, once (55,000 cycles a
+ * document: 295 M cycles for 5,000, 95 ms with the WAL). Cycles, measured on 200,000 documents with a 5,000-document buffer.
+ */
+#define WBUF_WALK_PRICE			250.0
+#define WBUF_PROMOTE_PRICE		55000.0
+/* a maintenance step counts at half, and a buffer under this many documents is not worth a segment (a segment costs every later query about 140,000 cycles, the walk of 600 documents) */
+#define WBUF_PROMOTE_HALF		0.5
+#define WBUF_READ_MIN_DOCS		2000
+
+/*
+ * Have the queries that walked the open write buffer paid for its promotion? A buffer nobody reads has no walks noted, so a table that is only written never promotes before
+ * its limit, and the sum is per generation of the buffer, so one promotion ends the debt.
+ */
+bool
+sift_maint_wbuf_read_due(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		due = false;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs && !due; i++)
+	{
+		double		paid;
+		uint64		ndocs,
+					sum_dl,
+					npages;
+
+		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
+			continue;
+		paid = (double) sift_cwbuf_decoded(index, snap->segs[i].gen) * WBUF_WALK_PRICE;
+		if (paid < WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * WBUF_READ_MIN_DOCS)
+			continue;
+		sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
+		due = ndocs >= WBUF_READ_MIN_DOCS && paid >= WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * (double) ndocs;
+	}
+	pfree(snap);
+	return due;
+}
+
+/* A search walked docs documents of the open buffer of generation gen: note them, and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
+void
+sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
+{
+	static Oid	looked = InvalidOid;
+	static TimestampTz looked_at = 0;
+	TimestampTz now;
+
+	sift_cwbuf_decoded_note(index, gen, docs);
+	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	now = GetCurrentTimestamp();
+	if (looked == RelationGetRelid(index) && now - looked_at < (int64) sift_maintenance_naptime * 1000)
+		return;
+	looked = RelationGetRelid(index);
+	looked_at = now;
+	if (sift_maint_wbuf_read_due(index))
+		sift_maint_request_worker(index, "sift_read_promote_worker_main");
+}
+
+/*
  * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees are
  * reusable by the next step, because neither its xid nor its xmin hold the horizon back once it
  * committed. The worker lock makes it the only worker of the index at work; the others leave.
@@ -828,13 +890,28 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
  * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM.
  * The last look is made after the window ended, so every such seal is before it.
  */
-void
-sift_maint_worker_main(Datum main_arg)
+static void
+worker_main(Datum main_arg, bool seal)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 
+	if (seal)
+	{
+		Relation	index;
+
+		StartTransactionCommand();
+		index = sift_try_open_index(indexoid, RowExclusiveLock);
+		if (index != NULL)
+		{
+			/* judged again: the buffer may have been promoted since the reads asked */
+			if (is_sift(index) && sift_maint_wbuf_read_due(index))
+				sift_wbuf_seal(index, true);
+			index_close(index, RowExclusiveLock);
+		}
+		CommitTransactionCommand();
+	}
 	for (;;)
 	{
 		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
@@ -846,6 +923,19 @@ sift_maint_worker_main(Datum main_arg)
 			break;
 		sift_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
 	}
+}
+
+void
+sift_maint_worker_main(Datum main_arg)
+{
+	worker_main(main_arg, false);
+}
+
+/* The worker that seals the open write buffer first, as the reads that walked it asked */
+void
+sift_read_promote_worker_main(Datum main_arg)
+{
+	worker_main(main_arg, true);
 }
 
 Datum

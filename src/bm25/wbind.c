@@ -284,6 +284,7 @@ bind_wbuf(SiftPlan *p)
 			}
 			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
 		}
+		sift_wbuf_note_walked(r);
 		sift_wbuf_totals(r, &n, &sum);
 		ndocs += n;
 		sum_dl += sum;

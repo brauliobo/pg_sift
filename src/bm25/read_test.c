@@ -10,12 +10,17 @@
 #include "funcapi.h"
 #include "utils/builtins.h"
 
+#include "access/genam.h"
+#include "col/wbuf.h"
 #include "bm25/dict.h"
+#include "bm25/maint.h"
+#include "bm25/wbuf.h"
 #include "bm25/posting.h"
 #include "bm25/segment.h"
 #include "bm25/prefix.h"
 
 PG_FUNCTION_INFO_V1(sift_test_read_stats);
+PG_FUNCTION_INFO_V1(sift_test_wbuf_reads);
 
 /* (reset bool) returns setof (key text, value int8) */
 Datum
@@ -64,6 +69,35 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		memset(&sift_segcache_stats, 0, sizeof(sift_segcache_stats));
 	}
 	return (Datum) 0;
+}
+
+/* (index regclass) -> (walked, ndocs, due): the documents queries walked in the open write buffer of a sift index, the documents it holds and whether their reads have paid for its promotion */
+Datum
+sift_test_wbuf_reads(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	Datum		values[3] = {0, 0, 0};
+	bool		nulls[3] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
+		{
+			uint64		ndocs,
+						sum_dl,
+						npages;
+
+			sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
+			values[0] = Int64GetDatum(sift_cwbuf_decoded(index, snap->segs[i].gen));
+			values[1] = Int64GetDatum(ndocs);
+		}
+	values[2] = BoolGetDatum(sift_maint_wbuf_read_due(index));
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
 #endif							/* SIFT_TESTING */

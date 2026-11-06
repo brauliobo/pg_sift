@@ -213,6 +213,10 @@ CREATE FUNCTION sift._test_col_wbuf_segments(index regclass, OUT gen int8, OUT k
 CREATE FUNCTION sift._test_col_wbuf_reads(index regclass, OUT decoded int8, OUT nrows int8, OUT due bool) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_reads' LANGUAGE C STRICT;
 
+-- the documents queries walked in the open write buffer of a sift (BM25) index, the documents it holds, and whether their promotion is due (sift_maint_wbuf_read_due)
+CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_wbuf_reads' LANGUAGE C STRICT;
+
 -- Column source (src/col/test/test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
 -- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the write buffers, 2 skip the visibility check.
 CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0, OUT tid tid, OUT sb int4) RETURNS SETOF record
