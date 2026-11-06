@@ -15,6 +15,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 | 4.1.1 to 4.1.2 | library only: the extension SQL stays at 4.1, no format changes; the log of a `sift_col` index with `track_changes` that an earlier release wrote is re-checked and re-baselined on its own | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`, no `ALTER INDEX` (after `pg_upgrade`, once for each index: see the section below); going back to 4.1.1 needs nothing first ([notes](releases/v4.1.2.md)) |
 | 4.1.2 to 4.1.3 | library only: the extension SQL stays at 4.1, no format changes; `REINDEX INDEX CONCURRENTLY` of a `sift_col` index with `track_changes` no longer takes ACCESS EXCLUSIVE on the table | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back to 4.1.2 needs nothing first ([notes](releases/v4.1.3.md)) |
 | 4.1.3 to 4.1.4 | library only: the extension SQL stays at 4.1, no format changes; two wrong answers of the aggregate scan are fixed | install the files and restart the server (a standby too; an open session keeps the old library); no `ALTER EXTENSION pg_sift UPDATE`, no `REINDEX`; going back needs nothing first ([notes](releases/v4.1.4.md)) |
+| a newer pg_sift from 4.1 to 4.2 | six changes of files, plans and one SQL function | [what 4.2 changes](#what-42-changes) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -91,6 +92,54 @@ one row per command (`kind` `reindex` or `rewrite`, the `object`, the `reason`, 
 Only the first warning means wrong results without the command. `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the whole table in the format of `sift.col_format_minor`, so
 schedule it; once it ran the table leaves the list. `REINDEX CONCURRENTLY` cannot run in a transaction block: run the commands one at a time. The check reads the catalogs and
 metapages and cannot fail the update; when it cannot answer (a relation locked by another session) it says so, and `sift.upgrade_commands()` can be run after reconnecting.
+
+## What 4.2 changes
+
+Six changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
+
+1. **A presence leaf for the `jsonb` columns that may be NULL (option `document_present`).** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
+   constraint (a `CHECK` or a domain that forbids NULL is not seen), so `NOT (doc @> x)`, `(doc @> x) IS FALSE`, `NOT (doc ? 'k')` and `doc IS [NOT] NULL`, also in a `FILTER` or a `CASE`, are answered by the index where they read the table.
+   The option takes `auto` (the default), `on`, `off` or a list of columns; `auto` decides when the index is built, writes the columns it chose to the option (`document_present = 'auto: doc, attrs'`) and says so in a NOTICE
+   (`sift_col index "x": 2 automatic choices (document_present, track_changes)`, detail `document_present = doc`); a later `ALTER TABLE .. SET NOT NULL` changes nothing, and `RESET (document_present)` then `REINDEX` decides again. No column
+   format minor changes. Measured on 150,000 documents, 1% to 50% of them without a declared member: `count(*), sum(id) WHERE NOT (doc @> x)` 84.9 M to 7.4 M cycles at 1% and 85.0 M to 9.9 M at 50%, `count(*) WHERE doc IS NULL` 34.9 M to 1.9 M at 5%.
+   The price, on 1,000,000 rows: `CREATE INDEX` +3.7% instructions, an insert +0.8%, the index +5.9% in size at the build (+0.4% after a merge).
+   - *Existing indexes* are not touched: they have no leaf, those forms keep reading the table, and nothing is wrong; `REINDEX` writes the leaf.
+   - *An older library* (4.0 and 4.1, tried with 4.0.5 and 4.1.4 on the files of 4.2) refuses an index that has the leaf: a read, an aggregate included, fails with `sift_col index "x" does not match its column layout` (hint
+     `REINDEX the index.`), a write with `index "x" was built with other column definitions` (hint `Use REINDEX to apply the new options.`), and `sift.col_verify` reports `The metapage does not describe this column layout.`
+     An index with `document_present = off` is read as before. `scripts/upgrade-check.sh --to 4.1` lists the indexes with the leaf as blockers, with the command below.
+   - *Off:* `WITH (document_present = off)` at `CREATE INDEX`; for an index that has it, `ALTER INDEX x SET (document_present = off)` and `REINDEX INDEX x` (do it before a downgrade).
+
+2. **The write buffer of a BM25 (`sift`) index is format 6.** The full pages of the buffer have a bloom of term hashes of 8,192 bits where format 0 has 256, so a search for a term that none of the buffered documents has no longer reads every page
+   of the buffer (220,000 documents and a buffer of 2,000: 1.96 M to 1.23 M cycles). Upgrading takes no step: the buffer that is open at the update keeps format 0 and is read as it is; the next one is format 6, and the first of them
+   raises the metapage of the index to minor 1.6 and nothing lowers it ([FORMATS.md](FORMATS.md)).
+   - *Existing indexes* need nothing; `sift_col` indexes and `sift_table` tables have no such buffer.
+   - *An older library* (4.1 and older) refuses a BM25 index of 1.6 on a read, a `sift.verify` and an insert: `sift index "x" has on-disk format 1.6, this build (pg_sift 4.1) reads formats 1.0 to 1.5`, hint `Install the pg_sift
+     release that wrote the index on every node that reads it, or REINDEX it.` A standby or a node that stays on the older release is such a node. `scripts/upgrade-check.sh --to 4.1` lists the index as a blocker.
+   - *To go back:* install the older release and `REINDEX` the index there (it is built again from the table). *Off:* none; an index that has taken no insert since the update is still format 0.
+
+3. **The aggregate scan is chosen more often for a grouped aggregate of one table.** For a grouped aggregate with no lookup join, no search and no top-N whose normal plan is a sequential scan and a hash of the groups, the scan's own work per row
+   is now priced in the units of the plan it is compared with (PostgreSQL's estimate of that plan runs at about 210 cost units a millisecond, the scan's price at 833), so a scan that was up to 4 times faster is no longer refused as `cost` when its rows are not few:
+   `max(ends - starts)` by tenant over 150,000 rows 18.6 to 7.1 ms, a `COALESCE` measure over 20,000 events 3.4 to 2.1 ms. A statement the scan does not win stays on the normal plan. This changes plans, not files.
+   - *An older library* and the indexes: nothing; a statement is planned by the library that runs. *`REINDEX`:* no.
+   - *Off:* no switch separates this choice; `SET sift.enable_agg = off` (a session, a role or a database) plans the statement as PostgreSQL does without pg_sift, and `sift.explain_why(query)` says why a statement did or did not take the scan.
+
+4. **One rule for `HAVING column IN (SELECT ..)` and `EXISTS (SELECT ..)`, and sub-selects of the groups.** In a plain `GROUP BY`, such a `HAVING` condition is always answered as a filter of the rows, as a semi join the scan runs, where
+   PostgreSQL keeps it above the aggregate and the sub-select ran for each group (`GROUP BY kind_id HAVING kind_id IN (SELECT id FROM kinds WHERE enabled)`: 300,000 rows, 1,000 keys, 40.1 to 0.58 ms); the rows form was the cheaper in all 40 cells measured,
+   at 0.09 to 0.78 of the cycles. A sub-select in the select list or the `HAVING` that reads the group keys or the aggregates is evaluated by the scan once for each group (36.8 to 1.85 ms for 300,000 rows and 1,000 groups). `NOT IN`, `NOT EXISTS`,
+   an expression or a cast of the key, a correlated `IN`, grouping sets and a `HAVING` without `GROUP BY` keep their `HAVING`. The rows are the same (`agg_having_where`: 46 statements equal to the rows with the scan off).
+   - *An older library*, *`REINDEX`:* nothing, no file changes. *Off:* no switch for this rule alone; `sift.enable_agg = off` as above.
+
+5. **A `sift_col` index with `track_changes` repairs its own log in more cases.** The log of an index whose triggers do not vouch for it (after `pg_upgrade`, which makes the triggers again; `pg_restore --disable-triggers`; `ALTER TABLE .. DISABLE TRIGGER ALL` then
+   `ENABLE TRIGGER ALL`; `CREATE INDEX CONCURRENTLY`; `REINDEX CONCURRENTLY`; `DETACH PARTITION`) was checked against the heap on every read until `REINDEX` or `ALTER INDEX`. Now the next `VACUUM`, the first read that checks the heap or the
+   maintenance worker that a write asks for re-baselines it (`ShareUpdateExclusiveLock` only). Triggers enabled for the origin only (what `ENABLE TRIGGER ALL` leaves, `tgenabled = 'O'`) are enabled for all sessions (`'A'`) by the worker, which asks
+   for the lock of `ENABLE TRIGGER` without waiting; triggers you disabled (`'D'`) stay disabled and the reads keep checking the heap. 300,000 rows churned and not vacuumed: the second statement of a grouped count costs 38.1 M instructions and 918 blocks
+   while the log is not vouched, 29.7 M and 467 when it is; after the repair it is 33.9 M and 585 (the repaired log is a little larger, a `VACUUM` or a merge shrinks it).
+   - *Format:* none, no minor changes; answers are right before and after. *`REINDEX`:* not needed. *Off:* none for the repair; `ALTER INDEX x SET (track_changes = 'off')` drops the log and its triggers for an index that should not have them.
+
+6. **`sift.refusal_slugs()` has a fourth column, `action`:** what to change for the slug (the statement, the index or a setting). A function cannot gain a column in place, so `pg_sift--4.1--4.2.sql` drops it and creates it again.
+   **A view that reads `sift.refusal_slugs()` makes `ALTER EXTENSION pg_sift UPDATE` fail** (`cannot drop function refusal_slugs() because other objects depend on it`; the update rolls back and the extension stays at 4.1): drop the view before the
+   update and create it again after it. A function of yours whose body is a string (`LANGUAGE sql` or `plpgsql`) is not a dependency and keeps working; a query that names the columns it reads keeps working. *Files, `REINDEX`:* no. *Off:* none.
 
 ## 3. A newer PostgreSQL major
 
