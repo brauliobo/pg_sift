@@ -92,7 +92,6 @@ struct Dist
 	/* DD_SORT */
 	PairSort   *sort;			/* the number of the group above the value id, as int8 */
 	uint32		nsid;
-	uint32		nsidcap;
 	uint32	   *sid;			/* per group: its sort id + 1 */
 	uint32		sidgroups;
 	uint64	   *cnt;			/* per sort id: distinct values, once sorted */

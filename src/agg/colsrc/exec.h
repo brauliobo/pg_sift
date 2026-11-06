@@ -223,7 +223,6 @@ typedef struct SiftSrcUnitAgg
 	double		min_f;			/* SCV_F64 leaves (NaN is the largest value, as in PostgreSQL's order) */
 	double		max_f;
 	bool		has_sums;		/* integer leaf: sum and sumsq are exact */
-	bool		has_sumsq;		/* sumsq did not overflow int128 */
 	SiftSrcI128 sum;
 	SiftSrcI128 sumsq;
 	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */

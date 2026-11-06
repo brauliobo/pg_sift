@@ -115,7 +115,6 @@ sift_aggpre_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, Si
 	if (a.has_sums)
 	{
 		agg->has_sums = !(a.zflags & SIFT_COLZ_OVERFLOW);
-		agg->has_sumsq = !(a.flags & SIFT_CAGG_SUMSQ_OVF);
 		agg->sum = a.sum;
 		agg->sumsq = a.sumsq;
 	}

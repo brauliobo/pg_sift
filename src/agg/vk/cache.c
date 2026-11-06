@@ -173,7 +173,7 @@ sift_vk_stage(SiftVk *vk, const SiftVkKey *k, const void *words, uint32_t nwords
 			vk->pend = p;
 		if (!c || !p)
 			return false;
-		vk->capcopy = vk->cappend = n;
+		vk->capcopy = n;
 	}
 	s = slab_for(vk, nwords);
 	if (s < 0 || !ent_put(vk, k, (uint32_t) s, vk->slab[s].used))

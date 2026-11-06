@@ -111,7 +111,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	if (to == DD_SORT)
 	{
 		d->sort = psort_begin(ex->cxt, d->budget);
-		d->nsid = d->nsidcap = d->sidgroups = 0;
+		d->nsid = d->sidgroups = 0;
 		d->sid = NULL;
 		ex->n_dist_spilled++;
 	}

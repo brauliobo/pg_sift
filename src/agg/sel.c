@@ -47,7 +47,6 @@ sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
 		return false;
 	}
 	a->compact = (uint64) a->sel.count * SEL_SPARSE <= a->nrow;
-	a->units_compact += a->compact;
 	*nrow = a->compact ? a->sel.count : a->nrow;
 	if (a->compact)
 		compact_idx(a);

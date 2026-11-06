@@ -230,9 +230,6 @@ HASH_GROUP_FN(16)
 static uint32 (*const hash_group_fns[]) (AggExec *, const uint32 *) =
 {hash_group_1, hash_group_2, hash_group_3, hash_group_4, hash_group_5, hash_group_6, hash_group_7, hash_group_8,
  hash_group_9, hash_group_10, hash_group_11, hash_group_12, hash_group_13, hash_group_14, hash_group_15, hash_group_16};
-static uint32 (*const hash_group_hfns[]) (AggExec *, const uint32 *, uint32) =
-{hash_group_h1, hash_group_h2, hash_group_h3, hash_group_h4, hash_group_h5, hash_group_h6, hash_group_h7, hash_group_h8,
- hash_group_h9, hash_group_h10, hash_group_h11, hash_group_h12, hash_group_h13, hash_group_h14, hash_group_h15, hash_group_h16};
 
 /* Wider tuples use the same hash and equality with the plan's actual width. */
 static uint32
@@ -254,7 +251,6 @@ hash_init(AggExec *ex, uint32 groups)
 
 	ex->hash = true;
 	ex->hashg = nk <= lengthof(hash_group_fns) ? hash_group_fns[nk - 1] : hash_group_generic;
-	ex->hashgh = nk <= lengthof(hash_group_hfns) ? hash_group_hfns[nk - 1] : hash_group_generic_h;
 	ex->nhslot = groups > 1024 ? pg_nextpower2_32(groups * 2) : 1024;
 	ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 	ex->ngroups = 0;
