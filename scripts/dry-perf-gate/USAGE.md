@@ -3,6 +3,8 @@
 1. Commit your refactor on your branch, then run (nice 19; with GATE_HEAVY=CMD behind that job-queue wrapper; scratch is tmpfs, GATE_ROOT):
    `scripts/dry-perf-gate.sh --src <your repo> BASE CAND`  e.g. `scripts/dry-perf-gate.sh --src . HEAD~1 HEAD`  (BASE = the parent, or the tip you branched from).
    Not committed yet: `scripts/dry-perf-gate.sh --src . HEAD --worktree .` (candidate = HEAD of `.` plus the uncommitted diff) or `--patch FILE`.
+   The subcommand is `run` (the default, so it can be left out: `dry-perf-gate.sh run --src . HEAD~1 HEAD` is the same); the others are `select BASE [CAND]` (the groups the changed files
+   select), `list` (groups and cases), `baseline BASE` (item 8) and `portable [REF]` (item 11). `--src` is any clone, bare repository or linked worktree of the repository; the gate only reads its objects.
 2. Both sides are built with identical flags (release library, `-D__LINE__=0`, fixed build id). Stripped object files all identical => it prints `PASS-IDENTICAL`
    in about a minute and stops (include trims, comment and whitespace edits, line moves): attach that line.
 3. Otherwise the changed paths select case groups (`scripts/dry-perf-gate/area-map.tsv`; `scripts/dry-perf-gate.sh select BASE CAND` shows them, `--groups g1,g2` or `--cases id,..` override,
