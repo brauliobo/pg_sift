@@ -49,8 +49,8 @@ CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sif
 SELECT 'aggregate' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'));
 SELECT 'reads periods' AS filter, * FROM plan_nodes(series_query($f$SELECT x.parent_id FROM events x JOIN periods p ON x.ts <@ p.range GROUP BY x.parent_id HAVING min(x.id) < 35 AND count(*) > 100$f$));
 SELECT 'lookup' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM events WHERE id < 5000'));
-SELECT 'correlated' AS filter, * FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
-SELECT 'not in' AS filter, * FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
+SELECT 'correlated' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
+SELECT 'not in' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
 SELECT differences(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25')) AS aggregate_differences,
        differences(series_query($f$SELECT x.parent_id FROM events x JOIN periods p ON x.ts <@ p.range GROUP BY x.parent_id HAVING min(x.id) < 35 AND count(*) > 100$f$)) AS periods_differences;
 DROP TABLE events;

@@ -61,16 +61,16 @@ SELECT 'lookup' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM
  lookup |          2 |            0 |             0
 (1 row)
 
-SELECT 'correlated' AS filter, * FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
-   filter   | scan_nodes | hoisted_ctes | hoisted_reads 
-------------+------------+--------------+---------------
- correlated |          0 |            0 |             0
+SELECT 'correlated' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));
+   filter   | hoisted_ctes | hoisted_reads 
+------------+--------------+---------------
+ correlated |            0 |             0
 (1 row)
 
-SELECT 'not in' AS filter, * FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
- filter | scan_nodes | hoisted_ctes | hoisted_reads 
---------+------------+--------------+---------------
- not in |          2 |            0 |             0
+SELECT 'not in' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
+ filter | hoisted_ctes | hoisted_reads 
+--------+--------------+---------------
+ not in |            0 |             0
 (1 row)
 
 SELECT differences(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25')) AS aggregate_differences,
