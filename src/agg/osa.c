@@ -108,7 +108,7 @@ key_f8(uint64 k)
 static inline uint64
 osa_hash(uint32 sid, uint64 key)
 {
-	return sift_fmix64(key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F)));
+	return sift_fmix64(key ^ ((uint64) sid * SIFT_XXP64_2));
 }
 
 Osa *

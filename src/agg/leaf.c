@@ -725,7 +725,7 @@ idmap_init(IdMap *m)
 static inline uint32
 idmap_hash(sift_i128 v)
 {
-	uint64		x = sift_fib64((uint64) v) ^ (uint64) (v >> 64) * UINT64CONST(0xC2B2AE3D27D4EB4F);
+	uint64		x = sift_fib64((uint64) v) ^ (uint64) (v >> 64) * SIFT_XXP64_2;
 
 	x ^= x >> 31;
 	return (uint32) ((x * SIFT_FOLD64) >> 32);

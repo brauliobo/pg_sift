@@ -16,8 +16,8 @@ key_hash(const SiftVkKey *k)
 {
 	uint64_t	h = sift_fib64(k->rel);
 
-	h ^= (k->gen + 0x7F4A7C15ull) * 0xC2B2AE3D27D4EB4Full;
-	h ^= ((uint64_t) k->unit << 20 | k->leaf) * 0x165667B19E3779F9ull;
+	h ^= (k->gen + 0x7F4A7C15ull) * SIFT_XXP64_2;
+	h ^= ((uint64_t) k->unit << 20 | k->leaf) * SIFT_XXP64_3;
 	h ^= h >> 29;
 	h *= 0xBF58476D1CE4E5B9ull;
 	return (uint32_t) (h >> 32);

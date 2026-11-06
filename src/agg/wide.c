@@ -23,7 +23,7 @@
 static uint32
 key_hash(const uint64 *k)
 {
-	uint64		h = sift_fib64(k[0]) ^ (k[1] * UINT64CONST(0xC2B2AE3D27D4EB4F)) ^ (k[2] * UINT64CONST(0x165667B19E3779F9));
+	uint64		h = sift_fib64(k[0]) ^ (k[1] * SIFT_XXP64_2) ^ (k[2] * SIFT_XXP64_3);
 
 	return (uint32) (sift_fold64(h, h >> 31) >> 32);
 }
