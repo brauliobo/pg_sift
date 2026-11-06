@@ -1,4 +1,4 @@
--- The corpus: 241 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: 307 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -527,3 +527,142 @@ select dim_a_id, max(value) filter (where attr = 'attr_1'), max(value) filter (w
 select k.name, r.region, count(e.id) from kinds k cross join (select distinct region from dim_a) r left join events e on e.kind_id = k.id and e.region = r.region where k.id <= 8 group by 1, 2;
 -- @case c2_cross_kinds_regions_sums | join | the same with count(*), a sum and a max, and a condition on the events
 select k.name, r.region, count(*), sum(e.qty), max(e.amount) from kinds k cross join (select distinct region from dim_a) r left join events e on e.kind_id = k.id and e.region = r.region and e.status = 'paid' group by 1, 2;
+-- ===================== range types
+-- @case c3_range_overlap_count | range | spans overlapping a window
+select count(*) from spans where during && daterange('2025-01-01', '2025-03-01');
+-- @case c3_range_bounds_plain | range | the same window through the plain bounds
+select tenant_id, count(*), sum(qty) from spans where starts <= date '2025-06-15' and ends > date '2025-06-15' group by 1;
+-- @case c3_range_group_by_range | range | groups by the range itself
+select during, count(*) from spans where dim_a_id <= 20 group by 1 order by 2 desc limit 10;
+-- ===================== HAVING with sub-selects
+-- @case c3_having_scalar_avg | having | entities whose total is above ten times the average row
+select dim_a_id, sum(amount) from events group by 1 having sum(amount) > (select avg(amount) * 10 from events);
+-- @case c3_having_count_scalar | having | entities with more events than the mean entity
+select dim_a_id, count(*) from events group by 1 having count(*) > (select count(*) / count(distinct dim_a_id) from events);
+-- @case c3_having_in_list | having | groups of entities of one type
+select dim_a_id, count(*), sum(qty) from events group by 1 having dim_a_id in (select id from dim_a where type = 'type_1');
+-- @case c3_having_exists_kind | having | kinds with an enabled row
+select kind_id, count(*) from events group by 1 having exists (select 1 from kinds k where k.id = events.kind_id and k.enabled);
+-- @case c3_having_max_recent | having | entities with an event in the last 30 days of the data
+select dim_a_id, max(d) from events group by 1 having max(d) > (select max(d) - 30 from events);
+-- @case c3_having_avg_region | having | tenants whose average score is above that of one region
+select tenant_id, avg(score) from events group by 1 having avg(score) > (select avg(score) from events where region = 'region_1');
+-- @case c3_having_corr_count | having | entities with more events than rows in a membership table
+select dim_a_id, count(*) from events group by 1 having count(*) > (select count(*) from dim_b b where b.dim_a_id = events.dim_a_id);
+-- @case c3_having_not_exists_deleted | having | entities with no deleted membership
+select dim_a_id, count(*) from events where dim_a_id <= 300 group by 1 having not exists (select 1 from dim_b b where b.dim_a_id = events.dim_a_id and b.deleted_at is not null);
+-- @case c3_having_select_scalar | having | share of the grand total, with the group kept by a sub-select
+select region, sum(amount), sum(amount) / (select sum(amount) from events) from events group by 1 having sum(amount) > (select sum(amount) / 20 from events);
+-- @case c3_having_avg_of_groups | having | regions above the average region count
+select region, count(*) from events group by 1 having count(*) > (select avg(c) from (select count(*) c from events group by region) x);
+-- @case c3_having_two_sub | having | between two sub-selects
+select kind_id, sum(qty) from events group by 1 having sum(qty) > (select min(q) from (select sum(qty) q from events group by kind_id) a) and count(*) < (select max(c) from (select count(*) c from events group by kind_id) b);
+-- ===================== wide tables with many measures
+-- @case c3_wide_sum_all_float | wide | twelve float sums by tenant
+select tenant_id, sum(m01), sum(m02), sum(m03), sum(m04), sum(m05), sum(m06), sum(m07), sum(m08), sum(m09), sum(m10), sum(m11), sum(m12) from wide group by 1;
+-- @case c3_wide_sum_all_int | wide | twelve integer sums by kind
+select kind_id, sum(n01), sum(n02), sum(n03), sum(n04), sum(n05), sum(n06), sum(n07), sum(n08), sum(n09), sum(n10), sum(n11), sum(n12) from wide group by 1;
+-- @case c3_wide_avg_mixed | wide | averages of both kinds by status
+select status, avg(m01), avg(m03), avg(m09), avg(m10), avg(n01), avg(n05), avg(n09), avg(n12) from wide group by 1;
+-- @case c3_wide_minmax | wide | min and max of six measures by tenant
+select tenant_id, min(m01), max(m01), min(m05), max(m05), min(n02), max(n02), min(n07), max(n07), min(m09), max(m09) from wide group by 1;
+-- @case c3_wide_count_cols | wide | count of each nullable measure by kind
+select kind_id, count(*), count(m09), count(m10), count(n09), count(m01), count(n01) from wide group by 1;
+-- @case c3_wide_filter_each | wide | sums with a FILTER of each status
+select tenant_id, sum(m01) filter (where status = 'new'), sum(m01) filter (where status = 'paid'), sum(m02) filter (where status = 'open'), sum(m02) filter (where status = 'closed'), count(*) filter (where status = 'shipped') from wide group by 1;
+-- @case c3_wide_expr_sums | wide | sums of products and sums of columns
+select tenant_id, sum(m01 * m02), sum(m03 + m04), sum(m05 - m06), sum(n01 * n02), sum(m07 / nullif(m08, 0)) from wide group by 1;
+-- @case c3_wide_three_keys | wide | ten measures by three keys
+select tenant_id, status, kind_id, sum(m01), sum(m02), sum(m03), sum(m04), sum(m05), avg(n01), avg(n02), max(n03), min(n04), count(*) from wide group by 1, 2, 3;
+-- @case c3_wide_ungrouped_many | wide | twenty aggregates over the whole table
+select count(*), sum(m01), sum(m02), sum(m03), sum(m04), avg(m05), avg(m06), avg(m07), avg(m08), min(m09), max(m10), sum(n01), sum(n02), sum(n03), avg(n04), avg(n05), min(n06), max(n07), sum(n08), sum(n09), sum(n10) from wide;
+-- @case c3_wide_stddev | wide | spread of six measures by status
+select status, stddev(m01), variance(m02), stddev(m03), stddev(n01), variance(n02), stddev(n03) from wide group by 1;
+-- @case c3_wide_live_only | wide | twelve sums over the rows that are not deleted
+select tenant_id, sum(m01), sum(m02), sum(m03), sum(m04), sum(n01), sum(n02), sum(n03), sum(n04), count(*) from wide where deleted_at is null group by 1;
+-- @case c3_wide_deleted_share | wide | deleted share of the sum by tenant
+select tenant_id, sum(m01) filter (where deleted_at is not null) / nullif(sum(m01), 0), count(*) filter (where deleted_at is not null) from wide group by 1;
+-- @case c3_wide_month_series | wide | six measures by month
+select date_trunc('month', created_at) m, sum(m01), sum(m02), avg(m03), max(n01), count(*) from wide where deleted_at is null group by 1;
+-- ===================== many small groups and few huge ones
+-- @case c3_groups_label_count | groups | one group for each of 50,000 labels
+select label, count(*) from events group by 1;
+-- @case c3_groups_label_having | groups | labels that repeat
+select label, count(*), sum(amount) from events group by 1 having count(*) > 5;
+-- @case c3_groups_entity_kind | groups | one group for each entity and kind
+select dim_a_id, kind_id, count(*), sum(qty) from events group by 1, 2;
+-- @case c3_groups_entity_day | groups | one group for each entity and day
+select dim_a_id, d, count(*) from events group by 1, 2;
+-- @case c3_groups_top_labels | groups | the ten busiest labels
+select label, count(*) from events group by 1 order by 2 desc, 1 limit 10;
+-- @case c3_groups_one_group | groups | a constant group over every row
+select count(*), sum(amount), avg(qty) from events group by ();
+-- @case c3_groups_distinct_entities | groups | distinct entities by tenant and region
+select tenant_id, region, count(distinct dim_a_id), count(distinct kind_id) from events group by 1, 2;
+-- @case c3_groups_ids_modulo | groups | groups of a hashed id
+select (id % 5000) g, count(*), sum(amount) from events group by 1;
+-- ===================== tenant and soft-delete filters
+-- @case c3_tenant_status | tenant | one tenant by status
+select status, count(*), sum(amount) from events where tenant_id = 7 group by 1;
+-- @case c3_tenant_in_list | tenant | five tenants by month
+select tenant_id, date_trunc('month', created_at) m, count(*) from events where tenant_id in (3, 7, 11, 19, 23) group by 1, 2;
+-- @case c3_tenant_range_created | tenant | one tenant in a window
+select kind_id, count(*), avg(amount) from events where tenant_id = 12 and created_at >= '2025-01-01' and created_at < '2025-04-01' group by 1;
+-- @case c3_tenant_live_wide | tenant | one tenant's live rows
+select status, count(*), sum(m01), avg(n01) from wide where tenant_id = 5 and deleted_at is null group by 1;
+-- @case c3_tenant_deleted_only | tenant | deleted rows of a tenant by month
+select date_trunc('month', deleted_at) m, count(*), sum(m02) from wide where tenant_id = 9 and deleted_at is not null group by 1;
+-- @case c3_tenant_join_dim | tenant | tenant plan through the dimension
+select t.plan, count(*), sum(e.amount) from events e join dim_a a on a.id = e.dim_a_id join tenants t on t.id = a.tenant_id where e.tenant_id <= 25 group by 1;
+-- ===================== window frames over aggregates
+-- @case c3_frame_centered | frame | three-month centered moving sum
+select m, s, sum(s) over (order by m rows between 1 preceding and 1 following) from (select date_trunc('month', d) m, sum(amount) s from events group by 1) t;
+-- @case c3_frame_range_days | frame | seven-day range average of daily counts
+select d, c, avg(c) over (order by d range between interval '6 days' preceding and current row) from (select d, count(*) c from events where d >= '2025-01-01' and d < '2025-04-01' group by 1) t;
+-- @case c3_frame_running | frame | running total by month
+select m, s, sum(s) over (order by m rows between unbounded preceding and current row) from (select date_trunc('month', d) m, sum(amount) s from events group by 1) t;
+-- @case c3_frame_following | frame | total from each month to the end
+select m, s, sum(s) over (order by m rows between current row and unbounded following) from (select date_trunc('month', d) m, sum(amount) s from events group by 1) t;
+-- @case c3_frame_groups | frame | groups frame over equal counts
+select c, n, sum(n) over (order by c groups between 1 preceding and current row) from (select count(*) c, count(distinct dim_a_id) n from events group by tenant_id) t;
+-- @case c3_frame_interval_range | frame | one-month range window over timestamps
+select m, s, sum(s) over (order by m range between interval '1 month' preceding and current row) from (select date_trunc('month', created_at) m, sum(qty) s from events group by 1) t;
+-- @case c3_frame_first_last | frame | first and last value of a partition frame
+select tenant_id, m, s, first_value(s) over w, last_value(s) over w from (select tenant_id, date_trunc('quarter', d) m, sum(amount) s from events where tenant_id <= 5 group by 1, 2) t window w as (partition by tenant_id order by m rows between unbounded preceding and unbounded following);
+-- @case c3_frame_lag_lead | frame | previous and next quarter
+select q, s, lag(s, 2) over (order by q), lead(s) over (order by q) from (select date_trunc('quarter', d) q, sum(amount) s from events group by 1) t;
+-- @case c3_frame_ntile | frame | quartile of entities by total
+select dim_a_id, s, ntile(4) over (order by s desc) from (select dim_a_id, sum(amount) s from events where dim_a_id <= 400 group by 1) t;
+-- @case c3_frame_percent_rank | frame | rank shares of kinds
+select kind_id, c, percent_rank() over (order by c), cume_dist() over (order by c) from (select kind_id, count(*) c from events group by 1) t;
+-- @case c3_frame_partition_rows | frame | per-tenant moving sum of three months
+select tenant_id, m, sum(s) over (partition by tenant_id order by m rows between 2 preceding and current row) from (select tenant_id, date_trunc('month', d) m, sum(qty) s from events where tenant_id <= 8 group by 1, 2) t;
+-- @case c3_frame_exclude | frame | moving sum without the current row
+select m, s, sum(s) over (order by m rows between 2 preceding and 2 following exclude current row) from (select date_trunc('month', d) m, sum(qty) s from events group by 1) t;
+-- @case c3_frame_nth_value | frame | second best month per tenant
+select tenant_id, m, nth_value(s, 2) over (partition by tenant_id order by s desc rows between unbounded preceding and unbounded following) from (select tenant_id, date_trunc('month', d) m, sum(amount) s from events where tenant_id <= 6 group by 1, 2) t;
+-- ===================== GROUPING SETS, ROLLUP and CUBE
+-- @case c3_gs_rollup_tenant_status | gsets | rollup of tenant and status
+select tenant_id, status, count(*), sum(amount) from events where tenant_id <= 10 group by rollup (tenant_id, status);
+-- @case c3_gs_cube_region_status | gsets | cube of region and status
+select region, status, count(*), avg(score) from events group by cube (region, status);
+-- @case c3_gs_sets_three | gsets | region, status and the total
+select region, status, count(*), sum(qty) from events group by grouping sets ((region), (status), ());
+-- @case c3_gs_grouping_fn | gsets | the grouping() flag kept by a HAVING
+select region, kind_id, grouping(region, kind_id) g, count(*) from events group by rollup (region, kind_id) having grouping(region, kind_id) < 3;
+-- @case c3_gs_rollup_month | gsets | rollup of year and month
+select extract(year from d) y, extract(month from d) m, count(*), sum(amount) from events group by rollup (1, 2);
+-- @case c3_gs_filtered | gsets | grouping sets under a filter
+select region, status, count(*) from events where kind_id <= 10 and created_at >= '2025-01-01' group by grouping sets ((region, status), (region), (status));
+-- @case c3_gs_cube_three | gsets | cube of three small columns
+select region, status, kind_id % 3 k, count(*) from events group by cube (region, status, kind_id % 3);
+-- @case c3_gs_rollup_limit | gsets | rollup with order and limit
+select tenant_id, kind_id, sum(amount) s from events group by rollup (tenant_id, kind_id) order by s desc nulls last limit 20;
+-- @case c3_gs_count_distinct | gsets | count distinct under rollup
+select region, status, count(distinct dim_a_id) from events group by rollup (region, status);
+-- @case c3_gs_join_rollup | gsets | rollup over a join
+select a.type, a.region, count(*), sum(e.amount) from events e join dim_a a on a.id = e.dim_a_id group by rollup (a.type, a.region);
+-- @case c3_gs_rollup_avg | gsets | rollup of kind and status with averages
+select kind_id, status, avg(amount), avg(qty), max(score) from events where kind_id <= 12 group by rollup (kind_id, status);
+-- @case c3_gs_wide_rollup | gsets | rollup over the wide table
+select tenant_id, status, sum(m01), sum(m02), sum(n01), count(*) from wide where tenant_id <= 12 group by rollup (tenant_id, status);

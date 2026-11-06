@@ -48,6 +48,7 @@ extern void group_by(Query *q, TargetEntry *te);
 extern bool group_aggregate_lateral(Query *q, bool apply);
 extern void flat_inner_items(Node *n, List **rtis, List **quals);
 extern void flat_ungroup(Query *q);
+extern Node *flat_ungroup_expr(Query *q, Node *n);
 extern bool flat_picks_rows(Node *c);
 extern bool flat_addable(Aggref *a);
 extern Node *flat_add_up(Aggref *a, Node *part);

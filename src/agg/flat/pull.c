@@ -243,6 +243,7 @@ flatten_query(Query *q, bool apply)
 	foreach_node(RangeTblEntry, rte, q->rtable)
 		if (rte->rtekind == RTE_SUBQUERY)
 			changed |= flatten_query(rte->subquery, apply);
+	changed |= sift_agg_having_to_where(q, apply);
 	if (q->hasSubLinks)
 		query_tree_walker(q, flatten_sublinks, &sublinks, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
 	changed |= sublinks.changed;

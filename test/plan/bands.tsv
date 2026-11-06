@@ -162,6 +162,8 @@ table	float_sum_unrounded	scan	0.071	0.28
 table	global	scan	0.033	0.13
 table	groups_over_threshold	scan	0.072	0.23
 table	having	either	0.042	0.17
+table	having_in_parents	scan	0.060	0.24
+table	having_not_exists_parents	scan	0.043	0.17
 table	in_active_parents	scan	0.080	0.23
 table	in_constants	scan	0.038	0.15
 table	in_expr_key	scan	0.080	0.32
@@ -417,6 +419,8 @@ tabletuned	float_sum_unrounded	scan	0.021	0.084
 tabletuned	global	scan	0.0093	0.037
 tabletuned	groups_over_threshold	scan	0.019	0.060
 tabletuned	having	either	0.012	0.047
+tabletuned	having_in_parents	scan	0.016	0.064
+tabletuned	having_not_exists_parents	scan	0.017	0.068
 tabletuned	in_active_parents	scan	0.022	0.067
 tabletuned	in_constants	scan	0.016	0.066
 tabletuned	in_expr_key	scan	0.024	0.094
@@ -672,6 +676,8 @@ tuned	float_sum_unrounded	scan	0.037	0.15
 tuned	global	scan	0.016	0.063
 tuned	groups_over_threshold	scan	0.033	0.11
 tuned	having	either	0.19	0.77
+tuned	having_in_parents	scan	0.027	0.11
+tuned	having_not_exists_parents	scan	0.025	0.100
 tuned	in_active_parents	scan	0.038	0.12
 tuned	in_constants	scan	0.016	0.065
 tuned	in_expr_key	scan	0.040	0.16

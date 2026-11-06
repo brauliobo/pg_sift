@@ -32,19 +32,51 @@ typedef struct Ungroup
 {
 	Index		rti;
 	List	   *exprs;
+	int			depth;			/* the sub-selects the walk is in: their columns of the entry are Vars of that many levels up */
 } Ungroup;
 
 /* a column of the entry that stands for the grouping is the expression it groups by */
 static Node *
 ungroup_column(Node *n, Ungroup *u)
 {
+	Node	   *r;
+
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varno == u->rti)
-		return copyObject(list_nth(u->exprs, ((Var *) n)->varattno - 1));
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == u->depth && ((Var *) n)->varno == u->rti)
+	{
+		r = copyObject(list_nth(u->exprs, ((Var *) n)->varattno - 1));
+		IncrementVarSublevelsUp(r, u->depth, 0);
+		return r;
+	}
+	if (IsA(n, Query))
+	{
+		u->depth++;
+		r = (Node *) query_tree_mutator((Query *) n, ungroup_column, u, 0);
+		u->depth--;
+		return r;
+	}
 	return expression_tree_mutator(n, ungroup_column, u);
 }
 #endif
+
+/* the expression of the query with the columns of its grouping entry as the expressions they group by (a sub-select of it included) */
+Node *
+flat_ungroup_expr(Query *q, Node *n)
+{
+#if PG_VERSION_NUM >= 180000
+	Ungroup		u;
+
+	if (!q->hasGroupRTE)
+		return n;
+	u.rti = list_length(q->rtable);
+	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
+	u.depth = 0;
+	return ungroup_column(n, &u);
+#else
+	return n;
+#endif
+}
 
 typedef struct DecorOut
 {
@@ -126,14 +158,10 @@ void
 flat_ungroup(Query *q)
 {
 #if PG_VERSION_NUM >= 180000
-	Ungroup		u;
-
 	if (!q->hasGroupRTE)
 		return;
-	u.rti = list_length(q->rtable);
-	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
-	q->targetList = (List *) ungroup_column((Node *) q->targetList, &u);
-	q->havingQual = ungroup_column(q->havingQual, &u);
+	q->targetList = (List *) flat_ungroup_expr(q, (Node *) q->targetList);
+	q->havingQual = flat_ungroup_expr(q, q->havingQual);
 	q->rtable = list_delete_last(q->rtable);
 	q->hasGroupRTE = false;
 #endif
