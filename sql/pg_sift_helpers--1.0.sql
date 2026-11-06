@@ -690,3 +690,18 @@ BEGIN
 	DROP TABLE r_sift, r_pg;
 	RETURN n = 0;
 END $$;
+
+-- agg_plan_and_differences: rows of q with the pushdown and how many differ from the normal plan, in a transaction; plan_label is what the caller says of the plan
+-- (its own plan_of(q), evaluated before this runs, so that each test keeps the way it names a plan)
+CREATE FUNCTION sift_helpers.agg_plan_and_differences(plan_label text, q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_label;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;

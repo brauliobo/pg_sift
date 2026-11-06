@@ -2,6 +2,7 @@
 -- function. Its rows are those of PostgreSQL's own plan of it, run once when the scan starts, so the result is the one of the normal plan
 -- (docs/AGG.md, "Joins"). Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the btree and bitmap plans from looking cheap as well
@@ -32,18 +33,7 @@ BEGIN
 	RETURN r || j;
 END $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 -- VALUES: a repeated key joins once per row of the list, a NULL key joins nothing, LEFT keeps what has no row once
 SELECT * FROM same($$SELECT m.label, count(*) AS n, sum(amount) AS s FROM ev e JOIN (VALUES ('north', 'N'), ('north', 'Nord'), ('east', 'E'), (NULL, 'none')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
@@ -145,4 +135,5 @@ ROLLBACK;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
 DROP TABLE ev, tenants, tags;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

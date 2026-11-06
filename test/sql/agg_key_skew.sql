@@ -5,6 +5,7 @@
 -- heaviest parents from one of the rarest, so both take the same plan; every statement is also run with sift.enable_agg = off: the rows must
 -- be the same.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
@@ -37,18 +38,7 @@ BEGIN
 	RETURN CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
 END $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
-	RESET sift.enable_agg;
-	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
-	DROP TABLE r_on, r_off;
-	RETURN NEXT;
-END $$;
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 
 CREATE FUNCTION in_list(tbl text, grp int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT f.kind, count(*) AS n, round(sum(f.amount)::numeric, 3) AS amount FROM %s f
@@ -71,4 +61,5 @@ FROM (VALUES ('ks_events', 1), ('ks_events', 2), ('ks_flat', 1), ('ks_flat', 2))
 
 DROP FUNCTION in_list(text, int), join_list(text, int), plan_of(text, text), same(text);
 DROP TABLE ks_events, ks_flat, ks_pick;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
