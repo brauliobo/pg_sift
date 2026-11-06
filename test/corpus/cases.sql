@@ -755,6 +755,8 @@ select sum(case when attrs ? 'a' then qty else 0 end), sum(case when attrs ? 'b'
 select count(*) filter (where (attrs ? 'a') is not true), count(*) filter (where (attrs ? 'a' or attrs ? 'b') is not true) from events;
 -- @case c3_jsonb_key_read | pred | the value of a key read beside the test of the key, a number and a text, by tenant
 select tenant_id, sum((attrs ->> 'a')::float8) filter (where attrs ? 'a') s, max(attrs ->> 'b') filter (where attrs ? 'b') m, count(*) filter (where attrs ? 'a') c from events group by 1;
+-- @case c3_jsonb_key_read_and | pred | the value of a key compared inside the filter of the key test, by tenant
+select tenant_id, sum((attrs ->> 'a')::float8) filter (where attrs ? 'a' and (attrs ->> 'a')::float8 > 100) s, count(*) filter (where attrs ? 'a' and (attrs ->> 'a')::float8 < 50) c from events group by 1;
 
 -- ===================== HAVING: conditions on the groups, after the GROUP BY (a WHERE is a condition of the rows, before it)
 -- @case having_count_gt | having | HAVING count(*) above a bound

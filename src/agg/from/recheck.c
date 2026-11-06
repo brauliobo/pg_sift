@@ -159,11 +159,32 @@ scalar_text_type(Oid typid)
 	return typid == BOOLOID || typid == INT4OID || typid == INT8OID || typid == FLOAT8OID;
 }
 
-/* a comparison, IN list, NULL test or boolean expression of the leaf alone, over the rows, that cannot raise by itself: a row the leaf cannot read passes it (pass_poison) */
+/*
+ * a comparison, IN list, NULL test or boolean expression of the leaf alone, over the rows, that cannot raise by itself: a row the leaf cannot read passes it (pass_poison); or an AND of
+ * them and the key tests (doc ? 'k') of the leaf, in any order: a row whose value the leaf cannot read has the key, so a test of the key before the comparison drops it no more than after.
+ */
 static bool
-scalar_test(const SiftAggPred *p, int leaf)
+scalar_test(AggCtx *c, const SiftAggPred *p, int leaf)
 {
+	if (p->kind == SAP_AND && p->level == 0 && !p->late && p->nchild > 0)
+	{
+		bool		ok = true;
+
+		for (int i = 0; i < p->nchild; i++)
+			ok = ok && (scalar_test(c, p->child[i], leaf) || (p->child[i]->kind == SAP_TYPE && p->child[i]->leaf == leaf && bms_is_member(leaf, c->haskey)));
+		return ok;
+	}
 	return p->level == 0 && !p->late && p->nchild == 0 && p->leaf == leaf && p->leaf2 < 0 && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT);
+}
+
+/* the rows a test of the leaf cannot read pass the tests of it: the comparisons of an AND are marked one by one */
+static void
+pass_poison_reads(AggCtx *c, SiftAggPred *p, const Bitmapset *read)
+{
+	for (int i = 0; i < p->nchild; i++)
+		pass_poison_reads(c, p->child[i], read);
+	if (p->nchild == 0 && pred_reads_set(c, p, read))
+		p->pass_poison = true;
 }
 
 /*
@@ -219,7 +240,7 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	for (int i = 0; i < s->npred; i++)
 		if (pred_reads_set(c, s->pred[i], read))
 		{
-			if (!scalar_test(s->pred[i], m))
+			if (!scalar_test(c, s->pred[i], m))
 			{
 				c->dirty_leaf = m;
 				c->dirty_why = "a condition on the cast is none of a comparison with a constant, an IN list of integers and a NULL test (an OR, an expression of it, a boolean)";
@@ -230,7 +251,7 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 	for (int j = 0; j < s->naggs; j++)
 		if (s->agg[j].filter != NULL && pred_reads_set(c, s->agg[j].filter, read))
 		{
-			if (!scalar_test(s->agg[j].filter, m))
+			if (!scalar_test(c, s->agg[j].filter, m))
 			{
 				c->dirty_leaf = m;
 				c->dirty_why = "the FILTER of an aggregate tests the cast in a way that is none of a comparison with a constant, an IN list of integers and a NULL test";
@@ -279,11 +300,10 @@ scalar_recheck(AggCtx *c, const SiftAggSpec *s, int m)
 		if (s->leaves[i] == m)
 			s->gate[i] = gate;
 	for (int i = 0; i < s->npred; i++)
-		if (pred_reads_set(c, s->pred[i], read))
-			s->pred[i]->pass_poison = true;
+		pass_poison_reads(c, s->pred[i], read);
 	for (int j = 0; filtered && j < s->naggs; j++)
-		if (s->agg[j].filter != NULL && pred_reads_set(c, s->agg[j].filter, read))
-			s->agg[j].filter->pass_poison = true;
+		if (s->agg[j].filter != NULL)
+			pass_poison_reads(c, s->agg[j].filter, read);
 	return kind;
 }
 

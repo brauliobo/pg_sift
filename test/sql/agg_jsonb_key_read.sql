@@ -89,9 +89,23 @@ INSERT INTO shapes VALUES
 INSERT INTO shapes VALUES
   (31, 'jsonb cast',          $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE doc ? 'k'), count(*) FILTER (WHERE doc ? 'k') FROM @$q$),
   (32, 'jsonb cast good rows', $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE doc ? 'k' AND g <> 3) AS s, count(*) FILTER (WHERE doc ? 'k') AS c FROM @ WHERE g <> 3$q$);
+-- a comparison of the read in an AND with the key test of its leaf (in any order), a jsonb_typeof guard around the read of the path it tests (a CASE or a FILTER)
+INSERT INTO shapes VALUES
+  (33, 'compare and key test',      $q$SELECT count(*) FILTER (WHERE doc ? 'k' AND (doc ->> 'k')::float8 > 1) AS c, sum(id) FILTER (WHERE (doc ->> 'k')::float8 <= 1 AND doc ? 'k') AS s FROM @$q$),
+  (34, 'compare and other key',     $q$SELECT count(*) FILTER (WHERE doc ? 'n' AND (doc ->> 'k')::float8 > 1) FROM @$q$),
+  (35, 'IN list and key test',      $q$SELECT g, count(*) FILTER (WHERE doc ? 'n' AND (doc ->> 'n')::int IN (0, 1)) AS c FROM @ GROUP BY g$q$),
+  (36, 'compare, key test and null', $q$SELECT count(*) FILTER (WHERE doc ? 'k' AND (doc ->> 'k')::float8 IS NULL) AS c, count(*) FILTER (WHERE (doc ->> 'n')::int > 0 AND doc ? 'n' AND g <> 4) AS d FROM @$q$),
+  (37, 'guard in a filter',         $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s, count(*) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS c FROM @$q$),
+  (38, 'guard and jsonb cast',      $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s FROM @$q$),
+  (39, 'guard of a text key',       $q$SELECT max(doc ->> 's') FILTER (WHERE jsonb_typeof(doc -> 's') = 'string') AS m, count(doc ->> 's') FILTER (WHERE jsonb_typeof(doc -> 's') = 'string') AS c FROM @$q$),
+  (40, 'guard of an int key',       $q$SELECT g, sum((doc ->> 'n')::int) FILTER (WHERE jsonb_typeof(doc -> 'n') = 'number') AS s FROM @ GROUP BY g$q$),
+  (41, 'guard keeps strings',       $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') IN ('number', 'string')) AS s FROM @$q$),
+  (42, 'guard in a case, grouped',  $q$SELECT g, sum(CASE WHEN jsonb_typeof(doc -> 'n') = 'number' THEN (doc ->> 'n')::int ELSE 0 END) AS s, avg(CASE WHEN jsonb_typeof(doc -> 'k') = 'number' THEN (doc ->> 'k')::float8 ELSE 0 END) AS a FROM @ GROUP BY g$q$),
+  (43, 'guard and key test',        $q$SELECT count(*) FILTER (WHERE doc ? 'k') AS c, sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s FROM @$q$),
+  (44, 'guard of the other key',    $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'n') = 'number') AS s FROM @$q$);
 
 CREATE TEMP TABLE tbls AS SELECT * FROM unnest(array['kr', 'kb_text', 'kb_bool', 'kb_array', 'kb_object', 'kb_range', 'ko', 'ko_text']) WITH ORDINALITY AS t(tbl, ord);
-SELECT tbl, n, label, CASE WHEN n < 31 THEN res WHEN res LIKE 'error:%' THEN 'error' ELSE regexp_replace(res, '^(scan|plain) ', '') END AS outcome
+SELECT tbl, n, label, CASE WHEN n NOT IN (31, 32) THEN res WHEN res LIKE 'error:%' THEN 'error' ELSE regexp_replace(res, '^(scan|plain) ', '') END AS outcome
 FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x ORDER BY ord, n;
 
 -- the same after writes (new documents of every shape, an update that changes the shape, a delete), and after the vacuum that rewrites the segments
@@ -104,10 +118,10 @@ UPDATE ko SET doc = kr_doc(id + 1, NULL) WHERE id % 7 = 0;
 DELETE FROM kr WHERE id % 11 = 0;
 DELETE FROM kb_text WHERE id % 11 = 0;
 DELETE FROM ko WHERE id % 11 = 0;
-SELECT 'after writes' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'after writes' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kr'), ('kb_text'), ('ko')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
 VACUUM kr, kb_text, ko;
-SELECT 'after vacuum' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'after vacuum' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kr'), ('kb_text'), ('ko')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
 
 -- two workers (the rows read again are the leader's and the workers' alike), on a table whose rows are good and one whose group 4 holds the text that is no number
@@ -120,7 +134,7 @@ SELECT kr_make('kq', '"abc"');
 VACUUM ANALYZE kp, kq;
 SELECT sift_helpers.plan_mode_two_workers($$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE doc ? 'k'), count(*) FILTER (WHERE doc ? 'k') FROM kp$$) AS plan;
 SET max_parallel_workers_per_gather = 2;
-SELECT 'two workers' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'two workers' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kp'), ('kq')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
 
 DROP TABLE shapes, tbls, kr, kb_text, kb_bool, kb_array, kb_object, kb_range, ko, ko_text, kp, kq;

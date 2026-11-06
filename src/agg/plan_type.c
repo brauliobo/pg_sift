@@ -274,6 +274,18 @@ haskey_leaf(AggCtx *c, int att, const char *key)
 	return -1;
 }
 
+/* is n the test `doc ? 'k'` of the key whose leaf is `leaf`? */
+bool
+key_test_of_leaf(AggCtx *c, Node *n, int leaf)
+{
+	JsonRef		r = {0};
+	List	   *keys;
+
+	n = strip_relabel(n);
+	return func_of(n) == F_JSONB_EXISTS && json_access(c, linitial(func_args(n)), &r) && r.att > 0 && r.path == NIL && (keys = exists_keys(n)) != NIL &&
+		haskey_leaf(c, r.att, strVal(linitial(keys))) == leaf;
+}
+
 typedef struct HasKeyReads
 {
 	AggCtx	   *c;

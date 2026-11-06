@@ -350,6 +350,7 @@ c3_jsonb_key_or	SiftAgg	single:t
 c3_jsonb_key_case	SiftAgg	single:t
 c3_jsonb_key_not_true	SiftAgg	single:t
 c3_jsonb_key_read	SiftAgg	single:t
+c3_jsonb_key_read_and	SiftAgg	single:t
 having_count_gt	SiftAgg	single:t
 having_sum_not_selected	SiftAgg	single:t
 having_avg_lt	SiftAgg	single:t

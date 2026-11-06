@@ -127,260 +127,370 @@ INSERT INTO shapes VALUES
 INSERT INTO shapes VALUES
   (31, 'jsonb cast',          $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE doc ? 'k'), count(*) FILTER (WHERE doc ? 'k') FROM @$q$),
   (32, 'jsonb cast good rows', $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE doc ? 'k' AND g <> 3) AS s, count(*) FILTER (WHERE doc ? 'k') AS c FROM @ WHERE g <> 3$q$);
+-- a comparison of the read in an AND with the key test of its leaf (in any order), a jsonb_typeof guard around the read of the path it tests (a CASE or a FILTER)
+INSERT INTO shapes VALUES
+  (33, 'compare and key test',      $q$SELECT count(*) FILTER (WHERE doc ? 'k' AND (doc ->> 'k')::float8 > 1) AS c, sum(id) FILTER (WHERE (doc ->> 'k')::float8 <= 1 AND doc ? 'k') AS s FROM @$q$),
+  (34, 'compare and other key',     $q$SELECT count(*) FILTER (WHERE doc ? 'n' AND (doc ->> 'k')::float8 > 1) FROM @$q$),
+  (35, 'IN list and key test',      $q$SELECT g, count(*) FILTER (WHERE doc ? 'n' AND (doc ->> 'n')::int IN (0, 1)) AS c FROM @ GROUP BY g$q$),
+  (36, 'compare, key test and null', $q$SELECT count(*) FILTER (WHERE doc ? 'k' AND (doc ->> 'k')::float8 IS NULL) AS c, count(*) FILTER (WHERE (doc ->> 'n')::int > 0 AND doc ? 'n' AND g <> 4) AS d FROM @$q$),
+  (37, 'guard in a filter',         $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s, count(*) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS c FROM @$q$),
+  (38, 'guard and jsonb cast',      $q$SELECT sum((doc -> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s FROM @$q$),
+  (39, 'guard of a text key',       $q$SELECT max(doc ->> 's') FILTER (WHERE jsonb_typeof(doc -> 's') = 'string') AS m, count(doc ->> 's') FILTER (WHERE jsonb_typeof(doc -> 's') = 'string') AS c FROM @$q$),
+  (40, 'guard of an int key',       $q$SELECT g, sum((doc ->> 'n')::int) FILTER (WHERE jsonb_typeof(doc -> 'n') = 'number') AS s FROM @ GROUP BY g$q$),
+  (41, 'guard keeps strings',       $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') IN ('number', 'string')) AS s FROM @$q$),
+  (42, 'guard in a case, grouped',  $q$SELECT g, sum(CASE WHEN jsonb_typeof(doc -> 'n') = 'number' THEN (doc ->> 'n')::int ELSE 0 END) AS s, avg(CASE WHEN jsonb_typeof(doc -> 'k') = 'number' THEN (doc ->> 'k')::float8 ELSE 0 END) AS a FROM @ GROUP BY g$q$),
+  (43, 'guard and key test',        $q$SELECT count(*) FILTER (WHERE doc ? 'k') AS c, sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'k') = 'number') AS s FROM @$q$),
+  (44, 'guard of the other key',    $q$SELECT sum((doc ->> 'k')::float8) FILTER (WHERE jsonb_typeof(doc -> 'n') = 'number') AS s FROM @$q$);
 CREATE TEMP TABLE tbls AS SELECT * FROM unnest(array['kr', 'kb_text', 'kb_bool', 'kb_array', 'kb_object', 'kb_range', 'ko', 'ko_text']) WITH ORDINALITY AS t(tbl, ord);
-SELECT tbl, n, label, CASE WHEN n < 31 THEN res WHEN res LIKE 'error:%' THEN 'error' ELSE regexp_replace(res, '^(scan|plain) ', '') END AS outcome
+SELECT tbl, n, label, CASE WHEN n NOT IN (31, 32) THEN res WHEN res LIKE 'error:%' THEN 'error' ELSE regexp_replace(res, '^(scan|plain) ', '') END AS outcome
 FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x ORDER BY ord, n;
-    tbl    | n  |        label         |                              outcome                              
------------+----+----------------------+-------------------------------------------------------------------
- kr        |  1 | filter sum           | scan same
- kr        |  2 | grouped              | scan same
- kr        |  3 | filter drops group 4 | scan same
- kr        |  4 | case else 0          | scan same
- kr        |  5 | case avg else 0      | scan same
- kr        |  6 | where                | scan same
- kr        |  7 | where or             | scan same
- kr        |  8 | where or two keys    | scan same
- kr        |  9 | any                  | scan same
- kr        | 10 | all                  | scan same
- kr        | 11 | not true             | scan same
- kr        | 12 | count of the read    | scan same
- kr        | 13 | read without filter  | scan same
- kr        | 14 | group by the read    | scan same
- kr        | 15 | compare in where     | scan same
- kr        | 16 | compare in filter    | plain same
- kr        | 17 | int key              | scan same
- kr        | 18 | text key             | scan same
- kr        | 19 | having               | scan same
- kr        | 20 | type test too        | plain same
- kr        | 21 | two reads            | scan same
- kr        | 22 | document read        | plain same
- kr        | 23 | path below the key   | plain same
- kr        | 24 | type guard of read   | plain same
- kr        | 25 | undeclared key       | plain same
- kr        | 27 | good rows grouped    | scan same
- kr        | 28 | good rows case       | scan same
- kr        | 29 | good rows or         | scan same
- kr        | 30 | good rows text key   | scan same
- kr        | 31 | jsonb cast           | error
- kr        | 32 | jsonb cast good rows | same
- kb_text   |  1 | filter sum           | error: invalid input syntax for type double precision: "abc"
- kb_text   |  2 | grouped              | error: invalid input syntax for type double precision: "abc"
- kb_text   |  3 | filter drops group 4 | scan same
- kb_text   |  4 | case else 0          | error: invalid input syntax for type double precision: "abc"
- kb_text   |  5 | case avg else 0      | error: invalid input syntax for type integer: "abc"
- kb_text   |  6 | where                | error: invalid input syntax for type double precision: "abc"
- kb_text   |  7 | where or             | error: invalid input syntax for type double precision: "abc"
- kb_text   |  8 | where or two keys    | error: invalid input syntax for type double precision: "abc"
- kb_text   |  9 | any                  | error: invalid input syntax for type double precision: "abc"
- kb_text   | 10 | all                  | error: invalid input syntax for type double precision: "abc"
- kb_text   | 11 | not true             | scan same
- kb_text   | 12 | count of the read    | error: invalid input syntax for type double precision: "abc"
- kb_text   | 13 | read without filter  | error: invalid input syntax for type double precision: "abc"
- kb_text   | 14 | group by the read    | error: invalid input syntax for type double precision: "abc"
- kb_text   | 15 | compare in where     | error: invalid input syntax for type double precision: "abc"
- kb_text   | 16 | compare in filter    | error: invalid input syntax for type double precision: "abc"
- kb_text   | 17 | int key              | error: invalid input syntax for type integer: "abc"
- kb_text   | 18 | text key             | scan same
- kb_text   | 19 | having               | error: invalid input syntax for type double precision: "abc"
- kb_text   | 20 | type test too        | error: invalid input syntax for type double precision: "abc"
- kb_text   | 21 | two reads            | error: invalid input syntax for type double precision: "abc"
- kb_text   | 22 | document read        | error: invalid input syntax for type double precision: "abc"
- kb_text   | 23 | path below the key   | plain same
- kb_text   | 24 | type guard of read   | plain same
- kb_text   | 25 | undeclared key       | plain same
- kb_text   | 27 | good rows grouped    | scan same
- kb_text   | 28 | good rows case       | scan same
- kb_text   | 29 | good rows or         | scan same
- kb_text   | 30 | good rows text key   | scan same
- kb_text   | 31 | jsonb cast           | error
- kb_text   | 32 | jsonb cast good rows | error
- kb_bool   |  1 | filter sum           | error: invalid input syntax for type double precision: "true"
- kb_bool   |  2 | grouped              | error: invalid input syntax for type double precision: "true"
- kb_bool   |  3 | filter drops group 4 | scan same
- kb_bool   |  4 | case else 0          | error: invalid input syntax for type double precision: "true"
- kb_bool   |  5 | case avg else 0      | error: invalid input syntax for type integer: "true"
- kb_bool   |  6 | where                | error: invalid input syntax for type double precision: "true"
- kb_bool   |  7 | where or             | error: invalid input syntax for type double precision: "true"
- kb_bool   |  8 | where or two keys    | error: invalid input syntax for type double precision: "true"
- kb_bool   |  9 | any                  | error: invalid input syntax for type double precision: "true"
- kb_bool   | 10 | all                  | error: invalid input syntax for type double precision: "true"
- kb_bool   | 11 | not true             | scan same
- kb_bool   | 12 | count of the read    | error: invalid input syntax for type double precision: "true"
- kb_bool   | 13 | read without filter  | error: invalid input syntax for type double precision: "true"
- kb_bool   | 14 | group by the read    | error: invalid input syntax for type double precision: "true"
- kb_bool   | 15 | compare in where     | error: invalid input syntax for type double precision: "true"
- kb_bool   | 16 | compare in filter    | error: invalid input syntax for type double precision: "true"
- kb_bool   | 17 | int key              | error: invalid input syntax for type integer: "true"
- kb_bool   | 18 | text key             | scan same
- kb_bool   | 19 | having               | error: invalid input syntax for type double precision: "true"
- kb_bool   | 20 | type test too        | error: invalid input syntax for type double precision: "true"
- kb_bool   | 21 | two reads            | error: invalid input syntax for type double precision: "true"
- kb_bool   | 22 | document read        | error: invalid input syntax for type double precision: "true"
- kb_bool   | 23 | path below the key   | plain same
- kb_bool   | 24 | type guard of read   | plain same
- kb_bool   | 25 | undeclared key       | plain same
- kb_bool   | 27 | good rows grouped    | scan same
- kb_bool   | 28 | good rows case       | scan same
- kb_bool   | 29 | good rows or         | scan same
- kb_bool   | 30 | good rows text key   | scan same
- kb_bool   | 31 | jsonb cast           | error
- kb_bool   | 32 | jsonb cast good rows | error
- kb_array  |  1 | filter sum           | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  2 | grouped              | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  3 | filter drops group 4 | scan same
- kb_array  |  4 | case else 0          | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  5 | case avg else 0      | error: invalid input syntax for type integer: "[1, 2]"
- kb_array  |  6 | where                | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  7 | where or             | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  8 | where or two keys    | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  |  9 | any                  | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 10 | all                  | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 11 | not true             | scan same
- kb_array  | 12 | count of the read    | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 13 | read without filter  | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 14 | group by the read    | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 15 | compare in where     | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 16 | compare in filter    | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 17 | int key              | error: invalid input syntax for type integer: "[1, 2]"
- kb_array  | 18 | text key             | scan same
- kb_array  | 19 | having               | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 20 | type test too        | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 21 | two reads            | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 22 | document read        | error: invalid input syntax for type double precision: "[1, 2]"
- kb_array  | 23 | path below the key   | plain same
- kb_array  | 24 | type guard of read   | plain same
- kb_array  | 25 | undeclared key       | plain same
- kb_array  | 27 | good rows grouped    | scan same
- kb_array  | 28 | good rows case       | scan same
- kb_array  | 29 | good rows or         | scan same
- kb_array  | 30 | good rows text key   | scan same
- kb_array  | 31 | jsonb cast           | error
- kb_array  | 32 | jsonb cast good rows | error
- kb_object |  1 | filter sum           | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  2 | grouped              | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  3 | filter drops group 4 | scan same
- kb_object |  4 | case else 0          | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  5 | case avg else 0      | error: invalid input syntax for type integer: "{"a": 1}"
- kb_object |  6 | where                | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  7 | where or             | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  8 | where or two keys    | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object |  9 | any                  | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 10 | all                  | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 11 | not true             | scan same
- kb_object | 12 | count of the read    | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 13 | read without filter  | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 14 | group by the read    | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 15 | compare in where     | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 16 | compare in filter    | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 17 | int key              | error: invalid input syntax for type integer: "{"a": 1}"
- kb_object | 18 | text key             | scan same
- kb_object | 19 | having               | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 20 | type test too        | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 21 | two reads            | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 22 | document read        | error: invalid input syntax for type double precision: "{"a": 1}"
- kb_object | 23 | path below the key   | plain same
- kb_object | 24 | type guard of read   | plain same
- kb_object | 25 | undeclared key       | plain same
- kb_object | 27 | good rows grouped    | scan same
- kb_object | 28 | good rows case       | scan same
- kb_object | 29 | good rows or         | scan same
- kb_object | 30 | good rows text key   | scan same
- kb_object | 31 | jsonb cast           | error
- kb_object | 32 | jsonb cast good rows | error
- kb_range  |  1 | filter sum           | scan same
- kb_range  |  2 | grouped              | scan same
- kb_range  |  3 | filter drops group 4 | scan same
- kb_range  |  4 | case else 0          | scan same
- kb_range  |  5 | case avg else 0      | error: value "3000000000" is out of range for type integer
- kb_range  |  6 | where                | scan same
- kb_range  |  7 | where or             | scan same
- kb_range  |  8 | where or two keys    | error: value "3000000000" is out of range for type integer
- kb_range  |  9 | any                  | error: value "3000000000" is out of range for type integer
- kb_range  | 10 | all                  | scan same
- kb_range  | 11 | not true             | scan same
- kb_range  | 12 | count of the read    | scan same
- kb_range  | 13 | read without filter  | scan same
- kb_range  | 14 | group by the read    | scan same
- kb_range  | 15 | compare in where     | scan same
- kb_range  | 16 | compare in filter    | plain same
- kb_range  | 17 | int key              | error: value "3000000000" is out of range for type integer
- kb_range  | 18 | text key             | scan same
- kb_range  | 19 | having               | scan same
- kb_range  | 20 | type test too        | plain same
- kb_range  | 21 | two reads            | error: value "3000000000" is out of range for type integer
- kb_range  | 22 | document read        | plain same
- kb_range  | 23 | path below the key   | plain same
- kb_range  | 24 | type guard of read   | plain same
- kb_range  | 25 | undeclared key       | plain same
- kb_range  | 27 | good rows grouped    | scan same
- kb_range  | 28 | good rows case       | scan same
- kb_range  | 29 | good rows or         | scan same
- kb_range  | 30 | good rows text key   | scan same
- kb_range  | 31 | jsonb cast           | error
- kb_range  | 32 | jsonb cast good rows | same
- ko        |  1 | filter sum           | scan same
- ko        |  2 | grouped              | scan same
- ko        |  3 | filter drops group 4 | scan same
- ko        |  4 | case else 0          | scan same
- ko        |  5 | case avg else 0      | scan same
- ko        |  6 | where                | scan same
- ko        |  7 | where or             | scan same
- ko        |  8 | where or two keys    | scan same
- ko        |  9 | any                  | scan same
- ko        | 10 | all                  | scan same
- ko        | 11 | not true             | scan same
- ko        | 12 | count of the read    | scan same
- ko        | 13 | read without filter  | scan same
- ko        | 14 | group by the read    | scan same
- ko        | 15 | compare in where     | scan same
- ko        | 16 | compare in filter    | plain same
- ko        | 17 | int key              | scan same
- ko        | 18 | text key             | scan same
- ko        | 19 | having               | scan same
- ko        | 20 | type test too        | plain same
- ko        | 21 | two reads            | scan same
- ko        | 22 | document read        | plain same
- ko        | 23 | path below the key   | plain same
- ko        | 24 | type guard of read   | plain same
- ko        | 25 | undeclared key       | plain same
- ko        | 27 | good rows grouped    | scan same
- ko        | 28 | good rows case       | scan same
- ko        | 29 | good rows or         | scan same
- ko        | 30 | good rows text key   | scan same
- ko        | 31 | jsonb cast           | error
- ko        | 32 | jsonb cast good rows | same
- ko_text   |  1 | filter sum           | error: invalid input syntax for type double precision: "abc"
- ko_text   |  2 | grouped              | error: invalid input syntax for type double precision: "abc"
- ko_text   |  3 | filter drops group 4 | scan same
- ko_text   |  4 | case else 0          | error: invalid input syntax for type double precision: "abc"
- ko_text   |  5 | case avg else 0      | error: invalid input syntax for type integer: "abc"
- ko_text   |  6 | where                | error: invalid input syntax for type double precision: "abc"
- ko_text   |  7 | where or             | error: invalid input syntax for type double precision: "abc"
- ko_text   |  8 | where or two keys    | error: invalid input syntax for type double precision: "abc"
- ko_text   |  9 | any                  | error: invalid input syntax for type double precision: "abc"
- ko_text   | 10 | all                  | error: invalid input syntax for type double precision: "abc"
- ko_text   | 11 | not true             | scan same
- ko_text   | 12 | count of the read    | error: invalid input syntax for type double precision: "abc"
- ko_text   | 13 | read without filter  | error: invalid input syntax for type double precision: "abc"
- ko_text   | 14 | group by the read    | error: invalid input syntax for type double precision: "abc"
- ko_text   | 15 | compare in where     | error: invalid input syntax for type double precision: "abc"
- ko_text   | 16 | compare in filter    | error: invalid input syntax for type double precision: "abc"
- ko_text   | 17 | int key              | error: invalid input syntax for type integer: "abc"
- ko_text   | 18 | text key             | scan same
- ko_text   | 19 | having               | error: invalid input syntax for type double precision: "abc"
- ko_text   | 20 | type test too        | error: invalid input syntax for type double precision: "abc"
- ko_text   | 21 | two reads            | error: invalid input syntax for type double precision: "abc"
- ko_text   | 22 | document read        | error: invalid input syntax for type double precision: "abc"
- ko_text   | 23 | path below the key   | plain same
- ko_text   | 24 | type guard of read   | plain same
- ko_text   | 25 | undeclared key       | plain same
- ko_text   | 27 | good rows grouped    | scan same
- ko_text   | 28 | good rows case       | scan same
- ko_text   | 29 | good rows or         | scan same
- ko_text   | 30 | good rows text key   | scan same
- ko_text   | 31 | jsonb cast           | error
- ko_text   | 32 | jsonb cast good rows | error
-(248 rows)
+    tbl    | n  |           label            |                              outcome                              
+-----------+----+----------------------------+-------------------------------------------------------------------
+ kr        |  1 | filter sum                 | scan same
+ kr        |  2 | grouped                    | scan same
+ kr        |  3 | filter drops group 4       | scan same
+ kr        |  4 | case else 0                | scan same
+ kr        |  5 | case avg else 0            | scan same
+ kr        |  6 | where                      | scan same
+ kr        |  7 | where or                   | scan same
+ kr        |  8 | where or two keys          | scan same
+ kr        |  9 | any                        | scan same
+ kr        | 10 | all                        | scan same
+ kr        | 11 | not true                   | scan same
+ kr        | 12 | count of the read          | scan same
+ kr        | 13 | read without filter        | scan same
+ kr        | 14 | group by the read          | scan same
+ kr        | 15 | compare in where           | scan same
+ kr        | 16 | compare in filter          | scan same
+ kr        | 17 | int key                    | scan same
+ kr        | 18 | text key                   | scan same
+ kr        | 19 | having                     | scan same
+ kr        | 20 | type test too              | plain same
+ kr        | 21 | two reads                  | scan same
+ kr        | 22 | document read              | plain same
+ kr        | 23 | path below the key         | plain same
+ kr        | 24 | type guard of read         | plain same
+ kr        | 25 | undeclared key             | plain same
+ kr        | 27 | good rows grouped          | scan same
+ kr        | 28 | good rows case             | scan same
+ kr        | 29 | good rows or               | scan same
+ kr        | 30 | good rows text key         | scan same
+ kr        | 31 | jsonb cast                 | error
+ kr        | 32 | jsonb cast good rows       | same
+ kr        | 33 | compare and key test       | scan same
+ kr        | 34 | compare and other key      | plain same
+ kr        | 35 | IN list and key test       | scan same
+ kr        | 36 | compare, key test and null | plain same
+ kr        | 37 | guard in a filter          | plain same
+ kr        | 38 | guard and jsonb cast       | plain same
+ kr        | 39 | guard of a text key        | plain same
+ kr        | 40 | guard of an int key        | plain same
+ kr        | 41 | guard keeps strings        | plain same
+ kr        | 42 | guard in a case, grouped   | plain same
+ kr        | 43 | guard and key test         | plain same
+ kr        | 44 | guard of the other key     | scan same
+ kb_text   |  1 | filter sum                 | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  2 | grouped                    | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  3 | filter drops group 4       | scan same
+ kb_text   |  4 | case else 0                | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  5 | case avg else 0            | error: invalid input syntax for type integer: "abc"
+ kb_text   |  6 | where                      | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  7 | where or                   | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  8 | where or two keys          | error: invalid input syntax for type double precision: "abc"
+ kb_text   |  9 | any                        | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 10 | all                        | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 11 | not true                   | scan same
+ kb_text   | 12 | count of the read          | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 13 | read without filter        | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 14 | group by the read          | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 15 | compare in where           | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 16 | compare in filter          | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 17 | int key                    | error: invalid input syntax for type integer: "abc"
+ kb_text   | 18 | text key                   | scan same
+ kb_text   | 19 | having                     | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 20 | type test too              | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 21 | two reads                  | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 22 | document read              | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 23 | path below the key         | plain same
+ kb_text   | 24 | type guard of read         | plain same
+ kb_text   | 25 | undeclared key             | plain same
+ kb_text   | 27 | good rows grouped          | scan same
+ kb_text   | 28 | good rows case             | scan same
+ kb_text   | 29 | good rows or               | scan same
+ kb_text   | 30 | good rows text key         | scan same
+ kb_text   | 31 | jsonb cast                 | error
+ kb_text   | 32 | jsonb cast good rows       | error
+ kb_text   | 33 | compare and key test       | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 34 | compare and other key      | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 35 | IN list and key test       | error: invalid input syntax for type integer: "abc"
+ kb_text   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 37 | guard in a filter          | plain same
+ kb_text   | 38 | guard and jsonb cast       | plain same
+ kb_text   | 39 | guard of a text key        | plain same
+ kb_text   | 40 | guard of an int key        | plain same
+ kb_text   | 41 | guard keeps strings        | error: invalid input syntax for type double precision: "abc"
+ kb_text   | 42 | guard in a case, grouped   | plain same
+ kb_text   | 43 | guard and key test         | plain same
+ kb_text   | 44 | guard of the other key     | scan same
+ kb_bool   |  1 | filter sum                 | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  2 | grouped                    | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  3 | filter drops group 4       | scan same
+ kb_bool   |  4 | case else 0                | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  5 | case avg else 0            | error: invalid input syntax for type integer: "true"
+ kb_bool   |  6 | where                      | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  7 | where or                   | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  8 | where or two keys          | error: invalid input syntax for type double precision: "true"
+ kb_bool   |  9 | any                        | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 10 | all                        | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 11 | not true                   | scan same
+ kb_bool   | 12 | count of the read          | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 13 | read without filter        | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 14 | group by the read          | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 15 | compare in where           | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 16 | compare in filter          | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 17 | int key                    | error: invalid input syntax for type integer: "true"
+ kb_bool   | 18 | text key                   | scan same
+ kb_bool   | 19 | having                     | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 20 | type test too              | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 21 | two reads                  | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 22 | document read              | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 23 | path below the key         | plain same
+ kb_bool   | 24 | type guard of read         | plain same
+ kb_bool   | 25 | undeclared key             | plain same
+ kb_bool   | 27 | good rows grouped          | scan same
+ kb_bool   | 28 | good rows case             | scan same
+ kb_bool   | 29 | good rows or               | scan same
+ kb_bool   | 30 | good rows text key         | scan same
+ kb_bool   | 31 | jsonb cast                 | error
+ kb_bool   | 32 | jsonb cast good rows       | error
+ kb_bool   | 33 | compare and key test       | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 34 | compare and other key      | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 35 | IN list and key test       | error: invalid input syntax for type integer: "true"
+ kb_bool   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "true"
+ kb_bool   | 37 | guard in a filter          | plain same
+ kb_bool   | 38 | guard and jsonb cast       | plain same
+ kb_bool   | 39 | guard of a text key        | plain same
+ kb_bool   | 40 | guard of an int key        | plain same
+ kb_bool   | 41 | guard keeps strings        | plain same
+ kb_bool   | 42 | guard in a case, grouped   | plain same
+ kb_bool   | 43 | guard and key test         | plain same
+ kb_bool   | 44 | guard of the other key     | scan same
+ kb_array  |  1 | filter sum                 | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  2 | grouped                    | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  3 | filter drops group 4       | scan same
+ kb_array  |  4 | case else 0                | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  5 | case avg else 0            | error: invalid input syntax for type integer: "[1, 2]"
+ kb_array  |  6 | where                      | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  7 | where or                   | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  8 | where or two keys          | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  |  9 | any                        | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 10 | all                        | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 11 | not true                   | scan same
+ kb_array  | 12 | count of the read          | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 13 | read without filter        | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 14 | group by the read          | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 15 | compare in where           | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 16 | compare in filter          | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 17 | int key                    | error: invalid input syntax for type integer: "[1, 2]"
+ kb_array  | 18 | text key                   | scan same
+ kb_array  | 19 | having                     | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 20 | type test too              | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 21 | two reads                  | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 22 | document read              | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 23 | path below the key         | plain same
+ kb_array  | 24 | type guard of read         | plain same
+ kb_array  | 25 | undeclared key             | plain same
+ kb_array  | 27 | good rows grouped          | scan same
+ kb_array  | 28 | good rows case             | scan same
+ kb_array  | 29 | good rows or               | scan same
+ kb_array  | 30 | good rows text key         | scan same
+ kb_array  | 31 | jsonb cast                 | error
+ kb_array  | 32 | jsonb cast good rows       | error
+ kb_array  | 33 | compare and key test       | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 34 | compare and other key      | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 35 | IN list and key test       | error: invalid input syntax for type integer: "[1, 2]"
+ kb_array  | 36 | compare, key test and null | error: invalid input syntax for type double precision: "[1, 2]"
+ kb_array  | 37 | guard in a filter          | plain same
+ kb_array  | 38 | guard and jsonb cast       | plain same
+ kb_array  | 39 | guard of a text key        | plain same
+ kb_array  | 40 | guard of an int key        | plain same
+ kb_array  | 41 | guard keeps strings        | plain same
+ kb_array  | 42 | guard in a case, grouped   | plain same
+ kb_array  | 43 | guard and key test         | plain same
+ kb_array  | 44 | guard of the other key     | scan same
+ kb_object |  1 | filter sum                 | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  2 | grouped                    | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  3 | filter drops group 4       | scan same
+ kb_object |  4 | case else 0                | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  5 | case avg else 0            | error: invalid input syntax for type integer: "{"a": 1}"
+ kb_object |  6 | where                      | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  7 | where or                   | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  8 | where or two keys          | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object |  9 | any                        | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 10 | all                        | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 11 | not true                   | scan same
+ kb_object | 12 | count of the read          | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 13 | read without filter        | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 14 | group by the read          | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 15 | compare in where           | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 16 | compare in filter          | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 17 | int key                    | error: invalid input syntax for type integer: "{"a": 1}"
+ kb_object | 18 | text key                   | scan same
+ kb_object | 19 | having                     | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 20 | type test too              | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 21 | two reads                  | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 22 | document read              | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 23 | path below the key         | plain same
+ kb_object | 24 | type guard of read         | plain same
+ kb_object | 25 | undeclared key             | plain same
+ kb_object | 27 | good rows grouped          | scan same
+ kb_object | 28 | good rows case             | scan same
+ kb_object | 29 | good rows or               | scan same
+ kb_object | 30 | good rows text key         | scan same
+ kb_object | 31 | jsonb cast                 | error
+ kb_object | 32 | jsonb cast good rows       | error
+ kb_object | 33 | compare and key test       | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 34 | compare and other key      | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 35 | IN list and key test       | error: invalid input syntax for type integer: "{"a": 1}"
+ kb_object | 36 | compare, key test and null | error: invalid input syntax for type double precision: "{"a": 1}"
+ kb_object | 37 | guard in a filter          | plain same
+ kb_object | 38 | guard and jsonb cast       | plain same
+ kb_object | 39 | guard of a text key        | plain same
+ kb_object | 40 | guard of an int key        | plain same
+ kb_object | 41 | guard keeps strings        | plain same
+ kb_object | 42 | guard in a case, grouped   | plain same
+ kb_object | 43 | guard and key test         | plain same
+ kb_object | 44 | guard of the other key     | scan same
+ kb_range  |  1 | filter sum                 | scan same
+ kb_range  |  2 | grouped                    | scan same
+ kb_range  |  3 | filter drops group 4       | scan same
+ kb_range  |  4 | case else 0                | scan same
+ kb_range  |  5 | case avg else 0            | error: value "3000000000" is out of range for type integer
+ kb_range  |  6 | where                      | scan same
+ kb_range  |  7 | where or                   | scan same
+ kb_range  |  8 | where or two keys          | error: value "3000000000" is out of range for type integer
+ kb_range  |  9 | any                        | error: value "3000000000" is out of range for type integer
+ kb_range  | 10 | all                        | scan same
+ kb_range  | 11 | not true                   | scan same
+ kb_range  | 12 | count of the read          | scan same
+ kb_range  | 13 | read without filter        | scan same
+ kb_range  | 14 | group by the read          | scan same
+ kb_range  | 15 | compare in where           | scan same
+ kb_range  | 16 | compare in filter          | scan same
+ kb_range  | 17 | int key                    | error: value "3000000000" is out of range for type integer
+ kb_range  | 18 | text key                   | scan same
+ kb_range  | 19 | having                     | scan same
+ kb_range  | 20 | type test too              | plain same
+ kb_range  | 21 | two reads                  | error: value "3000000000" is out of range for type integer
+ kb_range  | 22 | document read              | plain same
+ kb_range  | 23 | path below the key         | plain same
+ kb_range  | 24 | type guard of read         | plain same
+ kb_range  | 25 | undeclared key             | plain same
+ kb_range  | 27 | good rows grouped          | scan same
+ kb_range  | 28 | good rows case             | scan same
+ kb_range  | 29 | good rows or               | scan same
+ kb_range  | 30 | good rows text key         | scan same
+ kb_range  | 31 | jsonb cast                 | error
+ kb_range  | 32 | jsonb cast good rows       | same
+ kb_range  | 33 | compare and key test       | scan same
+ kb_range  | 34 | compare and other key      | plain same
+ kb_range  | 35 | IN list and key test       | error: value "3000000000" is out of range for type integer
+ kb_range  | 36 | compare, key test and null | error: value "3000000000" is out of range for type integer
+ kb_range  | 37 | guard in a filter          | plain same
+ kb_range  | 38 | guard and jsonb cast       | plain same
+ kb_range  | 39 | guard of a text key        | plain same
+ kb_range  | 40 | guard of an int key        | error: value "3000000000" is out of range for type integer
+ kb_range  | 41 | guard keeps strings        | plain same
+ kb_range  | 42 | guard in a case, grouped   | error: value "3000000000" is out of range for type integer
+ kb_range  | 43 | guard and key test         | plain same
+ kb_range  | 44 | guard of the other key     | scan same
+ ko        |  1 | filter sum                 | scan same
+ ko        |  2 | grouped                    | scan same
+ ko        |  3 | filter drops group 4       | scan same
+ ko        |  4 | case else 0                | scan same
+ ko        |  5 | case avg else 0            | scan same
+ ko        |  6 | where                      | scan same
+ ko        |  7 | where or                   | scan same
+ ko        |  8 | where or two keys          | scan same
+ ko        |  9 | any                        | scan same
+ ko        | 10 | all                        | scan same
+ ko        | 11 | not true                   | scan same
+ ko        | 12 | count of the read          | scan same
+ ko        | 13 | read without filter        | scan same
+ ko        | 14 | group by the read          | scan same
+ ko        | 15 | compare in where           | scan same
+ ko        | 16 | compare in filter          | scan same
+ ko        | 17 | int key                    | scan same
+ ko        | 18 | text key                   | scan same
+ ko        | 19 | having                     | scan same
+ ko        | 20 | type test too              | plain same
+ ko        | 21 | two reads                  | scan same
+ ko        | 22 | document read              | plain same
+ ko        | 23 | path below the key         | plain same
+ ko        | 24 | type guard of read         | plain same
+ ko        | 25 | undeclared key             | plain same
+ ko        | 27 | good rows grouped          | scan same
+ ko        | 28 | good rows case             | scan same
+ ko        | 29 | good rows or               | scan same
+ ko        | 30 | good rows text key         | scan same
+ ko        | 31 | jsonb cast                 | error
+ ko        | 32 | jsonb cast good rows       | same
+ ko        | 33 | compare and key test       | scan same
+ ko        | 34 | compare and other key      | plain same
+ ko        | 35 | IN list and key test       | scan same
+ ko        | 36 | compare, key test and null | plain same
+ ko        | 37 | guard in a filter          | plain same
+ ko        | 38 | guard and jsonb cast       | plain same
+ ko        | 39 | guard of a text key        | plain same
+ ko        | 40 | guard of an int key        | plain same
+ ko        | 41 | guard keeps strings        | plain same
+ ko        | 42 | guard in a case, grouped   | plain same
+ ko        | 43 | guard and key test         | plain same
+ ko        | 44 | guard of the other key     | scan same
+ ko_text   |  1 | filter sum                 | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  2 | grouped                    | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  3 | filter drops group 4       | scan same
+ ko_text   |  4 | case else 0                | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  5 | case avg else 0            | error: invalid input syntax for type integer: "abc"
+ ko_text   |  6 | where                      | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  7 | where or                   | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  8 | where or two keys          | error: invalid input syntax for type double precision: "abc"
+ ko_text   |  9 | any                        | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 10 | all                        | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 11 | not true                   | scan same
+ ko_text   | 12 | count of the read          | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 13 | read without filter        | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 14 | group by the read          | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 15 | compare in where           | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 16 | compare in filter          | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 17 | int key                    | error: invalid input syntax for type integer: "abc"
+ ko_text   | 18 | text key                   | scan same
+ ko_text   | 19 | having                     | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 20 | type test too              | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 21 | two reads                  | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 22 | document read              | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 23 | path below the key         | plain same
+ ko_text   | 24 | type guard of read         | plain same
+ ko_text   | 25 | undeclared key             | plain same
+ ko_text   | 27 | good rows grouped          | scan same
+ ko_text   | 28 | good rows case             | scan same
+ ko_text   | 29 | good rows or               | scan same
+ ko_text   | 30 | good rows text key         | scan same
+ ko_text   | 31 | jsonb cast                 | error
+ ko_text   | 32 | jsonb cast good rows       | error
+ ko_text   | 33 | compare and key test       | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 34 | compare and other key      | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 35 | IN list and key test       | error: invalid input syntax for type integer: "abc"
+ ko_text   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 37 | guard in a filter          | plain same
+ ko_text   | 38 | guard and jsonb cast       | plain same
+ ko_text   | 39 | guard of a text key        | plain same
+ ko_text   | 40 | guard of an int key        | plain same
+ ko_text   | 41 | guard keeps strings        | error: invalid input syntax for type double precision: "abc"
+ ko_text   | 42 | guard in a case, grouped   | plain same
+ ko_text   | 43 | guard and key test         | plain same
+ ko_text   | 44 | guard of the other key     | scan same
+(344 rows)
 
 -- the same after writes (new documents of every shape, an update that changes the shape, a delete), and after the vacuum that rewrites the segments
 INSERT INTO kr SELECT 1000 + i, i % 5, kr_doc(i + 7, NULL) FROM generate_series(1, 200) i;
@@ -392,23 +502,23 @@ UPDATE ko SET doc = kr_doc(id + 1, NULL) WHERE id % 7 = 0;
 DELETE FROM kr WHERE id % 11 = 0;
 DELETE FROM kb_text WHERE id % 11 = 0;
 DELETE FROM ko WHERE id % 11 = 0;
-SELECT 'after writes' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'after writes' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kr'), ('kb_text'), ('ko')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
     stage     |   tbl   | shapes | different | scans 
 --------------+---------+--------+-----------+-------
- after writes | kb_text |     31 |         0 |     3
- after writes | ko      |     31 |         0 |    23
- after writes | kr      |     31 |         0 |    23
+ after writes | kb_text |     43 |         0 |     4
+ after writes | ko      |     43 |         0 |    27
+ after writes | kr      |     43 |         0 |    27
 (3 rows)
 
 VACUUM kr, kb_text, ko;
-SELECT 'after vacuum' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'after vacuum' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kr'), ('kb_text'), ('ko')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
     stage     |   tbl   | shapes | different | scans 
 --------------+---------+--------+-----------+-------
- after vacuum | kb_text |     31 |         0 |     3
- after vacuum | ko      |     31 |         0 |    23
- after vacuum | kr      |     31 |         0 |    23
+ after vacuum | kb_text |     43 |         0 |     4
+ after vacuum | ko      |     43 |         0 |    27
+ after vacuum | kr      |     43 |         0 |    27
 (3 rows)
 
 -- two workers (the rows read again are the leader's and the workers' alike), on a table whose rows are good and one whose group 4 holds the text that is no number
@@ -436,12 +546,12 @@ SELECT sift_helpers.plan_mode_two_workers($$SELECT sum((doc ->> 'k')::float8) FI
 (1 row)
 
 SET max_parallel_workers_per_gather = 2;
-SELECT 'two workers' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n < 31) AS scans
+SELECT 'two workers' AS stage, tbl, count(*) AS shapes, count(*) FILTER (WHERE res LIKE '%DIFF%') AS different, count(*) FILTER (WHERE res LIKE 'scan%' AND n NOT IN (31, 32)) AS scans
 FROM (VALUES ('kp'), ('kq')) t(tbl), shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@', tbl)) AS res) x GROUP BY tbl ORDER BY tbl;
     stage    | tbl | shapes | different | scans 
 -------------+-----+--------+-----------+-------
- two workers | kp  |     31 |         0 |    23
- two workers | kq  |     31 |         0 |     7
+ two workers | kp  |     43 |         0 |    27
+ two workers | kq  |     43 |         0 |     8
 (2 rows)
 
 DROP TABLE shapes, tbls, kr, kb_text, kb_bool, kb_array, kb_object, kb_range, ko, ko_text, kp, kq;

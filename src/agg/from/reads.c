@@ -33,7 +33,7 @@ leaf_read(Node *n, const Unconditional *u)
 	return r.att == l->attno && paths_equal(r.path, l->path);
 }
 
-/* does the expression evaluate what u looks for, for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only */
+/* does the expression evaluate what u looks for, for every row that reaches it? A CASE branch, a FILTER, the later operands of AND, OR and COALESCE do for some only (but those after a test of the key) */
 bool
 unconditional(Node *n, Unconditional *u)
 {
@@ -68,7 +68,13 @@ unconditional(Node *n, Unconditional *u)
 	if (IsA(n, CoalesceExpr))
 		return unconditional(linitial(((CoalesceExpr *) n)->args), u);
 	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop != NOT_EXPR)
-		return unconditional(linitial(((BoolExpr *) n)->args), u);
+	{
+		/* the test of the key of the leaf (doc ? 'k') before the read in an AND drops the rows that have no value to raise: the read is as unconditional as it is after it */
+		foreach_ptr(Node, x, ((BoolExpr *) n)->args)
+			if (((BoolExpr *) n)->boolop != AND_EXPR || u->leaf < 0 || !key_test_of_leaf(c, x, u->leaf))
+				return unconditional(x, u);
+		return false;
+	}
 	if (IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, WindowFunc) || IsA(n, GroupingFunc))
 		return false;
 	return expression_tree_walker(n, unconditional, u);
