@@ -110,17 +110,19 @@ class Repo:
 
     def __init__(self, src):
         self.src = str(Path(src).resolve())
-        self.git_src = self.src + '/.git' if (Path(self.src) / '.git').exists() else self.src
+        # the object store of a clone, a bare repository or a linked worktree alike (a worktree's own .git is a file, its objects are in the common directory)
+        self.git_src = sh(['git', '-C', self.src, 'rev-parse', '--path-format=absolute', '--git-common-dir']).strip()
         self.dir = W / 'repo'
         with Lock('lock-repo'):
             if not (self.dir / 'HEAD').exists() and not (self.dir / '.git').exists():
                 sh(['git', 'init', '-q', str(self.dir)])
             alt = self.dir / '.git/objects/info/alternates'
-            have = alt.read_text().split() if alt.exists() else []
+            old = alt.read_text().split() if alt.exists() else []
+            have = [p for p in old if Path(p).is_dir()]       # a line whose repository is gone makes every git command of the gate fail
             want = str(Path(self.git_src) / 'objects')
-            if want not in have:
+            if want not in have or have != old:
                 alt.parent.mkdir(parents=True, exist_ok=True)
-                alt.write_text('\n'.join(have + [want]) + '\n')
+                alt.write_text('\n'.join(have + ([want] if want not in have else [])) + '\n')
 
     def rev(self, ref):
         return sh(['git', '-C', self.src, 'rev-parse', '--verify', ref + '^{commit}']).strip()
