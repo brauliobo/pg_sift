@@ -119,6 +119,12 @@ SELECT * FROM chk('upsert');
 SELECT sift.col_promote('events_c') >= 0 AS promoted;
 SELECT count(*) AS segments, count(stamp) AS stamped FROM sift.col_stamps('events_c');
 SELECT * FROM chk('upsert, promoted');
+-- the rows of a rolled-back upsert (no inserter in their records) lie before the rows of a statement that committed after it: the set is not stamped, whatever order they come in
+BEGIN;
+INSERT INTO events SELECT i, i % 10, i, 'a' FROM generate_series(60001, 60040) i ON CONFLICT DO NOTHING;
+ROLLBACK;
+INSERT INTO events SELECT i, i % 10, i, 'b' FROM generate_series(60101, 60140) i;
+SELECT * FROM chk('rolled-back upsert, then an insert');
 REINDEX INDEX events_c;
 
 -- the option is off: a delete is not heard, so the log says nothing and the heap checks, with the same answers
