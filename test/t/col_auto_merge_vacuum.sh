@@ -73,9 +73,11 @@ check "CREATE INDEX on a table with autovacuum_enabled = false: a notice" test "
 # scan asked, has vacuumed the table. No VACUUM by hand.
 repaired() { cheap && [[ $(groups on) == "$(groups off)" ]]; }
 sql av "CREATE INDEX facts_key ON facts (key)" >/dev/null
+# A rebuild asks for the VACUUM itself (the index it builds leaves pages out of the visibility map), so the worker can vacuum the table before the scan below looks:
+# the rebuild is repeated, up to 12 times, until a scan finds the map empty (the sleep is longer than the least time between two VACUUMs of a table)
+emptied() { local n=0 try; for try in $(seq 12); do sleep 2; n=$(vetted "$1"); [[ $n -gt 20000 ]] && break; done; echo "$n"; }
 for rebuild in "CLUSTER facts USING facts_key" "VACUUM FULL facts"; do
-	sleep 2
-	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(vetted "$rebuild")" -gt 20000
+	check "$rebuild: the visibility map is empty, the scan checks the rows in the heap" test "$(emptied "$rebuild")" -gt 20000
 	check "$rebuild: the worker vacuums the table, the next scan checks few rows and answers as the heap does" repaired
 done
 check "the index verifies" test "$(sql av "SELECT sift.col_verify('facts_idx', true)" 2>&1 | grep -c ERROR)" == 0
