@@ -12,6 +12,7 @@
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
+#include "col/am.h"
 #include "col/dsmreg.h"
 
 void *
@@ -33,8 +34,8 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 	ResourceOwner owner = CurrentResourceOwner;
 	void	   *volatile s = NULL;
 
-	/* a subtransaction cannot start where there is no transaction or a parallel operation; the next statement of the backend tries again */
-	if (!IsTransactionState() || IsInParallelMode())
+	/* a subtransaction cannot start where there is no transaction or a parallel operation, and must not under a write (sift_col_writing); the next statement of the backend tries again */
+	if (!IsTransactionState() || IsInParallelMode() || sift_col_writing())
 		return NULL;
 	BeginInternalSubTransaction(NULL);
 	MemoryContextSwitchTo(cx);
