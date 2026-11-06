@@ -79,7 +79,7 @@ typedef struct SiftScanState
 	int			ncols;
 	SiftCol    *col;
 	MemoryContext cxt;				/* everything of one scan */
-	MemoryContext tmpcx;			/* one candidate's text */
+	MemoryContext tmpcx;			/* one candidate's text; the executor's context of the query, not a child of cxt (a rescan resets cxt) */
 	bool		started;
 	bool		empty;				/* a query is NULL: no rows */
 	bool		done;				/* count: row returned */
