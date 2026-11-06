@@ -129,6 +129,7 @@ tap-shell-col_heapfree_reads	59	45
 tap-shell-replication	59	50
 tap-shell-col_refresh_compat	0	58
 installcheck-agg_par_preserved	55	57
+tap-shell-col_reindex_concurrent	57	57
 installcheck-agg_calendar_step	56	51
 tap-shell-col_online_compact	56	44
 tap-shell-col_build_concurrent	55	40
