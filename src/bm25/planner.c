@@ -634,8 +634,7 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 		sift_vis_scope(false);
 	}
 	PG_END_TRY();
-	if (sift_enable_scan)
-		sift_tie_scans(stmt);
+	sift_finish_plan(stmt, sift_enable_scan);
 	return stmt;
 }
 
