@@ -296,7 +296,7 @@ for k, o in sorted(objs.items(), key=lambda kv: kv[0][1]):
     kind, name = k
     note = notes.get(name if kind != 'operator' else name)
     g = note[0] if note and note[0] else ('col' if name.startswith('col_') else 'table' if name.startswith('table_') else 'search')
-    if o['internal'] or (note and note[0] == '-'):
+    if o['internal'] or name.startswith('_') or (note and note[0] == '-'):
         internal.append(name)
         continue
     desc = comments.get(k)

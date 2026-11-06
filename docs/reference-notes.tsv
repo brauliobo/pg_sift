@@ -26,8 +26,8 @@ version	diag		Version of the loaded library (the installed extension version is 
 col_ops			Default operator class of the sift_col index: it has no operators, the index is read by the column scans.
 col_*_ops	col	3.3	Operator classes per type (int2, int4, int8, float4, float8, date, timestamp, timestamptz, bool, numeric, text, bpchar, uuid) that let the planner scan a sift_col index; opt-in per column.
 col_index_info			Space and directory state of a sift_col index: blocks, free list, segments, rows, units (the superblocks the segments cover once; the units a key-cut segment stores, each) and the kernel level of the scans.
-col_unit_agg			Pre-aggregates of every stored unit of a leaf of a sift_col index (debug and test hook).
-col_unit_hist			Histogram of the groups of a dimension of a sift_col index per unit, with the count and sum of one measure (debug and test hook).
+col_unit_agg	-		Pre-aggregates of every stored unit of a leaf of a sift_col index (debug and test hook).
+col_unit_hist	-		Histogram of the groups of a dimension of a sift_col index per unit, with the count and sum of one measure (debug and test hook).
 col_segments			One row per segment of a sift_col index: rows, units, bytes, column format and the bytes of its pre-aggregates.
 col_leaves			One row per leaf of a sift_col index: its chunks by encoding, their bytes and the bytes of its dictionaries.
 col_sections			Where the bytes of a sift_col index or a sift_table go, one row per kind; they add up to pg_relation_size.
@@ -60,3 +60,12 @@ workers	maint
 col_refresh	maint		
 refusal_slugs	diag		
 refusal_actions	diag		
+cluster_advice	col		
+index_advice	col		
+index_choices	col		
+key_cut_decision	col		
+suggest_paths	col		
+approx_count_distinct	col		
+help	diag		
+tblref_in	-		
+tblref_out	-		
