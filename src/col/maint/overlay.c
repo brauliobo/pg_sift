@@ -22,9 +22,11 @@ bool		maint_overlay_asked = false;
 int			maint_overlay_steps = 0;	/* the steps of the rewrite in hand left for the overlays: the automatic one takes a pass and the rule asks again for the next, an explicit col_maintain goes on until they are one */
 
 /*
- * The overlays of a key-cut index in partitions: the segments under half a partition, that promotions leave over the keys of the partitions (a partition holds a key in one
- * unit; each overlay holds it in another). The smallest of them whose bytes stay under half a partition, so that the merged one is an overlay too and not a partition whose
- * key range overlaps the others': a merge of the small tail into one. take marks them; false where fewer than two. ev: what the merge costs and what the reads would spare.
+ * The overlays of a key-cut index: the segments that promotions leave over the keys of the large ones (a large segment holds a key in one unit; each overlay holds it in another).
+ * With partitions (sift.col_auto_merge_partition_kb) the large ones are the partitions; else the segments of at least half the largest. The merge takes the smallest overlays that
+ * come to at least one and a half times the largest of them (a size-tiered step: a row is rewritten once for each growth by half and not at every promotion), their bytes under half a large segment, so that
+ * the merged one is an overlay too, and under a pass of the WAL (an eighth of max_wal_size, and sift.col_auto_merge_wal_pct percent of it). take marks them; false where fewer than
+ * two. ev: what the merge costs and what the reads would spare.
  * A unit holds a range of keys, so what a read of a key opens is told by the widths of the ranges of the units: the width of those of each overlay added is the units a random
  * key opens in them, the width of all of them together (overlaps once) the units it would open in the merged one.
  */
@@ -33,29 +35,34 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 {
 	int			idx[SIFT_MAX_SEGMENTS],
 				ncand = 0,
+				ntake = 0,
 				cut;
 	uint64		bytes = 0,
-				limit = (uint64) maint_part_kb * 512,
+				large = 0,
+				limit,
 				nspan = 0,
 				total_units = 0;
 	KeySpan    *sp;
 
-	/* a merge writes about the bytes of its segments: a pass takes an eighth of max_wal_size at most, and sift.col_auto_merge_wal_pct percent of it, so that it forces no checkpoint of its own; the next pass takes the rest */
-	limit = Min(limit, ((uint64) max_wal_size_mb << 20) / 8);
-	if (sift_col_auto_merge_wal_pct > 0)
-		limit = Min(limit, (uint64) ((double) ((uint64) max_wal_size_mb << 20) * sift_col_auto_merge_wal_pct / 100.0));
 	memset(ev, 0, sizeof(*ev));
-	if (maint_part_kb == 0 || v->nkover > 0 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+	if (v->nkover > 0 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	cut = sift_col_rel(index)->cut[0];
 	for (int i = 0; i < v->n; i++)
+		large = Max(large, v->imm[i].bytes);
+	for (int i = 0; i < v->n; i++)
 	{
 		total_units += v->seg[i]->nsb;
-		if (!maint_is_partition(&v->imm[i]) && !(v->imm[i].flags & SIFT_SEG_UNIT))
+		if (!(v->imm[i].flags & SIFT_SEG_UNIT) && (maint_part_kb > 0 ? !maint_is_partition(&v->imm[i]) : v->imm[i].bytes * 2 < large))
 			idx[ncand++] = i;
 	}
 	if (ncand < 2)
 		return false;
+	limit = maint_part_kb > 0 ? (uint64) maint_part_kb * 512 : large / 2;
+	/* a merge writes about the bytes of its segments: a pass takes an eighth of max_wal_size at most, and sift.col_auto_merge_wal_pct percent of it, so that it forces no checkpoint of its own; the next pass takes the rest */
+	limit = Min(limit, ((uint64) max_wal_size_mb << 20) / 8);
+	if (sift_col_auto_merge_wal_pct > 0)
+		limit = Min(limit, (uint64) ((double) ((uint64) max_wal_size_mb << 20) * sift_col_auto_merge_wal_pct / 100.0));
 	/* by size, the smallest first */
 	for (int a = 1; a < ncand; a++)
 		for (int b = a; b > 0 && v->imm[idx[b - 1]].bytes > v->imm[idx[b]].bytes; b--)
@@ -65,12 +72,21 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 			idx[b] = idx[b - 1];
 			idx[b - 1] = t;
 		}
-	sp = palloc(Max(total_units, 1) * sizeof(KeySpan));
 	for (int a = 0; a < ncand && bytes + v->imm[idx[a]].bytes < limit; a++)
+	{
+		bytes += v->imm[idx[a]].bytes;
+		ntake++;
+	}
+	/* the merged segment at least one and a half times the largest it takes */
+	while (ntake >= 2 && bytes * 2 < 3 * v->imm[idx[ntake - 1]].bytes)
+		bytes -= v->imm[idx[--ntake]].bytes;
+	if (ntake < 2)
+		return false;
+	sp = palloc(Max(total_units, 1) * sizeof(KeySpan));
+	for (int a = 0; a < ntake; a++)
 	{
 		SiftColSegment *seg = v->seg[idx[a]];
 
-		bytes += v->imm[idx[a]].bytes;
 		take[idx[a]] = true;
 		ev->n++;
 		ev->rows += v->imm[idx[a]].ndocs;
