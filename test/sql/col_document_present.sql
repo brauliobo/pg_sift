@@ -93,6 +93,13 @@ SELECT * FROM dp_state();
 CREATE INDEX dp_auto ON dp USING sift_col (id, g, doc) WITH (key_cut = g);
 SELECT * FROM dp_state();
 
+-- the list names jsonb columns of the index; anything else is refused at CREATE INDEX, like every column list
+\set VERBOSITY terse
+CREATE INDEX dn_bad ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'nonexistent');
+CREATE INDEX dn_bad ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a, g');
+CREATE INDEX dn_two ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a, b');
+DROP INDEX dn_two;
+
 DROP TABLE dp, dq, qs, dn;
 DROP FUNCTION dp_doc(int), dq_doc(int), dp_state(), dp_reads();
 DROP EXTENSION pg_sift_helpers;

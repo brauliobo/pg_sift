@@ -279,6 +279,43 @@ present_wanted(Relation index, const char *attname)
 	return pg_strcasecmp(v, "on") == 0 || pg_strcasecmp(v, "true") == 0 || sift_col_list_has(v, attname);
 }
 
+/* the error of a document_present list that names something other than a jsonb column of the index (NULL when it is fine, or on, off, auto or unset) */
+char *
+sift_col_present_check(Relation index)
+{
+	const char *v = sift_col_options_document_present(index);
+	bool		autolist;
+	const char *p;
+
+	if (v == NULL || pg_strcasecmp(v, "on") == 0 || pg_strcasecmp(v, "true") == 0 || pg_strcasecmp(v, "off") == 0 || pg_strcasecmp(v, "false") == 0)
+		return NULL;
+	p = sift_cpagg_auto_list(v, &autolist);
+	for (; *p == ' '; p++)
+		;
+	while (*p != '\0')
+	{
+		const char *end = strchr(p, ',');
+		size_t		n = end ? (size_t) (end - p) : strlen(p);
+		bool		found = false;
+
+		while (n > 0 && p[n - 1] == ' ')
+			n--;
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && !found; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+
+			found = att->atttypid == JSONBOID && strlen(NameStr(att->attname)) == n && strncmp(NameStr(att->attname), p, n) == 0;
+		}
+		if (n > 0 && !found)
+			return psprintf("\"%.*s\" is not a jsonb column of the index", (int) n, p);
+		if (end == NULL)
+			break;
+		for (p = end + 1; *p == ' '; p++)
+			;
+	}
+	return NULL;
+}
+
 /*
  * document_present unset or auto: the jsonb columns of the index that may hold a NULL document (no NOT NULL constraint on the column of the table: a CHECK or a
  * domain that forbids NULL is not seen) keep the presence of their documents; written as 'auto: doc, attrs' before the build, so that the build, its workers and
