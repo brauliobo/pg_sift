@@ -76,6 +76,14 @@ static bool batch_seen;
 
 static int	batch_stmts;
 
+static int	batch_writes;		/* statements running that modify data (sift_col_writing) */
+
+static CommandId batch_cid;	/* the command id the innermost statement that modifies data runs with, valid while batch_cid_set (sift_col_stmt_cid) */
+
+static bool batch_cid_set;
+
+static bool batch_inserting;	/* inside sift_col_aminsert; an error leaves it set until the (sub)transaction aborts */
+
 static int	batch_updates;		/* statements running that replace row versions (UPDATE, MERGE, ON CONFLICT DO UPDATE): an index with track_changes supersedes the entries of the old versions */
 
 static void batch_xact(XactEvent event, void *arg);
@@ -118,6 +126,8 @@ batch_xact(XactEvent event, void *arg)
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
+		batch_cid_set = false;
 	}
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 		batch_seen = false;
@@ -132,19 +142,33 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 	{
 		sift_cwbuf_discard(InvalidOid);
 		sift_col_tombs_discard();
+		batch_inserting = false;
 	}
 }
 
 #define STMT_SPECULATIVE	1
 #define STMT_UPDATING		2
+#define STMT_WRITING		4
+
+typedef struct StmtState
+{
+	int			what;
+	CommandId	prev_cid;
+	bool		prev_set;
+} StmtState;
 
 static void
 batch_stmt_done(void *arg)
 {
-	uintptr_t	what = (uintptr_t) arg;
+	StmtState  *st = arg;
+	int			what = st->what;
+
+	batch_cid = st->prev_cid;
+	batch_cid_set = st->prev_set;
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
+	batch_writes -= (what & STMT_WRITING) != 0;
 }
 
 static bool
@@ -163,22 +187,53 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
 
 	bool		updating = plan_updates(ps->planTree);
+	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
 		updating |= plan_updates(sub);
 	}
-	if (speculative || updating)
+	if (speculative || updating || writing)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
+		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(StmtState));
 
+		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0);
+		st->prev_cid = batch_cid;
+		st->prev_set = batch_cid_set;
 		cb->func = batch_stmt_done;
-		cb->arg = (void *) (uintptr_t) ((speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0));
+		cb->arg = st;
 		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
+		if (writing)
+		{
+			batch_cid = GetCurrentCommandId(true);
+			batch_cid_set = true;
+		}
 		batch_stmts += speculative;
 		batch_updates += updating;
+		batch_writes += writing;
 	}
+}
+
+/*
+ * The command id of the statement that writes: the one its tuples carry. A function that runs SQL (SPI) inside the statement advances the command id, and a tombstone or a
+ * probe that took the current one would no longer see the versions the statement ended (a snapshot of the command sees them, the next command's does not).
+ */
+CommandId
+sift_col_stmt_cid(void)
+{
+	return batch_cid_set ? batch_cid : GetCurrentCommandId(true);
+}
+
+/*
+ * Is a statement writing, or an aminsert running? The registry of the dynamic shared memory attaches in a subtransaction, whose commit advances the command id: that must not
+ * happen under a write (a row updated by two statements of one transaction would keep its middle version in the index), so the shared tables attach in the next statement that reads.
+ */
+bool
+sift_col_writing(void)
+{
+	return batch_inserting || batch_writes > 0 || batch_updates > 0 || batch_stmts > 0;
 }
 
 /* Is an UPDATE running that tombstones the entries its new versions replace (sift_col_aminsert, track_changes)? */
@@ -206,6 +261,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	 */
 	TransactionId xmin = r->track && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
 
+	batch_inserting = true;
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
@@ -222,6 +278,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);
 	sift_col_vacuum_note_insert(index, heap);
 	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0, 0);
+	batch_inserting = false;
 	return false;
 }
 

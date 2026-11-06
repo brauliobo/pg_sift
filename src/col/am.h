@@ -97,6 +97,8 @@ extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
 extern bool sift_col_updates_supersede(void);
+extern bool sift_col_writing(void);
+extern CommandId sift_col_stmt_cid(void);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_no_supersede;

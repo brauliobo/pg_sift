@@ -37,7 +37,7 @@ q clean "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE unwritten (id int) USING sift_table" >/dev/null || bail "setup failed"
 objects=$(q clean "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname LIKE 'sift%' AND c.relkind IN ('i', 'r')")
 procs=$(q clean "SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace")
-# VACUUM promotes the rows of a sift_table that are older than the oldest snapshot of the cluster: the maintenance worker this node runs (it starts at the commit of a
+# VACUUM promotes the rows of a sift_table that are older than the oldest snapshot of its database: the maintenance worker this node runs (it starts at the commit of a
 # CREATE INDEX) can hold one while the VACUUMs above run, and a table whose rows are still in the write buffer has no column format to report. Vacuum again until both report it.
 for _ in $(seq 120); do
 	out=$(uc clean)
