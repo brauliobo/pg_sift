@@ -394,6 +394,16 @@ extern void use_matched_leaf(AggCtx *c, int leaf);
 extern SiftAggPred *make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf);
 extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);
 extern void junction_done(SiftAggPred *p);
+
+/* the child i of the junction *p, or the child itself as *p while *p is NULL (one child needs no junction) */
+static inline void
+junction_child(SiftAggPred **p, int i, SiftAggPred *e)
+{
+	if (*p)
+		(*p)->child[i] = e;
+	else
+		*p = e;
+}
 extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args);
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
 /* the condition n as tests of a column (plan_prednorm.c), or NULL */

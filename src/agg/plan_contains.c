@@ -50,10 +50,7 @@ build_contains(AggCtx *c, int grp, void *arg)
 			return NULL;
 		if ((e = lit_test(c, grp, pnstrdup(k.val.string.val, k.val.string.len), SCMP_EQ, &lit, false)) == NULL)
 			return NULL;
-		if (p)
-			p->child[i] = e;
-		else
-			p = e;
+		junction_child(&p, i, e);
 	}
 	if (n > 1)
 		junction_done(p);
@@ -89,10 +86,7 @@ contains_elems(AggCtx *c, int grp, JsonbContainer *arr)
 			return NULL;
 		if (e == NULL)
 			return NULL;
-		if (p)
-			p->child[i] = e;
-		else
-			p = e;
+		junction_child(&p, i, e);
 	}
 	if (n > 1)
 		junction_done(p);
@@ -160,10 +154,7 @@ build_object(AggCtx *c, int att, List *path, JsonbContainer *obj)
 			e = NULL;
 		if (e == NULL)
 			return NULL;
-		if (p)
-			p->child[i] = e;
-		else
-			p = e;
+		junction_child(&p, i, e);
 	}
 	if (n > 1)
 		junction_done(p);
@@ -230,10 +221,7 @@ compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
 
 		if (e == NULL)
 			return NULL;
-		if (p)
-			p->child[i] = e;
-		else
-			p = e;
+		junction_child(&p, i, e);
 	}
 	if (n > 1)
 		junction_done(p);
@@ -324,10 +312,7 @@ array_elems(AggCtx *c, int grp, Const *arr, Oid collid, bool all)
 
 		if (nulls[i] || !elem_lit(elem, collid, vals[i], &lit) || (e = any_elem(c, grp, build_elem_lit, &lit)) == NULL)
 			return NULL;
-		if (p)
-			p->child[i] = e;
-		else
-			p = e;
+		junction_child(&p, i, e);
 	}
 	if (n > 1)
 		junction_done(p);
