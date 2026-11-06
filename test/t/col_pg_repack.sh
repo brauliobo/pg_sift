@@ -4,12 +4,12 @@
 # Skipped where the pg_repack binary and extension are not installed (postgresql-NN-repack).
 . "$(dirname "$0")/lib.bash"
 
-plan 20
-command -v pg_repack >/dev/null || { skip 20 "pg_repack is not installed"; finish; }
+plan 24
+command -v pg_repack >/dev/null || { skip 24 "pg_repack is not installed"; finish; }
 node_init rp 28 "autovacuum = off"
 node_start rp || bail "start failed"
 sql rp "CREATE EXTENSION pg_sift CASCADE" >/dev/null || bail "pg_sift"
-sql rp "CREATE EXTENSION pg_repack" >/dev/null 2>&1 || { skip 20 "the pg_repack extension is not available"; finish; }
+sql rp "CREATE EXTENSION pg_repack" >/dev/null 2>&1 || { skip 24 "the pg_repack extension is not available"; finish; }
 sql rp "CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), title text, doc jsonb, pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO facts SELECT g, (g * 7919) % 200, 'cat_' || (g % 8), g % 997, 'alpha beta ' || (g % 50), jsonb_build_object('score', g % 11), repeat('x', 100 + g % 400) FROM generate_series(1, 40000) g" \
 	"CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, doc) WITH (paths = 'doc.score float8')" \
@@ -17,6 +17,7 @@ sql rp "CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numer
 	"CREATE TABLE st (id int PRIMARY KEY, v int) USING sift_table" "INSERT INTO st SELECT g, g FROM generate_series(1, 1000) g" >/dev/null || bail "setup failed"
 D=$(dir rp)
 repack() { pg_repack -h "$D/sock" -p "$(port rp)" -U postgres -d postgres "$@"; }
+state_of() { sql rp "SELECT concat_ws(',', track_changes, triggers, complete, heap_free) FROM sift.col_tracking('$1')"; }
 # the answers of the column scan (the normal plan priced out) and of the heap, as one string
 SCAN="SELECT kind, grp % 5 g, count(*), sum(amount), sum((doc->>'score')::float8) FROM facts GROUP BY 1, 2"
 answers() {
@@ -75,4 +76,30 @@ sql rp "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) facts" >/dev/null
 check "... and tracks its changes again after the VACUUM (track_changes, triggers, complete, heap_free)" test "$(sql rp "SELECT concat_ws(',', track_changes, triggers, complete, heap_free) FROM sift.col_tracking('facts_col')")" == "t,t,t,t"
 check "pg_repack refuses the sift_table and leaves it readable" test "$(repack -t st 2>&1 | grep -c 'cannot rewrite the sift_table')|$(sql rp "SELECT count(*), sum(v) FROM st")" == "1|1000|500500"
 check "pg_repack --only-indexes of the sift_table is fine" test "$(repack -t st --only-indexes >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM st")" == "0|1000"
+# A pg_repack that dies while it builds the sift_col copy (here: killed, its backend ends the statement it was in) leaves what it committed: its log table, the trigger of pg_repack on the table, the copy and the copy's
+# indexes. The copy owns the two triggers of its own index, on the copy table that nobody writes, so they never fire; the table keeps the two triggers of its index and its reads. What costs the writers
+# is the trigger of pg_repack, which logs every change until the extension is dropped (pg_repack says so when it is run again). The copy is held in its index build by an event trigger.
+sql rp "CREATE FUNCTION hold_copy() RETURNS event_trigger LANGUAGE plpgsql AS \$\$ BEGIN IF current_query() ~ '^CREATE INDEX index_[0-9]+ ON repack\\.table_[0-9]+ USING sift_col' THEN PERFORM pg_sleep(3); END IF; END \$\$" \
+	"CREATE EVENT TRIGGER hold_copy ON ddl_command_start EXECUTE FUNCTION hold_copy()" >/dev/null || bail "the event trigger"
+pg_repack -h "$D/sock" -p "$(port rp)" -U postgres -d postgres -t facts >"$D/repack4.log" 2>&1 & rp4=$!
+for _ in $(seq 1 400); do
+	[[ $(sql rp "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pg_repack' AND wait_event = 'PgSleep'") -gt 0 ]] && break
+	sleep 0.05
+done
+kill -9 "$rp4"; wait "$rp4" 2>/dev/null
+# the statement the backend is in ends and commits (a CREATE INDEX is a transaction of its own), then the backend finds its client gone
+for _ in $(seq 1 200); do [[ $(sql rp "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pg_repack'") == 0 ]] && break; sleep 0.1; done
+sql rp "DROP EVENT TRIGGER hold_copy" >/dev/null
+trig_on() { sql rp "SELECT count(*) FROM pg_trigger WHERE tgrelid::regclass::text = '$1' AND tgname LIKE '$2'"; }
+ct=$(sql rp "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'repack' AND c.relname ~ '^table_'")
+check "the killed pg_repack leaves its copy ($ct), whose sift_col index owns two triggers of its own on the copy table, and the table keeps the two of facts_col" \
+	test -n "$ct" -a "$(trig_on "repack.$ct" 'sift_track_%')" == 2 -a "$(trig_on facts 'sift_track_%')" == 2
+: >"$D/writer.err"
+writer 700000
+check "writes to the table go on beside the leftover (the triggers of facts_col fire, the copy's never), and the reads answer as the heap, heap-free" \
+	test ! -s "$D/writer.err" -a "$(state_of facts_col)" == "t,t,t,t" -a "$(answers on)" == "$(answers off)"
+check "DROP EXTENSION pg_repack CASCADE removes the leftover at once (the copy's index and triggers, pg_repack's trigger), and facts_col keeps its triggers and its answers" \
+	test "$(sql rp "SET statement_timeout = 20000" "DROP EXTENSION pg_repack CASCADE" >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'repack'")|$(sql rp "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'repack%'")|$(trig_on facts 'sift_track_%')" == "0|0|0|2" -a "$(answers on)" == "$(answers off)"
+sql rp "CREATE EXTENSION pg_repack" >/dev/null
+check "pg_repack runs again after it, and the index tracks its changes after the next VACUUM" test "$(repack -t facts >/dev/null 2>&1; echo $?)" == 0 -a "$(sql rp "VACUUM facts" >/dev/null; state_of facts_col)" == "t,t,t,t" -a "$(answers on)" == "$(answers off)"
 finish
