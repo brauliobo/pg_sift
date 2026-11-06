@@ -38,6 +38,12 @@
 #include "utils/syscache.h"
 #include "utils/tuplestore.h"
 
+#include "access/xlog.h"
+#include "storage/lmgr.h"
+#include "utils/timestamp.h"
+
+#include "agg/stats.h"
+#include "bm25/maint.h"
 #include "core/eval.h"
 #include "col/am.h"
 #include "core/tomb.h"
@@ -166,16 +172,23 @@ sift_col_track_deaf(Relation heap)
 	return NULL;
 }
 
-/* Are both triggers there as the option made them, and the log's own word on its completeness the one the channel gives (complete, with the witnesses of the triggers) */
+/* Are both triggers there as the option made them, and the log's own word on its completeness the one the channel gives (complete, with the witnesses of the triggers): of this release or an earlier one */
 static bool
-channel_as_asked(Relation heap, Relation index, SiftTombLog *log)
+channel_vouched(Relation heap, Relation index, SiftTombLog *log)
 {
 	bool		present[2],
 				ok[2];
 	uint32		witness[2];
 
 	channel_read(heap, index, present, ok, witness);
-	return ok[0] && ok[1] && log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE && log->chan.witness[0] == witness[0] && log->chan.witness[1] == witness[1];
+	return ok[0] && ok[1] && log != NULL && (log->chan.flags & SIFT_TOMB_COMPLETE) && log->chan.witness[0] == witness[0] && log->chan.witness[1] == witness[1];
+}
+
+/* ... and the log was made complete (or re-baselined) by a release that has the fix: an index of an earlier one is installed again by ALTER INDEX, and re-baselined by sift_col_track_rebaseline */
+static bool
+channel_as_asked(Relation heap, Relation index, SiftTombLog *log)
+{
+	return channel_vouched(heap, index, log) && log->chan.flags == SIFT_TOMB_CURRENT;
 }
 
 static void
@@ -335,7 +348,7 @@ void
 sift_col_track_install(Relation heap, Relation index, bool concurrent)
 {
 	SiftTombLog *log = sift_col_log(index);
-	SiftTombChan chan = {.flags = SIFT_TOMB_COMPLETE};
+	SiftTombChan chan = {.flags = SIFT_TOMB_CURRENT};
 	bool		present[2],
 				ok[2];
 
@@ -363,6 +376,67 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	repack_witness(heap, index, chan.witness);
 	chan.base_xid = GetCurrentTransactionId();
 	sift_tomb_set_chan(index, log, &chan);
+}
+
+/*
+ * A log written before the fix (flags COMPLETE alone: 4.0.0 to 4.1.1), or one whose re-baseline began and aborted (it is set in place, the transaction is not: the log then names a
+ * transaction that never committed, and no read could take it for complete again).
+ */
+static bool
+rebaseline_due(const SiftTombLog *log)
+{
+	return log->chan.flags == SIFT_TOMB_COMPLETE ||
+		(log->chan.flags == SIFT_TOMB_CURRENT && TransactionIdIsNormal(log->chan.base_xid) && sift_xid_state(log->chan.base_xid) == SIFT_XID_ABORTED);
+}
+
+/*
+ * The repair of the log of an index that a library before the fix wrote: its statements that moved the command id left row versions without a tombstone (every release since 4.0.0,
+ * docs/releases/v4.1.1.md), and the reads that take the log for complete count them. The baseline of the install does what is needed, with the triggers as they are: a tombstone for every
+ * address of the table that no version is live for, then the log is complete from this transaction on. The caller holds ShareUpdateExclusiveLock on the table, which keeps a VACUUM
+ * out (it frees an address that a new row then takes, and the tombstone of the baseline would hide that row) and lets the writers go on: a version a writer ends meanwhile gets its
+ * tombstone from the trigger, and the readers whose snapshot does not see this transaction check the heap (sift_col_track_ok). 71 ms (a vacuumed table) to 119 ms (30,000 rows each updated, deleted and
+ * inserted since the VACUUM) for 600,000 rows, 3 kB to 14 MB of WAL. Not on a standby, which has the result by replication, and reads the heap until then.
+ * Returns whether it ran: not for a log that is current, one the triggers no longer vouch for (the install or a REINDEX makes that one complete), or an index that does not track.
+ */
+bool
+sift_col_track_rebaseline(Relation index, Relation heap)
+{
+	SiftTombLog *log;
+	SiftTombChan chan;
+
+	Assert(CheckRelationLockedByMe(heap, ShareUpdateExclusiveLock, true));
+	if (RecoveryInProgress() || !sift_col_row_key_on(index) || (log = sift_col_log(index)) == NULL || !rebaseline_due(log) || !channel_vouched(heap, index, log))
+		return false;
+	baseline(index, heap, log);
+	chan = log->chan;
+	chan.flags = SIFT_TOMB_CURRENT;
+	chan.base_xid = GetCurrentTransactionId();
+	sift_tomb_set_chan(index, log, &chan);
+	return true;
+}
+
+/*
+ * A read that takes the heap for a log that is due for the re-baseline asks the worker for it, once per naptime for an index in this backend and under the backoff of the index
+ * (the table may be one nobody writes or vacuums). The maintenance worker and VACUUM re-baseline it as well, whichever comes first; sift.col_auto_merge = off leaves it to VACUUM.
+ */
+void
+sift_col_track_ask(Relation index)
+{
+	static Oid	asked = InvalidOid;
+	static TimestampTz asked_at = 0;
+	SiftTombLog *log;
+	TimestampTz now;
+
+	if (!sift_col_auto_merge || !sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() ||
+		index->rd_rel->relpersistence == RELPERSISTENCE_TEMP || !sift_col_row_key_on(index) || (log = sift_col_log(index)) == NULL || !rebaseline_due(log))
+		return;
+	now = GetCurrentTimestamp();
+	if (asked == RelationGetRelid(index) && now - asked_at < (int64) sift_maintenance_naptime * 1000)
+		return;
+	asked = RelationGetRelid(index);
+	asked_at = now;
+	if (sift_maint_request_worker(index, "sift_col_track_worker_main"))
+		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 }
 
 /*
@@ -446,7 +520,7 @@ sift_col_track_reconcile(Relation index)
 bool
 sift_col_track_own(const SiftTombLog *log)
 {
-	return log->chan.flags == SIFT_TOMB_COMPLETE && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
+	return log->chan.flags == SIFT_TOMB_CURRENT && TransactionIdIsCurrentTransactionId(log->chan.base_xid);
 }
 
 /*
@@ -466,7 +540,7 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 	r = sift_col_rel(index);
 	if (!OidIsValid(sift_col_row_key_unique(heap, index->rd_index->indkey.values[r->rowkey_attno - 1])) || sift_col_track_deaf(heap) != NULL)
 		return false;
-	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_COMPLETE)
+	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_CURRENT)
 		return false;
 	channel_read(heap, index, present, ok, witness);
 	if (!ok[0] || !ok[1] || witness[0] != log->chan.witness[0] || witness[1] != log->chan.witness[1])
@@ -555,7 +629,7 @@ sift_col_track_incomplete(Relation index)
 {
 	SiftTombLog *log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
 
-	return log != NULL && log->chan.flags != SIFT_TOMB_COMPLETE;
+	return log != NULL && !(log->chan.flags & SIFT_TOMB_COMPLETE);
 }
 
 /* sift.col_tracking(index): what the log can be taken for, and which part is missing */
@@ -577,8 +651,8 @@ sift_col_tracking(PG_FUNCTION_ARGS)
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	log = sift_col_row_key_on(index) ? sift_col_log(index) : NULL;
 	v[0] = BoolGetDatum(sift_col_row_key_on(index));
-	v[1] = BoolGetDatum(log != NULL && channel_as_asked(heap, index, log));
-	v[2] = BoolGetDatum(log != NULL && log->chan.flags == SIFT_TOMB_COMPLETE);
+	v[1] = BoolGetDatum(log != NULL && channel_vouched(heap, index, log));
+	v[2] = BoolGetDatum(log != NULL && (log->chan.flags & SIFT_TOMB_COMPLETE));
 	v[3] = BoolGetDatum(sift_col_track_ok(index, heap, NULL));
 	table_close(heap, NoLock);
 	index_close(index, NoLock);

@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "access/table.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "storage/lwlock.h"
@@ -275,6 +276,11 @@ maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCall
 void
 maint_vacuum_log(Relation index)
 {
+	Relation	heap = table_open(index->rd_index->indrelid, NoLock);	/* VACUUM holds ShareUpdateExclusiveLock on it */
+
+	/* the addresses this VACUUM left dead (it skipped the indexes) get their tombstones here, and the entries it freed lose theirs below */
+	(void) sift_col_track_rebaseline(index, heap);
+	table_close(heap, NoLock);
 	log_vacuum(index, NULL, NULL);
 }
 
