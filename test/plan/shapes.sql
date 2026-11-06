@@ -128,7 +128,7 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT id FROM dims WHERE active) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: in_expr_key
--- expect: scan 0.11 0.43
+-- expect: scan 0.13 0.53
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT id + 1 FROM dims WHERE active) AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
@@ -234,7 +234,7 @@ SELECT d.tier, sum(s.n) AS n FROM (SELECT parent_id, count(*) AS n FROM events W
 SELECT count(*) AS cells FROM (SELECT parent_id, kind FROM events WHERE deleted_at IS NULL GROUP BY 1, 2) s;
 
 -- name: spine_range_join
--- expect: scan 0.080 0.32
+-- expect: scan 0.25 1.0
 SELECT b.bucket, count(e.id) AS n, sum(e.amount) AS total FROM buckets b
 LEFT JOIN events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month' AND e.deleted_at IS NULL AND e.kind = 'cat_a' GROUP BY 1 ORDER BY 1;
 
@@ -249,12 +249,12 @@ ORDER BY 1;
 SELECT b.bucket, count(e.id) AS n FROM buckets b LEFT JOIN events e ON date_trunc('month', e.ts)::date = b.bucket AND e.kind = 'cat_a' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: spine_span_kind
--- expect: scan 0.13 0.54
+-- expect: scan 0.36 1.4
 SELECT b.span, e.kind, count(*) AS n, sum(e.amount) AS total FROM buckets b JOIN events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
 WHERE e.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: spine_series
--- expect: scan 0.070 0.28
+-- expect: scan 0.21 0.85
 SELECT g.bucket::date AS bucket, count(e.id) AS n FROM generate_series(date '2024-01-01', date '2025-12-01', interval '1 month') g(bucket)
 LEFT JOIN events e ON e.ts >= g.bucket AND e.ts < g.bucket + interval '1 month' AND e.deleted_at IS NULL AND e.parent_id IN (SELECT id FROM dims WHERE tier = 'tier_a') GROUP BY 1 ORDER BY 1;
 

@@ -18,6 +18,7 @@
 #include "agg/cost/int.h"
 
 static bool real_cost_walker(Node *n, double *excess);
+static bool calendar_cost_walker(Node *n, double *ops);
 
 double
 num_cost(const SiftAggNum *o)
@@ -269,10 +270,16 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				double		candidates = jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows,
 							built = 0;
 
-				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
+				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's evaluation of the clause for a pair (PostgreSQL's expression: jsonb builds, calendar functions) does not get; a semi join stops at the first match: half the candidates for a key that has one (in_expr_key measured 105 ns a pair at that count) */
 				if (j->fslot >= 0)
-					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
-				cost += combo_entries(c, s, cb, alive, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
+				{
+					Node	   *on = (Node *) cb->slot[j->fslot].expr;
+
+					json_build_walker(on, &built);
+					real_cost_walker(on, &built);
+					calendar_cost_walker(on, &built);
+				}
+				cost += combo_entries(c, s, cb, alive, false) * Max(candidates, 1.0) * (j->kind == SJ_SEMI ? 0.5 : 1.0) * (AGG_PAIR_OPS + built) / AGG_SCAN_SPEED;
 			}
 			continue;
 		}
@@ -335,6 +342,35 @@ bucket_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows)
 		if (s->key[i].bucket > 0)
 			cost += rows * AGG_BUCKET_ROW + bucket_count(c, &s->key[i], rows) * AGG_EVAL_SLOT;
 	return cost;
+}
+
+/* what a function that breaks a timestamp into its calendar fields spends beyond the call, in operators PostgreSQL's executor runs (a cast or a comparison of dates and timestamps does not: 20 to 70 ns) */
+static bool
+calendar_cost_walker(Node *n, double *ops)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr))
+		switch (((FuncExpr *) n)->funcid)
+		{
+			case F_DATE_TRUNC_TEXT_TIMESTAMP:
+			case F_DATE_TRUNC_TEXT_TIMESTAMPTZ:
+			case F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT:
+			case F_TIMESTAMPTZ_DATE:
+			case F_DATE_PART_TEXT_DATE:
+			case F_DATE_PART_TEXT_TIMESTAMP:
+			case F_DATE_PART_TEXT_TIMESTAMPTZ:
+			case F_EXTRACT_TEXT_DATE:
+			case F_EXTRACT_TEXT_TIMESTAMP:
+			case F_EXTRACT_TEXT_TIMESTAMPTZ:
+			case F_TO_CHAR_TIMESTAMP_TEXT:
+			case F_TO_CHAR_TIMESTAMPTZ_TEXT:
+				*ops += AGG_REAL_CALENDAR;
+				break;
+			default:
+				break;
+		}
+	return expression_tree_walker(n, calendar_cost_walker, ops);
 }
 
 /*

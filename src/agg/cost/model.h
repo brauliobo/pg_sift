@@ -49,6 +49,8 @@
 #define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
 #define AGG_REAL_JSON		70.0	/* the same for a function that builds a jsonb value: 1,400 instructions measured for jsonb_build_array of one element, against 100 for an fmgr call */
+#define AGG_REAL_CALENDAR	80.0	/* the same for a function that breaks a timestamp into calendar fields (date_trunc, a timestamptz cast to date, extract, to_char): 260 ns measured in the executor, against 20 to 70 for the other casts and comparisons of dates and timestamps */
+#define AGG_PAIR_OPS		43.0	/* a (cached input, child row) pair of a join with no equality key, before the ON clause: 130 ns measured for the bind, the lookup and the dispatch of a clause of one addition */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_UNNEST_FLOOR	100.0	/* the rows PostgreSQL expects of an unnesting function over one row (jsonb_array_elements, jsonb_each): the join of a lookup it has no statistics for is that many */
