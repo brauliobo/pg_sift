@@ -144,15 +144,9 @@ arm_tables(Plan *plan, List **oids)
 }
 
 /* the plans (their ids among the subplans of the statement) the expressions of a node run: its InitPlans (scalar subqueries) and the SubPlans of its target list and quals; not the CTEs, which a CteScan names */
-static bool
-subplan_ids_walker(Node *n, List **ids)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(subplan_ids_walker, List **, ids,
 	if (IsA(n, SubPlan) && ((SubPlan *) n)->subLinkType != CTE_SUBLINK)
-		*ids = lappend_int(*ids, ((SubPlan *) n)->plan_id);
-	return expression_tree_walker(n, subplan_ids_walker, ids);
-}
+		*ids = lappend_int(*ids, ((SubPlan *) n)->plan_id);)
 
 static List *
 subplan_ids(Plan *plan)

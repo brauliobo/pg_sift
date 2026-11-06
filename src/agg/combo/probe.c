@@ -53,15 +53,9 @@
  * The parameters of the child hold the values of the key evaluated last when the batch is probed: a filter or a projection of the child that reads one (or runs a
  * sub-plan, which may) would see the wrong key's value, so such a child runs for each key.
  */
-static bool
-dp_reads_params(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(dp_reads_params, void *, context,
 	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, AlternativeSubPlan))
-		return true;
-	return expression_tree_walker(n, dp_reads_params, context);
-}
+		return true;)
 
 /*
  * Can the child be probed directly? The shape and the index conditions are examined once; false ends it for the combo.

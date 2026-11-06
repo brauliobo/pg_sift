@@ -97,15 +97,9 @@ row_bound(Node *qual, Index rti, AttrNumber *attno)
 	return 0;
 }
 
-static bool
-count_window_funcs(Node *n, int *count)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(count_window_funcs, int *, count,
 	if (IsA(n, WindowFunc))
-		(*count)++;
-	return expression_tree_walker(n, count_window_funcs, count);
-}
+		(*count)++;)
 
 static int
 expr_index(List *list, Node *e)

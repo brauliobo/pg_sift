@@ -54,6 +54,17 @@ sift_str_type(Oid t)
 		} \
 	} while (0)
 
+/* a tree walker that tests each node n (not NULL) by the statements given, which return the answer for a node they decide, and recurses into the others; ctx is its context argument */
+#define SIFT_WALKER(name, CtxT, ctx, ...) \
+	static bool \
+	name(Node *n, CtxT ctx) \
+	{ \
+		if (n == NULL) \
+			return false; \
+		__VA_ARGS__ \
+		return expression_tree_walker(n, name, ctx); \
+	}
+
 /* the integer that sorts as a value of an integer, date or timestamp type does (a key of the global order, of a spilled group) */
 static inline int64
 sift_int_key(Oid typid, Datum d)

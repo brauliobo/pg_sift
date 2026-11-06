@@ -246,15 +246,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 
 static bool reads_column_index(Query *q);
 
-static bool
-sublink_reads_index(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(sublink_reads_index, void *, context,
 	if (IsA(n, Query))
-		return reads_column_index((Query *) n);
-	return expression_tree_walker(n, sublink_reads_index, context);
-}
+		return reads_column_index((Query *) n);)
 
 /* does the query, or one it holds (a sub-select, a CTE, a sublink), read a table that has a column index? */
 static bool

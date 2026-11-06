@@ -75,15 +75,9 @@ fractions(Node *arg)
 	return r;
 }
 
-static bool
-candidate_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(candidate_walker, void *, context,
 	if (IsA(n, Aggref) && percentile_array((Aggref *) n) && fractions(linitial(((Aggref *) n)->aggdirectargs)) != NIL)
-		return true;
-	return expression_tree_walker(n, candidate_walker, context);
-}
+		return true;)
 
 /* a query with such an aggregate in its select list or HAVING (the test that costs no copy of the query) */
 bool

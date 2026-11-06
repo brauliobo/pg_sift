@@ -305,17 +305,11 @@ exact_key_type(Oid t)
 }
 
 /* does the query, or a sub-select of it, read a CTE? */
-static bool
-cte_ref_walker(Node *n, void *context)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(cte_ref_walker, void *, context,
 	if (IsA(n, RangeTblEntry))
 		return ((RangeTblEntry *) n)->rtekind == RTE_CTE;
 	if (IsA(n, Query))
-		return query_tree_walker((Query *) n, cte_ref_walker, context, QTW_EXAMINE_RTES_BEFORE);
-	return expression_tree_walker(n, cte_ref_walker, context);
-}
+		return query_tree_walker((Query *) n, cte_ref_walker, context, QTW_EXAMINE_RTES_BEFORE);)
 
 /* a filter of rows, nothing more: the output rows are rows of the FROM kept by the WHERE (a plain DISTINCT drops duplicates only) */
 static bool

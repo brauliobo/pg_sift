@@ -27,7 +27,7 @@ plan_pred.c: false_on_absent negate_existential # a test of a compiled predicate
 plan_rows.c: pg_aggregate_ok # a test of an aggregate of the rows plan: the caller names rows_shape
 plan_range_join.c: range_conds # the conditions of one range of a join on a range: false is "the range is not one this can read", and the estimate stays the planner's, no refusal
 arms.c: append_arms same_scan from_same cond_split outer_cond # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
-inner.c: arm_gates arm_having_expr count_aggs_walker outer_agg # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
+inner.c: arm_gates arm_having_expr outer_agg # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 spine.c: spine_key two_keys two_aggs spine_where null_in_arms two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 plan_jindex.c: index_qual # a condition that is no bound or point of an index scan: the table is read whole, join_filter names nothing
 plan_type.c: typeof_cmp_operands typeof_test wide_test shape_test range_unary_test types_guard_reads # tests of a jsonb_typeof, wide or range or network comparison: the caller names where
@@ -38,7 +38,7 @@ spec.c: sift_aggspec_ascii_fold sift_aggspec_spillable sift_parse_decimal sift_a
 plan_contains.c: elem_lit array_eq_args # the constant is not an element of a list the directory knows: the shape is read from the units, no refusal
 build.c: fuse_leaves fuse_children fuse_build fuse_key_slots fuse_candidate sift_aggspec_fusable # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
 join.c: combo_same fuse_join fuse_combo fuse_fslots # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
-pred.c: fuse_posts runs_plan pred_runs_plan fuse_aggs routable fuse_split # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
+pred.c: fuse_posts pred_runs_plan fuse_aggs routable fuse_split # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
 spec_preagg.c: plain_leaf pa_pres sift_pawhy_fixable add_leaf pred_dims in_leaves rows_zone_bound cal_pred cal_tests cal_alt # pre-aggregate decisions: a miss is counted by sift.col_rollup_misses, no refusal
 shape.c: topn_unique_key # a test of the join table's indexes: topn_joins_ok names topn_shape
 keys.c: topn_raw_key # a test of the first key leaf: the scan reads it through the datums of the unit, not as the stored codes, and is no less a top-N

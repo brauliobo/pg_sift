@@ -28,6 +28,7 @@
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
 
+#include "agg/agg.h"
 #include "agg/colsrc.h"
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
@@ -49,15 +50,9 @@
 #define SEARCH_SPARSE		8.0
 #define SEARCH_KEY_ROW		530.0	/* a row read by an index and checked for the text on the heap: 3,600 instructions measured on 500 keys, at the 6.8 instructions an operator that the postings of 25,000 and 62,500 matches measured */
 
-static bool
-operand_walker(Node *n, void *ctx)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(operand_walker, void *, ctx,
 	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan) || IsA(n, SubLink) || (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC))
-		return true;
-	return expression_tree_walker(n, operand_walker, ctx);
-}
+		return true;)
 
 /* The query operand is the same at every execution of the plan: a constant, a parameter of the statement, a stable function of them */
 bool

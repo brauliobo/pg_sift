@@ -22,17 +22,11 @@ typedef struct KeptWalk
 	int			last;
 } KeptWalk;
 
-static bool
-kept_cond_bad(Node *n, KeptWalk *w)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(kept_cond_bad, KeptWalk *, w,
 	if (IsA(n, Param))
 		return ((Param *) n)->paramkind != PARAM_EXEC || ((Param *) n)->paramid < w->first || ((Param *) n)->paramid >= w->last;
 	if (IsA(n, SubPlan) || IsA(n, SubLink))
-		return true;
-	return expression_tree_walker(n, kept_cond_bad, w);
-}
+		return true;)
 
 static bool
 map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)

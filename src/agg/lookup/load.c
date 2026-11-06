@@ -646,15 +646,9 @@ map_load(AggExec *ex, int ci)
 }
 
 /* does an expression read one of the first n parameters (the leaves of a combo)? */
-static bool
-reads_leaf_param(Node *n, int *nleaves)
-{
-	if (n == NULL)
-		return false;
+SIFT_WALKER(reads_leaf_param, int *, nleaves,
 	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < *nleaves)
-		return true;
-	return expression_tree_walker(n, reads_leaf_param, nleaves);
-}
+		return true;)
 
 /* does the expression of a slot of the combo read one of its leaves? */
 bool
