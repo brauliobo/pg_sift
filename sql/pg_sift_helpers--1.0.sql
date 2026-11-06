@@ -479,3 +479,20 @@ BEGIN
 	EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t)), ''[]'') FROM (' || q || ') t' INTO j;
 	RETURN j;
 END $$;
+
+-- plan_pushed_aggregates_have_no_case: true when q runs in the scan and no CASE is left in the aggregates it pushes, i.e. agg(CASE WHEN p THEN x ELSE k END) was planned as aggregates
+-- with a FILTER (agg/expr/casefilter.c); used by agg_case_filter_else
+CREATE FUNCTION sift_helpers.plan_pushed_aggregates_have_no_case(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	pushed bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Pushed Aggregates:' THEN
+			IF l ~ 'CASE' THEN RETURN false; END IF;
+			pushed := true;
+		END IF;
+	END LOOP;
+	RETURN pushed;
+END $$;

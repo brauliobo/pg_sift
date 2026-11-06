@@ -451,3 +451,4 @@ search_bitmap_recheck	checks the match again only on the rows of a lossy page	do
 agg_output_subplan	a sub-select in the select list or the HAVING of a grouped query is evaluated by the scan node once for each group	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 agg_lookup_range_bounds	the table of a lookup join that has its own bounds	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 jsonb_key_forms	answered by the index in a FILTER, an OR or a CASE	events	-	Pushed Aggregates: count\(\*\), sum	native	-	ms	faster33	no	-
+agg_case_else	an average, a minimum or a count of a CASE with an ELSE that is a value	events	-	Pushed Aggregates: .*sum\(qty\)	native	-	ms	faster33	no	-

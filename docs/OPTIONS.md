@@ -956,12 +956,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · default · since 4.2 · default on
 
-- **What it does:** sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, and sum over CASE WHEN p THEN x ELSE 0 END, run as the aggregate of x with a filter on p: the kernels of x under a test of p, not the CASE for every row
+- **What it does:** sum, avg, min, max and count over CASE WHEN p THEN x [ELSE NULL] END, sum over CASE WHEN p THEN x ELSE 0 END, count with any ELSE that is not NULL, and min, max (integers) and avg (integers, numerics) with ELSE 0, run as the aggregates of x with a filter on p: the kernels of x under a test of p, not the CASE for every row
 - **Gain:** a pivot of two sums over CASE WHEN status = .. THEN amount ELSE 0 END, grouped, 300,000 events, one backend, warm: 221.8 M instructions and 31.1 ms with the setting off, 43.7 M and 3.6 ms on; the same rows
 - **Gain and cost:** 5.10x fewer instructions (178000k saved a query), index +0.0%, build +0.0%, automatic
 - **Impact:** index size: -; build, merge and writes: -; other: planning only: a walk of the statement for aggregates of that shape; the statement is planned once more as written when the rewritten one does not run in the scan
 - **When:** sift_col and sift_table statements that aggregate over CASE WHEN p THEN x [ELSE NULL | 0]: a pivot, a share of rows by condition. It does not apply where the statement is not run by the scan (it keeps the plan of the CASE as written) or where the CASE has several branches.
-- **Default:** on — the rewrite is exact for the shapes it takes (a sum with ELSE 0 keeps 0 for a group where the condition never holds, NULL for an empty input) and costs one walk of the statement; avg, min and max with ELSE 0, DISTINCT, several WHEN branches and sub-selects stay as written.
+- **Default:** on — the rewrite is exact for the shapes it takes (a sum with ELSE 0 keeps 0 for a group where the condition never holds, NULL for an empty input) and costs one walk of the statement; min, max and avg of a float or of a numeric (min and max) with ELSE 0, an ELSE that is not a zero of the type, DISTINCT, several WHEN branches and sub-selects stay as written.
 - **Turn off:** SET sift.agg_case_filter = off (session, role, database or postgresql.conf): the CASE is evaluated for every row as written. Planning only, no REINDEX.
 - **Upgrade from 3.7:** ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement.
 - **Advice:** Leave on. It changes the text the scan computes, not the rows: the result of every shape is checked against the plan without the scan.

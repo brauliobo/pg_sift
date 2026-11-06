@@ -107,8 +107,8 @@ SELECT * FROM kf_run('kn');
  02 filter                    | same [{"count": 3202}] pushed
  03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
  04 case sum else 0           | same [{"sum": 2240000}] pushed
- 05 case count                | same [{"count": 1802}] normal
- 06 case avg                  | same [{"avg": 699.5627732667083073}] normal
+ 05 case count                | same [{"count": 1802}] pushed
+ 06 case avg                  | same [{"avg": 699.5627732667083073}] pushed
  07 or                        | same [{"count": 1761}] pushed
  08 or two keys               | same [{"count": 1800}] pushed
  09 and or                    | same [{"count": 1440}] pushed
@@ -151,8 +151,8 @@ SELECT * FROM kf_run('kc');
  02 filter                    | same [{"count": 3200}] pushed
  03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
  04 case sum else 0           | same [{"sum": 2240000}] pushed
- 05 case count                | same [{"count": 1800}] normal
- 06 case avg                  | same [{"avg": 700.0000000000000000}] normal
+ 05 case count                | same [{"count": 1800}] pushed
+ 06 case avg                  | same [{"avg": 700.0000000000000000}] pushed
  07 or                        | same [{"count": 1760}] pushed
  08 or two keys               | same [{"count": 1800}] pushed
  09 and or                    | same [{"count": 1440}] pushed
@@ -194,8 +194,8 @@ SELECT * FROM kf_run('ko');
  02 filter                    | same [{"count": 3200}] pushed
  03 two filters               | same [{"avg": 1600.0000000000000000, "sum": 1118200, "count": 1400}] pushed
  04 case sum else 0           | same [{"sum": 2240000}] pushed
- 05 case count                | same [{"count": 1800}] normal
- 06 case avg                  | same [{"avg": 700.0000000000000000}] normal
+ 05 case count                | same [{"count": 1800}] pushed
+ 06 case avg                  | same [{"avg": 700.0000000000000000}] pushed
  07 or                        | same [{"count": 1760}] pushed
  08 or two keys               | same [{"count": 1800}] pushed
  09 and or                    | same [{"count": 1440}] pushed
@@ -247,8 +247,8 @@ SELECT * FROM kf_run('kn');
  02 filter                    | same [{"count": 3093}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1738}] normal
- 06 case avg                  | same [{"avg": 748.1338506304558681}] normal
+ 05 case count                | same [{"count": 1738}] pushed
+ 06 case avg                  | same [{"avg": 748.1338506304558681}] pushed
  07 or                        | same [{"count": 1706}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -290,8 +290,8 @@ SELECT * FROM kf_run('kc');
  02 filter                    | same [{"count": 3092}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1737}] normal
- 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 05 case count                | same [{"count": 1737}] pushed
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] pushed
  07 or                        | same [{"count": 1705}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -333,8 +333,8 @@ SELECT * FROM kf_run('ko');
  02 filter                    | same [{"count": 3092}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1737}] normal
- 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 05 case count                | same [{"count": 1737}] pushed
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] pushed
  07 or                        | same [{"count": 1705}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -384,8 +384,8 @@ SELECT * FROM kf_run('kn');
  02 filter                    | same [{"count": 3093}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1738}] normal
- 06 case avg                  | same [{"avg": 748.1338506304558681}] normal
+ 05 case count                | same [{"count": 1738}] pushed
+ 06 case avg                  | same [{"avg": 748.1338506304558681}] pushed
  07 or                        | same [{"count": 1706}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -427,8 +427,8 @@ SELECT * FROM kf_run('kc');
  02 filter                    | same [{"count": 3092}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1737}] normal
- 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 05 case count                | same [{"count": 1737}] pushed
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] pushed
  07 or                        | same [{"count": 1705}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -470,8 +470,8 @@ SELECT * FROM kf_run('ko');
  02 filter                    | same [{"count": 3092}] pushed
  03 two filters               | same [{"avg": 1707.7328413284132841, "sum": 1150241, "count": 1355}] pushed
  04 case sum else 0           | same [{"sum": 2313978}] pushed
- 05 case count                | same [{"count": 1737}] normal
- 06 case avg                  | same [{"avg": 748.3758085381630013}] normal
+ 05 case count                | same [{"count": 1737}] pushed
+ 06 case avg                  | same [{"avg": 748.3758085381630013}] pushed
  07 or                        | same [{"count": 1705}] pushed
  08 or two keys               | same [{"count": 1741}] pushed
  09 and or                    | same [{"count": 1392}] pushed
@@ -537,8 +537,8 @@ SELECT * FROM kf_run('kp');
  02 filter                    | same [{"count": 12000}] pushed
  03 two filters               | same [{"avg": 6000.0000000000000000, "sum": 15743250, "count": 5250}] pushed
  04 case sum else 0           | same [{"sum": 31500000}] pushed
- 05 case count                | same [{"count": 6750}] normal
- 06 case avg                  | same [{"avg": 2625.0000000000000000}] normal
+ 05 case count                | same [{"count": 6750}] pushed
+ 06 case avg                  | same [{"avg": 2625.0000000000000000}] pushed
  07 or                        | same [{"count": 6600}] pushed
  08 or two keys               | same [{"count": 6750}] pushed
  09 and or                    | same [{"count": 5400}] pushed

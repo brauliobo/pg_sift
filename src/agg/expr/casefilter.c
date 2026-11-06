@@ -8,8 +8,16 @@
  *  - sum(CASE WHEN p THEN x ELSE 0 END) adds a zero for every row where p does not hold: the sum is NULL only when no row at all holds x, which is
  *    CASE WHEN count(*) FILTER (WHERE p IS NOT TRUE) > 0 THEN coalesce(sum(x) FILTER (WHERE p), 0) ELSE sum(x) FILTER (WHERE p) END
  *    (a group where p never holds is 0, an empty input is NULL, rows that hold a NULL x and no other row give NULL: all as the CASE form).
- * avg and min/max with ELSE 0 are not the same aggregate (the zeros count) and stay. A condition or a value that holds a sub-select, a volatile function or a
- * set-returning function stays as written, and so do DISTINCT, ORDER BY and the aggregates of other functions.
+ *  - count(CASE WHEN p THEN x ELSE k END), k not NULL, counts every row where p is not true (they give k) and those where p holds and x is not NULL:
+ *    count(x) FILTER (WHERE p) + count(*) FILTER (WHERE p IS NOT TRUE).
+ *  - min and max of an integer x with ELSE 0: a zero is one of the values when a row does not hold p, so CASE WHEN count(*) FILTER (WHERE p IS NOT TRUE) > 0
+ *    THEN least(min(x) FILTER (WHERE p), 0) ELSE min(x) FILTER (WHERE p) END (greatest and max alike; least and greatest skip the NULL of a group that has no x).
+ *    Integers only: two equal values of a numeric or a float that differ in scale or sign (0.00 and 0, -0 and 0) tie, and which one the aggregate returns depends on the order of the rows.
+ *  - avg of an integer or a numeric x with ELSE 0 (the zeros count as rows): CASE WHEN n > 0 THEN coalesce(sum(x) FILTER (WHERE p), 0)::numeric / n::numeric END with
+ *    n = count(x) FILTER (WHERE p) + count(*) FILTER (WHERE p IS NOT TRUE), the same numeric_div of the same sum and count as the final function of avg (NULL when n is 0).
+ *    Not a float: avg(float4) adds in float8 where sum(float4) adds in float4, and the sign of a zero sum differs. For int2 and int4 the sum is a bigint, as the state of avg is: both
+ *    leave the range of a bigint only after more than 2^32 rows of the largest values.
+ * A condition or a value that holds a sub-select, a volatile function or a set-returning function stays as written, and so do DISTINCT, ORDER BY and the aggregates of other functions.
  */
 #include "postgres.h"
 
@@ -17,6 +25,7 @@
 
 #include "access/stratnum.h"
 #include "access/transam.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
@@ -32,7 +41,7 @@
 
 bool		sift_agg_case_filter_enabled = true;
 
-typedef enum { CF_NONE, CF_SKIP, CF_ZERO } CaseElse;
+typedef enum { CF_SKIP, CF_ZERO, CF_COUNT } CaseElse;
 
 static Node *
 test_value(Node *n, Node *arg)
@@ -86,6 +95,22 @@ is_zero(Const *c)
 	}
 }
 
+/* the aggregates whose result with ELSE 0 is made of the aggregates of the rows that hold the condition and the number of rows that do not (the header) */
+static bool
+zero_else_exact(const char *name, Aggref *a, Node *value, Const *zero)
+{
+	Oid			t = exprType(value);
+	bool		integer = t == INT2OID || t == INT4OID || t == INT8OID;
+
+	if (zero->consttype != t)
+		return false;
+	if (strcmp(name, "sum") == 0)
+		return a->aggtype == INT8OID || a->aggtype == NUMERICOID || a->aggtype == FLOAT4OID || a->aggtype == FLOAT8OID;
+	if (strcmp(name, "avg") == 0)
+		return integer || t == NUMERICOID;
+	return integer && (strcmp(name, "min") == 0 || strcmp(name, "max") == 0);
+}
+
 /* the shape of the aggregate: the condition, the value and what the other branch gives; false when it is not one of the shapes above */
 static bool
 case_arm(Aggref *a, Node **cond, Node **value, CaseElse *other, Const **zero)
@@ -112,8 +137,9 @@ case_arm(Aggref *a, Node **cond, Node **value, CaseElse *other, Const **zero)
 	*zero = NULL;
 	if (ce->defresult == NULL || (dflt != NULL && IsA(dflt, Const) && ((Const *) dflt)->constisnull))
 		*other = CF_SKIP;
-	else if (dflt != NULL && IsA(dflt, Const) && strcmp(name, "sum") == 0 && is_zero((Const *) dflt) &&
-			 (a->aggtype == INT8OID || a->aggtype == NUMERICOID || a->aggtype == FLOAT4OID || a->aggtype == FLOAT8OID))
+	else if (dflt != NULL && IsA(dflt, Const) && strcmp(name, "count") == 0)
+		*other = CF_COUNT;
+	else if (dflt != NULL && IsA(dflt, Const) && is_zero((Const *) dflt) && zero_else_exact(name, a, (Node *) w->result, (Const *) dflt))
 	{
 		*other = CF_ZERO;
 		*zero = (Const *) dflt;
@@ -158,6 +184,139 @@ with_filter(Aggref *a, Node *cond)
 	return cond;
 }
 
+/* count(*) FILTER (filter), with the level and the collation of the aggregate a */
+static Aggref *
+count_rows(Aggref *a, Node *filter)
+{
+	Aggref	   *n = copyObject(a);
+
+	n->aggfnoid = F_COUNT_;
+	n->aggtype = INT8OID;
+	n->aggtranstype = InvalidOid;
+	n->aggstar = true;
+	n->args = NIL;
+	n->aggargtypes = NIL;
+	n->aggfilter = (Expr *) filter;
+	return n;
+}
+
+/* the rows no value is made of: those the other conditions of the aggregate drop do not count either, so the count has the same filter on the rows */
+static Node *
+not_true_filter(Aggref *a, Node *cond)
+{
+	BooleanTest *not_true = makeNode(BooleanTest);
+
+	not_true->arg = (Expr *) copyObject(cond);
+	not_true->booltesttype = IS_NOT_TRUE;
+	not_true->location = -1;
+	return a->aggfilter != NULL ? (Node *) makeBoolExpr(AND_EXPR, list_make2(copyObject(a->aggfilter), not_true), -1) : (Node *) not_true;
+}
+
+static Node *
+bigint_op(const char *name, Oid resulttype, Oid type, Node *l, Node *r)
+{
+	OpExpr	   *op = (OpExpr *) make_opclause(OpernameGetOprid(list_make1(makeString((char *) name)), type, type), resulttype, false, (Expr *) l, (Expr *) r, InvalidOid, InvalidOid);
+
+	set_opfuncid(op);
+	return (Node *) op;
+}
+
+/* count > 0 */
+static Node *
+some_rows(Node *count)
+{
+	Oid			gt = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, BTGreaterStrategyNumber);
+	OpExpr	   *op = (OpExpr *) make_opclause(gt, BOOLOID, false, (Expr *) count, (Expr *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, true), InvalidOid, InvalidOid);
+
+	set_opfuncid(op);
+	return (Node *) op;
+}
+
+static Node *
+case_when(Oid type, Node *cond, Node *then, Node *otherwise)
+{
+	CaseWhen   *w = makeNode(CaseWhen);
+	CaseExpr   *ce = makeNode(CaseExpr);
+
+	w->expr = (Expr *) cond;
+	w->result = (Expr *) then;
+	w->location = -1;
+	ce->casetype = type;
+	ce->args = list_make1(w);
+	ce->defresult = (Expr *) otherwise;
+	ce->location = -1;
+	return (Node *) ce;
+}
+
+/* count(CASE WHEN p THEN x ELSE k END): the rows where p is not true give k, which is not NULL */
+static Node *
+rewrite_count_else(Aggref *a, Node *cond, Node *value)
+{
+	Aggref	   *others = count_rows(a, not_true_filter(a, cond)),
+			   *held;
+
+	if (IsA(value, Const) && ((Const *) value)->constisnull)
+		return (Node *) others;
+	if (IsA(value, Const))
+		held = count_rows(a, with_filter(a, cond));
+	else
+	{
+		held = copyObject(a);
+		held->args = list_make1(makeTargetEntry((Expr *) value, 1, NULL, false));
+		held->aggfilter = (Expr *) with_filter(a, cond);
+	}
+	return bigint_op("+", INT8OID, INT8OID, (Node *) held, (Node *) others);
+}
+
+/* min, max and avg of CASE WHEN p THEN x ELSE 0 END, x an integer (avg: or a numeric): the header */
+static Node *
+rewrite_zero_stat(Aggref *a, const char *name, Node *cond, Node *value, Const *zero)
+{
+	Oid			t = exprType(value);
+	Aggref	   *others = count_rows(a, not_true_filter(a, cond)),
+			   *held = copyObject(a);
+	Node	   *some = some_rows((Node *) others);
+
+	held->args = list_make1(makeTargetEntry((Expr *) value, 1, NULL, false));
+	held->aggfilter = (Expr *) with_filter(a, cond);
+	if (strcmp(name, "avg") != 0)
+	{
+		MinMaxExpr *m = makeNode(MinMaxExpr);
+
+		m->minmaxtype = t;
+		m->op = strcmp(name, "min") == 0 ? IS_LEAST : IS_GREATEST;
+		m->args = list_make2(copyObject(held), copyObject(zero));
+		m->location = -1;
+		return case_when(t, some, (Node *) m, (Node *) copyObject(held));
+	}
+	{
+		bool		sum_int8 = t != INT8OID && t != NUMERICOID;		/* sum(int2) and sum(int4) are bigints, those of int8 and numeric numerics */
+		Aggref	   *sum = copyObject(held),
+				   *values = copyObject(held);
+		Oid			sumtype = sum_int8 ? INT8OID : NUMERICOID;
+		CoalesceExpr *co = makeNode(CoalesceExpr);
+		Node	   *total,
+				   *n,
+				   *count;
+
+		sum->aggfnoid = t == INT2OID ? F_SUM_INT2 : t == INT4OID ? F_SUM_INT4 : t == INT8OID ? F_SUM_INT8 : F_SUM_NUMERIC;
+		sum->aggtype = sumtype;
+		sum->aggtranstype = InvalidOid;
+		sum->aggargtypes = list_make1_oid(t);
+		values->aggfnoid = F_COUNT_ANY;
+		values->aggtype = INT8OID;
+		values->aggtranstype = InvalidOid;
+		values->aggargtypes = list_make1_oid(t);
+		n = bigint_op("+", INT8OID, INT8OID, (Node *) values, (Node *) copyObject(others));
+		co->coalescetype = sumtype;
+		co->args = list_make2(sum, zero_of(sumtype, zero));
+		co->location = -1;
+		total = sum_int8 ? (Node *) makeFuncExpr(F_NUMERIC_INT8, NUMERICOID, list_make1(co), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST) : (Node *) co;
+		count = (Node *) makeFuncExpr(F_NUMERIC_INT8, NUMERICOID, list_make1(copyObject(n)), InvalidOid, InvalidOid, COERCE_IMPLICIT_CAST);
+		return case_when(NUMERICOID, some_rows(n), bigint_op("/", NUMERICOID, NUMERICOID, total, count), (Node *) makeNullConst(NUMERICOID, -1, InvalidOid));
+	}
+}
+
 static Node *
 rewrite_aggref(Aggref *a)
 {
@@ -169,18 +328,13 @@ rewrite_aggref(Aggref *a)
 
 	if (!case_arm(a, &cond, &value, &other, &dc))
 		return NULL;
-	f = copyObject(a);
+	if (other == CF_COUNT)
+		return rewrite_count_else(a, cond, value);
+	if (other == CF_ZERO && strcmp(get_func_name(a->aggfnoid), "sum") != 0)
+		return rewrite_zero_stat(a, get_func_name(a->aggfnoid), cond, value, dc);
 	if (count_of_constant(a, value))
-	{
-		f->aggfnoid = F_COUNT_;
-		f->aggtype = INT8OID;
-		f->aggtranstype = InvalidOid;
-		f->aggstar = true;
-		f->args = NIL;
-		f->aggargtypes = NIL;
-		f->aggfilter = (Expr *) with_filter(a, cond);
-		return (Node *) f;
-	}
+		return (Node *) count_rows(a, with_filter(a, cond));
+	f = copyObject(a);
 	if (other == CF_SKIP)
 	{
 		f->args = list_make1(makeTargetEntry((Expr *) value, 1, NULL, false));
@@ -188,41 +342,15 @@ rewrite_aggref(Aggref *a)
 		return (Node *) f;
 	}
 	{
-		Aggref	   *n = copyObject(a);
-		Const	   *zero = zero_of(a->aggtype, dc);
-		Oid			gt = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, BTGreaterStrategyNumber);
-		BooleanTest *not_true = makeNode(BooleanTest);
 		CoalesceExpr *co = makeNode(CoalesceExpr);
-		CaseWhen   *w = makeNode(CaseWhen);
-		CaseExpr   *ce = makeNode(CaseExpr);
-		OpExpr	   *op;
+		Aggref	   *others = count_rows(a, not_true_filter(a, cond));
 
 		f->args = list_make1(makeTargetEntry((Expr *) value, 1, NULL, false));
 		f->aggfilter = (Expr *) with_filter(a, cond);
-		/* the rows no sum is made of: those the other conditions of the aggregate drop do not count either, so the count has the same filter on the rows */
-		n->aggfnoid = F_COUNT_;
-		n->aggtype = INT8OID;
-		n->aggtranstype = InvalidOid;
-		n->aggstar = true;
-		n->args = NIL;
-		n->aggargtypes = NIL;
-		not_true->arg = (Expr *) copyObject(cond);
-		not_true->booltesttype = IS_NOT_TRUE;
-		not_true->location = -1;
-		n->aggfilter = a->aggfilter != NULL ? (Expr *) makeBoolExpr(AND_EXPR, list_make2(copyObject(a->aggfilter), not_true), -1) : (Expr *) not_true;
 		co->coalescetype = a->aggtype;
-		co->args = list_make2(copyObject(f), zero);
+		co->args = list_make2(copyObject(f), zero_of(a->aggtype, dc));
 		co->location = -1;
-		op = (OpExpr *) make_opclause(gt, BOOLOID, false, (Expr *) n, (Expr *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, true), InvalidOid, InvalidOid);
-		set_opfuncid(op);
-		w->expr = (Expr *) op;
-		w->result = (Expr *) co;
-		w->location = -1;
-		ce->casetype = a->aggtype;
-		ce->args = list_make1(w);
-		ce->defresult = (Expr *) copyObject(f);
-		ce->location = -1;
-		return (Node *) ce;
+		return case_when(a->aggtype, some_rows((Node *) others), (Node *) co, (Node *) copyObject(f));
 	}
 }
 

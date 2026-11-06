@@ -783,3 +783,7 @@ select region, count(*), rank() over (order by count(*) desc) from events group 
 select region, count(e) from events e group by 1 having count(e) > 1600;
 -- @case having_in_cte | having | a grouped CTE with a HAVING, read by an outer aggregate
 with g as (select region, count(*) c from events group by 1 having count(*) > 1600) select count(*), sum(c) from g;
+-- @case c3_case_else_count | pred | the rows counted by a CASE whose ELSE is a value, by tenant
+select tenant_id, count(case when status = 'paid' then qty else 0 end) a, count(case when status = 'paid' then null else 1 end) b from events group by 1;
+-- @case c3_case_else_avg_min | pred | an average, a minimum and a maximum of a CASE with ELSE 0, by tenant
+select tenant_id, avg(case when status = 'paid' then qty else 0 end) a, min(case when status = 'paid' then qty else 0 end) mn, max(case when status = 'open' then kind_id else 0 end) mx, avg(case when status = 'paid' then amount else 0 end) am from events group by 1;

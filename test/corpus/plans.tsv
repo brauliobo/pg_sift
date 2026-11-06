@@ -363,3 +363,5 @@ having_join_lookup	SiftAgg	single:t
 having_window_over_groups	SiftAgg	single:t
 having_count_whole_row	SiftAgg	single:t
 having_in_cte	SiftAgg	-
+c3_case_else_count	SiftAgg	single:t
+c3_case_else_avg_min	SiftAgg	single:t
