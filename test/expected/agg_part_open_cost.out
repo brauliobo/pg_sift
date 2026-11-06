@@ -78,279 +78,77 @@ CREATE TABLE pp_many_63 PARTITION OF pp_many FOR VALUES FROM ('11-06-2020') TO (
 CREATE TABLE pp_many_64 PARTITION OF pp_many FOR VALUES FROM ('11-11-2020') TO ('11-16-2020')
 INSERT INTO pp_few SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 400, i % 97 FROM generate_series(1, 200000) i;
 INSERT INTO pp_many SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3], date '2020-01-01' + i % 320, i % 97 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 SELECT format('CREATE INDEX %s_col ON %s USING sift_col (id, kind, ts, amount)', c.relname, c.relname) FROM pg_class c WHERE c.relname ~ '^pp_(few|many)_[0-9]+$' ORDER BY 1 \gexec
 CREATE INDEX pp_few_1_col ON pp_few_1 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_few_1_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_1_col');
 CREATE INDEX pp_few_2_col ON pp_few_2 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_few_2_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_2_col');
 CREATE INDEX pp_few_3_col ON pp_few_3 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_few_3_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_3_col');
 CREATE INDEX pp_few_4_col ON pp_few_4 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_few_4_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_few_4_col');
 CREATE INDEX pp_many_10_col ON pp_many_10 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_10_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_10_col');
 CREATE INDEX pp_many_11_col ON pp_many_11 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_11_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_11_col');
 CREATE INDEX pp_many_12_col ON pp_many_12 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_12_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_12_col');
 CREATE INDEX pp_many_13_col ON pp_many_13 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_13_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_13_col');
 CREATE INDEX pp_many_14_col ON pp_many_14 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_14_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_14_col');
 CREATE INDEX pp_many_15_col ON pp_many_15 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_15_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_15_col');
 CREATE INDEX pp_many_16_col ON pp_many_16 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_16_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_16_col');
 CREATE INDEX pp_many_17_col ON pp_many_17 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_17_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_17_col');
 CREATE INDEX pp_many_18_col ON pp_many_18 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_18_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_18_col');
 CREATE INDEX pp_many_19_col ON pp_many_19 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_19_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_19_col');
 CREATE INDEX pp_many_1_col ON pp_many_1 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_1_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_1_col');
 CREATE INDEX pp_many_20_col ON pp_many_20 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_20_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_20_col');
 CREATE INDEX pp_many_21_col ON pp_many_21 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_21_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_21_col');
 CREATE INDEX pp_many_22_col ON pp_many_22 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_22_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_22_col');
 CREATE INDEX pp_many_23_col ON pp_many_23 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_23_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_23_col');
 CREATE INDEX pp_many_24_col ON pp_many_24 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_24_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_24_col');
 CREATE INDEX pp_many_25_col ON pp_many_25 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_25_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_25_col');
 CREATE INDEX pp_many_26_col ON pp_many_26 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_26_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_26_col');
 CREATE INDEX pp_many_27_col ON pp_many_27 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_27_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_27_col');
 CREATE INDEX pp_many_28_col ON pp_many_28 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_28_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_28_col');
 CREATE INDEX pp_many_29_col ON pp_many_29 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_29_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_29_col');
 CREATE INDEX pp_many_2_col ON pp_many_2 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_2_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_2_col');
 CREATE INDEX pp_many_30_col ON pp_many_30 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_30_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_30_col');
 CREATE INDEX pp_many_31_col ON pp_many_31 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_31_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_31_col');
 CREATE INDEX pp_many_32_col ON pp_many_32 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_32_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_32_col');
 CREATE INDEX pp_many_33_col ON pp_many_33 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_33_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_33_col');
 CREATE INDEX pp_many_34_col ON pp_many_34 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_34_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_34_col');
 CREATE INDEX pp_many_35_col ON pp_many_35 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_35_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_35_col');
 CREATE INDEX pp_many_36_col ON pp_many_36 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_36_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_36_col');
 CREATE INDEX pp_many_37_col ON pp_many_37 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_37_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_37_col');
 CREATE INDEX pp_many_38_col ON pp_many_38 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_38_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_38_col');
 CREATE INDEX pp_many_39_col ON pp_many_39 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_39_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_39_col');
 CREATE INDEX pp_many_3_col ON pp_many_3 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_3_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_3_col');
 CREATE INDEX pp_many_40_col ON pp_many_40 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_40_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_40_col');
 CREATE INDEX pp_many_41_col ON pp_many_41 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_41_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_41_col');
 CREATE INDEX pp_many_42_col ON pp_many_42 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_42_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_42_col');
 CREATE INDEX pp_many_43_col ON pp_many_43 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_43_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_43_col');
 CREATE INDEX pp_many_44_col ON pp_many_44 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_44_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_44_col');
 CREATE INDEX pp_many_45_col ON pp_many_45 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_45_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_45_col');
 CREATE INDEX pp_many_46_col ON pp_many_46 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_46_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_46_col');
 CREATE INDEX pp_many_47_col ON pp_many_47 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_47_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_47_col');
 CREATE INDEX pp_many_48_col ON pp_many_48 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_48_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_48_col');
 CREATE INDEX pp_many_49_col ON pp_many_49 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_49_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_49_col');
 CREATE INDEX pp_many_4_col ON pp_many_4 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_4_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_4_col');
 CREATE INDEX pp_many_50_col ON pp_many_50 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_50_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_50_col');
 CREATE INDEX pp_many_51_col ON pp_many_51 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_51_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_51_col');
 CREATE INDEX pp_many_52_col ON pp_many_52 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_52_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_52_col');
 CREATE INDEX pp_many_53_col ON pp_many_53 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_53_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_53_col');
 CREATE INDEX pp_many_54_col ON pp_many_54 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_54_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_54_col');
 CREATE INDEX pp_many_55_col ON pp_many_55 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_55_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_55_col');
 CREATE INDEX pp_many_56_col ON pp_many_56 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_56_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_56_col');
 CREATE INDEX pp_many_57_col ON pp_many_57 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_57_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_57_col');
 CREATE INDEX pp_many_58_col ON pp_many_58 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_58_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_58_col');
 CREATE INDEX pp_many_59_col ON pp_many_59 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_59_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_59_col');
 CREATE INDEX pp_many_5_col ON pp_many_5 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_5_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_5_col');
 CREATE INDEX pp_many_60_col ON pp_many_60 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_60_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_60_col');
 CREATE INDEX pp_many_61_col ON pp_many_61 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_61_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_61_col');
 CREATE INDEX pp_many_62_col ON pp_many_62 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_62_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_62_col');
 CREATE INDEX pp_many_63_col ON pp_many_63 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_63_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_63_col');
 CREATE INDEX pp_many_64_col ON pp_many_64 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_64_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_64_col');
 CREATE INDEX pp_many_6_col ON pp_many_6 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_6_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_6_col');
 CREATE INDEX pp_many_7_col ON pp_many_7 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_7_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_7_col');
 CREATE INDEX pp_many_8_col ON pp_many_8 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_8_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_8_col');
 CREATE INDEX pp_many_9_col ON pp_many_9 USING sift_col (id, kind, ts, amount)
-NOTICE:  sift_col index "pp_many_9_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pp_many_9_col');
+RESET client_min_messages;
 VACUUM ANALYZE pp_few, pp_many;
 CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
