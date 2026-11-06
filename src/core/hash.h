@@ -12,6 +12,9 @@
 #define SIFT_FOLD64	UINT64_C(0xD6E8FEB86659FD93)	/* the multiplier that follows a xor in a fold */
 #define SIFT_FMIX64_A	UINT64_C(0xFF51AFD7ED558CCD)	/* the two multipliers of the 64 bit finalizer of MurmurHash3 */
 #define SIFT_FMIX64_B	UINT64_C(0xC4CEB9FE1A85EC53)
+#define SIFT_XXP64_2	UINT64_C(0xC2B2AE3D27D4EB4F)	/* the primes of xxHash64 that the hashes of keys with several words take as further multipliers */
+#define SIFT_XXP64_3	UINT64_C(0x165667B19E3779F9)
+#define SIFT_XXP64_5	UINT64_C(0x27D4EB2F165667C5)
 
 /* Fibonacci hashing: keep the top bits (x >> (64 - bits)) as a slot, or a middle slice as a 32 bit hash */
 static inline uint64_t
