@@ -393,6 +393,9 @@ extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
 /* the condition n as tests of a column (plan_prednorm.c), or NULL */
 extern Node *pred_normalize(AggCtx *c, Node *n);
+/* the conjuncts a containment on a jsonb column is in the WHERE (plan_contains.c), and the path of one that no leaf holds, or NULL */
+extern List *contains_conjuncts(AggCtx *c, Node *q);
+extern char *undeclared_path(AggCtx *c, Node *q);
 extern SiftAggPred *compile_calendar_cmp(AggCtx *c, OpExpr *op);
 extern void compile_periodic(AggCtx *c, Node *n, SiftAggPred *p);
 

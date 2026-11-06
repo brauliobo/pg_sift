@@ -86,7 +86,7 @@ SELECT t.name AS tbl, p.name, (scan_same(format('SELECT count(*) FROM %s WHERE d
 FROM (VALUES ('co_clean'), ('co_dirty')) t(name), patterns p ORDER BY 1, p.name;
    tbl    |             name             | scan | same 
 ----------+------------------------------+------+------
- co_clean | JSON null                    | f    | t
+ co_clean | JSON null                    | t    | t
  co_clean | array                        | t    | t
  co_clean | array and member             | t    | t
  co_clean | array of objects             | f    | t
@@ -111,7 +111,7 @@ FROM (VALUES ('co_clean'), ('co_dirty')) t(name), patterns p ORDER BY 1, p.name;
  co_clean | three dim_b                  | t    | t
  co_clean | two dim_b                    | t    | t
  co_clean | unknown key                  | f    | t
- co_dirty | JSON null                    | f    | t
+ co_dirty | JSON null                    | t    | t
  co_dirty | array                        | f    | t
  co_dirty | array and member             | f    | t
  co_dirty | array of objects             | f    | t

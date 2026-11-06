@@ -4,10 +4,15 @@
 #include "postgres.h"
 
 #include "catalog/pg_collation.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_type.h"
+#include "parser/parsetree.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
+#include "utils/json.h"
 #include "utils/lsyscache.h"
 
 #include "agg/plan_exists_int.h"
@@ -605,4 +610,247 @@ compile_array_test(AggCtx *c, Node *n, Node **target)
 		return array_contained(c, grp, (Const *) other, collid);
 	*target = arr;
 	return array_elems(c, grp, (Const *) other, collid, all);
+}
+
+/*
+ * attribute @> '{"k": true, "o": {"n": null}}' as a conjunct of the WHERE: a boolean on an astext leaf and a JSON null are not members the leaf can compare (the text
+ * of `true` is also a string's), but the chunk keeps the kind of each value, so
+ *   "k": true   is   attribute ->> 'k' = 'true' AND jsonb_typeof(attribute -> 'k') = 'boolean'
+ *   "k": "12"   is   attribute ->> 'k' = '12' AND jsonb_typeof(attribute -> 'k') = 'string'   (a string a number or a boolean prints as)
+ *   "k": null   is   jsonb_typeof(attribute -> 'k') = 'null'
+ * (a key of a document that is no object is NULL for ->, so the conjuncts are false for it as the containment is). The other members stay a containment of what
+ * is left of the pattern. The type test is a conjunct of the WHERE only (compile_typeof), so this is asked of the top-level conditions, not of a branch of an OR.
+ */
+static Node *
+text_const(const char *s)
+{
+	return (Node *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(s), false, false);
+}
+
+static Node *
+member_path(Node *doc, List *path, bool as_text)
+{
+	Node	   *e = doc;
+
+	for (int i = 0; i < list_length(path); i++)
+		e = (Node *) makeFuncExpr(as_text && i == list_length(path) - 1 ? F_JSONB_OBJECT_FIELD_TEXT : F_JSONB_OBJECT_FIELD, as_text && i == list_length(path) - 1 ? TEXTOID : JSONBOID,
+								  list_make2(e, text_const(strVal(list_nth(path, i)))), DEFAULT_COLLATION_OID, InvalidOid, COERCE_EXPLICIT_CALL);
+	return e;
+}
+
+static Node *
+text_equals(Node *l, const char *s)
+{
+	OpExpr	   *o = (OpExpr *) make_opclause(TextEqualOperator, BOOLOID, false, (Expr *) l, (Expr *) text_const(s), InvalidOid, DEFAULT_COLLATION_OID);
+
+	set_opfuncid(o);
+	return (Node *) o;
+}
+
+static Node *
+type_is(Node *doc, List *path, const char *type)
+{
+	return text_equals((Node *) makeFuncExpr(F_JSONB_TYPEOF, TEXTOID, list_make1(member_path(doc, path, false)), DEFAULT_COLLATION_OID, InvalidOid, COERCE_EXPLICIT_CALL), type);
+}
+
+/* the JSON text of a value of a pattern */
+static void
+value_text(StringInfo out, JsonbValue *v)
+{
+	if (v->type == jbvBinary)
+		(void) JsonbToCString(out, v->val.binary.data, -1);
+	else
+		(void) JsonbToCString(out, &JsonbValueToJsonb(v)->root, -1);
+}
+
+/* the JSON text of what is left of the object after its expandable members went to *conj; NULL when nothing is left */
+static char *
+object_rest(AggCtx *c, Node *doc, List *path, JsonbContainer *obj, List **conj)
+{
+	int			n = JsonContainerSize(obj);
+	JsonbIterator *it = JsonbIteratorInit(obj);
+	StringInfoData out;
+	JsonbValue	k,
+				v;
+	int			kept = 0;
+
+	initStringInfo(&out);
+	appendStringInfoChar(&out, '{');
+	(void) JsonbIteratorNext(&it, &k, true);
+	for (int i = 0; i < n; i++)
+	{
+		List	   *mp;
+		Lit			lit;
+		int			leaf;
+		char	   *rest = NULL;
+		bool		moved = false;
+
+		(void) JsonbIteratorNext(&it, &k, true);
+		(void) JsonbIteratorNext(&it, &v, true);
+		mp = lappend(list_copy(path), makeString(pnstrdup(k.val.string.val, k.val.string.len)));
+		if (v.type == jbvBinary && JsonContainerIsObject(v.val.binary.data) && JsonContainerSize(v.val.binary.data) > 0)
+		{
+			if ((rest = object_rest(c, doc, mp, v.val.binary.data, conj)) == NULL)
+				continue;
+		}
+		else if (jsonb_lit(&v, &lit) && (lit.kind == 'z' || lit.kind == 'b' || (lit.kind == 's' && !lit_is_plain_text(&lit))) &&
+				 (leaf = typeof_leaf(c, member_path(doc, mp, false))) >= 0 &&
+				 (lit.kind == 'z' || (leaf_of(c, leaf)->astext && leaf_of(c, leaf)->typid == TEXTOID)))
+		{
+			if (lit.kind == 'z')
+				*conj = lappend(*conj, type_is(doc, mp, "null"));
+			else
+			{
+				*conj = lappend(*conj, text_equals(member_path(doc, mp, true), lit.kind == 's' ? pnstrdup(lit.s, lit.len) : lit.b ? "true" : "false"));
+				*conj = lappend(*conj, type_is(doc, mp, lit.kind == 's' ? "string" : "boolean"));
+			}
+			moved = true;
+		}
+		if (moved)
+			continue;
+		if (kept++ > 0)
+			appendStringInfoChar(&out, ',');
+		escape_json(&out, pnstrdup(k.val.string.val, k.val.string.len));
+		appendStringInfoChar(&out, ':');
+		if (rest != NULL)
+			appendStringInfoString(&out, rest);
+		else
+			value_text(&out, &v);
+	}
+	appendStringInfoChar(&out, '}');
+	return kept > 0 ? out.data : NULL;
+}
+
+/* the conjuncts q is in the WHERE (NIL: it is not a containment of an object with such members, and stays as it is) */
+List *
+contains_conjuncts(AggCtx *c, Node *q)
+{
+	Node	   *n = normalize_expr(c, q),
+			   *target,
+			   *rhs;
+	Oid			fid = func_of(n);
+	Jsonb	   *jb;
+	JsonRef		r = {0};
+	List	   *conj = NIL;
+	char	   *rest;
+
+	if (fid != F_JSONB_CONTAINS && fid != F_JSONB_CONTAINED)
+		return NIL;
+	target = strip_relabel(fid == F_JSONB_CONTAINS ? linitial(func_args(n)) : lsecond(func_args(n)));
+	rhs = strip_relabel(fid == F_JSONB_CONTAINS ? lsecond(func_args(n)) : linitial(func_args(n)));
+	if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull || !json_access(c, target, &r) || r.as_text || r.att <= 0)
+		return NIL;
+	jb = DatumGetJsonbP(((Const *) rhs)->constvalue);
+	if (!JB_ROOT_IS_OBJECT(jb) || JB_ROOT_COUNT(jb) == 0 || !source_can_types(c))
+		return NIL;
+	rest = object_rest(c, target, NIL, &jb->root, &conj);
+	if (conj == NIL)
+		return NIL;
+	if (rest != NULL)
+		conj = lcons(makeFuncExpr(F_JSONB_CONTAINS, BOOLOID, list_make2(target, makeConst(JSONBOID, -1, InvalidOid, -1, DirectFunctionCall1(jsonb_in, CStringGetDatum(rest)), false, false)),
+								  InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL), conj);
+	return conj;
+}
+
+/* is there a leaf of the index at this path below the jsonb attribute (a scalar of any kind, or a list)? */
+static bool
+path_declared(AggCtx *c, int att, List *path)
+{
+	for (int i = 0; i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path))
+			return true;
+	}
+	return false;
+}
+
+/* the path as the index declares it: column.key.key */
+static char *
+path_name(AggCtx *c, int att, List *path)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	appendStringInfoString(&buf, get_attname(planner_rt_fetch(c->relid, c->root)->relid, att, false));
+	foreach_ptr(String, s, path)
+		appendStringInfo(&buf, ".%s", strVal(s));
+	return buf.data;
+}
+
+static char *
+undeclared_member(AggCtx *c, int att, List *path, JsonbContainer *obj)
+{
+	int			n = JsonContainerSize(obj);
+	JsonbIterator *it = JsonbIteratorInit(obj);
+	JsonbValue	k,
+				v;
+
+	(void) JsonbIteratorNext(&it, &k, true);
+	for (int i = 0; i < n; i++)
+	{
+		List	   *mp;
+		char	   *u;
+
+		(void) JsonbIteratorNext(&it, &k, true);
+		(void) JsonbIteratorNext(&it, &v, true);
+		mp = lappend(list_copy(path), makeString(pnstrdup(k.val.string.val, k.val.string.len)));
+		if (v.type == jbvBinary && JsonContainerIsObject(v.val.binary.data))
+		{
+			if (JsonContainerSize(v.val.binary.data) > 0 && (u = undeclared_member(c, att, mp, v.val.binary.data)) != NULL)
+				return u;
+		}
+		else if (!path_declared(c, att, mp))
+		{
+			return path_name(c, att, mp);
+		}
+	}
+	return NULL;
+}
+
+/* the first path q names that no leaf of the index holds: a member of the pattern of @> or a key of ?, ?|, ?& on a jsonb column (NULL: none, or q is not such a test) */
+char *
+undeclared_path(AggCtx *c, Node *q)
+{
+	Node	   *n = normalize_expr(c, q),
+			   *target,
+			   *rhs;
+	Oid			fid = func_of(n);
+	JsonRef		r = {0};
+	List	   *keys = NIL;
+
+	if (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED)
+	{
+		target = strip_relabel(fid == F_JSONB_CONTAINS ? linitial(func_args(n)) : lsecond(func_args(n)));
+		rhs = strip_relabel(fid == F_JSONB_CONTAINS ? lsecond(func_args(n)) : linitial(func_args(n)));
+		if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull || !json_access(c, target, &r) || r.as_text || r.att <= 0 ||
+			!JB_ROOT_IS_OBJECT(DatumGetJsonbP(((Const *) rhs)->constvalue)))
+			return NULL;
+		return undeclared_member(c, r.att, r.path, &DatumGetJsonbP(((Const *) rhs)->constvalue)->root);
+	}
+	if (fid != F_JSONB_EXISTS && fid != F_JSONB_EXISTS_ANY && fid != F_JSONB_EXISTS_ALL)
+		return NULL;
+	target = strip_relabel(linitial(func_args(n)));
+	rhs = strip_relabel(lsecond(func_args(n)));
+	if (!json_access(c, target, &r) || r.as_text || r.att <= 0)
+		return NULL;
+	if (fid == F_JSONB_EXISTS)
+	{
+		if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull)
+			return NULL;
+		keys = list_make1(makeString(TextDatumGetCString(((Const *) rhs)->constvalue)));
+	}
+	else if (!path_keys(rhs, &keys))
+		return NULL;
+	foreach_ptr(String, key, keys)
+	{
+		List	   *mp = lappend(list_copy(r.path), key);
+
+		if (!path_declared(c, r.att, mp))
+		{
+			return path_name(c, r.att, mp);
+		}
+	}
+	return NULL;
 }

@@ -381,3 +381,7 @@ the heap fetch of a top-N is priced at a page of the b-tree plan with a LIMIT	en
 65 buffers	col_overlay_wide_units	200000	sift	layered	blocks	65	25	run 89cbe072644b-20261106T010815Z-26f2, records in program-scale/records/cases-col_overlay_wide_units-20261105.rec
 0.48 million instructions	col_overlay_wide_units	200000	sift	default	instr_m	0.48	25	run 89cbe072644b-20261106T010815Z-26f2, records in program-scale/records/cases-col_overlay_wide_units-20261105.rec
 29 buffers	col_overlay_wide_units	200000	sift	default	blocks	29	25	run 89cbe072644b-20261106T010815Z-26f2, records in program-scale/records/cases-col_overlay_wide_units-20261105.rec
+-	agg_jsonb_contain_object	200000	picked	default	exec_ms	1.5	25	bench case agg_jsonb_contain_object, 600,000 documents, records in program-scale/realq42b/wp07
+-	agg_jsonb_contain_object	200000	picked	default	instr_m	17.7	10	bench case agg_jsonb_contain_object, records in program-scale/realq42b/wp07
+-	agg_jsonb_contain_object	200000	native	default	exec_ms	32.2	25	bench case agg_jsonb_contain_object, native plan with a GIN index on doc, records in program-scale/realq42b/wp07
+-	agg_jsonb_contain_object	200000	native	default	instr_m	307	10	bench case agg_jsonb_contain_object, native plan, records in program-scale/realq42b/wp07

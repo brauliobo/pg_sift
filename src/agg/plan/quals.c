@@ -69,7 +69,10 @@ static bool
 where_refused(AggCtx *c, Node *q)
 {
 	MissingCol	m = {c, InvalidAttrNumber};
+	char	   *path = sift_explain_refusals ? undeclared_path(c, q) : NULL;
 
+	if (path != NULL)
+		return agg_refuse_f(JSONB_PATH_NOT_DECLARED, "the path \"%s\" is not declared in the paths of the index", path);
 	if (sift_explain_refusals && missing_column_walker(q, &m) && m.att > 0)
 		return agg_refuse_f(WHERE, "the index does not hold the column \"%s\"%s", get_attname(planner_rt_fetch(c->relid, c->root)->relid, m.att, false),
 							row_compare_walker(q, NULL) ? ": the tie column of a keyset comparison (a, id) > (x, y) is served from the index only when it is in it" : "");
@@ -89,6 +92,18 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
 		return agg_refuse(JOIN_CONDITION);
 	quals = list_concat(quals, scan_quals);
+	/* a containment with a boolean or a JSON null member is several conjuncts (plan_contains.c) */
+	{
+		List	   *expanded = NIL;
+
+		foreach_ptr(Node, q, quals)
+		{
+			List	   *parts = contains_conjuncts(c, q);
+
+			expanded = parts != NIL ? list_concat(expanded, parts) : lappend(expanded, q);
+		}
+		quals = expanded;
+	}
 	s->pred = palloc(Max(list_length(quals), 1) * ARRAY_EQ_CONJ * sizeof(SiftAggPred *));
 	s->post = palloc(Max(list_length(quals) + list_length(joined) + list_length(scan_post), 1) * sizeof(SiftAggPred *));
 	initStringInfo(&txt);

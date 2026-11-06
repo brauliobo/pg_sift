@@ -77,7 +77,7 @@ pred_like_suffix	SiftAgg	single:t
 pred_like_contains	SiftAgg	single:t
 pred_ilike	SiftAgg	single:t
 pred_regex	SiftAgg	single:t
-pred_jsonb_contains	-	single:f:where
+pred_jsonb_contains	SiftAgg	single:t
 pred_jsonb_path	SiftAgg	single:t
 pred_array_overlap	-	single:f:where
 pred_array_contains	-	single:f:where
