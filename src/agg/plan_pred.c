@@ -689,6 +689,33 @@ negate_existential(SiftAggPred *p)
 	return true;
 }
 
+/*
+ * NOT (a && k), NOT (a @> k), NOT (a <@ k) of an array column that may be NULL: the test is NULL for a NULL array, and NOT of it keeps no row, so the rows
+ * are those of a IS NOT NULL whose elements fail the test (a NULL element never matches, so the test is never NULL for another array). NULL: the index has
+ * no way to tell a NULL array (neither its image nor the lengths), or the test is not one of the three.
+ */
+static SiftAggPred *
+compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
+{
+	NullTest   *nt;
+	SiftAggPred *nn,
+			   *both;
+
+	if (!OidIsValid(get_element_type(exprType(target))) || p->level > 1)
+		return NULL;
+	nt = makeNode(NullTest);
+	nt->arg = (Expr *) target;
+	nt->nulltesttype = IS_NOT_NULL;
+	if ((nn = compile_pred(c, (Node *) nt)) == NULL || nn->level > 1 || !negate_existential(p))
+		return NULL;
+	p->desc = psprintf("NOT %s", p->desc);
+	both = new_junction(c, SAP_AND, 2);
+	both->child[0] = nn;
+	both->child[1] = p;
+	junction_done(both);
+	return both;
+}
+
 static SiftAggPred *
 compile_bool(AggCtx *c, BoolExpr *b)
 {
@@ -701,7 +728,7 @@ compile_bool(AggCtx *c, BoolExpr *b)
 	if ((p = compile_existential(c, strip_relabel(linitial(b->args)), &target)) == NULL)
 		return compile_lut(c, (Node *) b);
 	if (target && !target_not_null(c, target))
-		return NULL;
+		return compile_not_array(c, b, p, target);
 	if (!negate_existential(p))
 		return compile_lut(c, (Node *) b);
 	p->desc = psprintf("NOT %s", p->desc);

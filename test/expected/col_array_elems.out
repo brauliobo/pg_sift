@@ -187,9 +187,9 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built any                | scan same
  built not any            | scan same
  built contained          | scan same
- built not two            | plain same
- built not overlap        | plain same
- built not contained      | plain same
+ built not two            | scan same
+ built not overlap        | scan same
+ built not contained      | scan same
  built null element       | scan same
  built group              | scan same
  built empty              | scan same
@@ -493,9 +493,9 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders any                | scan same
  orders not any            | scan same
  orders contained          | scan same
- orders not two            | plain same
- orders not overlap        | plain same
- orders not contained      | plain same
+ orders not two            | scan same
+ orders not overlap        | scan same
+ orders not contained      | scan same
  orders null element       | scan same
  orders group              | scan same
  orders empty              | scan same
@@ -672,9 +672,9 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum any                | scan same
  vacuum not any            | scan same
  vacuum contained          | scan same
- vacuum not two            | plain same
- vacuum not overlap        | plain same
- vacuum not contained      | plain same
+ vacuum not two            | scan same
+ vacuum not overlap        | scan same
+ vacuum not contained      | scan same
  vacuum null element       | scan same
  vacuum group              | scan same
  vacuum empty              | scan same
@@ -921,9 +921,9 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex any                | scan same
  reindex not any            | scan same
  reindex contained          | scan same
- reindex not two            | plain same
- reindex not overlap        | plain same
- reindex not contained      | plain same
+ reindex not two            | scan same
+ reindex not overlap        | scan same
+ reindex not contained      | scan same
  reindex null element       | scan same
  reindex group              | scan same
  reindex empty              | scan same
