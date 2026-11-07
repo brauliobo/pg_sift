@@ -13,37 +13,28 @@
 
 #include <math.h>
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
-#include "common/hashfn.h"
 #include "nodes/bitmapset.h"
 #include "pgstat.h"
 #include "optimizer/optimizer.h"
-#include "optimizer/planner.h"
 #include "rewrite/rewriteHandler.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-#include "utils/typcache.h"
 
-#include "agg/kern.h"
 #include "agg/pre.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
 #include "col/col.h"
 #include "col/am.h"
-#include "col/ktab.h"
 #include "col/pagg.h"
 #include "col/seg.h"
-#include "agg/colsrc.h"
 #include "table/table.h"
 
-#include "core/visibility.h"
 #include "src_int.h"
 
 static bool

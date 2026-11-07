@@ -15,7 +15,6 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "executor/tuptable.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
 

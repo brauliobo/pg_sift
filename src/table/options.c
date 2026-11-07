@@ -17,7 +17,6 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
-#include "funcapi.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"

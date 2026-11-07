@@ -7,12 +7,9 @@
 #include "postgres.h"
 
 #include "access/xlog.h"
-#include "miscadmin.h"
-#include "storage/bufmgr.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
-#include "bm25/maint.h"
 #include "col/am.h"
 #include "col/seg.h"
 #include "core/ops.h"

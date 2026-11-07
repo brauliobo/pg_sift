@@ -11,37 +11,26 @@
 #include <math.h>
 
 
-#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tableam.h"
-#include "access/toast_internals.h"
 #include "access/detoast.h"
 #include "access/xact.h"
-#include "access/xlog.h"
-#include "catalog/index.h"
-#include "catalog/pg_publication.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
-#include "commands/vacuum.h"
-#include "executor/executor.h"
-#include "miscadmin.h"
 #include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "storage/procarray.h"
 #include "storage/smgr.h"
-#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
-#include "bm25/merge.h"
 #include "table/table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);

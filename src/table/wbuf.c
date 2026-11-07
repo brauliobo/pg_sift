@@ -4,15 +4,10 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
-#include "storage/ipc.h"
 #include "storage/procarray.h"
-#include "utils/hsearch.h"
-#include "utils/inval.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "core/lane.h"

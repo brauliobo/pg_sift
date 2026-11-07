@@ -3,18 +3,15 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/xact.h"
 #ifdef SIFT_TESTING
 #include "bm25/build.h"
 #endif
-#include "col/seg.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/condition_variable.h"
 #include "storage/lmgr.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/wait_event.h"
 

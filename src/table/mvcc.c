@@ -10,7 +10,6 @@
 #include "access/xact.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
-#include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "table/table.h"

@@ -9,10 +9,7 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/relation.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
@@ -21,7 +18,6 @@
 #include "miscadmin.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
-#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
 #include "utils/rel.h"

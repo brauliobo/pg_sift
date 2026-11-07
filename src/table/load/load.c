@@ -5,7 +5,6 @@
 
 #include "access/detoast.h"
 #include "access/htup_details.h"
-#include "access/parallel.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "miscadmin.h"

@@ -4,7 +4,6 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/parallel.h"
 #include "access/xact.h"
 #ifdef SIFT_TESTING
 #include "bm25/build.h"

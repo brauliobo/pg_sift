@@ -3,22 +3,10 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "access/heapam.h"
-#include "access/htup_details.h"
 #include "storage/bufmgr.h"
-#include "storage/lmgr.h"
-#include "storage/ipc.h"
-#include "storage/procarray.h"
-#include "utils/hsearch.h"
-#include "utils/inval.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
 
 #include "core/lane.h"
 #include "table/table.h"
-#include "table/store_int.h"
-#include "core/cmp.h"
 
 /* Brings the page table of seg up to the header's now */
 void

@@ -3,32 +3,25 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
-#include "access/tsmapi.h"
 #include "access/xact.h"
 #include "catalog/index.h"
-#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
-#include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
-#include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/read_stream.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "optimizer/optimizer.h"
 #include "col/kern.h"
 #include "table/table.h"
 #include "core/hash.h"
-#include "core/visibility.h"
 #include "table/scan_int.h"
 
 /*
