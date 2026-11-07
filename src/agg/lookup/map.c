@@ -15,7 +15,6 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 
-#include "agg/wide.h"
 #include "agg/lookup/int.h"
 
 /* room for `cap` rows */

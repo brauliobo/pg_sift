@@ -5,18 +5,12 @@
 #include "postgres.h"
 
 #include "executor/executor.h"
-#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "pgstat.h"
 #include "portability/instr_time.h"
-#include "storage/bufmgr.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
-#include "utils/rel.h"
 
-#include "agg/wide.h"
 #include "agg/memo.h"
-#include "storage/smgr.h"
 #include "agg/combo/int.h"
 
 /*

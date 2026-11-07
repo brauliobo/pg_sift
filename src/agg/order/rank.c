@@ -13,9 +13,6 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
-#include "catalog/pg_type_d.h"
-#include "commands/explain.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
@@ -24,7 +21,6 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
-#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ruleutils.h"

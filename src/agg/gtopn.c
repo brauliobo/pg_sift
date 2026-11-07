@@ -7,10 +7,7 @@
 
 #include <math.h>
 
-#include "agg/agg.h"
-#include "agg/spec.h"
 #include "agg/agg_int.h"
-#include "core/limits.h"
 
 typedef struct GKey
 {

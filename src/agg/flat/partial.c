@@ -19,7 +19,6 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"

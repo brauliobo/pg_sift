@@ -16,7 +16,6 @@
 
 #include "access/stratnum.h"
 #include "catalog/pg_opfamily.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -24,7 +23,6 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
-#include "agg/agg.h"
 #include "agg/plan_int.h"
 
 static Node *

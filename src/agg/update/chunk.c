@@ -6,7 +6,6 @@
 #include "postgres.h"
 
 #include "agg/dense_int.h"
-#include "col/am.h"
 #include "agg/update/int.h"
 
 /* the stage's tuples: the outputs of the earlier joins are copied only by a stage that repeats or drops tuples, so a chain of one-row lookups holds one array per stage */

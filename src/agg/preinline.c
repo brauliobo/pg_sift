@@ -10,7 +10,6 @@
 
 #include "catalog/pg_proc.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 

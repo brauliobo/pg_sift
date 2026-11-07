@@ -9,21 +9,14 @@
 
 #include <math.h>
 
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "parser/parse_clause.h"
-#include "optimizer/tlist.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "utils/lsyscache.h"
 
-#include "agg/agg.h"
 #include "agg/plan_int.h"
-#include "agg/spec.h"
 #include "core/compat.h"
-#include "core/limits.h"
 
 /* what one integer compare of the rank tuples costs, in operator costs: no function call */
 #define ORD_RANK_CMP	0.1

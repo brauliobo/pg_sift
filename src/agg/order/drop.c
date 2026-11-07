@@ -13,14 +13,11 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/spec.h"
 #include "agg/topn.h"
 #include "agg/plan_int.h"
 

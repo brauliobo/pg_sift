@@ -6,7 +6,6 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
-#include "utils/tuplesort.h"
 
 #include "agg/dist/int.h"
 

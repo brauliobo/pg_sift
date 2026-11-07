@@ -6,7 +6,6 @@
 #include "access/tupdesc.h"
 #include "executor/executor.h"
 #include "utils/datum.h"
-#include "nodes/makefuncs.h"
 #include "utils/memutils.h"
 
 #include "agg/agg_int.h"

@@ -15,7 +15,6 @@
 
 #include "storage/ipc.h"
 #include "utils/guc.h"
-#include "utils/hsearch.h"
 
 #include "agg/back.h"
 #ifdef SIFT_VULKAN

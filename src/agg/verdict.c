@@ -29,7 +29,6 @@
 
 #include "access/genam.h"
 #include "access/relation.h"
-#include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "common/hashfn.h"
 #include "lib/ilist.h"

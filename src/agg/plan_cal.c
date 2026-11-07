@@ -22,11 +22,8 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
-#include "utils/date.h"
-#include "utils/datetime.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/numeric.h"
 #include "utils/timestamp.h"
 
 #include "agg/plan_int.h"

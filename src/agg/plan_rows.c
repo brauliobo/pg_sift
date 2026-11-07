@@ -8,7 +8,6 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
@@ -17,9 +16,7 @@
 #include "utils/selfuncs.h"
 #include "utils/lsyscache.h"
 
-#include "agg/accum_int.h"
 #include "agg/rows.h"
-#include "agg/spec.h"
 #include "agg/plan_int.h"
 
 /* the Custom Scans (SiftAgg) a plan reads, in *arms; only a query the pushdown already reaches gets this node */

@@ -11,13 +11,11 @@
 #include "catalog/pg_aggregate_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
 
 #include "agg/agg.h"
-#include "agg/flat/int.h"
 
 /* a sub-select or a parameter of the statement: a value the statement asks once, not a constant the planner folds */
 SIFT_WALKER(asked_once_walker, void *, context,

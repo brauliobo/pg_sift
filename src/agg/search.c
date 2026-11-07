@@ -10,22 +10,16 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
-#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
-#include "utils/rel.h"
 #include "utils/ruleutils.h"
 
 #include "agg/agg.h"

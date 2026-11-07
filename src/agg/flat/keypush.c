@@ -10,12 +10,10 @@
 
 #include "catalog/pg_class.h"
 #include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"

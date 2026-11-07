@@ -5,13 +5,10 @@
  */
 #include "postgres.h"
 
-#include <math.h>
 
 #include "access/visibilitymap.h"
 #include "miscadmin.h"
 
-#include "port/pg_bitutils.h"
-#include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
 #include "agg/gord.h"

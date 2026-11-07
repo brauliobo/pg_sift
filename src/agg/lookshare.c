@@ -11,9 +11,7 @@
 #include "postgres.h"
 
 #include "utils/datum.h"
-#include "utils/lsyscache.h"
 
-#include "agg/agg.h"
 #include "agg/agg_int.h"
 
 static Size

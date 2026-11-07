@@ -22,7 +22,6 @@
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_index.h"
 #include "nodes/nodeFuncs.h"
-#include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 

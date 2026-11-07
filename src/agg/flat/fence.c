@@ -13,17 +13,14 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
-#include "agg/agg.h"
 #include "agg/flat/int.h"
 
 /* a SELECT whose rows are those of its FROM list kept by its WHERE: the form PostgreSQL pulls up into the query around it */

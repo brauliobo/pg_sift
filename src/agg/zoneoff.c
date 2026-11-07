@@ -9,7 +9,6 @@
 #include "postgres.h"
 
 #include "datatype/timestamp.h"
-#include "utils/datetime.h"
 
 #include "core/host.h"
 #include "agg/zoneoff.h"

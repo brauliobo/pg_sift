@@ -3,8 +3,6 @@
  */
 #include "postgres.h"
 
-#include "nodes/makefuncs.h"
-#include "catalog/pg_operator_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
 #include "mb/pg_wchar.h"
@@ -15,11 +13,9 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/date.h"
-#include "nodes/value.h"
 #include "storage/itemptr.h"
 
 #include "agg/agg.h"
-#include "agg/spec.h"
 #include "agg/plan_int.h"
 
 sift_i128

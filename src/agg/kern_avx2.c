@@ -10,7 +10,6 @@
 #include "core/simd_isa.h"
 
 #include "agg/kern_int.h"
-#include "col/kern_int.h"
 
 #if defined(__x86_64__)
 

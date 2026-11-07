@@ -3,10 +3,7 @@
  */
 #include "postgres.h"
 
-#include "utils/memutils.h"
-
 #include "agg/chunkfilter.h"
-#include "agg/sel.h"
 
 bool
 sift_aggfilt_int(const SiftColDef *def)

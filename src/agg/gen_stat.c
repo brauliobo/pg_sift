@@ -11,7 +11,6 @@
 
 #include <math.h>
 
-#include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
 #include "catalog/pg_type.h"
 #include "fmgr.h"

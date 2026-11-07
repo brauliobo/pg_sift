@@ -28,7 +28,6 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
-#include "common/hashfn.h"
 #include "common/pg_prng.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
@@ -39,8 +38,6 @@
 
 #include "agg/agg.h"
 #include "agg/back.h"
-#include "agg/colsrc.h"
-#include "agg/spec.h"
 #include "core/limits.h"
 #include "agg/agg_int.h"
 #include "agg/spill/int.h"

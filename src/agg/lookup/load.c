@@ -25,7 +25,6 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
-#include "agg/wide.h"
 #include "agg/lookup/int.h"
 #include "agg/init_int.h"
 

@@ -15,13 +15,11 @@
 
 #include "access/parallel.h"
 #include "access/tableam.h"
-#include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/agg.h"
 #include "agg/agg_int.h"
 
 int			sift_agg_lookup_cache_kb = 256 * 1024;

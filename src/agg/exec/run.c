@@ -10,7 +10,6 @@
 #include "storage/lock.h"
 #include "storage/predicate.h"
 #include "utils/float.h"
-#include "utils/tuplesort.h"
 
 #include "agg/agg.h"
 #include "agg/part.h"

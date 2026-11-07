@@ -6,16 +6,13 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "utils/datetime.h"
 #include "utils/datum.h"
-#include "utils/numeric.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
 
 #include "port/pg_bitutils.h"
 
 #include "agg/part.h"
-#include "agg/wide.h"
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 

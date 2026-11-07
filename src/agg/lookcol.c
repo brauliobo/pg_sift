@@ -11,18 +11,12 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
-#include "access/relation.h"
-#include "catalog/index.h"
-#include "catalog/namespace.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
-#include "executor/executor.h"
-#include "nodes/nodeFuncs.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
-#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/memutils.h"
@@ -31,7 +25,6 @@
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
-#include "agg/colsrc.h"
 #include "agg/leaf_int.h"
 #include "agg/plan_int.h"
 

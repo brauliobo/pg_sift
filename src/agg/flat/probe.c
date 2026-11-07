@@ -13,7 +13,6 @@
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "catalog/pg_am.h"
-#include "commands/defrem.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"

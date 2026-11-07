@@ -8,7 +8,6 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/datum.h"

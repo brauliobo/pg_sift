@@ -5,8 +5,6 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/tableam.h"
 #include "access/tupmacs.h"
@@ -18,7 +16,6 @@
 #include "utils/rel.h"
 #include "utils/uuid.h"
 
-#include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
 
 static inline int

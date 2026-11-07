@@ -2,7 +2,6 @@
  * agg/kern.c - the scalar aggregation operators (the specification every SIMD level matches bit for bit) and the
  * dispatch. Baseline x86-64 code: no POPCNT, no vector instruction needed.
  */
-#include "core/host.h"
 
 #include "agg/kern_int.h"
 

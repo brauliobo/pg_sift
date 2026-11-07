@@ -8,7 +8,6 @@
 #include "postgres.h"
 
 #include "storage/buffile.h"
-#include "utils/memutils.h"
 
 #include "agg/agg_int.h"
 

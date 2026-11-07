@@ -11,7 +11,6 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 
-#include "agg/wide.h"
 #include "agg/agg_int.h"
 
 static bool

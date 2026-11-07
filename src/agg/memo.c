@@ -11,11 +11,9 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "common/hashfn.h"
 #include "port/atomics.h"
 
-#include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "agg/memo.h"
 

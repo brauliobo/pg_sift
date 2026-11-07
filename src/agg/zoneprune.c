@@ -3,8 +3,6 @@
  */
 #include "postgres.h"
 
-#include "utils/memutils.h"
-
 #include "agg/zoneprune.h"
 
 static int

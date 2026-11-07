@@ -5,7 +5,6 @@
 
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_operator_d.h"
-#include "executor/nodeAgg.h"
 #include "nodes/makefuncs.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"

@@ -4,12 +4,9 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
 
-#include "agg/agg.h"
 #include "agg/plan_int.h"
 
 /* the negation of an existential test of a document that is not NULL: an element test and a NULL test flip, an AND of them is the OR of their negations (and the reverse); false: a test of the cardinality or of the elements in order has none */

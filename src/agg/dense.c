@@ -5,8 +5,6 @@
 
 #include <float.h>
 
-#include "utils/float.h"
-
 #include "col/kern.h"
 #include "agg/dense_int.h"
 

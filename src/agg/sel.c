@@ -8,7 +8,6 @@
 #include "agg/kern.h"
 #include "agg/sel.h"
 #include "core/popcount.h"
-#include "agg/colsrc.h"
 #include "col/wbuf.h"
 
 /* Few kept rows are decoded one by one; many are decoded with the whole chunk, and the mask keeps the others out */

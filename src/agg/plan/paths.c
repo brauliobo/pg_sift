@@ -18,7 +18,6 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/agg_int.h"
 #include "agg/rows.h"
 #include "agg/plan/int.h"
 

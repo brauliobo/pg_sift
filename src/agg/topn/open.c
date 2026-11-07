@@ -12,7 +12,6 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
-#include "port/pg_bitutils.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -21,7 +20,6 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "utils/varlena.h"
 
 #include "col/am.h"
 #include "agg/agg.h"

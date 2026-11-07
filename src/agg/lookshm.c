@@ -16,14 +16,11 @@
 #include "common/hashfn.h"
 #include "miscadmin.h"
 #include "storage/dsm.h"
-#include "storage/dsm_registry.h"
-#include "storage/latch.h"
 #include "storage/procarray.h"
 #include "storage/spin.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 
-#include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "col/dsmreg.h"
 

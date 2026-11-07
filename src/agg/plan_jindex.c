@@ -6,14 +6,10 @@
 
 #include "access/stratnum.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/clauses.h"
-#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
-#include "agg/agg.h"
-#include "agg/spec.h"
 #include "agg/plan_int.h"
 #include "agg/plan_join_int.h"
 

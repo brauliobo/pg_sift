@@ -5,13 +5,10 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
-#include "agg/colsrc.h"
-#include "agg/spec.h"
 #include "agg/par/int.h"
 #include "agg/spill/int.h"
 

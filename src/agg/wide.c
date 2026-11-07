@@ -6,12 +6,8 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type_d.h"
-#include "common/hashfn.h"
 #include "fmgr.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
-#include "utils/timestamp.h"
 
 #include "agg/agg_int.h"
 #include "agg/combo_int.h"

@@ -4,10 +4,6 @@
  */
 #include "postgres.h"
 
-#include "access/visibilitymap.h"
-#include "miscadmin.h"
-
-#include "port/pg_bitutils.h"
 #include "lib/stringinfo.h"
 #include "utils/memutils.h"
 

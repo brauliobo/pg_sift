@@ -17,7 +17,6 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/flat/int.h"
 
 #define MAX_FRACTIONS 64
 

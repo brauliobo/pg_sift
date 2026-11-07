@@ -6,7 +6,6 @@
 #include "postgres.h"
 
 #include "executor/executor.h"
-#include "utils/tuplesort.h"
 
 #include "agg/blob/int.h"
 
