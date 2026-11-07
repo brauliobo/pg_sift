@@ -22,7 +22,6 @@
 #include "utils/inval.h"
 #include "utils/json.h"
 #include "utils/jsonfuncs.h"
-#include "utils/memutils.h"
 #include "utils/syscache.h"
 
 #include "agg/agg.h"

@@ -1,7 +1,6 @@
 /* core/eval.c - one validated list for developer experiments. */
 #include "postgres.h"
 #include "core/eval.h"
-#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/varlena.h"
 

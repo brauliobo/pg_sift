@@ -11,13 +11,11 @@
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "core/cmp.h"
 #include "core/tomb.h"
-#include "core/visibility.h"
 
 #define corrupt(rel, ...) \
 	ereport(ERROR, \

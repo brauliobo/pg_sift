@@ -6,8 +6,6 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
-#include "access/visibilitymapdefs.h"
-#include "access/transam.h"
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"

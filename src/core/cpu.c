@@ -1,6 +1,5 @@
 #include "core/host.h"
 
-#include "core/sift.h"
 #include "core/cpu.h"
 
 #if defined(__x86_64__)

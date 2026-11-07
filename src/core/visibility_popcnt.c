@@ -4,7 +4,6 @@
  */
 #include "postgres.h"
 
-#include "core/cpu.h"
 #include "core/visibility_run.h"
 
 #if defined(__x86_64__) || defined(SIFT_HAVE_NEON)

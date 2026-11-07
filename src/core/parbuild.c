@@ -8,7 +8,6 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/index.h"
-#include "miscadmin.h"
 #include "pgstat.h"
 #include "tcop/tcopprot.h"
 #include "utils/snapmgr.h"
