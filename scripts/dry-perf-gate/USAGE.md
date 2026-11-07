@@ -46,8 +46,11 @@
    (VACUUM of a churned sift_col index, an INSERT that seals the BM25 write buffer, an INSERT into a sift_table) with the settings of the worker set on the database (a worker does not
    read the session's), waits until the worker has finished (the case fails if it never does), and resets the settings and ends stray workers afterwards, also when the run failed.
    The counters are those of the whole process tree: the statement and the worker together (the foreground part of each is a plain `col_vacuum`, `bm25_wbuf` insert, `table_insert`).
-14. The SQLite port on its real host (opt-in group `sqlite`, selected by the objects of the port build that differ between BASE and CAND: a change in `sqlite/` or a file of
-   `src/portable.list` runs it, `--groups sqlite` forces; `PASS-IDENTICAL` needs those objects identical too, built with the flags of the PostgreSQL build). `sqlite_*` (15 cases: build, insert,
-   update and delete, optimize, integrity-check, ranked top-10 and counts for AND / OR / phrase, prefix, fuzzy, regular expression, highlight) load the extension into python's sqlite3 and count the
-   window between the first statement and the commit. A 20,000-document synthetic corpus (ports.py), the database made by the BASE build and copied for each run; the compared numbers are
-   instructions, cycles, the md5 of the printed rows and, in the `wal` column, the bytes of the database file afterwards. About 40 seconds for the 15 cases at 9 runs.
+14. The ports on their real hosts (opt-in groups `sqlite` and `mariadb`, selected by the objects of the two port builds that differ between BASE and CAND: a change in `sqlite/`, `mariadb/` or a
+   file of `src/portable.list` runs them, `--groups sqlite,mariadb` forces; `PASS-IDENTICAL` needs their objects identical too, built with the flags of the PostgreSQL build). `sqlite_*`
+   (15 cases: build, insert, update and delete, optimize, integrity-check, ranked top-10 and counts for AND / OR / phrase, prefix, fuzzy, regular expression, highlight) load the extension into
+   python's sqlite3 and count the window between the first statement and the commit; `mariadb_*` (7: load, feed with updates and deletes, merge, ranked + count runs for AND / OR / phrase and the
+   wildcard forms) run `sift_cli`, the engine of the MariaDB port without a server, whole process. A 20,000-document synthetic corpus (ports.py), the database / index made by the BASE build
+   and copied for each run; the compared numbers are instructions, cycles, the md5 of the printed rows and, in the `wal` column, the bytes of the database file or index directory afterwards.
+   About 1 minute for all 22 cases at 9 runs. Not covered: the MariaDB UDF layer (`udf*.c`, the SQL procedures and the queue table need a running server).
+

@@ -1,9 +1,12 @@
-"""Workload cases of the SQLite port of the DRY performance gate: the portable core (BM25 analyzer, query language, segments, merge, top-k) on the real hosts that compile it.
+"""Workload cases of the SQLite and MariaDB ports of the DRY performance gate: the portable core (BM25 analyzer, query language, segments, merge, top-k) on the real hosts that compile it.
 
 SQLite: the extension (sift.so) loaded into python's sqlite3, one fresh process per run; the window (perf stat --control) opens after the corpus and the queries are built and the
         connection is open, and closes after the statements and the commit, so it holds the extension and the SQLite it calls, not the interpreter's start.
+MariaDB: sift_cli, the engine of mariadb/ without a server (create / load / feed / run / merge): the host-independent half of the port. The UDF layer (udf*.c, the SQL procedures
+        and the queue table) needs a running server and is not covered; its engine calls are the ones sift_cli makes.
 
-Cases are measured like the PostgreSQL cases (instructions:u and cycles:u of the process tree, elapsed ms, md5 of the printed rows); `wal` holds the bytes of the database file after the run. The corpus is synthetic and deterministic (a generator of its own, no external data).
+Both are measured like the PostgreSQL cases (instructions:u and cycles:u of the process tree, elapsed ms, md5 of the printed rows); `wal` holds the bytes of the database file or index
+directory after the run. The corpus is synthetic and deterministic (a generator of its own, no external data).
 Run as a script this file is the driver of one SQLite run:  python3 -I ports.py sqlite MODE SO DB
 """
 import hashlib
@@ -21,6 +24,7 @@ N_BATCH = 2000
 MODES = {
     'sqlite': ('build', 'insert', 'update_delete', 'optimize', 'integrity', 'top10_and', 'top10_or', 'top10_phrase', 'count_and', 'count_or', 'count_phrase', 'prefix', 'fuzzy',
                'regex', 'highlight'),
+    'mariadb': ('load', 'feed', 'merge', 'run_and', 'run_or', 'run_phrase', 'run_wild'),
 }
 SYL = ('ka', 'lo', 'mi', 'ren', 'tu', 'sa', 'vel', 'dor', 'an', 'pi', 'shu', 'ber', 'gan', 'ow', 'el', 'nes', 'tia', 'quo', 'zen', 'fi')
 SUFFIX = {7: 'ing', 11: 's', 13: 'ed'}
@@ -205,15 +209,25 @@ class PortSide:
         self.name, self.build, self.template = name, Path(build), Path(template)
 
     def run(self, case, rundir, tag):
-        mode = case.sql
+        mode, host = case.sql, case.src
         work = rundir / f'work-{self.name}'
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         env = {**os.environ, 'LC_ALL': 'C', 'SIFT_TMP': str(work)}
-        db = work / 'gate.db'
-        if mode != 'build':
-            shutil.copy(self.template / 'gate.db', db)
-        cmd, window, size = [sys.executable, '-I', str(Path(__file__).resolve()), 'sqlite', mode, str(self.build / 'sqlite' / 'sift.so'), str(db)], True, db
+        if host == 'sqlite':
+            db = work / 'gate.db'
+            if mode != 'build':
+                shutil.copy(self.template / 'gate.db', db)
+            cmd, window, size = [sys.executable, '-I', str(Path(__file__).resolve()), 'sqlite', mode, str(self.build / 'sqlite' / 'sift.so'), str(db)], True, db
+        else:
+            cli = str(self.build / 'mariadb' / 'sift_cli')
+            idx = work / 'idx'
+            if mode == 'load':
+                idx.mkdir()
+                subprocess.run([cli, str(idx), 'create', 'wiki'], env=env, check=True, capture_output=True)
+            else:
+                shutil.copytree(self.template / 'idx', idx, symlinks=True)
+            cmd, window, size = mariadb_command(cli, idx, mode, work, self.template, env), False, idx
         t0 = time.perf_counter()
         so, se, rc, vals = under_perf(cmd, env, rundir, window)
         wall = (time.perf_counter() - t0) * 1000
@@ -226,6 +240,47 @@ class PortSide:
         r.update(instr=vals['instructions'], cycles=vals['cycles'], ms=float(ms.group(1)) if ms else wall, hits=0, reads=0, writes=0, extends=0, wal=dir_bytes(size),
                  rows=hashlib.md5('\n'.join(rows).encode()).hexdigest()[:12], nrows=len(rows))
         return r
+
+
+def write_lines(path, ids):
+    with open(path, 'w') as f:
+        for i in ids:
+            f.write(f'{i}\t{doc(i)[1]}\n')
+
+
+def mariadb_command(cli, idx, mode, work, tpl, env):
+    docs = work / 'docs.tsv'
+    if mode == 'load':
+        write_lines(docs, range(1, N_DOCS + 1))
+        return [cli, str(idx), 'load', 'wiki', str(docs)]
+    if mode == 'feed':
+        with open(docs, 'w') as f:       # updates of 500 existing rows, deletes of 500, 2000 new rows: sequence numbers continue the load
+            seq = N_DOCS
+            for i in range(1, 501):
+                seq += 1
+                f.write(f'{seq}\tI\t{i}\t{doc(i + 100000)[1]}\n')
+            for i in range(1, 501):
+                seq += 1
+                f.write(f'{seq}\tD\t{i * 3}\t\n')
+            for i in range(N_DOCS + 1, N_DOCS + N_BATCH + 1):
+                seq += 1
+                f.write(f'{seq}\tI\t{i}\t{doc(i)[1]}\n')
+        return [cli, str(idx), 'feed', 'wiki', str(docs)]
+    if mode == 'merge':
+        seq = N_DOCS
+        for b in range(3):               # three more segments, outside the window
+            with open(docs, 'w') as f:
+                for i in range(N_DOCS + 1 + b * 500, N_DOCS + 501 + b * 500):
+                    seq += 1
+                    f.write(f'{seq}\tI\t{i}\t{doc(i)[1]}\n')
+            subprocess.run([cli, str(idx), 'feed', 'wiki', str(docs)], env=env, check=True, capture_output=True)
+        return [cli, str(idx), 'merge', 'wiki', 'full']
+    kinds = {'run_and': ['and'] * 1, 'run_or': ['or'], 'run_phrase': ['phrase'], 'run_wild': ['prefix', 'fuzzy', 'regex']}[mode]
+    with open(work / 'q.tsv', 'w') as f:
+        for kind in kinds:
+            for j, q in enumerate(queries(kind, 100 if len(kinds) == 1 else 30)):
+                f.write(f'{kind}{j}\t{q}\n')
+    return [cli, str(idx), 'run', 'wiki', str(work / 'q.tsv'), '10']
 
 
 def object_hashes(root):
@@ -250,6 +305,15 @@ def make_template(base_build, out, hosts):
     if 'sqlite' in hosts:
         (out / 'gate.db').unlink(missing_ok=True)
         subprocess.run([sys.executable, '-I', str(Path(__file__).resolve()), 'sqlite', 'template', str(Path(base_build) / 'sqlite' / 'sift.so'), str(out / 'gate.db')], env=env, check=True)
+    if 'mariadb' in hosts:
+        cli, idx = str(Path(base_build) / 'mariadb' / 'sift_cli'), out / 'idx'
+        shutil.rmtree(idx, ignore_errors=True)
+        idx.mkdir()
+        subprocess.run([cli, str(idx), 'create', 'wiki'], env=env, check=True, capture_output=True)
+        write_lines(out / 'docs.tsv', range(1, N_DOCS + 1))
+        subprocess.run([cli, str(idx), 'load', 'wiki', str(out / 'docs.tsv')], env=env, check=True, capture_output=True)
+        (out / 'docs.tsv').unlink()
+
 
 if __name__ == '__main__' and len(sys.argv) == 5 and sys.argv[1] == 'sqlite':
     sqlite_main(*sys.argv[2:])

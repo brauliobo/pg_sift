@@ -284,7 +284,7 @@ class PortableCheck(Build):
     the server or the shell finds out when it loads one, which is why this runs before any workload."""
     STEPS = (('portable includes', ['bash', 'scripts/check-portable.sh']),
              ('sqlite', ['make', '-C', 'sqlite', '-j4', 'B={dir}/sqlite', 'CC={cc}', 'isa-check']),
-             ('mariadb', ['make', '-C', 'mariadb', '-j4', 'OUT={dir}/mariadb', 'CC={cc}', 'isa-check']))
+             ('mariadb', ['make', '-C', 'mariadb', '-j4', 'OUT={dir}/mariadb', 'CC={cc}', 'isa-check', '{dir}/mariadb/sift_cli']))
     PROBLEM = re.compile(r'undefined (symbol|reference)|error:|baseline object|popcount|does not exist|a portable file|: fatal|No such file', re.I)
 
     def __init__(self, repo, sha, patch=None, label=''):
@@ -297,7 +297,7 @@ class PortableCheck(Build):
             (W / 'ports').mkdir(parents=True, exist_ok=True)
             marker = self.dir / 'done.json'
             self.pin()
-            if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE + 'p':
+            if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE + 'p2':
                 self.info = json.loads(marker.read_text())
                 self.touch()
                 return self
@@ -322,7 +322,7 @@ class PortableCheck(Build):
                 if r.returncode:
                     lines = [l.strip()[:300] for l in (r.stdout + r.stderr).splitlines() if self.PROBLEM.search(l)]
                     problems += [f'{name}: {l}' for l in dict.fromkeys(lines)][:12] or [f'{name}: failed ({r.returncode}): ' + (r.stderr.strip().splitlines() or ['?'])[-1][:200]]
-            self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE + 'p', objects=object_hashes(self.dir) if not problems else {})
+            self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE + 'p2', objects=object_hashes(self.dir) if not problems else {})
             marker.write_text(json.dumps(self.info))
             for old in sorted((d for d in (W / 'ports').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)[4:]:
                 use = open(W / 'builds' / (old.name + '.use'), 'a')
