@@ -42,11 +42,13 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 		r->merged = merge_steps(rel, st, oldest);
 		(void) sift_recycle(rel);
 		(void) sift_maint_orphan_sweep(rel);
+		sift_maint_cut_nowait(true);
 		if (tbl_truncates(rel))
 			sift_maint_space_budget(rel, relocate_page, DEBUG2, background ? Min(budget, DEFRAG_RELOCATE_BYTES) : budget);
 	}
 	PG_FINALLY();
 	{
+		sift_maint_cut_nowait(false);
 		maintaining = false;
 		sift_maint_unlock(rel);
 	}

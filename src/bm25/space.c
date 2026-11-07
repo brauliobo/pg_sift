@@ -122,11 +122,20 @@ cut_lock(Relation rel)
 #define CUT_LOCK_WAIT_MS	5000
 #define CUT_LOCK_NAP_MS		50
 
+static bool cut_nowait = false;
+
+void
+sift_maint_cut_nowait(bool on)
+{
+	cut_nowait = on;
+}
+
 /*
  * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a reader or a writer holds a lock on a ready one for the length of
  * its statement: on a busy table the lock is rarely free at one instant. Like the truncation of a heap (VACUUM_TRUNCATE_LOCK_TIMEOUT) the cut asks again every 50 ms for
  * 5 seconds, conditionally, so that nobody queues behind the request; lock_timeout, when set and shorter, ends the wait, and a cancel ends it at once. The background
- * worker asks once: it holds the maintenance lock between its steps and the next step asks again.
+ * worker asks once: it holds the maintenance lock between its steps and the next step asks again. So does sift.table_maintain() (sift_maint_cut_nowait): its
+ * contract is a pass that takes only what is free now and says busy otherwise, which a call from a client backend must keep.
  */
 static bool
 cut_lock_try(Relation rel, LOCKMODE mode, int *waited_ms)
@@ -134,7 +143,7 @@ cut_lock_try(Relation rel, LOCKMODE mode, int *waited_ms)
 	int			wait_ms = LockTimeout > 0 ? Min(LockTimeout, CUT_LOCK_WAIT_MS) : CUT_LOCK_WAIT_MS;
 	int			waited;
 
-	if (MyBackendType == B_BG_WORKER)
+	if (MyBackendType == B_BG_WORKER || cut_nowait)
 		wait_ms = 0;
 
 	for (waited = 0;; waited += CUT_LOCK_NAP_MS)
