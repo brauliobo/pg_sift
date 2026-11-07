@@ -638,7 +638,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: the options that write a minor above the setting are ignored; a 3.2 library refuses segments of minor 7 and above
 - **When:** Every segment a sift_col index or sift_table writes (build, promotion, merge, refresh, worker); options needing a higher minor are ignored; segments already written keep theirs. Wide leaves force their own minor.
-- **Default:** 15 — 15, the newest minor 3.3 writes (3.2: 6), so cube_minmax, superunit, calendar cells, dictionaries read in place and key lists are on by default; a 3.2 library refuses minors above 6.
+- **Default:** 15 — 15 since 3.3 (3.2: 6), so cube_minmax, superunit, calendar cells, dictionaries read in place and key lists are on by default; a 3.2 library refuses minors above 6.
 - **Turn off:** SET sift.col_format_minor = 6 (3.2), 4 (3.1) or 3 (3.0) before writing. It is superuser-only and workers follow only the server or database value (ALTER SYSTEM, ALTER DATABASE); see docs/UPGRADING.md section 4.
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Leave at the default (15; point_tid_columns and key_cut stamp 16 and 17 themselves). Lower to 6 before creating indexes a 3.2 library must read; options needing a higher minor are ignored.
