@@ -5,7 +5,6 @@
 #define SIFT_AGG_VNUM_H
 
 #include "agg/agg_fwd_int.h"
-#include "agg/spec.h"
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)

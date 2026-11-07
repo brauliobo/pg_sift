@@ -5,8 +5,6 @@
 #ifndef SIFT_AGG_CHUNKFILTER_H
 #define SIFT_AGG_CHUNKFILTER_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "agg/colsrc.h"
 

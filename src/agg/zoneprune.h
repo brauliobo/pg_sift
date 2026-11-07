@@ -5,8 +5,6 @@
 #ifndef SIFT_AGG_ZONEPRUNE_H
 #define SIFT_AGG_ZONEPRUNE_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "agg/colsrc.h"
 

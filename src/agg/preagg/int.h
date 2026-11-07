@@ -6,7 +6,6 @@
 #ifndef SIFT_AGG_PREAGG_DIR_INT_H
 #define SIFT_AGG_PREAGG_DIR_INT_H
 
-#include "agg/gen_int.h"
 
 extern void preagg_count(AggExec *ex, int64 rows);
 extern bool rollup_dim_leaf(const AggExec *ex, int leaf);

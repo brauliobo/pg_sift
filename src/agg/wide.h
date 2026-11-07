@@ -11,7 +11,6 @@
 #include "utils/lsyscache.h"
 
 #include "col/col.h"
-#include "agg/colsrc.h"
 
 typedef struct SiftAggWide
 {

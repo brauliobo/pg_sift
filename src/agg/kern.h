@@ -32,8 +32,6 @@
 #ifndef SIFT_AGGKERN_H
 #define SIFT_AGGKERN_H
 
-#include "core/host.h"
-
 #include "core/sift.h"
 #include "core/cpu.h"
 

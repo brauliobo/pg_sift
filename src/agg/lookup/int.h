@@ -6,8 +6,6 @@
 #ifndef SIFT_AGG_LOOKUP_DIR_INT_H
 #define SIFT_AGG_LOOKUP_DIR_INT_H
 
-#include "common/hashfn.h"
-
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "core/hash.h"

@@ -25,9 +25,6 @@
 #ifndef SIFT_COLSRC_H
 #define SIFT_COLSRC_H
 
-#include "agg/colsrc/meta.h"
-#include "agg/colsrc/exec.h"
-#include "agg/colsrc/provider.h"
 #include "agg/colsrc/plan.h"
 
 #endif							/* SIFT_COLSRC_H */

@@ -5,11 +5,8 @@
 #ifndef SIFT_AGGPRE_H
 #define SIFT_AGGPRE_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "col/preagg.h"
-#include "agg/colsrc.h"
 #include "agg/sel.h"
 
 /* The histograms a spec writes, as the planner sees them (SiftSrcPreagg.aggs is always set: every unit has the sums of its integer leaves) */

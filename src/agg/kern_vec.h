@@ -5,8 +5,6 @@
  * (agg/vnum.c) wraps (unsigned lanes): the caller has proved that no value leaves int64.
  */
 
-#include "core/simd_isa.h"
-
 #define AKV_VB SIFT_V_BYTES
 
 typedef uint64 akv_u __attribute__((vector_size(AKV_VB), aligned(8), may_alias));

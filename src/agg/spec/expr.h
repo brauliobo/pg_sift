@@ -7,8 +7,6 @@
 #define SIFT_AGG_SPEC_EXPR_H
 
 #include "catalog/pg_type_d.h"
-#include "nodes/pg_list.h"
-#include "nodes/primnodes.h"
 
 #include "agg/kern.h"
 #include "agg/colsrc.h"

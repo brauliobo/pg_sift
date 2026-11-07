@@ -4,10 +4,6 @@
 #ifndef SIFT_AGG_STUB_SRC_INT_H
 #define SIFT_AGG_STUB_SRC_INT_H
 
-#include "agg/stub.h"
-
-#include "agg/colsrc.h"
-
 typedef struct StubVecSlot
 {
 	SiftSrcVec	vec;

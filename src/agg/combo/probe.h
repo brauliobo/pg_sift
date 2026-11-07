@@ -15,7 +15,6 @@
 #define SIFT_AGG_COMBO_PROBE_H
 
 #include "access/relscan.h"
-#include "executor/executor.h"
 
 #include "agg/combo/int.h"
 

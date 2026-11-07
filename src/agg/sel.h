@@ -8,8 +8,6 @@
 #ifndef SIFT_AGGSEL_H
 #define SIFT_AGGSEL_H
 
-#include "core/host.h"
-
 #include "col/col.h"
 #include "core/filter.h"
 #include "agg/colsrc.h"

@@ -7,9 +7,7 @@
 #include "executor/nodeAgg.h"
 #include "utils/sortsupport.h"
 #include "agg/back.h"
-#include "agg/colsrc.h"
 #include "agg/search.h"
-#include "agg/spec.h"
 #include "agg/topn.h"
 #include "core/visibility.h"
 
@@ -20,7 +18,6 @@
 #include "agg/group_int.h"
 #include "agg/dist_int.h"
 #include "agg/osa_int.h"
-#include "agg/lookup_int.h"
 #include "agg/combo_int.h"
 #include "agg/two_int.h"
 #include "agg/gen_int.h"

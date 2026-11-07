@@ -6,10 +6,8 @@
 
 #include "nodes/extensible.h"
 
-#include "agg/colsrc.h"
 #include "agg/cost/model.h"
 #include "agg/refuse.h"
-#include "core/limits.h"
 #include "agg/search.h"
 #include "agg/spec.h"
 

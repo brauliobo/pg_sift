@@ -9,7 +9,6 @@
 #include "utils/float.h"
 
 #include "agg/agg_int.h"
-#include "core/hash.h"
 
 /* tuples ahead whose slot of a group or value table is prefetched: the tables outgrow the cache at millions of groups */
 #define GROUP_AHEAD 16

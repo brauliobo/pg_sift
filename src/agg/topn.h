@@ -10,13 +10,11 @@
 #ifndef SIFT_TOPN_H
 #define SIFT_TOPN_H
 
-#include "access/tableam.h"
 #include "lib/stringinfo.h"
 #include "port/atomics.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
-#include "nodes/pathnodes.h"
 
 #include "agg/colsrc.h"
 #include "core/limits.h"

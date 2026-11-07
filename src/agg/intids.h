@@ -4,7 +4,6 @@
 #ifndef SIFT_AGG_INTIDS_H
 #define SIFT_AGG_INTIDS_H
 
-#include "utils/memutils.h"
 #include "core/hash.h"
 
 typedef struct IntIdEnt

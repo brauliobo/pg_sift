@@ -4,32 +4,14 @@
 #ifndef SIFT_AGG_COL_INT_H
 #define SIFT_AGG_COL_INT_H
 
-#include "access/genam.h"
-#include "access/relation.h"
-#include "access/table.h"
-#include "access/tableam.h"
-#include "catalog/index.h"
-#include "catalog/pg_type.h"
-#include "executor/executor.h"
 #include "nodes/execnodes.h"
-#include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/rel.h"
 
-#include "agg/kern.h"
 #include "agg/pre.h"
 #include "agg/zoneprune.h"
 #include "agg/chunkfilter.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
-#include "core/popcount.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
-#include "col/am.h"
-#include "col/enc.h"
-#include "col/pg.h"
-#include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
 /*

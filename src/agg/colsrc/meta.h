@@ -6,9 +6,6 @@
 #ifndef SIFT_AGG_COLSRC_META_H
 #define SIFT_AGG_COLSRC_META_H
 
-#include "core/host.h"
-
-#include "core/sift.h"
 #include "core/filter.h"
 
 struct SiftCGOrdBuf;

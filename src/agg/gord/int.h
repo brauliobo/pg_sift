@@ -6,7 +6,6 @@
 
 #include "postgres.h"
 
-#include "col/am.h"
 #include "col/gorder.h"
 #include "agg/gord.h"
 
