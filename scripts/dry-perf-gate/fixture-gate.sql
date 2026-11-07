@@ -56,6 +56,12 @@ select i as id, i % 16 as g, i % 1000 as g2, i as v, (i % 977) * 0.37::float8 as
 from generate_series(1, :rows) i;
 create table cbb as select id, body from docs where id <= :rows / 3;
 
+-- a nullable jsonb document with paths: the index keeps the presence leaf of the document (2% NULL documents); jw is the empty scratch table of its write cases
+create table cd as select id, g, case when id % 50 = 0 then null else j end as doc from cb;
+create index cd_col on cd using sift_col (id, g, doc) with (key_cut = g, paths = 'doc.a int4, doc.b astext');
+create table jw (id int, g int, doc jsonb);
+create index jw_col on jw using sift_col (id, g, doc) with (key_cut = g, paths = 'doc.a int4, doc.b astext');
+
 -- deleted rows no VACUUM took (autovacuum is off): reads of a pre-aggregate with the dead-row correction
 create table dd as select id, g, g2, v as amount, x, t from cb;
 create index dd_col on dd using sift_col (id, g, g2, amount, x, t);
@@ -64,6 +70,6 @@ delete from dd where id % 20 = 7;
 create table tr (id int primary key, g int, amount bigint);
 create index tr_col on tr using sift_col (id, g, amount);
 
-vacuum (analyze) docs, wb, wbp, mt, sc, seed, store, mutable, cb, cbb;
+vacuum (analyze) docs, wb, wbp, mt, sc, seed, store, mutable, cb, cbb, cd, jw;
 analyze dd, tr;
 checkpoint;

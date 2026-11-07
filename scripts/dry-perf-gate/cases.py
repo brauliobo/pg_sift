@@ -125,6 +125,10 @@ FILL_MT = ('TRUNCATE mt',) + tuple(
     stmt for k in range(6) for stmt in (
         f"INSERT INTO mt SELECT i, i % 16, i % 1000 FROM generate_series({k * 3000 + 1}, {k * 3000 + 3000}) i", "SELECT sift.col_promote('mt_col')"))
 
+FILL_JW = ('TRUNCATE jw',) + tuple(
+    stmt for k in range(4) for stmt in (
+        f"INSERT INTO jw SELECT id, g, doc FROM cd WHERE id > {k * 3000} AND id <= {k * 3000 + 3000}", "SELECT sift.col_promote('jw_col')"))
+
 FILL_WBP_SEGS = ('TRUNCATE wbp',) + tuple(
     stmt for k in range(6) for stmt in (
         f"INSERT INTO wbp SELECT i, i % 16, i % 1000, 'common w' || i % 97 || ' t' || (i::bigint * 7919) % 2000 FROM generate_series({k * 1500 + 1}, {k * 1500 + 1500}) i", "SELECT sift.promote('wbp_bm25')"))
@@ -194,6 +198,14 @@ GATE = [
     Case('col_reindex', g('col-build', 'col-maint'), 'REINDEX INDEX docs_col', kind='once', plan=False),
     Case('col_merge', g('col-maint'), "SELECT sift.col_merge('mt_col', true)", kind='once', pre=FILL_MT, plan=False),
     Case('col_vacuum', g('col-maint'), 'VACUUM mt', kind='once', pre=FILL_MT + ('DELETE FROM mt WHERE id % 10 = 3',), plan=False),
+    # a nullable jsonb document with paths: the presence leaf of the document
+    Case('col_doc_not_contains', g('col-read', 'agg-read'), 'SELECT count(*), sum(id) FROM cd WHERE NOT (doc @> \'{"b": "x"}\')', note='NOT of a containment over a nullable document: the presence leaf'),
+    Case('col_doc_is_null', g('col-read', 'agg-read'), 'SELECT count(*) FROM cd WHERE doc IS NULL'),
+    Case('col_doc_build', g('col-build'), "CREATE INDEX cd_build ON cd USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.a int4, doc.b astext')", kind='once',
+         pre=('DROP INDEX IF EXISTS cd_build',), post=('DROP INDEX cd_build',), plan=False),
+    Case('col_doc_insert', g('col-wbuf'), "INSERT INTO jw SELECT id, g, doc FROM cd WHERE id <= 3000", kind='once', pre=('TRUNCATE jw',), plan=False),
+    Case('col_doc_promote', g('col-maint', 'col-wbuf'), "SELECT sift.col_promote('jw_col') >= 0", kind='once', pre=('TRUNCATE jw', 'INSERT INTO jw SELECT id, g, doc FROM cd WHERE id <= 12000'), plan=False),
+    Case('col_doc_merge', g('col-maint'), "SELECT sift.col_merge('jw_col', true)", kind='once', pre=FILL_JW, plan=False),
     # table
     Case('table_insert', g('table'), 'INSERT INTO mutable SELECT * FROM seed WHERE id <= 3000', kind='once', pre=('TRUNCATE mutable',), plan=False),
     Case('table_update', g('table'), 'UPDATE mutable SET amount = amount + 1 WHERE id BETWEEN 100 AND 200', kind='once', pre=RESET, plan=False),
