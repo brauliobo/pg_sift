@@ -67,6 +67,13 @@ sift_path_disable(Path *p, int nodes)
 #define sift_fallthrough	__attribute__((fallthrough))
 #endif
 
+/* The checksum of a page about to be written to the file (19 renamed the in-place form) */
+#if PG_VERSION_NUM >= 190000
+#define sift_page_set_checksum	PageSetChecksum
+#else
+#define sift_page_set_checksum	PageSetChecksumInplace
+#endif
+
 /* The cost delay point of a VACUUM pass (18 tells it from the one of ANALYZE) */
 #if PG_VERSION_NUM >= 180000
 #define sift_vacuum_delay_point()	vacuum_delay_point(false)

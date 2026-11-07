@@ -167,7 +167,7 @@ sift_tbl_ensure_init(Relation rel)
 		LockRelationForExtension(rel, ExclusiveLock);
 		if (RelationGetNumberOfBlocks(rel) == 0)
 		{
-			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+			SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_LAYOUT);
 
 			sift_store_init_meta(wt, &none, 0, "");
 			sift_wt_finish(wt);

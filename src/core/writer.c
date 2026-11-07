@@ -1,17 +1,22 @@
 /*
- * core/writer.c - write targets (where a BULK, INIT or SHARED writer takes its blocks from) and the stream writer.
+ * core/writer.c - write targets (where a BULK, INIT, LAYOUT or SHARED writer takes its blocks from) and the stream writer.
  */
 #include "postgres.h"
 
+#include "access/xlog.h"
+#include "access/xloginsert.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "storage/bufpage.h"
 #include "storage/bulk_write.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
+#include "core/compat.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
@@ -61,7 +66,8 @@ sift_wt_begin(Relation index, SiftWriteMode mode)
 	{
 		SIFT_INVARIANT(smgrnblocks(RelationGetSmgr(index), fork) == 0, "sift: bulk write into non-empty index \"%s\"",
 					   RelationGetRelationName(index));
-		wt->bulk = smgr_bulk_start_rel(index, fork);
+		if (mode != SIFT_WRITE_LAYOUT)
+			wt->bulk = smgr_bulk_start_rel(index, fork);
 		wt->next = FIRST_DATA_BLKNO;
 	}
 	return wt;
@@ -72,7 +78,7 @@ sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyze
 {
 	SiftMetaPageData *meta = &wt->meta;
 
-	SIFT_INVARIANT(wt->bulk != NULL, "sift: the metapage is written by BULK or INIT write targets only");
+	SIFT_INVARIANT(wt->mode != SIFT_WRITE_SHARED, "sift: the metapage is written by BULK, INIT or LAYOUT write targets only");
 	memset(meta, 0, sizeof(SiftMetaPageData));
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;
@@ -349,19 +355,54 @@ sift_wt_write_page(SiftWriteTarget *wt, Page page)
 	return blkno;
 }
 
+/* The metapage and the empty directory */
+static void
+layout_pages(SiftWriteTarget *wt, Page meta, Page dir)
+{
+	sift_page_init(meta, SIFT_PT_META, 0);
+	*META(meta) = wt->meta;
+	SiftPageSetUsed(meta, wt->meta.analyzer_config[0] ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
+	sift_page_init(dir, SIFT_PT_DIRECTORY, 0);
+	SiftPageSetUsed(dir, DIR_USED(0));
+}
+
 static void
 bulk_put_meta(SiftWriteTarget *wt)
 {
-	Page		page = wt_page(wt, NULL);
+	Page		meta = wt_page(wt, NULL),
+				dir = wt_page(wt, NULL);
 
-	sift_page_init(page, SIFT_PT_META, 0);
-	*META(page) = wt->meta;
-	SiftPageSetUsed(page, wt->meta.analyzer_config[0] ? sizeof(SiftMetaPageData) : SIFT_META_BASE_SIZE);
-	wt_put(wt, SIFT_METAPAGE_BLKNO, page);
-	page = wt_page(wt, NULL);
-	sift_page_init(page, SIFT_PT_DIRECTORY, 0);
-	SiftPageSetUsed(page, DIR_USED(0));
-	wt_put(wt, SIFT_DIRECTORY_BLKNO, page);
+	layout_pages(wt, meta, dir);
+	wt_put(wt, SIFT_METAPAGE_BLKNO, meta);
+	wt_put(wt, SIFT_DIRECTORY_BLKNO, dir);
+}
+
+/*
+ * LAYOUT: the pages go to the file only after their WAL is durable, and no checkpoint takes its redo pointer in between. A bulk write
+ * (smgr_bulk_*) sends them ahead of it, which is safe only for a file the same transaction created: here the file exists and is committed, so a
+ * crash before the WAL flush leaves pages that neither the recovery nor a standby has, and the next record of them carries no full image.
+ */
+static void
+layout_write(SiftWriteTarget *wt)
+{
+	SMgrRelation srel = RelationGetSmgr(wt->index);
+	PGIOAlignedBlock bufs[2];
+	Page		pages[2] = {bufs[0].data, bufs[1].data};
+	BlockNumber blknos[2] = {SIFT_METAPAGE_BLKNO, SIFT_DIRECTORY_BLKNO};
+
+	layout_pages(wt, pages[0], pages[1]);
+	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+	if (RelationNeedsWAL(wt->index))
+	{
+		log_newpages(&srel->smgr_rlocator.locator, MAIN_FORKNUM, 2, blknos, pages, true);
+		XLogFlush(GetXLogInsertRecPtr());
+	}
+	for (int i = 0; i < 2; i++)
+	{
+		sift_page_set_checksum(pages[i], blknos[i]);
+		smgrextend(srel, MAIN_FORKNUM, blknos[i], pages[i], false);
+	}
+	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 }
 
 /* BULK spare: trailing runs shrink the relation, the rest go to a free list */
@@ -398,6 +439,13 @@ bulk_release_spare(SiftWriteTarget *wt)
 void
 sift_wt_finish(SiftWriteTarget *wt)
 {
+	if (wt->mode == SIFT_WRITE_LAYOUT)
+	{
+		SIFT_INVARIANT(wt->have_meta, "sift: layout write target finished without a metapage");
+		wt->meta.high_water = wt->next;
+		layout_write(wt);
+		return;
+	}
 	if (wt->bulk == NULL)
 	{
 		if (wt->nspare > 0)

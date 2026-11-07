@@ -304,6 +304,8 @@ extern BlockNumber sift_store_truncate(Relation index);
  *   BULK   ambuild into a new relfilenode: smgr_bulk_*, single writer, WAL
  *          skipped when not needed; blocks 0-1 are written at finish.
  *   INIT   ambuildempty: BULK on the init fork, always WAL-logged.
+ *   LAYOUT the metapage and the empty directory of an empty relation that exists already (the first writer
+ *          of a table): the pages reach the file only after their WAL is flushed.
  *   SHARED promotion/merge: shared buffers, each page logged as a full image
  *          when written; unused allocated blocks go back to the free list at
  *          finish.
@@ -314,7 +316,8 @@ typedef enum SiftWriteMode
 {
 	SIFT_WRITE_BULK,
 	SIFT_WRITE_SHARED,
-	SIFT_WRITE_INIT
+	SIFT_WRITE_INIT,
+	SIFT_WRITE_LAYOUT
 } SiftWriteMode;
 
 extern SiftWriteTarget *sift_wt_begin(Relation index, SiftWriteMode mode);
