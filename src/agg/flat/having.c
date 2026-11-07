@@ -31,7 +31,7 @@ semi_subselect(Query *q)
 }
 
 /*
- * a condition of the rows of a group that the scan answers as a semi join: `column = ANY (sub-select)` (IN) with the column as it is (or a relabel of it that keeps its collation:
+ * a condition of the rows of a group that the scan answers as a semi join: `column = ANY (sub-select)` (IN) with the column as it is (or relabels of it that keep its collation:
  * any other cast of it is a function of the key that the groups may not agree on, and stays) and a sub-select that does not read the query (whatever it holds: the planner makes
  * a semi join of every such sub-select in WHERE, a sub-plan hashed or not in HAVING: 161 s against 28 ms for 20,000 keys of an aggregate at work_mem 64kB), or EXISTS of a simple
  * one, reading no aggregate of this query (one in a sub-select of it counts) and nothing volatile. The rows form reads less than the groups form in every cell measured
@@ -39,7 +39,7 @@ semi_subselect(Query *q)
  * on the groups, where the rows form tests every row (20% and 49% slower in half the cells and 2 to 3 times faster in the others: no rule of the shape tells them apart)
  */
 static bool
-row_condition(Node *c)
+row_condition(Query *q, Node *c)
 {
 	SubLink    *sl = (SubLink *) c;
 	OpExpr	   *op;
@@ -55,7 +55,9 @@ row_condition(Node *c)
 	key = linitial(op->args);
 	if (!op_mergejoinable(op->opno, exprType(key)))
 		return false;
-	if (IsA(key, RelabelType) && ((RelabelType *) key)->resultcollid == exprCollation((Node *) ((RelabelType *) key)->arg))
+	/* PostgreSQL 18 hands the key over as a column of the grouping entry: the expression it groups by is what decides, as before 18 */
+	key = flat_ungroup_expr(q, key);
+	while (IsA(key, RelabelType) && ((RelabelType *) key)->resultcollid == exprCollation((Node *) ((RelabelType *) key)->arg))
 		key = (Node *) ((RelabelType *) key)->arg;
 	return IsA(key, Var);
 }
@@ -72,7 +74,7 @@ sift_agg_having_candidate(Query *q)
 	if (!plain_group_by(q))
 		return false;
 	foreach_ptr(Node, c, make_ands_implicit((Expr *) q->havingQual))
-		if (row_condition(c))
+		if (row_condition(q, c))
 			return true;
 	return false;
 }
@@ -89,7 +91,7 @@ sift_agg_having_to_where(Query *q, bool apply)
 		return true;
 	foreach_ptr(Node, c, make_ands_implicit((Expr *) q->havingQual))
 	{
-		if (row_condition(c))
+		if (row_condition(q, c))
 			rows = lappend(rows, flat_ungroup_expr(q, c));
 		else
 			keep = lappend(keep, c);

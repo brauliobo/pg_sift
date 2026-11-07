@@ -103,7 +103,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome, sift_helpers.plan
   7 | scalar of the key                                                  | scan same  | t
   8 | a key and an aggregate                                             | scan same  | f
   9 | two conditions of rows                                             | scan same  | f
- 10 | a key expression                                                   | scan same  | f
+ 10 | a key expression                                                   | scan same  | t
  11 | NULL keys                                                          | scan same  | t
  12 | with a WHERE                                                       | scan same  | f
  13 | ORDER BY and LIMIT                                                 | scan same  | f
