@@ -161,7 +161,7 @@ The same four questions have three sets of settings. They are different mechanis
 | the segments | `sift.segments` | `sift.col_segments` | `sift.table_segments` |
 | what it holds | `sift.segment_postings` | `sift.col_leaves`, `sift.col_sections` | |
 | merge, promote, check | `sift.merge`, `sift.promote`, `sift.verify` | the same three (`sift.col_merge`, `sift.col_promote`, `sift.col_verify` are the same calls) | `sift.table_maintain` |
-| maintenance state | `sift.workers`, `sift.worker_state` | `sift.workers`, `sift.col_maintenance_status`, `sift.col_maintenance_due` | |
+| maintenance state | `sift.workers`, `sift.worker_state` | `sift.workers`, `sift.col_maintenance_status`, `sift.col_maintenance_due` | `sift.workers` (segments, sealed buffers, running), `sift.table_space` |
 | what the build chose or advises | | `sift.index_choices`, `sift.index_advice`, `sift.key_cut_decision`, `sift.cluster_advice` | |
 | what a notice, a choice or a refusal slug means | | `sift.help(slug)`, `sift.refusal_slugs()`, `sift.refusal_actions()` | `sift.help(slug)` |
 

@@ -16,6 +16,7 @@
 #include "col/pg.h"
 #include "bm25/maint_int.h"
 #include "core/sql.h"
+#include "table/table.h"
 #include "bm25/segment_sql.h"
 
 #define corrupt SIFT_CORRUPT
@@ -126,8 +127,8 @@ sift_index_info(PG_FUNCTION_ARGS)
 }
 
 /*
- * sift.worker_state(index) behind the sift.workers view: whether maintenance is at work on the index, and for an index whose last background step
- * failed what it was and when it is tried next. The delay is the one the background keeps (backoff_ms of bm25/maint.c). NULL while another session holds the index in a lock this probe would wait for (a REINDEX).
+ * sift.worker_state(index) behind the sift.workers view: whether maintenance is at work on the index (or the sift_table: its failures are not noted, so they are 0),
+ * and for an index whose last background step failed what it was and when it is tried next. The delay is the one the background keeps (backoff_ms of bm25/maint.c). NULL while another session holds the index in a lock this probe would wait for (a REINDEX).
  */
 Datum
 sift_worker_state(PG_FUNCTION_ARGS)
@@ -142,13 +143,13 @@ sift_worker_state(PG_FUNCTION_ARGS)
 
 	if (!ConditionalLockRelationOid(relid, AccessShareLock))
 		PG_RETURN_NULL();
-	index = try_index_open(relid, NoLock);
+	index = try_relation_open(relid, NoLock);
 	if (index == NULL)
 	{
 		UnlockRelationOid(relid, AccessShareLock);
 		PG_RETURN_NULL();
 	}
-	if (index->rd_rel->relam != sift_catalog()->am && !sift_col_is_index(index))
+	if (index->rd_rel->relkind == RELKIND_INDEX ? index->rd_rel->relam != sift_catalog()->am && !sift_col_is_index(index) : !sift_tbl_is_table(index))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
@@ -179,7 +180,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		v[6] = CStringGetTextDatum(unpack_sql_state(snap->meta.maint_errcode));
 		v[7] = CStringGetTextDatum(pg_verifymbstr(msg, strlen(msg), true) ? msg : "(unreadable)");
 	}
-	index_close(index, AccessShareLock);
+	relation_close(index, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 

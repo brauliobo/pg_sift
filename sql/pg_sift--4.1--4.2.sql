@@ -102,3 +102,23 @@ CREATE FUNCTION sift.refusal_actions(OUT slug text, OUT action text)
 	AS 'MODULE_PATHNAME', 'sift_agg_refusal_actions' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.refusal_actions() IS 'What to change for each slug of sift.refusal_slugs(): the statement, the index or a setting (the hint of the notice of sift.explain_refusals); join it to sift.explain_why on slug';
 COMMENT ON FUNCTION sift.help(text) IS 'The row of docs/messages.tsv of a pg_sift message or choice by its slug, or the registry row of a refusal slug of sift.explain_why (all message rows without an argument)';
+
+-- sift.workers also lists the sift_table: its column is named index and holds the table, kind is sift_table, and its segments and sealed write buffers are as for an index.
+-- The background of a table keeps no note of a failed step, so its failures, failed_at, next_retry, error_code and last_error are 0 and NULL, and due is NULL.
+CREATE OR REPLACE VIEW sift.workers AS
+	SELECT c.oid::regclass AS index, a.amname::text AS kind, w.segments, w.sealed, w.running, w.failures, w.failed_at, w.next_retry,
+		   w.error_code, w.last_error,
+		   CASE WHEN a.amname = 'sift_col' THEN sift.col_maintenance_due(c.oid) END AS due
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
+	JOIN pg_index i ON i.indexrelid = c.oid
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	WHERE c.relkind = 'i' AND has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL
+	UNION ALL
+	SELECT c.oid::regclass, a.amname::text, w.segments, w.sealed, w.running, w.failures, w.failed_at, w.next_retry,
+		   w.error_code, w.last_error, NULL::text
+	FROM pg_class c
+	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_table'
+	CROSS JOIN LATERAL sift.worker_state(c.oid) w
+	WHERE c.relkind IN ('r', 'm') AND has_table_privilege(c.oid, 'SELECT') AND w.segments IS NOT NULL;
+COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index and per sift_table whose table you can read (index: the index, or the table): segments, sealed write buffers, whether maintenance runs, the failures in a row of the background, when, the next retry, the SQLSTATE and the last error (a sift_table keeps none), and why a sift_col index would be rewritten (due).';

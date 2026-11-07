@@ -63,7 +63,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=107
+UPG_CHECKS=108
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 node_init life 6
 node_start life || bail "start failed"
@@ -230,13 +230,14 @@ if (( PG_MAJOR >= 18 )); then
 	check "4.0.3 updated to 4.2 has the objects of a fresh 4.2 install" test "$(q life upg403 "$MEMBERS")" == "$(q life fresh42 "$MEMBERS")"
 	# 4.1 -> 4.2 adds the table of the per-table options of a sift_table: an existing table reads as before, and the objects are those of a fresh install
 	q life postgres "CREATE DATABASE upg41" >/dev/null
-	q life upg41 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '4.1'" "CREATE VIEW slugs41 AS SELECT slug, class, reason FROM sift.refusal_slugs()" "CREATE TABLE t41 (id int, v text) USING sift_table" "INSERT INTO t41 SELECT g, 'x' || g FROM generate_series(1, 2000) g" >/dev/null
+	q life upg41 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '4.1'" "CREATE VIEW slugs41 AS SELECT slug, class, reason FROM sift.refusal_slugs()" "CREATE VIEW workers41 AS SELECT index, kind, segments, due FROM sift.workers" "CREATE TABLE t41 (id int, v text) USING sift_table" "INSERT INTO t41 SELECT g, 'x' || g FROM generate_series(1, 2000) g" >/dev/null
 	check "a table of 4.1 has no per-table options table before the update" test "$(q life upg41 "SELECT to_regclass('sift.table_option_values') IS NULL")" == t
 	q life upg41 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
 	check "ALTER EXTENSION UPDATE takes 4.1 to 4.2" test "$(q life upg41 "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$EXT"
 	check "4.1 updated to 4.2 has the objects of a fresh 4.2 install" test "$(q life upg41 "$MEMBERS")" == "$(q life fresh42 "$MEMBERS")"
 	# what to change for each slug is a function of its own (sift.refusal_actions): refusal_slugs() keeps its three columns, so that a view over it does not fail the update
 	check "a view over sift.refusal_slugs() made with 4.1 survives the update and reads the slugs" test "$(q life upg41 "SELECT count(*) = (SELECT count(*) FROM sift.refusal_slugs()) AND count(*) > 0 FROM slugs41")" == t
+	check "a view over sift.workers made with 4.1 survives the update and lists the sift_table" test "$(q life upg41 "SELECT count(*) FILTER (WHERE kind = 'sift_table') = 1 AND count(*) = (SELECT count(*) FROM sift.workers) FROM workers41")" == t
 	check "sift.refusal_actions() gives every slug of the registry a line" test "$(q life upg41 "SELECT count(*) = count(*) FILTER (WHERE a.action <> '') FROM sift.refusal_slugs() s LEFT JOIN sift.refusal_actions() a USING (slug)")" == t
 	check "a fresh 4.2 install lists as many slugs as the updated 4.1 one" test "$(q life upg41 "SELECT count(*) FROM sift.refusal_slugs()")" == "$(q life fresh42 "SELECT count(*) FROM sift.refusal_slugs()")"
 	q life upg41 "SELECT sift.table_set_option('t41', 'hot_update', 'off')" >/dev/null
