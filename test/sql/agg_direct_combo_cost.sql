@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE spans (id int PRIMARY KEY, tenant int NOT NULL, few_s int NOT NULL, few_e int NOT NULL, many_s int NOT NULL, many_e int NOT NULL);
 INSERT INTO spans SELECT g, g % 50, g % 10, g % 10 + 5, g, g + 3 FROM generate_series(1, 60000) g;
-CREATE INDEX spans_col ON spans USING sift_col (id, tenant, few_s, few_e, many_s, many_e) WITH (rollup_dims = 'off');
+CREATE INDEX spans_col ON spans USING sift_col (id, tenant, few_s, few_e, many_s, many_e) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) spans;
 
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;

@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE spans (id int PRIMARY KEY, tenant int NOT NULL, few_s int NOT NULL, few_e int NOT NULL, many_s int NOT NULL, many_e int NOT NULL);
 INSERT INTO spans SELECT g, g % 50, g % 10, g % 10 + 5, g, g + 3 FROM generate_series(1, 60000) g;
-CREATE INDEX spans_col ON spans USING sift_col (id, tenant, few_s, few_e, many_s, many_e) WITH (rollup_dims = 'off');
+CREATE INDEX spans_col ON spans USING sift_col (id, tenant, few_s, few_e, many_s, many_e) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "spans_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('spans_col');
