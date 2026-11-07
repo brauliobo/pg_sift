@@ -5,14 +5,11 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
-#include "access/tableam.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_type_d.h"
 #include "storage/bufmgr.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "bm25/planner.h"

@@ -6,7 +6,6 @@
  */
 #include "postgres.h"
 
-#include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 
 #include "bm25/planner.h"

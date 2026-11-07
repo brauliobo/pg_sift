@@ -3,14 +3,9 @@
  */
 #include "core/host.h"
 
-#include <math.h>
-
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/kernels.h"
-#include "bm25/wbuf.h"
-#include "bm25/prefix.h"
-#include "bm25/segment.h"
 
 PosCtx *
 posctx_create(SiftPlan *p)

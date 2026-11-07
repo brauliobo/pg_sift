@@ -1,7 +1,6 @@
 /*
  * bm25/liveness.c - segment liveness: live rows and bits, counts, the dead postings of each term, VACUUM and deletes of single docs.
  */
-#include "core/host.h"
 
 #include "bm25/kernels.h"
 #include "core/live.h"

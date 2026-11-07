@@ -4,14 +4,11 @@
  * token stream, the streaming cursor and the document bag, so index and query
  * analysis cannot diverge (the scanner is bm25/analyze_scan.h, included where it stood).
  */
-#include "core/host.h"
 #include "core/hash.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>
 #endif
-
-#include <ctype.h>
 
 #include "bm25/analyze.h"
 #include "bm25/analyze_memo.h"

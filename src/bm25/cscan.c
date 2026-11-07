@@ -15,34 +15,19 @@
 
 #include <math.h>
 
-#include "access/relation.h"
-#include "access/sysattr.h"
-#include "access/table.h"
-#include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/pg_am_d.h"
-#include "commands/explain.h"
 #include "executor/executor.h"
-#include "lib/binaryheap.h"
 #include "miscadmin.h"
-#include "nodes/extensible.h"
-#include "nodes/nodeFuncs.h"
 #include "nodes/tidbitmap.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
-#include "storage/predicate.h"
 #include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/datum.h"
-#include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/ruleutils.h"
-#include "utils/sortsupport.h"
 
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
-#include "core/explain.h"
 
 #include "cscan_int.h"
 

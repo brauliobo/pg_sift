@@ -11,7 +11,6 @@
 #include "nodes/tidbitmap.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
 
 #include "bm25/am.h"
 #include "bm25/eval.h"

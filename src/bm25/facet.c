@@ -13,7 +13,6 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
@@ -28,7 +27,6 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/rls.h"

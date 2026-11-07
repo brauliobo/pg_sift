@@ -3,9 +3,7 @@
  */
 #include "core/host.h"
 
-#include "bm25/kernels.h"
 #include "core/live.h"
-#include "core/popcount.h"
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"

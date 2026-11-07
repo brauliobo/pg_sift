@@ -2,7 +2,6 @@
  * bm25/segment.c - immutable segment reader: open, docmap, doc pages (layout in
  * bm25/segment.h and core/page.h).
  */
-#include "core/host.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>

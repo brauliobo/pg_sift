@@ -11,13 +11,9 @@
  */
 #include "postgres.h"
 
-#include "access/generic_xlog.h"
-#include "common/int.h"
 #include "nodes/execnodes.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
-#include "storage/lmgr.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "bm25/am.h"

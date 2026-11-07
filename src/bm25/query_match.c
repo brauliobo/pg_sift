@@ -3,8 +3,6 @@
  */
 #include "core/host.h"
 
-#include <ctype.h>
-
 #include "bm25/query.h"
 #include "bm25/query_int.h"
 

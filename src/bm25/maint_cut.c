@@ -4,9 +4,7 @@
  */
 #include "postgres.h"
 
-#include "storage/lmgr.h"
 #include "access/xlog.h"
-#include "utils/rel.h"
 
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"

@@ -5,10 +5,6 @@
  * (a deposit, a variable length decode, a compaction and a bit gather, none of which NEON has an instruction for), ub_accum,
  * which the compiler vectorizes as well as the intrinsics do, and bm25_sel, which the intrinsics lose on.
  */
-#include "core/host.h"
-
-#include "bm25/kernels_int.h"
-#include "core/neon.h"
 
 #if defined(SIFT_HAVE_NEON)
 

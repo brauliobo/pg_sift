@@ -8,12 +8,10 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_ts_config.h"
 #include "fmgr.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_public.h"
 #include "nodes/miscnodes.h"
-#include "utils/builtins.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
