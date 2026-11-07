@@ -51,18 +51,18 @@ INSERT INTO s_q VALUES
 SELECT n, pushed(q) AS pushed, reread(q) AS reread, outcome(q) FROM s_q ORDER BY n;
         n        | pushed | reread |                            outcome                             
 -----------------+--------+--------+----------------------------------------------------------------
- another column  | t      |     30 | same rows
+ another column  | t      |     60 | same rows
  cast float8     | f      |     -1 | same ERR 22023 cannot cast jsonb null to type double precision
- expression      | t      |     30 | same rows
- having          | t      |     30 | same rows
- io bool         | t      |     30 | same rows
- io float8       | t      |     30 | same rows
- io int4         | t      |     30 | same rows
- io int8         | t      |     30 | same rows
+ expression      | t      |     60 | same rows
+ having          | t      |     60 | same rows
+ io bool         | t      |     60 | same rows
+ io float8       | t      |     60 | same rows
+ io int4         | t      |     60 | same rows
+ io int8         | t      |     60 | same rows
  key float8      | f      |     -1 | same ERR 22023 cannot cast jsonb null to type double precision
- key io          | t      |     30 | same rows
- no groups       | t      |     30 | same rows
- text key beside | t      |     30 | same rows
+ key io          | t      |     60 | same rows
+ no groups       | t      |     60 | same rows
+ text key beside | t      |     60 | same rows
 (12 rows)
 
 -- numeric strings, which `->>` and a cast of the text convert (the cast of the jsonb value raises for them, below)
@@ -73,16 +73,16 @@ VACUUM ANALYZE s_t;
 SELECT n, pushed(q) AS pushed, reread(q) AS reread, outcome(q) FROM s_q WHERE n NOT IN ('cast float8', 'key float8') ORDER BY n;
         n        | pushed | reread |  outcome  
 -----------------+--------+--------+-----------
- another column  | t      |     99 | same rows
- expression      | t      |    118 | same rows
- having          | t      |    118 | same rows
- io bool         | t      |    131 | same rows
- io float8       | t      |    118 | same rows
- io int4         | t      |    118 | same rows
- io int8         | t      |    124 | same rows
- key io          | t      |    118 | same rows
- no groups       | t      |    118 | same rows
- text key beside | t      |    118 | same rows
+ another column  | t      |    129 | same rows
+ expression      | t      |    148 | same rows
+ having          | t      |    148 | same rows
+ io bool         | t      |    161 | same rows
+ io float8       | t      |    148 | same rows
+ io int4         | t      |    148 | same rows
+ io int8         | t      |    154 | same rows
+ key io          | t      |    148 | same rows
+ no groups       | t      |    148 | same rows
+ text key beside | t      |    148 | same rows
 (10 rows)
 
 -- a value SQL cannot convert: the scan raises the error of the cast for the row it reaches, as the normal plan does
