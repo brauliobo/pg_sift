@@ -95,7 +95,7 @@ metapages and cannot fail the update; when it cannot answer (a relation locked b
 
 ## What 4.2 changes
 
-Ten changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+Ten changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. Only 7, 8 and 9 ask for a step (remove a setting that is no longer accepted, before the update); `ALTER EXTENSION pg_sift UPDATE`
 runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
 
 1. **The index keeps a presence bit for the `jsonb` columns that may be NULL.** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
