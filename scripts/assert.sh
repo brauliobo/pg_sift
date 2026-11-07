@@ -10,7 +10,7 @@
 # planner paths that deparse or cast nodes (facets, agg_subplan_lut) and the aggregate buffers (agg_numeric_const_cmp), the two tests that reload the
 # relcache entry of the index at every lock and catalog read (cache_discard, verify_relcache: debug_discard_caches, which cassert builds have), the default of key_columns, which
 # rewrites the options of the index in the catalog (col_key_columns_auto), and
-# the TAP tests 001_crash and 003_wal_minimal (SIFT_ASSERT_TAP="" skips them). The lane fails on a failed test, on a TRAP (failed Assert)
+# the TAP tests 001_crash and 003_wal_minimal (SIFT_ASSERT_TAP="" skips them) and the isolation test merge_ranked. The lane fails on a failed test, on a TRAP (failed Assert)
 # or on a memory-context warning or a catalog write without the lock it expects (missing lock for relation) in any server log, which the tests themselves would not notice. In scripts/ci.sh it is opt-in:
 # `SIFT_CI_JOBS=assert scripts/ci.sh quick`. KEEP=1 keeps the scratch directory.
 set -euo pipefail
@@ -55,6 +55,8 @@ scripts/pgtest.sh regress "${TESTS[@]}" || rc=1
 # the quick tier of the TAP tests: sift only (the GIN control needs the gin_index_check of amcheck on PostgreSQL 18) and fewer crash iterations
 if (( ! rc && ${#TAPS[@]} )); then SIFT_QUICK=1 scripts/tap.sh "${TAPS[@]}" || rc=1; fi
 for t in "${SHTAPS[@]}"; do (( rc )) || SIFT_QUICK=1 scripts/pgtest.sh tap "$t" || rc=1; done
+# a maintenance worker that opens the index of the setup transaction as it commits (the lock order of sift_try_open_index)
+(( rc )) || scripts/isolation.sh merge_ranked || rc=1
 if grep -rEl "$BAD" "$SIFT_TMP" --include='*.log' 2>/dev/null | head -n 5 | grep .; then
 	grep -rEh "$BAD" "$SIFT_TMP" --include='*.log' | head -n 10
 	echo "assert: a server log has an assertion failure or a memory-context warning (files above)" >&2

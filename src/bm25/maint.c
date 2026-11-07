@@ -448,48 +448,41 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 }
 
 /*
- * Locks the table of an index before the index, in the order of a statement: DROP TABLE and the commands like it lock the table and then its indexes, so a backend that holds an
- * index and then asks for the table waits for a command that waits for the index. The lock is held to the end of the transaction; nothing is locked when the index is gone.
+ * Opens an index with its table locked first, in the order of a statement: DROP TABLE and the commands like it lock the table and then its indexes, so a backend that holds an
+ * index and then asks for the table waits for a command that waits for the index. The locks are held to the end of the transaction; NULL when the index is gone (missing_ok).
+ * An index that its creating transaction had not committed when the table was looked up is opened after that commit, with no table lock: it is closed, and the table it
+ * belongs to is locked on the next turn.
  */
-static void
-sift_lock_table_of_index(Oid indexoid, LOCKMODE lock)
+static Relation
+open_index_table_first(Oid indexoid, LOCKMODE lock, bool missing_ok)
 {
-	Oid			heapoid = IndexGetRelation(indexoid, true);
+	for (;;)
+	{
+		Oid			heapoid = IndexGetRelation(indexoid, true);
+		Relation	index;
 
-	SIFT_POINT("sift-maint-before-table-lock");
-	if (OidIsValid(heapoid))
-		LockRelationOid(heapoid, lock);
-	SIFT_POINT("sift-maint-after-table-lock");
+		SIFT_POINT("sift-maint-before-table-lock");
+		if (OidIsValid(heapoid))
+			LockRelationOid(heapoid, lock);
+		SIFT_POINT("sift-maint-after-table-lock");
+		index = missing_ok ? try_index_open(indexoid, lock) : index_open(indexoid, lock);
+		if (index == NULL || index->rd_index->indrelid == heapoid)
+			return index;
+		index_close(index, lock);
+	}
 }
 
-/* A backend that holds an index must hold its table: asking for the table then waits for a DROP TABLE that waits for the index */
-static void
-assert_table_locked(Relation index, LOCKMODE lock)
-{
-	Assert(CheckRelationOidLockedByMe(index->rd_index->indrelid, lock, true));
-}
-
-/* The index with its table locked first (lock order of the statements), NULL when it is gone: what a worker or a transaction that records a failure opens */
+/* What a worker or a transaction that records a failure opens: NULL when the index is gone */
 Relation
 sift_try_open_index(Oid indexoid, LOCKMODE lock)
 {
-	Relation	index;
-
-	sift_lock_table_of_index(indexoid, lock);
-	index = try_index_open(indexoid, lock);
-	if (index != NULL)
-		assert_table_locked(index, lock);
-	return index;
+	return open_index_table_first(indexoid, lock, true);
 }
 
 Relation
 sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 {
-	Relation	index;
-
-	sift_lock_table_of_index(indexoid, lock);
-	index = index_open(indexoid, lock);
-	assert_table_locked(index, lock);
+	Relation	index = open_index_table_first(indexoid, lock, false);
 
 	if (!ops->is_index(index))
 		ereport(ERROR,
