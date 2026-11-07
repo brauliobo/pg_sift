@@ -1,15 +1,4 @@
 commit 21a92741e	a gate and a script for the plan-choice tests; no statement gets faster
-`ORDER BY key LIMIT n OFFSET m` over the sorted array of the key throws away	case order_layout_offset_mid: OFFSET rows/10 (100,000 at 1,000,000 rows) over the auto, whole and compact layouts, against a b-tree
-`CREATE INDEX` of a `sift_col` index with `key_cut` sorts the order arrays by radix	case col_build_cube_13cols: the build of a 13-column index at the rows of the run, with 0, 4 and 8 workers as variants (ms, instructions)
-`CREATE INDEX` of a `sift_col` index with workers no longer chooses	case col_build_cube_13cols: the variants workers_0, workers_4 and workers_8 against the default build
-VACUUM of a `sift_col` index writes, after each segment that has dead rows	case col_vacuum_churn_sidecar: the VACUUM after 4% churn, whose sidecar is the cost; the query after it is topn_offset_after_vacuum and dirty_share_few
-the WAL budget of the automatic rewrite of a `sift_col` index	the stall needs sift.col_auto_merge_wal_pct below the WAL of the churn and 8 rounds of churn with the maintenance worker running, a state the single-session case harness cannot hold still; tests/col_net_policy (dad53e034) asserts that the buffer is promoted under the budget and the numbers of the line came from that run
-while a physical standby streams, `VACUUM` of a `sift_col` index moves the segments	needs a streaming hot standby with feedback; the single-server harness has none: measured by test/t/col_index_replica.sh and the lab run named in the line
-use two new SIMD kernels	case col_vacuum_13cols: VACUUM of a 13-column index after churn, instructions and time
-the sidecar a VACUUM writes for the units with dead rows takes a sixth fewer instructions	case col_vacuum_churn_sidecar: the VACUUM after churn whose sidecar is the cost
-keeps the buffer's order ranges with its batches	case wbuf_layout_topn: a page of the order of a key under a write buffer, scan after scan
-returns the keys from the entries and reads no row of the table	case topn_scattered_time: the key-only page of a scattered time column (0.51 ms and 2.1 million instructions in 46 blocks at 300,000 rows against PostgreSQL's plan 16.9 ms and 1,911 blocks)
-reads the sorted array of the column like an integer one	case topn_numeric_offset: ORDER BY amount, id LIMIT 20 OFFSET 10000 over a numeric(12, 2) column (0.80 ms and 7.7 million instructions at 300,000 rows, a b-tree 0.66 ms and 6.6 million)
 commit 8aab48d7e	CHANGELOG line written after the commit; case point_scattered_subselect
 commit da8761c87	CHANGELOG line written after the commit; case topn_text_tiebreak_global_order
 commit ea24f1cdb	CHANGELOG line written after the commit; case order_layout_range
@@ -28,7 +17,6 @@ commit f786fbc57	repairs the cost that 5ce93b74c added on every read of a kept b
 commit c7468b07c	comment and option text only; no code path changes
 commit ca46315a9	comment and option text only; the choice of the layout is not changed
 commit 5ce93b74c	a repair of wrong rows after VACUUM in a development version that never shipped; its cost is measured: 69,711 instructions to stamp a buffer of 15 pages and 20,151 for each read that finds the set (0.5% of the page statement)
-goes on past the entries whose pages are not all-visible	case topn_offset_after_vacuum: the OFFSET of a page after deletes, updates and a VACUUM (23.4 million instructions at 300,000 rows against 307 million before the skip went on, a b-tree 42.6 million)
 commit 9e574ccc6	CHANGELOG line written after the commit; case topn_offset_after_vacuum
 commit 68f4de4d2	CHANGELOG line written after the commit; case distinct_on_latest_per_entity
 commit f2178aebd	the cost of a probe that started over at each LATERAL row (80.8 to 55.9 thousand instructions by callgrind) is part of what lateral_top1_kept_source measures: 200 probes over 300,000 rows take 8.3 million instructions and 1.01 ms (a b-tree 6.8 million, 0.79 ms). The commit alone, built with and without it on the same data (200 probes, key_cut grouped order array, 300,000 rows): 21.1 to 17.8 million instructions, 2.4 to 2.1 ms in the same 3,214 blocks (a b-tree 5.5 million, 0.6 ms)
@@ -39,21 +27,9 @@ commit 6ff768eeb	a planner price held by test/sql/agg_par_cost.sql (the lookup, 
 commit 079bb110e	held by test/sql/agg_exact_units_dirty.sql (failing first: the cost of a month's count with 5% of the pages dirty at the end is under twice the clean one, with 1 page in 20 dirty anywhere it is over twice); the plan matrix with the dirty dimension is the time proof
 commit 478e9cb3b	a planner price held by test/sql/agg_topn_runs_filter.sql (failing first: the page of 5,000 of 300,000 rows with 10% passing is the scan and cheaper than the normal plan, and its price grows with the page); the commit's table is the cost against the time of the plan matrix
 commit e7265c883	a planner price held by test/sql/agg_topn_walk_cost.sql (failing first, four booleans: the price of the walk follows the pass rate, 394 to 139 at 50%, 434 to 114 at 98%, the give-up boundary at 1%); col_topn_gorder now expects the array
-the rows of the group of ties that holds the first row to keep	case topn_offset_dates_auto: the OFFSET of 10,000 over a date column of 365 values, the sift lane against sift off and a b-tree twin, at 300,000 and 1,000,000 rows
-`ORDER BY text_key, id LIMIT 20 OFFSET 10000` over the sorted array of a text column	case topn_offset_churn_text: the text key after churn, with the integer and date keys of topn_offset_churn_int and topn_offset_churn_date
-a unit with dead rows asks the heap for the pages it checks through a read stream	case sum_dead_units: a grouped sum with 9% of the rows dead and no VACUUM, the cold read requests and megabytes beside the sequential scan
-VACUUM counts the dead postings of each term of a segment again only when	case search_vacuum_dead_postings: VACUUM after an insert, an update and a delete of 1% of the documents, instructions against a GIN index
-the dead rows of a unit are turned into heap addresses without decoding	case topn_offset_churn_int: the OFFSET of 10,000 after churn and VACUUM, with the text and date keys of topn_offset_churn_text and topn_offset_churn_date
-the sorted array of a key written in the compact layout (`order_layout`, 41) is read after deletes and updates	case topn_offset_after_vacuum: the OFFSET of a tenth of the rows after a DELETE of 3%, an UPDATE of 3% and a VACUUM
-a `count(*)` over a range of a column with an order array (`order_array_columns`), on a table with rows inserted	case wbuf_layout_text_count: count(*) over a range of a text key with 5,000 rows inserted after the VACUUM
-`ORDER BY sift.score(ctid) DESC, key LIMIT k`	case search_top_20_ties: the ranked search with a key after the score, instructions against a GIN index
-the merge of the segments of a `sift_col` index with `key_cut` outside a build	case col_merge_forced_key_cut: sift.col_merge(index, true) with 0, 2 and 4 parallel maintenance workers against the rebuild of a b-tree
 commit eda053aae	CHANGELOG line written after the commit; case topn_offset_churn_text
-the VACUUM rewrites a lone segment whose dead rows cost more in the next 100 scans than the rewrite costs	a rule of the rewrite of a lone segment that holds only with the sidecar of the VACUUM off (sift.test_col_net, a setting of the testing build): with the sidecar the scans of a dirty unit are cheap and the dead rows stay, so no release-build case shows it; test/sql/col_dead_rewrite.sql holds the rule (a narrow segment with a dead row in every unit is rewritten, a wide one and one with the dead rows in its first rows are not)
-the group of ties that holds the first row to keep of an `ORDER BY date DESC, id LIMIT 20 OFFSET 10000` page	case topn_offset_dates_auto: the page tied on a date after churn and a VACUUM, with the heap fetches of the plan held under 100 and the cold reads of the sift lane, sift off and a b-tree twin, at 300,000 and 1,000,000 rows
 commit 3d11cb1fb	a planner price of the probes of a repeated index scan held by test/sql/col_join_probe_price.sql (failing first: the arrival-order heap took the hash join, the same rows either way) and the plan matrix shape added with it
 commit 74ccf0039	a planner price of the keys an index looks up in its order array held by test/sql/col_point_btree_price.sql (failing first: 500 keys took the sift_col index, the b-tree now, the same rows)
-lists every NOTICE, WARNING and `VACUUM VERBOSE` INFO line of the library in one table	a documentation page and a lint check; no statement gets faster
 commit a33bd8e5f	a planner price of when the index paths of an aggregate over a few keys stay, held by test/sql/col_point_lookup_plan.sql (failing first: a column of 667 rows a key kept the index scan; 250,000 rows, the 216 rows of one day priced 76 against 187 for the aggregate scan and taking 1.4 ms against 0.55)
 commit 1b3b58e06	repair of the baseline-ISA check (scripts/isa_check.sh): best level 30% fewer instructions per rank (116/356/676 to 83/251/475 at 4/16/32 words), the whole query under 0.2% (428.3 M to 427.6 M for 80 conjunctions); the scalar level counts by arithmetic, 151/487/935, more than the libgcc helper it replaces
 commit 2d4d217b5	a planner price of the probes of a repeated index scan (the first unit looked up, the others walked, each heap row paid) held by test/sql/agg_topn_plan_keys.sql and col_list_equality.sql (failing first: both red on the tip; the nested loop of 124 rows a probe took 4 to 5 ms and 3,127 buffer hits where the top-N scan takes 1.4 ms and 50)
@@ -61,23 +37,14 @@ commit ab98e13a3	a planner price of the rows an index-only scan hands over (0.07
 commit 390c12b8b	CHANGELOG line written after the commit (the Added line of key_order); cases key_order_latest and key_order_offset
 commit 43f9c7f63	a test-only floor (sift.table_max_segments 16 to 8, a setting that exists only in the testing build) so that tbl_writepath and tbl_bigtx reach the directory pressure with a quarter of the rows (71 s to 15 s and 11 s to 2 s of test time); the library a release ships is unchanged, held by test/sql/tbl_writepath.sql and tbl_bigtx.sql (failing with dir_pressure() always false)
 commit 37eaaf50c	a test gate (sift.test_merge_gate) that holds a merge of the maintenance worker, replacing a sleep setting in the testing build; no statement gets faster, held by test/t/maint_lock.sh
-writes the values of each row into one index tuple it keeps	the scan is the Index Only Scan of a whole index that a join, a sort or an OFFSET 0 subquery plans; the planner never picks it for a plain aggregate (plain_index_for_rows_only) and chooses a sequential scan over it in a single-table case, so no case of the harness (the planner's own plan, asserted) reaches it. Held by test/sql/col_ioss_fixed.sql (rows equal the heap's for every width, NULLs, deletes, a write buffer) and measured with enable_seqscan off in a private cluster: 1,000,000 rows count(*), sum(k) 781 Minstr / 76 ms against 1,209 / 99 before, a b-tree 665 / 47-59; all rows 1,190 against 1,619, b-tree 1,075
-the strings of a text order array whose dictionary is in compressed blocks	case topn_offset_churn_text: the text cut of an OFFSET of 10,000 after churn, the instructions and the buffer accesses of the sift lane beside the b-tree twin
-`count(*)`, `GROUP BY` and `IN` on a `key_columns` leaf answered by the key table of a segment	case key_table_point: count(*) over an IN list of a key_columns column answered by the key table of each segment, the blocks and instructions beside sift off
 commit 6f3edd674	which keys get the grouped order array by default is held by test/sql/col_gorder_autogroup_kinds.sql (a date of 365 values, a timestamp in heap order, an integer and a decimal, an entity of 20 rows and one of 2, a timestamp cut by key_cut, a table with nothing to group, a two-column index); the case lateral_latest_row_default runs the shape of the latest row of each entity
 commit 11e5e77b6	a planner price that repairs two regression tests after the point directory became the default of an integer key: test/sql/col_point_dir.sql holds the plan of an equality on a boolean (the index scan priced by the row against the index-only scan) and test/sql/col_index_return_str.sql the plain index scan of the one-row lookups; the plan matrix has no flipped cell
 commit 05d41606e	a planner price of the restart of a top-N probe of the order array (2.5 units, measured 2.4 to 2.7 us a probe at 100,000 to 1,000,000 rows) held by test/sql/agg_topn_probe_cost.sql (failing first: priced 88 to 106 units a probe) and the case lateral_top1_kept_source
 commit 11e5e77b6	a planner price of the heap row of a plain index scan (0.1 us a row, measured 146 ns a row of a clustered table) held by test/sql/col_point_dir.sql (failing first: the lookup of an equality on a bool, 16,853 rows, took the index scan at 1.55 ms where the index-only scan takes 1.08)
 commit 6f3edd674	CHANGELOG line written after the commit; cases group_latest_entity and group_count_entity
-a join that looks up a `sift_col` index with one equality for each row of the outer side	case join_eq_nl_probe: the nested loop of 1,000 outer keys against the index, with a b-tree as the native variant; held by test/sql/col_join_is_probe.sql
 commit 0df9bb51c	a test-only setting (sift.test_direct_max) that shortens a regression test from 41.5 s to 0.7 s; no code path of a release build changes
 commit 4c1f89e29	a test-only setting of the table load that lets the tests of the ring and the workers use smaller units; the time is the test run, not a statement
-sizes the candidate buffers of a unit that starts afresh without copying	case tenant_latest_20: the latest 20 rows of a tenant on the default index, the statement whose unit buffers were copied (records tenant_unitfix_before / tenant_unitfix_fixed)
-`track_changes` (on by default as `'auto'`	the measurement needs a table with a history of updates, deletes and VACUUMs under two index settings, off and the default, which one case of the single-statement harness cannot hold: bench/churn/heapfree_churn_reads.py (reads) and bench/churn/heapfree_records.py --write (writes) keep the records, test:col_heapfree_reads checks the answers
-commit dcad963f	the shortcut is in the read of the log of track_changes, measured by bench/churn/heapfree_churn_reads.py (one tenant count 8.13 to 6.21 M instructions)
-commit a95a8829	the delete trigger of track_changes, measured by bench/churn/heapfree_records.py --write (DELETE of 2% +73.9 to +38.0 M instructions over a plain index)
 commit ad95c2c1	the read of the tombstone log by page, measured by bench/churn/heapfree_churn_reads.py (the count of one tenant under track_changes, recent 20% updated)
-commit 1dfdbe18	the read of the tombstone log under track_changes, measured by bench/churn/heapfree_churn_reads.py (the point read, recent 20% updated: 3.73 to 3.37 M instructions warm, callgrind)
 figure over a key of several columns costs fewer instructions	bench case setup of lateral_probe_direct at 50,000 rows (a lookup table of 300,000 rows; the same data in a database under the default collation and one under the ICU collation en-US, seed 0.42): EXPLAIN ANALYZE and user instructions by perf stat of one backend, scan on, the library before and after the change, two runs each
 figure over a uuid, a date, a timestamp or a timestamptz key compares it in the probe itself	bench case shape of lateral_probe_direct with a lookup table of 300,000 rows by the key type and 40,000 keys of a table of 40,000 rows (sift_col index on the driving table, the key built from its integer column): user instructions and cycles by perf stat of one backend, scan on, the library before and after the change, interleaved runs
 figure a run of a correlated `LIMIT 1` child that the scan probes in its btree directly is priced by what it takes	measurement of 60 choices between the direct probes of a correlated child and the first-row table read whole (4 key kinds, tables of 30,000, 100,000 and 300,000 rows, an eightieth to a fifth of the rows as keys, lookup cache off): user instructions and cycles of one backend by perf stat, the slope over 1,250 to 20,000 keys for a probe and over the rows for a table read whole; docs/AGG.md
@@ -97,3 +64,163 @@ figure the planner chooses the aggregate scan more often for a grouped aggregate
 figure the aggregate scan prices an expression that PostgreSQL evaluates	the figures are the elapsed milliseconds of a table of 150,000 rows with 10, 11,700, 27,700, 75,100 and 150,000 distinct pairs of two integer columns (max(ends - starts) grouped by 50 tenants, forced scan, parallel workers off, min of 6 runs: 3.1, 4.3, 5.4, 8.2, 13.1 ms) and the scan estimates before and after (sift.explain_why scan_cost); the change is the unit of the cost estimate (test/sql/agg_direct_combo_cost.sql pins the ratios, test/corpus/plans.tsv the choices), not a bench case
 figure the planner chooses the aggregate scan more often for a grouped aggregate with lookup joins	the figures are the user instructions, cycles, milliseconds and buffers of one statement of the plan-choice gate (scripts/plangate.sh --rows 250000 --table --lane tuned, shape linkleft_all_parents, minimum of 3 runs, normal plan then scan; the other figures are the plangate columns native_ms and scan_ms of the shapes dimright_dim_c and linkjoin_all_parents): a plan-choice measurement, not a bench case; test/plan/bands.tsv holds the cost ratios
 figure a `HAVING` condition `column IN (SELECT ..)` or `EXISTS (SELECT ..)` of a plain `GROUP BY` is always answered	the 40 cells are the statements `GROUP BY gK HAVING gK IN (SELECT id FROM lst WHERE id <= L)` over 300,000 rows (K = 100 to 200,000 groups, L keeping 1% or 50% of the keys, the group columns in a sift_col index, parallel workers off and on, lookup caches off, work_mem 256MB) with the rows form taken or refused in the planner hook (cycles of the backend, minimum of 3 runs, planning included); the rule and its exactness are pinned by test/sql/agg_having_where.sql, the first figure (342 to 5.7 M instructions) by bench case agg_having_where
+`sift.workers` lists the `sift_table` tables the caller can read next 	not a speed claim: a setting, function, message or tool change; nothing to measure
+`sift.help(slug)` answers the slug of a refusal of `sift.explain_why` 	not a speed claim: a setting, function, message or tool change; nothing to measure
+`sift.merge`, `sift.promote` and `sift.verify` take a `sift_col` index	not a speed claim: a setting, function, message or tool change; nothing to measure
+`CREATE INDEX` and `ALTER INDEX .. SET` of a `sift` index with the rel	not a speed claim: a setting, function, message or tool change; nothing to measure
+`sift.agg_lookup_max_rows` (deprecated since 3.2; `sift.agg_lookup_max	not a speed claim: a setting, function, message or tool change; nothing to measure
+the developer method `unit_rewrite` of `sift.eval_methods` is removed 	not a speed claim: a setting, function, message or tool change; nothing to measure
+the name `latest_hint` of `sift.eval_methods` is gone with the code be	not a speed claim: a setting, function, message or tool change; nothing to measure
+the name `snapshot_masks` of `sift.eval_methods` is gone: it was accep	not a speed claim: a setting, function, message or tool change; nothing to measure
+the developer method `skip_trigger_lookup` of `sift.eval_methods` is g	not a speed claim: a setting, function, message or tool change; nothing to measure
+4.2 changes ten things worth reading before the update (`docs/UPGRADIN	not a speed claim: a setting, function, message or tool change; nothing to measure
+the planner chooses the aggregate scan more often for a grouped aggreg	not a speed claim: a setting, function, message or tool change; nothing to measure
+the aggregate scan prices an expression that PostgreSQL evaluates (`ma	not a speed claim: a setting, function, message or tool change; nothing to measure
+`DROP INDEX CONCURRENTLY` of a `sift_col` index that tracks its change	not a speed claim: a setting, function, message or tool change; nothing to measure
+a `sift_col` index with `track_changes` whose log is not complete only	not a speed claim: a setting, function, message or tool change; nothing to measure
+`sift.refusal_actions()` returns what to change for each slug of `sift	not a speed claim: a setting, function, message or tool change; nothing to measure
+options of one `sift_table`, as functions, because a table access meth	not a speed claim: a setting, function, message or tool change; nothing to measure
+`bench/steps/fresh_backend_statements.sh` no longer counts the exit of	not a speed claim: a setting, function, message or tool change; nothing to measure
+a correlated lookup (a `LEFT JOIN LATERAL .. LIMIT 1` into a large map	not a speed claim: a setting, function, message or tool change; nothing to measure
+a run of a correlated `LIMIT 1` child that the scan probes in its btre	not a speed claim: a setting, function, message or tool change; nothing to measure
+commit 1620b5c4b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 301b6785d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 80be326aa	refactor: one implementation of code that was repeated; no statement gets faster
+commit a7e38ea21	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 68b7c57ee	refactor: one implementation of code that was repeated; no statement gets faster
+commit 6b06e4db1	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 68aad4143	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit a6d9bcfb3	refactor: one implementation of code that was repeated; no statement gets faster
+commit 9c5539e19	refactor: one implementation of code that was repeated; no statement gets faster
+commit 894a559c7	refactor: one implementation of code that was repeated; no statement gets faster
+commit 7729dc951	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 711bd6521	refactor: one implementation of code that was repeated; no statement gets faster
+commit 12b2e2c85	refactor: one implementation of code that was repeated; no statement gets faster
+commit 2cc886d59	refactor: one implementation of code that was repeated; no statement gets faster
+commit 58761cf22	refactor: one implementation of code that was repeated; no statement gets faster
+commit f3283936f	refactor: one implementation of code that was repeated; no statement gets faster
+commit e2a494fbe	refactor: one implementation of code that was repeated; no statement gets faster
+commit 87c284eb8	refactor: one implementation of code that was repeated; no statement gets faster
+commit bfc5cd48a	refactor: one implementation of code that was repeated; no statement gets faster
+commit 1416eae4a	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit ee2de2875	refactor: one implementation of code that was repeated; no statement gets faster
+commit 48e056320	refactor: one implementation of code that was repeated; no statement gets faster
+commit 8848c1a35	refactor: one implementation of code that was repeated; no statement gets faster
+commit e18193ea3	refactor: one implementation of code that was repeated; no statement gets faster
+commit f48c4fd46	refactor: one implementation of code that was repeated; no statement gets faster
+commit dc2838be2	refactor: one implementation of code that was repeated; no statement gets faster
+commit e920d6d54	refactor: one implementation of code that was repeated; no statement gets faster
+commit 124d63570	refactor: one implementation of code that was repeated; no statement gets faster
+commit af9077f21	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 62387634f	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 400b004b5	refactor: one implementation of code that was repeated; no statement gets faster
+commit 985047524	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8afef71ef	refactor: one implementation of code that was repeated; no statement gets faster
+commit b01c0dd3a	refactor: one implementation of code that was repeated; no statement gets faster
+commit 3fa5768c4	refactor: one implementation of code that was repeated; no statement gets faster
+commit 2447e0234	refactor: one implementation of code that was repeated; no statement gets faster
+commit 89b92cc05	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 2e15b8c56	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 905165e4c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit e1fe65bc9	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 825fcb214	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit e08362f34	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b6542fe08	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b9180636c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 82c0351b4	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit f5b4c7adf	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit d14fd6f52	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 5e7f88a8a	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 416e693ff	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit dff1a6579	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 394505b7e	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4148f11b3	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 33a513378	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 13b8cb552	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 13d064d70	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 19047dd69	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b35e77c54	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit ddc30f6f1	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 95044278b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit faee82fb3	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 56f247585	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 29dbf3670	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit bce6dfca2	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 3f5232cc8	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8db5f0169	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit bc548c9c1	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b5080144b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit a1454c982	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 36b41e7cc	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 675c705ab	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 9c7cd0856	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 61e3079aa	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 103c54d6a	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 15ca8e326	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit bdd8b8143	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit bc16c518d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4555942f5	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit a1f54611d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4d9b0198e	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit fec4f7f80	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit c422f29a3	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b51b237d5	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 1761d534b	refactor: one implementation of code that was repeated; no statement gets faster
+commit 679a93b6a	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit ec1d19465	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 1778d598e	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 173b535f9	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8bc3e4241	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4e456915b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 803fdf494	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 27d75617a	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 92b89c6f6	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 14353f264	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b0b11245c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 7eb8a57a5	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 61c53f152	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 98c4654c8	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4d4fce7cc	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 3b4de9472	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 0993f0cf2	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit c21cb2b02	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit fa43b024c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 3774679ee	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 7e6fac745	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit f2d575012	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8098b99e3	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 46ae42100	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit ed110b147	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8e4c1d1d2	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8a3ee5348	tooling, tests or docs; no statement gets faster
+commit cda120493	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 300ef4109	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit b7a217a8d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 3abc4d56c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 1afdd03d0	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 04fe4d1a2	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit c05e3afd6	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 490a75d10	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 10efee8f9	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit f087552a4	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit bf6a230da	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit c74d2d3da	refactor: one implementation of code that was repeated; no statement gets faster
+commit 904bd2acd	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 5e27cd63b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 03440d882	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit d687b03ca	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 0bd50da38	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit fb418469d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 7e39a564b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 30c601dfc	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit f27748eaf	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 3e1ed81c9	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit c0302aec5	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 6103c5d53	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 1b51fb4ea	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit ce19dbb2d	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 7ff873340	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8545fdeb8	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 32784171b	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 8809bf7ab	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit 4e565ae7c	internal change of the planner or the scan with no CHANGELOG claim of its own
