@@ -118,10 +118,13 @@ typedef struct SiftSegEntry
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
 	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
+	uint32		pad;			/* always 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;
 } SiftSegEntry;
+
+StaticAssertDecl(sizeof(SiftSegEntry) == offsetof(SiftSegEntry, bytes) + sizeof(uint64), "a directory entry has no padding: its bytes are stored in the page");
 
 /* A write buffer (open or sealed): the segments that are neither this nor immutable are lane chains of another use (the tombstone log) */
 static inline bool
