@@ -127,13 +127,17 @@ subtest 'a standby query holding the index is cancelled by the truncation' => su
 	healthy($standby, 'standby after the conflict');
 };
 
-subtest 'a reader on the primary keeps VACUUM from truncating, without waiting' => sub {
+subtest 'a reader on the primary does not stop VACUUM, which gives the free end back online' => sub {
 	fragmented($primary);
 	my $before = blocks($primary);
 	my $bg = $primary->background_psql('postgres');
-	$bg->query_safe("BEGIN; SET enable_seqscan = off; SELECT count(*) FROM $t WHERE body @@> 'w1'");
-	$primary->safe_psql('postgres', "VACUUM $t");
-	is(blocks($primary), $before, 'the file is as it was while a reader holds the index');
+	my $count = "SELECT count(*) FROM $t WHERE body @@> 'w1'";
+	my $rows = $bg->query_safe("BEGIN; SET enable_seqscan = off; $count");
+	# the cut asks for its AccessExclusiveLock for 5 s (lock_timeout ends the wait: the statement timeout only proves that it did), then gives the free end back
+	# under the lock that readers do not conflict with
+	$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM $t");
+	cmp_ok(blocks($primary), '<', $before, 'the free end went back while a reader holds the index');
+	is($bg->query_safe($count), $rows, 'the reader still reads the same rows');
 	$bg->query_safe('COMMIT');
 	$bg->quit;
 	$primary->safe_psql('postgres', "VACUUM $t");
