@@ -2550,7 +2550,7 @@ all · deprecated · since 1.0 · default 4096
 - **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore; no measurement.
 - **Turn off:** ALTER INDEX .. RESET (mutable_limit), and use SET (write_buffer_limit = n); scripts/upgrade-check.sh lists indexes that still carry it. No REINDEX.
 - **Upgrade from 4.1:** unchanged
-- **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set). Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
+- **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
 
 #### sift.agg_lookup_max_rows
 

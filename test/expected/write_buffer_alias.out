@@ -2,6 +2,8 @@
 CREATE EXTENSION pg_sift;
 CREATE TABLE wa (id serial PRIMARY KEY, body text);
 CREATE INDEX wa_old ON wa USING sift (body) WITH (mutable_limit = 64);
+NOTICE:  reloption "mutable_limit" is the older name of "write_buffer_limit"
+HINT:  Use "write_buffer_limit"; the older name keeps working.
 CREATE INDEX wa_new ON wa USING sift (body) WITH (write_buffer_limit = 64);
 CREATE INDEX wa_def ON wa USING sift (body);
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('wa_old', 'wa_new', 'wa_def') ORDER BY relname;
@@ -21,6 +23,8 @@ ERROR:  value 0 out of bounds for option "write_buffer_limit"
 DETAIL:  Valid values are between "64" and "1048576".
 -- ALTER INDEX .. SET / RESET take the old name too
 ALTER INDEX wa_def SET (mutable_limit = 128);
+NOTICE:  reloption "mutable_limit" is the older name of "write_buffer_limit"
+HINT:  Use "write_buffer_limit"; the older name keeps working.
 SELECT reloptions FROM pg_class WHERE relname = 'wa_def';
      reloptions      
 ---------------------

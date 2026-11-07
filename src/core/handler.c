@@ -350,6 +350,15 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 };
 
+/* An older name of a reloption that stays accepted: said where the option is written (CREATE and ALTER INDEX), never when the stored options are only read */
+void
+sift_relopt_alias_notice(const char *old, const char *new)
+{
+	ereport(NOTICE,
+			(errmsg("reloption \"%s\" is the older name of \"%s\"", old, new),
+			 errhint("Use \"%s\"; the older name keeps working.", new)));
+}
+
 static bytea *
 sift_amoptions(Datum reloptions, bool validate)
 {
@@ -359,7 +368,11 @@ sift_amoptions(Datum reloptions, bool validate)
 	/* given, even as its default: relopt_parse_elt has no isset_offset in PostgreSQL 19, so the list says it on every version */
 	if (o != NULL)
 		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+		{
 			o->accent_folding_set |= strcmp(def->defname, "accent_folding") == 0;
+			if (validate && strcmp(def->defname, "mutable_limit") == 0)
+				sift_relopt_alias_notice("mutable_limit", "write_buffer_limit");
+		}
 	/* the alias counts when write_buffer_limit is left at its default */
 	if (o != NULL && o->write_buffer_limit == SIFT_DEFAULT_WRITE_BUFFER_LIMIT)
 		o->write_buffer_limit = o->mutable_limit;	/* DEPRECATED ALIAS */
