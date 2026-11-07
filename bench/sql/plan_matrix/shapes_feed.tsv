@@ -20,3 +20,6 @@ page_big	filtered	SELECT id, ts FROM feed WHERE q10 = 1 ORDER BY ts DESC LIMIT 5
 max_ts	order	SELECT max(ts) FROM feed
 count_active	count	SELECT count(*) FROM feed WHERE deleted_at IS NULL AND active
 group_kind	group	SELECT kind, count(*) FROM feed WHERE ts >= TIMESTAMPTZ '2025-01-01' GROUP BY 1
+sub_max_ts_entity	entity	SELECT e.id, (SELECT max(p.ts) FROM pings p WHERE p.entity = e.id) FROM dim_a e WHERE e.tier = 3 ORDER BY e.id
+sub_latest_id_entity	entity	SELECT e.id, (SELECT p.id FROM pings p WHERE p.entity = e.id ORDER BY p.ts DESC LIMIT 1) FROM dim_a e WHERE e.tier = 3 ORDER BY e.id
+sub_max_ts_entity_rare	entity	SELECT e.id, (SELECT max(p.ts) FROM pings p WHERE p.entity = e.id AND p.status = 7) FROM dim_a e WHERE e.tier = 3 ORDER BY e.id

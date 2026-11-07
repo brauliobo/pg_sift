@@ -346,7 +346,7 @@ remember_form(CteVerdict *fv, bool shared_cte, bool won, PlannedStmt *stmt)
  * runs in the scan and costs less. Both are plans of the same query.
  */
 static PlannedStmt *
-plan_flat(SIFT_PLANNER_PARAMS)
+plan_flat_pair(SIFT_PLANNER_PARAMS)
 {
 	Query	   *flat = NULL;
 	PlannedStmt *plain,
@@ -485,6 +485,39 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	if (quiet)
 		plain = plan_again(SIFT_PLANNER_ARGS(plain_again), plain_cx, &plain_cx);
 	return plain;
+}
+
+/*
+ * The plan of the query with its correlated min() and max() sub-selects as first rows (agg/flat/minmax.c) is a third plan of it: an ordinary one, priced as any, kept
+ * where it runs in the scan and costs less than the one of the pair. The loser's context is deleted with the statement's.
+ */
+static PlannedStmt *
+plan_flat(SIFT_PLANNER_PARAMS)
+{
+	Query	   *first = NULL;
+	PlannedStmt *stmt,
+			   *top;
+	MemoryContext cx;
+
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse) && sift_agg_minmax_sublinks(parse, false))
+	{
+		first = copyObject(parse);
+		sift_agg_minmax_sublinks(first, true);
+	}
+	stmt = plan_flat_pair(SIFT_PLANNER_ARGS(parse));
+	if (first == NULL)
+		return stmt;
+	top = plan_grouped(SIFT_PLANNER_ARGS(first), &cx, true);
+	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) &&
+#if PG_VERSION_NUM >= 180000
+		(top->planTree->disabled_nodes < stmt->planTree->disabled_nodes ||
+		 (top->planTree->disabled_nodes == stmt->planTree->disabled_nodes && top->planTree->total_cost < stmt->planTree->total_cost)))
+#else
+		top->planTree->total_cost < stmt->planTree->total_cost)
+#endif
+		return top;
+	discard_plan(cx);
+	return stmt;
 }
 
 /*

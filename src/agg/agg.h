@@ -169,6 +169,7 @@ extern int64 sift_source_lookups;	/* the asks of has_column_source that went to 
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_minmax_sublinks(Query *q, bool apply);
 extern bool sift_agg_probe_joins(Query *q, bool apply);
 extern void sift_agg_probe_init(void);
 extern bool sift_agg_push_dim_keys(Query *q, bool apply);

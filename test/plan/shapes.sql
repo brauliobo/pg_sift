@@ -192,6 +192,18 @@ SELECT e.kind, count(*) AS n, sum(l.val) AS total FROM events e
 LEFT JOIN LATERAL (SELECT f.val FROM facts f WHERE f.parent_id = e.parent_id ORDER BY f.ts, f.id LIMIT 1) l ON true
 WHERE e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
+-- name: sub_latest_time_per_parent
+-- expect: normal -
+SELECT d.id, (SELECT max(p.ts) FROM pings p WHERE p.parent_id = d.id) AS last_ts FROM dims d WHERE d.tier = 'tier_b' ORDER BY d.id;
+
+-- name: sub_latest_id_per_parent
+-- expect: normal 1.6 6.5
+SELECT d.id, (SELECT p.id FROM pings p WHERE p.parent_id = d.id ORDER BY p.ts DESC LIMIT 1) AS last_id FROM dims d WHERE d.tier = 'tier_b' ORDER BY d.id;
+
+-- name: sub_latest_time_rare_status
+-- expect: either 0.046 0.18
+SELECT d.id, (SELECT max(p.ts) FROM pings p WHERE p.parent_id = d.id AND p.status = 'st_0007') AS last_ts FROM dims d WHERE d.tier = 'tier_b' ORDER BY d.id;
+
 -- name: lateral_recordset
 -- expect: scan 0.039 0.16
 SELECT p.kind, p.sub, round(avg(p.score)::numeric, 3) AS mean, count(*) AS n FROM events e

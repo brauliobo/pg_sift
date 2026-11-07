@@ -233,7 +233,7 @@ SELECT gg_chk('SELECT v.g, (SELECT k FROM gg WHERE g = v.g ORDER BY k DESC, id L
 SELECT gg_chk('SELECT v.g, (SELECT max(k) FROM gg WHERE g = v.g) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_max;
  subselect_max 
 ---------------
- units
+ global order
 (1 row)
 
 -- the scan starts over at each probe and keeps what the plan fixes: the same operand twice, NULL, a group with no array entry, a bound that is no pin (the units), a rewind
