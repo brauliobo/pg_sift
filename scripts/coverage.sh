@@ -289,7 +289,7 @@ ext_logical_run() {
 # D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
 # sift_col index and on a sift_table, and a BM25 match from a SiftScan / SiftCount plan
 ext_standby_run() {
-	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'clean'"
+	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'damaged'"
 	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
 	pg_basebackup -h "$SIFT_TMP/sock" -p "${SIFT_PORT:-56100}" -U postgres -D "$SIFT_TMP/side-standby/data" -X stream -c fast -R || return 1
 	side_conf standby || return 1
