@@ -318,7 +318,7 @@ preagg_init(AggExec *ex)
 		text = ex->super_on && only && t != NULL && t->nvals == 1 && (t->op == SIFT_COLOP_EQ || (t->op >= SIFT_COLOP_LT && t->op <= SIFT_COLOP_GE) || t->op == SIFT_COLOP_PREFIX);
 		if (text)
 		{
-			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0], t->lens[0]);
+			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0].v.s, t->vals[0].len);
 			ex->pcount = true;
 		}
 		/* ... or of the one test that an element of a list equals a value: a segment whose point directory lists the rows of the value counts them */
@@ -343,8 +343,8 @@ preagg_init(AggExec *ex)
 			/* ... or of the strings of a text leaf between two bounds: the ranks of its global order */
 			else if ((leaf = sift_agg_text_range(ex, &lo, &hi)) >= 0)
 			{
-				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0] : NULL, lo != NULL ? lo->lens[0] : 0, lo != NULL && lo->op == SIFT_COLOP_GT,
-									   hi != NULL ? hi->vals[0] : NULL, hi != NULL ? hi->lens[0] : 0, hi != NULL && hi->op == SIFT_COLOP_LT);
+				sift_colsrc_count_strs(ex->src, leaf, lo != NULL ? lo->collid : hi->collid, lo != NULL ? lo->vals[0].v.s : NULL, lo != NULL ? lo->vals[0].len : 0, lo != NULL && lo->op == SIFT_COLOP_GT,
+									   hi != NULL ? hi->vals[0].v.s : NULL, hi != NULL ? hi->vals[0].len : 0, hi != NULL && hi->op == SIFT_COLOP_LT);
 				ex->pcount = ex->pcount_cmp = true;
 			}
 		}

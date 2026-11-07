@@ -98,8 +98,6 @@ typedef struct ColSource
 	uint64	   *wgen;
 	uint64		ugen;			/* the unit the source is at, counted */
 	uint64		wseq;			/* dictionaries made, for their ids */
-	SiftColValue *fvals;		/* the constants of one filter_str call */
-	int			fcap;
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
 } ColSource;
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */

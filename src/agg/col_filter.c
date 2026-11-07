@@ -47,7 +47,7 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 		if (!src->lay->leaf[t[i].leaf].lossy)
 		{
 			src->spmap[src->nspred] = i;
-			src->spred[src->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)), t[i].leaf);
+			src->spred[src->nspred++] = (SiftColPred) {t[i].leaf, t[i].op, t[i].nvals, t[i].vals};
 		}
 }
 
@@ -75,12 +75,7 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 
 	if (src->lay->leaf[t->leaf].lossy)
 		return false;
-	if (t->nvals > src->fcap)
-	{
-		src->fcap = Max(t->nvals, 2 * src->fcap);
-		SIFT_REGROW_IN(src->cxt, src->fvals, src->fcap * sizeof(SiftColValue));
-	}
-	pred = sift_aggfilt_str_pred(t, src->fvals, t->leaf);
+	pred = (SiftColPred) {t->leaf, t->op, t->nvals, t->vals};
 	if (src->lay->leaf[t->leaf].parent >= 0)
 	{
 		SiftColGroupPred gp = {.group = src->lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
@@ -138,8 +133,6 @@ col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
 	return rows_left(unit, rows);
 }
-
-/* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
 
 /* ---- integer filters in the source: the conjuncts run on the encoded chunks (docs/COL-PLAN.md, "Filters in the source") ---- */
 

@@ -387,7 +387,7 @@ tbl_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 		p->nspred = 0;
 		for (int i = 0; i < nt && p->nspred < COL_MAX_STR_PRUNE; i++)
 			if (p->col[t[i].leaf] >= 0 && !tb->lay->leaf[t[i].leaf].lossy)
-				p->spred[p->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(tb->cxt, t[i].nvals * sizeof(SiftColValue)), p->col[t[i].leaf]);
+				p->spred[p->nspred++] = (SiftColPred) {p->col[t[i].leaf], t[i].op, t[i].nvals, t[i].vals};
 	}
 }
 
@@ -409,14 +409,11 @@ tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 {
 	TblSource  *tb = impl;
 	TblPart    *p = unit->priv;
-	SiftColValue *vals;
-	SiftColPred pred;
 	int			parent = tb->lay->leaf[t->leaf].parent;
+	SiftColPred pred = {p->col[t->leaf], t->op, t->nvals, t->vals};
 
 	if (p->col[t->leaf] < 0 || tb->lay->leaf[t->leaf].lossy || (parent >= 0 && p->col[parent] < 0))
 		return false;
-	vals = palloc(Max(t->nvals, 1) * sizeof(SiftColValue));
-	pred = sift_aggfilt_str_pred(t, vals, p->col[t->leaf]);
 	if (parent >= 0)
 	{
 		SiftColGroupPred gp = {.group = p->col[parent],.npreds = 1,.preds = &pred};
@@ -425,7 +422,6 @@ tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	}
 	else
 		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
-	pfree(vals);
 	return true;
 }
 

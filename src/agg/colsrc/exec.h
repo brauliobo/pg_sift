@@ -126,9 +126,7 @@ typedef struct SiftSrcStrTest
 	SiftColOp op;
 	Oid			collid;			/* the collation the test compares under (set by the planner's recognizer; the source ignores it) */
 	int			nvals;
-	const char *const *vals;
-	const uint32 *lens;
-	const int64 *ints;			/* the operands of a test of an integer leaf (an element of a list of integers): vals and lens are unused */
+	const SiftColValue *vals;	/* v.s and len, or v.i for a test of an integer leaf (an element of a list of integers) */
 } SiftSrcStrTest;
 
 /*

@@ -232,8 +232,8 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 			return NULL;
 		g->kind = STG_STR;
 		g->sop = st.op;
-		g->str = st.vals[0];
-		g->slen = st.lens[0];
+		g->str = st.vals[0].v.s;
+		g->slen = st.vals[0].len;
 		g->collid = st.collid;
 		g->lead = p->leaf == keyleaf;
 		g->pinned = pinned;

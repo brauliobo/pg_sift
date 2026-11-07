@@ -8,14 +8,6 @@
 #include "agg/chunkfilter.h"
 #include "agg/sel.h"
 
-/* a text test as a column predicate over the constants in vals (room for t->nvals) */
-SiftColPred
-sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col)
-{
-	for (int i = 0; i < t->nvals; i++)
-		vals[i] = t->ints ? (SiftColValue) {.v.i = t->ints[i]} : (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
-	return (SiftColPred) {col, t->op, t->nvals, vals};
-}
 bool
 sift_aggfilt_int(const SiftColDef *def)
 {

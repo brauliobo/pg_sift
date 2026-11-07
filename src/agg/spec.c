@@ -326,14 +326,24 @@ sift_aggspec_ascii_fold(Oid collid)
 	return n == sizeof(lowers) - 1 && memcmp(az, lowers, n) == 0;
 }
 
+/* the one constant of a test */
+static SiftColValue *
+one_str(const char *s, uint32 len)
+{
+	SiftColValue *v = palloc(sizeof(SiftColValue));
+
+	*v = (SiftColValue) {.v.s = s,.len = len};
+	return v;
+}
+
 /*
  * ILIKE '%part%' is lower(value) LIKE lower(part), and for a part of ASCII bytes the strings are compared as bytes with their ASCII letters in lower case,
  * if the collation lowers A-Z to a-z (not tr_TR's I) in a UTF-8 database: the lower case of any other character is not ASCII, but for U+0130 and U+212A,
  * which a part with an i or a k meets as what lower() makes of them (*vals[1], *vals[2], when that is not themselves; subst false for ~*, which does not
- * equate them). On true vals/lens hold the lower case part and perhaps those two.
+ * equate them). On true vals hold the lower case part and perhaps those two.
  */
 static bool
-ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals, uint32 **lens, int *nvals)
+ilike_test(Oid collid, const char *s, uint32 len, bool subst, SiftColValue **vals, int *nvals)
 {
 	char	   *low = palloc(len);
 	bool		ik = false;
@@ -348,10 +358,8 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
 		ik |= low[i] == 'i' || low[i] == 'k';
 	}
 	*nvals = 1;
-	*vals = palloc(3 * sizeof(char *));
-	*lens = palloc(3 * sizeof(uint32));
-	(*vals)[0] = low;
-	(*lens)[0] = len;
+	*vals = palloc(3 * sizeof(SiftColValue));
+	(*vals)[0] = (SiftColValue) {.v.s = low,.len = len};
 	if (ik && subst)
 	{
 		uint32		l1 = 2,
@@ -361,10 +369,8 @@ ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals
 
 		if (!(l1 == 2 && memcmp(i1, "\xC4\xB0", 2) == 0 && l2 == 3 && memcmp(i2, "\xE2\x84\xAA", 3) == 0))
 		{
-			(*vals)[1] = i1;
-			(*lens)[1] = l1;
-			(*vals)[2] = i2;
-			(*lens)[2] = l2;
+			(*vals)[1] = (SiftColValue) {.v.s = i1,.len = l1};
+			(*vals)[2] = (SiftColValue) {.v.s = i2,.len = l2};
 			*nvals = 3;
 		}
 	}
@@ -448,20 +454,15 @@ str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out, bool rang
 	out->collid = collid;
 	if (sop == SIFT_COLOP_ICONTAINS)
 	{
-		const char **vals;
-		uint32	   *lens;
+		SiftColValue *vals;
 
-		if (!ilike_test(collid, s, len, subst, &vals, &lens, &out->nvals))
+		if (!ilike_test(collid, s, len, subst, &vals, &out->nvals))
 			return false;
 		out->vals = vals;
-		out->lens = lens;
 		return true;
 	}
 	out->nvals = 1;
-	out->vals = palloc(sizeof(char *));
-	out->lens = palloc(sizeof(uint32));
-	((const char **) out->vals)[0] = s;
-	((uint32 *) out->lens)[0] = len;
+	out->vals = one_str(s, len);
 	return true;
 }
 
@@ -527,10 +528,7 @@ strpos_test(OpExpr *op, SiftSrcStrTest *out)
 		return false;
 	out->op = found ? SIFT_COLOP_CONTAINS : SIFT_COLOP_NOTCONTAINS;
 	out->nvals = 1;
-	out->vals = palloc(sizeof(char *));
-	out->lens = palloc(sizeof(uint32));
-	((const char **) out->vals)[0] = s;
-	((uint32 *) out->lens)[0] = len;
+	out->vals = one_str(s, len);
 	return true;
 }
 
@@ -543,8 +541,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 	bool	   *nl;
 	int			ne,
 				n = 0;
-	const char **vals;
-	uint32	   *lens;
+	SiftColValue *vals;
 
 	set_sa_opfuncid(sa);
 	if (list_length(sa->args) != 2 || !IsA(strip_relabel(linitial(sa->args)), Param) ||
@@ -555,8 +552,7 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 	if (!IsA(k, Const) || k->constisnull || !sift_str_type(get_element_type(k->consttype)))
 		return false;
 	deconstruct_array(DatumGetArrayTypeP(k->constvalue), get_element_type(k->consttype), -1, false, TYPALIGN_INT, &el, &nl, &ne);
-	vals = palloc(Max(ne, 1) * sizeof(char *));
-	lens = palloc(Max(ne, 1) * sizeof(uint32));
+	vals = palloc(Max(ne, 1) * sizeof(SiftColValue));
 	for (int i = 0; i < ne; i++)
 	{
 		if (nl[i])
@@ -565,15 +561,13 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 				continue;
 			return false;
 		}
-		vals[n] = VARDATA_ANY(DatumGetPointer(el[i]));
-		lens[n++] = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]));
+		vals[n++] = (SiftColValue) {.v.s = VARDATA_ANY(DatumGetPointer(el[i])),.len = VARSIZE_ANY_EXHDR(DatumGetPointer(el[i]))};
 	}
 	if (n == 0)
 		return false;
 	out->op = sa->useOr ? SIFT_COLOP_IN : SIFT_COLOP_NOTIN;
 	out->nvals = n;
 	out->vals = vals;
-	out->lens = lens;
 	return true;
 }
 
@@ -605,7 +599,6 @@ str_leaf_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrc
 	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !sift_str_type(lf->typid))
 		return false;
 	out->leaf = p->leaf;
-	out->ints = NULL;
 	return str_expr_test(p, out, ranges);
 }
 
@@ -638,14 +631,13 @@ sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase
 	if (lf->kind != SCL_SCALAR || lf->parent < 0 || lf->lossy)
 		return false;
 	out->leaf = t->leaf;
-	out->ints = NULL;
 	if (t->kind == SAP_CMP && t->op == SCMP_EQ && sift_int_type(lf->typid) && IsA(t->expr, Const) &&
 		!((Const *) t->expr)->constisnull && ((Const *) t->expr)->consttype == INT8OID)
 	{
-		int64	   *v = palloc(sizeof(int64));
+		SiftColValue *v = palloc(sizeof(SiftColValue));
 
-		*v = DatumGetInt64(((Const *) t->expr)->constvalue);
-		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SIFT_COLOP_EQ,.nvals = 1,.ints = v};
+		v->v.i = DatumGetInt64(((Const *) t->expr)->constvalue);
+		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SIFT_COLOP_EQ,.nvals = 1,.vals = v};
 		return true;
 	}
 	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !sift_str_type(lf->typid))

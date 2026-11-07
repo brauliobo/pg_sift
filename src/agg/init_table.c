@@ -74,6 +74,7 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 {
 	MapTab	   *m;
 	SiftSrcStrTest *t;
+	SiftColValue *vals;
 
 	if (ex->cs[ci].map == NULL)
 	{
@@ -89,7 +90,10 @@ join_filter_str(AggExec *ex, int ci, int k, int leaf, MemoryContext caller)
 	ex->jtrial = ex->jtrial ? repalloc(ex->jtrial, (ex->njstr + 1) * sizeof(JstrTrial)) : palloc(sizeof(JstrTrial));
 	ex->jtrial[ex->njstr] = (JstrTrial) {0};
 	t = &ex->jstr[ex->njstr++];
-	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SIFT_COLOP_EQ : SIFT_COLOP_IN,.nvals = (int) m->kd[k].n,.vals = m->kd[k].ptr,.lens = m->kd[k].len};
+	vals = palloc(m->kd[k].n * sizeof(SiftColValue));
+	for (uint32 i = 0; i < m->kd[k].n; i++)
+		vals[i] = (SiftColValue) {.v.s = m->kd[k].ptr[i],.len = m->kd[k].len[i]};
+	*t = (SiftSrcStrTest) {.leaf = leaf,.op = m->kd[k].n == 1 ? SIFT_COLOP_EQ : SIFT_COLOP_IN,.nvals = (int) m->kd[k].n,.vals = vals};
 }
 
 /*
