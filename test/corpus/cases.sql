@@ -603,6 +603,8 @@ select dim_a_id, sum(amount) from events group by 1 having sum(amount) > (select
 select dim_a_id, count(*) from events group by 1 having count(*) > (select count(*) / count(distinct dim_a_id) from events);
 -- @case c3_having_in_list | having | groups of entities of one type
 select dim_a_id, count(*), sum(qty) from events group by 1 having dim_a_id in (select id from dim_a where type = 'type_1');
+-- @case c3_having_in_expression_key | having | groups of an expression of the entity, kept by a list (the HAVING stays on the groups)
+select dim_a_id % 10, count(*), sum(qty) from events group by 1 having dim_a_id % 10 in (select id from dim_a where type = 'type_1');
 -- @case c3_having_exists_kind | having | kinds with an enabled row
 select kind_id, count(*) from events group by 1 having exists (select 1 from kinds k where k.id = events.kind_id and k.enabled);
 -- @case c3_having_max_recent | having | entities with an event in the last 30 days of the data

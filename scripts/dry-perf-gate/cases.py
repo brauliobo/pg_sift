@@ -69,6 +69,7 @@ CORPUS = [
     # HAVING and IN sub-select
     ('agg_having',                g('agg-read', 'agg-plan')),
     ('c3_having_in_list',         g('agg-plan')),
+    ('c3_having_in_expression_key', g('agg-plan')),
     ('join_set_in_subselect_75_group', g('agg-plan', 'agg-read')),
     ('having_count_gt',           g('agg-plan')),
     # join to a lookup table
