@@ -120,6 +120,15 @@ sift_col_def_is_image(const SiftColDef *d)
 		(d->store == SIFT_COLS_STR && (d->type == SIFT_COLT_UUID || d->type == SIFT_COLT_BYTEA));
 }
 
+/* the leaf "<column>#present" of a jsonb document (true, NULL where the document is SQL NULL): a flag of the column, no dimension or measure of the pre-aggregates */
+static inline bool
+sift_col_def_is_present(const SiftColDef *d)
+{
+	size_t		n = strlen(d->path);
+
+	return n > 8 && strcmp(d->path + n - 8, "#present") == 0;
+}
+
 /* a leaf that only a 3.2 segment holds: a lane of a wide value, money, interval, time, enum or an image */
 static inline bool
 sift_col_def_needs_wide(const SiftColDef *d)

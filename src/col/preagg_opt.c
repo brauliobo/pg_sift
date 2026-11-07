@@ -23,7 +23,7 @@ plain_type(const SiftColDef *d)
 bool
 sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 {
-	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
+	return depth1(s, d) && plain_type(d) && !sift_col_def_is_present(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
 /* The list of an option that may be the choice of the build, without its 'auto' word and colon; *autolist: the build chose it (or is to), 'auto' alone is none chosen yet */

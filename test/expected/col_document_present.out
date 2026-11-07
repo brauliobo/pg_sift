@@ -295,6 +295,14 @@ CREATE INDEX dn_bad ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths 
 ERROR:  invalid document_present option: "g" is not a jsonb column of the index
 CREATE INDEX dn_two ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a, b');
 DROP INDEX dn_two;
+-- the leaf is no dimension of the pre-aggregates: the index with it holds one leaf-sum record more for each unit
+SELECT (w.pre - n.pre) <= 96 * w.units AS leaf_is_no_cube_dimension
+  FROM (SELECT sum(preagg_bytes) AS pre, sum(units) AS units FROM sift.col_segments('dp_on')) w, (SELECT sum(preagg_bytes) AS pre FROM sift.col_segments('dp_off')) n;
+ leaf_is_no_cube_dimension 
+---------------------------
+ t
+(1 row)
+
 DROP TABLE dp, dq, qs, dn;
 DROP FUNCTION dp_doc(int), dq_doc(int), dp_state(), dp_reads();
 DROP EXTENSION pg_sift_helpers;

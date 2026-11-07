@@ -103,7 +103,7 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    The option takes `auto` (the default), `on`, `off` or a list of columns; `auto` decides when the index is built, writes the columns it chose to the option (`document_present = 'auto: doc, attrs'`) and says so in a NOTICE
    (`sift_col index "x": 2 automatic choices (document_present, track_changes)`, detail `document_present = doc`); a later `ALTER TABLE .. SET NOT NULL` changes nothing, and `RESET (document_present)` then `REINDEX` decides again. No column
    format minor changes. Measured on 150,000 documents, 1% to 50% of them without a declared member: `count(*), sum(id) WHERE NOT (doc @> x)` 84.9 M to 7.4 M cycles at 1% and 85.0 M to 9.9 M at 50%, `count(*) WHERE doc IS NULL` 34.9 M to 1.9 M at 5%.
-   The price, on 1,000,000 rows: `CREATE INDEX` +3.7% instructions, an insert +0.8%, the index +5.9% in size at the build (+0.4% after a merge).
+   The price, on 1,000,000 rows: `CREATE INDEX` +3.2% instructions, an insert +0.4%, the index +2.0% in size after a merge (up to +13% right after the build of a wide index).
    - *Existing indexes* are not touched: they have no leaf, those forms keep reading the table, and nothing is wrong; `REINDEX` writes the leaf.
    - *An older library* (4.0 and 4.1, tried with 4.0.5 and 4.1.4 on the files of 4.2) refuses an index that has the leaf: a read, an aggregate included, fails with `sift_col index "x" does not match its column layout` (hint
      `REINDEX the index.`), a write with `index "x" was built with other column definitions` (hint `Use REINDEX to apply the new options.`), and `sift.col_verify` reports `The metapage does not describe this column layout.`
