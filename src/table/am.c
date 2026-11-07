@@ -77,9 +77,6 @@ compression_check_hook(char **newval, void **extra, GucSource source)
 	return true;
 }
 
-/* sift.table_auto_defrag_dead_pct, released in 3.3, only keeps a configuration that sets it loading */
-static int	auto_defrag_dead_pct_unused = 5;
-
 void
 sift_tbl_define_gucs(void)
 {
@@ -133,9 +130,6 @@ sift_tbl_define_gucs(void)
 							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
 							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
 							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
-							"Deprecated, no effect: the background pass is asked for when the reads of the table have cost as much as the pass would.",
-							NULL, &auto_defrag_dead_pct_unused, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_budget",
 							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
 							"The worker passes again while the budget stopped the last one. 0 is no limit.",

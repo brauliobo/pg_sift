@@ -95,7 +95,7 @@ metapages and cannot fail the update; when it cannot answer (a relation locked b
 
 ## What 4.2 changes
 
-Eight changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+Nine changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
 runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
 
 1. **A presence leaf for the `jsonb` columns that may be NULL (option `document_present`).** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
@@ -168,6 +168,10 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    SELECT name, setting, sourcefile, sourceline FROM pg_file_settings WHERE name = 'sift.enable_col';    -- superuser; remove the line, or ALTER SYSTEM RESET sift.enable_col, then SELECT pg_reload_conf()
    ```
    `scripts/upgrade-check.sh` lists each of them as a blocker with the command (any release of the library, so it can run before the update). *Files, `REINDEX`:* no. *Off:* not applicable; to compare a plan with the normal one, `SET sift.enable_agg = off` and `SET sift.enable_col_scan = off`.
+
+9. **`sift.table_auto_defrag_dead_pct` is removed.** It was the trigger of the background pass of a `sift_table` in 3.3 (a percent of tombstones); since 4.0 the pass is asked for by the reads of the table and the setting changed nothing. It is refused and dropped
+   exactly as `sift.enable_col` of item 8 (`ERROR: invalid configuration parameter name "sift.table_auto_defrag_dead_pct"`, `DETAIL: "sift" is a reserved prefix.`; a stored value: `WARNING: invalid configuration parameter name "sift.table_auto_defrag_dead_pct", removing it`),
+   and the queries and commands of item 8 with that name find and clear it; `scripts/upgrade-check.sh` lists each as a blocker. *Files, `REINDEX`:* no. *Off:* not applicable (`sift.table_auto_defrag = off` turns the pass off).
 
 ## 3. A newer PostgreSQL major
 

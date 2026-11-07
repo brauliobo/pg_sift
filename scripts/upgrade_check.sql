@@ -23,7 +23,8 @@ DECLARE
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	-- the settings the 4.2 library removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
 	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
-		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"]}';
+		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"],
+		"sift.table_auto_defrag_dead_pct": [null, "the 4.2 library has removed this setting (it has had no effect since 4.0; the background pass of a sift_table is asked for by the reads of the table) and refuses it in a SET"]}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
 	lib text;

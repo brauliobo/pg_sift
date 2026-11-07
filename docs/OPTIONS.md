@@ -38,7 +38,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
-| [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
+| [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
 
 ### default
 
@@ -2551,20 +2551,6 @@ all · deprecated · since 1.0 · default 4096
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width, and the first plan of a session that uses it warns; removed in 5.0.
 - **Sources:** [AGG](AGG.md#joins-to-plans)
-
-#### sift.table_auto_defrag_dead_pct
-
-`sift_table` · deprecated · since 3.3 · default 5
-
-- **What it does:** a worker clears dead rows, rewrites mostly dead segments and returns free space without VACUUM
-- **Gain:** -
-- **Impact:** index size: -; build, merge and writes: -; other: the older form of the trigger of the background pass, a percent of tombstones; the pass is asked for by the reads of the table instead
-- **When:** Nothing: the pass is asked for when the reads of the table since the last pass, each paying for the share of its superblocks that hold a tombstone, add up to 38 reads of a table dirty throughout (the price of a pass, half of 1,500 instructions a row, against 20 a row of a dirty superblock a read).
-- **Default:** 5 — Up to 3.7 the pass was asked for when a percent of the rows (5) were tombstones; a table deleted from by 4.5% and read for ever stayed dirty. The setting is kept so a configuration that sets it keeps loading.
-- **Turn off:** The setting has no effect and cannot be removed; table_auto_defrag = off stops the pass.
-- **Upgrade from 4.1:** unchanged
-- **Advice:** Leave at 5 (it has no effect). The background pass of a sift_table is asked for when the reads of the table since the last one have cost as much as the pass.
-- **Sources:** benchmark as `sift.table_auto_defrag`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 <!-- sift-cases:end -->
 
 ## Upgrading from 3.6
