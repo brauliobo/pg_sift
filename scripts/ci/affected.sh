@@ -59,7 +59,7 @@ focus_tokens() {
 # Measured (run 40164658605, 27 tests, 4 lanes): the job 8.0 min (cache 1 s, extension build 34 s, tests 7.2 min wall, scratch 435 MB); the slowest tests agg_preagg_elem_parallel 266 s,
 # agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
-ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
+ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_)'
 # the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
 # 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
 ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
