@@ -24,7 +24,7 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 	return -1;
 }
 
-/* The leaf that is NULL where the jsonb document e is SQL NULL (option document_present), -1 for another expression or an index without it */
+/* The leaf that is NULL where the jsonb document e is SQL NULL, -1 for another expression or an index without it */
 int
 present_leaf(AggCtx *c, Node *e)
 {

@@ -17,8 +17,8 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, 'k' || i % 5, date '2
                                                                                  'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j)) END
 FROM generate_series(1, 6000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}');
-NOTICE:  sift_col index "events_col": 3 automatic choices (document_present, key_columns, track_changes)
-DETAIL:  document_present = doc; key_columns = parent_id; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = parent_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE lookup (kind text, cat text, derived_cat text) WITH (autovacuum_enabled = false);
 INSERT INTO lookup SELECT 'k' || k, 'cat_' || c, 'm' || (k + c) % 3 FROM generate_series(0, 4) k, generate_series(0, 5) c WHERE (k + c) % 5 <> 0;

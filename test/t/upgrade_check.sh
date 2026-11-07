@@ -251,20 +251,20 @@ out=$(uc clean); rc=$?
 check "an index in a newer format is unreadable and blocks" grep -q -E '^blocker +refused_idx +index +unreadable +sift index "refused_idx" has on-disk format 1\.9.*REINDEX' <<<"$out"
 check "the others are still checked, and the exit is 1" test $rc -eq 1 -a "$(grep -c '^ok' <<<"$out")" -ge "$objects"
 # 4.2 writes two things that every release before it refuses: the buffer of a BM25 index that took an insert (format 1.6) and the boolean leaf of a jsonb column that may hold a NULL
-# document (option document_present); a release before 4.2 reads an index that has neither, and one with document_present = off
+# document; a release before 4.2 reads an index that has neither (a jsonb column with NOT NULL has no leaf)
 q postgres "CREATE DATABASE v42" >/dev/null
 q v42 "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE bm (id int, body text)" "INSERT INTO bm SELECT g, 'alpha w' || g % 50 FROM generate_series(1, 2000) g" "CREATE INDEX bm_idx ON bm USING sift (body)" \
 	"INSERT INTO bm SELECT g, 'beta' FROM generate_series(2001, 2100) g" \
 	"CREATE TABLE dp (id int PRIMARY KEY, doc jsonb)" "INSERT INTO dp SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE jsonb_build_object('b', 'x' || g % 3) END FROM generate_series(1, 3000) g" \
 	"CREATE INDEX dp_col ON dp USING sift_col (id, doc) WITH (paths = 'doc.b astext')" \
-	"CREATE INDEX dp_off ON dp USING sift_col (id, doc) WITH (paths = 'doc.b astext', document_present = off)" >/dev/null || bail "setup of v42 failed"
+	"CREATE TABLE dn (id int PRIMARY KEY, doc jsonb NOT NULL)" "INSERT INTO dn SELECT g, jsonb_build_object('b', 'x' || g % 3) FROM generate_series(1, 3000) g" \
+	"CREATE INDEX dn_col ON dn USING sift_col (id, doc) WITH (paths = 'doc.b astext')" >/dev/null || bail "setup of v42 failed"
 out=$(uc --to 4.1 v42)
 check "to 4.1: a BM25 index that took an insert (write buffer format 6, format 1.6) is a blocker" test -n "$(row "$out" blocker bm_idx)"
-check "to 4.1: an index with the leaf of document_present is a blocker that says to turn the option off and REINDEX" grep -q -E '^blocker +dp_col .*ALTER INDEX dp_col SET \(document_present = off\), then REINDEX INDEX dp_col' <<<"$out"
-check "to 4.1: the index with document_present = off is ok" test -z "$(row "$out" blocker dp_off)"
-q v42 "ALTER INDEX dp_col SET (document_present = off)" "REINDEX INDEX dp_col" >/dev/null
-check "to 4.1: the advice makes it readable, and to 4.2 nothing blocks" test -z "$(row "$(uc --to 4.1 v42)" blocker dp_col)" -a "$(uc --to 4.2 v42 | grep -c '^blocker')" == 0
+check "to 4.1: an index with the presence leaf is a blocker that says to REINDEX with the older release" grep -q -E '^blocker +dp_col .*REINDEX INDEX dp_col with 4\.1 ' <<<"$out"
+check "to 4.1: the index of a NOT NULL jsonb column has no leaf and is ok" test -z "$(row "$out" blocker dn_col)"
+check "to 4.2 nothing about the leaf blocks" test -z "$(row "$(uc --to 4.2 v42)" blocker dp_col)"
 # 4.2 removed latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup from sift.eval_methods: where a role, a database or the server file sets one, the check says so with the command that removes it
 # (each q is a session of its own: the library is not loaded when the ALTER runs, which is why the older value is stored)
 q postgres "CREATE ROLE ev_role" "CREATE DATABASE ev_db" >/dev/null

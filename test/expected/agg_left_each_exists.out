@@ -7,8 +7,8 @@ INSERT INTO facts
 SELECT i, i % 40, jsonb_build_object('k', i % 7), jsonb_build_object('a', i % 9, 'b', i % 5)
 FROM generate_series(1, 4000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, extra) WITH (paths = 'metrics.* float8, extra.* float8');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics, extra
+NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/agg_helpers.sql

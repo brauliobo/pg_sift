@@ -11,8 +11,8 @@ SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', 
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 5000) i;
 CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
-NOTICE:  sift_col index "b_t_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "b_t_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('b_t_col');
 VACUUM (FREEZE, ANALYZE) b_t;
 \ir test/agg_helpers.sql

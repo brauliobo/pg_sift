@@ -14,8 +14,8 @@ SELECT i, 1 + i % 4, date '2026-01-01' + i % 20,
                   ELSE jsonb_build_object('catga_score', i % 10, 'catgk_score', i % 7) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX entries_col ON entries USING sift_col (id, foreign_id, day, metrics_a) WITH (paths = 'metrics_a.* float8');
-NOTICE:  sift_col index "entries_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics_a
+NOTICE:  sift_col index "entries_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('entries_col');
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE sources; ANALYZE labels;

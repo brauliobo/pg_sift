@@ -97,7 +97,17 @@ extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments writt
 typedef struct SiftColShredAdapter SiftColShredAdapter;
 
 /* Parses the "paths" reloption against the index; NULL when it has none. ERROR for a specification the engine cannot hold (deeper nesting than one list level, ...) */
-extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index);
+/* The presence leaf of a jsonb document ("<column>#present", true, NULL where the document is SQL NULL): which columns have one is the layout of the index (col/am/rel.c) */
+typedef enum SiftColPresent
+{
+	SIFT_COL_PRESENT_NULLABLE,	/* the jsonb columns whose column of the table may be NULL: what a build writes */
+	SIFT_COL_PRESENT_NONE,		/* an index built before the leaf */
+	SIFT_COL_PRESENT_ALL		/* every jsonb column of the index */
+} SiftColPresent;
+
+extern uint32 sift_col_present_attrs(Relation index, SiftColPresent which);
+extern bool sift_col_shred_drop_present(SiftColShredAdapter *a, int attno);
+extern SiftColShredAdapter *sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present);
 /* The same for a paths specification over the first natts attributes of a tuple descriptor (a sift_table's declared paths) */
 extern SiftColShredAdapter *sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const char *paths);
 /* Leaves the specification declares for index attribute attno, in the order sift_col_shred_row fills them (0: not shredded); parent is relative to the first */
@@ -161,7 +171,6 @@ typedef struct SiftColOptions
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
-	int			document_present;	/* offset of the "document_present" string (the jsonb columns that keep a boolean leaf, NULL where the document is SQL NULL), 0 = auto */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
@@ -197,7 +206,6 @@ extern const char *sift_col_options_preagg(Relation index);	/* "" when none (def
 extern const char *sift_col_options_rollup_leaves(Relation index);	/* "" when none (automatic) */
 extern const char *sift_col_options_rollup_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
-extern const char *sift_col_options_document_present(Relation index);	/* NULL when the option is not set: the build has not chosen yet, or an index written without it */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */

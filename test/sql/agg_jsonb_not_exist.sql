@@ -1,8 +1,8 @@
 -- NOT of an existential test (containment, key existence, a path, an array overlap or inclusion) of a column with a NOT NULL constraint: the rows of the scan
 -- are the rows the normal plan gives. The negation flipped a test it did not know (the equality of a text leaf is a lookup table whose operator no flag
 -- reverses) and returned the rows that match: on 6000 documents `NOT (doc @> '{"b": "x"}')` gave the 2668 rows that match where the normal plan gives the 3332 that do not. A column that may be
--- NULL is read from the leaf of option document_present (true, NULL where the document is SQL NULL): a NULL document, '{}' and a document of undeclared keys are
--- three different rows. The index with document_present = off is the index of a release before the option: the same answers from the normal plan.
+-- NULL is read from the presence leaf (true, NULL where the document is SQL NULL): a NULL document, '{}' and a document of undeclared keys are
+-- three different rows. The index jo, built with sift.test_col_no_present, has the layout of a release before the leaf: the same answers from the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -27,7 +27,9 @@ CREATE TABLE jo AS SELECT * FROM jy;
 CREATE TABLE jd AS SELECT id, g, CASE id % 6 WHEN 0 THEN NULL WHEN 1 THEN '[1, 2]' WHEN 2 THEN '"s"' WHEN 3 THEN 'null' WHEN 4 THEN '{"b": "x", "n": 3}' ELSE '{}' END::jsonb AS doc, tags FROM jx;
 CREATE INDEX jx_col ON jx USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
 CREATE INDEX jy_col ON jy USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
-CREATE INDEX jo_col ON jo USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)', document_present = off);
+SET sift.test_col_no_present = on;
+CREATE INDEX jo_col ON jo USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
+RESET sift.test_col_no_present;
 CREATE INDEX jd_col ON jd USING sift_col (id, g, doc, tags) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4, doc.o.p astext, doc.t[] text(8)');
 VACUUM ANALYZE jx;
 VACUUM ANALYZE jy;
@@ -71,11 +73,11 @@ INSERT INTO forms (name, tmpl) VALUES
 SELECT count(*) FROM jx WHERE NOT (doc @> '{"b": "x"}');
 CREATE TABLE qs AS SELECT row_number() OVER (ORDER BY tb.ord, t.ord, f.ord) AS n, tb.name || ': ' || t.name || ', ' || f.name AS label, format(f.tmpl, tb.name, t.cond) AS q
 FROM tests t, forms f, (VALUES (1, 'jx'), (2, 'jy'), (3, 'jo'), (4, 'jd')) tb(ord, name);
--- the leaf of document_present: jx has a NOT NULL document and needs none, the nullable ones have it, jo is the index of a release before the option
+-- the presence leaf: jx has a NOT NULL document and needs none, the nullable ones have it, jo has the layout of a release before it
 SELECT i.indrelid::regclass AS tbl, bool_or(l.path = 'doc#present') AS has_leaf FROM pg_index i, LATERAL sift.col_leaves(i.indexrelid) l
 WHERE i.indrelid IN ('jx'::regclass, 'jy'::regclass, 'jo'::regclass, 'jd'::regclass) AND i.indisready AND i.indexrelid::regclass::text LIKE 'j%\_col' GROUP BY 1 ORDER BY 1;
 -- jx: the column has a NOT NULL constraint; jy: it may be NULL (NULL, {} and a document of undeclared keys among the rows); jo: jy with the index of a release before
--- document_present; jd: documents that are not objects (an array, a string, a JSON null) beside the NULL ones, which the index holds as overflow
+-- the presence leaf; jd: documents that are not objects (an array, a string, a JSON null) beside the NULL ones, which the index holds as overflow
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
 
 DROP TABLE qs, tests, forms, jx, jy, jo, jd;

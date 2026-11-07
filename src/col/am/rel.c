@@ -40,7 +40,7 @@ COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
-build_rel(Relation index, MemoryContext mcxt)
+build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColRel *r = palloc0(sizeof(SiftColRel));
@@ -58,7 +58,7 @@ build_rel(Relation index, MemoryContext mcxt)
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
 	r->name = palloc0((natts + 1) * sizeof(bool));
-	r->shred = sift_col_shred_create(mcxt, index);
+	r->shred = sift_col_shred_create(mcxt, index, present);
 	for (int a = 1; a <= natts; a++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
@@ -81,6 +81,8 @@ build_rel(Relation index, MemoryContext mcxt)
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
 					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
+		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS) && r->shred && sift_col_shred_drop_present(r->shred, a))
+			k--;
 		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
@@ -137,8 +139,6 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_columns option: %s", err)));
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
-		if ((err = sift_col_present_check(index)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid document_present option: %s", err)));
 		r->pagg.minmax = sift_col_options(index)->cube_minmax;
 		r->pagg.key_table = sift_col_options(index)->key_table;
 		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
@@ -291,6 +291,36 @@ build_rel(Relation index, MemoryContext mcxt)
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(old);
+	return r;
+}
+
+/*
+ * The jsonb columns of an index with paths whose column of the table may be NULL have a presence leaf ("<column>#present"). CREATE INDEX and REINDEX write it for
+ * those columns; an index that exists has the layout its metapage hash says, whatever the table says now: one built before the leaf has none, and ALTER TABLE ..
+ * SET NOT NULL or DROP NOT NULL does not change it. So the layout is the first of the nullable columns, none and every jsonb column whose schema hash is the stored one
+ * (a metapage that has none yet, the index being built, takes the first); no match is left to the check that refuses the index with the REINDEX hint.
+ */
+static SiftColRel *
+build_rel(Relation index, MemoryContext mcxt)
+{
+	uint32		layout[3] = {sift_col_present_attrs(index, SIFT_COL_PRESENT_NULLABLE), 0, sift_col_present_attrs(index, SIFT_COL_PRESENT_ALL)};
+	SiftColRel *r = build_rel_with(index, mcxt, layout[0]);
+	uint32		hash,
+				flags;
+
+	if (layout[0] == layout[1] && layout[0] == layout[2])
+		return r;
+	if (sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG) && r->schema->hash != hash)
+		for (int i = 1; i < 3; i++)
+		{
+			SiftColRel *o;
+
+			if (layout[i] == layout[0] || (i == 2 && layout[2] == layout[1]))
+				continue;
+			o = build_rel_with(index, mcxt, layout[i]);
+			if (o->schema->hash == hash)
+				return o;
+		}
 	return r;
 }
 

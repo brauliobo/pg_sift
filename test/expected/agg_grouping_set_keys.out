@@ -7,8 +7,8 @@ CREATE TABLE gs_facts (id int PRIMARY KEY, dim_a_id int, day date, kind text, me
 INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b', NULL])[1 + i % 3],
 	jsonb_build_object('catg_i_catg_a', i % 10, 'catg_i', 3, 'catg_m', i % 4) FROM generate_series(1, 3000) i;
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, dim_a_id, day, kind, metrics_a) WITH (paths = 'metrics_a.* float8');
-NOTICE:  sift_col index "gs_facts_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = metrics_a; track_changes = id
+NOTICE:  sift_col index "gs_facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gs_facts_col');
 VACUUM (FREEZE, ANALYZE) gs_facts;
 \ir test/agg_check_pushed.sql

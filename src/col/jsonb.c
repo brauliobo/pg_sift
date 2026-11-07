@@ -12,8 +12,10 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/build.h"
 #include "col/shred_pg.h"
 
 typedef enum LeafKind
@@ -22,7 +24,7 @@ typedef enum LeafKind
 	LEAF_GROUP,					/* a list or map */
 	LEAF_CHILD_COL,				/* a column of a group */
 	LEAF_MAP_KEY,				/* the member name of a map */
-	LEAF_PRESENT				/* the document itself: true, NULL where it is SQL NULL (option document_present) */
+	LEAF_PRESENT				/* the document itself: true, NULL where it is SQL NULL */
 } LeafKind;
 
 typedef struct ShredLeaf
@@ -246,10 +248,8 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	return a;
 }
 
-static bool present_wanted(Relation index, const char *attname);
-
 SiftColShredAdapter *
-sift_col_shred_create(MemoryContext mcxt, Relation index)
+sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present)
 {
 	const char *paths = sift_col_options_paths(index);
 	SiftColShredAdapter *a;
@@ -258,7 +258,7 @@ sift_col_shred_create(MemoryContext mcxt, Relation index)
 		return NULL;
 	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
 	for (int i = 1; i <= a->natts; i++)
-		if (a->attr[i].n > 0 && !a->attr[i].array && present_wanted(index, a->attr[i].name))
+		if (a->attr[i].n > 0 && !a->attr[i].array && (present >> i & 1))
 		{
 			ShredLeaf  *l = add_leaf(&a->attr[i], LEAF_PRESENT, -1, SIFT_COLK_SCALAR, MemoryContextStrdup(mcxt, psprintf("%s#present", a->attr[i].name)), -1, -1);
 
@@ -268,77 +268,60 @@ sift_col_shred_create(MemoryContext mcxt, Relation index)
 	return a;
 }
 
-/* does the option document_present name the jsonb column: on (all), off, auto (none yet), 'doc, attrs' or the 'auto: doc, attrs' that a build writes */
-static bool
-present_wanted(Relation index, const char *attname)
-{
-	const char *v = sift_col_options_document_present(index);
+#ifdef SIFT_TESTING
+bool		sift_test_col_no_present = false;
+#endif
 
-	if (v == NULL || pg_strcasecmp(v, "auto") == 0 || pg_strcasecmp(v, "off") == 0 || pg_strcasecmp(v, "false") == 0)
+/* An index at the limit of leaves goes without the presence leaf of a column rather than fail: the leaf is the last one of its attribute */
+bool
+sift_col_shred_drop_present(SiftColShredAdapter *a, int attno)
+{
+	ShredAttr  *at = &a->attr[attno];
+
+	if (at->n == 0 || at->leaf[at->n - 1].kind != LEAF_PRESENT)
 		return false;
-	return pg_strcasecmp(v, "on") == 0 || pg_strcasecmp(v, "true") == 0 || sift_col_list_has(v, attname);
-}
-
-/* the error of a document_present list that names something other than a jsonb column of the index (NULL when it is fine, or on, off, auto or unset) */
-char *
-sift_col_present_check(Relation index)
-{
-	const char *v = sift_col_options_document_present(index);
-	bool		autolist;
-	const char *p;
-
-	if (v == NULL || pg_strcasecmp(v, "on") == 0 || pg_strcasecmp(v, "true") == 0 || pg_strcasecmp(v, "off") == 0 || pg_strcasecmp(v, "false") == 0)
-		return NULL;
-	p = sift_cpagg_auto_list(v, &autolist);
-	for (; *p == ' '; p++)
-		;
-	while (*p != '\0')
-	{
-		const char *end = strchr(p, ',');
-		size_t		n = end ? (size_t) (end - p) : strlen(p);
-		bool		found = false;
-
-		while (n > 0 && p[n - 1] == ' ')
-			n--;
-		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && !found; i++)
-		{
-			Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
-
-			found = att->atttypid == JSONBOID && strlen(NameStr(att->attname)) == n && strncmp(NameStr(att->attname), p, n) == 0;
-		}
-		if (n > 0 && !found)
-			return psprintf("\"%.*s\" is not a jsonb column of the index", (int) n, p);
-		if (end == NULL)
-			break;
-		for (p = end + 1; *p == ' '; p++)
-			;
-	}
-	return NULL;
+	at->n--;
+	return true;
 }
 
 /*
- * document_present unset or auto: the jsonb columns of the index that may hold a NULL document (no NOT NULL constraint on the column of the table: a CHECK or a
- * domain that forbids NULL is not seen) keep the presence of their documents; written as 'auto: doc, attrs' before the build, so that the build, its workers and
- * a REINDEX share one schema, and ALTER TABLE .. SET NOT NULL cannot change the layout of an index. NULL: no column needs it.
+ * The attributes (bit a, 1-based) that have a presence leaf: the jsonb columns of the index with paths whose column of the table may hold a NULL (no NOT NULL
+ * constraint; an index expression counts as nullable), which is what CREATE INDEX and REINDEX write; SIFT_COL_PRESENT_ALL is every jsonb column. The layout of an index
+ * that exists is the one its metapage hash says (col/am/rel.c tries the three of them), so ALTER TABLE .. SET NOT NULL and an index built before the leaf change
+ * nothing. A CHECK or a domain that forbids NULL is not seen.
  */
-char *
-sift_col_present_choice(Relation heap, Relation index)
+uint32
+sift_col_present_attrs(Relation index, SiftColPresent which)
 {
-	const char *v = sift_col_options_document_present(index);
-	StringInfoData names;
+	uint32		mask = 0;
 
-	if ((v != NULL && pg_strcasecmp(v, "auto") != 0) || sift_col_options_paths(index)[0] == '\0')
-		return NULL;
-	initStringInfo(&names);
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	if (which == SIFT_COL_PRESENT_NONE)
+		return 0;
+#ifdef SIFT_TESTING
+	if (which == SIFT_COL_PRESENT_NULLABLE && sift_test_col_no_present)
+		return 0;
+#endif
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && i < 31; i++)
 	{
 		AttrNumber	col = index->rd_index->indkey.values[i];
-		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+		bool		nullable = true;
 
-		if (att->atttypid == JSONBOID && (col == 0 || !TupleDescAttr(RelationGetDescr(heap), col - 1)->attnotnull))
-			appendStringInfo(&names, "%s%s", names.len ? ", " : "", NameStr(att->attname));
+		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid != JSONBOID)
+			continue;
+		if (which == SIFT_COL_PRESENT_NULLABLE && col != 0)
+		{
+			HeapTuple	tp = SearchSysCache2(ATTNUM, ObjectIdGetDatum(index->rd_index->indrelid), Int16GetDatum(col));
+
+			if (HeapTupleIsValid(tp))
+			{
+				nullable = !((Form_pg_attribute) GETSTRUCT(tp))->attnotnull;
+				ReleaseSysCache(tp);
+			}
+		}
+		if (nullable)
+			mask |= 1U << (i + 1);
 	}
-	return names.len > 0 ? names.data : NULL;
+	return mask;
 }
 
 int

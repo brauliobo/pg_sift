@@ -130,8 +130,8 @@ CREATE TABLE pj AS SELECT g AS id, hashint8extended(g, 9) & 4611686018427387903 
 VACUUM (FREEZE, ANALYZE) pj;
 SET client_min_messages = notice;
 CREATE INDEX pj_auto ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext');
-NOTICE:  sift_col index "pj_auto": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc; point_tid_columns = rid
+NOTICE:  sift_col index "pj_auto": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = rid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pj_auto');
 SET client_min_messages = warning;
 CREATE INDEX pj_off ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext', point_tid_columns = 'off');

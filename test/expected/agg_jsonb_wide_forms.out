@@ -2,8 +2,8 @@
 -- of CASE WHEN c THEN x ELSE y END is a FILTER on c and one on `c IS NOT TRUE`), FILTER, OR and AND with another condition, a key. Every statement runs with sift
 -- on and off and the rows are compared (md5 of the sorted rows); `engaged` says the scan ran. jw holds a NULL document, a JSON null, empty and nested objects,
 -- numbers in different spellings, arrays of scalars, unicode keys, a number as the document, two long documents, and in jd the values a leaf cannot store (overflow rows); jn is the same with a NOT NULL document. A NULL document makes the containment NULL: NOT of it keeps no row, IS NOT TRUE of it
--- keeps the row: NOT and IS FALSE on the nullable column read the leaf of option document_present (true, NULL for a NULL document), which the index of a release
--- before the option does not have (agg_jsonb_not_exist keeps that index on the normal plan).
+-- keeps the row: NOT and IS FALSE on the nullable column read the presence leaf (true, NULL for a NULL document), which the index of a release
+-- before the leaf does not have (agg_jsonb_not_exist keeps that index on the normal plan).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;

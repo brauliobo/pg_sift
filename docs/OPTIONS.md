@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 98 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
@@ -338,21 +338,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Leave it. CREATE INDEX keeps the lengths of every array column and says so; array_lengths = off drops them (ALTER INDEX .. SET (array_lengths = off), then REINDEX).
 - **Sources:** benchmark `test:col_array_lengths`
-
-#### sift_col(document_present)
-
-`sift_col` · default · since 4.2 · default ''
-
-- **What it does:** NOT (doc @> x), (doc @> x) IS FALSE and doc IS [NOT] NULL of a jsonb column that may be NULL are read from the index, without the table, from a boolean column kept next to the paths
-- **Gain:** NOT (doc @> x), (doc @> x) IS FALSE, FILTER (WHERE NOT ..) and doc IS NULL of a jsonb column that may be NULL, 150,000 documents, 1% to 50% of them without a declared member (cycles of one backend, M = million): count and sum of NOT 84.9 M to 7.4 M (19.9 to 2.3 ms; 1%), 121.1 M to 6.0 M (5%), 88.3 M to 8.6 M (10%), 85.0 M to 9.9 M (50%); IS FALSE 80.2 M to 9.4 M (1%), 103.6 M to 8.5 M (5%), 82.4 M to 9.2 M (10%), 93.5 M to 9.2 M (50%); FILTER NOT and FILTER hits per group 156.9 M to 11.0 M (1%), 159.7 M to 15.4 M (5%), 192.7 M to 15.1 M (10%), 137.1 M to 14.1 M (50%); count of doc IS NULL 34.9 M to 1.9 M (5%), 57.0 M to 1.5 M (10%). Reading the heap for the documents without a declared member instead would cost 7.1 M, 21.2 M and 59.6 M at 1%, 10% and 50% (1.0x at 50%), and the leaf does not depend on the share
-- **Gain and cost:** 10.00x fewer instructions (100000k saved a query), index +2.0%, build +3.2%, automatic
-- **Impact:** index size: 1,000,000 rows, 20 key groups, four paths, segments after the merge of 1,250,000 rows: 7,725,056 to 7,733,248 bytes with no NULL document (+0.1%), 8,241,152 to 8,404,992 with 2% NULL documents (+2.0%); right after CREATE INDEX 5,890,048 to 6,144,000 (+4.3%) and 6,184,960 to 6,733,824 (+8.9%) because the extra column shortens the runs of the build; an index of 15 columns with two documents 35,741,696 to 40,329,216 bytes (+12.8%, one run more) and +0.1% after the merge; the chunks of the column are 928 bytes and the column is no dimension or measure of the pre-aggregates; build, merge and writes: CREATE INDEX +3.2% instructions (10,332 M to 10,664 M; 1,000,000 rows, 2% NULL documents; +2.7% with none), insert of 1,000,000 rows +0.4% (27,127 M to 27,236 M), promotion +4.6% (6,754 M to 7,065 M), merge +5.0% (6,398 M to 6,720 M); the 15-column index with two documents: build +2.3%, insert +0.6%, promotion +4.0%, merge +3.4%; one backend, no workers; other: one boolean column for each jsonb column that may hold a NULL document: 928 bytes of chunks for 1,000,000 rows and no pre-aggregate of its own; the index is +0.1% to +2.0% larger after a merge, and up to +13% right after the build of a wide index (the extra column makes the build cut one run more, a merge joins them); a build, merge or promotion writes one more column for each such jsonb column; auto leaves out the column with a NOT NULL constraint, which needs none; after a change the table takes no write until the REINDEX
-- **When:** NOT, IS FALSE and IS NOT TRUE of a containment, key existence or other test of a jsonb column that may be NULL, and doc IS [NOT] NULL, also in FILTER and CASE. A column with a NOT NULL constraint does not get the leaf under auto (NOT p is exact there); a CHECK constraint or a domain that forbids NULL is not seen, so that column gets it. auto decides when the index is built and writes the columns to the option ('auto: doc, attrs'): a later ALTER TABLE .. SET NOT NULL changes nothing, and RESET (document_present) then REINDEX decides again.
-- **Default:** '' — Automatic: NOT, IS FALSE and IS NULL of a nullable jsonb column read 8.6 to 20 times fewer cycles (85 M to 121 M down to 6 M to 10 M) for 2.0% more index (after a merge) and 3.2% more build, whatever share of the documents is NULL, which pays for every jsonb column that may hold a NULL document; a column with a NOT NULL constraint gets none, because NOT p is exact there and the leaf would only cost; a heap recheck of the ambiguous rows would cost 1.0x at 50% (59.6 M against 60.5 M); the NOTICE at CREATE INDEX names the columns and the off switch.
-- **Turn off:** ALTER INDEX .. SET (document_present = off), then REINDEX (or document_present = off on CREATE INDEX): the index has no leaf for any document, as before 4.2, and those forms read the table; on keeps the leaf for every jsonb column with paths, 'doc, attrs' for the columns named. No column format minor: the leaf is an ordinary boolean leaf of the schema; a library before 4.2 refuses the index with the message to REINDEX.
-- **Upgrade from 4.1:** An index built before is read as before: it has no leaf, so those forms read the table, and it needs no REINDEX; REINDEX (or a new index) writes the leaf. A library before 4.2 reads an index with the leaf as of another layout and says REINDEX.
-- **Advice:** Leave it. CREATE INDEX keeps the presence of the documents of the nullable jsonb columns with paths and says so; document_present = off drops it (ALTER INDEX .. SET (document_present = off), then REINDEX).
-- **Sources:** benchmark `test:agg_jsonb_not_exist`
 
 #### sift_col(rollup_columns)
 
@@ -2584,12 +2569,11 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(document_present)`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
+No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
 
 | Option | 4.1 | 4.2 | Column format | What a 4.1 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | new | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
-| `sift_col(document_present)` | new | '' |  | An index built before is read as before: it has no leaf, so those forms read the table, and it needs no REINDEX; REINDEX (or a new index) writes the leaf. A library before 4.2 reads an index with the leaf as of another layout and says REINDEX. |
 | `sift_col(rollup_columns)` | new | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
 | `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |

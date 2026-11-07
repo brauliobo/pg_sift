@@ -21,8 +21,8 @@ SELECT 6000 + i, i, 'wide', jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_
                                                          FROM generate_series(1, CASE WHEN i = 1 THEN 9000 ELSE 40 END) j))
 FROM generate_series(1, 4) i;
 CREATE INDEX items_col ON items USING sift_col (id, parent_id, region, doc) WITH (paths = 'doc.parts[]{k text, tag text, n int4}');
-NOTICE:  sift_col index "items_col": 3 automatic choices (document_present, key_columns, track_changes)
-DETAIL:  document_present = doc; key_columns = parent_id; track_changes = id
+NOTICE:  sift_col index "items_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = parent_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
 VACUUM (FREEZE, ANALYZE) items;
 -- the outer aggregates, the arms' extra group column and its HAVING, and the WHERE of the scan

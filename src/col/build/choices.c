@@ -154,15 +154,6 @@ d_array_lengths(Derive *d)
 		add(d, "array-lengths", names.data, NULL);
 }
 
-static void
-d_document_present(Derive *d)
-{
-	const char *v = sift_col_options_document_present(d->index);
-
-	if (v != NULL && strncmp(v, "auto:", 5) == 0)
-		add(d, "document-present", pstrdup(v + 5 + strspn(v + 5, " ")), NULL);
-}
-
 /* paths = 'auto: spec': the element tokens of array columns ("name[] type", "+name[] type") are the elements of arrays, the others the paths of jsonb columns */
 static void
 d_paths(Derive *d)
@@ -548,7 +539,6 @@ static const struct
 	{"key-order", d_key_order},
 	{"key-order-auto", d_key_order},
 	{"array-lengths", d_array_lengths},
-	{"document-present", d_document_present},
 	{"jsonb-paths", d_paths},
 	{"array-elements", d_paths},
 	{"key-lists", d_key_columns},

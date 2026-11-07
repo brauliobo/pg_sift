@@ -183,7 +183,6 @@ Name `order_columns` alone, with `order_array_columns = 'off'`, only when the si
 | `point_columns`, `point_tid_columns` | none | yes | yes | |
 | `order_columns`, `hll_columns`, `return_columns`, `key_order` | none | no | yes | |
 | `array_lengths`, `dict_lookup` (enums) | not allowed | yes | yes | `on` |
-| `document_present` (new in 4.2) | not allowed | yes | yes | `on` |
 
 ## Which function to call
 

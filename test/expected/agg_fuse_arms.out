@@ -15,8 +15,8 @@ SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3]
                                     FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, qty, price, doc) WITH (paths = 'doc.lines[]{k text, p text, v float8}');
-NOTICE:  sift_col index "ev_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE zones;

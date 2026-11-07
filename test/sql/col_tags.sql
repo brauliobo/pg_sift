@@ -109,7 +109,9 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN regexp_replace(SQLSTATE || ': ' || SQLERRM || coalesce(' | ' || nullif(d, ''), ''), '[0-9]+', 'N', 'g');
 END $$;
 CREATE TABLE w (id int, doc jsonb);
-CREATE INDEX w_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0, document_present = off);
+SET sift.test_col_no_present = on;
+CREATE INDEX w_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
+RESET sift.test_col_no_present;
 INSERT INTO w VALUES (1, '{"m": "str"}');
 CREATE TABLE pages AS SELECT b AS blk, pg.type, pg.lower FROM generate_series(0, pg_relation_size('w_idx') / 8192 - 1) b, LATERAL sift._test_page('w_idx', b) pg;
 -- the first record of the buffer: its head follows the page head at 32, its first flag byte is at 44 (3: null and overflow, the type in the high nibble)
@@ -127,7 +129,9 @@ SELECT expect($$ SELECT sift.col_verify('w_idx', false) $$);
 SELECT sift._test_poke('w_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
 SET sift.col_format_minor = 3;
-CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0, document_present = off);
+SET sift.test_col_no_present = on;
+CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
+RESET sift.test_col_no_present;
 RESET sift.col_format_minor;
 SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);

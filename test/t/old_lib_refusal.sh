@@ -42,6 +42,10 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-kc" SIFT_PORT=$((SIFT_PORT + 18)) "$REPO/scripts/old-lib-check.sh" keyed 2>&1)
 	# and the logs of 4.0.0 to 4.1.1, which may count row versions that were updated: this tree re-baselines them, and the older library reads the result as the heap
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.1.0 SIFT_TMP="$TAPDIR/old-lib-track" SIFT_PORT=$((SIFT_PORT + 21)) "$REPO/scripts/old-lib-check.sh" track 2>&1)
+	# and the presence leaf of 4.2 (a jsonb column that may hold a NULL document): every release family refuses the index, and REINDEX under the release is the way back
+	for ref in v3.2.3 v4.0.5 v4.1.4; do
+		out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=$ref SIFT_TMP="$TAPDIR/old-lib-pr-$ref" SIFT_PORT=$((SIFT_PORT + 22)) "$REPO/scripts/old-lib-check.sh" present 2>&1 | sed "s/^\(PASS\|FAIL\) /\1 $ref: /")
+	done
 fi
 if ((rc == 77)); then
 	echo "1..0 # SKIP $(grep -h '^SKIP ' <<<"$out" | head -1 | sed 's/^SKIP //')"

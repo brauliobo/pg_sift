@@ -1,7 +1,7 @@
 -- The group leaf a set-returning function reads (the jsonb array behind jsonb_array_elements, the object behind jsonb_each) is found by its attribute, its path and
 -- its kind alone, with none of the tests a scalar leaf gets (not lossy, no '#' in its name): a group leaf is never lossy and has no name, and the virtual leaves
--- (document_present's '<col>#present', the members read as expressions) are scalars, which the kind keeps out. This pins it: an index with a lossy scalar leaf (char
--- without a length), the leaf of document_present and both group kinds gives the rows of the normal plan.
+-- (the presence leaf '<col>#present', the members read as expressions) are scalars, which the kind keeps out. This pins it: an index with a lossy scalar leaf (char
+-- without a length), the presence leaf and both group kinds gives the rows of the normal plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
@@ -13,7 +13,7 @@ INSERT INTO gl SELECT i, i % 7, CASE i % 4 WHEN 0 THEN 'a' WHEN 1 THEN 'a  ' WHE
 	CASE WHEN i % 17 = 0 THEN NULL ELSE jsonb_build_object('x', i % 5 + 0.5, 'y', i % 3 + 0.25) END
 	FROM generate_series(1, 2000) i;
 SET client_min_messages = warning;
-CREATE INDEX gl_col ON gl USING sift_col (id, g, c, doc, m) WITH (paths = 'doc.items[]{tag text, n int4}, m.* float8', document_present = on);
+CREATE INDEX gl_col ON gl USING sift_col (id, g, c, doc, m) WITH (paths = 'doc.items[]{tag text, n int4}, m.* float8');
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) gl;
 CREATE FUNCTION rows_of(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$

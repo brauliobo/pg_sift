@@ -22,12 +22,12 @@ FROM generate_series(1, 12000) i;
 CREATE TABLE events_nv (LIKE events INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO events_nv SELECT * FROM events;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "events_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE INDEX events_nv_col ON events_nv USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "events_nv_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "events_nv_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_nv_col');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE events_nv;

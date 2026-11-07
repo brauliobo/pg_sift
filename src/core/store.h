@@ -133,6 +133,7 @@ typedef struct SiftDirSnapshot
 
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
+extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 
 /*
  * The directory's version through a pinned directory buffer, without its content lock: for a reader that compares it with a version it

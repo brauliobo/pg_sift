@@ -12,8 +12,8 @@ SELECT i, jsonb_build_object('items', jsonb_build_array(jsonb_build_object('cate
                                                         jsonb_build_object('category', 'b', 'score', 2)))
 FROM generate_series(1, 5000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, doc) WITH (paths = 'doc.items[]{category text, score float8}');
-NOTICE:  sift_col index "docs_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "docs_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('docs_col');
 VACUUM (FREEZE, ANALYZE) docs;
 \ir test/agg_helpers.sql

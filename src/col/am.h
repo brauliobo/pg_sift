@@ -184,10 +184,6 @@ extern void sift_col_auto_cube(Relation heap, Relation index);
 extern void sift_col_auto_rows(Relation heap, Relation index);
 /* array_lengths = auto (col/keycols/keycols.c): written as on for an index with an array column, before the build */
 extern void sift_col_auto_arrlen(Relation index);
-/* document_present = auto (col/jsonb.c): the nullable jsonb columns with paths, NULL for none; build.c writes them as 'auto: doc, attrs' before the build */
-extern char *sift_col_present_choice(Relation heap, Relation index);
-/* the error of a document_present list that names a column other than a jsonb column of the index, else NULL */
-extern char *sift_col_present_check(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index, bool layout);
 extern void sift_col_auto_point(Relation heap, Relation index);

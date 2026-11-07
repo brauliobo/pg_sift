@@ -9,18 +9,18 @@ NOTICE:  reloption "rollup" is the older name of "rollup_leaves"
 HINT:  Use "rollup_leaves"; the older name keeps working.
 NOTICE:  reloption "rollup_dims" is the older name of "rollup_columns"
 HINT:  Use "rollup_columns"; the older name keeps working.
-NOTICE:  sift_col index "ra_old": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
+NOTICE:  sift_col index "ra_old": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ra_old');
 CREATE INDEX ra_new ON ra USING sift_col (id, g, h, v, items) WITH (paths = 'items[]{kind text}', rollup_leaves = 'items[].kind', rollup_columns = 'g, h: v');
-NOTICE:  sift_col index "ra_new": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
+NOTICE:  sift_col index "ra_new": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ra_new');
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ra_old', 'ra_new') ORDER BY relname;
- relname |                                                   reloptions                                                    
----------+-----------------------------------------------------------------------------------------------------------------
- ra_new  | {"paths=items[]{kind text}",rollup_leaves=items[].kind,"rollup_columns=g, h: v","document_present=auto: items"}
- ra_old  | {"paths=items[]{kind text}",rollup=items[].kind,"rollup_dims=g, h: v","document_present=auto: items"}
+ relname |                                    reloptions                                    
+---------+----------------------------------------------------------------------------------
+ ra_new  | {"paths=items[]{kind text}",rollup_leaves=items[].kind,"rollup_columns=g, h: v"}
+ ra_old  | {"paths=items[]{kind text}",rollup=items[].kind,"rollup_dims=g, h: v"}
 (2 rows)
 
 -- the same options: the same rollups (the unit records of the build) and the same verdict
@@ -69,9 +69,9 @@ HINT:  Use "rollup_leaves"; the older name keeps working.
 NOTICE:  reloption "rollup_dims" is the older name of "rollup_columns"
 HINT:  Use "rollup_columns"; the older name keeps working.
 SELECT reloptions FROM pg_class WHERE relname = 'ra_old';
-                                        reloptions                                         
--------------------------------------------------------------------------------------------
- {"paths=items[]{kind text}","document_present=auto: items",rollup=off,"rollup_dims=g, h"}
+                         reloptions                         
+------------------------------------------------------------
+ {"paths=items[]{kind text}",rollup=off,"rollup_dims=g, h"}
 (1 row)
 
 ALTER INDEX ra_old SET (rollup_leaves = 'items[].kind');
@@ -81,14 +81,14 @@ NOTICE:  reloption "rollup_dims" is the older name of "rollup_columns"
 HINT:  Use "rollup_columns"; the older name keeps working.
 ALTER INDEX ra_old RESET (rollup, rollup_dims);
 SELECT reloptions FROM pg_class WHERE relname = 'ra_old';
-                                       reloptions                                       
-----------------------------------------------------------------------------------------
- {"paths=items[]{kind text}","document_present=auto: items",rollup_leaves=items[].kind}
+                       reloptions                        
+---------------------------------------------------------
+ {"paths=items[]{kind text}",rollup_leaves=items[].kind}
 (1 row)
 
 REINDEX INDEX ra_old;
-NOTICE:  sift_col index "ra_old": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = items
+NOTICE:  sift_col index "ra_old": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ra_old');
 SELECT sift.col_verify('ra_old', true);
  col_verify 

@@ -31,8 +31,8 @@ UPDATE d_t SET doc = 'null' WHERE id % 100 = 4;
 UPDATE d_t SET doc = '{"parts": [{"c": "a", "n": "5", "t": 12, "score": "8.5", "ok": "yes"}, {"c": "b", "n": 7, "t": true, "score": " 9 ", "ok": "f"}]}'
 WHERE id % 100 = 5;
 CREATE INDEX d_t_col ON d_t USING sift_col (id, grp, doc) WITH (paths = 'doc.parts[]{c text, n int4, t text, score float8, ok bool}');
-NOTICE:  sift_col index "d_t_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "d_t_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_t_col');
 VACUUM ANALYZE d_t;
 -- the leaves are dirty and the scan is in the plan; it reads the 60 documents (30 of them not objects, 30 with strings) again
@@ -224,12 +224,12 @@ FROM generate_series(1, 24000) i;
 INSERT INTO d_few SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', CASE WHEN i IN (5, 6, 7) THEN to_jsonb('8.5'::text) ELSE to_jsonb(i % 10) END, 'pad', repeat('x', 300))))
 FROM generate_series(1, 24000) i;
 CREATE INDEX d_spread_col ON d_spread USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
-NOTICE:  sift_col index "d_spread_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "d_spread_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_spread_col');
 CREATE INDEX d_few_col ON d_few USING sift_col (id, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
-NOTICE:  sift_col index "d_few_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "d_few_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_few_col');
 VACUUM ANALYZE d_spread;
 VACUUM ANALYZE d_few;

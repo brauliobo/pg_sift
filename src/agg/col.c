@@ -134,7 +134,7 @@ child_name(const char *path, bool is_map, bool is_key, char *name)
 	else if (f)
 		strlcpy(name, f + 3, NAMEDATALEN);
 	else
-		strlcpy(name, strstr(path, "#present") ? "#present" : "", NAMEDATALEN);	/* option document_present: the leaf of a jsonb document, true or NULL */
+		strlcpy(name, strstr(path, "#present") ? "#present" : "", NAMEDATALEN);	/* the leaf of a jsonb document, true or NULL */
 }
 
 /* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */

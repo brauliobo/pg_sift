@@ -58,8 +58,8 @@ sift.async_maintenance = off'
 	check "$ref promotion preserves uncertain null kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
 	check "$ref promotion preserves uncertain astext kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
 	check "$ref promotion does not claim minor 6" test "$(sql legacy "SELECT max(format) < 6 FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == t
-	# without the leaf of document_present, so that 3.1 refuses the segments by their minor (the leaf is a layout it refuses before it reads one)
-	sql legacy "ALTER INDEX oldcol_idx SET (document_present = off)" "REINDEX INDEX oldcol_idx" >/dev/null || bail 'reindex'
+	# the layout of an index made before 4.2 (no presence leaf), so that 3.1 reads the segments by their minor (the leaf is a layout it refuses before it reads one)
+	sql legacy "SET sift.test_col_no_present = on" "REINDEX INDEX oldcol_idx" >/dev/null || bail 'reindex'
 	check "$ref REINDEX writes minor 12 or later (the complete kinds, with the sections that are on by default)" test "$(sql legacy "SELECT min(format) >= 12 FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == t
 	check "$ref rewritten null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
 	check "$ref rewritten astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"

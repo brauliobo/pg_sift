@@ -6,8 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ln (j jsonb, id int PRIMARY KEY, t int) WITH (autovacuum_enabled = false);
 INSERT INTO ln SELECT jsonb_build_object('a', i % 50, 'b', hashint4(i) & 1023), i, hashint4(i + 5) & 4095 FROM generate_series(1, 30000) i;
 CREATE INDEX ln_ix ON ln USING sift_col (j, id, t) WITH (paths = 'j.a int4, j.b int4', order_array_columns = 'auto: id');
-NOTICE:  sift_col index "ln_ix": 3 automatic choices (document_present, order_array_columns, track_changes)
-DETAIL:  document_present = j; order_array_columns = id; track_changes = id
+NOTICE:  sift_col index "ln_ix": 2 automatic choices (order_array_columns, track_changes)
+DETAIL:  order_array_columns = id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ln_ix');
 NOTICE:  sift_col index "ln_ix" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

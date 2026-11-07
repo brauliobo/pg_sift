@@ -71,9 +71,10 @@ BEGIN
 		END IF;
 		BEGIN
 			EXECUTE 'SELECT major, minor FROM sift.index_format($1)' INTO maj, mnr USING r.relid;
-			lo := NULL; hi := NULL;
+			lo := NULL; hi := NULL; dpl := false;
 			IF r.amname = 'sift_col' THEN
 				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.col_segments(r.relid) s;
+				SELECT coalesce(bool_or(l.path LIKE '%#present'), false) INTO dpl FROM sift.col_leaves(r.relid) l;
 			ELSIF r.amname = 'sift_table' THEN
 				SELECT min((to_jsonb(s)->>'format')::int), max((to_jsonb(s)->>'format')::int) INTO lo, hi FROM sift.table_segments(r.relid) s;
 			END IF;
@@ -92,8 +93,7 @@ BEGIN
 		-- the first release that reads it
 		need := CASE WHEN r.amname = 'sift' THEN CASE WHEN mnr >= 6 THEN '4.2' WHEN mnr >= 5 THEN '4.0' WHEN mnr >= 4 THEN '3.7' WHEN mnr >= 3 THEN '3.1' ELSE '3.0' END
 					 ELSE coalesce(col_first->>greatest(hi, 3)::text, '3.0') END;
-		-- 4.2: the boolean leaf of a jsonb column that may hold a NULL document (option document_present, the columns it chose or was given): a release before 4.2 refuses the index
-		dpl := r.amname = 'sift_col' AND EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'document_present=%' AND o <> 'document_present=off' AND o !~ '^document_present=auto:? *$');
+		-- 4.2: the presence leaf of a jsonb column that may hold a NULL document ("<column>#present"): a release before 4.2 refuses the index
 		IF dpl AND string_to_array(need, '.')::int[] < ARRAY[4, 2] THEN need := '4.2'; END IF;
 		detected := format('format %s.%s', maj, mnr) ||
 				 CASE WHEN hi IS NULL THEN '' WHEN lo = hi THEN ', column format ' || hi ELSE format(', column format %s to %s', lo, hi) END;
@@ -101,7 +101,7 @@ BEGIN
 		IF tgt IS NOT NULL AND string_to_array(need, '.')::int[] > string_to_array(tgt, '.')::int[] THEN
 			status := 'blocker';
 			IF dpl THEN
-				adv := format('ALTER INDEX %s SET (document_present = off), then REINDEX INDEX %s writes the layout that %s reads (the forms NOT, IS FALSE and IS NULL of its jsonb columns read the table again)', r.rel, r.rel, tgt);
+				adv := format('REINDEX INDEX %s with %s writes the layout that %s reads; there is no setting (the forms NOT, IS FALSE and IS NULL of its jsonb columns read the table again)', r.rel, tgt, tgt);
 			ELSIF r.amname = 'sift' THEN
 				adv := format('%s cannot read this format: drop the index and CREATE INDEX it again with that release, or keep this library', tgt);
 			ELSIF hi = 5 THEN

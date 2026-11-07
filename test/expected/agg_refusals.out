@@ -12,8 +12,8 @@ SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6,
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "events_col": 3 automatic choices (document_present, key_columns, track_changes)
-DETAIL:  document_present = doc; key_columns = parent_id; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = parent_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i FROM generate_series(0, 599) i;
@@ -36,15 +36,15 @@ CREATE TABLE facts (id int, metrics jsonb);
 INSERT INTO facts SELECT i, jsonb_build_object('m_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
 INSERT INTO facts VALUES (5001, '{"m_total": "abc"}');
 CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = metrics
+NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 -- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
 CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
 INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
 CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
-NOTICE:  sift_col index "guarded_col": 2 automatic choices (document_present, track_changes)
-DETAIL:  document_present = doc; track_changes = id
+NOTICE:  sift_col index "guarded_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('guarded_col');
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) facts;

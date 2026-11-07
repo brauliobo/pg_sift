@@ -180,8 +180,8 @@ INSERT INTO rr
 SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 5, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e) FROM generate_series(1, g % 4 + 1) e), repeat('p', 300)
 FROM generate_series(1, 12000) g;
 CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, q int4}', rollup_leaves = 'lines[].a');
-NOTICE:  sift_col index "rr_i": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = lines
+NOTICE:  sift_col index "rr_i": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rr_i');
 VACUUM (FREEZE, ANALYZE) rr;
 SELECT sift.stats_reset();

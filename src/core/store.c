@@ -242,6 +242,23 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
+/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) */
+bool
+sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
+{
+	Buffer		metabuf;
+	SiftMetaPageData *meta;
+
+	if (RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
+		return false;
+	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	meta = META(BufferGetPage(metabuf));
+	*hash = meta->analyzer_hash;
+	*flags = meta->flags;
+	UnlockReleaseBuffer(metabuf);
+	return true;
+}
+
 Buffer
 sift_dir_pin(Relation index)
 {

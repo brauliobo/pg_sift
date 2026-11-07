@@ -29,23 +29,23 @@ SELECT pt_fill(1, 6000);
 
 -- on the parent: one index per partition, with the partitions' own attribute numbers
 CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "pt_a_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_a_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_a_id_g_d_v_amount_s_doc_idx');
-NOTICE:  sift_col index "pt_b_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_b_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_b_id_g_d_v_amount_s_doc_idx');
-NOTICE:  sift_col index "pt_c0_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_c0_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_c0_id_g_d_v_amount_s_doc_idx');
-NOTICE:  sift_col index "pt_c1_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_c1_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_c1_id_g_d_v_amount_s_doc_idx');
-NOTICE:  sift_col index "pt_u_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_u_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_u_id_g_d_v_amount_s_doc_idx');
-NOTICE:  sift_col index "pt_rest_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_rest_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_rest_id_g_d_v_amount_s_doc_idx');
 VACUUM (FREEZE, ANALYZE) pt;
 -- the maintenance view lists the indexes of the partitions, not the parent's, which has no storage to read
@@ -416,8 +416,8 @@ CREATE TABLE pt_n (LIKE pt INCLUDING DEFAULTS) WITH (autovacuum_enabled = false)
 INSERT INTO pt_n SELECT 100000 + i, i % 11, DATE '2025-03-01' + i % 20, i, i / 10.0, 'red', '{"k": 1}' FROM generate_series(1, 500) i;
 ALTER TABLE pt DETACH PARTITION pt_rest;
 ALTER TABLE pt ATTACH PARTITION pt_n FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
-NOTICE:  sift_col index "pt_n_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_n_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_n_id_g_d_v_amount_s_doc_idx');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pt GROUP BY g');
                      plan                     | result_rows | vs_normal_plan 
@@ -439,8 +439,8 @@ CREATE TABLE pn_a PARTITION OF pn FOR VALUES FROM ('2024-01-01') TO ('2024-07-01
 CREATE TABLE pn_b PARTITION OF pn FOR VALUES FROM ('2024-07-01') TO ('2025-01-01') WITH (autovacuum_enabled = false);
 INSERT INTO pn SELECT i, i % 7, DATE '2024-01-01' + i % 360, i % 100, jsonb_build_object('k', i % 5) FROM generate_series(1, 3000) i;
 CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "pn_a_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pn_a_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_a_col');
 ANALYZE pn;
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
@@ -456,8 +456,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn WHERE d < DATE ''2024-07-01'
 (1 row)
 
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int8', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "pn_b_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pn_b_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_b_col');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
   plan  | result_rows | vs_normal_plan 
@@ -467,8 +467,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 
 DROP INDEX pn_b_col;
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "pn_b_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pn_b_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_b_col');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
   plan  | result_rows | vs_normal_plan 
@@ -478,8 +478,8 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 
 DROP INDEX pn_b_col;
 CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
-NOTICE:  sift_col index "pn_b_col": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pn_b_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_b_col');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pn GROUP BY g');
         plan        | result_rows | vs_normal_plan 
@@ -535,8 +535,8 @@ SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 5, 6) ORDER BY n;
 (4 rows)
 
 TRUNCATE pt_b;
-NOTICE:  sift_col index "pt_b_id_g_d_v_amount_s_doc_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = doc
+NOTICE:  sift_col index "pt_b_id_g_d_v_amount_s_doc_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_b_id_g_d_v_amount_s_doc_idx');
 SELECT n, (same(q)).* FROM pt_q WHERE n IN (1, 2, 6) ORDER BY n;
  n |                      plan                       | result_rows | vs_normal_plan 

@@ -51,7 +51,7 @@ TESTING_REGRESS += col_set_list_span agg_topn_with_ties agg_root_key_exists agg_
 TESTING_REGRESS += col_wide_values agg_par_split col_vet_lazy_offsets
 TESTING_REGRESS += lang_chain lang_memo col_wbuf_order_cache col_wbuf_big_set
 TESTING_REGRESS += bm25_wbuf_read_promote bm25_wbuf_wide_bloom tbl_wide_rows col_wildcard_keys col_read_ahead col_dead_rewrite col_tomb_log col_track_updates_supersede col_track_shared_probe col_track_default col_track_deletes col_tomb_log_cache tbl_tomb_legacy_header col_tomb_log_cache
-TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks
+TESTING_REGRESS += col_point_exact col_point_packed col_point_root col_gorder_gaps col_dict_packed position_blocks agg_jsonb_not_exist col_document_present
 TESTING_REGRESS += col_topn_unit_ends col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func col_topn_trail
 # these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/build_par.c)
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths col_cost_selectivity_once col_cost_keys_sorted_once agg_source_cache agg_prepass_const_list

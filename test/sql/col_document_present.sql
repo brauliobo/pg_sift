@@ -1,7 +1,8 @@
--- document_present: a jsonb column of an index keeps a boolean leaf of its own, NULL where the document is SQL NULL. CREATE INDEX writes it (auto is on);
--- document_present = off is the index of a release before the option, which has no leaf and is read as before. The leaf is checked against the heap by
--- col_verify after the build, an insert, a promotion, a merge and a REINDEX, and a table without a jsonb column gets none. The rows the leaf holds are read back
--- through the scan after each step (a NULL document, {}, a document of undeclared keys, a JSON null, an array) and compared with the normal plan.
+-- The presence leaf of a jsonb document: an index with paths keeps a boolean leaf "<column>#present" (true, NULL where the document is SQL NULL) for each jsonb
+-- column whose column of the table has no NOT NULL constraint; there is no option. The layout of an index is the one its metapage says: an index made before the
+-- leaf (here sift.test_col_no_present) keeps working and has none until REINDEX, and ALTER TABLE .. SET NOT NULL changes nothing. The leaf is checked against the
+-- heap by col_verify after the build, an insert, a promotion, a merge and a REINDEX, and a table without a jsonb column gets none. The rows the leaf holds are read
+-- back through the scan after each step (a NULL document, {}, a document of undeclared keys, a JSON null, an array) and compared with the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -19,15 +20,17 @@ CREATE FUNCTION dq_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 INSERT INTO dq SELECT i, i % 5, dq_doc(i) FROM generate_series(1, 3500) i;
 CREATE INDEX dq_on ON dq USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
 CREATE INDEX dp_on ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
-CREATE INDEX dp_off ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4', document_present = off);
+-- dp_off: the layout of an index built before the leaf
+SET sift.test_col_no_present = on;
+CREATE INDEX dp_off ON dp USING sift_col (id, g, doc) WITH (key_cut = g, paths = 'doc.b astext, doc.n int4');
+RESET sift.test_col_no_present;
 CREATE INDEX dp_plain ON dp USING sift_col (id, g) WITH (key_cut = g);
--- dn: one jsonb column with a NOT NULL constraint (a NOT p is exact there: auto keeps no leaf for it), one that may be NULL, one under a CHECK that forbids NULL (not seen)
+-- dn: one jsonb column with a NOT NULL constraint (a NOT p is exact there: no leaf), one that may be NULL, one under a CHECK that forbids NULL (not seen)
 CREATE TABLE dn (id int PRIMARY KEY, g int, a jsonb NOT NULL, b jsonb, c jsonb CHECK (c IS NOT NULL));
 INSERT INTO dn SELECT i, i % 5, '{"k": 1}', CASE WHEN i % 4 = 0 THEN NULL ELSE '{"k": 2}' END, '{"k": 3}' FROM generate_series(1, 600) i;
-CREATE INDEX dn_auto ON dn USING sift_col (id, g, a, b, c) WITH (key_cut = g, paths = 'a.k int4, b.k int4, c.k int4');
+CREATE INDEX dn_all ON dn USING sift_col (id, g, a, b, c) WITH (key_cut = g, paths = 'a.k int4, b.k int4, c.k int4');
 CREATE INDEX dn_notnull ON dn USING sift_col (id, g, a) WITH (key_cut = g, paths = 'a.k int4');
-CREATE INDEX dn_on ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = on);
-CREATE INDEX dn_list ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a');
+CREATE INDEX dn_ab ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4');
 VACUUM (FREEZE, ANALYZE) dp;
 VACUUM (FREEZE, ANALYZE) dq;
 CREATE TABLE qs (n serial, q text);
@@ -42,9 +45,8 @@ INSERT INTO qs (q) VALUES
 	('SELECT count(*), sum(id) FROM dp WHERE doc IS NOT NULL AND g = 2');
 CREATE FUNCTION dp_reads() RETURNS TABLE (n int, outcome text) LANGUAGE sql AS $$ SELECT n, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n $$;
 
-CREATE FUNCTION dp_state() RETURNS TABLE (idx text, option text, leaves int, present text, verified bool) LANGUAGE sql AS $$
+CREATE FUNCTION dp_state() RETURNS TABLE (idx text, leaves int, present text, verified bool) LANGUAGE sql AS $$
 	SELECT c.relname::text,
-		(SELECT option_value FROM pg_options_to_table(c.reloptions) WHERE option_name = 'document_present'),
 		(SELECT count(*)::int FROM sift.col_leaves(c.oid::regclass)),
 		(SELECT string_agg(path, ', ' ORDER BY leaf) FROM sift.col_leaves(c.oid::regclass) WHERE path LIKE '%#present' AND type = 'boolean'),
 		sift.col_verify(c.oid::regclass, true)::text = ''
@@ -82,23 +84,33 @@ REINDEX INDEX dq_on;
 SELECT * FROM dp_state();
 SELECT * FROM dp_reads();
 
--- the option changed on an index: the layout changes with the next REINDEX
-ALTER INDEX dp_off SET (document_present = on);
+-- an index made before the leaf has none until REINDEX writes it
 REINDEX INDEX dp_off;
-ALTER INDEX dp_on SET (document_present = off);
-REINDEX INDEX dp_on;
 SELECT * FROM dp_state();
+SELECT * FROM dp_reads();
 
 -- no paths option: the build reads the paths from a sample of the documents (paths = auto) and keeps the presence of the column as well
 CREATE INDEX dp_auto ON dp USING sift_col (id, g, doc) WITH (key_cut = g);
 SELECT * FROM dp_state();
 
--- the list names jsonb columns of the index; anything else is refused at CREATE INDEX, like every column list
-\set VERBOSITY terse
-CREATE INDEX dn_bad ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'nonexistent');
-CREATE INDEX dn_bad ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a, g');
-CREATE INDEX dn_two ON dn USING sift_col (id, g, a, b) WITH (key_cut = g, paths = 'a.k int4, b.k int4', document_present = 'a, b');
-DROP INDEX dn_two;
+-- ALTER TABLE .. SET NOT NULL or DROP NOT NULL does not change the layout of an index that exists: the leaf stays and the reads stay right; a REINDEX decides again
+CREATE TABLE dz (id int, g int, d jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO dz SELECT i, i % 3, '{"k": 1}' FROM generate_series(1, 900) i;
+CREATE INDEX dz_idx ON dz USING sift_col (id, g, d) WITH (key_cut = g, paths = 'd.k int4');
+CREATE FUNCTION dz_leaves(step text) RETURNS TABLE (step text, present_leaves int, verified bool) LANGUAGE sql AS $$
+	SELECT $1, (SELECT count(*)::int FROM sift.col_leaves('dz_idx') WHERE path LIKE '%#present'), sift.col_verify('dz_idx', true)::text = '' $$;
+SELECT * FROM dz_leaves('built');
+ALTER TABLE dz ALTER d SET NOT NULL;
+SELECT * FROM dz_leaves('after SET NOT NULL');
+SELECT count(*), sum(id) FROM dz WHERE NOT (d @> '{"k": 1}');
+REINDEX INDEX dz_idx;
+SELECT * FROM dz_leaves('REINDEX of a NOT NULL column');
+ALTER TABLE dz ALTER d DROP NOT NULL;
+SELECT * FROM dz_leaves('after DROP NOT NULL');
+REINDEX INDEX dz_idx;
+SELECT * FROM dz_leaves('REINDEX of a nullable column');
+DROP FUNCTION dz_leaves(text);
+DROP TABLE dz;
 
 -- the leaf is no dimension of the pre-aggregates: the index with it holds one leaf-sum record more for each unit
 SELECT (w.pre - n.pre) <= 96 * w.units AS leaf_is_no_cube_dimension

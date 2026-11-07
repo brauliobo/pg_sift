@@ -19,14 +19,14 @@ SELECT i, repeat(md5(i::text), 50),
 FROM generate_series(1, 3000) i;
 -- the default dictionary holds them all: no NOTICE
 CREATE INDEX jw_all ON jw USING sift_col (id, m) WITH (paths = 'm.* int4');
-NOTICE:  sift_col index "jw_all": 1 automatic choice (document_present), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; document_present = m
+NOTICE:  sift_col index "jw_all": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('jw_all');
 DROP INDEX jw_all;
 SET sift.test_limits = 'shred_keys=16';
 CREATE INDEX jw_col ON jw USING sift_col (id, m) WITH (paths = 'm.* int4');
-NOTICE:  sift_col index "jw_col": 1 automatic choice, 1 advice, 1 limit
-DETAIL:  advice: track_changes = the table has no one-column primary key; limit: paths = m.*; document_present = m
+NOTICE:  sift_col index "jw_col": 1 advice (track_changes), 1 limit (paths)
+DETAIL:  advice: track_changes = the table has no one-column primary key; limit: paths = m.*
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('jw_col');
 VACUUM (FREEZE, ANALYZE) jw;
 SELECT sift.col_verify('jw_col', true);

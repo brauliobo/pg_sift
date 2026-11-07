@@ -1,6 +1,6 @@
 /*
  * agg/plan_not.c - NOT, IS FALSE and IS NOT TRUE of the existential tests of a document or an array: the negation of a test, the complement of its bitmap, the
- * documents that are not NULL (the lengths of an array, the leaf of option document_present)
+ * documents that are not NULL (the lengths of an array, the presence leaf of a jsonb document)
  */
 #include "postgres.h"
 
@@ -34,7 +34,7 @@ negate_existential(SiftAggPred *p)
 	return true;
 }
 
-/* target IS NOT NULL as a predicate (the lengths of an array, the document_present leaf of a jsonb column); NULL when the index has none */
+/* target IS NOT NULL as a predicate (the lengths of an array, the presence leaf of a jsonb column); NULL when the index has none */
 static SiftAggPred *
 compile_not_null(AggCtx *c, Node *target)
 {
@@ -51,7 +51,7 @@ compile_not_null(AggCtx *c, Node *target)
  * NOT (a && k), NOT (a @> k), NOT (a <@ k) of an array column that may be NULL, NOT (doc @> k) of a jsonb column that may be NULL: the test is NULL for a
  * NULL document, and NOT of it keeps no row, so the rows are those of a IS NOT NULL whose elements fail the test (a NULL element never matches, so the
  * test is never NULL for another array; a document is never NULL otherwise). NULL: the index has no way to tell a NULL document (neither the lengths
- * of an array nor the leaf of option document_present), or the test is not an existential one.
+ * of an array nor the presence leaf of a jsonb document), or the test is not an existential one.
  */
 SiftAggPred *
 compile_not_array(AggCtx *c, BoolExpr *b, SiftAggPred *p, Node *target)
@@ -134,7 +134,7 @@ complement_tests(SiftAggPred *p)
 
 /*
  * NOT of a key test (doc ? 'k'): the test is NULL only for a NULL document, so the negation keeps the rows of the other types; a nullable document needs the
- * leaf of document_present to be told from a missing key, and keeps the documents that are not NULL.
+ * presence leaf of the document to be told from a missing key, and keeps the documents that are not NULL.
  */
 SiftAggPred *
 compile_not_haskey(AggCtx *c, BoolExpr *b)

@@ -209,10 +209,11 @@ sift.async_maintenance = off'
 		[[ $docsonly == *" $fmt "* ]] && continue
 		# a minor 3 segment stores no types: 3.1 refuses an astext leaf of it at query time with the REINDEX hint, by design
 		kind=$textkind; [[ $fmt != lo ]] || kind=text
-		q "SET sift.col_format_minor = $minor" \
-			"CREATE TABLE jt_$fmt AS TABLE jt" "CREATE INDEX jt_${fmt}_col ON jt_$fmt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}', document_present = off)" \
+		# the clones are written without the presence leaf (sift.test_col_no_present: the layout of an index made before 4.2), so that the release reads them
+		q "SET sift.col_format_minor = $minor" "SET sift.test_col_no_present = on" \
+			"CREATE TABLE jt_$fmt AS TABLE jt" "CREATE INDEX jt_${fmt}_col ON jt_$fmt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" \
 			"INSERT INTO jt_$fmt SELECT i, '[{\"s\":\"gift\"}]', '{\"a\":1}' FROM generate_series(4001, 4200) i" >/dev/null || bail "$ref $fmt jt"
-		# the presence of the documents (option document_present, on at CREATE INDEX) is a leaf of the layout, not a minor: the release refuses that index (its metapage does not describe the layout)
+		# the presence of the documents (the leaf that CREATE INDEX writes for a jsonb column that may be NULL) is a leaf of the layout, not a minor: the release refuses that index (its metapage does not describe the layout)
 		[[ $fmt != lo ]] || q "SET sift.col_format_minor = $minor" "CREATE TABLE jt_dp AS TABLE jt" "CREATE INDEX jt_dp_col ON jt_dp USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a ${kind}')" >/dev/null || bail "$ref jt_dp"
 		if [[ $hastbl == yes ]]; then
 			q "SET sift.col_format_minor = $minor" "CREATE TABLE tbl_$fmt (LIKE tbl) USING sift_table" "INSERT INTO tbl_$fmt SELECT * FROM tbl" "VACUUM (FREEZE) tbl_$fmt" \
@@ -271,7 +272,7 @@ sift.async_maintenance = off'
 		fi
 	done
 	err=$(q "SELECT sift.col_verify('jt_dp_col', true)" 2>&1)
-	check "$ref refuses the index with document_present, a layout it does not know" test "$(grep -ci 'does not describe this column layout' <<<"$err")" -ge 1
+	check "$ref refuses the index with the presence leaf, a layout it does not know" test "$(grep -ci 'does not describe this column layout' <<<"$err")" -ge 1
 	if [[ $hastbl == yes ]]; then
 		err=$(q "SELECT count(*), sum(length(t::text)) FROM tbl_ca t" 2>&1)
 		check "$ref refuses the sift_table tbl_ca (calendar cells, column format 8) with a format error and the hint" test "$(grep -ci 'format\|REINDEX' <<<"$err")" -ge 2
@@ -302,21 +303,22 @@ sift.async_maintenance = off'
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
 		for _ in $(seq 100); do [[ $(q "SHOW sift.col_format_minor") == 6 ]] && break; sleep 0.1; done
 		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.col_format_minor")" == 6
+		under_old=()
 		while read -r _ obj kind rest; do
 			case $kind in
 				index)
-					# the advice of the preflight for the presence leaf of 4.2 (option document_present): the option off first, then the REINDEX writes the layout the release reads
-					[[ $rest != *"SET (document_present = off)"* ]] || q "ALTER INDEX $obj SET (document_present = off)" >/dev/null || diag "ALTER INDEX $obj failed"
-					q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed" ;;
+					# the presence leaf of 4.2 is written by a REINDEX of this tree: its advice is the REINDEX under the release, after the restart (below)
+					if [[ $rest == *"REINDEX INDEX $obj with "* ]]; then under_old+=("$obj"); else q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed"; fi ;;
 				table) q "VACUUM FULL $obj" >/dev/null || diag "VACUUM FULL $obj failed" ;;
 				trigger) q "ALTER EVENT TRIGGER $obj DISABLE" >/dev/null || diag "ALTER EVENT TRIGGER $obj failed" ;;
 			esac
 		done <<<"$blockers"
 		# the BM25 index has no setting that writes an older format: its REINDEX writes format 4 again, so it stays a blocker here and the way back is a REINDEX under the release
 		left_blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
-		check "3.2 downgrade: the BM25 indexes (dgb_idx, lw_idx) are the blockers left, and nothing else" test "$(grep -c . <<<"$left_blockers")/$(grep -cE ' (dgb|lw)_idx ' <<<"$left_blockers")" == 2/2
+		check "3.2 downgrade: the indexes with the presence leaf (jt_col, jt_dp_col) say to REINDEX with the release" test "${under_old[*]}" == "jt_col jt_dp_col"
+		check "3.2 downgrade: they and the BM25 indexes (dgb_idx, lw_idx) are the blockers left, and nothing else" test "$(grep -c . <<<"$left_blockers")/$(grep -cE ' (dgb_idx|lw_idx|jt_col|jt_dp_col) ' <<<"$left_blockers")" == 4/4
 		left=$(q "WITH i AS MATERIALIZED (SELECT c.oid, c.relname, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))
-			SELECT relname || ':' || (SELECT max(format) FROM sift.col_segments(oid::regclass)) FROM i WHERE amname = 'sift_col' AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
+			SELECT relname || ':' || (SELECT max(format) FROM sift.col_segments(oid::regclass)) FROM i WHERE amname = 'sift_col' AND relname NOT IN ('jt_col', 'jt_dp_col') AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
 			UNION ALL SELECT relname || ':' || (SELECT max(format) FROM sift.table_segments(oid::regclass)) FROM i WHERE amname = 'sift_table' AND (SELECT max(format) FROM sift.table_segments(oid::regclass)) > 6" | tr '\n' ' ')
 		check "3.2 downgrade: no segment is above minor 6 or in a buffer of format 11" test -z "$left"
 		[[ -z $left ]] || diag "left above 6: $left"
@@ -324,6 +326,7 @@ sift.async_maintenance = off'
 		use_root mx "$oldroot"
 		node_start mx || bail "cannot restart $ref after the downgrade"
 		check "3.2 downgrade: the release's library is the one that runs" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.2
+		check "3.2 downgrade: REINDEX under the release writes the layout it reads for the indexes with the presence leaf" q "REINDEX INDEX jt_col" "REINDEX INDEX jt_dp_col"
 		for idx in $(q "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i' ORDER BY 1"); do
 			check "3.2 downgrade: $idx verifies" q "SELECT sift.col_verify('$idx', true)"
 		done
@@ -357,8 +360,8 @@ sift.async_maintenance = off'
 		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres --exclude-table-data=sift.table_option_values -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
 		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
 		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
-		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5) and every one that holds the option document_present (4.2)
-		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims|rollup_columns|document_present"
+		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)
+		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims|rollup_columns"
 		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
 		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3))"

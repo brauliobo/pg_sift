@@ -92,9 +92,9 @@ ERROR:  invalid rollup_leaves option: "lines[].nosuch" is not a leaf declared in
 ALTER INDEX rr_i SET (rollup_leaves = 'lines[].w');
 ERROR:  invalid rollup_leaves option: "lines[].w" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf
 SELECT reloptions FROM pg_class WHERE relname = 'rr_i';
-                                                                       reloptions                                                                        
----------------------------------------------------------------------------------------------------------------------------------------------------------
- {"paths=lines[]{a text, b text, c int2, q int4, w float8}",write_buffer_limit=4096,"document_present=auto: lines","rollup_leaves=lines[].a, lines[].b"}
+                                                        reloptions                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ {"paths=lines[]{a text, b text, c int2, q int4, w float8}",write_buffer_limit=4096,"rollup_leaves=lines[].a, lines[].b"}
 (1 row)
 
 SELECT pre = 0 AS none_from_rollups, miss = units AS all_missing, queued = units AS all_queued, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
