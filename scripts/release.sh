@@ -54,6 +54,7 @@ notes_components() {
 	{ echo; components "$VERSION"; } >>"$f"
 	echo "release: the Packages, SQLite extension and MariaDB extension sections of $VERSION are appended to docs/releases/v$VERSION.md"
 }
+sed_file() { sed "$1" "$2" >"$2.new" && mv "$2.new" "$2"; }   # not sed -i: BSD sed reads the expression as the backup suffix
 # the commit of --ext-version: the update script from the control's version into VERSION, the one back to MAJOR.MINOR, the control and the library's version string
 ext_bump() {
 	local from to=$VERSION hdr
@@ -65,8 +66,8 @@ ext_bump() {
 	hdr() { printf '\\echo Use "ALTER EXTENSION pg_sift UPDATE TO '"'%s'"'" to load this file. \\quit\n\n-- %s\n' "$1" "$2"; }
 	hdr "$to" "The patch release $to changes no SQL object: this script only moves the extension version." >"$REPO/sql/pg_sift--$from--$to.sql"
 	hdr "$MM" "From a patch release back to $MM, so that the script of the next minor (from $MM) serves every patch release before it." >"$REPO/sql/pg_sift--$to--$MM.sql"
-	sed -i "s/^default_version *=.*/default_version = '$to'/" "$REPO/pg_sift.control"
-	sed -i "s/^\(#define SIFT_MODULE_VERSION[[:space:]]*\)\"[^\"]*\"/\1\"$to\"/" "$REPO/src/core/ops.h"
+	sed_file "s/^default_version *=.*/default_version = '$to'/" "$REPO/pg_sift.control"
+	sed_file "s/^\(#define SIFT_MODULE_VERSION[[:space:]]*\)\"[^\"]*\"/\1\"$to\"/" "$REPO/src/core/ops.h"
 	git -C "$REPO" add pg_sift.control src/core/ops.h "sql/pg_sift--$from--$to.sql" "sql/pg_sift--$to--$MM.sql"
 	git -C "$REPO" commit -q -m "release: $to: the extension version" && echo "release: the extension version is $to: sql/pg_sift--$from--$to.sql and sql/pg_sift--$to--$MM.sql, committed"
 }
