@@ -65,7 +65,9 @@ DBS="src plain custom"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
 UPG_CHECKS=108
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
-node_init life 6
+# no autovacuum (as in the other clusters, scripts/pgtest.sh): a worker vacuuming docs after the first minute of a slow run drops its dead documents from the
+# corpus statistics, and the scores the index answers with move in the fourth digit
+node_init life 6 "autovacuum = off"
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
 q life src "$SETUP" >/dev/null || bail "setup failed"
