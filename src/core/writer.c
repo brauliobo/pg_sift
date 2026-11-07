@@ -395,7 +395,7 @@ layout_write(SiftWriteTarget *wt)
 	if (RelationNeedsWAL(wt->index))
 	{
 		log_newpages(&srel->smgr_rlocator.locator, MAIN_FORKNUM, 2, blknos, pages, true);
-		XLogFlush(GetXLogInsertRecPtr());
+		XLogFlush(PageGetLSN(pages[1]));	/* the end of the record: the insert position can lie past the written WAL */
 	}
 	for (int i = 0; i < 2; i++)
 	{
