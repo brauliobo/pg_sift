@@ -5,6 +5,8 @@
 #ifndef SIFT_NEON_H
 #define SIFT_NEON_H
 
+#include "core/cpu.h"
+
 #if defined(SIFT_HAVE_NEON)
 #include <arm_neon.h>
 

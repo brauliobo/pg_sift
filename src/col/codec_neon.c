@@ -7,6 +7,11 @@
  * alp_keys_f8 1000 -> 1563, alp_f8 516 -> 1000, alp_f4 438 -> 516.
  */
 
+#include "core/host.h"
+
+#include "col/codec_int.h"
+#include "core/neon.h"
+
 #if defined(SIFT_HAVE_NEON)
 
 /* the 32 bits of eight u32 compares: narrowed to bytes and folded, not one add across per vector */

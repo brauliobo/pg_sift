@@ -16,6 +16,8 @@
 #ifndef SIFT_SIMD_ISA_H
 #define SIFT_SIMD_ISA_H
 
+#include "core/cpu.h"
+
 #if defined(SIFT_VEC_AVX2) && defined(__x86_64__)
 #include <immintrin.h>
 
