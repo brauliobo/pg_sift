@@ -23,6 +23,7 @@
 #include "utils/syscache.h"
 
 #include "core/sift.h"
+#include "core/limits.h"
 #include "agg/agg.h"
 #include "agg/stub.h"
 #include "bm25/am.h"

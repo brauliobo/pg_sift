@@ -19,6 +19,7 @@
 #include "agg/blob/int.h"
 #include "agg/spill_int.h"
 #include "agg/spill/int.h"
+#include "agg/exec/int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_agg_pass_w = 0;
