@@ -16,7 +16,7 @@ sql ta "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind tex
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount) WITH (order_array_columns = 'off')" "VACUUM facts" >/dev/null || bail "setup failed"
 # eight appended batches, each promoted to a segment of its own over superblocks no other segment holds
 for b in 1 2 3 4 5 6 7 8; do
-	sql ta "INSERT INTO facts SELECT g, (hashint8(g) & 1048575)::int, 'cat_' || (g % 8), (hashint8(g + 1) & 65535) / 100.0 FROM generate_series($b * 100000 + 1, $b * 100000 + 100000) g" \
+	sql ta "SET sift.async_maintenance = off" "INSERT INTO facts SELECT g, (hashint8(g) & 1048575)::int, 'cat_' || (g % 8), (hashint8(g + 1) & 65535) / 100.0 FROM generate_series($b * 100000 + 1, $b * 100000 + 100000) g" \
 		"SELECT sift.col_promote('facts_idx')" >/dev/null || bail "batch $b failed"
 done
 segments() { sql ta "SELECT count(*) FROM sift.col_segments('facts_idx') WHERE kind = 'immutable'"; }
