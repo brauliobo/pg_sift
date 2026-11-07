@@ -276,41 +276,50 @@ sift_col_track_worker_main(Datum main_arg)
 	PG_END_TRY();
 }
 
-/* seal: the open write buffer is sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
+/* The open write buffer sealed first, as the reads that decoded it asked (maint_wbuf_read_due, judged again here: it may have been promoted since) */
 static void
-maint_worker(Datum main_arg, bool seal)
+seal_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 {
-	ErrorContextCallback errctx;
-	TimestampTz start = GetCurrentTimestamp();
-	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	Relation	index;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		if (sift_col_is_index(index) && maint_wbuf_read_due(index))
+			sift_cwbuf_seal(index, true);
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
+/*
+ * One promotion or merge in a transaction of its own (sift_maint_worker_stay). The lock is busy when a VACUUM or a SQL merge is at it, which merge to the end,
+ * and when an inserter promotes, which leaves the merges to the worker: the next look finds it free.
+ */
+static SiftStepResult
+col_worker_step(Oid indexoid, TimestampTz start, bool last)
+{
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);	/* the name of the index, once it is open: a failure before that names the oid */
-
-	sift_maint_own_xacts = true;
+	volatile SiftStepResult r = SIFT_STEP_IDLE;
 
 	PG_TRY();
 	{
 		Relation	index;
 
-		if (rebaseline_step(indexoid, cx, &name))
-			rebaseline_step(indexoid, cx, &name);
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 		index = sift_try_open_index(indexoid, RowExclusiveLock);
-		if (index != NULL)
-			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
 		if (index != NULL && sift_col_is_index(index))
 		{
-			if (seal && maint_wbuf_read_due(index))
-				sift_cwbuf_seal(index, true);
-			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
-			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
-			{
-				CHECK_FOR_INTERRUPTS();
-				if ((index = sift_maint_step_boundary(index)) == NULL)
-					break;
-			}
-			if (index != NULL)
+			name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+			if (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
+				r = SIFT_STEP_DONE;
+			else if (last)
 			{
 				sift_mops_cut_free_end(&maint_col_ops, index);
 				sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
@@ -324,8 +333,40 @@ maint_worker(Datum main_arg, bool seal)
 	PG_CATCH();
 	{
 		worker_failed(indexoid, name, cx);
+		r = SIFT_STEP_FAILED;
 	}
 	PG_END_TRY();
+	return r;
+}
+
+/* seal: the open write buffer is sealed first */
+static void
+maint_worker(Datum main_arg, bool seal)
+{
+	ErrorContextCallback errctx;
+	TimestampTz start = GetCurrentTimestamp();
+	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
+	MemoryContext cx = CurrentMemoryContext;
+	const char *volatile name = psprintf("%u", indexoid);
+	volatile bool failed = false;
+
+	sift_maint_own_xacts = true;
+
+	PG_TRY();
+	{
+		if (rebaseline_step(indexoid, cx, &name))
+			rebaseline_step(indexoid, cx, &name);
+		if (seal)
+			seal_step(indexoid, cx, &name);
+	}
+	PG_CATCH();
+	{
+		worker_failed(indexoid, name, cx);
+		failed = true;
+	}
+	PG_END_TRY();
+	if (!failed)
+		sift_maint_worker_stay(indexoid, start, col_worker_step);
 }
 
 void

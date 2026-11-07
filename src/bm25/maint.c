@@ -882,9 +882,26 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 
 /*
  * The worker stays until sift.maintenance_naptime after it started, looking for work every so often: a seal inside that window
- * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM.
+ * of the request that started it asks for no worker of its own, and its segments would wait for the next seal or a VACUUM. So
+ * does a look that finds the maintenance lock with an inserter, which promotes and leaves the merges to the worker.
  * The last look is made after the window ended, so every such seal is before it.
  */
+void
+sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
+{
+	for (;;)
+	{
+		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+		SiftStepResult	r;
+
+		while ((r = step(indexoid, start, left <= 0)) == SIFT_STEP_DONE)
+			CHECK_FOR_INTERRUPTS();
+		if (r == SIFT_STEP_FAILED || left <= 0)
+			break;
+		sift_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
+	}
+}
+
 static void
 worker_main(Datum main_arg, bool seal)
 {
@@ -907,17 +924,7 @@ worker_main(Datum main_arg, bool seal)
 		}
 		CommitTransactionCommand();
 	}
-	for (;;)
-	{
-		long		left = sift_maintenance_naptime - TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
-		SiftStepResult	r;
-
-		while ((r = worker_step(indexoid, start, left <= 0)) == SIFT_STEP_DONE)
-			CHECK_FOR_INTERRUPTS();
-		if (r == SIFT_STEP_FAILED || left <= 0)
-			break;
-		sift_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
-	}
+	sift_maint_worker_stay(indexoid, start, worker_step);
 }
 
 void

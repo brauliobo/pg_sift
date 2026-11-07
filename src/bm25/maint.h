@@ -98,6 +98,10 @@ typedef enum SiftStepResult
 	SIFT_STEP_FAILED			/* rolled back, its blocks returned, reported and counted */
 } SiftStepResult;
 
+/* One step of a worker in a transaction of its own; last: the look after the window of the request ended */
+typedef SiftStepResult (*SiftWorkerStep) (Oid indexoid, TimestampTz start, bool last);
+extern void sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step);
+
 /* Who asks for a merge: any (explicit, or for room in a full directory), the background (worker), VACUUM */
 typedef enum SiftMergeGoal
 {

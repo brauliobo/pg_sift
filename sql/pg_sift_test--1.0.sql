@@ -202,6 +202,9 @@ CREATE FUNCTION sift._test_col_gdead_stats(OUT hits int8, OUT builds int8, OUT c
 -- VACUUM's pass: flags the rows with id % modulus = 0, then bumps the version; returns how many
 CREATE FUNCTION sift._test_col_wbuf_delete(index regclass, modulus int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_delete' LANGUAGE C STRICT;
+-- holds the maintenance lock until the test lets go of advisory lock (20983, key)
+CREATE FUNCTION sift._test_col_hold_maint(index regclass, key int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_hold_maint' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_wbuf_seal(index regclass, force bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_seal' LANGUAGE C STRICT;
 -- live: the rows sift_cwbuf_verify counts; extents: the blocks sift_cwbuf_pages reports (header included); lanes: lanes holding records

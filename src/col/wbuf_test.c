@@ -44,6 +44,7 @@ uint64		sift_cseg_dict_blocks;
 PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_delete);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
+PG_FUNCTION_INFO_V1(sift_test_col_hold_maint);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
 
@@ -605,6 +606,19 @@ sift_test_col_wbuf_delete(PG_FUNCTION_ARGS)
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_INT64(removed);
+}
+
+/* (index regclass, key int4): holds the maintenance lock as an inserter does while it promotes, until the test lets go of advisory lock (0x51F7, key) */
+Datum
+sift_test_col_hold_maint(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+
+	LockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	sift_test_wait(PG_GETARG_INT32(1));
+	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, ExclusiveLock);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 /* (index regclass, force bool): sift_cwbuf_seal; the sealed generation or 0 */
