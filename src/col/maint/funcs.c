@@ -89,7 +89,7 @@ sift_col_maintain(PG_FUNCTION_ARGS)
 	PreventCommandIfReadOnly("sift.col_maintain()");
 	PreventCommandDuringRecovery("sift.col_maintain()");
 	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
-	n = sift_mops_rewrite(&maint_col_ops, index, false);
+	n = sift_mops_rewrite(&maint_col_ops, &index, false);
 	index_close(index, RowExclusiveLock);
 	PG_RETURN_BOOL(n >= 0);
 }

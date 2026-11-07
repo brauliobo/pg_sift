@@ -522,6 +522,28 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 	return index;
 }
 
+bool		sift_maint_own_xacts = false;
+
+/*
+ * The end of a step of a background worker: its transaction commits and the next step runs in a new one. What a step frees carries its transaction's xid and the
+ * worker's snapshot holds the horizon at that xid for as long as the transaction lasts, so a step could not reuse what the one before freed (the file grew by
+ * the size of the output of every step of a rewrite, and the next VACUUM cut it back). NULL when the index is gone.
+ */
+Relation
+sift_maint_step_boundary(Relation index)
+{
+	Oid			indexoid = RelationGetRelid(index);
+
+	if (!sift_maint_own_xacts)
+		return index;
+	index_close(index, RowExclusiveLock);
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	return sift_try_open_index(indexoid, RowExclusiveLock);
+}
+
 /* Seals the active segment and promotes every sealed one; returns the number promoted */
 /* The free end of the file that a step of the worker leaves, cut when it is worth the lock (released: the step freed it itself, which its own snapshot holds back from the screen) */
 static void
@@ -580,8 +602,9 @@ sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS)
 }
 
 int
-sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
+sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic)
 {
+	Relation	index = *indexp;
 	const char *why;
 	TimestampTz start = GetCurrentTimestamp();
 	bool		all;
@@ -610,6 +633,9 @@ sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 		/* a step of the kind makes progress; this is the end of a kind that does not */
 		if (n >= SIFT_MAX_SEGMENTS)
 			break;
+		*indexp = index = sift_maint_step_boundary(index);
+		if (index == NULL)
+			return n;
 		maint_lock_mode(index, true, ops->step_lock);
 	}
 	if (n > 0)

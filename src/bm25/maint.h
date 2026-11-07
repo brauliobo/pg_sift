@@ -176,7 +176,9 @@ extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
  * The lock is not waited for to begin with (when a VACUUM, a merge or the worker holds it, nothing is done), but between steps. automatic: the call is the
  * server's own (the limit on the bytes rewritten applies). Returns the merges made, -1 when nothing was due or the lock was busy.
  */
-extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic);
+extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation *indexp, bool automatic);
+extern PGDLLIMPORT bool sift_maint_own_xacts;
+extern Relation sift_maint_step_boundary(Relation index);
 
 /* Like sift_maint_request_worker, but a request is not dropped for coming within the naptime of another: the worker itself leaves when it has nothing to do */
 extern bool sift_maint_register_worker(Relation index, const char *function);

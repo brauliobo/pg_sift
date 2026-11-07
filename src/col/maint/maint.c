@@ -148,7 +148,7 @@ sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn, int workers)
 	maint_after_build = true;
 	PG_TRY();
 	{
-		merged = sift_mops_rewrite(&maint_col_ops, index, false) > 0;
+		merged = sift_mops_rewrite(&maint_col_ops, &index, false) > 0;
 	}
 	PG_FINALLY();
 	{
@@ -286,6 +286,8 @@ maint_worker(Datum main_arg, bool seal)
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);	/* the name of the index, once it is open: a failure before that names the oid */
 
+	sift_maint_own_xacts = true;
+
 	PG_TRY();
 	{
 		Relation	index;
@@ -303,9 +305,16 @@ maint_worker(Datum main_arg, bool seal)
 				sift_cwbuf_seal(index, true);
 			/* the lock is busy when another worker or a VACUUM is at it, which then does the work */
 			while (sift_col_maint_promote(index, false) > 0 || sift_col_maint_merge_step(index, false))
+			{
 				CHECK_FOR_INTERRUPTS();
-			sift_mops_cut_free_end(&maint_col_ops, index);
-			sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+				if ((index = sift_maint_step_boundary(index)) == NULL)
+					break;
+			}
+			if (index != NULL)
+			{
+				sift_mops_cut_free_end(&maint_col_ops, index);
+				sift_log_maint(index, "column maintenance worker finished", start, -1, -1);
+			}
 		}
 		if (index != NULL)
 			index_close(index, RowExclusiveLock);
@@ -359,6 +368,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	MemoryContext cx = CurrentMemoryContext;
 	const char *volatile name = psprintf("%u", indexoid);
 
+	sift_maint_own_xacts = true;
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
 	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
 		return;
@@ -376,10 +386,11 @@ sift_col_rewrite_worker_main(Datum main_arg)
 			{
 				TimestampTz start = GetCurrentTimestamp();
 
-				if (sift_mops_rewrite(&maint_col_ops, index, true) >= 0)
+				if (sift_mops_rewrite(&maint_col_ops, &index, true) >= 0 && index != NULL)
 					sift_log_maint(index, "column rewrite worker finished", start, -1, -1);
 			}
-			index_close(index, RowExclusiveLock);
+			if (index != NULL)
+				index_close(index, RowExclusiveLock);
 		}
 		PopActiveSnapshot();
 		CommitTransactionCommand();
