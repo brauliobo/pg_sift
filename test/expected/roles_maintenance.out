@@ -134,47 +134,47 @@ SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1
 !SELECT sift.parse_query('alpha beta')
 !SELECT sift.highlight('alpha beta', 'alpha')
 $$);
-                                     stmt                                      |                     result                      |                       by_role                       
--------------------------------------------------------------------------------+-------------------------------------------------+-----------------------------------------------------
- SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'                                | ok: (t)                                         | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.stats()                                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT sift.stats_reset()                                                     | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.refusal_slugs()                                            | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.refusal_actions()                                          | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (rm.docs_idx,reindex)                       | rm_own, rm_mem, rm_mt
- SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (no rows)                                   | rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_rollup_counters()                                      | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_rollup_queue()                                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_rollup_misses()                                        | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (rm.docs_col,sift_col) ; (rm.docs_idx,sift) | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (no rows)                                   | rm_non
- SELECT * FROM sift.col_rollup_state                                           | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_rollup_requests                                        | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ERROR: permission denied for table docs         | rm_non
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ERROR: permission denied for table facts        | rm_non
- SELECT * FROM sift.worker_state('rm.docs_idx')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_maintenance_due('rm.docs_col')                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_index_info('rm.docs_col')                              | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_segments('rm.docs_col')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_leaves('rm.docs_col')                                  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_sections('rm.docs_col')                                | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_clustering('rm.docs_col')                              | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for table docs         | rm_non
- SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
- SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for table docs         | rm_non
- SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.table_segments('rm.facts')                                 | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.table_space('rm.facts')                                    | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.col_sections('rm.facts')                                   | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT * FROM sift.table_paths                                                | ERROR: permission denied for table table_paths  | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1       | ok: (rm.facts,doc)                              | rm_own, rm_mem, rm_mt
- SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1       | ok: (no rows)                                   | rm_wr, rm_rd, rm_non, rm_nos
- SELECT sift.tokenize('Hello World')                                           | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT sift.parse_query('alpha beta')                                         | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
- SELECT sift.highlight('alpha beta', 'alpha')                                  | ok                                              | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+                                     stmt                                      |                                 result                                  |                       by_role                       
+-------------------------------------------------------------------------------+-------------------------------------------------------------------------+-----------------------------------------------------
+ SELECT sift.version() ~ '^[0-9]+([.][0-9]+)+$'                                | ok: (t)                                                                 | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.stats()                                                    | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.stats_reset()                                                     | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.refusal_slugs()                                            | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.refusal_actions()                                          | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (rm.docs_idx,reindex)                                               | rm_own, rm_mem, rm_mt
+ SELECT object::text, kind FROM sift.upgrade_commands() ORDER BY 1             | ok: (no rows)                                                           | rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_counters()                                      | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_queue()                                         | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_misses()                                        | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (rm.docs_col,sift_col) ; (rm.docs_idx,sift) ; (rm.facts,sift_table) | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT index::text, kind FROM sift.workers ORDER BY 1                         | ok: (no rows)                                                           | rm_non
+ SELECT * FROM sift.col_rollup_state                                           | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_rollup_requests                                        | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.docs GROUP BY g')  | ERROR: permission denied for table docs                                 | rm_non
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.explain_why('SELECT g, count(*) FROM rm.facts GROUP BY g') | ERROR: permission denied for table facts                                | rm_non
+ SELECT * FROM sift.worker_state('rm.docs_idx')                                | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_maintenance_due('rm.docs_col')                         | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_index_info('rm.docs_col')                              | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_segments('rm.docs_col')                                | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_leaves('rm.docs_col')                                  | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_sections('rm.docs_col')                                | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_clustering('rm.docs_col')                              | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.col_unit_agg('rm.docs_col', 'id')                          | ERROR: permission denied for table docs                                 | rm_non
+ SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_nos
+ SELECT * FROM sift.col_unit_hist('rm.docs_col', 'g')                          | ERROR: permission denied for table docs                                 | rm_non
+ SELECT sift.col_verify('rm.docs_col', true)                                   | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_segments('rm.facts')                                 | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_space('rm.facts')                                    | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.col_sections('rm.facts')                                   | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT * FROM sift.table_paths                                                | ERROR: permission denied for table table_paths                          | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1       | ok: (rm.facts,doc)                                                      | rm_own, rm_mem, rm_mt
+ SELECT relid::text, attname FROM sift.table_paths_maintained ORDER BY 1       | ok: (no rows)                                                           | rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.tokenize('Hello World')                                           | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.parse_query('alpha beta')                                         | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
+ SELECT sift.highlight('alpha beta', 'alpha')                                  | ok                                                                      | rm_own, rm_mem, rm_mt, rm_wr, rm_rd, rm_non, rm_nos
 (39 rows)
 
 -- with USAGE on the schema sift taken back from PUBLIC and given to the owner: every other role is refused the schema, not an object of it
