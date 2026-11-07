@@ -7,7 +7,6 @@
 #include "postgres.h"
 
 #include "lib/stringinfo.h"
-#include "utils/rel.h"
 
 #include "col/col.h"
 

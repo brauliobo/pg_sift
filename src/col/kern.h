@@ -15,8 +15,6 @@
 #ifndef SIFT_COL_KERN_H
 #define SIFT_COL_KERN_H
 
-#include "core/host.h"
-
 #include "core/sift.h"
 #include "core/cpu.h"
 

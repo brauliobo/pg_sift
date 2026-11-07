@@ -6,8 +6,6 @@
 #ifndef SIFT_COL_SETSUM_H
 #define SIFT_COL_SETSUM_H
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 
 #define SIFT_CSET_EXACT			1		/* the sorted distinct keys, as offsets from the smallest in 1, 2, 4 or 8 bytes each */

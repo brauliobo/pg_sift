@@ -9,7 +9,6 @@
 #define SIFT_COL_POINT_H
 
 #include "col/enc.h"
-#include "core/host.h"
 
 #define SIFT_CPOINT_MAGIC	0x4B4C4F43		/* "COLK" */
 #define SIFT_CPOINT_VERSION_ROWS	2		/* the frame of a segment whose tables all list rows (minor 14) */

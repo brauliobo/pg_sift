@@ -4,7 +4,6 @@
  * col/shred_kern_avx2.c and col/shred_kern_neon.c after they define SIFT_VEC_<level>, SV_FN(x) (the kernels' names) and sv_words(p, value, ovf): the 64 bits of the states at p
  * that equal VALUE and OVERFLOW (the one operation of the level that is a movemask).
  */
-#include "core/simd_isa.h"
 
 #define SV_L	(SIFT_V_BYTES / 8)
 

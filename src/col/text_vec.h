@@ -3,7 +3,6 @@
  * width (SIFT_V_BYTES of core/simd_isa.h). Included by col/kern_avx2.c, col/kern_avx512.c and col/kern_neon.c inside SIFT_VEC_PUSH / SIFT_VEC_POP after
  * they define SIFT_VEC_<level> and TV_FN(x), the kernels' names and storage. The tails are the scalar kernels' (col/kern.c).
  */
-#include "core/simd_isa.h"
 
 typedef uint8 tv_b __attribute__((vector_size(SIFT_V_BYTES), aligned(1), may_alias));
 

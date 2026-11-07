@@ -18,8 +18,6 @@
 #ifndef SIFT_COLCODEC_H
 #define SIFT_COLCODEC_H
 
-#include "core/host.h"
-
 #include "core/sift.h"
 #include "core/cpu.h"
 #include "col/col.h"

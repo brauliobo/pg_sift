@@ -9,7 +9,6 @@
 #include "core/host.h"
 
 #include "col/col.h"
-#include "col/kern.h"
 #include "col/codec.h"
 
 typedef struct SiftColSchema

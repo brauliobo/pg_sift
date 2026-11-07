@@ -5,7 +5,6 @@
 #ifndef SIFT_COL_RUNS_H
 #define SIFT_COL_RUNS_H
 
-#include "core/host.h"
 
 #include "col/preagg.h"
 

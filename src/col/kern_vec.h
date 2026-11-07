@@ -3,7 +3,6 @@
  * at the width of the level (SIFT_V_BYTES of core/simd_isa.h). Included by col/kern_avx2.c and col/kern_neon.c inside SIFT_VEC_PUSH / SIFT_VEC_POP
  * after they define SIFT_VEC_<level> and CV_FN(x), the kernels' names and storage. The tails are the scalar kernels'.
  */
-#include "core/simd_isa.h"
 
 #define CV_L	(SIFT_V_BYTES / 8)
 
