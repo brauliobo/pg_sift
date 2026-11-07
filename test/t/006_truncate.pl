@@ -134,8 +134,13 @@ subtest 'a reader on the primary does not stop VACUUM, which gives the free end 
 	my $count = "SELECT count(*) FROM $t WHERE body @@> 'w1'";
 	my $rows = $bg->query_safe("BEGIN; SET enable_seqscan = off; $count");
 	# the cut asks for its AccessExclusiveLock for 5 s (lock_timeout ends the wait: the statement timeout only proves that it did), then gives the free end back
-	# under the lock that readers do not conflict with
-	$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM $t");
+	# under the lock that readers do not conflict with. A VACUUM that has to move segments down first gives back only the blocks that a snapshot cannot read any more,
+	# so what it vacates goes back at the VACUUM after the horizon passed it (the second one, after a new transaction id)
+	for (1 .. 2)
+	{
+		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM $t");
+		$primary->safe_psql('postgres', 'SELECT pg_current_xact_id()');
+	}
 	cmp_ok(blocks($primary), '<', $before, 'the free end went back while a reader holds the index');
 	is($bg->query_safe($count), $rows, 'the reader still reads the same rows');
 	$bg->query_safe('COMMIT');
