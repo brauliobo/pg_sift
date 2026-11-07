@@ -13,13 +13,15 @@ kind     warm   one un-measured execution in the same backend first (relcache, c
 """
 from dataclasses import dataclass, field, replace
 
+from ports import MODES as PORT_MODES
+
 
 @dataclass(frozen=True)
 class Case:
     id: str
     groups: tuple
     sql: str = ''
-    src: str = 'gate'          # corpus | catalog | gate
+    src: str = 'gate'          # corpus | catalog | gate | sqlite | mariadb (the ports: ports.py)
     kind: str = 'warm'
     pre: tuple = ()
     post: tuple = ()
@@ -228,6 +230,9 @@ BGW = [
 CONC_OF = {'agg_basic_five': (3, 8), 'c3_groups_label_count': (3, 8), 'acc_point_pk': (3, 200), 'bm25_top10_common': (3, 20), 'bm25_count_common': (3, 20),
            'col_wbuf_group': (3, 8), 'bm25_wbuf_count': (3, 8), 'storage_point_lookup': (3, 200)}
 
+# --- the SQLite and MariaDB ports (groups `sqlite`, `mariadb`; ports.py): the case's `sql` is the mode of the driver
+PORTS = [Case(f'{host}_{mode}', (host,), mode, src=host, kind='once', plan=False, note=f'{host} port: {mode}') for host, modes in PORT_MODES.items() for mode in modes]
+
 # first statement after eviction: the cold-read path of each family
 EVICT_OF = {'agg_basic_five': g('smoke', 'first-agg'), 'acc_point_pk': g('first-agg', 'first-col'), 'col_wbuf_group': g('first-col'), 'bm25_count_common': g('first-bm25'),
             'storage_point_lookup': g('first-table')}
@@ -242,7 +247,7 @@ def build(corpus_cases, catalog_cases):
     for name, groups in CATALOG:
         c = catalog_cases[name]
         out.append(Case(name, tuple(x for x in groups if x != 'first'), c.sql, 'catalog', 'warm', plan=True))
-    out += GATE + BGW
+    out += GATE + BGW + PORTS
     by = {c.id: c for c in out}
     for cid, groups in EVICT_OF.items():
         b = by[cid]

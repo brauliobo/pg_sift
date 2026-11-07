@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent / 'dry-perf-gate'     # cases.py, area-ma
 sys.dont_write_bytecode = True       # no __pycache__ in the repository
 sys.path.insert(0, str(HERE))      # python3 -I does not put the script's directory on the path
 from verdict import evidence_line, fmt_m, judge, report, spread, summarize  # noqa: E402
+from ports import PortSide, make_template as make_port_template, object_hashes  # noqa: E402
 W = Path(os.environ.get('GATE_ROOT', '/dev/shm/sift-perf-gate'))    # builds, data templates, run directories: tmpfs only
 STATE = Path(os.environ.get('GATE_STATE', str(Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'sift-perf-gate')))   # baselines and noise floors, kept out of git
 DEFAULT_SRC = os.environ.get('GATE_SRC', str(Path(__file__).resolve().parent.parent))
@@ -282,8 +283,8 @@ class PortableCheck(Build):
     (compile, link, no POPCNT or vector instruction outside the vector objects, no symbol that only the PostgreSQL sources define). A shared library links with undefined symbols;
     the server or the shell finds out when it loads one, which is why this runs before any workload."""
     STEPS = (('portable includes', ['bash', 'scripts/check-portable.sh']),
-             ('sqlite', ['make', '-C', 'sqlite', '-j4', 'B={dir}/sqlite', 'isa-check']),
-             ('mariadb', ['make', '-C', 'mariadb', '-j4', 'OUT={dir}/mariadb', 'isa-check']))
+             ('sqlite', ['make', '-C', 'sqlite', '-j4', 'B={dir}/sqlite', 'CC={cc}', 'isa-check']),
+             ('mariadb', ['make', '-C', 'mariadb', '-j4', 'OUT={dir}/mariadb', 'CC={cc}', 'isa-check']))
     PROBLEM = re.compile(r'undefined (symbol|reference)|error:|baseline object|popcount|does not exist|a portable file|: fatal|No such file', re.I)
 
     def __init__(self, repo, sha, patch=None, label=''):
@@ -296,7 +297,7 @@ class PortableCheck(Build):
             (W / 'ports').mkdir(parents=True, exist_ok=True)
             marker = self.dir / 'done.json'
             self.pin()
-            if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE:
+            if marker.exists() and json.loads(marker.read_text()).get('recipe') == RECIPE + 'p':
                 self.info = json.loads(marker.read_text())
                 self.touch()
                 return self
@@ -309,17 +310,19 @@ class PortableCheck(Build):
             if self.patch:
                 (self.dir / 'cand.patch').write_text(self.patch)
                 sh(['git', 'apply', '--whitespace=nowarn', str(self.dir / 'cand.patch')], cwd=self.tree)
+            # the flags of the PostgreSQL build: a commit that only moves lines or paths leaves the objects of the ports byte-identical too
+            cc = f'cc {COPT} -ffile-prefix-map={self.tree}=/src'
             t0, steps, problems = time.time(), {}, []
             for name, cmd in self.STEPS:
                 if cmd[0] == 'make' and not (self.tree / cmd[2]).exists():
                     continue                  # a base that predates the port
                 t1 = time.time()
-                r = subprocess.run([c.format(dir=self.dir) for c in cmd], cwd=self.tree, text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
+                r = subprocess.run([c.format(dir=self.dir, cc=cc) for c in cmd], cwd=self.tree, text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
                 steps[name] = round(time.time() - t1, 1)
                 if r.returncode:
                     lines = [l.strip()[:300] for l in (r.stdout + r.stderr).splitlines() if self.PROBLEM.search(l)]
                     problems += [f'{name}: {l}' for l in dict.fromkeys(lines)][:12] or [f'{name}: failed ({r.returncode}): ' + (r.stderr.strip().splitlines() or ['?'])[-1][:200]]
-            self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE)
+            self.info = dict(ok=not problems, problems=problems, steps=steps, secs=round(time.time() - t0, 1), recipe=RECIPE + 'p', objects=object_hashes(self.dir) if not problems else {})
             marker.write_text(json.dumps(self.info))
             for old in sorted((d for d in (W / 'ports').iterdir() if (d / 'done.json').exists()), key=lambda d: d.stat().st_mtime, reverse=True)[4:]:
                 use = open(W / 'builds' / (old.name + '.use'), 'a')
@@ -561,6 +564,8 @@ def under_perf(cl, rundir, work):
 
 
 def run_once(cl, case, rundir, tag):
+    if isinstance(cl, PortSide):
+        return cl.run(case, rundir, tag)
     spath = rundir / 'run.sql'
     spath.write_text(script(case, HERE / 'ctl.sh'))
     try:
@@ -770,8 +775,8 @@ def main():
     if a.cmd == 'baseline':
         cand_sha, patch = base_sha, None
 
-    port_note = ''
-    if a.cmd == 'run' and portable_relevant(changed_paths(repo, base_sha, cand_sha, patch)):
+    port_note, pc, pb, port_groups = '', None, None, set()
+    if a.cmd in ('run', 'baseline') and (a.cmd == 'baseline' or portable_relevant(changed_paths(repo, base_sha, cand_sha, patch)) or re.search(r'sqlite|mariadb', a.groups or a.cases or '')):
         pc = PortableCheck(repo, cand_sha, patch, 'candidate').ensure()
         print('\n'.join(pc.report()))
         if not pc.info['ok']:
@@ -781,6 +786,9 @@ def main():
                 Path(a.json).write_text(json.dumps(dict(status='FAIL', evidence=line, portable=pc.info), indent=1))
             return 1
         port_note = f", portable ok ({pc.info['secs']}s)"
+        pb = pc if cand_sha == base_sha and not patch else PortableCheck(repo, base_sha, label='base').ensure()
+        pdiff = {o for o in set(pb.info['objects']) | set(pc.info['objects']) if pb.info['objects'].get(o) != pc.info['objects'].get(o)}
+        port_groups = {h for h in ('sqlite', 'mariadb') if any(o.startswith(h + '/') for o in pdiff)}
     base = Build(repo, base_sha, label='base')
     cand = Build(repo, cand_sha, patch, label='candidate') if (cand_sha != base_sha or patch) else base
     if a.cmd == 'select':
@@ -797,7 +805,7 @@ def main():
     diff = sorted(o for o in set(base.info['objects']) | set(cand.info['objects']) if base.info['objects'].get(o) != cand.info['objects'].get(o))
     meta = dict(port_note=port_note, base=base.key, cand=cand.key, base_text=base.info['text'], cand_text=cand.info['text'], differing_objects=diff)
     sql_changed = [p for p in changed_paths(repo, base_sha, cand_sha, patch) if p.startswith('sql/pg_sift--') or p == 'pg_sift.control']
-    if a.cmd == 'run' and not diff and not sql_changed and not a.force_workload:
+    if a.cmd == 'run' and not diff and not sql_changed and not port_groups and not a.force_workload:
         line = f"perf-gate {base.key} -> {cand.key}: PASS-IDENTICAL (all {len(base.info['objects'])} stripped object files byte-identical, text {cand.info['text'] - base.info['text']:+d} B{port_note})"
         print(line)
         out = dict(status='PASS-IDENTICAL', meta=meta, evidence=line)
@@ -820,6 +828,9 @@ def main():
         if un:
             log('unmapped files fall back to smoke:', ' '.join(un[:6]))
         selected = [c for c in registry if set(c.groups) & groups]
+    if not a.cases and not a.groups and a.cmd != 'baseline':
+        groups |= port_groups
+        selected = [c for c in registry if set(c.groups) & groups]
     meta['groups'] = sorted(groups)
     log(f'{len(selected)} cases, groups {",".join(sorted(groups)) or "-"}; differing objects: {len(diff)}')
     if not selected:
@@ -834,28 +845,33 @@ def main():
     rundir = W / 'run' / f'{os.getpid()}'
     shutil.rmtree(rundir, ignore_errors=True)
     rundir.mkdir(parents=True)
-    sides = {'base': Cluster('base', rundir / 'data-base', rundir / 'sock-b', 57810, base.root), 'cand': Cluster('cand', rundir / 'data-cand', rundir / 'sock-c', 57811, cand.root)}
+    pg_sel, port_sel = [c for c in selected if c.src not in ('sqlite', 'mariadb')], [c for c in selected if c.src in ('sqlite', 'mariadb')]
+    sides = {'base': Cluster('base', rundir / 'data-base', rundir / 'sock-b', 57810, base.root), 'cand': Cluster('cand', rundir / 'data-cand', rundir / 'sock-c', 57811, cand.root)} if pg_sel else {}
     try:
         # creation, eviction and the copies of the template happen under one lock: no other gate removes or rebuilds a template while it is copied, and a copy that does
         # not match the manifest written with the template is an infrastructure error, never a measurement
-        with Lock('lock-template'):
-            if not template_ok(tpl):
-                make_template(base, a.rows, tpl, reg_tree)
-            os.utime(tpl)
-            olds = sorted((p for p in (W / 'data').iterdir() if p.name.startswith('tpl-') and p.is_dir() and p != tpl), key=lambda p: p.stat().st_mtime, reverse=True)
-            for old in olds[2:]:
-                shutil.rmtree(old)
-                Path(str(old) + '.log').unlink(missing_ok=True)
-            for s in sides.values():
-                shutil.copytree(tpl, s.data, symlinks=True)
-                if manifest(s.data) != json.loads((tpl / 'gate.complete').read_text()):
-                    raise InfraError(f'the copy {s.data} differs from the template {tpl.name}')
+        if pg_sel:
+            with Lock('lock-template'):
+                if not template_ok(tpl):
+                    make_template(base, a.rows, tpl, reg_tree)
+                os.utime(tpl)
+                olds = sorted((p for p in (W / 'data').iterdir() if p.name.startswith('tpl-') and p.is_dir() and p != tpl), key=lambda p: p.stat().st_mtime, reverse=True)
+                for old in olds[2:]:
+                    shutil.rmtree(old)
+                    Path(str(old) + '.log').unlink(missing_ok=True)
+                for s in sides.values():
+                    shutil.copytree(tpl, s.data, symlinks=True)
+                    if manifest(s.data) != json.loads((tpl / 'gate.complete').read_text()):
+                        raise InfraError(f'the copy {s.data} differs from the template {tpl.name}')
         for s in sides.values():
             s.start()
         t0 = time.time()
         noise = load_noise(base.key)
         cfg = a
-        res = measure_cases(selected, sides, a.runs, rundir, True, cfg, noise)
+        res = measure_cases(pg_sel, sides, a.runs, rundir, True, cfg, noise) if pg_sel else {}
+        if port_sel:
+            make_port_template(pb.dir, rundir / 'port-template', {c.src for c in port_sel})
+            res.update(measure_cases(port_sel, {'base': PortSide('base', pb.dir, rundir / 'port-template'), 'cand': PortSide('cand', pc.dir, rundir / 'port-template')}, a.runs, rundir, True, cfg, noise))
         damaged = re.compile(r'segment of column format|invalid page|could not read block|checksum|corrupt|unexpected data beyond|this build reads|not a valid')
         for cid, r in res.items():
             for side, sm in r['sides'].items():
