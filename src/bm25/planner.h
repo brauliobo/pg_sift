@@ -19,7 +19,6 @@
 #define SIFT_PLANNER_H
 
 #include "nodes/extensible.h"
-#include "nodes/pathnodes.h"
 
 typedef /* Rows of a table whose keys a ranked scan tests an INCLUDE column against (SIFT_PRIV_SEMI) */
 #define SIFT_SEMI_MAX_SET	65536

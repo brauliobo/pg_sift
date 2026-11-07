@@ -4,7 +4,6 @@
 #ifndef SIFT_CSCAN_INT_H
 #define SIFT_CSCAN_INT_H
 
-#include "nodes/extensible.h"
 #include "utils/sortsupport.h"
 
 #include "bm25/eval.h"

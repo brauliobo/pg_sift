@@ -13,8 +13,6 @@
 #ifndef SIFT_PARALLEL_H
 #define SIFT_PARALLEL_H
 
-#include "core/host.h"
-
 #include "core/sift.h"
 
 /* A ranked hit as exchanged between participants */
