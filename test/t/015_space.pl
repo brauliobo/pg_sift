@@ -143,23 +143,35 @@ for my $kind (qw(col tbl))
 		my $query = $kind eq 'col' ? 'SELECT v, count(*) FROM s WHERE v > 0 GROUP BY v' : 'SELECT * FROM s';
 		like($primary->safe_psql('postgres', "$cursor_settings; EXPLAIN (COSTS OFF) $query"), qr/SiftAgg/, 'cursor reads the column index') if $kind eq 'col';
 		$bg->query_safe("BEGIN; $cursor_settings; DECLARE c CURSOR FOR $query; FETCH 1 FROM c");
-		$primary->safe_psql('postgres', "SET statement_timeout = '3s'; VACUUM s");
-		is(size($primary, $kind), $before, 'an open cursor skips reclamation without waiting');
+		my $groups = $primary->safe_psql('postgres', 'SELECT count(DISTINCT v) FROM s WHERE v > 0');
+		# the cut asks for its lock for 5 s (lock_timeout ends the wait), so the statement timeout only proves that the wait ended at the lock timeout
+		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM s");
+		my $held = size($primary, $kind);
+		if ($kind eq 'col')
+		{
+			# the lock stays refused, so the free end goes back online: readers do not conflict with it and the open cursor reads on
+			cmp_ok($held, '<', $before, 'an open cursor does not keep the free end of the index');
+			is(scalar(split /\n/, $bg->query_safe('FETCH ALL FROM c')), $groups - 1, 'the open cursor still reads all its groups');
+		}
+		else
+		{
+			is($held, $before, 'an open cursor skips the cut of a table once the lock timeout ends the wait');
+		}
 		$bg->query_safe('COMMIT');
 		$bg->quit;
 		if ($kind eq 'tbl')
 		{
 			$primary->safe_psql('postgres', 'VACUUM (TRUNCATE FALSE) s');
-			is(size($primary, $kind), $before, 'TRUNCATE FALSE preserves the table file');
+			is(size($primary, $kind), $held, 'TRUNCATE FALSE preserves the table file');
 		}
 		else
 		{
 			$primary->safe_psql('postgres', 'ALTER INDEX s_col SET (vacuum_truncate = false); VACUUM s');
-			is(size($primary, $kind), $before, 'vacuum_truncate=false preserves the index file');
+			is(size($primary, $kind), $held, 'vacuum_truncate=false preserves the index file');
 			$primary->safe_psql('postgres', 'ALTER INDEX s_col RESET (vacuum_truncate)');
 		}
 		$primary->safe_psql('postgres', 'VACUUM s');
-		cmp_ok(size($primary, $kind), '<', $before, 'closing the cursor allows reclamation');
+		cmp_ok(size($primary, $kind), '<', $held, 'closing the cursor allows reclamation');
 		healthy($primary, $kind, $expected);
 	};
 }
