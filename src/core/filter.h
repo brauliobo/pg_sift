@@ -10,8 +10,6 @@
 #ifndef SIFT_FILTER_H
 #define SIFT_FILTER_H
 
-#include "core/host.h"
-
 #include "core/sift.h"
 
 /* The pages of one superblock; the offset masks of its exact pages are rows [row, row + popcount(pages & ~lossy)) */

@@ -5,7 +5,6 @@
 #ifndef SIFT_I64SET_H
 #define SIFT_I64SET_H
 
-#include "core/host.h"
 #include "core/cmp.h"
 #include "core/hash.h"
 

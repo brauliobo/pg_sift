@@ -9,8 +9,6 @@
 #ifndef SIFT_LANE_H
 #define SIFT_LANE_H
 
-#include "core/host.h"
-
 #include "core/store.h"
 
 typedef struct SiftLanePageHead

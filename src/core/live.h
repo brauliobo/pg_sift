@@ -6,8 +6,6 @@
 #ifndef SIFT_LIVE_H
 #define SIFT_LIVE_H
 
-#include "core/host.h"
-
 #include "core/store.h"
 
 /* Offset of the first liveness bit in the LIVE run of a segment spanning nsb superblocks */
