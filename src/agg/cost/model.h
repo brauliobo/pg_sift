@@ -28,6 +28,8 @@
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
 #define AGG_VLEAF_ELEM		0.6		/* an element of an object looked up by key (a metric of a free key object), per row and key: 1, 2 and 4 keys of an object of 12 elements took 4.7 ms, 7.3 ms and 12.5 ms more than the group alone over 1,000,000 rows (0.55 ns an element) */
 #define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
+#define AGG_EVAL_DIRECT		115.0	/* ... of a combo with a slot PostgreSQL evaluates (a column minus a column, an arithmetic expression): 69 ns an entry measured, max(ends - starts) over 150,000 rows of 10 to 150,000 distinct pairs takes 3.1 to 13.5 ms */
+#define AGG_DIRECT_ROW		35.0	/* a tuple of such a combo, whatever the number of distinct combinations: the leaves read and the combination looked up (21 ns a row measured, the same rows with 10 distinct pairs) */
 #define AGG_JOIN_PROBE		58.0	/* a tuple's probe of a lookup table of 250,000 rows by its join key: the key's hash and the rows it finds, in the operators AGG_SCAN_SPEED scales (35 ns measured); it grows with the square root of the rows, as the table leaves the cache */
 #define AGG_JOIN_LUT		5.0		/* ... of a table answered from a byte table of its keys (semi_lut_build, in the cache of a core): 40 instructions a tuple measured on 985,000 tuples of a 550,000-key table */
 #define AGG_ENTRY_ROW		70.0	/* a new entry of a combo of a join that reads values beyond its key (a CASE of a lookup column and a measure): the hash insert and the id of its value, 215 ns measured with 2.8 million entries (2,040 instructions with one expression, 5,450 with seven) */

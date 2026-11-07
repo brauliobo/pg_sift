@@ -293,7 +293,7 @@ c3_wide_count_cols	SiftAgg	single:t
 c3_wide_filter_each	SiftAgg	single:t
 c3_wide_expr_sums	SiftAgg	single:t
 c3_span_length_max	-	single:f:cost
-c3_span_length_expr	SiftAgg	single:t
+c3_span_length_expr	-	single:f:cost
 c3_span_length_avg_max	-	single:f:cost
 c3_wide_three_keys	SiftAgg	single:t
 c3_wide_ungrouped_many	SiftAgg	single:t

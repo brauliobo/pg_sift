@@ -317,7 +317,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		}
 		if (combo_wsum_only(s, ci))
 			continue;
-		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
+		cost += tuples * (wide * AGG_WIDE_LEAF + (direct ? AGG_DIRECT_ROW : 0.0)) + combo_entries(c, s, cb, tuples, false) * cb->nslots * (direct ? AGG_EVAL_DIRECT : AGG_EVAL_SLOT);
 	}
 	return cost + *entry_cost;
 }
