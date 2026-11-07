@@ -153,7 +153,7 @@ BEGIN
 			CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
-		-- a segment is minor 9, 10, 13, 14, 15 or 20 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.17)
+		-- a segment is minor 9, 10, 13, 14, 15 or 20 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does
 		-- cube_minmax and superunit are on unless the index says otherwise (dflt): the units written before 3.3 lack their sections
 		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
 				('^paths=', 6, 'JSON paths', false,
