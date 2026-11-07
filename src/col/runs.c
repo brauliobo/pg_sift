@@ -11,8 +11,6 @@
  * last ones, the last of the run first, each {i64 key, u64 heap address of the row}: ORDER BY .. LIMIT n <= H reads them instead of the unit.
  */
 
-#include "core/host.h"
-
 #include "col/runs.h"
 #include "core/cmp.h"
 

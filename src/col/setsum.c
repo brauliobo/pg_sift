@@ -13,8 +13,6 @@
  * its smallest and largest, or that has fewer than two, has no EXACT or BLOOM (its zone says as much).
  */
 
-#include "core/host.h"
-
 #include "col/point.h"
 #include "col/setsum.h"
 #include "core/cmp.h"

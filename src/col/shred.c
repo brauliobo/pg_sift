@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "bm25/analyze.h"
 #include "col/kern.h"
 #include "core/limits.h"
 #include "core/page.h"

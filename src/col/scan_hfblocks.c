@@ -8,7 +8,6 @@
 #include "postgres.h"
 
 #include "common/hashfn.h"
-#include "utils/memutils.h"
 
 #include "col/am.h"
 #include "core/tomb.h"

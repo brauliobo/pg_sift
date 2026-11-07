@@ -3,7 +3,6 @@
  * byte comparison of the rebuilt blob, the excepts
  * used by sift.verify
  */
-#include "core/host.h"
 #include "col/preagg_read/preagg_read_int.h"
 
 static bool

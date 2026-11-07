@@ -3,7 +3,6 @@
  * the compact form and the signatures
  * written by the segment writer
  */
-#include "core/host.h"
 #include "col/compress.h"
 #include "col/dict/dict_int.h"
 

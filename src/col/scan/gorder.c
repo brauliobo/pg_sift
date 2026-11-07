@@ -4,10 +4,8 @@
  * the reads of its strings, ranges and heads
  */
 #include "postgres.h"
-#include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "col/point.h"
-#include "col/wbuf.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
 

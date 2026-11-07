@@ -3,7 +3,6 @@
  * and its view; every section of a segment is read by the file
  * next to it that names it
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
 

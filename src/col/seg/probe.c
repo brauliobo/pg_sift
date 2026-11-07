@@ -2,8 +2,6 @@
  * col/seg/probe.c - the heap rows a compact block of the global order reads its exact keys from (col/seg/gorder.c is portable and reaches them through the hooks of seg_int.h).
  */
 #include "postgres.h"
-#include "access/heapam.h"
-#include "access/tableam.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_type_d.h"
 #include "storage/bufpage.h"

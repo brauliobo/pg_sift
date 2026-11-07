@@ -2,8 +2,6 @@
  * col/preagg_opt.c - the pre-aggregates option: the leaves that can be dims and measures, the default spec, the parser (docs/COL-PREAGG.md).
  */
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 
 /* a scalar leaf of the top level, or of a list of the top level: a list inside a list has no cube */

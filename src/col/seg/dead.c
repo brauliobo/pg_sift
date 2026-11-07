@@ -5,8 +5,6 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "core/cmp.h"
-#include "col/am.h"
 #include "col/seg_int.h"
 
 /*

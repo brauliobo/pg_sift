@@ -4,8 +4,6 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
-#include "storage/procarray.h"
-#include "col/am.h"
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 

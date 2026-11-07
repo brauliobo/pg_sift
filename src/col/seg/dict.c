@@ -3,7 +3,6 @@
  * the counts and places of a value, the text signatures
  * and the checks of their hashes and counts
  */
-#include "core/host.h"
 #include "col/compress.h"
 #include "col/seg_int.h"
 

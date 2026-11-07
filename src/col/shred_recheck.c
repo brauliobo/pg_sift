@@ -6,13 +6,9 @@
  */
 #include "core/host.h"
 
-#include <math.h>
-
 #include "catalog/pg_type.h"
 #include "fmgr.h"
-#include "miscadmin.h"
 #include "nodes/miscnodes.h"
-#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/jsonb.h"
 #include "utils/memutils.h"

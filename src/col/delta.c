@@ -10,9 +10,6 @@
  */
 #include "postgres.h"
 
-#include "utils/memutils.h"
-
-#include "col/am.h"
 #include "col/pagg.h"
 #include "col/scan_int.h"
 #include "core/popcount.h"

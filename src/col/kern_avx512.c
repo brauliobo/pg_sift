@@ -8,7 +8,6 @@
  * values per step from four 128-bit windows of the stream. bits_count is the bitmap module's AVX-512 popcount. gather_u32 is a masked
  * VPGATHERDD; the other selection decodes (for_i64_sel) stay scalar: gathers were slower than the loads they replace.
  */
-#include "core/host.h"
 
 #define SIFT_VEC_AVX512
 #include "col/kern_int.h"

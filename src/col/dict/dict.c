@@ -3,7 +3,6 @@
  * the hash table of the strings and its growth
  * the other files order, serialize and parse a dictionary
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "core/hash.h"
 #include "col/dict/dict_int.h"

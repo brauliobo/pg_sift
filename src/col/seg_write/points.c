@@ -3,7 +3,6 @@
  * from the keys of the units to the blobs of the file
  * build, then write
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 

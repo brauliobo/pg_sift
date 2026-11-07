@@ -2,10 +2,6 @@
  * col/gorder.c - the global order of a leaf in a segment (col/gorder.h). Portable (core/host.h only).
  */
 
-#include "core/host.h"
-
-#include <math.h>
-
 #include "col/codec.h"
 #include "col/enc_int.h"
 #include "col/gquant.h"

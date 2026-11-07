@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include "utils/builtins.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 

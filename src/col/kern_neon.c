@@ -7,12 +7,8 @@
  * compare. The 8-bit LUT is a two-register table lookup (TBL). The last partial word of a bit vector is computed from a zero
  * padded copy of the remaining elements.
  */
-#include "core/host.h"
 
 #define SIFT_VEC_NEON
-#include "col/kern_int.h"
-#include "core/neon.h"
-#include "core/simd_isa.h"
 
 #if defined(SIFT_HAVE_NEON)
 

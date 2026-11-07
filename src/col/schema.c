@@ -1,7 +1,6 @@
 /*
  * col/schema.c - L1 of the column engine: the schema, the leaf list of an index.
  */
-#include "core/host.h"
 
 #include "col/enc.h"
 #include "col/enc_int.h"

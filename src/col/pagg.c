@@ -6,18 +6,13 @@
 #include <math.h>
 
 #include "access/table.h"
-#include "catalog/index.h"
-#include "catalog/pg_type_d.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
-#include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
 #include "col/am.h"

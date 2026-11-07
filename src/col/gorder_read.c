@@ -3,15 +3,9 @@
  * Portable (core/host.h only).
  */
 
-#include "core/host.h"
-
 #include "col/codec.h"
-#include "col/enc_int.h"
 #include "col/gquant.h"
 #include "col/gorder.h"
-#include "col/point.h"
-#include "col/runs.h"
-#include "core/cmp.h"
 
 #define GORD_ALIGN8(x)	(((uint64) (x) + 7) & ~(uint64) 7)
 

@@ -3,7 +3,6 @@
  * the unit aggregates, the super units
  * written after the units they summarize
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 

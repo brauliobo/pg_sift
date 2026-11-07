@@ -11,8 +11,6 @@
 #include "core/cmp.h"
 #include "col/gorder.h"
 #include "col/scan_int.h"
-#include "fmgr.h"
-#include "utils/fmgrprotos.h"
 
 #ifdef SIFT_TESTING
 /*

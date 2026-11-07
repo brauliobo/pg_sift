@@ -4,7 +4,6 @@
  * the runs, the publication and the NOTICEs are in the files next to it
  */
 #include "postgres.h"
-#include <math.h>
 #include "commands/progress.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
@@ -12,7 +11,6 @@
 #include "bm25/build.h"
 #endif
 #include "col/build/build_int.h"
-#include "col/maint/maint_int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_workers = 0;

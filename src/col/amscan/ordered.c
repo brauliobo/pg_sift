@@ -16,7 +16,6 @@
 #include "executor/tuptable.h"
 #include "utils/rel.h"
 #include "col/am.h"
-#include "agg/colsrc.h"
 #include "agg/gord.h"
 #include "col/amscan/amscan_int.h"
 #include "col/scan/gmem.h"

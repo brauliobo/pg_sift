@@ -10,15 +10,12 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/inet.h"
-#include "utils/cash.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
-#include "utils/varbit.h"
 #include "utils/timestamp.h"
 #include "utils/date.h"
 #include "utils/uuid.h"
-#include "utils/rangetypes.h"
 
 #include "col/am.h"
 

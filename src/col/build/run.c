@@ -4,7 +4,6 @@
  * the end of a segment
  */
 #include "postgres.h"
-#include <math.h>
 #include "access/heapam.h"
 #include "commands/progress.h"
 #include "pgstat.h"

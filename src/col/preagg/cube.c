@@ -3,7 +3,6 @@
  * the groups, the counts, the sums and the minima and maxima
  * emitted as the cube blob
  */
-#include "core/host.h"
 #include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"
 

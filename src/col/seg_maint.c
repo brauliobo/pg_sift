@@ -2,8 +2,6 @@
  * col/seg_maint.c - column segments in maintenance: decoding for rewrites, overflow reaping, VACUUM and verification (col/seg.h).
  */
 
-#include "core/host.h"
-
 #include "col/hll.h"
 #include "col/ktab.h"
 #include "col/preagg.h"

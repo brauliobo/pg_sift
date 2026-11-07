@@ -9,7 +9,6 @@
  * replace. The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */
-#include "core/host.h"
 
 #define SIFT_VEC_AVX2
 #include "col/kern_int.h"

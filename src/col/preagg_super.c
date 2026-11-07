@@ -4,8 +4,6 @@
  * the stored bytes are what the units say, byte for byte.
  */
 
-#include "core/host.h"
-
 #include "col/preagg.h"
 #include "col/preagg_int.h"
 #include "core/cmp.h"

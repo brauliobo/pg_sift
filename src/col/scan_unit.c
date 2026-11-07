@@ -6,25 +6,13 @@
 
 #include "port/pg_bitutils.h"
 
-#include "common/pg_prng.h"
-
-#include "access/htup_details.h"
 #include "access/xact.h"
-#include "miscadmin.h"
-#include "utils/rls.h"
-#include "storage/bufmgr.h"
-#include "storage/predicate.h"
-#include "utils/acl.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "core/cmp.h"
-#include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
-#include "bm25/estimate.h"
 #include "col/seg.h"
 #include "core/tomb.h"
 #include "core/visibility.h"

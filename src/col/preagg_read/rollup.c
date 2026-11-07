@@ -3,7 +3,6 @@
  * the tuples, a projection of the dimensions, the leaves of the unit
  * the inverse of preagg/rollup.c
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/preagg_read/preagg_read_int.h"
 

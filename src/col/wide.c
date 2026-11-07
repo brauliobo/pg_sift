@@ -1,7 +1,6 @@
 /*
  * col/wide.c - the values of the wide leaf types. Portable: no allocation, no host type.
  */
-#include "core/host.h"
 
 #include "col/wide.h"
 

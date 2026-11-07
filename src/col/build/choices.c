@@ -7,15 +7,12 @@
  * command that turns each choice off from the table docs/messages.tsv generates (choices_gen.h), so a text is written once, there.
  */
 #include "postgres.h"
-#include <math.h>
 #include "access/table.h"
 #include "catalog/pg_constraint.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "col/shred.h"
-#include "core/limits.h"
 #include "col/build/build_int.h"
 #include "col/build/choices_gen.h"
 #include "agg/refuse.h"

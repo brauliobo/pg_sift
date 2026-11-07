@@ -1,7 +1,6 @@
 /*
  * col/codec_policy.c - the compression policy of a column: the parser of the reloption and its canonical name.
  */
-#include "core/host.h"
 
 #include "col/codec_int.h"
 

@@ -8,8 +8,6 @@
  * The other sections are in schema.c, dict.c, batch.c, chunk.c, ctest.c and unit.c; what they share is in enc_int.h.
  */
 
-#include "core/host.h"
-
 #include "col/enc.h"
 #include "col/enc_int.h"
 

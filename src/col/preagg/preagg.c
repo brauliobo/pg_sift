@@ -22,7 +22,6 @@
  *     in bytes as a varint, so that a query skips the measures it does not read.
  */
 
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/preagg/pagg_build_int.h"
 

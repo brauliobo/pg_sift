@@ -3,7 +3,6 @@
  * so that a test can damage the section and see the open or the
  * verify refuse it; compiled only with SIFT_TESTING
  */
-#include "core/host.h"
 #include "col/ktab.h"
 #include "col/setsum.h"
 #include "col/seg_int.h"

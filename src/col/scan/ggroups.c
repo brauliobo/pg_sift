@@ -2,8 +2,6 @@
  * col/scan/ggroups.c - the values of the group column of a scan that reads the groups of a second order one after the other (an index-only scan ordered by the group and the key)
  */
 #include "postgres.h"
-#include "col/point.h"
-#include "col/wbuf.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
 

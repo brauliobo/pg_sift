@@ -1,13 +1,8 @@
 /*
  * col/shred_kern_neon.c - AArch64 Advanced SIMD kernels of the shredder output; the results equal col/shred_kern.c's.
  */
-#include "core/host.h"
 
 #define SIFT_VEC_NEON
-#include "core/simd_isa.h"
-
-#include "col/shred.h"
-#include "core/neon.h"
 
 #if defined(SIFT_HAVE_NEON)
 

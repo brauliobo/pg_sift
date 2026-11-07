@@ -5,14 +5,11 @@
  */
 #include "postgres.h"
 
-#include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "common/hashfn.h"
-#include "funcapi.h"
 #include "storage/lmgr.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"

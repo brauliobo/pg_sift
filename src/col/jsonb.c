@@ -10,11 +10,9 @@
 #include "catalog/pg_type.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-#include "col/am.h"
 #include "col/build.h"
 #include "col/shred_pg.h"
 

@@ -3,7 +3,6 @@
  * reads: the global order and the point directory against the units
  * they were built from; run by the verify functions, never by a scan
  */
-#include "core/host.h"
 #include "col/seg_int.h"
 
 /* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */

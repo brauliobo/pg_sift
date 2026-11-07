@@ -9,19 +9,13 @@
 #include <math.h>
 
 #include "access/parallel.h"
-#include "access/table.h"
 #include "access/tableam.h"
-#include "catalog/index.h"
 #include "commands/progress.h"
 #include "datatype/timestamp.h"
-#include "executor/instrument.h"
-#include "miscadmin.h"
 #include "optimizer/paths.h"
 #include "pgstat.h"
 #include "storage/condition_variable.h"
-#include "tcop/tcopprot.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
 #ifdef SIFT_TESTING

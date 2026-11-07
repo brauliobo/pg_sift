@@ -6,10 +6,6 @@
  * vectorizes them or the NEON loop is slower: max32 and prefix32 tie (105 and 1313 ns), scale32 117 -> 234, scale64 375 -> 688, prefix64 1813 -> 2625,
  * alp_keys_f8 1000 -> 1563, alp_f8 516 -> 1000, alp_f4 438 -> 516.
  */
-#include "core/host.h"
-
-#include "col/codec_int.h"
-#include "core/neon.h"
 
 #if defined(SIFT_HAVE_NEON)
 

@@ -3,7 +3,6 @@
  * units, the strings of a text order, the ranges and seeks a scan makes
  * in it and the addresses a range lists
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
 #include "col/gquant.h"

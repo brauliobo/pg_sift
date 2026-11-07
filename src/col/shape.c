@@ -25,7 +25,6 @@
 #include "utils/inet.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
-#include "utils/timestamp.h"
 #include "utils/typcache.h"
 
 #include "col/am.h"

@@ -1,7 +1,6 @@
 /*
  * col/point.c - the point directory of a leaf in a segment (col/point.h). Portable (core/host.h only).
  */
-#include "core/host.h"
 #include "core/hash.h"
 
 #include "col/point.h"

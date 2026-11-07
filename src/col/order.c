@@ -4,16 +4,13 @@
  */
 #include "postgres.h"
 
-#include "access/relation.h"
 #include "catalog/pg_class.h"
-#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
 #include "core/cmp.h"
 #include "col/am.h"
 #include "col/enc.h"
-#include "col/pg.h"
 #include "col/runs.h"
 #include "col/seg.h"
 

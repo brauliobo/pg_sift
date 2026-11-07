@@ -3,7 +3,6 @@
  * the rollup blob of a list and of the rows of the unit
  * emitted after the cube
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"

@@ -4,7 +4,6 @@
  * and the batches a tuple scan returns
  */
 #include "postgres.h"
-#include <math.h>
 #include "access/table.h"
 #include "access/visibilitymap.h"
 #include "utils/datum.h"

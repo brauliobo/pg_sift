@@ -1,7 +1,6 @@
 /*
  * col/seg/dictkeep.c - the compressed blocks of a dictionary read for a string by code: the last LOOK_KEEP of them are kept
  */
-#include "core/host.h"
 #include "col/seg_int.h"
 
 /* The block b into blkraw: from the blocks kept when it was read lately, else decompressed (and kept, when it was compressed) */

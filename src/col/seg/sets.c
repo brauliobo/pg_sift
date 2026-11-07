@@ -4,7 +4,6 @@
  * tables; and the pruning of units by them
  */
 #include "core/cmp.h"
-#include "core/host.h"
 #include "col/hll.h"
 #include "col/ktab.h"
 #include "col/setsum.h"

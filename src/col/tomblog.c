@@ -7,7 +7,6 @@
 
 #include "access/table.h"
 #include "access/transam.h"
-#include "access/xact.h"
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"

@@ -2,10 +2,8 @@
  * col/seg/gorder_group.c - the rows of one group of a second order (a global order grouped by another leaf) between two keys: the group's run
  * in the table of groups, the two bounds as seeks among its entries
  */
-#include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"
-#include "col/gquant.h"
 
 /*
  * Is the second order of leaf col (a complete block grouped by leaf gcol) there to read: the slot to read it through, -1 when the segment has none

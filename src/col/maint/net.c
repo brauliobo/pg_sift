@@ -7,7 +7,6 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "bm25/maint_int.h"
 #include "core/ops.h"

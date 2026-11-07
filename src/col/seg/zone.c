@@ -3,7 +3,6 @@
  * unit, the kinds a leaf holds, the sampled statistics and their check
  * what the planner and the pruning read before a unit is opened
  */
-#include "core/host.h"
 #include "col/setsum.h"
 #include "core/popcount.h"
 #include "col/seg_int.h"

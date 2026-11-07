@@ -2,7 +2,6 @@
  * col/kern.c - scalar column kernels and
  * the dispatch. Baseline x86-64 code: bits are counted with SWAR, no vector instruction.
  */
-#include "core/host.h"
 
 #include "col/kern_int.h"
 #include "core/popcount.h"

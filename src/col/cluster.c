@@ -10,7 +10,6 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/relation.h"
 #include "access/htup_details.h"
 #include "catalog/pg_statistic.h"
 #include "funcapi.h"

@@ -9,7 +9,6 @@
 
 #include "access/xact.h"
 #include "storage/dsm_registry.h"
-#include "utils/memutils.h"
 #include "utils/resowner.h"
 
 #include "col/am.h"

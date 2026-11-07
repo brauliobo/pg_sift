@@ -3,7 +3,6 @@
  * which dictionaries are written, cached or built
  * the layout of the blobs in the file
  */
-#include "core/host.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 

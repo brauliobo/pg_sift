@@ -5,7 +5,6 @@
 
 #include "core/host.h"
 #include "col/hll.h"
-#include "col/runs.h"
 #include "core/cmp.h"
 
 #define ENT(reg, rank)	((uint32) (reg) << 6 | (rank))

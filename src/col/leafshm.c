@@ -16,7 +16,6 @@
 
 #include "port/pg_crc32c.h"
 #include "storage/spin.h"
-#include "utils/memutils.h"
 
 #include "col/dsmreg.h"
 #include "col/leafshm.h"

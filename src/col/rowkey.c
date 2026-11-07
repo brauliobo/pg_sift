@@ -14,7 +14,6 @@
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_index.h"
 #include "executor/tuptable.h"
-#include "utils/timestamp.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
