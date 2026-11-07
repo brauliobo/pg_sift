@@ -228,14 +228,15 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
-/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) */
+/* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) and for a partitioned
+ * index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
 bool
 sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags)
 {
 	Buffer		metabuf;
 	SiftMetaPageData *meta;
 
-	if (RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
+	if (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || RelationGetNumberOfBlocks(index) <= SIFT_DIRECTORY_BLKNO)
 		return false;
 	metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
 	meta = META(BufferGetPage(metabuf));
