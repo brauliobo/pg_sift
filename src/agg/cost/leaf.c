@@ -163,7 +163,7 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 		return 0.0;
 	/* a unit written before the options asked for the section it is answered from has none and is scanned: a half refreshed index is priced for the units that have it */
 	for (int i = 0; i < s->naggs; i++)
-		minmax |= s->agg[i].kind == SAA_MIN || s->agg[i].kind == SAA_MAX;
+		minmax |= saa_minmax(s->agg[i].kind);
 	dim = shape.dim >= 0 ? shape.dim : shape.hdim;
 	if (shape.rows)
 		miss = c->stats.rows_miss;

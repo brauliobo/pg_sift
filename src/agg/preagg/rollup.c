@@ -91,8 +91,8 @@ rollup_need(AggExec *ex)
 			}
 			n->meas[n->nmeas++].leaf = leaf;
 		}
-		n->meas[m].sums |= a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX;
-		n->meas[m].minmax |= a->kind == SAA_MIN || a->kind == SAA_MAX;
+		n->meas[m].sums |= a->kind != SAA_COUNT && !saa_minmax(a->kind);
+		n->meas[m].minmax |= saa_minmax(a->kind);
 	}
 }
 
@@ -237,7 +237,7 @@ preagg_rollup(AggExec *ex)
 		const SiftAggAgg *a = &s->agg[ai];
 		int			leaf = pa_leaf(a),
 					m = 0;
-		bool		mm = a->kind == SAA_MIN || a->kind == SAA_MAX;
+		bool		mm = saa_minmax(a->kind);
 
 		if (leaf < 0)
 		{

@@ -77,7 +77,7 @@ preagg_hist(AggExec *ex)
 	{
 		int			leaf = pa_leaf(&s->agg[ai]);
 		int			m = 0;
-		bool		mm = s->agg[ai].kind == SAA_MIN || s->agg[ai].kind == SAA_MAX;
+		bool		mm = saa_minmax(s->agg[ai].kind);
 
 		while (leaf >= 0 && leaf != ex->pa.dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
@@ -85,7 +85,7 @@ preagg_hist(AggExec *ex)
 		if (leaf >= 0 && leaf != ex->pa.dim &&
 			(m == h.nmeas || (mm ? h.min[m] == NULL : s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
 			return false;
-		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf, true))
+		if (leaf >= 0 && saa_sumavg_f64(s->agg[ai].kind) && !preagg_floats(ex, leaf, true))
 			return false;
 		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? -3 : leaf == ex->pa.dim ? -2 : m;
 	}

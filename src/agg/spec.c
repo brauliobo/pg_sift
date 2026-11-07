@@ -873,7 +873,7 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_GEN)
 			for (int j = 0; j < s->naggs; j++)
-				if (s->agg[j].kind == SAA_SUM_F64 || s->agg[j].kind == SAA_AVG_F64)
+				if (saa_sumavg_f64(s->agg[j].kind))
 				{
 					*agg = i;
 					return "a float sum is merged in lane order, a generic state as the workers finish";

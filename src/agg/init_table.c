@@ -630,7 +630,7 @@ table_init(AggExec *ex)
 		}
 		else if (a->kind == SAA_O_COUNT_KEY)
 			ex->dist[i] = dist_new(ex, i, false);
-		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
+		if (saa_joined(a->kind))
 			ex->dset[i].counted = a->kind == SAA_M_SUM || a->kind == SAA_M_AVG || a->kind == SAA_M_PG;
 		else if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || ex->lay->leaf[a->leaf].vtype != SCV_CODE)
 			continue;

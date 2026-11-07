@@ -14,7 +14,7 @@
 bool
 numeric_sum_agg(const SiftAggAgg *a)
 {
-	return (a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == NUMERICOID;
+	return saa_x_sumavg(a->kind) && a->restype == NUMERICOID;
 }
 
 /* dst[r] = src[gl[r]] for elements of esize bytes: a copy of a size the compiler knows is a load and a store, where memcpy(esize) is a call for each element */

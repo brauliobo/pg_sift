@@ -36,7 +36,7 @@ remap_pred(const SiftAggPred *p, const FuseArm *arm)
 static bool
 agg_reads_combo(const SiftAggAgg *a)
 {
-	return (a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG || (a->kind >= SAA_X_COUNT && a->kind <= SAA_X_AVG);
+	return saa_joined(a->kind) || saa_x(a->kind);
 }
 
 /* the conjunct with its own ids in the pass (an executor state each) */

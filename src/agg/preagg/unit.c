@@ -99,7 +99,7 @@ preagg_dead_ok(AggExec *ex, bool net)
 
 		if (a->kind == SAA_COUNT_DISTINCT || a->kind == SAA_GEN)
 			return false;
-		if (!net && (a->kind == SAA_MIN || a->kind == SAA_MAX || a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 ||
+		if (!net && (saa_minmax(a->kind) || saa_sumavg_f64(a->kind) ||
 					 (leaf >= 0 && a->kind != SAA_COUNT && ex->lay->leaf[leaf].vtype == SCV_F64)))
 			return false;
 	}

@@ -176,7 +176,7 @@ combo_wsum_only(const SiftAggSpec *s, int ci)
 
 		only &= cb->slot[sl].direct;
 		for (int ai = 0; ai < s->naggs; ai++)
-			if ((s->agg[ai].kind >= SAA_X_COUNT && s->agg[ai].kind <= SAA_X_AVG) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
+			if (saa_x(s->agg[ai].kind) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
 			{
 				only &= s->agg[ai].wsum != 0;
 				used = true;
@@ -442,8 +442,8 @@ plain_credit(AggCtx *c, const SiftAggSpec *s, double agg_rows)
 	{
 		const SiftAggAgg *a = &s->agg[ai];
 
-		if (a->restype == NUMERICOID && (a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM || a->kind == SAA_MIN || a->kind == SAA_MAX ||
-										 a->kind == SAA_X_SUM || a->kind == SAA_X_AVG || a->kind == SAA_X_MIN || a->kind == SAA_X_MAX))
+		if (a->restype == NUMERICOID && (a->kind == SAA_SUM_NUM || a->kind == SAA_AVG_NUM || saa_minmax(a->kind) ||
+										 saa_x_sumavg(a->kind) || a->kind == SAA_X_MIN || a->kind == SAA_X_MAX))
 			excess += AGG_REAL_NUMERIC - 2.0;
 	}
 	return excess * agg_rows * AGG_PLAIN_CREDIT;

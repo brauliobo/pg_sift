@@ -211,6 +211,13 @@ typedef enum SiftAggKind
 	SAA_O_COUNT_KEY				/* count(DISTINCT x) of a column the arms group by: the distinct ids of key `slot` in the cells of a group */
 } SiftAggKind;
 
+/* the kinds several places single out: min and max of the plain form, its float sum and average, the aggregates of a joined table's column (M, M_PG) and of an expression PostgreSQL evaluates (X) */
+static inline bool saa_minmax(SiftAggKind k) { return k == SAA_MIN || k == SAA_MAX; }
+static inline bool saa_sumavg_f64(SiftAggKind k) { return k == SAA_SUM_F64 || k == SAA_AVG_F64; }
+static inline bool saa_joined(SiftAggKind k) { return (k >= SAA_M_COUNT && k <= SAA_M_AVG) || k == SAA_M_PG; }
+static inline bool saa_x(SiftAggKind k) { return k >= SAA_X_COUNT && k <= SAA_X_AVG; }
+static inline bool saa_x_sumavg(SiftAggKind k) { return k == SAA_X_SUM || k == SAA_X_AVG; }
+
 /* the number of kinds: spec.c keeps a row of facts for each (kind_info); not an enumerator, so that a switch over the kinds does not ask for it */
 #define SAA_NKINDS	(SAA_O_COUNT_KEY + 1)
 

@@ -526,7 +526,7 @@ register_combos(AggExec *ex)
 												  Int32GetDatum(-1));
 		}
 		for (int ai = 0; ai < s->naggs; ai++)
-			if ((s->agg[ai].kind == SAA_X_SUM || s->agg[ai].kind == SAA_X_AVG) && s->agg[ai].restype == NUMERICOID && s->agg[ai].combo == ci)
+			if (saa_x_sumavg(s->agg[ai].kind) && s->agg[ai].restype == NUMERICOID && s->agg[ai].combo == ci)
 			{
 				if (!cs->decode)
 					cs->decode = palloc0(Max(cb->nslots, 1) * sizeof(bool));

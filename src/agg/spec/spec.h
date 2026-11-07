@@ -119,8 +119,8 @@ extern bool sift_aggspec_gstream(const SiftAggSpec *s);
 static inline bool
 sift_aggkind_float_sum(const SiftAggAgg *a)
 {
-	return a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
-		((a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == FLOAT8OID);
+	return saa_sumavg_f64(a->kind) || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
+		(saa_x_sumavg(a->kind) && a->restype == FLOAT8OID);
 }
 
 /* a scan with a spine or a correlated child plan: workers were added for them after the release that scanned the others in lanes */

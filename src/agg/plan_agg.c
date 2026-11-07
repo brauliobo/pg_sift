@@ -447,7 +447,7 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	out->combo = ci;
 	out->slot = si;
 	out->wsum = 0;
-	if (direct && (kind == SAA_X_SUM || kind == SAA_X_AVG) && typ == NUMERICOID && (out->wsum = match_leaf(c, arg) + 1) > 0)
+	if (direct && saa_x_sumavg(kind) && typ == NUMERICOID && (out->wsum = match_leaf(c, arg) + 1) > 0)
 	{
 		const SiftSrcLeaf *lf = leaf_of(c, out->wsum - 1);
 
