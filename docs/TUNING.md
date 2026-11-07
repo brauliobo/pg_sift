@@ -129,6 +129,39 @@ The same four questions have three sets of settings. They are different mechanis
 | Wait while clients are busy | `sift.col_auto_merge_max_active` (0: never) | `sift.table_auto_defrag_max_active` (0: never) | none |
 | Slow down | none | `sift.table_auto_defrag_delay` (10 ms) | `sift.maintenance_cost_delay` (0 ms), `sift.maintenance_naptime` (2000 ms) |
 
+## Two pairs of options that look alike
+
+Both pairs were measured side by side (400,000 rows, a table of an `int4` id spread over the heap, an `int4` of 100 rows a key, a timestamp and an `int4` spread over the heap; instructions of one backend a statement, user space, the mean of 30 statements with other constants; the other automatic choices off so that only the pair differs).
+
+**`point_columns` or `point_tid_columns`** (directories of the rows of a key). Leave `point_tid_columns` on `auto`: it is the better one in every shape measured, and `point_columns` is for an index that a release before 3.7 must read (the heap addresses are column format minor 33 and above, read from 3.7) or where every byte counts.
+
+| Statement | no directory | `point_columns` | `point_tid_columns` |
+|---|---|---|---|
+| `WHERE id = k`, all columns, one row | 1.55 M | 133 k | 95 k |
+| `WHERE id = k`, the key only | 1.55 M | 148 k | 86 k |
+| `count(*) WHERE id = k` | sequential scan, 218 M | sequential scan, 218 M | 114 k |
+| `count(*) WHERE id IN (5 keys)` / `(64 keys)` | sequential scan, 335 M / 256 M | sequential scan, 335 M / 256 M | 180 k / 905 k |
+| `WHERE grp = k`, 100 rows | 2.07 M | 1.20 M | 540 k |
+| the same after 5% of the rows were deleted (not vacuumed) | `IN` of 64 keys 267 M | same plan as before | 1.78 M (a unit with a dead row is read) |
+| index size (5 columns) | 5.14 MB | 7.39 MB (+43.9%) | 7.50 MB (+45.9%) |
+| `CREATE INDEX`, instructions | 1.45 G | 1.60 G (+10.5%) | 1.63 G (+12.4%) |
+
+**`order_columns` and `order_array_columns`** (sorted runs and the global order). They are layers, not alternatives: the global order extends the sorted run of a column, so a list of `order_array_columns` names columns of `order_columns` (`auto` builds both for the columns it picks, and is the default). The run alone answers `ORDER BY .. LIMIT` and narrow ranges 1.8 to 10 times cheaper than the units; the array on top is 1.1 to 8 times cheaper again, for 44% to 47% more index.
+
+| Statement | none | runs (`order_columns`) | runs and array (`auto`) |
+|---|---|---|---|
+| `ORDER BY ts LIMIT 10` | 3.36 M | 334 k | 298 k |
+| `ORDER BY ts DESC LIMIT 100` | 7.88 M | 1.54 M | 587 k |
+| `ORDER BY n LIMIT 20` | 2.33 M | 273 k | 195 k |
+| `WHERE n > k ORDER BY n LIMIT 20` | 4.68 M | 1.62 M | 309 k |
+| `WHERE ts > k ORDER BY ts LIMIT 50` | 11.5 M | 2.34 M | 634 k |
+| `count(*)` of a range of 800 `n` / 3,600 s of `ts` | 3.04 M / 9.83 M | 1.71 M / 2.60 M | 285 k / 318 k |
+| rows of a range of 3,600 s of `ts` | 8.94 M | 1.70 M | 271 k |
+| index size (4 columns, 2 of them ordered) | 4.17 MB | 5.82 MB (+39.5%) | 8.40 to 8.58 MB (+102% to +106%) |
+| `CREATE INDEX`, instructions | 1.29 G | 1.46 G (+13.3%) | 1.99 G to 2.13 G (+54% to +65%) |
+
+Name `order_columns` alone, with `order_array_columns = 'off'`, only when the size of the index is the limit; otherwise leave both on their defaults.
+
 ## The words that mean several things
 
 - **key.** `key_columns` (and `sift.table_key_table`, `key_table`) are *lookup keys*: the columns whose distinct values every unit lists, for equality, `IN` and `count(DISTINCT)`. `key_cut` and `key_cut_rows` are a *sort key*: the column whose range cuts the units. `key_order` is the sort key of the table as a whole and stands for `key_cut`, `order_columns`, `order_array_columns` and `point_tid_columns` on it. For ordered reads set `key_order` and nothing else.
