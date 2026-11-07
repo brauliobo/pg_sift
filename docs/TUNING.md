@@ -163,5 +163,6 @@ The same four questions have three sets of settings. They are different mechanis
 | merge, promote, check | `sift.merge`, `sift.promote`, `sift.verify` | the same three (`sift.col_merge`, `sift.col_promote`, `sift.col_verify` are the same calls) | `sift.table_maintain` |
 | maintenance state | `sift.workers`, `sift.worker_state` | `sift.workers`, `sift.col_maintenance_status`, `sift.col_maintenance_due` | |
 | what the build chose or advises | | `sift.index_choices`, `sift.index_advice`, `sift.key_cut_decision`, `sift.cluster_advice` | |
+| what a notice, a choice or a refusal slug means | | `sift.help(slug)`, `sift.refusal_slugs()`, `sift.refusal_actions()` | `sift.help(slug)` |
 
 A function with the prefix of the other kind answers `"x" is not a sift index` (or `sift_col`) and changes nothing.

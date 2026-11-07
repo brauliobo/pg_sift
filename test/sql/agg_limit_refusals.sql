@@ -93,6 +93,11 @@ SELECT slug, class FROM sift.refusal_slugs() WHERE slug IN ('shape_width', 'too_
 SELECT count(*) = count(*) FILTER (WHERE action <> '' AND action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() USING (slug);
 SET sift.agg_lookup_max_kb = 1;
 SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(spine_q()) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug WHERE w.arm = 'two_level';
+-- sift.help(slug) answers a refusal slug too: the reason and the action of the registry; the list of sift.help() stays the messages
+SELECT count(*) = count(*) FILTER (WHERE h.message = r.reason AND h.hint = a.action AND h.kind = 'refusal') AS every_slug_has_its_help FROM sift.refusal_slugs() r JOIN sift.refusal_actions() a USING (slug), LATERAL sift.help(r.slug) h;
+SELECT count(*) FILTER (WHERE kind = 'refusal') AS refusals_in_the_list FROM sift.help();
+SELECT kind, level, message, hint FROM sift.help('spine_rows');
+SELECT * FROM sift.help('no-such-slug');
 RESET sift.agg_lookup_max_kb;
 
 RESET client_min_messages;

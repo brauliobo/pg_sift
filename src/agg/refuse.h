@@ -74,6 +74,7 @@ extern const char *agg_variant;
 
 /* the refusal that gave up the arm being planned, if it is the first: false, so that a site returns it */
 extern bool agg_refuse_note(AggRefusal why, const char *detail);
+extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);
 extern void agg_refuse_retry(void);
 /* the same for a refusal by the limit lim of the registry (SiftLimitId): the arm counts it under that name */
 extern bool agg_refuse_limit_note(AggRefusal why, int lim, const char *detail);

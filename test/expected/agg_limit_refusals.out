@@ -160,6 +160,28 @@ SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(spine
  spine_rows | limit | t
 (1 row)
 
+-- sift.help(slug) answers a refusal slug too: the reason and the action of the registry; the list of sift.help() stays the messages
+SELECT count(*) = count(*) FILTER (WHERE h.message = r.reason AND h.hint = a.action AND h.kind = 'refusal') AS every_slug_has_its_help FROM sift.refusal_slugs() r JOIN sift.refusal_actions() a USING (slug), LATERAL sift.help(r.slug) h;
+ every_slug_has_its_help 
+-------------------------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind = 'refusal') AS refusals_in_the_list FROM sift.help();
+ refusals_in_the_list 
+----------------------
+                    0
+(1 row)
+
+SELECT kind, level, message, hint FROM sift.help('spine_rows');
+  kind   | level |                             message                              |                               hint                               
+---------+-------+------------------------------------------------------------------+------------------------------------------------------------------
+ refusal |       | the rows of the spine are estimated above sift.agg_lookup_max_kb | Raise sift.agg_lookup_max_kb, or filter the spine to fewer rows.
+(1 row)
+
+SELECT * FROM sift.help('no-such-slug');
+ERROR:  no message, choice or refusal "no-such-slug"
+HINT:  SELECT id FROM sift.help() lists the messages and choices, SELECT slug FROM sift.refusal_slugs() the refusals.
 RESET sift.agg_lookup_max_kb;
 RESET client_min_messages;
 DROP TABLE limits, events, dims, ticks, parted;

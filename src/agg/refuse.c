@@ -869,6 +869,19 @@ sift_agg_refuse_init(void)
 							 PGC_USERSET, 0, NULL, assign_count, NULL);
 }
 
+/* The row i (from 1) of the registry for sift.help(); false past the last */
+bool
+sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit)
+{
+	if (i < 1 || i >= AGG_REFUSE_COUNT)
+		return false;
+	*slug = refusals[i].slug;
+	*text = refusals[i].text;
+	*action = refusals[i].action;
+	*limit = refusals[i].limit;
+	return true;
+}
+
 /* sift.refusal_slugs(): the registry of refuse.h, for the tools that read sift.stats() or sift.explain_why() */
 Datum
 sift_agg_refusal_slugs(PG_FUNCTION_ARGS)

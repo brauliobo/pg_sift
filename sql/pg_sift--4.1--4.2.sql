@@ -101,3 +101,4 @@ CREATE FUNCTION sift.refusal_actions(OUT slug text, OUT action text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_agg_refusal_actions' LANGUAGE C STRICT VOLATILE;
 COMMENT ON FUNCTION sift.refusal_actions() IS 'What to change for each slug of sift.refusal_slugs(): the statement, the index or a setting (the hint of the notice of sift.explain_refusals); join it to sift.explain_why on slug';
+COMMENT ON FUNCTION sift.help(text) IS 'The row of docs/messages.tsv of a pg_sift message or choice by its slug, or the registry row of a refusal slug of sift.explain_why (all message rows without an argument)';

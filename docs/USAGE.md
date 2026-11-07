@@ -532,7 +532,7 @@ Index what you filter and group by; an expression such as the month above is a c
 
 A `sift_col` index chooses these from the table at `CREATE INDEX`; `CREATE INDEX`, `REINDEX` and `REINDEX CONCURRENTLY` say all of them in one NOTICE (the count of the choices, the advice and the limits, and their values on two lines); each is a default that an explicit option replaces, and none changes an answer (the aggregates are the normal plan's).
 
-`SELECT * FROM sift.index_choices('index')` lists the choices of an index with the reason, the cost measured on it and the command that turns each off, and `SELECT * FROM sift.help('key-lists')` returns the row of one of them. Every message and choice, with its trigger, benefit, trade-off and switch, is listed in [MESSAGES.md](MESSAGES.md); the table below is the short form.
+`SELECT * FROM sift.index_choices('index')` lists the choices of an index with the reason, the cost measured on it and the command that turns each off, and `SELECT * FROM sift.help('key-lists')` returns the row of one of them; the slug of a refusal (`SiftAgg not used: spine_rows: ..`, the list is `sift.refusal_slugs()`) is a valid argument too and answers with the reason and what to change. Every message and choice, with its trigger, benefit, trade-off and switch, is listed in [MESSAGES.md](MESSAGES.md); the table below is the short form.
 
 | Decision | Rule | The NOTICE lists | Replace it with |
 |---|---|---|---|

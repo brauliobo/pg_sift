@@ -18,6 +18,7 @@
 #include "core/limits.h"
 #include "col/build/build_int.h"
 #include "col/build/choices_gen.h"
+#include "agg/refuse.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
 #define DETAIL_LINE		112		/* ... and of a line of its values (two lines) */
@@ -796,34 +797,59 @@ sift_col_index_choices(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_help);
 
-/* sift.help(slug): the row of docs/messages.tsv of a message or choice (all of them without a slug): what it says, when, what pg_sift chose, why and how to change it */
+static void
+help_row(ReturnSetInfo *rsi, const char *const *cells, int n)
+{
+	Datum		v[10];
+	bool		nulls[10];
+
+	for (int c = 0; c < n; c++)
+	{
+		nulls[c] = cells[c][0] == '\0';
+		v[c] = nulls[c] ? (Datum) 0 : CStringGetTextDatum(cells[c]);
+	}
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+}
+
+/*
+ * sift.help(slug): the row of docs/messages.tsv of a message or choice, or the registry row of a refusal slug of sift.explain_why (kind refusal: the reason is the message,
+ * the action the hint); the rows of docs/messages.tsv without a slug (the refusal slugs are in sift.refusal_slugs())
+ */
 Datum
 sift_help(PG_FUNCTION_ARGS)
 {
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	bool		all = PG_ARGISNULL(0);
 	const char *slug = all ? "" : text_to_cstring(PG_GETARG_TEXT_PP(0));
 	bool		found = all;
+	const char *rslug,
+			   *text,
+			   *action;
+	bool		limit;
 
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 0; i < lengthof(sift_msg_rows); i++)
 	{
 		const SiftMsgRow *r = &sift_msg_rows[i];
 		const char *cells[] = {r->id, r->kind, r->level, r->message, r->detail, r->hint, r->decision, r->why, r->off[0] ? psprintf(r->off, "<index>", "<index>") : "", r->doc};
-		Datum		v[lengthof(cells)];
-		bool		nulls[lengthof(cells)];
 
 		if (!all && strcmp(r->id, slug) != 0)
 			continue;
 		found = true;
-		for (int c = 0; c < lengthof(cells); c++)
-		{
-			nulls[c] = cells[c][0] == '\0';
-			v[c] = nulls[c] ? (Datum) 0 : CStringGetTextDatum(cells[c]);
-		}
-		tuplestore_putvalues(((ReturnSetInfo *) fcinfo->resultinfo)->setResult, ((ReturnSetInfo *) fcinfo->resultinfo)->setDesc, v, nulls);
+		help_row(rsi, cells, lengthof(cells));
+	}
+	for (int i = 1; !all && sift_agg_refusal_row(i, &rslug, &text, &action, &limit); i++)
+	{
+		const char *cells[] = {rslug, "refusal", "", text, "", action, "",
+			limit ? "The query has more of something than a fixed limit of the scan." : "The scan does not answer this shape of query.", "", "USAGE.md#why-a-query-kept-the-normal-plan"};
+
+		if (strcmp(rslug, slug) != 0)
+			continue;
+		found = true;
+		help_row(rsi, cells, lengthof(cells));
 	}
 	if (!found)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no message or choice \"%s\"", slug),
-						errhint("SELECT id FROM sift.help() lists them.")));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no message, choice or refusal \"%s\"", slug),
+						errhint("SELECT id FROM sift.help() lists the messages and choices, SELECT slug FROM sift.refusal_slugs() the refusals.")));
 	PG_RETURN_NULL();
 }
