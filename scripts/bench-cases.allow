@@ -224,3 +224,10 @@ commit 8545fdeb8	internal change of the planner or the scan with no CHANGELOG cl
 commit 32784171b	internal change of the planner or the scan with no CHANGELOG claim of its own
 commit 8809bf7ab	internal change of the planner or the scan with no CHANGELOG claim of its own
 commit 4e565ae7c	internal change of the planner or the scan with no CHANGELOG claim of its own
+commit d568b2374	a comment of the update script; no statement changes
+commit b3219f120	includes of the core headers; no code runs differently
+commit 9961efd4f	includes of the table headers; no code runs differently
+commit 38eac31fc	includes of the column sources; no code runs differently
+commit d0b95627d	includes of the table sources; no code runs differently
+commit d5b8b4ba4	includes of the core sources; no code runs differently
+commit b59e66ff2	includes of the aggregate sources; no code runs differently
