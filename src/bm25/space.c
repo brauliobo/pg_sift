@@ -147,13 +147,12 @@ cut_lock(Relation rel)
  * worker asks once: it holds the maintenance lock between its steps and the next step asks again.
  */
 static bool
-cut_lock_try(Relation rel, int *waited_ms)
+cut_lock_try(Relation rel, LOCKMODE mode, int *waited_ms)
 {
-	LOCKMODE	mode = cut_lock(rel);
 	int			wait_ms = LockTimeout > 0 ? Min(LockTimeout, CUT_LOCK_WAIT_MS) : CUT_LOCK_WAIT_MS;
 	int			waited;
 
-	if (mode == AccessExclusiveLock && MyBackendType == B_BG_WORKER)
+	if (MyBackendType == B_BG_WORKER)
 		wait_ms = 0;
 
 	for (waited = 0;; waited += CUT_LOCK_NAP_MS)
@@ -210,12 +209,13 @@ typedef enum CutSkip
 	SKIP_STANDBY,
 	SKIP_LOCK,
 	SKIP_ONLINE_LOCK,
-	SKIP_SNAPSHOT
+	SKIP_SNAPSHOT,
+	SKIP_FALLBACK
 } CutSkip;
 
-/* why: what kept the cut; blocks: the free blocks that stay in the file; waited: the ms the lock was asked for (SKIP_LOCK) */
+/* why: what kept the cut; blocks: the free blocks that stay in the file (SKIP_FALLBACK: the blocks moved); waited: the ms the lock was asked for; more: the blocks given back (SKIP_FALLBACK) */
 static void
-cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 blocks, int waited)
+cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 blocks, int waited, int64 more)
 {
 	const char *name = RelationGetRelationName(rel);
 
@@ -229,12 +229,51 @@ cut_skipped(Relation rel, const char *what, int elevel, CutSkip why, int64 block
 			ereport(elevel, (errmsg("%s \"%s\": not truncating, a lock is held on it (waited %d ms): %lld free blocks stay", what, name, waited, (long long) blocks)));
 			break;
 		case SKIP_ONLINE_LOCK:
-			ereport(elevel, (errmsg("index \"%s\": not truncating, a lock is held on it: %lld free blocks stay", name, (long long) blocks)));
+			ereport(elevel, (errmsg("index \"%s\": not truncating, a lock is held on it (waited %d ms): %lld free blocks stay", name, waited, (long long) blocks)));
+			break;
+		case SKIP_FALLBACK:
+			ereport(elevel, (errmsg("index \"%s\": a lock is held on it (waited %d ms): %lld blocks moved, %lld given back online", name, waited, (long long) blocks, (long long) more)));
 			break;
 		case SKIP_SNAPSHOT:
 			ereport(elevel, (errmsg("index \"%s\": %lld free blocks stay, held by a snapshot that may still read them", name, (long long) blocks)));
 			break;
 	}
+}
+
+/*
+ * The online cut and shrink (no AccessExclusiveLock: readers are never kept out, a writer waits for the cut of the free end only) are the way to give blocks back on an index
+ * that a reader or a writer holds all the time: the VACUUM whose AccessExclusiveLock was refused uses them as a standby that streams makes it, on the horizon
+ * of the blocks that left. cut_busy: the last cut asked for its lock in vain (sift_maint_cut_lock_busy); cut_fallback: the online path is on for this VACUUM.
+ */
+static bool cut_busy = false;
+static int	cut_busy_ms = 0;
+static bool cut_fallback = false;
+
+static bool
+online_fallback_possible(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX && cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && !RecoveryInProgress();
+}
+
+bool
+sift_maint_cut_lock_busy(void)
+{
+	return cut_busy;
+}
+
+/* What the online cut did in place of the cut that waited for its lock: one report per VACUUM, with the blocks it moved and the blocks it gave back */
+void
+sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed)
+{
+	cut_skipped(index, "index", elevel, SKIP_FALLBACK, moved / BLCKSZ, cut_busy_ms, freed);
+}
+
+void
+sift_maint_online_fallback(bool on)
+{
+	cut_fallback = on;
+	if (!on)
+		cut_busy = false;
 }
 
 /* The lock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
@@ -245,12 +284,19 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 
 	if (cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
-		cut_skipped(rel, what, elevel, SKIP_STANDBY, sift_store_free_stats(rel).blocks, 0);
+		cut_skipped(rel, what, elevel, SKIP_STANDBY, sift_store_free_stats(rel).blocks, 0, 0);
 		return false;
 	}
-	if (!cut_lock_try(rel, &waited))
+	if (!cut_lock_try(rel, cut_lock(rel), &waited))
 	{
-		cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited);
+		/* the cut that needs no lock beyond the ExclusiveLock of the online cut is the next thing the VACUUM tries (sift_maint_online_fallback), and says what it finds */
+		if (online_fallback_possible(rel))
+		{
+			cut_busy = true;
+			cut_busy_ms = waited;
+		}
+		else
+			cut_skipped(rel, what, elevel, SKIP_LOCK, sift_store_free_stats(rel).blocks, waited, 0);
 		return false;
 	}
 	return true;
@@ -273,13 +319,15 @@ online_cut(Relation index, int elevel)
 		tail = sift_store_tail_blocks(index);
 		if (tail > 0 && (tail >= TRUNCATE_MIN_BLOCKS || tail >= RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
 		{
-			if (ConditionalLockRelation(index, ExclusiveLock))
+			int			waited;
+
+			if (cut_lock_try(index, ExclusiveLock, &waited))
 			{
 				freed = sift_store_truncate(index);
 				UnlockRelation(index, ExclusiveLock);
 			}
 			else
-				cut_skipped(index, "index", elevel, SKIP_ONLINE_LOCK, sift_store_free_stats(index).blocks, 0);
+				cut_skipped(index, "index", elevel, SKIP_ONLINE_LOCK, sift_store_free_stats(index).blocks, waited, 0);
 		}
 		else
 		{
@@ -287,7 +335,7 @@ online_cut(Relation index, int elevel)
 			SiftFreeStats fs = sift_store_free_stats(index);
 
 			if (space_worth(fs.blocks - fs.reusable, RelationGetNumberOfBlocks(index)))
-				cut_skipped(index, "index", elevel, SKIP_SNAPSHOT, fs.blocks - fs.reusable, 0);
+				cut_skipped(index, "index", elevel, SKIP_SNAPSHOT, fs.blocks - fs.reusable, 0, 0);
 		}
 	}
 	PG_FINALLY();
@@ -304,7 +352,7 @@ online_cut(Relation index, int elevel)
 static bool
 online_cut_wanted(Relation rel)
 {
-	return rel->rd_rel->relkind == RELKIND_INDEX && cut_lock(rel) == AccessExclusiveLock && !sift_maint_file_is_new(rel) && sift_maint_standby_streams();
+	return online_fallback_possible(rel) && (cut_fallback || sift_maint_standby_streams());
 }
 
 /*
@@ -863,6 +911,7 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
 		return 0;
 	space_copied = 0;
+	cut_busy = false;
 	if (online_cut_wanted(rel))
 		return online_cut(rel, elevel);
 	nblocks = RelationGetNumberOfBlocks(rel);
@@ -885,6 +934,7 @@ BlockNumber
 sift_maint_cut_released(Relation rel, int elevel)
 {
 	space_copied = 0;
+	cut_busy = false;
 	if (online_cut_wanted(rel))
 		return online_cut(rel, elevel);
 	return cut_locked(rel, NULL, elevel, 0);

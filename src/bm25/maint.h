@@ -206,6 +206,9 @@ extern void sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int e
 /* The same with a cap on the bytes copied under the lock (0: only the free tail is cut), and its screen for a run of free blocks */
 extern uint64 sift_maint_shrink(Relation rel, int elevel);
 extern bool sift_maint_buffer_above_shrink(Relation rel);
+extern bool sift_maint_cut_lock_busy(void);
+extern void sift_maint_online_fallback(bool on);
+extern void sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed);
 extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);

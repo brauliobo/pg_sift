@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A cut of the free end of a sift_col file that does not happen says so once per VACUUM with the blocks that stay in the file: VACUUM VERBOSE reports it (INFO), and an
-# autovacuum that logs reports it in the server log (LOG). The reason is the lock another session holds on the table for the whole wait.
+# A VACUUM whose cut of the free end of a sift_col file waited for its lock in vain says so once, with the blocks the online cut moved and gave back instead: VACUUM VERBOSE reports it (INFO), and an
+# autovacuum that logs reports it in the server log (LOG). The reason is the lock another session holds on the table for the whole wait, and what the online cut did in its place.
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_CS_ROWS 200000 100000)
@@ -23,6 +23,7 @@ loosen() {
 	done
 	sql skip "SELECT sift.col_merge('$1_idx', true)" >/dev/null
 }
+# a reader that holds the table for $2 seconds (the AccessShareLock on the index refuses the AccessExclusiveLock of the cut)
 hold() { sql skip "BEGIN" "SELECT count(*) FROM $1 WHERE id < 10" "SELECT pg_sleep($2)" "COMMIT" >/dev/null 2>&1 & HOLDER=$!; sleep 0.5; }
 
 loosen t
@@ -30,10 +31,10 @@ hold t 4
 out=$(sql skip "SET sift.async_maintenance = off" "SET lock_timeout = '500ms'" "SET client_min_messages = info" "VACUUM (VERBOSE) t" 2>&1)
 wait "$HOLDER"
 diag "$(grep 'not truncating' <<<"$out")"
-check "VACUUM VERBOSE says the lock kept the cut" grep -q 'index "t_idx": not truncating, a lock is held on it (waited [0-9]* ms): [0-9]* free blocks stay' <<<"$out"
-check "it says so once" test "$(grep -c 'not truncating' <<<"$out")" -eq 1
+check "VACUUM VERBOSE says the lock was held and what the online cut did" grep -q 'index "t_idx": a lock is held on it (waited [0-9]* ms): [0-9]* blocks moved, [0-9]* given back online' <<<"$out"
+check "it says so once" test "$(grep -c 'a lock is held on it' <<<"$out")" -eq 1
 out=$(sql skip "SET sift.async_maintenance = off" "SET client_min_messages = info" "VACUUM (VERBOSE) t" 2>&1)
-check "without a reader nothing is reported and the file is cut" test -z "$(grep 'not truncating' <<<"$out")" -a \
+check "without a reader nothing is reported and the file is cut" test -z "$(grep 'a lock is held on it' <<<"$out")" -a \
 	"$(sql skip "SELECT pg_relation_size('t_idx') < 15 * bytes / 10 FROM sift.col_index_info('t_idx')")" == t
 
 # an autovacuum that logs: the reader holds the table longer than the 5 s wait
@@ -41,12 +42,12 @@ loosen u
 hold u 12
 sql skip "INSERT INTO u SELECT id + 50000000, grp, amount, pad FROM u WHERE id < 2000" "ALTER TABLE u SET (autovacuum_enabled = on)" >/dev/null
 for _ in $(seq 150); do
-	grep -q 'index "u_idx": not truncating, a lock is held on it' "$(dir skip)/postgres.log" && break
+	grep -q 'index "u_idx": a lock is held on it' "$(dir skip)/postgres.log" && break
 	sleep 0.2
 done
 wait "$HOLDER"
-line=$(grep 'index "u_idx": not truncating' "$(dir skip)/postgres.log" | head -1)
+line=$(grep 'index "u_idx": a lock is held on it' "$(dir skip)/postgres.log" | head -1)
 diag "$line"
-check "the autovacuum logs it at LOG with the blocks that stay" grep -q 'LOG:.*index "u_idx": not truncating, a lock is held on it (waited 5000 ms): [0-9]* free blocks stay' <<<"$line"
+check "the autovacuum logs it at LOG with the blocks moved and given back" grep -q 'LOG:.*index "u_idx": a lock is held on it (waited 5000 ms): [0-9]* blocks moved, [0-9]* given back online' <<<"$line"
 check "intact" test -z "$(sql skip "SELECT sift.col_verify('u_idx', true)" 2>&1)"
 finish

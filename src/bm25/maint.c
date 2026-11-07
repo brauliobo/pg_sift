@@ -227,7 +227,7 @@ in_backoff(const SiftMetaPageData *meta)
 static bool make_room_locked(const SiftMaintOps *ops, Relation index);
 
 /* Promotes every sealed segment, oldest first, until one fails; returns the number promoted */
-static int
+int
 promote_locked(const SiftMaintOps *ops, Relation index, bool seal_active, bool propagate)
 {
 	uint64		busy = 0;
@@ -440,15 +440,10 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 		bool		defer = ops->vacuum_space_defer && ops->vacuum_space_defer(index);
 
 		if (!defer)
-		{
-			if (ops->vacuum_rotate && sift_maint_buffer_above_shrink(index))
-			{
-				ops->vacuum_rotate(index);
-				promote_locked(ops, index, false, false);
-			}
-			(void) sift_maint_shrink(index, info->message_level);
-		}
+			(void) online_shrink(ops, index, info->message_level);
 		sift_maint_space_rounds(index, NULL, info->message_level, defer ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
+		if (!defer)
+			online_fallback(ops, index, info->message_level);
 	}
 	sift_maint_unlock(index);
 	if (ops->vacuum_done)
@@ -546,20 +541,6 @@ sift_maint_step_boundary(Relation index)
 }
 
 /* Seals the active segment and promotes every sealed one; returns the number promoted */
-/* The free end of the file that a step of the worker leaves, cut when it is worth the lock (released: the step freed it itself, which its own snapshot holds back from the screen) */
-static void
-cut_free_end(const SiftMaintOps *ops, Relation index, bool released)
-{
-	if (!ops->vacuum_truncate || !ops->vacuum_truncate(index) || RecoveryInProgress())
-		return;
-	sift_maint_lock(index, true);
-	if (released)
-		(void) sift_maint_cut_released(index, DEBUG1);
-	else
-		(void) sift_maint_space_budget(index, NULL, DEBUG1, 0);
-	sift_maint_unlock(index);
-}
-
 void
 sift_mops_cut_free_end(const SiftMaintOps *ops, Relation index)
 {
