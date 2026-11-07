@@ -302,9 +302,12 @@ sift.async_maintenance = off'
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
 		for _ in $(seq 100); do [[ $(q "SHOW sift.col_format_minor") == 6 ]] && break; sleep 0.1; done
 		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.col_format_minor")" == 6
-		while read -r _ obj kind _; do
+		while read -r _ obj kind rest; do
 			case $kind in
-				index) q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed" ;;
+				index)
+					# the advice of the preflight for the presence leaf of 4.2 (option document_present): the option off first, then the REINDEX writes the layout the release reads
+					[[ $rest != *"SET (document_present = off)"* ]] || q "ALTER INDEX $obj SET (document_present = off)" >/dev/null || diag "ALTER INDEX $obj failed"
+					q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed" ;;
 				table) q "VACUUM FULL $obj" >/dev/null || diag "VACUUM FULL $obj failed" ;;
 				trigger) q "ALTER EVENT TRIGGER $obj DISABLE" >/dev/null || diag "ALTER EVENT TRIGGER $obj failed" ;;
 			esac
@@ -354,8 +357,8 @@ sift.async_maintenance = off'
 		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres --exclude-table-data=sift.table_option_values -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
 		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
 		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
-		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)
-		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims"
+		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5) and every one that holds the option document_present (4.2)
+		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims|document_present"
 		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
 		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3))"
