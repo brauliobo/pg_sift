@@ -753,7 +753,7 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 const char *
 sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	if (opt == NULL || rest_blank(opt))
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "auto"))
 	{
 		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (their cells
 		 * grew the index of a wide API table by 12%: calendar_columns names them) */
@@ -770,13 +770,13 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 const char *
 sift_cpagg_calendar_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") ? NULL : parse_calendar(opt, NULL, NULL, NULL);
 }
 
 const char *
 sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	if (opt == NULL || rest_blank(opt))
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default"))
 		return NULL;
 	spec->rfixed = true;
 	return parse_rollup_dims(opt, s, names, spec);
@@ -785,7 +785,7 @@ sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *con
 const char *
 sift_cpagg_rollup_syntax(const char *opt)
 {
-	return opt == NULL || rest_blank(opt) ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
+	return opt == NULL || rest_blank(opt) || is_word(opt, "auto") || is_word(opt, "default") ? NULL : parse_rollup_dims(opt, NULL, NULL, NULL);
 }
 
 const char *

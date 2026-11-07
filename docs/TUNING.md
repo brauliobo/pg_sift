@@ -143,8 +143,8 @@ The same four questions have three sets of settings. They are different mechanis
 | Option | `''` means | `auto` | `off` | Other words |
 |---|---|---|---|---|
 | `key_columns`, `key_cut`, `order_array_columns`, `order_array_group`, `rollup_dims`, `count_columns` | automatic | yes | yes | |
-| `calendar_columns` | every date and timestamp column | no | yes | `all` |
-| `rollup` | the byte-budget rule (2% of the unit) | no | yes | |
+| `calendar_columns` | every date and timestamp column | yes | yes | `all` |
+| `rollup` | the byte-budget rule (2% of the unit) | yes | yes | `default` |
 | `preagg` | the default | yes | yes | `default`, `cube(..)` |
 | `order_layout` | `auto` | yes | no | `whole`, `compact` |
 | `compression` | `auto` | yes | no | `none`, `lz4`, `zstd` |

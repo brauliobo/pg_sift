@@ -109,6 +109,16 @@ SELECT count(*) FROM ap;
   3001
 (1 row)
 
+-- auto is the word of the default for calendar_columns and rollup (empty, and 'default' for rollup, mean the same); a word that is none of them is refused
+\c
+ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup = 'auto');
+ALTER INDEX ap_plain SET (rollup = 'default');
+\c
+ALTER INDEX ap_plain SET (rollup = 'nope');
+ERROR:  invalid rollup option: "nope" is not a leaf declared in paths
+ALTER INDEX ap_plain SET (calendar_columns = 'autos');
+ERROR:  invalid calendar_columns option: "autos" is not a column of the index
+ALTER INDEX ap_plain RESET (calendar_columns, rollup);
 VACUUM ao;
 VACUUM ap;
 SELECT sift.col_verify('ao_paths', true), sift.col_verify('ap_plain', true);

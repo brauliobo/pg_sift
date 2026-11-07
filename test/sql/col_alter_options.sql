@@ -79,6 +79,14 @@ INSERT INTO ao VALUES (-1, 0, '2024-01-01', now(), 'x', 0, '{"a": 1}', '[]');
 INSERT INTO ap VALUES (-1, 0, '2024-01-01', now(), 'x', 0);
 SELECT count(*) FROM ao;
 SELECT count(*) FROM ap;
+-- auto is the word of the default for calendar_columns and rollup (empty, and 'default' for rollup, mean the same); a word that is none of them is refused
+\c
+ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup = 'auto');
+ALTER INDEX ap_plain SET (rollup = 'default');
+\c
+ALTER INDEX ap_plain SET (rollup = 'nope');
+ALTER INDEX ap_plain SET (calendar_columns = 'autos');
+ALTER INDEX ap_plain RESET (calendar_columns, rollup);
 VACUUM ao;
 VACUUM ap;
 SELECT sift.col_verify('ao_paths', true), sift.col_verify('ap_plain', true);
