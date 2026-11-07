@@ -8,7 +8,8 @@ SHOW sift.enable_col;
 SHOW sift.table_auto_defrag_dead_pct;
 RESET sift.enable_col;
 ALTER ROLE CURRENT_USER SET sift.enable_col = off;
-SELECT format('ALTER DATABASE %I SET sift.table_auto_defrag_dead_pct = 1', current_database()) \gexec
+SELECT format('ALTER DATABASE %I SET sift.table_auto_defrag_dead_pct = 1', current_database()) AS alter_db \gset
+:alter_db;
 -- the switches that stay
 SET sift.enable_col_scan = off;
 SET sift.enable_agg = off;

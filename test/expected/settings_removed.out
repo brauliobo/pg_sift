@@ -18,8 +18,8 @@ DETAIL:  "sift" is a reserved prefix.
 ALTER ROLE CURRENT_USER SET sift.enable_col = off;
 ERROR:  invalid configuration parameter name "sift.enable_col"
 DETAIL:  "sift" is a reserved prefix.
-SELECT format('ALTER DATABASE %I SET sift.table_auto_defrag_dead_pct = 1', current_database()) \gexec
-ALTER DATABASE contrib_regression_settings_removed SET sift.table_auto_defrag_dead_pct = 1
+SELECT format('ALTER DATABASE %I SET sift.table_auto_defrag_dead_pct = 1', current_database()) AS alter_db \gset
+:alter_db;
 ERROR:  invalid configuration parameter name "sift.table_auto_defrag_dead_pct"
 DETAIL:  "sift" is a reserved prefix.
 -- the switches that stay
