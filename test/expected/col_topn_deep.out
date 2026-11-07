@@ -13,8 +13,8 @@ SELECT i, (hashint4(i) & 2147483647) % 50, (hashint4(i + 1) & 2147483647) % 7, (
 	   (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4], 'n' || i
 FROM generate_series(1, 200000) i;
 CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind) WITH (order_array_columns = off, key_cut = 'off');
-NOTICE:  sift_col index "cd_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = d, e; track_changes = id
+NOTICE:  sift_col index "cd_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = d, e; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cd_col');
 VACUUM (ANALYZE) cd;
 CREATE FUNCTION cd_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;

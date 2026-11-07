@@ -10,7 +10,7 @@ setup
 	INSERT INTO iso_ru SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 4, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e)
 	                              FROM generate_series(1, g % 4 + 1) e), repeat('p', 100) FROM generate_series(1, 24000) g;
 	-- the braces of a path would end the block of the spec
-	DO $$ BEGIN EXECUTE format('CREATE INDEX iso_ru_idx ON iso_ru USING sift_col (id, lines) WITH (paths = %L, write_buffer_limit = 4096, rollup = ''off'')',
+	DO $$ BEGIN EXECUTE format('CREATE INDEX iso_ru_idx ON iso_ru USING sift_col (id, lines) WITH (paths = %L, write_buffer_limit = 4096, rollup_leaves = ''off'')',
 	                           'lines[]' || chr(123) || 'a text, b text, q int4' || chr(125)); END $$;
 }
 
@@ -21,7 +21,7 @@ setup
 
 setup
 {
-	ALTER INDEX iso_ru_idx SET (rollup = 'lines[].a, lines[].b');
+	ALTER INDEX iso_ru_idx SET (rollup_leaves = 'lines[].a, lines[].b');
 	CREATE FUNCTION iso_ru_q(OUT units int, OUT pre int, OUT miss int, OUT queued int, OUT agree bool) LANGUAGE plpgsql AS $$
 	DECLARE l text; q text := 'SELECT e.a, e.b, count(*), sum(e.q) FROM iso_ru d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int) GROUP BY 1, 2'; x text; y text;
 	BEGIN

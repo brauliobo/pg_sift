@@ -13,8 +13,8 @@ SELECT i, i % 11, CASE WHEN i % 13 = 0 THEN NULL ELSE (ARRAY['paid', 'shipped', 
        timestamp '2024-01-01' + i * interval '97 minutes', date '2024-01-01' + i % 700, CASE WHEN i % 5 = 0 THEN 'DE' WHEN i % 7 = 0 THEN 'US' ELSE 'FR' END, 'b'
 FROM generate_series(1, 20000) i;
 CREATE INDEX f_t_col ON f_t USING sift_col (id, g, k, v, n, t, d, c);
-NOTICE:  sift_col index "f_t_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, c
+NOTICE:  sift_col index "f_t_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, c
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('f_t_col');
 VACUUM (FREEZE, ANALYZE) f_t;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;

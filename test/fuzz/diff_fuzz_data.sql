@@ -189,7 +189,7 @@ CREATE TABLE udd (LIKE kcut_a) WITH (autovacuum_enabled = false);
 ALTER TABLE udd ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO udd SELECT * FROM fz.gen_ufl(1, @ROWS@, 90);
 CREATE INDEX udd_idx ON udd USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind)
-	WITH (preagg = 'cube(kind: amount, val, kn, ki; ki: amount, val, kn; kd: amount, ki; kt: amount; kn: amount, ki)', rollup_dims = 'kind, ki: amount, kn', calendar_columns = 'kd, kt');
+	WITH (preagg = 'cube(kind: amount, val, kn, ki; ki: amount, val, kn; kd: amount, ki; kt: amount; kn: amount, ki)', rollup_columns = 'kind, ki: amount, kn', calendar_columns = 'kd, kt');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) udd;
 
 -- units with a sorted run of the range leaves (order_columns): a range is answered from the run when it is short; a unit is 256 pages, so the rows of a few thousand fill one unit of more than 1,024 rows

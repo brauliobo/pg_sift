@@ -7,7 +7,7 @@ CREATE TABLE ks_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ks_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
 CREATE TABLE ks_dim (id int PRIMARY KEY, n int);
 INSERT INTO ks_dim SELECT i, i FROM generate_series(0, 6) i;
-CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_dims = 'off');
+CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_columns = 'off');
 ANALYZE ks_fact;
 ANALYZE ks_dim;
 

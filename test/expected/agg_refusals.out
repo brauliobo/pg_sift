@@ -25,8 +25,8 @@ CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
-NOTICE:  sift_col index "parted_0_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, val
+NOTICE:  sift_col index "parted_0_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = kind, val
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parted_0_col');
 -- a series longer than a spine can be
 CREATE TABLE ticks (a int, b int);

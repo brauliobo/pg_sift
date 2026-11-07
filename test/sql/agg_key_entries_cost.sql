@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, part int NOT NULL, amount float8 NOT NULL, grp text NOT NULL, gi int NOT NULL);
 SELECT setseed(0.42);
 INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), g % 100, random() * 100, 'k' || (g % 20000), g % 20000 FROM generate_series(1, 100000) g;
-CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_dims = 'off');
+CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) items;
 
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;

@@ -180,7 +180,7 @@ extern void sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n,
 extern void sift_col_auto_paths(Relation heap, Relation index);
 /* preagg = 'auto' or none (col/keycols/keycols.c): before a build of an index with more plain columns than the cube holds, the columns ranked by data and written to the option as 'auto: a, b' */
 extern void sift_col_auto_cube(Relation heap, Relation index);
-/* rollup_dims = 'auto' (col/keycols/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
+/* rollup_columns = 'auto' (col/keycols/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
 extern void sift_col_auto_rows(Relation heap, Relation index);
 /* array_lengths = auto (col/keycols/keycols.c): written as on for an index with an array column, before the build */
 extern void sift_col_auto_arrlen(Relation index);
@@ -218,6 +218,8 @@ extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks
 extern void sift_col_validate_preagg(const char *value);
 extern void sift_col_validate_rollup(const char *value);
 extern void sift_col_validate_rollup_dims(const char *value);
+extern void sift_col_validate_rollup_leaves(const char *value);
+extern void sift_col_validate_rollup_columns(const char *value);
 extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_key_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);

@@ -192,10 +192,10 @@ CREATE TABLE ev_b PARTITION OF ev FOR VALUES FROM ('2026-02-01') TO ('2026-04-01
 INSERT INTO ev SELECT i, i % 7, date '2026-01-01' + i % 80, CASE WHEN i % 10 = 0 THEN timestamp '2026-03-01' END, i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, deleted_at, score) WHERE deleted_at IS NULL;
 NOTICE:  sift_col index "ev_a_id_grp_day_deleted_at_score_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, deleted_at
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, deleted_at
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_a_id_grp_day_deleted_at_score_idx');
 NOTICE:  sift_col index "ev_b_id_grp_day_deleted_at_score_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, deleted_at
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, deleted_at
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_b_id_grp_day_deleted_at_score_idx');
 VACUUM (FREEZE, ANALYZE) ev;
 SELECT * FROM check_query('partitions, implied', 'SELECT grp, count(*), sum(score) FROM ev WHERE deleted_at IS NULL AND day >= ''2026-01-20'' GROUP BY grp');

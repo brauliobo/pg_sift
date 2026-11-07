@@ -192,7 +192,7 @@ extern const char *sift_cpagg_syntax(const char *opt);
 extern const char *sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
 extern const char *sift_cpagg_rollup_syntax(const char *opt);
 /*
- * The `rollup_dims` option: "a, b" or "a, b: m1, m2" (top-level scalar leaves; the measures are the integer and numeric top-level leaves when none are named): the
+ * The `rollup_columns` option: "a, b" or "a, b: m1, m2" (top-level scalar leaves; the measures are the integer and numeric top-level leaves when none are named): the
  * rollup of the rows of every unit, a cell per distinct combination of the dims (list -1 of spec). "" / "off": none. Same returns as sift_cpagg_rollup_apply.
  */
 extern const char *sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);

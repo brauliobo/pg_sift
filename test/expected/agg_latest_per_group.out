@@ -9,8 +9,8 @@ CREATE TABLE events (id int PRIMARY KEY, grp int NOT NULL, sub int, ts int, amou
 INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 1000 END, i % 11, i % 4
 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie);
-NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = sub, tie; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = sub, tie; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE groups (grp int PRIMARY KEY, name text) WITH (autovacuum_enabled = false);
 INSERT INTO groups SELECT i, 'g' || i FROM generate_series(0, 36) i;

@@ -19,8 +19,8 @@ INSERT INTO dm SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'kind' || i % 9 END
 	(i % 20 - 5)::int2, i::bigint * 100000, i % 3 = 0, CASE WHEN i % 101 = 0 THEN 'NaN'::numeric WHEN i % 19 = 0 THEN NULL ELSE (i % 1000) / 4.0 END, i % 7
 FROM generate_series(0, 3199) i;
 CREATE INDEX dm_col ON dm USING sift_col (k, t, vc, d, ts, tz, i2, i8, b, n, grp);
-NOTICE:  sift_col index "dm_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = t, b; track_changes = k
+NOTICE:  sift_col index "dm_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = t, b; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dm_col');
 -- an index that leaves the grouping column out: the table is read from the heap
 CREATE TABLE dn (k int PRIMARY KEY, t text, grp int) WITH (autovacuum_enabled = false);
@@ -32,12 +32,12 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 -- the same rows without a NaN, a value the leaf of a numeric cannot hold as a number: its units overflow, and the table is read from the heap
 CREATE TABLE dp (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 NOTICE:  sift_col index "dp_k_t_vc_d_ts_tz_i2_i8_b_n_grp_idx": 2 automatic choices
-DETAIL:  rollup_dims = t, b; track_changes = k
+DETAIL:  rollup_columns = t, b; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dp_k_t_vc_d_ts_tz_i2_i8_b_n_grp_idx');
 INSERT INTO dp SELECT * FROM dm WHERE n IS NULL OR n <> 'NaN';
 CREATE INDEX dp_col ON dp USING sift_col (k, t, vc, d, ts, tz, i2, i8, b, n, grp);
-NOTICE:  sift_col index "dp_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = t, b; track_changes = k
+NOTICE:  sift_col index "dp_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = t, b; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dp_col');
 VACUUM (FREEZE, ANALYZE) ev, dm, dn, dp;
 CREATE TABLE shapes (n int, sql text);

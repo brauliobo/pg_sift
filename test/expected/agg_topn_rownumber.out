@@ -10,8 +10,8 @@ INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 EN
        CASE WHEN i % 6 = 0 THEN NULL ELSE 't' || i % 13 END, CASE WHEN i % 9 = 0 THEN NULL ELSE i / 7.0 END, ARRAY[i, i + 1]
 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie, txt, num);
-NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = sub, tie; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = sub, tie; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE plain_events (id int PRIMARY KEY, grp int NOT NULL, ts int) WITH (autovacuum_enabled = false);
 INSERT INTO plain_events SELECT i, i % 37, i FROM generate_series(1, 500) i;
@@ -250,8 +250,8 @@ SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, g
 CREATE TABLE ranked (id int PRIMARY KEY, k37 int NOT NULL, k1000 int NOT NULL, ts int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ranked SELECT i, i % 37, i % 1000, (i * 31) % 1000, i % 11 FROM generate_series(1, 5000) i;
 CREATE INDEX ranked_col ON ranked USING sift_col (id, k37, k1000, ts, amount);
-NOTICE:  sift_col index "ranked_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = k37, amount; track_changes = id
+NOTICE:  sift_col index "ranked_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = k37, amount; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ranked_col');
 VACUUM (FREEZE, ANALYZE) ranked;
 CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$

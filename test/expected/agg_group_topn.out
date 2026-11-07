@@ -17,8 +17,8 @@ FROM generate_series(1, 30000) i;
 -- groups whose sums are all NULL, and groups of one row
 INSERT INTO gt (id, g, tie, small, f, n, q) SELECT 40000 + i, 5000 + i, 1, 0, NULL, NULL, NULL FROM generate_series(1, 40) i;
 CREATE INDEX gt_col ON gt USING sift_col (id, g, tie, small, f, n, q);
-NOTICE:  sift_col index "gt_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = small, q; track_changes = id
+NOTICE:  sift_col index "gt_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = small, q; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gt_col');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) gt;
 CREATE FUNCTION pushed(q text) RETURNS text LANGUAGE plpgsql AS $$

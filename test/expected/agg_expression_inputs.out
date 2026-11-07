@@ -7,8 +7,8 @@ SELECT i, i % 7, i % 3, i % 5, i % 2, i % 7, i % 3, i % 5,
        CASE WHEN i % 11 = 0 THEN NULL ELSE i % 2 END, repeat('payload', 50)
 FROM generate_series(1, 50000) i;
 CREATE INDEX events_col ON events USING sift_col (id, a, b, c, d, e, f, g, h);
-NOTICE:  sift_col index "events_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = b, f
+NOTICE:  sift_col index "events_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, f
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE labels (id int, label text);
 INSERT INTO labels SELECT i, 'v' || i FROM generate_series(0, 6) i;

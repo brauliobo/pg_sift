@@ -24,8 +24,8 @@ INSERT INTO ag SELECT i, i % 5,
 	CASE i % 17 WHEN 0 THEN NULL WHEN 1 THEN -0.0 ELSE i / 8.0 END, i % 100
 FROM generate_series(1, 30000) i;
 CREATE INDEX ag_col ON ag USING sift_col (id, g, s, f, n) WITH (write_buffer_limit = 4096);
-NOTICE:  sift_col index "ag_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, n
+NOTICE:  sift_col index "ag_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, n
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ag_col');
 VACUUM ANALYZE ag;
 SELECT sift.col_verify('ag_col', true);

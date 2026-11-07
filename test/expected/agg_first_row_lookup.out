@@ -12,8 +12,8 @@ SELECT i, i % 200, i % 101, 'k' || (i % 200), 'v' || (i % 101), 't' || ((i % 200
 INSERT INTO facts VALUES (20001, NULL, 1, 'k1', 'v1', 't1', 1), (20002, 1, NULL, 'k1', NULL, 't1', 2), (20003, 500, 1, 'zz', 'v1', 't1', 3),
  (20004, 1, 500, 'k1', 'zz', 'zz', 4), (20005, NULL, NULL, NULL, NULL, NULL, 5);
 CREATE INDEX facts_col ON facts USING sift_col (id, a, b, k, v, t, amount, w);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = b, v
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 CREATE TABLE dims (a int, b int, label text, score int);
 INSERT INTO dims SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 199) x, generate_series(0, 100) y;

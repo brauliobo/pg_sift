@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # drive.sh N HOST PORT LABEL [OPTS [BUILDS]]: a database (DB, default jb) of N documents (gen.sql) on the cluster and the run of run.sql on it;
-# REUSE=1 keeps the database of the last call. OPTS is appended to the WITH (...) of the index, e.g. ", rollup = 'off'".
+# REUSE=1 keeps the database of the last call. OPTS is appended to the WITH (...) of the index, e.g. ", rollup_leaves = 'off'".
 here=$(cd "$(dirname "$0")" && pwd)
 n=$1; host=$2; port=$3; label=$4; opts=${5:-}; builds=${6:-5}; db=${DB:-jb}
 P="psql -h $host -p $port -U postgres -X -q"

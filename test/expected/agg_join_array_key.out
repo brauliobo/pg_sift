@@ -12,8 +12,8 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 9 END, CASE WHEN i % 17 = 0 TH
        CASE WHEN i % 13 = 0 THEN NULL ELSE date '2025-01-01' + (i / 3) % 6 END, CASE WHEN i % 3 = 0 THEN round(i % 5 + 0.5, 1) ELSE round(i % 5 + 0.5, 2) END, i % 7
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, kind, ts, amount, val);
-NOTICE:  sift_col index "facts_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = parent_id, ts; track_changes = id
+NOTICE:  sift_col index "facts_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = parent_id, ts; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 -- buckets: a NULL kind and a NULL day (they equal the facts without one), a bucket twice, buckets no fact has, one with a numeric amount of another scale

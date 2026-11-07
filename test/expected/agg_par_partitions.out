@@ -30,45 +30,45 @@ INSERT INTO pr SELECT * FROM ph;
 INSERT INTO pl SELECT * FROM ph;
 CREATE INDEX ph_col ON ph USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "ph_0_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_0_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "ph_1_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_1_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "ph_2_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_2_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "ph_3_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_3_id_grp_kind_ts_amount_val_idx');
 CREATE INDEX pr_col ON pr USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "pr_0_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_0_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pr_1_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_1_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pr_2_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_2_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pr_3_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pr_3_id_grp_kind_ts_amount_val_idx');
 CREATE INDEX pl_col ON pl USING sift_col (id, grp, kind, ts, amount, val);
 NOTICE:  sift_col index "pl_0_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_0_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pl_1_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_1_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pl_2_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_2_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pl_3_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_3_id_grp_kind_ts_amount_val_idx');
 NOTICE:  sift_col index "pl_none_id_grp_kind_ts_amount_val_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, kind
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pl_none_id_grp_kind_ts_amount_val_idx');
 VACUUM (FREEZE, ANALYZE) ph, pr, pl;
 CREATE FUNCTION p_rows(q text, push bool, workers int, leader bool) RETURNS text LANGUAGE plpgsql AS $$

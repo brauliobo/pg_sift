@@ -11,8 +11,8 @@ SET enable_indexonlyscan = off;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date);
 INSERT INTO events SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts);
-NOTICE:  sift_col index "events_col": 3 automatic choices (key_columns, rollup_dims, track_changes)
-DETAIL:  key_columns = parent_id; rollup_dims = kind, ts; track_changes = id
+NOTICE:  sift_col index "events_col": 3 automatic choices (key_columns, rollup_columns, track_changes)
+DETAIL:  key_columns = parent_id; rollup_columns = kind, ts; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i % 7 FROM generate_series(0, 599) i;
@@ -23,8 +23,8 @@ CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
-NOTICE:  sift_col index "parted_0_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = kind, val
+NOTICE:  sift_col index "parted_0_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = kind, val
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parted_0_col');
 CREATE INDEX parted_1_col ON parted_1 USING sift_col (id, kind, val);
 NOTICE:  sift_col index "parted_1_col": 1 advice (track_changes)

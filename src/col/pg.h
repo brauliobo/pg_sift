@@ -144,9 +144,11 @@ typedef struct SiftColOptions
 	int			paths;			/* offset of the shredder's "paths" string, 0 = none */
 	int			compression;	/* offset of the "compression" string, 0 = auto */
 	int			preagg;			/* offset of the "preagg" string (docs/COL-PREAGG.md), 0 = default */
-	int			rollup;			/* offset of the "rollup" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
+	int			rollup;			/* the older name of rollup_leaves: am_col_amoptions copies its offset to rollup_leaves when that is empty */
+	int			rollup_leaves;	/* offset of the "rollup_leaves" string (the dims of the element rollups, docs/COL-PREAGG.md), 0 = automatic */
 	int			calendar_columns;	/* offset of the "calendar_columns" string (the date and timestamp columns that get calendar cells in every unit, docs/COL-PREAGG.md section 2; column format minor 8), 0 = none */
-	int			rollup_dims;	/* offset of the "rollup_dims" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
+	int			rollup_dims;	/* the older name of rollup_columns, copied the same way */
+	int			rollup_columns;	/* offset of the "rollup_columns" string (the columns of the rollup of the rows of a unit, docs/COL-PREAGG.md; column format minor 8), 0 = none */
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
@@ -192,8 +194,8 @@ extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */
 extern const char *sift_col_options_compression(Relation index);	/* "" when none (auto) */
 extern const char *sift_col_options_preagg(Relation index);	/* "" when none (default) */
-extern const char *sift_col_options_rollup(Relation index);	/* "" when none (automatic) */
-extern const char *sift_col_options_rollup_dims(Relation index);	/* "" when none */
+extern const char *sift_col_options_rollup_leaves(Relation index);	/* "" when none (automatic) */
+extern const char *sift_col_options_rollup_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_document_present(Relation index);	/* NULL when the option is not set: the build has not chosen yet, or an index written without it */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */

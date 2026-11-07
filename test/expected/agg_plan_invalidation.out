@@ -116,8 +116,8 @@ SELECT * FROM chk('drop index');
 (1 row)
 
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind);
-NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = ts, kind; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = ts, kind; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT * FROM chk('narrow index');
      step     | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 

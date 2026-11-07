@@ -12,8 +12,8 @@ INSERT INTO ev
 SELECT i, 'k' || (abs(hashint4(i)) % 40), 'b' || (abs(hashint4(i + 1000000)) % 60), 's' || (abs(hashint4(i + 2000000)) % 50), date '2024-01-01' + i % 700, (i % 1000) / 10.0
 FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (kind, bucket, sub, day, amount);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = kind, sub
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = kind, sub
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE maps (kind text, bucket text, sub text, label text) WITH (autovacuum_enabled = false);

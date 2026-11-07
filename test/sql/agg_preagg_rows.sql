@@ -1,4 +1,4 @@
--- The rollup of the rows of a unit (reloption rollup_dims, column format minor 9, docs/COL-PREAGG.md section 2): a cell for each distinct combination of a few
+-- The rollup of the rows of a unit (reloption rollup_columns, column format minor 9, docs/COL-PREAGG.md section 2): a cell for each distinct combination of a few
 -- scalar columns with the rows, the sums, the minima and the maxima of its measures. A GROUP BY of two or more of them, and a test of one with a group by
 -- another, are answered from the cells of the exact units. Every query runs three ways, which must give the same rows (text): from the pre-aggregates,
 -- scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata:
@@ -87,17 +87,17 @@ INSERT INTO rm SELECT * FROM rw;
 DROP TABLE rw;
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 SET sift.col_auto_merge_fragmentation = 1000;
-CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, d: v, w, c');
+CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
 RESET sift.col_auto_merge_fragmentation;
-CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, c');
-CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'id, a: v');
+CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, c');
+CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'id, a: v');
 CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 SET sift.col_format_minor = 8;
-CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b');
+CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b');
 RESET sift.col_format_minor;
 -- the rollup of a segment written under 14 has no length before each measure (minor 9); one written under the default has (minor 36): both are read
 SET sift.col_format_minor = 14;
-CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, d: v, w, c');
+CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
 RESET sift.col_format_minor;
 CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 CALL pa_settle();
@@ -153,7 +153,7 @@ SELECT * FROM pa_check('rc');
 -- 6. the option comes after the build: the segments written before have no cells (their units scan), the ones written after have them, and a merge of both
 -- writes them for every unit. Under the setting 8 the option is ignored
 SELECT * FROM pa_sum('rx');
-ALTER INDEX rx_col SET (rollup_dims = 'a, b');
+ALTER INDEX rx_col SET (rollup_columns = 'a, b');
 INSERT INTO rx SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 320000) g;
 SELECT sift.col_promote('rx_col') >= 0 AS promoted;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
@@ -171,7 +171,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) rf;
 SELECT sift.col_verify('rf_col', true);
 SELECT * FROM pa_sum('rf');
 -- the option off again: a merge of the units that hold cells writes none
-ALTER INDEX rx_col SET (rollup_dims = '');
+ALTER INDEX rx_col SET (rollup_columns = '');
 SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
 SELECT sift.col_verify('rx_col', true);

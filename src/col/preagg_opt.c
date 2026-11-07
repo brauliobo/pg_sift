@@ -645,7 +645,7 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 		ru.dim[ru.ndims++] = leaf;
 	} while (eat(c, ','));
 	if (nrows < 2)
-		return "rollup_dims needs at least two columns (the cube answers one)";
+		return "rollup_columns needs at least two columns (the cube answers one)";
 	if (eat(c, ':'))
 	{
 		do

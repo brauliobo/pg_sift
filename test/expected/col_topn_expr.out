@@ -22,8 +22,8 @@ SELECT i, i % 7,
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
 CREATE INDEX tc_col ON tc USING sift_col (id, g, a, b, c, d, t, z, s, v);
-NOTICE:  sift_col index "tc_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = g, v; track_changes = id
+NOTICE:  sift_col index "tc_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = g, v; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tc_col');
 RESET sift.test_limits;
 VACUUM (ANALYZE) tc;

@@ -1,6 +1,6 @@
--- rollup_dims = 'auto' writes the rollup of the rows of a unit by the columns whose combinations fit the cells a unit may keep, read from a sample of the
+-- rollup_columns = 'auto' writes the rollup of the rows of a unit by the columns whose combinations fit the cells a unit may keep, read from a sample of the
 -- table at CREATE INDEX: the columns that fit the cube's histograms, the fewest values first, as the largest nested set that fits in most of the sampled stretches,
--- recorded as 'auto: a, b' (a REINDEX keeps it, ALTER INDEX SET (rollup_dims = 'auto') decides again). Not a default. The answers are the plain plan's.
+-- recorded as 'auto: a, b' (a REINDEX keeps it, ALTER INDEX SET (rollup_columns = 'auto') decides again). Not a default. The answers are the plain plan's.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
@@ -16,7 +16,7 @@ INSERT INTO ra SELECT i, i % 100, i % 5, i % 7, i % 11, (i * 37) % 97, i, repeat
 VACUUM (FREEZE, ANALYZE) ra;
 
 CREATE FUNCTION ra_option(i text) RETURNS text LANGUAGE sql AS
-$$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'rollup_dims=%'), 'not set') $$;
+$$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'rollup_columns=%'), 'not set') $$;
 CREATE FUNCTION ra_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_other_scans_off(q, push) $$;
 CREATE TABLE ra_q (n int, q text);
 INSERT INTO ra_q VALUES
@@ -35,7 +35,7 @@ BEGIN
 END $$;
 
 -- off: the cube holds one column at a time, so a GROUP BY of two scans the units
-CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'off');
+CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_columns = 'off');
 SELECT ra_option('ra_none');
 SELECT * FROM ra_check();
 DROP INDEX ra_none;
@@ -46,7 +46,7 @@ SELECT ra_option('ra_default');
 SELECT * FROM ra_check();
 DROP INDEX ra_default;
 
-CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'auto');
+CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_columns = 'auto');
 SELECT ra_option('ra_auto');
 SELECT sift.col_verify('ra_auto', true);
 SELECT * FROM ra_check();
@@ -56,7 +56,7 @@ UPDATE ra SET a = id % 400;
 VACUUM (FREEZE, ANALYZE) ra;
 REINDEX INDEX ra_auto;
 SELECT ra_option('ra_auto');
-ALTER INDEX ra_auto SET (rollup_dims = 'auto');
+ALTER INDEX ra_auto SET (rollup_columns = 'auto');
 REINDEX INDEX ra_auto;
 SELECT ra_option('ra_auto');
 SELECT sift.col_verify('ra_auto', true);
@@ -65,7 +65,7 @@ SELECT * FROM ra_check();
 -- columns whose combinations never fit write nothing
 CREATE TABLE ra_few (id int, x int, y int) WITH (autovacuum_enabled = off);
 INSERT INTO ra_few SELECT i, i, i % 3 FROM generate_series(1, 2000) i;
-CREATE INDEX ra_few_col ON ra_few USING sift_col (id, x, y) WITH (rollup_dims = 'auto');
+CREATE INDEX ra_few_col ON ra_few USING sift_col (id, x, y) WITH (rollup_columns = 'auto');
 SELECT ra_option('ra_few_col');
 
 DROP TABLE ra, ra_q, ra_few;

@@ -9,9 +9,9 @@ INSERT INTO kw SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_series(
 CREATE INDEX kw_k ON kw (k);
 CREATE INDEX kw_col ON kw USING sift_col (id, k, v);
 SELECT reloptions FROM pg_class WHERE relname = 'kw_col';
-         reloptions         
-----------------------------
- {"rollup_dims=auto: k, v"}
+          reloptions           
+-------------------------------
+ {"rollup_columns=auto: k, v"}
 (1 row)
 
 -- 120,000 narrow rows, the same steps: the build analyzes them and chooses the directory of the id
@@ -20,9 +20,9 @@ INSERT INTO kn SELECT i, i / 300, i % 7 FROM generate_series(0, 119999) i;
 CREATE INDEX kn_k ON kn (k);
 CREATE INDEX kn_col ON kn USING sift_col (id, k, v);
 SELECT reloptions FROM pg_class WHERE relname = 'kn_col';
-                       reloptions                        
----------------------------------------------------------
- {"rollup_dims=auto: k, v","point_tid_columns=auto: id"}
+                         reloptions                         
+------------------------------------------------------------
+ {"rollup_columns=auto: k, v","point_tid_columns=auto: id"}
 (1 row)
 
 -- analyzed at 30,000 rows and grown to 120,000 since: the rows are counted from the pages, the statistics are the old ones
@@ -33,9 +33,9 @@ INSERT INTO kg SELECT i, i / 300, i % 7 FROM generate_series(30000, 119999) i;
 CREATE INDEX kg_k ON kg (k);
 CREATE INDEX kg_col ON kg USING sift_col (id, k, v);
 SELECT reloptions FROM pg_class WHERE relname = 'kg_col';
-                       reloptions                        
----------------------------------------------------------
- {"rollup_dims=auto: k, v","point_tid_columns=auto: id"}
+                         reloptions                         
+------------------------------------------------------------
+ {"rollup_columns=auto: k, v","point_tid_columns=auto: id"}
 (1 row)
 
 DROP TABLE kw, kn, kg;

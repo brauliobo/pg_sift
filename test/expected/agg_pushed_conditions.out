@@ -8,8 +8,8 @@ INSERT INTO dim_a SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_seri
 CREATE TABLE facts (id int, day date, dim_a_id int, deleted_at timestamp);
 INSERT INTO facts SELECT i, '2026-01-01'::date + (i % 15), 1 + (i * i) % 97, CASE WHEN i % 17 = 0 THEN now() END FROM generate_series(1, 40000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at);
-NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = day, deleted_at
+NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = day, deleted_at
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;

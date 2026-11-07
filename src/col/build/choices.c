@@ -210,8 +210,8 @@ d_preagg(Derive *d)
 static void
 d_rollup(Derive *d)
 {
-	if (after_auto(sift_col_options_rollup_dims(d->index)))
-		add(d, "rows-rollup", pstrdup(after_auto(sift_col_options_rollup_dims(d->index))), NULL);
+	if (after_auto(sift_col_options_rollup_columns(d->index)))
+		add(d, "rows-rollup", pstrdup(after_auto(sift_col_options_rollup_columns(d->index))), NULL);
 }
 
 static void

@@ -7,8 +7,8 @@ SET cpu_tuple_cost = 0.5;
 CREATE TABLE nf (id int, g int, n int, s text);
 INSERT INTO nf SELECT i, i % 7, i % 100, 'v' || i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n, s);
-NOTICE:  sift_col index "nf_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, s
+NOTICE:  sift_col index "nf_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nf_col');
 VACUUM ANALYZE nf;
 \ir test/agg_rows_helpers.sql

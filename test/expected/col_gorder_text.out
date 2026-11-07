@@ -289,9 +289,9 @@ CREATE INDEX tc_wide ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text
 NOTICE:  sift_col index "tc_wide": 3 automatic choices, 1 advice
 NOTICE:  sift_col index "tc_wide" is column format minor 42, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'tc_wide';
-                                      reloptions                                       
----------------------------------------------------------------------------------------
- {"rollup_dims=auto: q, a","order_array_columns=auto: s","point_tid_columns=auto: id"}
+                                        reloptions                                        
+------------------------------------------------------------------------------------------
+ {"rollup_columns=auto: q, a","order_array_columns=auto: s","point_tid_columns=auto: id"}
 (1 row)
 
 DROP TABLE tc;

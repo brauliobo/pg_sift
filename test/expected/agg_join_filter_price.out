@@ -21,8 +21,8 @@ VACUUM (FREEZE, ANALYZE) wide_keys;
 CREATE TABLE few (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO few SELECT i, i % 100, i % 10 FROM generate_series(1, 20000) i;
 CREATE INDEX few_col ON few USING sift_col (id, k, v);
-NOTICE:  sift_col index "few_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = k, v
+NOTICE:  sift_col index "few_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('few_col');
 VACUUM (FREEZE, ANALYZE) few;
 \ir test/agg_helpers.sql

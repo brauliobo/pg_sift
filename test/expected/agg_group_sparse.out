@@ -10,8 +10,8 @@ INSERT INTO sp_facts SELECT i, i % 50, d, extract(week FROM d)::int, extract(dow
 FROM (SELECT i, date '2024-01-01' + i % 90 AS d FROM generate_series(1, 40000) i) g;
 CREATE STATISTICS sp_facts_days (ndistinct) ON ts, wk, dow FROM sp_facts;
 CREATE INDEX sp_facts_col ON sp_facts USING sift_col (id, parent_id, ts, wk, dow, quarter, amount);
-NOTICE:  sift_col index "sp_facts_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = dow, quarter
+NOTICE:  sift_col index "sp_facts_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dow, quarter
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_facts_col');
 VACUUM (FREEZE, ANALYZE) sp_facts;
 CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_scan_kind_rows_and_differences(q) $$;

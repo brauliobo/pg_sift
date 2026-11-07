@@ -9,7 +9,7 @@ CREATE TABLE ds (id int, k text, g text, w text, v int, ip inet) WITH (autovacuu
 INSERT INTO ds
 SELECT i, 'key' || (i * 7919 % 9000), 'g' || (i % 13), CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 26), 1 + i % 40) || i % 997 END, i % 100, '198.18.0.0'::inet + (i * 7919 % 60000)
 FROM generate_series(1, 30000) i;
-CREATE INDEX ds_col ON ds USING sift_col (id, k, g, w, v, ip) WITH (rollup_dims = 'off');
+CREATE INDEX ds_col ON ds USING sift_col (id, k, g, w, v, ip) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) ds;
 
 CREATE TABLE shapes (id int PRIMARY KEY, q text);

@@ -41,7 +41,7 @@ INSERT INTO cp_q VALUES
 CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m, id, h1, h2) WITH (key_columns = 'off');
 NOTICE:  sift_col index "cp_col": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key;
-limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_dims = l1, l2; point_tid_columns = id, h1, h2
+limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_columns = l1, l2; point_tid_columns = id, h1, h2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_col');
 SELECT cp_held('cp_col');
                                  cp_held                                  
@@ -63,7 +63,7 @@ SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u
 REINDEX INDEX cp_col;
 NOTICE:  sift_col index "cp_col": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key;
-limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_dims = l1, l2; point_tid_columns = id, h1, h2
+limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_columns = l1, l2; point_tid_columns = id, h1, h2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_col');
 SELECT cp_held('cp_col');
                                  cp_held                                  
@@ -74,8 +74,8 @@ SELECT cp_held('cp_col');
 DROP INDEX cp_col;
 -- all fit: 9 plain columns, the 3 dates and 1 more, and the cells of the 3 dates (16): the dates' own histograms kept
 CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
-NOTICE:  sift_col index "cp_fit": 1 automatic choice (rollup_dims), 1 advice (track_changes), 1 limit (cube)
-DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "d3"; rollup_dims = l1, l2
+NOTICE:  sift_col index "cp_fit": 1 automatic choice, 1 advice, 1 limit
+DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "d3"; rollup_columns = l1, l2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_fit');
 SELECT cp_held('cp_fit');
                         cp_held                        
@@ -86,8 +86,8 @@ SELECT cp_held('cp_fit');
 DROP INDEX cp_fit;
 -- a cube(...) of the user is kept as written, and calendar_columns names the dates it wants
 CREATE INDEX cp_fixed ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m) WITH (key_columns = 'off', preagg = 'cube(l1; l2; l3; l4; l5; l6; l7; l8; l9; l10; l11; l12; d1; d2; d3; v)', calendar_columns = 'off');
-NOTICE:  sift_col index "cp_fixed": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = l1, l2
+NOTICE:  sift_col index "cp_fixed": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = l1, l2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_fixed');
 SELECT cp_held('cp_fixed');
                                           cp_held                                          

@@ -10,8 +10,8 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 7 END, CASE WHEN i % 13 = 0 THEN NULL ELSE date '2025-01-01' + (i / 3) % 8 END, i % 5 + 0.5, i % 11
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, k, ts, amount, val);
-NOTICE:  sift_col index "facts_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = k, ts; track_changes = id
+NOTICE:  sift_col index "facts_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = k, ts; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 -- days of the dimension are timestamps: several in one day, a NULL, one no fact has, 'infinity'; the small and wide integers repeat and have a NULL

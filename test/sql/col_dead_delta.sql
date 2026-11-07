@@ -15,7 +15,7 @@ INSERT INTO dd SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHE
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
 FROM generate_series(1, 40000) g;
 CREATE INDEX dd_col ON dd USING sift_col (id, grp, kind, amount, qty, big, f, ts)
-	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts', dead_rewrite_pct = 50);
+	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_columns = 'kind, grp: amount, qty', calendar_columns = 'ts', dead_rewrite_pct = 50);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) dd;
 
 -- the units that answer net of dead rows, as EXPLAIN ANALYZE counts them

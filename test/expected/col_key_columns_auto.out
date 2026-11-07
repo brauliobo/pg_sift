@@ -44,9 +44,9 @@ CREATE FUNCTION au_minors(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15))::text FROM sift._test_col_formats(i::regclass) $$;
 -- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
 CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (key_cut = 'off', write_buffer_limit = 4096, point_tid_columns = 'off');
-NOTICE:  sift_col index "au_i": 2 automatic choices (key_columns, rollup_dims), 1 advice (track_changes)
+NOTICE:  sift_col index "au_i": 2 automatic choices (key_columns, rollup_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = point_tid_columns is off; key_columns = parent_id, set_id, sparse_fk, region_id;
-rollup_dims = low_id, ts
+rollup_columns = low_id, ts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('au_i');
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
                           option                           | minors 
@@ -78,9 +78,9 @@ FROM unnest(ARRAY['parent_id', 'set_id', 'sparse_fk', 'region_id', 'ext_fk', 'un
 
 -- a rebuild of the same heap keeps the same columns, and says so again
 REINDEX INDEX au_i;
-NOTICE:  sift_col index "au_i": 2 automatic choices (key_columns, rollup_dims), 1 advice (track_changes)
+NOTICE:  sift_col index "au_i": 2 automatic choices (key_columns, rollup_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = point_tid_columns is off; key_columns = parent_id, set_id, sparse_fk, region_id;
-rollup_dims = low_id, ts
+rollup_columns = low_id, ts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('au_i');
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
                           option                           | minors 

@@ -35,7 +35,7 @@ topn_big_offset	with `n + m` past 100,000	orders	default	Top-N: amount	native,pg
 topn_many_keys	up to 8 sort columns in the heap of the top-N scan	orders	default	Top-N: customer_id, country, category, status, quantity	native,pg_duckdb	-	ms	faster33	no	-
 count_distinct_hist	`count(DISTINCT col)` of a 32-bit or text column the cube tenants a histogram of	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
 group_numeric_key	a group key that is an `int8` or a `numeric(p,s)` column	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
-rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_dims = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
+rollup_dims	`rollup_dims` (`sift_col` reloption, default off	orders	default WITH (rollup_columns = 'country, category: amount')	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
 dict_equality	finds its dictionary codes without testing every string	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 dict_prefix	a byte-order permutation of the dictionary	orders	default+title	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 partitions_scan	the planner prices the opening of the partitions of a partitioned table, which grows faster than their number	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-

@@ -6,8 +6,8 @@ SET sift.async_maintenance = off;
 CREATE TABLE rs (id int, parent_id int, kind text, grp int) WITH (autovacuum_enabled = false);
 INSERT INTO rs SELECT i, i % 10, 'k' || (i % 5), i % 12 FROM generate_series(1, 600) i;
 CREATE INDEX rs_col ON rs USING sift_col (id, parent_id, kind, grp);
-NOTICE:  sift_col index "rs_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = parent_id, kind
+NOTICE:  sift_col index "rs_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = parent_id, kind
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rs_col');
 VACUUM (FREEZE, ANALYZE) rs;
 -- the buffer holds the new versions of 8 rows: 6 of kind k3, 2 of kind k2

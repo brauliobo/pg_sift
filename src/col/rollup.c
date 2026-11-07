@@ -488,7 +488,7 @@ cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft
  * After a build or a refresh: where the caps of the options leave units without what was asked, which the queries on it then scan. A dim of cube(...)
  * has no histogram in a unit with more groups than max_groups, a key_columns leaf the user named keeps a bloom filter instead of its keys where a unit
  * holds more than SIFT_CSET_LIMIT of them and nothing where its keys are one value or fill their range, and no key list or bitmap where that would take
- * more than a few percent of the unit, a rollup_dims rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
+ * more than a few percent of the unit, a rollup_columns rollup is not written in a unit with more cells than it may keep, and calendar_columns = 'all'
  * leaves out the date columns past the 16 dimensions of the cube. The leaves the build chose for key_columns are reported by it (col/keycols/keycols.c). Read from
  * the headers of the stored sidecar, like the census of a refresh; sift.col_rollup_misses counts the scans that paid.
  */

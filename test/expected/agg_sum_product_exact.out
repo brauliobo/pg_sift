@@ -17,8 +17,8 @@ INSERT INTO p VALUES (10001, 9, 9999999999999999, 9999999999999999, 999999999999
                      (10008, 5, 'NaN', 2, 3, 'NaN', 0.1, 0.2), (10009, 5, 1, 2, 3, 1, 0.1, 0.2);
 INSERT INTO p SELECT 20000 + i, 4, 1234567890123456, 8765432109876543, 12345 + i, 1234567890123.45, 0.01 * (i % 90), 0.01 * (i % 70) FROM generate_series(1, 3000) i;
 CREATE INDEX p_col ON p USING sift_col (g, a, b, c, price, disc, tax);
-NOTICE:  sift_col index "p_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = g, b
+NOTICE:  sift_col index "p_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = g, b
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('p_col');
 VACUUM (FREEZE, ANALYZE) p;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_forced_differences(q) $$;

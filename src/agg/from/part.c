@@ -122,7 +122,7 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 }
 
 /*
- * Do two partitions write the same pre-aggregates? The key lists of the integer leaves (key_columns = auto) and the rollups (rollup_dims = auto) follow the
+ * Do two partitions write the same pre-aggregates? The key lists of the integer leaves (key_columns = auto) and the rollups (rollup_columns = auto) follow the
  * data of each partition, and a unit without one is read by its rows: acc keeps the leaves and the rollups every partition so far lists, and what else
  * differs is a layout of its own.
  */

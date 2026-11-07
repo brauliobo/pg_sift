@@ -37,11 +37,11 @@ ERROR:  invalid key_columns option: not a plain integer, text or uuid column
 ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
 ERROR:  invalid key_columns option: unknown column
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'nope, pid');
-ERROR:  invalid rollup_dims option: "nope" is not a column of the index
+ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
+ERROR:  invalid rollup_columns option: "nope" is not a column of the index
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'f, pid');
-ERROR:  invalid rollup_dims option: "f" must be a boolean, integer, date, numeric or text column
+ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
+ERROR:  invalid rollup_columns option: "f" must be a boolean, integer, date, numeric or text column
 \c
 ALTER INDEX ao_paths SET (order_columns = 'nope');
 ERROR:  invalid order_columns option: unknown column
@@ -76,7 +76,7 @@ SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain
  ad_dates | {calendar_columns=off}
  ao_paths | {"paths=metrics.* float8, parts[]{kind text}","document_present=auto: metrics, parts",calendar_columns=all}
  ap_plain | 
- aw_wide  | {"rollup_dims=auto: c2, c9","calendar_columns=d1, d2"}
+ aw_wide  | {"rollup_columns=auto: c2, c9","calendar_columns=d1, d2"}
 (4 rows)
 
 SET client_min_messages = warning;
@@ -91,7 +91,7 @@ SELECT count(*) FROM ao;
 VACUUM ao;
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;
@@ -111,11 +111,11 @@ SELECT count(*) FROM ap;
 
 -- auto is the word of the default for calendar_columns and rollup (empty, and 'default' for rollup, mean the same); a word that is none of them is refused
 \c
-ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup = 'auto');
-ALTER INDEX ap_plain SET (rollup = 'default');
+ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup_leaves = 'auto');
+ALTER INDEX ap_plain SET (rollup_leaves = 'default');
 \c
-ALTER INDEX ap_plain SET (rollup = 'nope');
-ERROR:  invalid rollup option: "nope" is not a leaf declared in paths
+ALTER INDEX ap_plain SET (rollup_leaves = 'nope');
+ERROR:  invalid rollup_leaves option: "nope" is not a leaf declared in paths
 ALTER INDEX ap_plain SET (calendar_columns = 'autos');
 ERROR:  invalid calendar_columns option: "autos" is not a column of the index
 ALTER INDEX ap_plain RESET (calendar_columns, rollup);

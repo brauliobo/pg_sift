@@ -132,6 +132,8 @@ order_array_syntax(const char *value)
 SYNTAX_VALIDATOR(preagg, sift_cpagg_syntax(value))
 SYNTAX_VALIDATOR(rollup, sift_cpagg_rollup_syntax(value))
 SYNTAX_VALIDATOR(rollup_dims, sift_cpagg_rows_syntax(value))
+SYNTAX_VALIDATOR(rollup_leaves, sift_cpagg_rollup_syntax(value))
+SYNTAX_VALIDATOR(rollup_columns, sift_cpagg_rows_syntax(value))
 SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
 SYNTAX_VALIDATOR(return_columns, am_return_walk(value, NULL, NULL))
 SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
@@ -450,8 +452,11 @@ sift_col_init(void)
 					   "The segments written from now on keep, for each key_columns leaf, a table of its distinct keys with the rows, sums, minima and maxima of each, where that adds at most 3% to the segment, so that count, sum, min and max WHERE key = x read one record of a segment, not its units; the segments are column format minor 22, which 3.4 and older libraries cannot read (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_dims",
-						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
+						 "Deprecated alias of rollup_columns, which wins when both are set",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_columns",
+						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
+						 "", sift_col_validate_rollup_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "calendar_columns",
 						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
 						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
@@ -501,8 +506,11 @@ sift_col_init(void)
 					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
 					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
-						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
+						 "Deprecated alias of rollup_leaves, which wins when both are set",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_leaves",
+						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', 'auto' (default) or off",
+						 "", sift_col_validate_rollup_leaves, ShareUpdateExclusiveLock);
 }
 
 static const relopt_parse_elt col_relopt_tab[] = {
@@ -514,6 +522,8 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
 	{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
 	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
+	{"rollup_leaves", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_leaves)},
+	{"rollup_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_columns)},
 	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
 	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
 	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
@@ -587,10 +597,32 @@ key_order_expand(SiftColOptions **op)
 	*op = o;
 }
 
+/* The older name counts when the new one is empty (the strings live in the same bytea, so the offset is shared) */
+static void
+alias_string(const SiftColOptions *o, int old, int *neu)
+{
+	if (old && *((const char *) o + old) && !(*neu && *((const char *) o + *neu)))
+		*neu = old;
+}
+
 bytea *
 am_col_amoptions(Datum reloptions, bool validate)
 {
 	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), col_relopt_tab, lengthof(col_relopt_tab));
+
+	if (o)
+	{
+		alias_string(o, o->rollup, &o->rollup_leaves);
+		alias_string(o, o->rollup_dims, &o->rollup_columns);
+	}
+	if (validate && o && reloptions != (Datum) 0)
+		foreach_ptr(DefElem, def, untransformRelOptions(reloptions))
+		{
+			if (strcmp(def->defname, "rollup") == 0)
+				sift_relopt_alias_notice("rollup", "rollup_leaves");
+			else if (strcmp(def->defname, "rollup_dims") == 0)
+				sift_relopt_alias_notice("rollup_dims", "rollup_columns");
+		}
 
 	if (validate && o && o->superunit == 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));

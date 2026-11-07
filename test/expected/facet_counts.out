@@ -21,8 +21,8 @@ SELECT (ARRAY['wireless','wired','portable','compact','classic'])[1 + i % 5] || 
 FROM generate_series(1, 12000) i;
 CREATE INDEX fc_bm ON fc USING sift (title);
 CREATE INDEX fc_col ON fc USING sift_col (brand, category, price, qty, added, ts, active) WITH (write_buffer_limit = 256);
-NOTICE:  sift_col index "fc_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = brand, active
+NOTICE:  sift_col index "fc_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = brand, active
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fc_col');
 VACUUM (ANALYZE) fc;
 -- the plans that are not SiftAgg are disabled for the pushed run; the planner's own choice with sift.enable_agg off is the other

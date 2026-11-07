@@ -5,7 +5,7 @@ CREATE TABLE nullp (id int, parent_id int NOT NULL, kind int NOT NULL, deleted_a
 INSERT INTO nullp SELECT i, 1 + ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int, i % 10,
 	CASE WHEN i % 500 = 0 OR ((((i * 7919) % 200000)::float8 / 200000) ^ 2 * 99)::int = 6 AND i % 4 = 0 THEN now() END FROM generate_series(1, 200000) i;
 CREATE INDEX nullp_parent ON nullp (parent_id);
-CREATE INDEX nullp_col ON nullp USING sift_col (parent_id, deleted_at, kind) WITH (rollup_dims = 'off', key_cut = 'off');
+CREATE INDEX nullp_col ON nullp USING sift_col (parent_id, deleted_at, kind) WITH (rollup_columns = 'off', key_cut = 'off');
 NOTICE:  sift_col index "nullp_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nullp_col');

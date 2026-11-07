@@ -7,8 +7,8 @@ SET sift.agg_force = off;
 CREATE TABLE ev (id int, grp int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 50, i % 7 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, v);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, v
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 -- the price of the scan node of the grouped query, as the planner gives it with the normal paths off
@@ -33,7 +33,7 @@ RESET sift.plan_scale;
 INSERT INTO price SELECT 'unscaled again', scan_price();
 REINDEX INDEX ev_col;
 NOTICE:  sift_col index "ev_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, v; point_tid_columns = id
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, v; point_tid_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 INSERT INTO price SELECT 'after reindex', scan_price();
 SELECT (SELECT p FROM price WHERE step = 'start') = (SELECT p FROM price WHERE step = 'same') AS same_state_same_price,

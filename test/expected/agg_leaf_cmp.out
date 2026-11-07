@@ -29,8 +29,8 @@ SELECT i, i % 5,
        (i % 5)::float4, (i % 5)::float8
 FROM generate_series(1, 3001) i;
 CREATE INDEX t_col ON t USING sift_col (id, g, a2, b2, a4, b4, a8, b8, da, db, ta, tb, tza, tzb, fa4, fb4, fa8, fb8, f4x, f8y);
-NOTICE:  sift_col index "t_col": 2 automatic choices (rollup_dims, track_changes), 1 limit (cube)
-DETAIL:  limit: cube = "ta", "tb", "tza", "tzb"; rollup_dims = db, tb; track_changes = id
+NOTICE:  sift_col index "t_col": 2 automatic choices (rollup_columns, track_changes), 1 limit (cube)
+DETAIL:  limit: cube = "ta", "tb", "tza", "tzb"; rollup_columns = db, tb; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_col');
 VACUUM (ANALYZE) t;
 EXPLAIN (COSTS OFF) SELECT g, count(*) FROM t WHERE da < db GROUP BY g;

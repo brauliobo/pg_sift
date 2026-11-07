@@ -38,7 +38,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
-| [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
+| [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
 
 ### default
 
@@ -266,17 +266,17 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at default. With more than 16 plain columns try auto (ranks them by data, +6% to +9% of the index); off keeps leaf sums only; cube(dim: measure) names the dims.
 - **Sources:** [COL-PREAGG 2](COL-PREAGG.md#2-what-is-precomputed-written-when-a-unit-is-built-merged-promoted-rewritten-by-vacuums-merge-and-by-every-worker-of-a-parallel-build)
 
-#### sift_col(rollup)
+#### sift_col(rollup_leaves)
 
 `sift_col` · default · since 3.1 · default ''
 
 - **What it does:** names the leaves of array elements and map values a rollup groups by
 - **Gain:** GROUP BY of an array element key 1,888 ms normal plan, 9.2 scanned, 2.0 ms from rollups (1,000,000 documents); 151 to 0.08 ms at 100,000
-- **Impact:** index size: +2.0% of the index (100,000 and 1,000,000 documents, default rollups against rollup = 'off'); build, merge and writes: serial build cpu 268 against 257 ms with the default rollups at 100,000 documents and 2,508 against 2,521 ms at 1,000,000: inside the noise; other: explicit names hold up to 4096 tuples a unit with no byte budget; the default rule has a budget of 2% of the unit per list
-- **When:** Array elements and map values of shredded jsonb paths (lists) of a sift_col index: the rollup groups them by their low-cardinality leaves, up to 4096 tuples a unit. Scalar columns use rollup_dims.
+- **Impact:** index size: +2.0% of the index (100,000 and 1,000,000 documents, default rollups against rollup_leaves = 'off'); build, merge and writes: serial build cpu 268 against 257 ms with the default rollups at 100,000 documents and 2,508 against 2,521 ms at 1,000,000: inside the noise; other: explicit names hold up to 4096 tuples a unit with no byte budget; the default rule has a budget of 2% of the unit per list
+- **When:** Array elements and map values of shredded jsonb paths (lists) of a sift_col index: the rollup groups them by their low-cardinality leaves, up to 4096 tuples a unit. Scalar columns use rollup_columns.
 - **Default:** '' — The automatic rule has a 2% byte budget a list: +2.0% of the index, +3.4% to +4.2% build instructions (1,000,000 documents), GROUP BY of an array key 1,888 to 2.0 ms: inside the 3% and 5% limits.
-- **Turn off:** SET (rollup = 'off') removes the rollups and keeps the cube; 'auto', 'default' or RESET returns to the automatic rule. Segments written afterwards; older units change at a merge, REINDEX or sift.col_refresh(index).
-- **Upgrade from 4.1:** unchanged
+- **Turn off:** SET (rollup_leaves = 'off') removes the rollups and keeps the cube; 'auto', 'default' or RESET returns to the automatic rule. Segments written afterwards; older units change at a merge, REINDEX or sift.col_refresh(index).
+- **Upgrade from 4.1:** An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX.
 - **Advice:** Leave at default: the rollups of array elements and map values are chosen by a 2% byte budget. Name the leaves (leaf, leaf) to answer more groupings, up to 4096 tuples a unit; off removes them.
 - **Sources:** benchmark `rollup`; [COL-PREAGG 2](COL-PREAGG.md#2-what-is-precomputed-written-when-a-unit-is-built-merged-promoted-rewritten-by-vacuums-merge-and-by-every-worker-of-a-parallel-build)
 
@@ -354,7 +354,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave it. CREATE INDEX keeps the presence of the documents of the nullable jsonb columns with paths and says so; document_present = off drops it (ALTER INDEX .. SET (document_present = off), then REINDEX).
 - **Sources:** benchmark `test:agg_jsonb_not_exist`
 
-#### sift_col(rollup_dims)
+#### sift_col(rollup_columns)
 
 `sift_col` · default · since 3.3 · default ''
 
@@ -364,9 +364,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +5.7% of the index (15,296,488 against 14,466,400 bytes; 600,000 rows, 214 units); +4.6% for two dims (96 cells a unit), +19% for three (200,000 rows); build, merge and writes: CREATE INDEX +1.6% instructions (13,214 M to 13,503 M; 600,000 rows); CREATE INDEX +12 to +47 ms of sampling; other: format minor 9; +5.3% of the index, build +25% (two columns); auto picks the pair at CREATE INDEX (+11% of the index and 3.5 to 0.66 ms on the pair's GROUP BY at 300,000 rows)
 - **When:** GROUP BY of two or more dims, or a key plus a filter on another dim, over 2 to 6 boolean, integer, date, numeric(p,s) or text columns; auto takes the pair with the fewest combinations that fits the cells of a unit (a tenth of its rows, at most 4,096) in 90% of 8 sampled stretches. Not float, count(DISTINCT) or a non-dim filter; too many cells in a unit: none.
 - **Default:** '' — Automatic: The GROUP BY of the pair reads 1.50 times fewer instructions for 5.7% more index and 1.6% more build, which pays for the pair a statistic of the table picks (sampled stretches); a point filter on both values of the pair reads more. The NOTICE at CREATE INDEX names the columns and the off switch, not the MB: the size of the cells is known only after the build (sift.col_sections).
-- **Turn off:** ALTER INDEX .. SET (rollup_dims = 'off'), then REINDEX (or rollup_dims = 'off' on CREATE INDEX): no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
-- **Upgrade from 4.1:** unchanged
-- **Advice:** Leave it. CREATE INDEX picks the pair when two columns of a unit have combinations that fit its cells and tells which; rollup_dims = 'off' writes none, a list of columns names the pair.
+- **Turn off:** ALTER INDEX .. SET (rollup_columns = 'off'), then REINDEX (or rollup_columns = 'off' on CREATE INDEX): no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
+- **Upgrade from 4.1:** An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX.
+- **Advice:** Leave it. CREATE INDEX picks the pair when two columns of a unit have combinations that fit its cells and tells which; rollup_columns = 'off' writes none, a list of columns names the pair.
 - **Sources:** benchmark `rollup_dims`; [COL-PREAGG 2](COL-PREAGG.md#2-what-is-precomputed-written-when-a-unit-is-built-merged-promoted-rewritten-by-vacuums-merge-and-by-every-worker-of-a-parallel-build)
 
 #### sift_col(calendar_columns)
@@ -2538,6 +2538,32 @@ all · deprecated · since 1.0 · default 4096
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
 
+#### sift_col(rollup)
+
+all · deprecated · since 3.1 · default ''
+
+- **What it does:** the 4.1 and older spelling of rollup_leaves, still accepted
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: -; other: none: the same as rollup_leaves
+- **When:** An index made before 4.2 that still carries the old spelling; the new name wins when both are set. Same values.
+- **Default:** '' — Kept accepted through 4.x for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of rollup_leaves, so old dumps and scripts restore; no measurement.
+- **Turn off:** ALTER INDEX .. RESET (rollup) and SET (rollup_leaves = ..); the build writes the new name. No REINDEX.
+- **Upgrade from 4.1:** unchanged
+- **Advice:** Old spelling of rollup_leaves, still accepted through 4.x (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use rollup_leaves; scripts/upgrade-check.sh needs nothing.
+
+#### sift_col(rollup_dims)
+
+all · deprecated · since 3.3 · default ''
+
+- **What it does:** the 4.1 and older spelling of rollup_columns, still accepted
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: -; other: none: the same as rollup_columns
+- **When:** An index made before 4.2 that still carries the old spelling; the new name wins when both are set. Same values.
+- **Default:** '' — Kept accepted through 4.x for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of rollup_columns, so old dumps and scripts restore; no measurement.
+- **Turn off:** ALTER INDEX .. RESET (rollup_dims) and SET (rollup_columns = ..); the build writes the new name. No REINDEX.
+- **Upgrade from 4.1:** unchanged
+- **Advice:** Old spelling of rollup_columns, still accepted through 4.x (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use rollup_columns; scripts/upgrade-check.sh needs nothing.
+
 #### sift.agg_lookup_max_rows
 
 `sift_col`, `sift_table` · deprecated · since 3.2 · default -1
@@ -2558,11 +2584,13 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(document_present)`.
+No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(document_present)`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
 
 | Option | 4.1 | 4.2 | Column format | What a 4.1 user gets after the update |
 |---|---|---|---|---|
+| `sift_col(rollup_leaves)` | new | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(document_present)` | new | '' |  | An index built before is read as before: it has no leaf, so those forms read the table, and it needs no REINDEX; REINDEX (or a new index) writes the leaf. A library before 4.2 reads an index with the leaf as of another layout and says REINDEX. |
+| `sift_col(rollup_columns)` | new | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
 | `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 <!-- sift-upgrade:end -->

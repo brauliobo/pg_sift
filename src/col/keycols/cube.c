@@ -422,7 +422,7 @@ sift_col_auto_cube(Relation heap, Relation index)
 }
 
 /*
- * The rows rollup of rollup_dims = 'auto' (docs/COL-PREAGG.md): the pair advice of sift.index_advice, chosen before the build. Of the columns that fit the cube's
+ * The rows rollup of rollup_columns = 'auto' (docs/COL-PREAGG.md): the pair advice of sift.index_advice, chosen before the build. Of the columns that fit the cube's
  * histograms in ROWS_AGREE_PCT of the sampled stretches (the SIFT_PAGG_MAX_RDIMS with the fewest values), the pair whose combinations fit the cells a unit may
  * keep (a tenth of its rows, at most SIFT_PAGG_ROWS_CELLS) in as many stretches, and has the fewest of them (the cheapest rollup, far from the limit of a unit),
  * is written to the option as 'auto: a, b'; none fits, nothing. It is the default (an empty option): the cells pay by the default formula (docs/OPTIONS.md); 'off' writes none.
@@ -549,7 +549,7 @@ sift_col_auto_arrlen(Relation index)
 void
 sift_col_auto_rows(Relation heap, Relation index)
 {
-	const char *opt = sift_col_options_rollup_dims(index);
+	const char *opt = sift_col_options_rollup_columns(index);
 	const SiftColRel *rel;
 	CubeCand	cand[SIFT_COL_MAX_COLS];
 	RowsPair	pr[SIFT_PAGG_MAX_RDIMS * SIFT_PAGG_MAX_RDIMS] = {{0}};
@@ -598,5 +598,5 @@ sift_col_auto_rows(Relation heap, Relation index)
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]));
 	else
 		appendStringInfo(&v, "auto: %s, %s", keycols_leaf_name(index, &rel->schema->cols[cand[by].leaf]), keycols_leaf_name(index, &rel->schema->cols[cand[bx].leaf]));
-	sift_col_set_option(index, "rollup_dims", v.data);
+	sift_col_set_option(index, "rollup_columns", v.data);
 }

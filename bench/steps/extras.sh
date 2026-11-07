@@ -107,7 +107,7 @@ item_rollup() {
 		build_psql -d jb -c "VACUUM (FREEZE, ANALYZE) docs" >/dev/null   # hint bits are set before the first build, not by it
 		builds=3
 		for variant in default off; do
-			opts=''; [[ $variant == default ]] || opts=", rollup = 'off'"
+			opts=''; [[ $variant == default ]] || opts=", rollup_leaves = 'off'"
 			out=$(locked build_psql -At -d jb -v n="$n" -v variant="$variant" -v builds="$builds" -v opts="$opts" -f "$BENCH/sql/jsonb/rollup/run.sql")
 			while IFS= read -r line; do
 				case $line in
@@ -118,14 +118,14 @@ item_rollup() {
 					*' normal/scanned/pre ms: '*)
 						local q=${line%% *} a b c
 						read -r a b c <<<"$(sed 's/.*ms: //; s/ \/ / /g' <<<"$line")"
-						emit "$q@$k" normal ms "$a" "rollup=$variant"; emit "$q@$k" scanned ms "$b" "rollup=$variant"; emit "$q@$k" rollup ms "$c" "rollup=$variant" ;;
+						emit "$q@$k" normal ms "$a" "rollup_leaves=$variant"; emit "$q@$k" scanned ms "$b" "rollup_leaves=$variant"; emit "$q@$k" rollup ms "$c" "rollup_leaves=$variant" ;;
 				esac
 			done <<<"$out"
 		done
 		build_psql -d postgres -c "DROP DATABASE jb" >/dev/null
 	done
 	finish_item rollup "Element rollups of jsonb arrays: group-elem and item-agg-having as the normal plan, the scan of every unit and the answer from the rollups (bench/sql/jsonb/rollup/run.sql)." \
-		--meta "build=$VERSION" --meta "method=server-side median ms of 21 runs (normal plan: 7), one backend, no parallel workers, seq_page_cost 10000, rollup worker off; index and build rows with the default rollups and with rollup = 'off'"
+		--meta "build=$VERSION" --meta "method=server-side median ms of 21 runs (normal plan: 7), one backend, no parallel workers, seq_page_cost 10000, rollup worker off; index and build rows with the default rollups and with rollup_leaves = 'off'"
 }
 
 item_tablewrites() {

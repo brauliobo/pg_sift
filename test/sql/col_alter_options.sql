@@ -38,9 +38,9 @@ ALTER INDEX ao_paths SET (key_columns = 'f');
 \c
 ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'nope, pid');
+ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
 \c
-ALTER INDEX ao_paths SET (rollup_dims = 'f, pid');
+ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
 \c
 ALTER INDEX ao_paths SET (order_columns = 'nope');
 \c
@@ -71,7 +71,7 @@ VACUUM ao;
 
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_dims = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;
@@ -81,10 +81,10 @@ SELECT count(*) FROM ao;
 SELECT count(*) FROM ap;
 -- auto is the word of the default for calendar_columns and rollup (empty, and 'default' for rollup, mean the same); a word that is none of them is refused
 \c
-ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup = 'auto');
-ALTER INDEX ap_plain SET (rollup = 'default');
+ALTER INDEX ap_plain SET (calendar_columns = 'auto', rollup_leaves = 'auto');
+ALTER INDEX ap_plain SET (rollup_leaves = 'default');
 \c
-ALTER INDEX ap_plain SET (rollup = 'nope');
+ALTER INDEX ap_plain SET (rollup_leaves = 'nope');
 ALTER INDEX ap_plain SET (calendar_columns = 'autos');
 ALTER INDEX ap_plain RESET (calendar_columns, rollup);
 VACUUM ao;

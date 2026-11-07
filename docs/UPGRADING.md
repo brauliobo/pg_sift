@@ -38,7 +38,7 @@ database has a blocker (or a warning with `--strict`) and 2 when a database coul
 |---|---|---|
 | `version` | `pg_extension` against `sift.version()` | `warn`: the library is newer than the extension (`ALTER EXTENSION pg_sift UPDATE`) or the new release is available; `blocker`: the library is older than the extension scripts |
 | `index`, `table` | the metapage format and the column formats of every `sift` index, `sift_col` index and `sift_table` | `blocker`: this library cannot open it (the error and its hint are the advice); with `--to`, the first release that reads it is newer than the target |
-| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_dims`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut` or `hll_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
+| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut` or `hll_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
 | `setting` | `sift.*` in the server configuration, the session, `ALTER DATABASE` and `ALTER ROLE` | `warn`: a setting the library does not define (removed or renamed), a feature switched off (a boolean setting that defaults on), `sift.col_format_minor` kept below the default |
 | `trigger` | with `--to` a release before 3.3: the event triggers of 3.3 | `blocker`: the older library has not their function and would fail every `ALTER TABLE` and `CREATE TRIGGER`; `ALTER EVENT TRIGGER x DISABLE` |
 | `test` | test-only settings and the extension `pg_sift_test` | `warn`: remove them; they need the test build of the library |
@@ -86,7 +86,7 @@ one row per command (`kind` `reindex` or `rewrite`, the `object`, the `reason`, 
 | Warning | Why | Command |
 |---|---|---|
 | a `sift` (text) index needs a `REINDEX` | **queries miss rows**: since 3.3 a word over 255 bytes is stored as its first 236 bytes and a hash; an older index holds it cut at 255 bytes, so a query for it finds nothing. The index does not record whether it holds such a word, so every text index except `analyzer = keyword` is listed, also after its `REINDEX` | `REINDEX INDEX CONCURRENTLY schema.index;` |
-| a `sift_col` index would gain from a `REINDEX` | an option set after the units were written (`cube_minmax`, JSON `paths`, `rollup_dims`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut`, `hll_columns`): older units stay readable and are scanned (for `order_columns`, read whole by an `ORDER BY .. LIMIT`) until then | `REINDEX INDEX CONCURRENTLY schema.index;` |
+| a `sift_col` index would gain from a `REINDEX` | an option set after the units were written (`cube_minmax`, JSON `paths`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut`, `hll_columns`): older units stay readable and are scanned (for `order_columns`, read whole by an `ORDER BY .. LIMIT`) until then | `REINDEX INDEX CONCURRENTLY schema.index;` |
 | a `sift_table` would gain from a rewrite | segments below the column format of its schema: no calendar cells for its date and timestamp columns (format 8), JSON kinds that may be incomplete for declared paths (format 6). A `sift_table` cannot be reindexed | `VACUUM FULL schema.table;` |
 
 Only the first warning means wrong results without the command. `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock and rewrites the whole table in the format of `sift.col_format_minor`, so
@@ -95,7 +95,7 @@ metapages and cannot fail the update; when it cannot answer (a relation locked b
 
 ## What 4.2 changes
 
-Nine changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+Ten changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
 runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
 
 1. **A presence leaf for the `jsonb` columns that may be NULL (option `document_present`).** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
@@ -173,6 +173,12 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    exactly as `sift.enable_col` of item 8 (`ERROR: invalid configuration parameter name "sift.table_auto_defrag_dead_pct"`, `DETAIL: "sift" is a reserved prefix.`; a stored value: `WARNING: invalid configuration parameter name "sift.table_auto_defrag_dead_pct", removing it`),
    and the queries and commands of item 8 with that name find and clear it; `scripts/upgrade-check.sh` lists each as a blocker. *Files, `REINDEX`:* no. *Off:* not applicable (`sift.table_auto_defrag = off` turns the pass off).
 
+10. **Two reloptions of `sift_col` have clearer names: `rollup` is `rollup_leaves` (the array elements and map values a unit groups by) and `rollup_dims` is `rollup_columns` (the scalar columns of the rollup of the rows).** The older names stay accepted through 4.x:
+    `CREATE INDEX` and `ALTER INDEX .. SET` with one say `NOTICE: reloption "rollup" is the older name of "rollup_leaves"` (`"rollup_dims"` and `"rollup_columns"` for the other) and read it as the new one; when both are given the new one wins; `ALTER INDEX .. SET` and `RESET` of the old name work;
+    an index that carries the old name keeps it in `pg_class.reloptions`, `pg_dump` writes it as it is, and `pg_upgrade` and `ALTER EXTENSION UPDATE` need nothing. The build writes the new name where it decides a value itself (`rollup_columns = 'auto: a, b'`). The messages, the
+    choices of `sift.index_choices` and the errors name the new spelling (`invalid rollup_columns option: ..`). `sift.upgrade_commands()` matches both spellings, so an index with either gets the same advice; a script or a view of yours that matches the text of `pg_class.reloptions` for `rollup_dims`
+    should match `rollup_columns` too. `sift.index_choices` reports the choice as `rollup_columns`. The limit ids of `sift.stats()` keep their names (`limit.rollup_dims`). *Files, `REINDEX`:* no (the files hold no option names). *Off:* not applicable; the old names go away in 5.0.
+
 ## 3. A newer PostgreSQL major
 
 `pg_upgrade` copies the relation files and restores the catalogs. pg_sift needs only its library for the new major next to the server (the same release as
@@ -213,7 +219,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 |---|---|---|
 | 7 | a `sift_col` index with `cube_minmax` (on by default) | `WITH (cube_minmax = false)`, or `sift.col_format_minor` 6 or less |
 | 8 | the calendar cells of a date, timestamp or timestamptz column: a `sift_col` index (`calendar_columns` defaults to all of them), a `sift_table` | `WITH (calendar_columns = 'off')`; a `sift_table`: `sift.col_format_minor` 7 or less |
-| 9 | `rollup_dims` (option, off) | do not set it, or `sift.col_format_minor` 8 or less |
+| 9 | `rollup_columns` (option, off) | do not set it, or `sift.col_format_minor` 8 or less |
 | 10 | `key_columns` naming a column that keeps a summary of its keys: text or uuid, or an int2, int4, int8 or date one whose key list or bitmap would not fit (option; `auto` never picks one) | do not name it, or `sift.col_format_minor` 9 or less |
 | 11 | a `sift_table` write buffer that took a row over the buffer (`sift.table_wide_rows`, on by default; a 3.2 library reads, writes beside and promotes it, but the preflight lists it until promoted) | `SET sift.table_wide_rows = off` (a row over the buffer is refused again) |
 | 12 | a `sift_col` index with `superunit` (16 by default) | `WITH (superunit = 0)`, or `sift.col_format_minor` 11 or less |
@@ -297,7 +303,7 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
   `sift.version()`, `sift.col_verify` and `sift.verify` work (tested).
 - **pg_dump and a server that has the 3.2 files only.** The dump holds `CREATE EXTENSION pg_sift` without a version, so the restore creates the extension at the version of the files it finds (3.2); the
   tables are restored with their rows and the 3.2 library builds every index again in its own format (no setting is needed, no 3.3 or 3.4 section is left). A `CREATE INDEX` with an option that 3.3 or
-  3.4 added (`cube_minmax`, `superunit`, `calendar_columns`, `dict_lookup`, `rollup_dims`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut`, `key_cut_rows`) fails with
+  3.4 added (`cube_minmax`, `superunit`, `calendar_columns`, `dict_lookup`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut`, `key_cut_rows`) fails with
   `unrecognized parameter`, and the restore goes on without that index. A `sift_table` with a row too large for a write buffer page (3.3 stores it, 3.2 refuses it with
   `row of sift_table "t" is too large`) restores no row at all: its `COPY` fails as a whole. These are the only errors (tested); a dump without them restores clean, and an index without an option is built at the 3.2 defaults. Reset the option before the dump
   (`ALTER INDEX x RESET (option)`) or edit the statement, and keep such a table out of a dump for 3.2.
@@ -342,7 +348,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 3 | 3.0 |
 | column format 4 (tags and kinds, version section of a `sift_table`) | 3.1 |
 | column format 5 (wide leaves), 6 (complete JSON kinds) | 3.2 |
-| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_dims`), 10 (`key_columns`, a summary of the keys), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`), 14 (a string dictionary of 1,024 strings or more, stored in blocks to be read in place), 15 (`key_columns`, a key list or bitmap) | 3.3 |
+| column format 7 (`cube_minmax`), 8 (the calendar cells of a date or timestamp in the cube of a `sift_table`, or of a `sift_col` index with `calendar_columns`), 9 (`rollup_columns`), 10 (`key_columns`, a summary of the keys), 11 (the write buffer of a `sift_table` with a row on tail pages), 12 (`superunit`), 13 (`order_columns`), 14 (a string dictionary of 1,024 strings or more, stored in blocks to be read in place), 15 (`key_columns`, a key list or bitmap) | 3.3 |
 | column format 16 (`point_tid_columns`) | 3.3 |
 | column format 17 (`key_cut`), 18 (heads of the sorted runs), 19 (the exceptions of a NULL-heavy leaf), 20 (`hll_columns`), 21 (`order_array_columns`) | 3.4 |
 | column format 22 (`key_table`, the key table of a segment) | 3.5 |

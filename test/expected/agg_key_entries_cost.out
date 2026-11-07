@@ -15,7 +15,7 @@ SELECT setseed(0.42);
 (1 row)
 
 INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), g % 100, random() * 100, 'k' || (g % 20000), g % 20000 FROM generate_series(1, 100000) g;
-CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_dims = 'off');
+CREATE INDEX items_col ON items USING sift_col (id, tag, cat, part, amount, grp, gi) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "items_col": 2 automatic choices (order_array_columns, track_changes)
 DETAIL:  order_array_columns = tag, grp, gi; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');

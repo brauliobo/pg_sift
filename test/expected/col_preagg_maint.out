@@ -14,12 +14,12 @@ CREATE TABLE pm_off (LIKE pm);
 ALTER TABLE pm_off SET (autovacuum_enabled = false, fillfactor = 10);
 INSERT INTO pm_off SELECT * FROM pm;
 CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096);
-NOTICE:  sift_col index "pm_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, qty
+NOTICE:  sift_col index "pm_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, qty
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_col');
 CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 100);
-NOTICE:  sift_col index "pm_off_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, qty
+NOTICE:  sift_col index "pm_off_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, qty
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_off_col');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pm, pm_off;
 -- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree

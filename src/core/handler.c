@@ -7,11 +7,13 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
+#include "datatype/timestamp.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "nodes/value.h"
@@ -354,6 +356,22 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 void
 sift_relopt_alias_notice(const char *old, const char *new)
 {
+	/* the options of one statement are parsed more than once (the check, then the stored value): say it once for each name */
+	static TimestampTz stmt;
+	static char said[8][NAMEDATALEN];
+	static int	nsaid;
+	TimestampTz now = GetCurrentStatementStartTimestamp();
+
+	if (now != stmt)
+	{
+		stmt = now;
+		nsaid = 0;
+	}
+	for (int i = 0; i < nsaid; i++)
+		if (strcmp(said[i], old) == 0)
+			return;
+	if (nsaid < lengthof(said))
+		strlcpy(said[nsaid++], old, NAMEDATALEN);
 	ereport(NOTICE,
 			(errmsg("reloption \"%s\" is the older name of \"%s\"", old, new),
 			 errhint("Use \"%s\"; the older name keeps working.", new)));

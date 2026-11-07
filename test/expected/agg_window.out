@@ -7,8 +7,8 @@ CREATE TABLE wn (id int, g int, k text, d date, n int, v numeric(10,2), c int);
 INSERT INTO wn SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'k' || i % 5 END, date '2024-01-01' + i % 400, i % 100, (i % 977) / 7.0,
 	CASE WHEN i % 13 = 0 THEN NULL ELSE i % 300 END FROM generate_series(1, 20000) i;
 CREATE INDEX wn_col ON wn USING sift_col (id, g, k, d, n, v, c);
-NOTICE:  sift_col index "wn_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, k
+NOTICE:  sift_col index "wn_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wn_col');
 VACUUM ANALYZE wn;
 \ir test/agg_rows_helpers.sql

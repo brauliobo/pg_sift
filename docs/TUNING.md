@@ -164,7 +164,7 @@ Name `order_columns` alone, with `order_array_columns = 'off'`, only when the si
 ## The words that mean several things
 
 - **key.** `key_columns` (and `sift.table_key_table`, `key_table`) are *lookup keys*: the columns whose distinct values every unit lists, for equality, `IN` and `count(DISTINCT)`. `key_cut` and `key_cut_rows` are a *sort key*: the column whose range cuts the units. `key_order` is the sort key of the table as a whole and stands for `key_cut`, `order_columns`, `order_array_columns` and `point_tid_columns` on it. For ordered reads set `key_order` and nothing else.
-- **rollup.** `rollup` is the *array elements and map values* a unit groups by, `rollup_dims` the *scalar columns* a unit groups by (the rollup of the rows), `rollup_on_demand` and `sift.col_rollup_on_demand` / `sift.col_rollup_worker` the *refresh* of rollups in the background (`sift.col_rollup_on_demand` asks, `sift.col_rollup_worker` serves; with the worker off the requests wait for `sift.col_rollup_refresh(index)`), `sift.agg_rollup_cost` the price of reading one.
+- **rollup.** `rollup_leaves` is the *array elements and map values* a unit groups by, `rollup_columns` the *scalar columns* a unit groups by (the rollup of the rows), `rollup_on_demand` and `sift.col_rollup_on_demand` / `sift.col_rollup_worker` the *refresh* of rollups in the background (`sift.col_rollup_on_demand` asks, `sift.col_rollup_worker` serves; with the worker off the requests wait for `sift.col_rollup_refresh(index)`), `sift.agg_rollup_cost` the price of reading one.
 - **field and section.** The text of a `fields` index is made of fields; `sift.sections()` is the function that joins them.
 - **`cluster_advice`.** A setting, an index option and a function share the name: the function `sift.cluster_advice()` recommends a physical order; the setting and the option only switch the recommendation off.
 
@@ -174,9 +174,9 @@ Name `order_columns` alone, with `order_array_columns = 'off'`, only when the si
 
 | Option | `''` means | `auto` | `off` | Other words |
 |---|---|---|---|---|
-| `key_columns`, `key_cut`, `order_array_columns`, `order_array_group`, `rollup_dims`, `count_columns` | automatic | yes | yes | |
+| `key_columns`, `key_cut`, `order_array_columns`, `order_array_group`, `rollup_columns`, `count_columns` | automatic | yes | yes | |
 | `calendar_columns` | every date and timestamp column | yes | yes | `all` |
-| `rollup` | the byte-budget rule (2% of the unit) | yes | yes | `default` |
+| `rollup_leaves` | the byte-budget rule (2% of the unit) | yes | yes | `default` |
 | `preagg` | the default | yes | yes | `default`, `cube(..)` |
 | `order_layout` | `auto` | yes | no | `whole`, `compact` |
 | `compression` | `auto` | yes | no | `none`, `lz4`, `zstd` |

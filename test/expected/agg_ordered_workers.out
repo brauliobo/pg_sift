@@ -11,8 +11,8 @@ SET max_parallel_workers_per_gather = 2;
 CREATE TABLE ow (id int, g int, amount float8, grade int);
 INSERT INTO ow SELECT i, i % 40, i * 0.37, i % 5 FROM generate_series(1, 30000) i;
 CREATE INDEX ow_col ON ow USING sift_col (id, g, amount, grade);
-NOTICE:  sift_col index "ow_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, grade
+NOTICE:  sift_col index "ow_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, grade
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ow_col');
 VACUUM ANALYZE ow;
 CREATE FUNCTION ow_plan(q text) RETURNS text LANGUAGE plpgsql AS $$

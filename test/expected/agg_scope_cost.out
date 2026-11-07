@@ -9,8 +9,8 @@ CREATE TABLE sc_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT N
 INSERT INTO sc_facts SELECT i, 1 + (i - 1) % 60, date '2024-01-01' + (i - 1) / 200, 'cat_' || chr(97 + i % 4), 1 + i % 17, CASE WHEN i % 29 = 0 THEN now() END FROM generate_series(1, 120000) i;
 CREATE INDEX sc_facts_parent ON sc_facts (parent_id, ts, deleted_at);
 CREATE INDEX sc_facts_col ON sc_facts USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
-NOTICE:  sift_col index "sc_facts_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = kind, deleted_at; track_changes = id
+NOTICE:  sift_col index "sc_facts_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = kind, deleted_at; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_facts_col');
 CREATE TABLE sc_dims (id int PRIMARY KEY, settings jsonb NOT NULL);
 INSERT INTO sc_dims SELECT p, jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= 30 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, 60) p;

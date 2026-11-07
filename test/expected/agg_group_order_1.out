@@ -15,8 +15,8 @@ SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 301) END, (i % 40)
        CASE i % 9 WHEN 0 THEN 0.0 WHEN 1 THEN -0.0 WHEN 2 THEN 'NaN' WHEN 3 THEN NULL WHEN 4 THEN 'Infinity' WHEN 5 THEN '-Infinity' ELSE i % 5 - 2.5 END, i * 0.1
 FROM generate_series(1, 30000) i;
 CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
-NOTICE:  sift_col index "o_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = c, e
+NOTICE:  sift_col index "o_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = c, e
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('o_col');
 VACUUM ANALYZE o;
 -- jsonb keys (a dimension built from columns): many distinct values, so the ranks come from the byte keys (gorder.c) and the check of the comparator; numbers that are one double
@@ -29,8 +29,8 @@ SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 19 - 9 END,
        CASE i % 3 WHEN 0 THEN true WHEN 1 THEN false END, i % 3
 FROM generate_series(1, 30000) i;
 CREATE INDEX oj_col ON oj USING sift_col (id, a, b, c, d, e);
-NOTICE:  sift_col index "oj_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = d, e
+NOTICE:  sift_col index "oj_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = d, e
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oj_col');
 VACUUM ANALYZE oj;
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
@@ -213,8 +213,8 @@ UPDATE o2 SET t = NULL WHERE id % 37 = 0;
 UPDATE o2 SET b = NULL WHERE id % 41 = 0;
 UPDATE o2 SET i8 = NULL WHERE id % 43 = 0;
 CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
-NOTICE:  sift_col index "o2_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = b, g
+NOTICE:  sift_col index "o2_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, g
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('o2_col');
 VACUUM ANALYZE o2;
 -- a collation that is not the byte order, when the server has one
@@ -314,8 +314,8 @@ SELECT i, (ARRAY['1.0', '1.00', '2', '2.000', '0', '0.0', '-0.0', '3.10', '3.1']
 FROM generate_series(1, 20000) i;
 UPDATE o3 SET n = NULL WHERE id % 13 = 0;
 CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
-NOTICE:  sift_col index "o3_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = s, g
+NOTICE:  sift_col index "o3_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = s, g
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('o3_col');
 VACUUM ANALYZE o3;
 CREATE FUNCTION o3_check(col text, canon text, dir text) RETURNS TABLE (plan text, same_groups bool) LANGUAGE plpgsql AS $$

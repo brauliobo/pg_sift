@@ -22,8 +22,8 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 3 = 0 THEN i % 20 ELSE (i * 13
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_entity_day ON ev (dim_a_id, day);
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, unit_id, foreign_id, day, price, latest, ccy);
-NOTICE:  sift_col index "ev_col": 3 automatic choices (key_columns, rollup_dims, track_changes)
-DETAIL:  key_columns = dim_a_id, unit_id; rollup_dims = latest, ccy; track_changes = id
+NOTICE:  sift_col index "ev_col": 3 automatic choices (key_columns, rollup_columns, track_changes)
+DETAIL:  key_columns = dim_a_id, unit_id; rollup_columns = latest, ccy; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE units; ANALYZE dim_c; ANALYZE links;

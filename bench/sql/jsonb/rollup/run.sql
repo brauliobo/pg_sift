@@ -2,8 +2,8 @@
 -- and group-elem, item-agg-having, item-agg-having-kind, item-agg-three-keys, item-agg-filtered as the normal plan, the scan of every unit (sift.agg_preagg off) and the answer from the rollups (median ms, server side).
 -- createdb jb && psql jb -c 'CREATE EXTENSION pg_sift' && psql jb -v n=1000000 -f ../gen.sql
 -- psql jb -v n=1000000 -v variant=default -v builds=5 -f run.sql                                    -- the automatic rule
--- psql jb -v n=1000000 -v variant=off -v builds=5 -v opts=", rollup = 'off'" -f run.sql             -- no rollups
--- psql jb -v n=1000000 -v variant=explicit -v builds=5 -v opts=", rollup = 'items[].kind, items[].sub, items[].flag'" -f run.sql
+-- psql jb -v n=1000000 -v variant=off -v builds=5 -v opts=", rollup_leaves = 'off'" -f run.sql             -- no rollups
+-- psql jb -v n=1000000 -v variant=explicit -v builds=5 -v opts=", rollup_leaves = 'items[].kind, items[].sub, items[].flag'" -f run.sql
 -- ondemand.sh: the time from ALTER INDEX ... SET (rollup = ...) to the first query answered from the rollups (the worker on).
 \set ON_ERROR_STOP on
 \pset format unaligned

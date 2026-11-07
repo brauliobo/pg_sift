@@ -11,8 +11,8 @@ FROM generate_series(1, 5000) i;
 INSERT INTO lines VALUES (10001, 9, 999999999999999999, 999999999999999999, 99, 1, 0, 0), (10002, 9, 999999999999999999, 999999999999999999, -99, 1, 0, 0),
                          (10003, 8, 999999999999999999, 999999999999999999, 99, 1, 0, 0);
 CREATE INDEX lines_col ON lines USING sift_col (g, a, b, c, price, disc, tax);
-NOTICE:  sift_col index "lines_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = b, c
+NOTICE:  sift_col index "lines_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = b, c
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lines_col');
 VACUUM (FREEZE, ANALYZE) lines;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.agg_forced_differences(q) $$;

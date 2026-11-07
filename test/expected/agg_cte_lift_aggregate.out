@@ -8,8 +8,8 @@ INSERT INTO kinds SELECT g, 'kind ' || g FROM generate_series(1, 20) g;
 CREATE TABLE events (id int PRIMARY KEY, kind_id int NOT NULL, ts date NOT NULL, amount int);
 INSERT INTO events SELECT g, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360), g % 100 FROM generate_series(1, 20000) g;
 CREATE INDEX events_col ON events USING sift_col (id, kind_id, ts, amount);
-NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = kind_id, amount; track_changes = id
+NOTICE:  sift_col index "events_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = kind_id, amount; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;

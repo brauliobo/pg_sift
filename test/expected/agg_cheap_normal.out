@@ -6,8 +6,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE cn (id int PRIMARY KEY, a int, b int, ts timestamp);
 INSERT INTO cn SELECT i, i % 50, i % 7, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
 CREATE INDEX cn_col ON cn USING sift_col (a, b, ts);
-NOTICE:  sift_col index "cn_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = a, b
+NOTICE:  sift_col index "cn_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = a, b
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cn_col');
 CREATE INDEX cn_ts ON cn (ts, id);
 VACUUM (FREEZE, ANALYZE) cn;

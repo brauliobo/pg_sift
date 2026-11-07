@@ -6,7 +6,7 @@ CREATE TABLE ks_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ks_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
 CREATE TABLE ks_dim (id int PRIMARY KEY, n int);
 INSERT INTO ks_dim SELECT i, i FROM generate_series(0, 6) i;
-CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_dims = 'off');
+CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_columns = 'off');
 NOTICE:  sift_col index "ks_fact_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ks_fact_col');

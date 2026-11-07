@@ -18,8 +18,8 @@ SELECT i, i % 7,
        CASE WHEN i % 6 = 0 THEN NULL ELSE ((i * 53) % 400 - 100) * 0.25 END
 FROM generate_series(1, 9000) i;
 CREATE INDEX d_col ON d_t USING sift_col (id, grp, kind, flag, qty, amt);
-NOTICE:  sift_col index "d_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = grp, flag
+NOTICE:  sift_col index "d_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, flag
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('d_col');
 VACUUM ANALYZE d_t;
 -- 3000 documents of 0 to 6 elements, one of 9000 (an element chunk ends inside a document), SQL NULL and empty arrays

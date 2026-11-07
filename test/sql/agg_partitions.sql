@@ -25,7 +25,7 @@ CREATE FUNCTION pt_fill(first_id int, last_id int) RETURNS void LANGUAGE sql AS 
 	FROM generate_series(first_id, last_id) i $$;
 SELECT pt_fill(1, 6000);
 -- on the parent: one index per partition, with the partitions' own attribute numbers
-CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pt;
 -- the maintenance view lists the indexes of the partitions, not the parent's, which has no storage to read
 SELECT NOT EXISTS (SELECT 1 FROM sift.workers WHERE index = 'pt_col'::regclass) AS parent_skipped;
@@ -110,7 +110,7 @@ CREATE TABLE pb (k int NOT NULL, v int) PARTITION BY RANGE (k);
 CREATE TABLE pb_a PARTITION OF pb FOR VALUES FROM (0) TO (10) WITH (autovacuum_enabled = false);
 CREATE TABLE pb_b PARTITION OF pb FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
 INSERT INTO pb SELECT i % 20, i FROM generate_series(1, 400) i;
-CREATE INDEX pb_col ON pb USING sift_col (k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX pb_col ON pb USING sift_col (k, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pb;
 PREPARE pb_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = $1;
 SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
@@ -133,8 +133,8 @@ CREATE TABLE pf_b PARTITION OF pf FOR VALUES FROM (10) TO (20) WITH (autovacuum_
 CREATE TABLE pf_c (k int NOT NULL, g int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO pf SELECT i % 20, i % 3, i FROM generate_series(1, 600) i;
 INSERT INTO pf_c SELECT 20 + i % 10, i % 3, i FROM generate_series(1, 300) i;
-CREATE INDEX pf_col ON pf USING sift_col (k, g, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
-CREATE INDEX pf_c_col ON pf_c USING sift_col (k, g, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX pf_col ON pf USING sift_col (k, g, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX pf_c_col ON pf_c USING sift_col (k, g, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pf, pf_c;
 PREPARE pf_q (int, int) AS SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= $1 AND k < $2 GROUP BY g;
 SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
@@ -210,17 +210,17 @@ CREATE TABLE pn (id int, g int, d date NOT NULL, v int, doc jsonb) PARTITION BY 
 CREATE TABLE pn_a PARTITION OF pn FOR VALUES FROM ('2024-01-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);
 CREATE TABLE pn_b PARTITION OF pn FOR VALUES FROM ('2024-07-01') TO ('2025-01-01') WITH (autovacuum_enabled = false);
 INSERT INTO pn SELECT i, i % 7, DATE '2024-01-01' + i % 360, i % 100, jsonb_build_object('k', i % 5) FROM generate_series(1, 3000) i;
-CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 ANALYZE pn;
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn WHERE d < DATE ''2024-07-01'' GROUP BY g');
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int8', cube_minmax = false, superunit = 0);
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int8', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 DROP INDEX pn_b_col;
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 DROP INDEX pn_b_col;
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_dims = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (rollup_columns = 'off', paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pn GROUP BY g');
 
 -- a plan prepared before a partition lost its index is replanned
@@ -280,7 +280,7 @@ DROP ROLE pt_reader;
 CREATE TABLE ih (id int, g int) WITH (autovacuum_enabled = false);
 CREATE TABLE ih_a (CHECK (g < 5)) INHERITS (ih);
 INSERT INTO ih_a SELECT i, i % 5 FROM generate_series(1, 500) i;
-CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih_a GROUP BY g');
 
@@ -291,7 +291,7 @@ CREATE TABLE pl_b PARTITION OF pl FOR VALUES IN ('cat_c') WITH (autovacuum_enabl
 CREATE TABLE pl_c PARTITION OF pl FOR VALUES IN ('cat_d') WITH (autovacuum_enabled = false);
 CREATE TABLE pl_rest PARTITION OF pl DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pl SELECT i, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d', 'cat_e'])[1 + i % 5], i % 100 FROM generate_series(1, 4000) i;
-CREATE INDEX pl_col ON pl USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX pl_col ON pl USING sift_col (id, k, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pl;
 SET plan_cache_mode = force_generic_plan;
 PREPARE pl_k (text) AS SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = $1 GROUP BY k;
@@ -315,18 +315,18 @@ RESET plan_cache_mode;
 CREATE TABLE ph (id int, k int, v int) PARTITION BY HASH (k);
 SELECT format('CREATE TABLE ph_%s PARTITION OF ph FOR VALUES WITH (MODULUS 8, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 7) i \gexec
 INSERT INTO ph SELECT i, CASE WHEN i % 40 = 0 THEN NULL ELSE i % 300 END, i % 100 FROM generate_series(1, 4000) i;
-CREATE INDEX ph_col ON ph USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX ph_col ON ph USING sift_col (id, k, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) ph;
 -- two key columns (a remainder needs both), and a key that is an expression
 CREATE TABLE phm (a int, b text, v int) PARTITION BY HASH (a, b);
 SELECT format('CREATE TABLE phm_%s PARTITION OF phm FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
 INSERT INTO phm SELECT i % 50, 'cat_' || chr(97 + i % 6), i % 100 FROM generate_series(1, 3000) i;
-CREATE INDEX phm_col ON phm USING sift_col (a, b, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX phm_col ON phm USING sift_col (a, b, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) phm;
 CREATE TABLE phx (k int, v int) PARTITION BY HASH ((k + 1));
 SELECT format('CREATE TABLE phx_%s PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
 INSERT INTO phx SELECT i % 200, i % 100 FROM generate_series(1, 2000) i;
-CREATE INDEX phx_col ON phx USING sift_col (k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX phx_col ON phx USING sift_col (k, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) phx;
 SET plan_cache_mode = force_generic_plan;
 PREPARE ph_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1;
@@ -398,7 +398,7 @@ CREATE TABLE pk_c PARTITION OF pk FOR VALUES IN (7, 8, 9) WITH (autovacuum_enabl
 CREATE TABLE pk_n PARTITION OF pk FOR VALUES IN (NULL) WITH (autovacuum_enabled = false);
 CREATE TABLE pk_rest PARTITION OF pk DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pk SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 12 END, i % 100 FROM generate_series(1, 3000) i;
-CREATE INDEX pk_col ON pk USING sift_col (id, k, v) WITH (rollup_dims = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX pk_col ON pk USING sift_col (id, k, v) WITH (rollup_columns = 'off', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pk;
 CREATE TABLE pk_keys (k int, kind text);
 INSERT INTO pk_keys SELECT i, 'cat_' || chr(97 + i % 3) FROM generate_series(0, 14) i;
@@ -491,7 +491,7 @@ SET max_parallel_workers_per_gather = 0;
 DROP FUNCTION same_join(text);
 DROP TABLE pt_days, pt_ids, pk, pk_keys, ph_keys;
 
--- the build picks a rollup of the rows for each partition from its data (rollup_dims = auto): a partition attached later with too few rows to pick one is read with the others, the rollups are left out
+-- the build picks a rollup of the rows for each partition from its data (rollup_columns = auto): a partition attached later with too few rows to pick one is read with the others, the rollups are left out
 CREATE TABLE pr (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
 CREATE TABLE pr_a PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2024-04-01') WITH (autovacuum_enabled = false);
 CREATE TABLE pr_b PARTITION OF pr FOR VALUES FROM ('2024-04-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);

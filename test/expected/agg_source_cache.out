@@ -11,7 +11,7 @@ SELECT $q$WITH a AS MATERIALIZED (SELECT k, v, sum(id) s FROM sc_fact WHERE k < 
   b AS MATERIALIZED (SELECT k, count(*) c FROM sc_fact WHERE v > 1 GROUP BY k)
 SELECT a.k, sum(a.s), sum(b.c) FROM a JOIN b USING (k) JOIN (SELECT k FROM sc_fact WHERE v = 3 GROUP BY k) x ON x.k = a.k
 WHERE a.k IN (SELECT k FROM sc_fact WHERE id > 10) GROUP BY a.k ORDER BY a.k$q$ AS q \gset
-CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "sc_fact_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_fact_col');
@@ -39,7 +39,7 @@ SELECT count(*) > 0 AS no_source_after_drop FROM sift.explain_why(:'q') WHERE sl
  t
 (1 row)
 
-CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "sc_fact_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_fact_col');
@@ -60,7 +60,7 @@ SELECT count(*) = 0 AS source_after_rollback FROM sift.explain_why(:'q') WHERE s
 
 DROP INDEX sc_fact_col;
 BEGIN;
-CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_dims = 'off');
+CREATE INDEX sc_fact_col ON sc_fact USING sift_col (id, k, v) WITH (rollup_columns = 'off');
 NOTICE:  sift_col index "sc_fact_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_fact_col');

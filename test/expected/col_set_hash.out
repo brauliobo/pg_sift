@@ -16,8 +16,8 @@ VACUUM (FREEZE, ANALYZE) sh;
 CREATE TABLE sh_small (id int, k int, b bigint, d date, ts timestamp);
 INSERT INTO sh_small SELECT i, i % 50, i, date '2020-01-01', timestamp '2024-01-01' FROM generate_series(1, 40) i;
 CREATE INDEX sh_small_i ON sh_small USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
-NOTICE:  sift_col index "sh_small_i": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = d, ts
+NOTICE:  sift_col index "sh_small_i": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = d, ts
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sh_small_i');
 CREATE FUNCTION sh_idx(tbl text, w text) RETURNS bigint[] LANGUAGE plpgsql
 	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$

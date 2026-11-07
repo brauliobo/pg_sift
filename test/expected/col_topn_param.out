@@ -14,8 +14,8 @@ FROM generate_series(1, 15000) i;
 CREATE TABLE tp_dim (k int PRIMARY KEY, label text);
 INSERT INTO tp_dim SELECT i, 'g' || i FROM generate_series(0, 3) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, dev, dev8, ts, v, g, nm, w);
-NOTICE:  sift_col index "tp_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = dev8, nm; track_changes = id
+NOTICE:  sift_col index "tp_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = dev8, nm; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tp_col');
 VACUUM (ANALYZE) tp, tp_dim;
 CREATE FUNCTION tp_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$

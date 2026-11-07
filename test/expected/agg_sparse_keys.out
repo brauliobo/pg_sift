@@ -9,8 +9,8 @@ CREATE TABLE sk_facts (id int PRIMARY KEY, set_id int, kind int, score float8, p
 INSERT INTO sk_facts SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 100000 + (i / 2000) * 60000 + i % 5 END, i % 3, (i % 10)::float8,
 	repeat('x', 300) FROM generate_series(1, 120000) i;
 CREATE INDEX sk_facts_col ON sk_facts USING sift_col (id, set_id, kind, score);
-NOTICE:  sift_col index "sk_facts_col": 2 automatic choices (rollup_dims, track_changes)
-DETAIL:  rollup_dims = set_id, kind; track_changes = id
+NOTICE:  sift_col index "sk_facts_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = set_id, kind; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sk_facts_col');
 CREATE TABLE sk_runs (id int PRIMARY KEY, set_id int, score float8, pad text);
 INSERT INTO sk_runs SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 100000 + ((i / 3) % 40) * 60000 + (i / 3000) * 7 END, (i % 10)::float8, repeat('x', 300)

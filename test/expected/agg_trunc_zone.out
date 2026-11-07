@@ -31,8 +31,8 @@ FROM (
 ) y;
 INSERT INTO tz SELECT 100000 + i, v, i % 5, i FROM unnest(ARRAY['infinity', '-infinity', NULL, NULL, '294000-01-01', '4000-06-01 BC']::timestamptz[]) WITH ORDINALITY u(v, i);
 CREATE INDEX tz_col ON tz USING sift_col (id, ts, g, v);
-NOTICE:  sift_col index "tz_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, v
+NOTICE:  sift_col index "tz_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tz_col');
 VACUUM ANALYZE tz;
 CREATE TABLE zones (z text);

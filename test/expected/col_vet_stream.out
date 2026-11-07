@@ -15,8 +15,8 @@ CREATE TABLE vs_keyed (id int PRIMARY KEY, g int NOT NULL, c int NOT NULL, v int
 INSERT INTO vs_keyed SELECT i, (i::bigint * 7919) % 50, (i::bigint * 104729) % 1000, (random() * 100)::int, md5(i::text) FROM generate_series(1, 120000) i;
 CREATE TABLE vs_heap (LIKE vs_keyed INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO vs_heap SELECT * FROM vs_keyed;
-CREATE INDEX vs_keyed_col ON vs_keyed USING sift_col (g, c, v) WITH (key_cut = 'c', rollup_dims = 'off');
-CREATE INDEX vs_heap_col ON vs_heap USING sift_col (g, c, v) WITH (key_cut = 'off', rollup_dims = 'off');
+CREATE INDEX vs_keyed_col ON vs_keyed USING sift_col (g, c, v) WITH (key_cut = 'c', rollup_columns = 'off');
+CREATE INDEX vs_heap_col ON vs_heap USING sift_col (g, c, v) WITH (key_cut = 'off', rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) vs_keyed;
 VACUUM (FREEZE, ANALYZE) vs_heap;
 DELETE FROM vs_keyed WHERE id % 11 = 3;

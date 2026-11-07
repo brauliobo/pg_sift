@@ -15,8 +15,8 @@ SELECT i,
 	(i % 1000) / 10.0
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_dims = n, n8
+NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = n, n8
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 -- every column type a join reads: by value (int, bigint, float8, bool, date), by reference (text, numeric, bytea, a fixed length uuid), NULLs among them

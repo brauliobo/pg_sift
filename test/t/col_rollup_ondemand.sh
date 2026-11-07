@@ -16,9 +16,9 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, doc jsonb)" \
 	"INSERT INTO orders (doc) SELECT (SELECT jsonb_build_object('items', jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 4, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9)))
 		FROM generate_series(1, g % 4 + 1) e) FROM generate_series(1, 30000) g" \
-	"CREATE INDEX o_col ON orders USING sift_col (id, doc) WITH (write_buffer_limit = 4096, paths = 'doc.items[]{a text, b text, q int4}', rollup = 'off')" \
+	"CREATE INDEX o_col ON orders USING sift_col (id, doc) WITH (write_buffer_limit = 4096, paths = 'doc.items[]{a text, b text, q int4}', rollup_leaves = 'off')" \
 	"VACUUM (DISABLE_PAGE_SKIPPING) orders" \
-	"ALTER INDEX o_col SET (rollup = 'doc.items[].a, doc.items[].b')" >/dev/null || bail "setup failed"
+	"ALTER INDEX o_col SET (rollup_leaves = 'doc.items[].a, doc.items[].b')" >/dev/null || bail "setup failed"
 
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"

@@ -17,8 +17,8 @@ INSERT INTO m SELECT i, i % 9,
 	i % 3 = 0
 FROM generate_series(1, 20000) i;
 CREATE INDEX m_col ON m USING sift_col (id, g, t, tc, n, b, d, f, ok);
-NOTICE:  sift_col index "m_col": 1 automatic choice (rollup_dims), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_dims = g, ok
+NOTICE:  sift_col index "m_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, ok
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('m_col');
 VACUUM ANALYZE m;
 CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;

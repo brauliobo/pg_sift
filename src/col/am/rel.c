@@ -32,9 +32,9 @@ COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
 
 COL_OPT_STR(sift_col_options_return_columns, return_columns, "")
 
-COL_OPT_STR(sift_col_options_rollup, rollup, "")
+COL_OPT_STR(sift_col_options_rollup_leaves, rollup_leaves, "")
 
-COL_OPT_STR(sift_col_options_rollup_dims, rollup_dims, "")
+COL_OPT_STR(sift_col_options_rollup_columns, rollup_columns, "")
 
 COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
@@ -131,10 +131,10 @@ build_rel(Relation index, MemoryContext mcxt)
 
 		if (err)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
-		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
-		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
+		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_leaves option: %s", err)));
+		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_columns option: %s", err)));
 		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
 		if ((err = sift_col_present_check(index)) != NULL)
@@ -417,8 +417,8 @@ uint32
 sift_col_pagg_hash(Relation index)
 {
 	const char *a = sift_col_options_preagg(index),
-			   *b = sift_col_options_rollup(index),
-			   *c = sift_col_options_rollup_dims(index),
+			   *b = sift_col_options_rollup_leaves(index),
+			   *c = sift_col_options_rollup_columns(index),
 			   *d = sift_col_options_calendar_columns(index);
 
 	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^
