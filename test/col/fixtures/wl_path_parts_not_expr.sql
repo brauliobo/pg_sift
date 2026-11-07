@@ -1,6 +1,6 @@
--- trap: NOT of a path test over an index expression that is NULL for a document that is not an object: NOT NULL is NULL, the negation would count the row
+-- trap: NOT of a path test over an index expression that is NULL for a document that is not an object: NOT NULL is NULL, the negation would count the row; the scan tests the document_present leaf of the expression first
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- key: -
 SELECT w.mix, count(*) FILTER (WHERE NOT jsonb_path_exists(coldiff.doc_norm(w.doc), '$.parts[*] ? (@.val == "catg_n")')) AS no_catg_n
 FROM t_work w
