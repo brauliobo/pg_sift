@@ -277,6 +277,7 @@ c3_range_not_overlap	SiftAgg	single:t
 c3_having_scalar_avg	SiftAgg	-
 c3_having_count_scalar	SiftAgg	-
 c3_having_in_list	SiftAgg	single:t
+c3_having_in_expression_key	SiftAgg	single:t
 c3_having_exists_kind	SiftAgg	single:t
 c3_having_max_recent	SiftAgg	-
 c3_having_avg_region	SiftAgg	-
