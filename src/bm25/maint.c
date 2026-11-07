@@ -36,6 +36,7 @@
 #include "utils/timestamp.h"
 
 #include "bm25/am.h"
+#include "col/pg.h"
 #include "bm25/build.h"
 #include "core/lane.h"
 #include "core/limits.h"
@@ -972,11 +973,15 @@ sift_read_promote_worker_main(Datum main_arg)
 Datum
 sift_promote(PG_FUNCTION_ARGS)
 {
+	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
+		return sift_col_promote(fcinfo);
 	return sift_mops_sql_promote(&bm25_ops, fcinfo);
 }
 
 Datum
 sift_merge(PG_FUNCTION_ARGS)
 {
+	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
+		return sift_col_merge(fcinfo);
 	return sift_mops_sql_merge(&bm25_ops, fcinfo);
 }

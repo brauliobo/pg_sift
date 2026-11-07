@@ -14,14 +14,14 @@ text_ops			Default operator class of the sift index for text: the @@> operator.
 segments			One row per segment of a sift index: documents, terms, bytes by section, dirty and dead documents.
 segment_postings			Postings of a sift index by segment and document-frequency class: representation counts, codec bytes and bits per posting.
 index_info			Space and directory state of a sift index: blocks, free list, segments, documents and whether maintenance runs.
-verify			Checks the structure of a sift index (and with heapallindexed, that every visible row is in it); raises on a problem.
+verify			Checks the structure of a sift or sift_col index (and with heapallindexed, that every visible row is in it); raises on a problem. col_verify is the same call.
 facets			Counts of the matches of a query per value of a keyword sift index, most frequent first.
 sections			Joins the fields of a document into the text a fields index is built on.
 field_query			The query with the weights of its fields: each term searched in every field with its boost times the field weight.
 facet_counts			Facet counts over a search: terms, range, histogram and date_histogram facets of any column type, several in one call.
 facet_sql			The SQL statement that facet_counts runs, one scan per facet.
-promote	maint		Turns the write buffer of a sift index into an immutable segment; returns the buffers promoted.
-merge	maint		Merges the segments of a sift index into fewer; force merges even when no policy asks; returns the segments merged.
+promote	maint		Turns the write buffer of a sift index into an immutable segment, or that of a sift_col index into column segments; returns the buffers promoted (col_promote is the same call).
+merge	maint		Merges the segments of a sift or sift_col index into fewer; force merges even when no policy asks; returns the segments merged (col_merge is the same call).
 version	diag		Version of the loaded library (the installed extension version is in pg_extension).
 col_ops			Default operator class of the sift_col index: it has no operators, the index is read by the column scans.
 col_*_ops	col	3.3	Operator classes per type (int2, int4, int8, float4, float8, date, timestamp, timestamptz, bool, numeric, text, bpchar, uuid) that let the planner scan a sift_col index; opt-in per column.

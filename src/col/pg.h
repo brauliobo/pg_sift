@@ -79,6 +79,7 @@ extern Oid	sift_col_def_typid(TupleDesc desc, const SiftColDef *def);
 
 /* Is relam the sift_col access method (the catalog lookup is cached) */
 extern bool sift_col_is_index(Relation index);
+extern bool sift_col_is_index_oid(Oid indexoid);
 extern Oid	sift_col_am_oid(void);
 /*
  * The index of an SQL function that is given its oid, with its table locked first in the same mode (the lock order of the statements: DROP TABLE and

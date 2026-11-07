@@ -425,8 +425,8 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
  * options, every immutable segment (sift_seg_walk with verify) and invariant
  * I1 between segments. ERRCODE_INDEX_CORRUPTED on the first violation.
  */
-Datum
-sift_verify(PG_FUNCTION_ARGS)
+static Datum
+bm25_verify(PG_FUNCTION_ARGS)
 {
 	Relation	index;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
@@ -498,4 +498,12 @@ sift_verify(PG_FUNCTION_ARGS)
 	MemoryContextDelete(cxt);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
+}
+
+Datum
+sift_verify(PG_FUNCTION_ARGS)
+{
+	if (sift_col_is_index_oid(PG_GETARG_OID(0)))
+		return sift_col_verify(fcinfo);
+	return bm25_verify(fcinfo);
 }

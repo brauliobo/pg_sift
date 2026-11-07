@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/table.h"
 #include "commands/defrem.h"
+#include "utils/relcache.h"
 #include "agg/stats.h"
 #include "col/leafshm.h"
 #include "core/limits.h"
@@ -354,6 +355,23 @@ bool
 sift_col_is_index(Relation index)
 {
 	return index->rd_rel->relam == sift_col_am_oid();
+}
+
+/*
+ * sift.merge, promote and verify of a sift_col index run the sift.col_* function of the same name. The relation cache answers, as the open that follows does: a
+ * catalog lookup of its own costs a BM25 index buffer hits it did not have, and a BM25 index asks nothing about the sift_col access method (its first lookup reads pg_am)
+ */
+bool
+sift_col_is_index_oid(Oid indexoid)
+{
+	Relation	rel = RelationIdGetRelation(indexoid);
+	bool		col;
+
+	if (!RelationIsValid(rel))
+		return false;
+	col = rel->rd_rel->relam != sift_catalog()->am && sift_col_is_index(rel);
+	RelationClose(rel);
+	return col;
 }
 
 Oid
