@@ -292,7 +292,8 @@ ext_standby_run() {
 	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'damaged'"
 	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
 	pg_basebackup -h "$SIFT_TMP/sock" -p "${SIFT_PORT:-56100}" -U postgres -D "$SIFT_TMP/side-standby/data" -X stream -c fast -R || return 1
-	side_conf standby || return 1
+	# pgtest.sh start empties postgresql.auto.conf, where -R wrote primary_conninfo: the standby would stay at the state of the base backup
+	side_conf standby "primary_conninfo = 'host=$SIFT_TMP/sock port=${SIFT_PORT:-56100} user=postgres'" || return 1
 	side standby start || return 1
 	sql -c "INSERT INTO cv_dml SELECT 9000 + i, i % 5, i, i, 'r' FROM generate_series(1, 300) i" -c "INSERT INTO cv_tt SELECT * FROM cv_types WHERE id <= 60" || return 1
 	lsn=$(sql -c "SELECT pg_current_wal_lsn()")
