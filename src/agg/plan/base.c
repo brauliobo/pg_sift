@@ -182,6 +182,28 @@ joined_in_order(PlannerInfo *root, int scanned, List *joined)
 	return list_concat(direct, rest);
 }
 
+/*
+ * A table of a query with a semi, anti or preserved join that has no relation entry and is not the nullable side of a LEFT JOIN was not removed as a
+ * useless LEFT JOIN: PostgreSQL 18 merged it (either side of the join) into another scan of the same table by a unique key (self-join elimination), and
+ * moved the conditions to the scan it kept, which the FROM tree does not say.
+ */
+static bool
+merged_by_self_join(PlannerInfo *root, FromScan *fs)
+{
+	Bitmapset  *lefts = NULL;
+	bool		other = false,
+				merged = false;
+
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		if (lj->kind == SJ_LEFT)
+			lefts = bms_add_member(lefts, lj->rti);
+		else
+			other = true;
+	foreach_int(rti, fs->rtis)
+		merged |= other && root->simple_rel_array[rti] == NULL && !bms_is_member(rti, lefts);
+	return merged;
+}
+
 static bool
 agg_base_once(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
@@ -197,13 +219,8 @@ agg_base_once(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	allrtis = bms_copy(fs->hidden);
 	if (!fs->ok)
 		return agg_refuse_on(FROM_SHAPE, "the FROM tree has a join other than the inner, left, semi, anti or preserved joins of tables the scan reads");
-	/*
-	 * A semi, anti or preserved join whose table has no relation entry was not removed as a useless LEFT JOIN: PostgreSQL 18 merged it into another
-	 * scan of the same table by a unique key (self-join elimination), and moved its conditions to the one it kept, which the FROM tree does not say.
-	 */
-	foreach_ptr(LeftJoin, lj, fs->lefts)
-		if (lj->kind != SJ_LEFT && root->simple_rel_array[lj->rti] == NULL)
-			return agg_refuse_on(FROM_SHAPE, "PostgreSQL merged a joined table into another scan of the same table (self-join elimination)");
+	if (merged_by_self_join(root, fs))
+		return agg_refuse_on(FROM_SHAPE, "PostgreSQL merged a joined table into another scan of the same table (self-join elimination)");
 	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
 	foreach_int(rti, fs->rtis)
 		if (root->simple_rel_array[rti] != NULL)

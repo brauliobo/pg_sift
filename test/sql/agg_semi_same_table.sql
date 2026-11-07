@@ -60,6 +60,10 @@ SELECT * FROM check_same($q$
   SELECT count(amount) FROM events e WHERE EXISTS (SELECT 1 FROM items i WHERE i.id = e.parent_id AND i.kind = 'k1')
     AND EXISTS (SELECT 1 FROM others o WHERE o.id = e.parent_id AND o.kind = 'k2')$q$);
 
+-- a table merged into the scan of the same table as the OUTER side (IN over the table by its own unique key): the refusal names the merge (from_shape), never an outer join
+SELECT bool_or(used OR slug = 'from_shape') AS pushed_or_merged, count(*) FILTER (WHERE slug = 'outer_join') AS outer_join_named
+FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE id IN (SELECT id FROM events WHERE amount > 500) GROUP BY kind') WHERE arm = 'single';
+
 DROP TABLE events, items, others;
 DROP FUNCTION check_same(text);
 DROP EXTENSION pg_sift;

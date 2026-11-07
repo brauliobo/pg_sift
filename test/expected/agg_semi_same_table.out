@@ -95,6 +95,14 @@ SELECT * FROM check_same($q$
  t      |           0
 (1 row)
 
+-- a table merged into the scan of the same table as the OUTER side (IN over the table by its own unique key): the refusal names the merge (from_shape), never an outer join
+SELECT bool_or(used OR slug = 'from_shape') AS pushed_or_merged, count(*) FILTER (WHERE slug = 'outer_join') AS outer_join_named
+FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE id IN (SELECT id FROM events WHERE amount > 500) GROUP BY kind') WHERE arm = 'single';
+ pushed_or_merged | outer_join_named 
+------------------+------------------
+ t                |                0
+(1 row)
+
 DROP TABLE events, items, others;
 DROP FUNCTION check_same(text);
 DROP EXTENSION pg_sift;
