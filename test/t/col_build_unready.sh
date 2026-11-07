@@ -6,7 +6,7 @@
 # holds, so no timing is involved.
 . "$(dirname "$0")/lib.bash"
 
-plan 6
+plan 7
 node_init bu 15 "autovacuum = off"
 node_start bu || bail "start failed"
 D=$(dir bu)
@@ -34,6 +34,9 @@ check "the build is held before its metapage, with its data pages written" test 
 
 sql bu "DELETE FROM t WHERE id % 100 = 1" "UPDATE t SET id = id + 100000 WHERE id % 100 = 2" >"$D/dml.out" 2>&1
 check "the writers of the table do not read the index being built" test "$?" == 0
+# the sub-select of a window (rank within a group) asks which columns the indexes of the table hold (column_source_reads), and reads the layout of every one of them
+LATEST="SELECT count(*) FROM (SELECT id, row_number() OVER (PARTITION BY grp ORDER BY amount DESC, id) rn FROM t) s WHERE rn <= 3"
+check "the plans of the readers of the table do not read the index being built" test "$(sql bu "SET sift.enable_agg = on" "$LATEST" 2>&1 | tail -1)" == 150
 touch "$D/release"
 wait "$hp"
 wait "$cp"

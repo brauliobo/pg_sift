@@ -18,6 +18,7 @@
 #include "utils/injection_point.h"
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
+#include "utils/rel.h"
 #include "utils/tuplestore.h"
 
 #if PG_VERSION_NUM >= 180000
@@ -26,6 +27,17 @@
 #else
 #include "optimizer/cost.h"
 #endif
+
+/*
+ * Is the file of this index finished, so that a page of it may be read? An index that CREATE INDEX CONCURRENTLY, REINDEX CONCURRENTLY or pg_repack --only-indexes is still building
+ * is in the catalog and not ready for inserts. Its build writes the file past shared buffers, data pages first and the metapage last, so a page read before the end (the layout of the index
+ * a statement asks for, its log) stays cached as the hole it was, and the build and every later reader fail with a corrupted index. Only the owner of the build reads it until it is ready.
+ */
+static inline bool
+sift_index_ready(Relation index)
+{
+	return index->rd_index->indisready;
+}
 
 /* A named point of the code where a test of an injection-points build stops a backend (test/t/maint_lock_order.sh); nothing in a server built without them */
 #if PG_VERSION_NUM >= 180000

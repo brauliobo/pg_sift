@@ -118,7 +118,8 @@ column_source_reads(Oid relid, Bitmapset *attnos)
 			if (!sift_colsrc_is_index(get_rel_relam(ix)))
 				continue;
 			idx = index_open(ix, AccessShareLock);
-			pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
+			if (sift_index_ready(idx))	/* the cache is dropped by the relcache invalidation that makes a built index ready */
+				pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
 			index_close(idx, AccessShareLock);
 		}
 		MemoryContextSwitchTo(old);
