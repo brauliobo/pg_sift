@@ -36,7 +36,7 @@ def main(doc):
     ap.add_argument('--budget-update', action='store_true', help='rewrite the ceilings of the cases that ran in the --budget file: the count with 15%% over it')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
-    ap.add_argument('--strict', action='store_true', help='coverage: fail (exit 1) on every gap, the release gate; without it the gaps are warnings')
+    ap.add_argument('--strict', action='store_true', help='coverage: fail (exit 1) on every gap; without it the gaps are warnings')
     ap.add_argument('--host-plan', action='store_true', help='coverage: print the commands that measure what is missing (the host window)')
     ap.add_argument('--since', help='coverage: the commits since this tag are the landed claims (default: the last tag behind HEAD)')
     ap.add_argument('--root', help='coverage: the checkout to read (default: this one)')
