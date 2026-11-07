@@ -4,8 +4,6 @@
 #ifndef SIFT_TBL_STORE_INT_H
 #define SIFT_TBL_STORE_INT_H
 
-#include "table/table.h"
-
 #define corrupt(rel, ...) \
 	ereport(ERROR, \
 			(errcode(ERRCODE_DATA_CORRUPTED), \

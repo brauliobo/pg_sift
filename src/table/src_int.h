@@ -8,7 +8,6 @@
 #include "agg/pre.h"
 #include "agg/sel.h"
 #include "agg/zoneprune.h"
-#include "agg/colsrc.h"
 #include "agg/chunkfilter.h"
 #include "table/table.h"
 
