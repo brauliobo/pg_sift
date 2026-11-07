@@ -266,6 +266,8 @@ SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY 
 
 SET sift.agg_lookup_max_rows = 10;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS above_cap;
+WARNING:  sift.agg_lookup_max_rows is deprecated and will be removed in 5.0
+HINT:  Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.
  above_cap 
 -----------
  normal

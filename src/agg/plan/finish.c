@@ -36,7 +36,18 @@ bool
 agg_lookup_fits(double rows, int width)
 {
 	if (sift_agg_lookup_max_rows >= 0)
+	{
+		static bool warned;
+
+		if (!warned)
+		{
+			warned = true;
+			ereport(WARNING,
+					(errmsg("sift.agg_lookup_max_rows is deprecated and will be removed in 5.0"),
+					 errhint("Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.")));
+		}
 		return rows <= sift_agg_lookup_max_rows;
+	}
 	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) sift_agg_lookup_max_kb * 1024;
 }
 

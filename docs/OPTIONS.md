@@ -2561,9 +2561,9 @@ all · deprecated · since 1.0 · default 4096
 - **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: the older form of agg_lookup_max_kb; -1 lets the memory decide
 - **When:** The same joins as sift.agg_lookup_max_kb, limited by the estimated rows whatever their width; used only when set to 0 or more, and then it replaces the memory limit.
 - **Default:** -1 — -1 hands the decision to sift.agg_lookup_max_kb, the limit by memory that replaced the row count; the setting is kept so a configuration of the older form keeps working.
-- **Turn off:** SET sift.agg_lookup_max_rows = -1 (or RESET) returns to the memory limit; the setting itself is deprecated and cannot be removed.
+- **Turn off:** SET sift.agg_lookup_max_rows = -1 (or RESET) returns to the memory limit; the setting is deprecated, warns once per session while it is set, and is removed in 5.0.
 - **Upgrade from 4.1:** unchanged
-- **Advice:** Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width.
+- **Advice:** Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width, and the first plan of a session that uses it warns; removed in 5.0.
 - **Sources:** [AGG](AGG.md#joins-to-plans)
 
 #### sift.table_auto_defrag_dead_pct

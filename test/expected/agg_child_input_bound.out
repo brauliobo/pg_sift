@@ -26,6 +26,8 @@ SELECT plan_has_scan($q$
  SELECT c.w % 7 AS k, count(*) AS n FROM facts f JOIN items e ON e.dim_a_id = f.dim_a_id
  JOIN LATERAL (SELECT e.v * 2 AS w UNION ALL SELECT -e.v) c ON true GROUP BY 1
 $q$) AS fanned_out;
+WARNING:  sift.agg_lookup_max_rows is deprecated and will be removed in 5.0
+HINT:  Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.
  fanned_out 
 ------------
  f

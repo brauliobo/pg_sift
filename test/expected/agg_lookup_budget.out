@@ -51,6 +51,8 @@ SELECT same(:'q') AS default_budget;
 -- the older setting limits the rows, whatever their width
 SET sift.agg_lookup_max_rows = 1000000;
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
+WARNING:  sift.agg_lookup_max_rows is deprecated and will be removed in 5.0
+HINT:  Use sift.agg_lookup_max_kb, the memory of the lookup tables, and RESET sift.agg_lookup_max_rows.
   arm   | used |    slug    
 --------+------+------------
  single | f    | join_child
