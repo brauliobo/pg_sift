@@ -21,6 +21,9 @@ DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
 	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
+	-- the settings the 4.2 library removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
+	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
+		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"]}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
 	lib text;
@@ -189,7 +192,7 @@ BEGIN
 		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'warn'; advice := NULL;
 		IF r.name LIKE 'sift.test\_%' THEN
 			kind := 'test'; advice := 'a setting of the test build only: remove it';
-		ELSIF r.name = 'sift.eval_methods' THEN
+		ELSIF removed ? r.name THEN
 			CONTINUE;		-- the removed names are the blockers below
 		ELSIF r.unknown THEN
 			advice := 'the loaded library does not define it (removed, renamed or from another build): remove it, or PostgreSQL ignores it with a warning';
@@ -203,29 +206,30 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 
-	-- 4.2 removed latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup (also with a leading -) from sift.eval_methods: a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that names one fails
-	-- once the 4.2 library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
-	FOR r IN SELECT x.scope, x.value, x.cmd FROM (
-				SELECT 'server (' || s.source || ')' AS scope, s.setting AS value,
-					   'remove it from postgresql.conf, or ALTER SYSTEM RESET sift.eval_methods when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd
-				FROM pg_settings s WHERE s.name = 'sift.eval_methods' AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user', 'session', 'client')
+	-- 4.2 removed the settings of `removed` (and latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup, also with a leading -, from sift.eval_methods): a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that
+	-- names one fails once the 4.2 library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
+	FOR r IN SELECT x.name, x.scope, x.value, x.cmd, k.spec->>1 AS note FROM (
+				SELECT s.name, 'server (' || s.source || ')' AS scope, s.setting AS value,
+					   'remove it from postgresql.conf, or ALTER SYSTEM RESET ' || s.name || ' when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd
+				FROM pg_settings s WHERE removed ? s.name AND s.source NOT IN ('default', 'override', 'database', 'user', 'database user', 'session', 'client')
 				UNION ALL
-				SELECT 'file ' || f.sourcefile || ':' || f.sourceline, f.setting,
-					   'remove the line (ALTER SYSTEM RESET sift.eval_methods when the file is postgresql.auto.conf), then SELECT pg_reload_conf()'
-				FROM pg_file_settings f WHERE f.name = 'sift.eval_methods'
+				SELECT f.name, 'file ' || f.sourcefile || ':' || f.sourceline, f.setting,
+					   'remove the line (ALTER SYSTEM RESET ' || f.name || ' when the file is postgresql.auto.conf), then SELECT pg_reload_conf()'
+				FROM pg_file_settings f WHERE removed ? f.name
 				UNION ALL
-				SELECT concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
+				SELECT split_part(c, '=', 1), concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
 					   substr(c, strpos(c, '=') + 1),
 					   'ALTER ' || CASE WHEN d.setrole <> 0 THEN 'ROLE ' || quote_ident(ro.rolname) || CASE WHEN d.setdatabase <> 0 THEN ' IN DATABASE ' || quote_ident(db.datname) ELSE '' END
-									    WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET sift.eval_methods'
+									    WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET ' || split_part(c, '=', 1)
 				FROM pg_db_role_setting d LEFT JOIN pg_roles ro ON ro.oid = d.setrole LEFT JOIN pg_database db ON db.oid = d.setdatabase, unnest(d.setconfig) c
-				WHERE c LIKE 'sift.eval_methods=%'
+				WHERE removed ? split_part(c, '=', 1)
 			 ) x
-			 WHERE x.value ~* '(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)'
-			 ORDER BY x.scope
+			 JOIN jsonb_each(removed) k(name, spec) ON k.name = x.name
+			 WHERE k.spec->>0 IS NULL OR x.value ~* (k.spec->>0)
+			 ORDER BY x.name, x.scope
 	LOOP
-		object := 'sift.eval_methods'; kind := 'setting'; detected := format('sift.eval_methods = %s, set by %s', r.value, r.scope); status := 'blocker';
-		advice := 'the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET: ' || r.cmd;
+		object := r.name; kind := 'setting'; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'blocker';
+		advice := r.note || ': ' || r.cmd;
 		RETURN NEXT;
 	END LOOP;
 

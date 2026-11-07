@@ -21,8 +21,6 @@
  * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
  */
 
-bool		sift_enable_col = true;
-
 /* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10, 12, 13, 14 or 15 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
@@ -213,10 +211,6 @@ gord_strcmp(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
 void
 sift_col_init(void)
 {
-	DefineCustomBoolVariable("sift.enable_col",
-							 "Enables the column scans over sift_col indexes.",
-							 NULL, &sift_enable_col, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
 							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",

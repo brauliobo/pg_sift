@@ -9,7 +9,7 @@
 --   ok      the result equals the reference (any plan)
 --   error:C the statement raises SQLSTATE C; with `avoid` ("name = value"), it runs without error under that setting
 --   true    the statement is a boolean self-check (same, in_tx, workers_agree, snapshot below, or a catalog query) that returns true
--- The reference run has sift.enable_agg, enable_scan, enable_count and enable_col off and the btree and bitmap scans off: the plan
+-- The reference run has sift.enable_agg, enable_scan and enable_count off and the btree and bitmap scans off: the plan
 -- PostgreSQL has without sift. A query that ranks (sift.score) has no such plan: only its plan and that it runs are checked.
 \set ON_ERROR_STOP on
 DROP SCHEMA IF EXISTS coverage CASCADE;
@@ -21,7 +21,7 @@ CREATE FUNCTION coverage.reference(gucs text[]) RETURNS void LANGUAGE plpgsql AS
 DECLARE g text;
 BEGIN
 	PERFORM coldiff.apply('off', gucs);
-	FOREACH g IN ARRAY ARRAY['sift.enable_scan', 'sift.enable_count', 'sift.enable_col', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan'] LOOP
+	FOREACH g IN ARRAY ARRAY['sift.enable_scan', 'sift.enable_count', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan'] LOOP
 		PERFORM set_config(g, 'off', false);
 	END LOOP;
 END $$;
@@ -30,7 +30,7 @@ CREATE FUNCTION coverage.reset(gucs text[] DEFAULT NULL) RETURNS void LANGUAGE p
 DECLARE g text;
 BEGIN
 	PERFORM coldiff.reset(gucs);
-	FOREACH g IN ARRAY ARRAY['sift.enable_scan', 'sift.enable_count', 'sift.enable_col', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan',
+	FOREACH g IN ARRAY ARRAY['sift.enable_scan', 'sift.enable_count', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan',
 							 'seq_page_cost', 'random_page_cost', 'cpu_tuple_cost'] LOOP
 		EXECUTE 'RESET ' || g;
 	END LOOP;

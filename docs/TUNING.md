@@ -71,7 +71,6 @@ The diagnostic options (generated from [options.tsv](options.tsv)):
 | `sift.prefetch` | BM25 | switches of the ranked scan, the count(*) pushdown, the bitmap of the other quals and the read-ahead |
 | `sift.log_min_duration` | all | logs promotions, merges and worker runs of at least that long |
 | `sift.simd` | all | caps the SIMD level of every kernel; every level returns the same results bit for bit |
-| `sift.enable_col` | sift_col | the column scans over sift_col indexes |
 | `sift.vis_page_cache` | sift_col | the rows of a heap page that a scan reads twice (the units of a key-cut index list rows of the same page) are checked for visibility once |
 | `sift.cluster_advice` | sift_col | sift.cluster_advice() may recommend a physical order or a key_cut for the tables, and CREATE INDEX may suggest key_cut |
 | `sift.agg_left_lateral` | sift_col, sift_table | a LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row is answered by the scan: a row none of whose elements passes is one tuple with NULL element columns |

@@ -10,7 +10,7 @@ import fnmatch, hashlib, os, re, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = "set statement_timeout='90s'; set extra_float_digits=-5; set max_parallel_workers_per_gather=0; set jit=off; set work_mem='256MB'; set sift.col_auto_merge=off;"
-OFF = ("set sift.enable_agg=off; set sift.enable_col=off; set sift.enable_col_scan=off; set sift.enable_scan=off; set sift.enable_topn=off; set sift.enable_count=off;")
+OFF = ("set sift.enable_agg=off; set sift.enable_col_scan=off; set sift.enable_scan=off; set sift.enable_topn=off; set sift.enable_count=off;")
 ON = "set sift.enable_agg=on;" + os.environ.get("CORPUS_ON_SET", "")
 
 

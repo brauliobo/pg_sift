@@ -554,10 +554,10 @@ SELECT sift.col_verify('sr_idx', true);
 
 SELECT count(*) || ':' || sum(val) AS plain FROM sr WHERE k = 2919 \gset
 SET sift.enable_agg = off;
-SET sift.enable_col = off;
+SET sift.enable_col_scan = off;
 SELECT count(*) || ':' || sum(val) AS heap FROM sr WHERE k = 2919 \gset
 RESET sift.enable_agg;
-RESET sift.enable_col;
+RESET sift.enable_col_scan;
 SELECT :'plain' = :'heap' AS equality_matches_heap;
  equality_matches_heap 
 -----------------------

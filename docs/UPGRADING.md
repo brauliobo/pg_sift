@@ -95,7 +95,7 @@ metapages and cannot fail the update; when it cannot answer (a relation locked b
 
 ## What 4.2 changes
 
-Seven changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
+Eight changes of 4.2 touch what an index holds, what an older library does with it, a plan you may have measured, or an object you may have made. None asks for a step at the update: `ALTER EXTENSION pg_sift UPDATE`
 runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and older as they are. Each entry says what changes, what an older library does with the result, whether a `REINDEX` is needed, and the switch that turns it off.
 
 1. **A presence leaf for the `jsonb` columns that may be NULL (option `document_present`).** `CREATE INDEX` and `REINDEX` of a `sift_col` index write one boolean leaf for each `jsonb` column that has `paths` and no `NOT NULL`
@@ -156,6 +156,18 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
    SELECT name, setting, sourcefile, sourceline FROM pg_file_settings WHERE name = 'sift.eval_methods';   -- superuser; remove the line, or ALTER SYSTEM RESET sift.eval_methods, then SELECT pg_reload_conf()
    ```
    `scripts/upgrade-check.sh` lists each of them as a blocker with the command (any release of the library, so it can run before the update). *Files, `REINDEX`:* no. *Off:* the names are gone; leave the setting empty.
+
+8. **`sift.enable_col` is removed.** It was declared in 3.0 and no code ever read it (`sift.enable_col_scan` and `sift.enable_agg` are the switches of the planner), so setting it changed nothing, whatever its documentation said.
+   What happens to a setting that names it (tried on this tree): with the library loaded, a `SET`, `ALTER ROLE .. SET`, `ALTER DATABASE .. SET` and `ALTER SYSTEM SET` fail with `ERROR: invalid configuration parameter name "sift.enable_col"` and
+   `DETAIL: "sift" is a reserved prefix.`, so a script that runs one breaks; a value already stored (`postgresql.conf`, `postgresql.auto.conf`, a role or database setting) does not stop the server or a login, but every session that loads the library
+   and the log of the server say `WARNING: invalid configuration parameter name "sift.enable_col", removing it` with `DETAIL: "sift" is now a reserved prefix.`, and `SHOW sift.enable_col` is `unrecognized configuration parameter`. Remove it before updating:
+   ```sql
+   SELECT coalesce(r.rolname, '(all roles)') AS role, coalesce(d.datname, '(all databases)') AS database, c AS setting
+   FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase, unnest(s.setconfig) c
+   WHERE c LIKE 'sift.enable_col=%';                                          -- ALTER ROLE r [IN DATABASE d] RESET sift.enable_col; or ALTER DATABASE d RESET sift.enable_col
+   SELECT name, setting, sourcefile, sourceline FROM pg_file_settings WHERE name = 'sift.enable_col';    -- superuser; remove the line, or ALTER SYSTEM RESET sift.enable_col, then SELECT pg_reload_conf()
+   ```
+   `scripts/upgrade-check.sh` lists each of them as a blocker with the command (any release of the library, so it can run before the update). *Files, `REINDEX`:* no. *Off:* not applicable; to compare a plan with the normal one, `SET sift.enable_agg = off` and `SET sift.enable_col_scan = off`.
 
 ## 3. A newer PostgreSQL major
 

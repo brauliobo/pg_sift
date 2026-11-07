@@ -69,21 +69,21 @@ sift.async_maintenance = off'
 		sql legacy "CREATE TABLE setlow AS SELECT i AS id, (i * 7919 % 5000)::bigint AS k FROM generate_series(1, 3000) i" "CREATE TABLE sethigh AS TABLE setlow" \
 			"SET sift.col_format_minor = 4" "CREATE INDEX setlow_idx ON setlow USING sift_col (id, k) WITH (key_columns = 'k')" "RESET sift.col_format_minor" \
 			"CREATE INDEX sethigh_idx ON sethigh USING sift_col (id, k) WITH (key_columns = 'k')" "VACUUM ANALYZE setlow" "VACUUM ANALYZE sethigh" >/dev/null || bail 'minor 10 setup'
-		setwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SETQ")
+		setwant=$(sql legacy "SET sift.enable_agg = off" "$SETQ")
 		check 'the setting 4 writes no summary (minor 4) and the default one does (minor 12, with the sections that are on by default)' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('setlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('sethigh_idx') WHERE kind = 'immutable')")" == 4:12
 		# the sorted run (minor 13, opt-in): the setting 4 writes no run, the setting 14 writes what 3.1 refuses (from 15 the run also holds its head, minor 18)
 		ORDQ="SELECT string_agg(id::text, ',' ORDER BY k, id) FROM (SELECT id, k FROM ordlow ORDER BY k, id LIMIT 50) x"
 		sql legacy "CREATE TABLE ordlow AS SELECT i AS id, i * 7919 % 5000 AS k FROM generate_series(1, 3000) i" "CREATE TABLE ordhigh AS TABLE ordlow" \
 			"SET sift.col_format_minor = 4" "CREATE INDEX ordlow_idx ON ordlow USING sift_col (id, k) WITH (order_columns = 'k')" "SET sift.col_format_minor = 14" \
 			"CREATE INDEX ordhigh_idx ON ordhigh USING sift_col (id, k) WITH (order_columns = 'k')" "RESET sift.col_format_minor" "VACUUM ANALYZE ordlow" "VACUUM ANALYZE ordhigh" >/dev/null || bail 'minor 13 setup'
-		ordwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$ORDQ")
+		ordwant=$(sql legacy "SET sift.enable_agg = off" "$ORDQ")
 		check 'the setting 4 writes no run and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('ordlow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('ordhigh_idx') WHERE kind = 'immutable')")" == 4:13
 		# the key list or bitmap of an int column (minor 15, opt-in): the setting 4 writes none, the default one writes what 3.1 refuses
 		KPQ="SELECT count(DISTINCT k), count(*) FROM kplow"
 		sql legacy "CREATE TABLE kplow AS SELECT i AS id, i % 200 AS k, i * 7919 % 100003 AS v FROM generate_series(1, 3000) i" "CREATE TABLE kphigh AS TABLE kplow" \
 			"SET sift.col_format_minor = 4" "CREATE INDEX kplow_idx ON kplow USING sift_col (id, k, v) WITH (key_columns = 'k')" "RESET sift.col_format_minor" \
 			"CREATE INDEX kphigh_idx ON kphigh USING sift_col (id, k, v) WITH (key_columns = 'k')" "VACUUM ANALYZE kplow" "VACUUM ANALYZE kphigh" >/dev/null || bail 'minor 15 setup'
-		kpwant=$(sql legacy "SET sift.enable_agg = off" "SET sift.enable_col = off" "$KPQ")
+		kpwant=$(sql legacy "SET sift.enable_agg = off" "$KPQ")
 		check 'the setting 4 writes no key presence and the default one does' test "$(sql legacy "SELECT (SELECT max(format) FROM sift.col_segments('kplow_idx') WHERE kind = 'immutable') || ':' || (SELECT max(format) FROM sift.col_segments('kphigh_idx') WHERE kind = 'immutable')")" == 4:15
 		node_stop legacy
 		use_root legacy "$oldroot"

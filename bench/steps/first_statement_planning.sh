@@ -47,7 +47,7 @@ evict() { $P -c "set sift.enable_agg = off; set enable_seqscan = off; set enable
 segs() { $P -c "select count(*) from sift.col_segments('events_sift') where kind = 'immutable'"; }
 measure() {  # ARM STATE: a new backend runs the statement as its first
   local arm=$1 state=$2 SEGN=$3 set="set sift.enable_agg = on;"
-  [ "$arm" = planner ] && set="set sift.enable_agg = off; set sift.enable_col = off; set sift.enable_col_scan = off; set sift.enable_scan = off; set sift.enable_topn = off; set sift.enable_count = off;"
+  [ "$arm" = planner ] && set="set sift.enable_agg = off; set sift.enable_col_scan = off; set sift.enable_scan = off; set sift.enable_topn = off; set sift.enable_count = off;"
   { echo "set max_parallel_workers_per_gather = 0; $set"; echo '\o /dev/stdout'; echo "explain (analyze, buffers, costs off, format json) $Q;"; } | $P | python3 -I -c "
 import json, sys
 j = json.load(sys.stdin)[0]

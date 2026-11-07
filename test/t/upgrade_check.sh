@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 98
+plan 103
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -279,4 +279,13 @@ check "a line of postgresql.auto.conf is one that says to ALTER SYSTEM RESET" gr
 check "four findings, and the method that stays alone (penalty_maintenance) is none" test "$(grep -c -E '^blocker +sift\.eval_methods' <<<"$out")" == 4
 q postgres "ALTER SYSTEM RESET sift.eval_methods" "ALTER ROLE ev_role RESET sift.eval_methods" "ALTER DATABASE ev_db RESET sift.eval_methods" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.eval_methods" "ALTER DATABASE v42 RESET sift.eval_methods" >/dev/null
 check "after the commands nothing is left" test "$(uc v42 | grep -c 'sift\.eval_methods')" == 0
+# 4.2 removed sift.enable_col whole: the same list serves it, whatever the value, and the generic check of unknown settings does not repeat it as a warning
+q postgres "ALTER ROLE ev_role SET sift.enable_col = off" "ALTER DATABASE ev_db SET sift.enable_col = off" "ALTER SYSTEM SET sift.enable_col = off" >/dev/null
+out=$(uc v42)
+check "a removed setting of a role is a blocker with the ALTER ROLE .. RESET that removes it" grep -q -E '^blocker +sift\.enable_col .*set by ALTER ROLE ev_role .*ALTER ROLE ev_role RESET sift\.enable_col' <<<"$out"
+check "a removed setting of a database is a blocker with the ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.enable_col .*set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.enable_col' <<<"$out"
+check "a removed setting in postgresql.auto.conf is a blocker that says to ALTER SYSTEM RESET" grep -q -E '^blocker +sift\.enable_col .*postgresql\.auto\.conf.*ALTER SYSTEM RESET sift\.enable_col' <<<"$out"
+check "the removed setting is no warning of the generic check" test "$(grep -c -E '^warn +sift\.enable_col' <<<"$out")" == 0
+q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" >/dev/null
+check "after the commands nothing of it is left" test "$(uc v42 | grep -c 'sift\.enable_col')" == 0
 finish

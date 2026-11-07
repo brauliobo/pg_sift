@@ -10,9 +10,9 @@ $$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift.col_segments(idx)
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
-	SET LOCAL sift.enable_col = on; SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.enable_agg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.enable_col = off; SET LOCAL sift.enable_agg = off;
+	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	RETURN a IS NOT DISTINCT FROM b;
 END $$;

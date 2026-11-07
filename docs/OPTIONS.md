@@ -36,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 38 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 3 | an older spelling that is still accepted |
 
@@ -1832,20 +1832,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Leave the default (the best level of the CPU; every level returns the same results and written data never depends on it). Lower it only to compare levels; scalar is the specification.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.enable_col
-
-`sift_col` · diagnostic · since 3.0 · default on
-
-- **What it does:** the column scans over sift_col indexes
-- **Gain:** column scans against the normal plan, 1,000,000 rows: count/sum of the table 60.6 to 0.11 ms, GROUP BY month 320 to 0.74 ms, count(DISTINCT) 108 to 0.38 ms
-- **Impact:** index size: -; build, merge and writes: -; other: none; off gives the plan PostgreSQL has without them
-- **When:** Column scans (SiftAgg) over sift_col indexes in the session; off gives the plan PostgreSQL has without them. It changes nothing stored.
-- **Default:** on — On: against the normal plan (1,000,000 rows) count/sum 60.6 to 0.11 ms, GROUP BY month 320 to 0.74 ms, count(DISTINCT) 108 to 0.38 ms; it has no storage or write cost of its own.
-- **Turn off:** SET sift.enable_col = off for a session (ALTER ROLE/DATABASE or postgresql.conf for more); used to compare plans and answers. No REINDEX.
-- **Upgrade from 4.1:** unchanged
-- **Advice:** Leave on. SET it off for one statement to see the plan PostgreSQL has without sift_col indexes, or to compare answers and times.
-- **Sources:** benchmark `cube_minmax_groupby`; [USAGE](USAGE.md#column-indexes-aggregates-and-sift_table)
 
 #### sift.vis_page_cache
 

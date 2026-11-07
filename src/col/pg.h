@@ -88,7 +88,6 @@ extern Oid	sift_col_am_oid(void);
  */
 extern Relation sift_col_open_index(Oid indexoid, LOCKMODE lock);
 
-extern PGDLLIMPORT bool sift_enable_col;
 extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */
 
 /* ---------------------------------------------------------------------------

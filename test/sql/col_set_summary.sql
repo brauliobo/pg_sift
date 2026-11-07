@@ -278,10 +278,10 @@ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minor
 SELECT sift.col_verify('sr_idx', true);
 SELECT count(*) || ':' || sum(val) AS plain FROM sr WHERE k = 2919 \gset
 SET sift.enable_agg = off;
-SET sift.enable_col = off;
+SET sift.enable_col_scan = off;
 SELECT count(*) || ':' || sum(val) AS heap FROM sr WHERE k = 2919 \gset
 RESET sift.enable_agg;
-RESET sift.enable_col;
+RESET sift.enable_col_scan;
 SELECT :'plain' = :'heap' AS equality_matches_heap;
 SELECT (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM sr GROUP BY a, b) g) =
        (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM (SELECT a, b FROM sr OFFSET 0) x GROUP BY a, b) g) AS group_matches;

@@ -137,7 +137,7 @@ if (( PG_MAJOR >= 18 )); then
 	TBL0=$(q life upg "$TBLQ" | tail -n 1)
 	COLQ="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM colt GROUP BY grp) g"
 	COLON=$(q life upg "SET sift.enable_agg = on" "$COLQ" | tail -n 1)
-	COLOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$COLQ" | tail -n 1)
+	COLOFF=$(q life upg "SET sift.enable_agg = off" "$COLQ" | tail -n 1)
 	check "the minor 3 column index answers the same as the heap" test "$COLON" == "$COLOFF"
 	q life postgres "CREATE DATABASE fresh" "CREATE DATABASE upg12" >/dev/null
 	q life fresh "CREATE EXTENSION pg_sift VERSION '3.0'" >/dev/null
@@ -341,7 +341,7 @@ if (( PG_MAJOR >= 18 )); then
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	# minor 4 segments join the same index: written after the update, beside the minor 3 ones
 	q life upg "INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "SELECT sift.col_promote('colt_col')" >/dev/null
-	COLOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$COLQ" | tail -n 1)
+	COLOFF=$(q life upg "SET sift.enable_agg = off" "$COLQ" | tail -n 1)
 	check "the index with minor 3 and minor 4 segments verifies and answers the same" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	# minor 7 segments (the cube also holds min and max; on by default since 3.3) join an index of minor 3 segments: the units written before scan, the others answer, the results are the heap's
@@ -350,7 +350,7 @@ if (( PG_MAJOR >= 18 )); then
 		"ALTER INDEX colm_col SET (cube_minmax = true)" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('colm_col')" >/dev/null
 	MMQ="SELECT string_agg(grp || ':' || lo || ':' || hi, ',' ORDER BY grp) FROM (SELECT grp, min(v) lo, max(v) hi FROM colm GROUP BY grp) g"
-	MMOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$MMQ" | tail -n 1)
+	MMOFF=$(q life upg "SET sift.enable_agg = off" "$MMQ" | tail -n 1)
 	check "an index with minor 3 and minor 7 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('colm_col') WHERE kind = 'immutable'")" == 3,7
 	check "the index with minor 3 and minor 7 segments verifies and answers min and max as the heap" test "$(q life upg "SELECT sift.col_verify('colm_col', true)" \
 		"SET sift.enable_agg = on" "$MMQ" | tail -n 1)" == "$MMOFF"
@@ -377,7 +377,7 @@ if (( PG_MAJOR >= 18 )); then
 		"SELECT sift.col_promote('rowr_col')" "ALTER INDEX rowr_col SET (rollup_dims = 'a, b')" \
 		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(30001, 40000) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
 	RRQ="SELECT string_agg(a || ':' || b || ':' || n || ':' || s, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n, sum(v) s FROM rowr GROUP BY a, b) g"
-	RROFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$RRQ" | tail -n 1)
+	RROFF=$(q life upg "SET sift.enable_agg = off" "$RRQ" | tail -n 1)
 	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT least(format, 9)::text, ',' ORDER BY least(format, 9)::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
 	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
 		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
@@ -387,7 +387,7 @@ if (( PG_MAJOR >= 18 )); then
 		"ALTER INDEX cols8_col SET (key_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols8_col')" >/dev/null
 	S8Q="SELECT count(*) || ':' || sum(v) FROM cols8 WHERE grp = 7919"
-	S8OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S8Q" | tail -n 1)
+	S8OFF=$(q life upg "SET sift.enable_agg = off" "$S8Q" | tail -n 1)
 	check "an index with minor 3 and minor 10 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols8_col') WHERE kind = 'immutable') x")" == 3,10
 	check "the index with minor 3 and minor 10 segments verifies and answers an equality as the heap" test "$(q life upg "SELECT sift.col_verify('cols8_col', true)" \
 		"SET sift.enable_agg = on" "$S8Q" | tail -n 1)" == "$S8OFF"
@@ -398,7 +398,7 @@ if (( PG_MAJOR >= 18 )); then
 		"ALTER INDEX cols_col SET (superunit = 4)" "INSERT INTO cols SELECT g, g % 9, g % 1000 / 8.0, repeat('p', 1500) FROM generate_series(12001, 24000) g" \
 		"VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) cols" "SELECT sift.col_promote('cols_col')" >/dev/null
 	SUQ="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM cols GROUP BY grp) g"
-	SUOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SUQ" | tail -n 1)
+	SUOFF=$(q life upg "SET sift.enable_agg = off" "$SUQ" | tail -n 1)
 	check "an index with minor 3 and minor 12 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols_col') WHERE kind = 'immutable') x")" == 3,12
 	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
 		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
@@ -408,7 +408,7 @@ if (( PG_MAJOR >= 18 )); then
 		"ALTER INDEX cols13_col SET (order_columns = 'grp, v')" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols13_col')" >/dev/null
 	S13Q="SELECT string_agg(id || ':' || grp, ',' ORDER BY grp DESC, id) FROM (SELECT id, grp FROM cols13 ORDER BY grp DESC, id LIMIT 300) x"
-	S13OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S13Q" | tail -n 1)
+	S13OFF=$(q life upg "SET sift.enable_agg = off" "$S13Q" | tail -n 1)
 	check "an index with minor 3 and minor 13 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")" == 3,13
 	check "the index with minor 3 and minor 13 segments verifies and answers an ORDER BY .. LIMIT as the heap" test "$(q life upg "SELECT sift.col_verify('cols13_col', true)" \
 		"SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "$S13OFF"
@@ -421,7 +421,7 @@ if (( PG_MAJOR >= 18 )); then
 		"ALTER INDEX cols15_col SET (key_columns = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols15_col')" >/dev/null
 	S15Q="SELECT count(DISTINCT k), count(*), sum(v) FROM cols15"
-	S15OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S15Q" | tail -n 1)
+	S15OFF=$(q life upg "SET sift.enable_agg = off" "$S15Q" | tail -n 1)
 	check "an index with minor 3 and minor 15 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")" == 3,15
 	check "the index with minor 3 and minor 15 segments verifies and answers a count(DISTINCT) as the heap" test "$(q life upg "SELECT sift.col_verify('cols15_col', true)" \
 		"SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "$S15OFF"
