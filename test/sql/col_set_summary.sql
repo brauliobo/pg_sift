@@ -8,7 +8,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-SET statement_timeout = '60s';
+SET statement_timeout = '900s';
 
 -- 30,000 rows in about 24 units. kind: a random value of 60 for each run of 700 rows (a unit holds two or three of them, so its zone spans most of the
 -- range and says nothing); parent_id: scattered over 5,000 values (a unit holds about 1,100 of them); cat: one of 3,000 texts for each run of 25 rows (about

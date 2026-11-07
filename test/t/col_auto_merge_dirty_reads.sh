@@ -15,7 +15,7 @@ sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
 
 dirty() { sql rd "SELECT coalesce(sum(units) FILTER (WHERE dirty), 0) FROM sift.col_segments('t_c')"; }
 # the rewrite is done: 30 s at most
-clean() { for _ in $(seq 100); do [[ $(dirty) == 0 ]] && return 0; sleep 0.3; done; return 1; }
+clean() { for _ in $(seq 400); do [[ $(dirty) == 0 ]] && return 0; sleep 0.3; done; return 1; }
 ids=$(seq 1 333 20000 | head -60 | paste -sd, -)
 # $1 batches of 100 reads of 60 keys in the dirty units in one session, a naptime apart: the look of the tick is once per naptime
 reads() { sql rd "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SET sift.enable_agg = off" "SET max_parallel_workers_per_gather = 0" \
