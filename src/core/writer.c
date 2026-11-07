@@ -19,6 +19,7 @@
 #include "core/compat.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/visibility.h"
 
 #define RUN_MIN				16
 #define RUN_MAX				1024
@@ -461,6 +462,7 @@ sift_wt_finish(SiftWriteTarget *wt)
 	SIFT_INVARIANT(wt->have_meta, "sift: bulk write target finished without a metapage");
 	bulk_release_spare(wt);
 	wt->meta.high_water = wt->next;
+	SIFT_TEST_GATE(sift_test_build_gate, 8);
 	bulk_put_meta(wt);
 	smgr_bulk_finish(wt->bulk);
 	wt->bulk = NULL;

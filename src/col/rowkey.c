@@ -316,7 +316,8 @@ other_tracker(Relation index, Relation heap, AttrNumber hatt)
 		if (oid == RelationGetRelid(index))
 			continue;
 		other = index_open(oid, AccessShareLock);
-		same = sift_col_is_index(other) && sift_col_row_key_on(other) && other->rd_index->indkey.values[sift_col_rel(other)->rowkey_attno - 1] == hatt;
+		/* a concurrent build writes the file of its index past shared buffers: a page read before it ends would stay cached as the hole it was (the writers do not use the index until it is ready) */
+		same = other->rd_index->indisready && sift_col_is_index(other) && sift_col_row_key_on(other) && other->rd_index->indkey.values[sift_col_rel(other)->rowkey_attno - 1] == hatt;
 		index_close(other, AccessShareLock);
 		if (same)
 			return true;
