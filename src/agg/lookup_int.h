@@ -183,6 +183,7 @@ typedef struct LookFinger
 	RelFileLocator rel;
 	BlockNumber nblocks;
 	XLogRecPtr *lsn;
+	bool		stamp;			/* not pages: the stamp of a derivation the journal of a parent index vouches for (dimgen.c), lsn = {lineage, horizon} */
 } LookFinger;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
@@ -227,15 +228,20 @@ bool cols_cover(const LookCols *have, const LookCols *need);
 
 /* dimgen.c, lookdim.c: the dimension map */
 typedef struct DimStamp DimStamp;
-DimStamp *dimgen_take(Relation rel);
-bool dimgen_same(const DimStamp *a, const DimStamp *b);
+DimStamp *dimgen_take(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap);
+bool dimgen_holds(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, const DimStamp *st);
 const LookFinger *dimgen_finger(const DimStamp *st);
+bool dimgen_stamped(const DimStamp *st);
+bool dimgen_journal(Relation index, AttrNumber keyatt);
+bool dimgen_readable(Relation rel, Relation index, Snapshot snap, const LookFinger *stored);
+Relation map_dense_index(Relation rel, const SiftAggJoin *j);
 MapTab *lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt);
 
 /* lookshm.c: the rows of the joined tables, and the dimension maps (lookdim.c), each with a directory and a budget of its own */
 bool lookshm_known(LookPool pool, const char *key);
 MapTab *lookshm_find(LookPool pool, const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
 bool lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
+bool lookshm_stored_stamp(LookPool pool, const char *key, LookFinger *out);
 bool lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt);
 void lookshm_unclaim(LookPool pool, const char *key);
 Size lookshm_bytes(LookPool pool);

@@ -86,6 +86,7 @@ look_finger(Relation rel, Size budget)
 	f = palloc(sizeof(LookFinger));
 	f->rel = rel->rd_locator;
 	f->nblocks = RelationGetNumberOfBlocks(rel);
+	f->stamp = false;
 	if (f->nblocks > LOOK_FINGER_BLOCKS(budget))
 		return NULL;
 	f->lsn = palloc(Max(f->nblocks, 1) * sizeof(XLogRecPtr));

@@ -637,23 +637,34 @@ dense_leaves_ok(const ColNeed *need, int nneed, int key)
 	return true;
 }
 
-/* does an index of the table hold the key and the columns of the join as integer leaves (map_load_dense)? */
-bool
-map_load_dense_possible(Relation rel, const SiftAggJoin *j)
+/* the index of the table (open, the caller closes it) that holds the key and the columns of the join as integer leaves (map_load_dense), else NULL */
+Relation
+map_dense_index(Relation rel, const SiftAggJoin *j)
 {
 	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				key = 0;
 	Relation	ix = load_index(rel, j, false, need, &nneed);
-	bool		ok;
+
+	if (ix == NULL)
+		return NULL;
+	while (need[key].att != j->keyatt[0])
+		key++;
+	if (dense_leaves_ok(need, nneed, key))
+		return ix;
+	index_close(ix, AccessShareLock);
+	return NULL;
+}
+
+bool
+map_load_dense_possible(Relation rel, const SiftAggJoin *j)
+{
+	Relation	ix = map_dense_index(rel, j);
 
 	if (ix == NULL)
 		return false;
-	while (need[key].att != j->keyatt[0])
-		key++;
-	ok = dense_leaves_ok(need, nneed, key);
 	index_close(ix, AccessShareLock);
-	return ok;
+	return true;
 }
 
 /*

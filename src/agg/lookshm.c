@@ -57,6 +57,9 @@ typedef struct LookShmEnt
 	dsm_handle	h;				/* DSM_HANDLE_INVALID: free */
 	uint64		key;			/* hash of the database and the key of the load */
 	uint64		pages;			/* hash of what the pages of the table were */
+	bool		stamped;		/* a stamp of a parent index (LookFinger.stamp): rel and sv say which, for a reader that cannot know it */
+	RelFileLocator srel;
+	uint64		sv[2];
 	LookCols	cols;
 	Size		size;
 	uint64		used;
@@ -203,6 +206,31 @@ lookshm_known(LookPool pool, const char *key)
 		known = s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh;
 	SpinLockRelease(&s->mutex);
 	return known;
+}
+
+/* the stamp of the map kept for the key, when it is one (the reader checks it against its snapshot, then asks for exactly that state with lookshm_find) */
+bool
+lookshm_stored_stamp(LookPool pool, const char *key, LookFinger *out)
+{
+	LookShm    *s;
+	uint64		kh = key_hash(key);
+	bool		found = false;
+
+	if (lookshm_bytes(pool) == 0)
+		return false;
+	s = shm_get(pool);
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_SLOTS && !found; i++)
+		if (s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh && s->ent[i].stamped)
+		{
+			out->rel = s->ent[i].srel;
+			out->nblocks = 2;
+			out->stamp = true;
+			memcpy(out->lsn, s->ent[i].sv, sizeof(s->ent[i].sv));
+			found = true;
+		}
+	SpinLockRelease(&s->mutex);
+	return found;
 }
 
 /* The rows kept for the key of a table that has the pages of f and the columns need, read in place and valid until mcxt goes; NULL when there are none. *have as in lookcache_find */
@@ -369,6 +397,12 @@ lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, con
 		at->h = dsm_segment_handle(seg);
 		at->key = kh;
 		at->pages = pages_hash(f);
+		at->stamped = f->stamp;
+		if (f->stamp)
+		{
+			at->srel = f->rel;
+			memcpy(at->sv, f->lsn, sizeof(at->sv));
+		}
 		at->cols = *cols;
 		at->size = size;
 		at->used = ++s->clock;
