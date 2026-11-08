@@ -23,6 +23,7 @@
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_depend.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_subscription_rel.h"
@@ -31,6 +32,7 @@
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "storage/bufmgr.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -60,9 +62,12 @@ bool		sift_test_no_chain_root = false;
 #endif
 
 /*
- * The two triggers of an index are its AUTO dependents in pg_trigger: [0] AFTER DELETE, [1] AFTER UPDATE (an internal trigger gets its oid appended to its name,
- * so they are found by what depends on the index). Each is checked to be what the option created: on the table, calling the function, a statement trigger, always
- * enabled. witness is its identity: the xmin of its catalog row, which any change to the row (disabling and enabling it again, a rename) makes another.
+ * The two triggers of an index are the rows of pg_trigger that it depends on (NORMAL): [0] AFTER DELETE, [1] AFTER UPDATE (an internal trigger gets its oid appended to its name,
+ * so they are found by what the index depends on). The index depends on them, and not they on it, because DROP INDEX CONCURRENTLY refuses to start once a transaction id is
+ * assigned and deletes what depends on the index first: an index nothing depends on drops, and sift_col_track_hook removes the triggers in the transaction that deletes the
+ * index. REINDEX CONCURRENTLY swaps the dependencies of the old and the new index, so the triggers follow the index that stays. Each is checked to be what the option
+ * created: on the table, calling the function, a statement trigger, always enabled. witness is its identity: the xmin of its catalog row, which any change to the row
+ * (disabling and enabling it again, a rename) makes another.
  */
 typedef struct HearTrig
 {
@@ -75,15 +80,21 @@ typedef struct HearTrig
 } HearTrig;
 
 /* By the schema oid, not LookupFuncName: a qualified name asks for USAGE on the schema, which an owner of the table creating the index need not have. */
-static Oid
-track_function(bool missing_ok)
+Oid
+sift_col_track_lookup(const char *name, bool missing_ok)
 {
 	Oid			nsp = get_namespace_oid("sift", missing_ok);
-	Oid			fn = OidIsValid(nsp) ? GetSysCacheOid3(PROCNAMEARGSNSP, Anum_pg_proc_oid, CStringGetDatum(HEAR_FUNCTION),
+	Oid			fn = OidIsValid(nsp) ? GetSysCacheOid3(PROCNAMEARGSNSP, Anum_pg_proc_oid, CStringGetDatum(name),
 													   PointerGetDatum(buildoidvector(NULL, 0)), ObjectIdGetDatum(nsp)) : InvalidOid;
 
-	SIFT_INVARIANT(OidIsValid(fn) || missing_ok, "sift: function sift.%s() does not exist", HEAR_FUNCTION);
+	SIFT_INVARIANT(OidIsValid(fn) || missing_ok, "sift: function sift.%s() does not exist", name);
 	return fn;
+}
+
+Oid
+sift_col_track_function(bool missing_ok)
+{
+	return sift_col_track_lookup(HEAR_FUNCTION, missing_ok);
 }
 
 static void
@@ -125,22 +136,22 @@ find_triggers(Oid heapoid, Relation index, HearTrig t[2], bool row)
 	ScanKeyData key[2];
 	SysScanDesc scan;
 	HeapTuple	tup;
-	Oid			funcoid = track_function(true);
+	Oid			funcoid = sift_col_track_function(true);
 
 	memset(t, 0, 2 * sizeof(HearTrig));
 	/* the extension is not updated to the release that has the function yet (the library is: ALTER INDEX of any option asks): no trigger can be its own */
 	if (!OidIsValid(funcoid))
 		return;
 	drel = table_open(DependRelationId, AccessShareLock);
-	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
-	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
+	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
 		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
 
-		if (d->classid == TriggerRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0)
-			read_trigger(heapoid, funcoid, d->objid, t, row);
+		if (d->refclassid == TriggerRelationId && d->deptype == DEPENDENCY_NORMAL && d->refobjsubid == 0)
+			read_trigger(heapoid, funcoid, d->refobjid, t, row);
 	}
 	systable_endscan(scan);
 	table_close(drel, AccessShareLock);
@@ -171,7 +182,7 @@ static bool trackable(Relation heap, Relation index);
 const char *
 sift_col_track_deaf(Relation heap)
 {
-	if (!OidIsValid(track_function(true)))
+	if (!OidIsValid(sift_col_track_function(true)))
 		return "the extension is not updated to the release that has sift.col_track_old_rows(): run ALTER EXTENSION pg_sift UPDATE";
 	if (heap->rd_rel->relispartition || has_superclass(RelationGetRelid(heap)) || find_inheritance_children(RelationGetRelid(heap), NoLock) != NIL)
 		return "the table is a partition or has inheritance children, and a statement trigger does not fire for a statement on the parent";
@@ -204,7 +215,7 @@ create_trigger(Relation heap, Relation index, bool update)
 {
 	CreateTrigStmt *stmt = makeNode(CreateTrigStmt);
 	TriggerTransition *tt = makeNode(TriggerTransition);
-	Oid			funcoid = track_function(false);
+	Oid			funcoid = sift_col_track_function(false);
 	bool		row = sift_col_track_ctid(index);
 	ObjectAddress trig,
 				idx;
@@ -222,7 +233,7 @@ create_trigger(Relation heap, Relation index, bool update)
 	stmt->transitionRels = row ? NIL : list_make1(tt);
 	trig = CreateTriggerFiringOn(stmt, "", RelationGetRelid(heap), InvalidOid, InvalidOid, InvalidOid, funcoid, InvalidOid, NULL, true, false, TRIGGER_FIRES_ALWAYS);
 	ObjectAddressSet(idx, RelationRelationId, RelationGetRelid(index));
-	recordDependencyOn(&trig, &idx, DEPENDENCY_AUTO);
+	recordDependencyOn(&idx, &trig, DEPENDENCY_NORMAL);
 }
 
 static void
@@ -234,10 +245,9 @@ drop_triggers(Relation heap, Relation index)
 	for (int i = 0; i < 2; i++)
 		if (OidIsValid(t[i].oid))
 		{
-			ObjectAddress obj;
-
-			ObjectAddressSet(obj, TriggerRelationId, t[i].oid);
-			performDeletion(&obj, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+			deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, TriggerRelationId, t[i].oid);
+			CommandCounterIncrement();
+			sift_col_track_delete_trigger(t[i].oid);
 		}
 	CommandCounterIncrement();
 }
@@ -670,60 +680,25 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 		!XidInMVCCSnapshot(log->chan.base_xid, snap) && sift_xid_state(log->chan.base_xid) == SIFT_XID_COMMITTED;
 }
 
-/*
- * The index a trigger serves: the one it depends on. REINDEX CONCURRENTLY swaps what depends on the old index and on the new one before it drops the old, so the oid in the
- * arguments (the one the trigger was made for) names an index that is gone afterwards.
- */
-static Oid
-depends_index(Oid trigger)
-{
-	Relation	drel = table_open(DependRelationId, AccessShareLock);
-	ScanKeyData key[2];
-	SysScanDesc scan;
-	HeapTuple	tup;
-	Oid			index = InvalidOid;
-
-	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(TriggerRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(trigger));
-	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
-	while (!OidIsValid(index) && HeapTupleIsValid(tup = systable_getnext(scan)))
-	{
-		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0 && get_rel_relkind(d->refobjid) == RELKIND_INDEX)
-			index = d->refobjid;
-	}
-	systable_endscan(scan);
-	table_close(drel, AccessShareLock);
-	return index;
-}
-
 static Oid
 trigger_index(Trigger *trig)
 {
-	Oid			index = depends_index(trig->tgoid);
-
-	return OidIsValid(index) ? index : atooid(trig->tgargs[0]);
+	return sift_col_track_trigger_index(trig->tgoid);
 }
 
 /*
- * DROP INDEX CONCURRENTLY of an index that has its triggers: they go with the index, which assigns the transaction an xid, and the command refuses that at the end ("must be first
- * action in transaction"). Called for each trigger it drops, with nothing changed yet, to say what to do instead.
+ * An index in service: DROP INDEX CONCURRENTLY marks it dead (indislive) before it waits for the transactions that could still use it, then deletes it holding its lock until it
+ * commits. A writer that gets past that mark skips it (it is not read, and a lock on it would wait for the drop, which waits for the writer's lock on the table).
  */
-void
-sift_col_track_drop_concurrently(Oid trigger)
+static bool
+index_live(Oid indexoid)
 {
-	Oid			oid = depends_index(trigger);
-	Relation	index;
+	HeapTuple	tup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+	bool		live = HeapTupleIsValid(tup) && ((Form_pg_index) GETSTRUCT(tup))->indislive;
 
-	if (!OidIsValid(oid))
-		return;
-	index = relation_open(oid, NoLock);
-	if (sift_col_is_index(index))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("DROP INDEX CONCURRENTLY cannot drop the sift_col index \"%s\" that tracks its changes", RelationGetRelationName(index)),
-						errdetail("The two triggers of track_changes go with the index, and dropping them needs a transaction id that DROP INDEX CONCURRENTLY does not allow."),
-						errhint("ALTER INDEX %s SET (track_changes = 'off') first, or DROP INDEX %s without CONCURRENTLY.", RelationGetRelationName(index), RelationGetRelationName(index))));
-	relation_close(index, NoLock);
+	if (HeapTupleIsValid(tup))
+		ReleaseSysCache(tup);
+	return live;
 }
 
 /*
@@ -739,6 +714,7 @@ static struct
 	RelFileNumber relnumber;
 	BlockNumber blk;
 	CommandId	cid;
+	bool		live;
 	bool		roots_read;
 	bool		hooked;
 	OffsetNumber roots[MaxHeapTuplesPerPage];
@@ -816,8 +792,11 @@ track_row(TriggerData *td)
 	if (rowmemo.trigger != td->tg_trigger->tgoid)
 	{
 		rowmemo.index = trigger_index(td->tg_trigger);
+		rowmemo.live = index_live(rowmemo.index);
 		rowmemo.trigger = td->tg_trigger->tgoid;
 	}
+	if (!rowmemo.live)
+		return PointerGetDatum(NULL);
 	index = index_open(rowmemo.index, RowExclusiveLock);
 	sift_col_tomb_hold_tid(index, &tid);
 	index_close(index, NoLock);
@@ -832,6 +811,7 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 	Relation	index,
 				heap;
 	AttrNumber	hatt;
+	Oid			indexoid;
 
 	if (CALLED_AS_TRIGGER(fcinfo) && TRIGGER_FIRED_AFTER(td->tg_event) && TRIGGER_FIRED_FOR_ROW(td->tg_event) && !TRIGGER_FIRED_BY_INSERT(td->tg_event))
 		return track_row(td);
@@ -839,7 +819,10 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 						errmsg("sift.col_track_old_rows is the trigger of an index option: AFTER UPDATE or DELETE, FOR EACH STATEMENT with an old table, or FOR EACH ROW")));
 	heap = td->tg_relation;
-	index = index_open(trigger_index(td->tg_trigger), RowExclusiveLock);
+	indexoid = trigger_index(td->tg_trigger);
+	if (!index_live(indexoid))
+		return PointerGetDatum(NULL);
+	index = index_open(indexoid, RowExclusiveLock);
 #ifdef SIFT_TESTING
 	if (sift_test_no_track)
 	{

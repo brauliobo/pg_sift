@@ -6,11 +6,9 @@
 
 #include "access/relation.h"
 #include "access/xact.h"
-#include "catalog/dependency.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
-#include "catalog/pg_trigger.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/array.h"
@@ -144,7 +142,7 @@ index_reloptions_copy(HeapTuple tuple)
 }
 
 /*
- * Before DROP INDEX CONCURRENTLY drops a trigger (sift_col_track_drop_concurrently), and after ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
+ * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
  * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
  * ProcessUtility hook: the first ALTER of a session that has not used sift loads this library while it runs, after the utility hook of the statement was
  * read, and PostgreSQL reads the object access hook when the catalog row is updated. That is before the command counter moves on: the old row is the one
@@ -159,8 +157,6 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
-	if (access == OAT_DROP && classId == TriggerRelationId && (((ObjectAccessDrop *) arg)->dropflags & PERFORM_DELETION_CONCURRENTLY))
-		sift_col_track_drop_concurrently(objectId);
 	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
 		return;
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));

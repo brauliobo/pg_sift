@@ -47,7 +47,7 @@ check "REINDEX CONCURRENTLY under 8 writers does at least 5 rounds in ${SECS} s 
 check "... no transaction of the writers failed" test "$(failed)" == 0
 check "... no deadlock was detected" test "$(($(deadlocks) - d0))" -eq 0
 check "... the table has the two triggers of the index, which depend on it, and no copy is left" \
-	test "$(ntrig)|$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid AND d.refobjid = 'h_x'::regclass WHERE t.tgrelid = 'h'::regclass")|$(sql n "SELECT count(*) FROM pg_class WHERE relname LIKE 'h_x_ccnew%'")" == "2|2|0"
+	test "$(ntrig)|$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass AND d.objid = 'h_x'::regclass WHERE t.tgrelid = 'h'::regclass")|$(sql n "SELECT count(*) FROM pg_class WHERE relname LIKE 'h_x_ccnew%'")" == "2|2|0"
 check "... the heap-free read, the checked read and the heap give one answer" differential
 
 # 2. the lock a REINDEX CONCURRENTLY asks of the table, sampled while writers run: ShareUpdateExclusiveLock, never ACCESS EXCLUSIVE
@@ -80,7 +80,7 @@ wait "$PGBENCH_PID"
 invalid=$(sql n "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'h'::regclass AND NOT i.indisvalid")
 diag "$invalid invalid index copies after the cancelled reindexes, $(failed) failed transactions"
 check "cancelled reindexes leave invalid copies that own no trigger, and the two triggers of the index" \
-	test "$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid JOIN pg_index i ON i.indexrelid = d.refobjid WHERE NOT i.indisvalid")" == 0 -a "$(ntrig)" == 2
+	test "$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass JOIN pg_index i ON i.indexrelid = d.objid WHERE NOT i.indisvalid")" == 0 -a "$(ntrig)" == 2
 check "... and the reads still answer as the heap" differential
 for ix in $(sql n "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'h'::regclass AND NOT i.indisvalid"); do
 	sql n "DROP INDEX CONCURRENTLY \"$ix\"" >/dev/null 2>&1 || sql n "DROP INDEX \"$ix\"" >/dev/null 2>&1

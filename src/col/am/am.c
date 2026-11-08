@@ -293,6 +293,7 @@ sift_col_handler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *am = sift_am_routine(25, 1, true);
 
+	sift_col_track_hook();
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
 	am->aminsert = sift_col_aminsert;

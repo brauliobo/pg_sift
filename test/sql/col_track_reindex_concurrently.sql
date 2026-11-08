@@ -11,7 +11,7 @@ CREATE INDEX t_c ON t USING sift_col (id, g, v);
 VACUUM (FREEZE, ANALYZE) t;
 
 CREATE FUNCTION triggers_of(idx regclass) RETURNS bigint LANGUAGE sql AS $$
-	SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid AND d.refobjid = idx
+	SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass AND d.objid = idx
 	WHERE t.tgrelid = 't'::regclass AND t.tgname LIKE 'sift_track_%' $$;
 CREATE FUNCTION all_triggers() RETURNS bigint LANGUAGE sql AS $$
 	SELECT count(*) FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift_track_%' $$;
