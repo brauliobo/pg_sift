@@ -554,7 +554,25 @@ seg_points_read(SiftColSegment *seg)
 	if (next != end)
 		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) end);
 	pv->dict_end = foot[0];
+	if (pv->go)
+		for (int c = 0; c < seg->schema->ncols; c++)
+			pv->gorder_bytes += pv->go[c].bytes;
+	pv->point_bytes = end - first - pv->gorder_bytes;
 	return pv->pt;
+}
+
+uint64
+sift_cseg_point_bytes(SiftColSegment *seg)
+{
+	(void) seg_points_read(seg);
+	return PRIV(seg)->point_bytes;
+}
+
+uint64
+sift_cseg_gorder_bytes(SiftColSegment *seg)
+{
+	(void) seg_points_read(seg);
+	return PRIV(seg)->gorder_bytes;
 }
 
 /* The superblocks the immutable segments of dir cover: the ranges of the segments of a parallel build interleave, so they are not summed */

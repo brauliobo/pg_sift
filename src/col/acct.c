@@ -37,7 +37,9 @@ put_row(SectionRows *r, const char *section, const char *leaf, int64 bytes)
 typedef struct SegSums
 {
 	int64		unit_dir;		/* unit records less their chunks: directory, offsets, alignment */
-	int64		dict_other;		/* DICTS less the dictionaries themselves */
+	int64		dict_other;		/* DICTS less the dictionaries, the point directories and the order arrays: their headers and records */
+	int64		point_dir;
+	int64		order_arrays;
 	int64		zones;
 	int64		preagg;
 	int64		sets;
@@ -85,7 +87,9 @@ add_segment(Relation rel, SiftColSegment *seg, const SiftColSchema *sc, int64 *c
 		stream_pages += h->extents[i].nblocks;
 	s->preagg += sift_cseg_preagg_bytes(seg);
 	s->unit_dir += h->sections[SIFT_SEC_POSTINGS].len - chunk_total;
-	s->dict_other += h->sections[SIFT_SEC_DICT].len - dict_total;
+	s->point_dir += sift_cseg_point_bytes(seg);
+	s->order_arrays += sift_cseg_gorder_bytes(seg);
+	s->dict_other += h->sections[SIFT_SEC_DICT].len - dict_total - sift_cseg_point_bytes(seg) - sift_cseg_gorder_bytes(seg);
 	s->sets += sift_cseg_set_bytes(seg);
 	s->runs += sift_cseg_run_bytes(seg);
 	s->hlls += sift_cseg_hll_bytes(seg);
@@ -99,7 +103,7 @@ add_segment(Relation rel, SiftColSegment *seg, const SiftColSchema *sc, int64 *c
 
 /*
  * sift.col_sections(rel regclass): (section, leaf, bytes) for a sift_col index or a sift_table. Sections: chunks and dict (per leaf),
- * unit_dir, dict_other, zones, preagg, net (the pre-aggregates net of the dead rows, when the segments have them), sbdir_schema, page_overhead, headers, free, other (the metapage, directory, free list pages and the
+ * unit_dir, point_dir, order_arrays, dict_other (what is left of the dictionary section), zones, preagg, net (the pre-aggregates net of the dead rows, when the segments have them), sbdir_schema, page_overhead, headers, free, other (the metapage, directory, free list pages and the
  * segments that are not column segments: the write buffer, tombstones). The bytes of all rows add up to pg_relation_size(rel).
  */
 Datum
@@ -148,6 +152,10 @@ sift_col_sections(PG_FUNCTION_ARGS)
 			put_row(&r, "dict", sift_col_leaf_name(rel, &sc->cols[c]), dicts[c]);
 	}
 	put_row(&r, "unit_dir", NULL, s.unit_dir);
+	if (s.point_dir > 0)
+		put_row(&r, "point_dir", NULL, s.point_dir);
+	if (s.order_arrays > 0)
+		put_row(&r, "order_arrays", NULL, s.order_arrays);
 	put_row(&r, "dict_other", NULL, s.dict_other);
 	put_row(&r, "zones", NULL, s.zones);
 	put_row(&r, "preagg", NULL, s.preagg);

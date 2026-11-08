@@ -40,7 +40,7 @@ FROM generate_series(1, 2) leaf;
     2 |           0 |         0 |   30000
 (2 rows)
 
-SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_old') WHERE section = 'dict_other') AS smaller;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_new') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) < (SELECT sum(bytes) FROM sift.col_sections('gg_old') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) AS smaller;
  smaller 
 ---------
  t
@@ -172,7 +172,7 @@ SELECT 'gg_oo_old' AS idx, format FROM sift.col_segments('gg_oo_old') WHERE kind
  gg_oo_old |     30
 (2 rows)
 
-SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section = 'dict_other') AS smaller;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) AS smaller;
  smaller 
 ---------
  t

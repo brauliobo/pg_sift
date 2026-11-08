@@ -25,7 +25,7 @@ SELECT leaf, (SELECT count(*) FROM (SELECT pos, key, tid, null_row FROM sift._te
 	   (SELECT count(*) FROM (SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gg_new', leaf) EXCEPT SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gg_old', leaf)) d) AS extra_new,
 	   (SELECT count(*) FROM sift._test_col_gorder('gg_new', leaf)) AS entries
 FROM generate_series(1, 2) leaf;
-SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_old') WHERE section = 'dict_other') AS smaller;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_new') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) < (SELECT sum(bytes) FROM sift.col_sections('gg_old') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) AS smaller;
 DROP INDEX gg_old;
 
 -- the answers through the arrays are the heap's
@@ -77,7 +77,7 @@ RESET sift.test_col_gorder_unpacked;
 CREATE INDEX gg_oo_new ON gg USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', key_columns = 'off', key_cut = 'off', point_tid_columns = 'off');
 SELECT sift.col_verify('gg_oo_old', true), sift.col_verify('gg_oo_new', true);
 SELECT 'gg_oo_old' AS idx, format FROM sift.col_segments('gg_oo_old') WHERE kind = 'immutable' UNION ALL SELECT 'gg_oo_new', format FROM sift.col_segments('gg_oo_new') WHERE kind = 'immutable' ORDER BY 1;
-SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section = 'dict_other') < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section = 'dict_other') AS smaller;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gg_oo_new') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) < (SELECT sum(bytes) FROM sift.col_sections('gg_oo_old') WHERE section IN ('dict_other', 'point_dir', 'order_arrays')) AS smaller;
 DROP INDEX gg_oo_new;
 INSERT INTO gg (id, k, u) SELECT 100000 + i, -((i * 6841) % 300), (i * 104729::bigint) % 1000003 FROM generate_series(1, 20000) i;
 SELECT sift.col_promote('gg_oo_old'::regclass) >= 0 AS promoted;

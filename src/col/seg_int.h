@@ -448,6 +448,8 @@ typedef struct SegPriv
 	uint32		vmax;
 	bool		pt_checked;		/* the point directories at the end of the DICT section were looked for */
 	uint64		dict_end;		/* where the dictionaries end in the DICT section (before the point directories, if any) */
+	uint64		point_bytes;	/* the tables of the point directories and the bytes of the global orders that follow the dictionaries */
+	uint64		gorder_bytes;
 	PointLeaf  *pt;				/* [ncols] (nslots 0: none) */
 	SiftCSbSpan *spans;			/* the superblocks the units have rows of, once asked (sift_cseg_sb_spans) */
 	uint32		nspans;

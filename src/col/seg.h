@@ -352,6 +352,9 @@ extern bool sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uin
 extern void sift_cseg_probe_init(void);
 extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; the chunk it ends in is left in keep */
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
+/* The bytes the point directories and the global order arrays of the segment take in its DICT section */
+extern uint64 sift_cseg_point_bytes(SiftColSegment *seg);
+extern uint64 sift_cseg_gorder_bytes(SiftColSegment *seg);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 /* The bytes the sorted runs of the segment take */
