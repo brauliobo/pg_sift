@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET sift.test_limits = 'par_build_rows=1';
 SET client_min_messages = warning;
+SET sift.async_maintenance = off;
 SELECT setseed(0.42);
 
 CREATE FUNCTION pa_sb(t tid) RETURNS int LANGUAGE sql IMMUTABLE AS $$ SELECT ((t::text::point)[0])::int / 256 $$;
