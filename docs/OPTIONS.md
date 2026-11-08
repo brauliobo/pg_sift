@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
@@ -1733,6 +1733,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave 0 (a writer waits only when the directory is nearly full). Set a percent above 50 for steady heavy writers so they merge before the directory fills, at the cost of the wait.
 - **Sources:** benchmark `test:tbl_cap`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 
+#### sift_col(connect)
+
+`sift_col` · opt-in · since 4.3 · default ''
+
+- **What it does:** connects this index to the sift_col index of the table it joins, so that a value of the parent that a query reads can be read from this index with the answer of the join. This release makes the connection: the parent index (the one that tracks the key and holds the carried columns) keeps a journal of the keys its updates and deletes ended, which says exactly which parent keys changed after any point in time, and this index depends on it
+- **Gain:** n/a: this release adds the connection and its journal; the reads that use them come with the carried columns
+- **Impact:** index size: n/a: no structure of this index is added by the connection itself; build, merge and writes: n/a: not measured yet; other: format minor 44; one 32-byte journal record for each entry of the parent that an UPDATE, DELETE or key change ends, only while a child index is connected; a parent without a child writes none
+- **When:** A table that joins a parent table with a primary key of one integer column that has a sift_col index tracking it (track_changes, the default for a primary key). Not a parent that is a partition, has inheritance children or is a subscription target; not a key of another type.
+- **Default:** '' — Not on by default: a connection names a table, so only the user can say it.
+- **Why not the default:** the history does not say
+- **Turn off:** ALTER INDEX i SET (connect = 'off') or RESET (connect): the dependency goes; the parent's journal stays until its REINDEX.
+- **Upgrade from 4.1:** A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read.
+- **Advice:** Set it on the index of a table that joins a dimension table by an integer key, once the dimension table has a sift_col index that holds its key (the primary key) and the columns the queries read. An unqualified parent name is in the schema of this index's table. DROP INDEX of the parent index needs CASCADE while the connection exists. Remove it with ALTER INDEX .. SET (connect = 'off').
+- **Sources:** benchmark `test:col_conn_declare`; [COL-CONNECT](COL-CONNECT.md)
+
 ### diagnostic
 
 #### sift(build_segments)
@@ -2584,7 +2599,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.1; new: `sift.agg_case_filter`, `sift.agg_dimmap_kb`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
+No default changed since 4.1; new: `sift.agg_case_filter`, `sift.agg_dimmap_kb`, `sift_col(rollup_columns)`, `sift_col(connect)`, `sift_col(rollup_leaves)`.
 
 | Option | 4.1 | 4.2 | Column format | What a 4.1 user gets after the update |
 |---|---|---|---|---|
@@ -2593,6 +2608,7 @@ No default changed since 4.1; new: `sift.agg_case_filter`, `sift.agg_dimmap_kb`,
 | `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.agg_dimmap_kb` | new | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
+| `sift_col(connect)` | new | '' | minor 44, unreadable by 4.1 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

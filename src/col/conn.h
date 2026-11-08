@@ -127,4 +127,34 @@ extern bool sift_conn_record(Relation index, Oid keytype, Datum key, SiftTomb *r
 /* The same checks without the keys: may a derivation stamped so be read by snap at all (the first four conditions above) */
 extern SiftConnWhy sift_conn_vouches(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap);
 
+/* ---- the declaration: WITH (connect = 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]') ---- */
+
+typedef enum SiftConnVia
+{
+	SIFT_CONN_VIA_AUTO = 0,		/* the planner picks by cost (carried column or shared map) */
+	SIFT_CONN_VIA_CARRIED,		/* carried columns in the child's segments */
+	SIFT_CONN_VIA_MAP			/* the shared dimension map only: nothing is stored in the child */
+} SiftConnVia;
+
+#define SIFT_CONN_MAX_CARRY	16
+
+typedef struct SiftConnSpec
+{
+	char	   *fk;				/* column of the child index that holds the parent key */
+	char	   *parent_schema;	/* NULL: the search path */
+	char	   *parent_table;
+	char	   *parent_key;
+	int			ncarry;
+	char	   *carry[SIFT_CONN_MAX_CARRY];
+	SiftConnVia via;
+} SiftConnSpec;
+
+/* Parses the option text without the catalog; NULL with *err set to what is wrong */
+extern SiftConnSpec *sift_conn_parse(const char *text, const char **err);
+/* The connection a child index declares (ERROR for text that does not parse), NULL when it declares none */
+extern SiftConnSpec *sift_conn_spec(Relation child_index);
+/* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent index the option names, or removes the connection */
+extern void sift_conn_resolve(Relation child_heap, Relation child_index);
+extern void sift_conn_alter(Relation child_index);
+
 #endif							/* SIFT_COL_CONN_H */

@@ -14,6 +14,7 @@
 #include "col/setsum.h"
 #include "col/seg.h"
 #include "col/am/am_int.h"
+#include "col/conn.h"
 #include "core/ops.h"
 
 /*
@@ -155,6 +156,19 @@ row_key_syntax(const char *value)
 }
 
 SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
+
+/* 'fk -> parent(key) carries a, b [via ...]', or empty or off: the names are resolved where the connection is made (col/conn_decl.c) */
+static const char *
+connect_syntax(const char *value)
+{
+	const char *err = NULL;
+
+	if (value[0] == '\0' || strcmp(value, "off") == 0)
+		return NULL;
+	return sift_conn_parse(value, &err) ? NULL : err;
+}
+
+SYNTAX_VALIDATOR(connect, connect_syntax(value))
 
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
@@ -494,6 +508,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "track_changes",
 						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
 						 "auto", sift_col_validate_track_changes, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "connect",
+						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column, and the parent columns that queries read through the join. The parent index (the one that tracks the key and holds the columns) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
+						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -541,6 +558,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
+	{"connect", RELOPT_TYPE_STRING, offsetof(SiftColOptions, connect)},
 };
 
 /*
@@ -697,6 +715,7 @@ sift_col_alter_check(Relation index)
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
 	sift_col_track_reconcile(index);
+	sift_conn_alter(index);
 }
 
 
@@ -718,6 +737,8 @@ sift_col_options_key_order_auto(Relation index)
 }
 
 COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
+
+COL_OPT_STR(sift_col_options_connect, connect, "")
 
 /* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool

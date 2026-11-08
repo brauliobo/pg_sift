@@ -170,6 +170,7 @@ typedef struct SiftColOptions
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
+	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/conn.h), 0 = none */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
@@ -209,6 +210,7 @@ extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_connect(Relation index);	/* "" when none */
 extern const char *sift_col_options_row_key(Relation index);	/* "" when off, "auto" before the build has chosen the primary key */
 extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */

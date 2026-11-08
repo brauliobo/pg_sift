@@ -232,8 +232,14 @@ sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_in
 {
 	ObjectAddress child,
 				parent;
+	SiftConnGen gen;
 
+	/* connected already, and the parent keeps its journal: nothing to lock or write (an ALTER INDEX of another option of a connected child resolves it again) */
+	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)) && sift_conn_gen(parent_index, &gen))
+		return;
 	(void) sift_conn_enable(parent_heap, parent_index);
+	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)))
+		return;
 	ObjectAddressSet(child, RelationRelationId, RelationGetRelid(child_index));
 	ObjectAddressSet(parent, RelationRelationId, RelationGetRelid(parent_index));
 	recordDependencyOn(&child, &parent, DEPENDENCY_NORMAL);

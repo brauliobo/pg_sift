@@ -57,3 +57,4 @@ LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_G
 DP_MAX_LEVELS	size of the array of the pages of one descent: a btree is never as deep, the probe falls back to the index scan when it is
 DP_MAX_PEND	keys of a chunk the direct probe holds before it flushes them: a memory bound of the batch with no visible effect
 JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the table's rows, is left to the join: a speed threshold, the rows are the same either way
+SIFT_CONN_MAX_CARRY	carried columns one connect option names: a syntax bound of the option text, rejected with an error

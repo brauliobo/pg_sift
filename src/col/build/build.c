@@ -142,6 +142,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	else
 		sift_col_track_reconcile(index);
+	sift_conn_resolve(heap, index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

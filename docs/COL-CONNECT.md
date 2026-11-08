@@ -33,6 +33,25 @@ transaction that wrote the table before is finished.
 
 Format minor 44; an older release refuses the index.
 
+## The declaration
+
+    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num)
+      WITH (connect = 'dim_a_id -> dim_a(id) carries category_id, label');
+
+`fk -> [schema.]parent(key) carries a, b [via carried|map|auto]`: the column of this index that holds the parent key (an `int2`, `int4` or `int8`), the parent table (in the schema of this index's
+table when it is not qualified: `CREATE INDEX` builds with a restricted search path and a dump restores with an empty one) and its key column, and the parent columns that queries read through the
+join. `via` says how they are read once that exists (`auto`, the default, lets the planner choose). The text is the record of the connection: `pg_dump` writes it, and `CREATE INDEX`, `REINDEX` and
+`ALTER INDEX` resolve it again by the names.
+
+Resolving finds the `sift_col` index of the parent table that tracks the key column and holds every carried column as a plain column (the lowest oid when several do), and fails with a hint when there
+is none, when a name does not exist, when the key of this index is not an integer, or when the parent is this table. The child index then depends on the parent index (`pg_depend`, normal): `DROP INDEX` of
+the parent index, and `DROP TABLE` of the parent table, are refused unless `CASCADE` is given, which drops the child index; a dump makes the parent index first. The parent table is locked against
+writers (`ShareLock`) until the end of the transaction that makes the connection, for its journal. `ALTER INDEX .. SET (connect = 'off')` or `RESET (connect)` removes the dependency; the parent's journal stays
+until its next `REINDEX`.
+
+A parent index with a connected child keeps its journal through `REINDEX` and `REINDEX CONCURRENTLY` (and the copy of `pg_repack`): the build makes it for the index it is or replaces. Until the log of a
+concurrently built copy is complete (the next VACUUM does it) nothing is vouched.
+
 ## Limits of this stage
 
-A parent that is reindexed `CONCURRENTLY` has no journal until the child index is built again; a parent rebuilt without `CONCURRENTLY` keeps none until the connection makes one.
+No query reads the connection yet: it makes the dependency and the journal, and nothing else.
