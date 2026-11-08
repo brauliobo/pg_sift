@@ -174,7 +174,7 @@ INSERT INTO t(t, rank) VALUES('integrity-check', 1); -- checks the index (1: als
 
 Functions: `sift_count(t, q)`, `sift_stat(t)` (segments, documents, bytes, cache hits, misses and evictions), `sift_drop_cache(t)`,
 `sift_isa()`, `sift_simd(level)` (`scalar`, `avx2`, `avx512`, `auto`; the environment variable `SIFT_SIMD` caps it at load),
-`sift_version()`, `sift_bm25`, `sift_highlight`, `sift_snippet`, `sift_highlight_text`, `sift_snippet_text`, `sift_facets`.
+`sift_work_mem([kB])` (the memory of a statement's search, 1 GiB by default; see [Limits](#limits)), `sift_version()`, `sift_bm25`, `sift_highlight`, `sift_snippet`, `sift_highlight_text`, `sift_snippet_text`, `sift_facets`.
 
 Writes go to an in-memory buffer; a commit, the posting threshold or a savepoint boundary stores it as an immutable segment in the same
 SQLite transaction, so rollback, a crash and WAL readers are consistent. After a flush, segments of the same size tier are merged (`automerge`) with
@@ -200,6 +200,10 @@ Measured on Simple English Wikipedia (218,058 articles), top 10 by BM25, warm ca
 
 ## Limits
 
+- **Memory** follows these settings and no row count: the page cache (`cache_size`, 64 MiB), the write buffer (`pending_postings`: a posting takes 16 bytes and a pending
+  document 11, so the default 64,000,000 postings are about 1 GiB; the buffer becomes a segment above it), a merge (`maintenance_work_mem`, fixed at 64 MiB:
+  the runs spill to a temporary file), and a statement's search (`sift_work_mem()`, 1 GiB by default: the hits of a ranked search without a `LIMIT` at 16 bytes each, and
+  the pages, the values and the rows of `sift_facets`; past it the statement fails naming it). The dead-posting recount of PostgreSQL's `VACUUM` does not exist here: a delete clears a liveness bit.
 - **One writer**, SQLite's. Another connection's commit is seen at its next statement. Each connection keeps its own page cache, so N connections
   cost N caches (`cache_size`).
 - **Parallel scans** (`parallel=N`, off by default) need the whole index resident in the cache and no document text, and pay only on heavy ranked

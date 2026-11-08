@@ -350,14 +350,6 @@ typedef struct SiftSegStats
 extern const uint32 sift_df_class_lo[SIFT_DF_CLASSES];
 extern const char *const sift_df_class_name[SIFT_DF_CLASSES];
 
-/*
- * One decoded term: postings in key order with tf and the doc's dl; pos / poslen (NULL without
- * positions, SIFT_TERM_POS) are the postings' position records back to back and their lengths
- */
-typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
-							   const SiftKey *keys, const uint8 *tf, const uint16 *dl,
-							   const uint8 *pos, const uint32 *poslen);
-
 /* The postings of one group of a term, in key order, with their tf and the dl of their docs (a term comes in several groups) */
 typedef void (*SiftWalkVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
 							   const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n);
@@ -376,16 +368,8 @@ extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify
 						  SiftSegStats *st, SiftWalkVisit visit, void *arg);
 
 /*
- * Dumps the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary
- * order (info->df is the live count). Memory: O(segment docs) plus the largest term. ref supplies k1 and b.
- */
-typedef void (*SiftDocVisit) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
-
-extern void sift_seg_dump(SiftSegment *seg, const SiftScoreRef *ref, SiftDocVisit docs,
-						  SiftTermVisit terms, void *arg);
-
-/*
- * The same for a merge (the runs of sift_run_from_segment), in memory that does not grow with the segment. term() comes first
+ * Streams the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary order (info->df is the live count).
+ * The segment is delivered to a merge (the runs of sift_run_from_segment) or a reader of its terms, in memory that does not grow with the segment. term() comes first
  * with info->df the number of live postings, then postings() until they are delivered: key order, tf, the dl of the doc, and with
  * SIFT_TERM_POS in info->flags the records back to back and their lengths. A term comes in batches of one group (a superblock)
  * at most, except a small term of a vacuumed segment, which is counted first and then comes in one. The memory is the dl of

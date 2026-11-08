@@ -5,10 +5,21 @@
  */
 #include "vtab.h"
 #include "core/cmp.h"
+#include "core/rowmem.h"
 
 SQLITE_EXTENSION_INIT3
 
 /* ---------- facets ---------- */
+
+/*
+ * The memory of a facets call follows the data and has no plan to give way to: the pages with a match (8 bytes each), the values counted (24 bytes and the
+ * value) and the rows of the answer (16 bytes) are held in all, up to work_mem (sift_work_mem(), 1 GiB), or the call fails naming it.
+ */
+static void
+facets_budget(Size bytes)
+{
+	sift_budget_check(bytes, work_mem, "sift_facets", "sift_work_mem()", "a narrower query");
+}
 
 typedef struct Matches
 {
@@ -27,6 +38,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	if (m->n == m->cap)
 	{
 		m->cap = m->cap ? m->cap * 2 : 1024;
+		facets_budget((Size) m->cap * (sizeof(BlockNumber) + sizeof(uint32)));
 		m->blk = m->blk ? repalloc_huge(m->blk, m->cap * sizeof(BlockNumber)) : palloc(m->cap * sizeof(BlockNumber));
 		m->mask = m->mask ? repalloc_huge(m->mask, m->cap * sizeof(uint32)) : palloc(m->cap * sizeof(uint32));
 	}
@@ -48,10 +60,16 @@ is_match(const Matches *m, SiftKey key)
 
 typedef struct Facet
 {
-	char	   *value;
+	char	   *value;					/* NUL-terminated */
 	int			len;
 	int64_t		n;
 } Facet;
+
+typedef struct FacetRow
+{
+	char	   *value;					/* NULL: the matches without a value */
+	int64_t		n;
+} FacetRow;
 
 typedef struct FacetCtx
 {
@@ -59,24 +77,41 @@ typedef struct FacetCtx
 	Facet	   *f;
 	int64_t		nf,
 				cap;
+	Size		vbytes;					/* the values, with the allocation header */
 } FacetCtx;
+
+/* What the matches and the values counted hold */
+static Size
+facets_bytes(const FacetCtx *fc)
+{
+	return (Size) fc->m->cap * (sizeof(BlockNumber) + sizeof(uint32)) + (Size) fc->cap * sizeof(Facet) + fc->vbytes;
+}
 
 static void
 count_term(void *arg, const char *term, int len, const SiftKey *keys, uint32 n)
 {
 	FacetCtx   *fc = arg;
 	int64_t		c = 0;
+	Facet	   *last = fc->nf > 0 ? &fc->f[fc->nf - 1] : NULL;
 
 	for (uint32 i = 0; i < n; i++)
 		c += is_match(fc->m, keys[i]);
 	if (c == 0)
 		return;
+	if (last != NULL && last->len == len && memcmp(last->value, term, len) == 0)
+	{
+		last->n += c;
+		return;
+	}
 	if (fc->nf == fc->cap)
 	{
 		fc->cap = fc->cap ? fc->cap * 2 : 64;
+		facets_budget(facets_bytes(fc));
 		fc->f = fc->f ? repalloc_huge(fc->f, fc->cap * sizeof(Facet)) : palloc(fc->cap * sizeof(Facet));
 	}
-	fc->f[fc->nf++] = (Facet) {memcpy(palloc(len), term, len), len, c};
+	fc->vbytes += len + 1 + 16;
+	facets_budget(facets_bytes(fc));
+	fc->f[fc->nf++] = (Facet) {pnstrdup(term, len), len, c};
 }
 
 static int
@@ -135,7 +170,7 @@ query_matches(SqVtab *vt, const char *q, int qlen)
 }
 
 static Facet *
-facet_values(SqVtab *ft, const Matches *m, int64_t *nf)
+facet_values(SqVtab *ft, const Matches *m, int64_t *nf, Size *bytes)
 {
 	FacetCtx	fc = {.m = m};
 	const SiftDirSnapshot *dir;
@@ -147,14 +182,9 @@ facet_values(SqVtab *ft, const Matches *m, int64_t *nf)
 		sq_seg_walk_terms(ft->st, &dir->segs[i], count_term, &fc);
 	*nf = combine(fc.f, fc.nf);
 	qsort(fc.f, *nf, sizeof(Facet), facet_by_count);
+	*bytes = facets_bytes(&fc);
 	return fc.f;
 }
-
-typedef struct FacetRow
-{
-	char	   *value;					/* NULL: the matches without a value */
-	int64_t		n;
-} FacetRow;
 
 typedef struct FacetCursor
 {
@@ -264,20 +294,22 @@ facet_rows(FacetCursor *c, SqVtab *vt, SqVtab *ft, const char *q, int qlen, int6
 	int64_t		nf,
 				counted = 0,
 				n;
+	Size		bytes;
 	SqStore    *prev;
 
 	prev = sq_store_enter(vt->st);
 	m = query_matches(vt, q, qlen);
 	sq_store_leave(prev);
 	prev = sq_store_enter(ft->st);
-	f = facet_values(ft, m, &nf);
+	f = facet_values(ft, m, &nf, &bytes);
 	sq_store_leave(prev);
 	for (int64_t i = 0; i < nf; i++)
 		counted += f[i].n;
 	n = lim >= 0 ? Min(nf, lim) : nf;
+	facets_budget(bytes + (Size) (n + 1) * sizeof(FacetRow));
 	c->rows = palloc((n + 1) * sizeof(FacetRow));
 	for (int64_t i = 0; i < n; i++)
-		c->rows[c->nrows++] = (FacetRow) {pnstrdup(f[i].value, f[i].len), f[i].n};
+		c->rows[c->nrows++] = (FacetRow) {f[i].value, f[i].n};
 	if (nulls && m->total > counted)
 		c->rows[c->nrows++] = (FacetRow) {NULL, m->total - counted};
 }
