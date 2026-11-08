@@ -381,7 +381,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	{
 		CustomPath *cp = keyed_path(root, rel, &c, &est, &ps->ko, query_limit(root));
 
-		if (cheaper(cp, ps->best_keyed))
+		if (cp && cheaper(cp, ps->best_keyed))
 			ps->best_keyed = cp;
 	}
 	if (mode == SIFT_MODE_RANKED && !est.sc.idx.known && sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)

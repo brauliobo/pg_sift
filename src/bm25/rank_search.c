@@ -2,6 +2,7 @@
  * bm25/rank_search.c - the ranked search: best-first over units and blocks, verification and the top-k.
  */
 #include "rank_int.h"
+#include "core/rowmem.h"
 
 /* Index entry of a hit whose visible tuple sits elsewhere on the page (HOT chain) */
 typedef struct HotEnt
@@ -30,6 +31,14 @@ hot_forget(SiftRanker *r)
 	r->hot = NULL;
 }
 
+/* The hits a search holds (the K best, the ties and the candidates waiting) must fit work_mem: K is unbounded without a limit, and one search then holds every match */
+static void
+rank_budget(const SiftTopK *tk, int64 hits)
+{
+	sift_budget_check((hits + tk->tiecap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit), work_mem,
+					  "a ranked search of the matches", "work_mem", "add a LIMIT that the search can take (a filter after the search keeps every match)");
+}
+
 /* A tie-inclusive search keeps, next to the K best hits, every verified hit that ties with the worst of them (r->ties) */
 static void
 tie_add(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
@@ -37,6 +46,7 @@ tie_add(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 	if (tk->ntie == tk->tiecap)
 	{
 		tk->tiecap = Max(2 * tk->tiecap, 256);
+		rank_budget(tk, tk->cap);
 		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->tie, tk->tiecap * sizeof(SiftHit));
 	}
 	tk->tie[tk->ntie++] = (SiftHit) {.key = key,.score = score};
@@ -48,6 +58,7 @@ tie_defer(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	if (tk->nlazy == tk->lazycap)
 	{
 		tk->lazycap = Max(2 * tk->lazycap, 256);
+		rank_budget(tk, tk->cap);
 		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->lazy, tk->lazycap * sizeof(SiftLazyHit));
 	}
 	tk->lazy[tk->nlazy++] = (SiftLazyHit) {.key = key,.score = score,.seg = seg};
@@ -111,7 +122,10 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		SiftHit		out = full ? tk->hit[0] : (SiftHit) {0};
 
 		if (tk->n == tk->cap && tk->n < tk->k)
+		{
+			rank_budget(tk, Min(tk->k, 2 * tk->cap));
 			tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
+		}
 		sift_kern_topk_push(tk, score, vis);
 		/* the hit the new one pushed out ties with the new worst one, or the worst score rose and the ties are behind it */
 		if (r->ties && full)
@@ -178,7 +192,10 @@ rank_append_ties(SiftTopK *tk)
 	if (tk->ntie == 0)
 		return;
 	if (tk->n + tk->ntie > tk->cap)
+	{
+		rank_budget(tk, tk->n + tk->ntie);
 		tk->hit = repalloc_huge(tk->hit, (tk->cap = tk->n + tk->ntie) * sizeof(SiftHit));
+	}
 	qsort(tk->tie, tk->ntie, sizeof(SiftHit), hit_key_cmp);
 	memcpy(tk->hit + tk->n, tk->tie, tk->ntie * sizeof(SiftHit));
 	tk->n += tk->ntie;

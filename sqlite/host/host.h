@@ -424,6 +424,8 @@ extern void BufFileDeleteFileSet(FileSet *fileset, const char *name, bool missin
 
 /* the memory (kB) a rebuild of segments may use: the budget of the run merge (lib/binaryheap.h follows) */
 extern int maintenance_work_mem;
+/* ... and a statement's search: the hits of a ranked search (a host has no plan that sorts instead, so it is generous) */
+extern int work_mem;
 
 #define PointerGetDatum(X)		((Datum) (X))
 #define DatumGetPointer(X)		((void *) (X))

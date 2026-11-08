@@ -13,6 +13,7 @@
 
 #include "bm25/eval.h"
 #include "bm25/cscan_int.h"
+#include "bm25/planner.h"
 
 /*
  * ORDER BY keys, score DESC: the score only breaks the ties of the keys, so the matches to score are those of
@@ -78,12 +79,21 @@ free_keyrow(SiftScanState *ss, KeyRow *r)
 	pfree(r);
 }
 
+/* The rows of a round (the heap, the ties) must fit work_mem: a tie of the last key can be every match */
+static void
+keytop_budget(const KeyTop *t, int64 heap, int64 ties)
+{
+	sift_budget_check(heap * SIFT_KEYED_ROW_BYTES(t->ss->nkeys) + ties * SIFT_KEYED_TIE_BYTES, work_mem,
+					  "a search ordered by keys and score", "work_mem", "add a LIMIT, or order by fewer matches");
+}
+
 static void
 add_tie(KeyTop *t, const ItemPointerData *entry)
 {
 	if (t->ntie == t->captie)
 	{
 		t->captie = Max(64, 2 * t->captie);
+		keytop_budget(t, binaryheap_size(t->heap), t->captie);
 		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
@@ -243,6 +253,7 @@ keyed_search(SiftScanState *ss)
 		MemoryContextDelete(ss->kcx);
 	ss->kcx = AllocSetContextCreate(ss->cxt, "sift keyed", ALLOCSET_DEFAULT_SIZES);
 	old = MemoryContextSwitchTo(ss->kcx);
+	keytop_budget(&t, ss->kheld, 0);
 	t.heap = binaryheap_allocate(ss->kheld, keyrow_worse, ss);
 	keyed_collect(ss, &t);
 	ss->krows = keytop_rows(&t, &ss->nkrows);

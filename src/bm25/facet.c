@@ -37,6 +37,7 @@
 #include "bm25/segment.h"
 #include "core/sql.h"
 #include "core/cmp.h"
+#include "core/rowmem.h"
 
 typedef uint64 Row[SIFT_OFFMASK_WORDS];
 
@@ -123,6 +124,15 @@ typedef struct Facets
 	EState	   *estate;
 } Facets;
 
+/* What the matches, the values and the results hold must fit work_mem: nothing here spills, and the values follow the keyword index */
+static void
+facet_budget(const Facets *f, Size vals)
+{
+	sift_budget_check(f->qsbcap * sizeof(QSb) + f->nqsb * sizeof(sift_grp) + f->rowcap * ROW_BYTES + f->termcap +
+					  f->entcap * sizeof(Entry) + f->rescap * sizeof(Res) + vals,
+					  work_mem, "sift.facets", "work_mem", "facet a keyword index with fewer distinct values, or narrow the query");
+}
+
 static void
 add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
@@ -136,6 +146,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 		if (f->nqsb == f->qsbcap)
 		{
 			f->qsbcap = Max(64, 2 * f->qsbcap);
+			facet_budget(f, 0);
 			SIFT_REGROW_HUGE_IN(f->mcxt, f->qsb, f->qsbcap * sizeof(QSb));
 		}
 		f->qsb[f->nqsb++] = (QSb) {.sb = sb,.row = f->nrows};
@@ -145,6 +156,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	if (f->nrows == f->rowcap)
 	{
 		f->rowcap = Max(256, 2 * f->rowcap);
+		facet_budget(f, 0);
 		SIFT_REGROW_HUGE_IN(f->mcxt, f->rows, f->rowcap * ROW_BYTES);
 	}
 	memcpy(f->rows[f->nrows++], offmask, ROW_BYTES);
@@ -290,11 +302,13 @@ add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *inf
 	if (f->nent == f->entcap)
 	{
 		f->entcap = Max(256, 2 * f->entcap);
+		facet_budget(f, 0);
 		SIFT_REGROW_HUGE_IN(f->mcxt, f->ent, f->entcap * sizeof(Entry));
 	}
 	if (f->nterms + len > f->termcap)
 	{
 		f->termcap = Max(4096, 2 * f->termcap + len);
+		facet_budget(f, 0);
 		SIFT_REGROW_HUGE_IN(f->mcxt, f->terms, f->termcap);
 	}
 	memcpy(f->terms + f->nterms, term, len);
@@ -484,6 +498,7 @@ res_add(Facets *f, Res r)
 	if (f->nres == f->rescap && (!f->bounded || f->nres < f->lim))
 	{
 		f->rescap = Max(16, Min(2 * f->rescap, f->bounded ? f->lim : PG_INT64_MAX));
+		facet_budget(f, 0);
 		SIFT_REGROW_HUGE_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
 	}
 	if (f->bounded)
@@ -539,9 +554,11 @@ val_cmp(const void *a, const void *b, void *arg)
 static Value *
 collect_values(Facets *f, int64 *nvals)
 {
-	Value	   *vals = MemoryContextAllocHuge(f->mcxt, Max(f->nent, 1) * sizeof(Value));
+	Value	   *vals;
 	int64		n = 0;
 
+	facet_budget(f, Max(f->nent, 1) * sizeof(Value));
+	vals = MemoryContextAllocHuge(f->mcxt, Max(f->nent, 1) * sizeof(Value));
 	qsort_arg(f->ent, f->nent, sizeof(Entry), ent_cmp, f);
 	for (int64 i = 0, j; i < f->nent; i = j)
 	{

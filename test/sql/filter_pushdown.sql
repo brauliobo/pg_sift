@@ -115,10 +115,10 @@ INSERT INTO pd_filters VALUES
 	('tenant < 300', 'half the table'), ('id % 2 = 0', 'no index serves it');
 
 -- the filters named in whats, else all of them (a WHERE on the result would run every check first: pd_check is volatile)
-CREATE FUNCTION pd_run(tbl regclass, whats text[] DEFAULT NULL) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
+CREATE FUNCTION pd_run(tbl regclass, whats text[] DEFAULT NULL, qs text[] DEFAULT NULL) RETURNS TABLE (what text, plan text, checked int, failures text) LANGUAGE sql AS $$
 	SELECT f.what, pd_kind(tbl, 'w3 OR x2', f.flt, 'force'), count(*)::int, coalesce(string_agg(q.q || ': ' || r, '; ') FILTER (WHERE r <> 'ok'), 'none')
 	FROM pd_filters f CROSS JOIN pd_queries q, LATERAL pd_check(tbl, q.q, f.flt) r
-	WHERE whats IS NULL OR f.what = ANY (whats)
+	WHERE (whats IS NULL OR f.what = ANY (whats)) AND (qs IS NULL OR q.q = ANY (qs))
 	GROUP BY f.flt, f.what ORDER BY f.flt
 $$;
 
@@ -130,13 +130,14 @@ SELECT flt, (SELECT count(*) FROM fd WHERE ctid IN (SELECT tid FROM pd_seq WHERE
 	WHEN 'tenant = 7' THEN tenant = 7 WHEN 'cat = 17' THEN cat = 17 WHEN 'tenant < 300' THEN tenant < 300 END)) AS matches
 FROM pd_filters WHERE flt IN ('tenant = 7', 'cat = 17', 'tenant < 300') ORDER BY 1;
 
--- a bitmap over the limit of work_mem has lossy pages: the masks keep their pages whole and the quals still decide
+-- a bitmap over the limit of work_mem has lossy pages: the masks keep their pages whole and the quals still decide (the queries of few matches: the
+-- hits of the k = everything search are held in work_mem too)
 SET work_mem = '64kB';
 SET sift.filter_pushdown = force;
 SELECT (j ->> 'Filter Pages Lossy')::int > 0 AS lossy
 FROM (SELECT sift_scan_node('SELECT id FROM fd WHERE body @@> ''common'' AND tenant < 300 ORDER BY sift.score(ctid) DESC LIMIT 5') AS j) t;
 RESET sift.filter_pushdown;
-SELECT * FROM pd_run('fd', ARRAY['half the table', 'btree range', 'BitmapOr']);
+SELECT * FROM pd_run('fd', ARRAY['half the table', 'btree range', 'BitmapOr'], ARRAY['w3 x2', '"quick brown"', 'nothing']);
 RESET work_mem;
 
 -- planning: a selective filter pushes down, a filter that keeps half the table does not, off and force say so
@@ -251,5 +252,5 @@ DROP TABLE fq;
 
 DROP TABLE fd, pd_queries, pd_seq, pd_filters;
 DROP FUNCTION pd_top(regclass, text, text, int, text), pd_kind(regclass, text, text, text), pd_seq_load(regclass),
-	pd_check(regclass, text, text), pd_run(regclass, text[]), sift_plan(text), sift_scan_node(text);
+	pd_check(regclass, text, text), pd_run(regclass, text[], text[]), sift_plan(text), sift_scan_node(text);
 DROP EXTENSION pg_sift;

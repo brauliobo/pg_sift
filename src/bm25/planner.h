@@ -23,6 +23,14 @@
 typedef /* Rows of a table whose keys a ranked scan tests an INCLUDE column against (SIFT_PRIV_SEMI) */
 #define SIFT_SEMI_MAX_SET	65536
 
+/*
+ * What a keyed scan (ORDER BY leading keys, score) holds for a row it keeps (the heap node, the KeyRow with its keys and null flags, twice for the
+ * chunk sizes, the entry in the sorted array and the row of its filter) and for one it keeps only for a tie with the last key: the planner offers
+ * the scan when the rows of a round fit work_mem, and the scan fails naming it when the ties or a longer round do not
+ */
+#define SIFT_KEYED_ROW_BYTES(nkeys)	(2 * (32 + (nkeys) * 9) + 2 * 8 + 64)
+#define SIFT_KEYED_TIE_BYTES		(6 + 32 + 8 + 64)
+
 enum SiftScanMode
 {
 	SIFT_MODE_UNORDERED,		/* heap order, optional scores */

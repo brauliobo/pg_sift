@@ -23,4 +23,17 @@ sift_rows_alloc(Size bytes)
 	return bytes > MaxAllocSize ? MemoryContextAllocHuge(CurrentMemoryContext, bytes) : palloc(bytes);
 }
 
+/*
+ * A structure that grows with the data of one statement (the values of a facet, the rows a search holds, a verification of a segment) and that no
+ * algorithm here can spill: it takes the memory its setting (work_mem, maintenance_work_mem, in kB) gives, or the statement fails naming it.
+ */
+static inline void
+sift_budget_check(Size bytes, int budget_kb, const char *what, const char *setting, const char *hint)
+{
+	if (bytes / 1024 > (Size) budget_kb)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("%s needs %zu kB, more than %s (%d kB)", what, (size_t) (bytes / 1024), setting, budget_kb),
+						errhint("Raise %s%s%s.", setting, hint ? ", or " : "", hint ? hint : "")));
+}
+
 #endif							/* SIFT_ROWMEM_H */
