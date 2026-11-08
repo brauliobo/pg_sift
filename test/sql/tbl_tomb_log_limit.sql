@@ -1,0 +1,35 @@
+-- Every backend that reads a sift_table keeps the tombstone log of the table in memory, sorted (64 bytes an entry with the scratch of a first look), so the log is
+-- bound by what one backend keeps: a read past it fails naming the log and VACUUM, which is not bound and drops the entries of the rows it cleared. sift.test_limits
+-- lowers tomb_log_kb (2 GB) to 16 kB, 256 entries.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+
+CREATE TABLE tl (id int, v int) USING sift_table;
+INSERT INTO tl SELECT i, i % 7 FROM generate_series(1, 4000) i;
+VACUUM tl;
+DELETE FROM tl WHERE id % 4 = 0;
+
+CREATE FUNCTION tl_count() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	n bigint;
+	hint text;
+BEGIN
+	SELECT count(*) INTO n FROM tl;
+	RETURN 'ok ' || n;
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
+	RETURN regexp_replace(SQLERRM, '[0-9]+', 'N', 'g') || ' / ' || hint;
+END $$;
+
+SELECT tl_count() AS default_limit;
+-- a new backend reads the log from its start
+\c -
+SET sift.test_limits = 'tomb_log_kb=16';
+SELECT tl_count() AS lowered;
+-- VACUUM consumes the log, whatever its length: the table reads again
+VACUUM tl;
+SELECT tl_count() AS after_vacuum;
+
+DROP FUNCTION tl_count();
+DROP TABLE tl;
+DROP EXTENSION pg_sift;

@@ -281,7 +281,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	uint32		sb_lo = PG_UINT32_MAX,
 				sb_hi = 0;
 
-	sift_tomb_sync(rel, &st->tomb);
+	sift_tomb_sync_all(rel, &st->tomb);
 	for (int i = 0; i < st->nwbuf; i++)
 	{
 		SiftTblSeg	seg = st->wbuf[i];
@@ -529,7 +529,7 @@ clear_removable(Relation rel, SiftTblRel *st, VacState *v)
 				sb_hi = 0;
 	int64		removed = 0;
 
-	sift_tomb_sync(rel, &st->tomb);
+	sift_tomb_sync_all(rel, &st->tomb);
 	group_dead(st, v, st->tomb.ents, st->tomb.nents, &sb_lo, &sb_hi);
 	group_dead(st, v, st->tomb.recent, st->tomb.nrecent, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);

@@ -89,11 +89,20 @@ typedef struct SiftTomb
 
 StaticAssertDecl(sizeof(SiftTomb) == 32, "tombstone entries are 32 bytes");
 
+/*
+ * What a backend may keep of the log of a relation, in kB: each entry costs it 64 bytes (the entry, the sort and merge scratch of a first look,
+ * and the hash entry of a chain member). A reader that would pass it fails naming the log; VACUUM, which drops the entries of the rows it
+ * cleared, is not bound by it, and a worker is asked for when the log reaches a quarter of it.
+ */
+#define SIFT_TOMB_LOG_KB		2097152
+#define SIFT_TOMB_ENTRY_BYTES	64
+
 /* What a backend keeps of a relation's log; dir is the directory copy the owner of the relation keeps (the log reads and refreshes it) */
 typedef struct SiftTombLog
 {
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
+	bool		bounded;		/* sift_tomb_sync fails past SIFT_TOMB_LOG_KB (a sift_table; a column index keeps its log whole) */
 	/* tombstones, sorted by (key, seq) */
 	uint64		gen;
 	BlockNumber hdr;
@@ -123,6 +132,11 @@ extern SiftSegEntry sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 
 /* Forgets what was read (the cache of the log follows the log of the directory now) */
 extern void sift_tomb_forget(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);
+/* ... for what consumes the log (VACUUM, its worker): bound by no limit */
+extern void sift_tomb_sync_all(Relation rel, SiftTombLog *t);
+/* A log of that many entries is more than a backend keeps / a quarter of it, when a worker is asked for to drop the cleared ones */
+extern bool sift_tomb_over(uint64 entries);
+extern bool sift_tomb_pressure(uint64 entries);
 /* The entries appended to the log so far, from its header page alone: no page of the log is read and no entry sorted */
 extern uint64 sift_tomb_entries(Relation rel, const SiftDirSnapshot *dir);
 /* Writes the completeness record of the header */

@@ -118,6 +118,7 @@ sift_tbl_rel(Relation rel)
 		e->st->cxt = cxt;
 		e->st->tgt_blk = InvalidBlockNumber;
 		sift_tomb_init(&e->st->tomb, cxt, &e->st->dir);
+		e->st->tomb.bounded = true;
 		sift_tbl_opts_load(e->st);
 	}
 	return e->st;

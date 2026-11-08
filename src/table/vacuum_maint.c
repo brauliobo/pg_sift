@@ -69,12 +69,15 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
  * has been through the indexes, so what the backend saw when it asked last decides whether they grew since; likewise the free blocks.
  */
 static uint64
-removable_tombs(Relation rel, SiftTblRel *st)
+removable_tombs(Relation rel, SiftTblRel *st, bool all)
 {
 	TransactionId horizon = GetOldestNonRemovableTransactionId(rel);
 	uint64		n = 0;
 
-	sift_tomb_sync(rel, &st->tomb);
+	if (all)
+		sift_tomb_sync_all(rel, &st->tomb);
+	else
+		sift_tomb_sync(rel, &st->tomb);
 	/* (the frozen entries are the roots of chains that go on: a pass keeps them) */
 	for (uint32 i = 0; i < st->tomb.nents; i++)
 		n += st->tomb.ents[i].xid != FrozenTransactionId && TransactionIdPrecedes(st->tomb.ents[i].xid, horizon);
@@ -119,10 +122,11 @@ dead_over(const SiftTblRel *st, uint64 tombs, uint64 reads)
 	return tombs > 0 && reads * dirty_share(st, tombs) >= PASS_READS;
 }
 
+/* A log of a quarter of what a backend keeps (sift_tomb_pressure) asks for the pass whatever the reads: the log is memory in every backend that reads the table */
 static bool
-dead_wanted(const SiftTblRel *st, uint64 tombs, uint64 seen, uint64 reads)
+dead_wanted(const SiftTblRel *st, uint64 entries, uint64 tombs, uint64 seen, uint64 reads)
 {
-	return tombs > seen && dead_over(st, tombs, reads);
+	return tombs > seen && (sift_tomb_pressure(entries) || dead_over(st, tombs, reads));
 }
 
 /*
@@ -157,9 +161,11 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 		return;
 	scans = table_scans(rel);
 	entries = sift_tomb_entries(rel, &st->dir);
-	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it */
-	if (dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
-		tombs = removable_tombs(rel, st);
+	/* the log is read, by this backend, only when its length could pay for a pass: a ticking backend that does nothing else does not sync it; one too long for a backend is the worker's to count */
+	if (sift_tomb_over(entries))
+		tombs = entries;
+	else if (sift_tomb_pressure(entries) || dead_over(st, entries, scans - Min(scans, st->defrag_scans)))
+		tombs = removable_tombs(rel, st, false);
 	else
 	{
 		tombs = st->defrag_tombs = 0;
@@ -178,7 +184,7 @@ auto_defrag_check(Relation rel, SiftTblRel *st)
 	/* a VACUUM rewrote the log, or a pass or a truncation used the free blocks: what is asked next is relative to what is left */
 	st->defrag_tombs = Min(st->defrag_tombs, tombs);
 	st->defrag_free = Min(st->defrag_free, fs.blocks);
-	dead = dead_wanted(st, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
+	dead = dead_wanted(st, entries, tombs, st->defrag_tombs, scans - Min(scans, st->defrag_scans));
 	space = !writing && fs.blocks * 100 >= (int64) nblocks * sift_tbl_opt_int(st, SIFT_TBLOPT_AUTO_DEFRAG_FREE_PCT) && sift_maint_space_worth(fs.blocks, nblocks) &&
 		fs.blocks >= st->defrag_free + (int64) nblocks / 32;
 	if (!dead && !space)
@@ -280,7 +286,8 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 				r->promoted = sift_tbl_settle(rel, st, GetOldestNonRemovableTransactionId(rel), false, SIFT_TBL_SETTLE_STEPS);
 				r->blocks_after = RelationGetNumberOfBlocks(rel);
 			}
-			else if (dead_wanted(st, removable_tombs(rel, st), worker_tombs, table_scans(rel) - Min(table_scans(rel), worker_scans)))
+			else if (dead_wanted(st, sift_tomb_entries(rel, &st->dir), removable_tombs(rel, st, true), worker_tombs,
+								 table_scans(rel) - Min(table_scans(rel), worker_scans)))
 			{
 				if (sift_tbl_opt_bool(st, SIFT_TBLOPT_AUTO_DEFRAG_INDEXES))
 					background_vacuum(rel, r);
@@ -288,8 +295,7 @@ worker_pass(Oid relid, WorkerPass pass, SiftTblMaintain *r)
 					sift_tbl_maintain(rel, true, true, r);
 				pass_cleared = true;
 				sift_tbl_refresh(rel, st);	/* the pass moved the log: the directory read before it points past the cut */
-				sift_tomb_sync(rel, &st->tomb);
-				worker_tombs = removable_tombs(rel, st);
+				worker_tombs = removable_tombs(rel, st, true);
 				worker_scans = table_scans(rel);
 			}
 			else

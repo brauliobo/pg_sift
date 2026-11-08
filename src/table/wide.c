@@ -13,6 +13,7 @@
 #include "agg/kern.h"
 #include "agg/sel.h"
 #include "col/col.h"
+#include "core/limits.h"
 #include "table/table.h"
 #include "table/src_int.h"
 
@@ -20,6 +21,7 @@
 
 typedef struct WideBuild
 {
+	const char *col;			/* for the error of a dictionary that outgrows its limit */
 	uint32		nd;
 	uint32		dcap;
 	uint32	   *off;			/* nd + 1: the entries start on 8 bytes */
@@ -43,6 +45,12 @@ wide_entry(WideBuild *w, const char *img, uint32 len)
 		if (w->len[e - 1] == len && memcmp(w->bytes + w->off[e - 1], img, len) == 0)
 			return e - 1;
 	end = (size_t) w->off[w->nd] + MAXALIGN(Max(len, 1));
+	if (end > (size_t) sift_limit(wide_dict_bytes, MaxAllocSize))
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("the distinct values of column \"%s\" in the rows of one unit take more than %zu bytes", w->col,
+							   (size_t) sift_limit(wide_dict_bytes, MaxAllocSize)),
+						errhint("A unit holds up to %d rows: values of a wide column that are that large and distinct cannot be read together.",
+								SIFT_COL_UNIT_MAX_ROWS)));
 	if (w->nd == w->dcap)
 	{
 		w->dcap *= 2;
@@ -86,7 +94,7 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 	int16		typlen = TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attlen;
 	SiftSrcLeafBuf *b = &t->buf[leaf];
 	MemoryContext old;
-	WideBuild	w = {0};
+	WideBuild	w = {.col = NameStr(TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attname)};
 	bool		has_null = false;
 
 	sift_aggsel_leaf_buf(t->cxt, b, n);

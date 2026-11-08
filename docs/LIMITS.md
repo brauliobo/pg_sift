@@ -98,6 +98,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 |---|---|---|---|---|---|---|---|
 | `segment_cache_kb` | docmap directories and term blobs of the segments that a backend keeps, in its own memory, for its next statement (one entry at most a quarter of it) | 32,768 (32 MiB) | kB | the least recently used entry that no cursor holds is dropped; a blob that does not fit while every entry is held is read as before and kept by nobody |  | `bm25/segcache.c` `SEGCACHE_MAX_KB` | yes |
 | `array_bytes` | the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array) | 1,125,899,906,842,624 (1.04858e+06 GiB) | bytes | none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size) | `maintenance_work_mem` | `core/limits.h` `SIFT_ARRAY_UNLIMITED` | yes |
+| `tomb_log_kb` | the tombstone log of a sift_table that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members) | 2,097,152 (2 GiB) | kB | ERROR 54000 naming the log and VACUUM, which is not bound by it and drops the entries of the rows it cleared; a worker VACUUM is asked for when the log reaches a quarter of it |  | `core/tomb.h` `SIFT_TOMB_LOG_KB` | yes |
 | `max_segments` | directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test) | 128 | segments | writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE) |  | `core/sift.h` `SIFT_MAX_SEGMENTS` | yes |
 | `term_bytes` | a BM25 token | 255 | bytes | the token is its first 236 bytes and a hash of all of it |  | `core/sift.h` `SIFT_MAX_TERM_BYTES` |  |
 | `term_tf` | term frequency in one document | 255 | occurrences | saturated |  | `core/sift.h` `SIFT_MAX_TF` |  |
@@ -119,5 +120,6 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
+| `wide_dict_bytes` | the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 naming the column |  | `table/wide.c` | yes |
 | `table_vblocks` | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | 4,294,967,294 | blocks | ERROR 54000, VACUUM FULL renumbers them |  | `table/wbuf.c` |  |
 

@@ -73,6 +73,7 @@ TESTING_REGRESS += col_text_scanwrap
 TESTING_REGRESS += col_dict_shared_stale
 TESTING_REGRESS += col_gorder_autogroup_kinds
 TESTING_REGRESS += col_gorder_group_count
+TESTING_REGRESS += store_sweep_runs tbl_tomb_log_limit tbl_wide_dict_limit
 TESTING_REGRESS += col_gorder_count_big_group
 TESTING_REGRESS += col_gorder_group_range col_build_same_options
 TESTING_REGRESS += col_build_par_rows col_build_par_choice col_preagg

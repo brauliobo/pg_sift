@@ -188,6 +188,12 @@
 	X(array_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
 	  "the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array)", \
 	  "none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size)", "maintenance_work_mem", 1) \
+	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
+	  "the tombstone log of a sift_table that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members)", \
+	  "ERROR 54000 naming the log and VACUUM, which is not bound by it and drops the entries of the rows it cleared; a worker VACUUM is asked for when the log reaches a quarter of it", "-", 1) \
+	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
+	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
+	  "ERROR 54000 naming the column", "-", 1) \
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \

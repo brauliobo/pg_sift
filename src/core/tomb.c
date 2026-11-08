@@ -250,8 +250,32 @@ tomb_held(const SiftTombLog *t, const SiftTomb *ent)
 	return false;
 }
 
-void
-sift_tomb_sync(Relation rel, SiftTombLog *t)
+bool
+sift_tomb_over(uint64 entries)
+{
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 > (uint64) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB);
+}
+
+bool
+sift_tomb_pressure(uint64 entries)
+{
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 >= (uint64) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB) / 4;
+}
+
+/* The entries held and those to read must fit what a backend keeps: all the log of the relation lives in each backend that reads it */
+static void
+tomb_budget(Relation rel, const SiftTombLog *t, uint64 n)
+{
+	if (sift_tomb_over(t->nents + t->nrecent + (n - t->synced)))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("the tombstone log of relation \"%s\" holds %llu entries, more than a backend keeps of it (%lld kB)",
+						RelationGetRelationName(rel), (unsigned long long) n, (long long) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB)),
+				 errhint("Run VACUUM on the table: it drops the entries of the rows it cleared. A transaction open for long keeps the rest.")));
+}
+
+static void
+tomb_sync(Relation rel, SiftTombLog *t, bool bounded)
 {
 	const SiftSegEntry *e = sift_tomb_find_seg(t->dir);
 	Buffer		buf;
@@ -286,6 +310,8 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 	UnlockReleaseBuffer(buf);
 	if (n == t->synced)
 		return;
+	if (bounded)
+		tomb_budget(rel, t, n);
 	/* the header says how many entries are new: the batch is allocated once (appenders may add more while it is read) */
 	capbatch = Max(64, n - t->synced + SIFT_TOMB_CAP);
 	batch = sift_rows_alloc(capbatch * sizeof(SiftTomb));
@@ -324,6 +350,18 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		tomb_add(t, batch, nbatch);
 	if (batch)
 		pfree(batch);
+}
+
+void
+sift_tomb_sync(Relation rel, SiftTombLog *t)
+{
+	tomb_sync(rel, t, t->bounded);
+}
+
+void
+sift_tomb_sync_all(Relation rel, SiftTombLog *t)
+{
+	tomb_sync(rel, t, false);
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */
@@ -799,7 +837,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		corrupt(rel, "There is no tombstone segment.");
 	sw.old_gen = old->gen;
 	tomb_reset(t, NULL);			/* the cache is rebuilt from the segment under the lock */
-	sift_tomb_sync(rel, t);
+	sift_tomb_sync_all(rel, t);
 	tomb_flatten(t);
 	gen = sift_store_new_gen(rel);
 	hbuf = sift_alloc_page(rel, SIFT_PT_WBUFHEADER, gen);
