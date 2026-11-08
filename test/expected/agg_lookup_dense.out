@@ -1,7 +1,7 @@
 -- A lookup table of one int4 key whose other columns are integer leaves of a sift_col index and take few distinct tuples of values is kept as classes of its keys:
 -- a table over the keys, one row for each class. The answers are those of the normal plan (keys the table has no row for, NULL columns, rows the transaction
 -- changed, a left join, a distinct count by a column of the table, workers), and a table that is not one of those (a key twice, a negative key, too many tuples,
--- a text column) is loaded row by row as before.
+-- a text column, a column of the key itself the query reads) is loaded row by row as before.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -61,7 +61,9 @@ INSERT INTO shapes VALUES
  (6, $q$SELECT dr.lvl, count(*) FROM ev JOIN dr ON dr.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (7, $q$SELECT dn.lvl, count(*) FROM ev JOIN dn ON dn.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT dw.lvl, dw.grade, count(*) FROM ev JOIN dw ON dw.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (9, $q$SELECT dt.t, dt.lvl, count(*) FROM ev JOIN dt ON dt.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$);
+ (9, $q$SELECT dt.t, dt.lvl, count(*) FROM ev JOIN dt ON dt.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (10, $q$SELECT dd.lvl, count(*), sum(dd.k), max(dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (11, $q$SELECT dd.lvl, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE dd.grade = 1) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 -- the rows of the answer, and the rows the load made classes of
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -92,7 +94,9 @@ SELECT * FROM report('settled');
  settled |     7 | t            | f       | t
  settled |     8 | t            | f       | t
  settled |     9 | t            | f       | t
-(9 rows)
+ settled |    10 | t            | f       | t
+ settled |    11 | t            | f       | t
+(11 rows)
 
 -- rows the heap changed after the index saw them: updated, deleted, inserted (the write buffer), in the transaction that reads them
 BEGIN;
@@ -112,7 +116,9 @@ SELECT * FROM report('in the transaction');
  in the transaction |     7 | t            | f       | t
  in the transaction |     8 | t            | f       | t
  in the transaction |     9 | t            | f       | t
-(9 rows)
+ in the transaction |    10 | t            | f       | t
+ in the transaction |    11 | t            | f       | t
+(11 rows)
 
 ROLLBACK;
 -- committed, not vacuumed: pages that are not all-visible
@@ -130,7 +136,9 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |     7 | t            | f       | t
  committed, not vacuumed |     8 | t            | f       | t
  committed, not vacuumed |     9 | t            | f       | t
-(9 rows)
+ committed, not vacuumed |    10 | t            | f       | t
+ committed, not vacuumed |    11 | t            | f       | t
+(11 rows)
 
 VACUUM dd;
 SELECT * FROM report('vacuumed');
@@ -145,7 +153,9 @@ SELECT * FROM report('vacuumed');
  vacuumed |     7 | t            | f       | t
  vacuumed |     8 | t            | f       | t
  vacuumed |     9 | t            | f       | t
-(9 rows)
+ vacuumed |    10 | t            | f       | t
+ vacuumed |    11 | t            | f       | t
+(11 rows)
 
 -- the workers read the classes from the leader's shared memory
 SET max_parallel_workers_per_gather = 2;
@@ -166,7 +176,9 @@ SELECT * FROM report('workers');
  workers |     7 | t            | f       | t
  workers |     8 | t            | f       | t
  workers |     9 | t            | f       | t
-(9 rows)
+ workers |    10 | t            | f       | t
+ workers |    11 | t            | f       | t
+(11 rows)
 
 -- switched off with the load from the leaves: the rows are loaded one by one
 SET sift.agg_lookup_columns = off;
@@ -182,7 +194,9 @@ SELECT * FROM report('lookup columns off');
  lookup columns off |     7 | t            | f       | t
  lookup columns off |     8 | t            | f       | t
  lookup columns off |     9 | t            | f       | t
-(9 rows)
+ lookup columns off |    10 | t            | f       | t
+ lookup columns off |    11 | t            | f       | t
+(11 rows)
 
 DROP FUNCTION report(text), classed(text), answer(text, bool);
 DROP TABLE shapes, ev, dd, dr, dn, dw, dt;

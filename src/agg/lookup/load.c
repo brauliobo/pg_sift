@@ -338,7 +338,7 @@ map_note_table(AggExec *ex, Relation rel)
 
 /*
  * Is the join of combo ci one whose table can be kept as classes of its keys (map_load_dense)? An inner or left join by one int4 leaf, nothing else in its
- * ON clause, and expressions that read the columns alone: then the output rows of a key are those of its class. No other lookup may be keyed by this
+ * ON clause, and expressions that read the columns alone (not the key's own): then the output rows of a key are those of its class. No other lookup may be keyed by this
  * one's rows (they are no longer one for each key); an expression of its columns in a combo of its own is.
  */
 bool
@@ -353,6 +353,10 @@ sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay)
 		return false;
 	for (int sl = 0; sl < cb->nslots; sl++)
 		if (slot_reads_leaf(cb, sl))
+			return false;
+	/* the row of a class holds the key of the first row that has it: a column that is the key itself is not the class's */
+	for (int c = 0; c < j->ncol; c++)
+		if (j->colatt[c] == j->keyatt[0])
 			return false;
 	for (int cd = 0; cd < s->ncombo; cd++)
 		for (int p = 0; s->combo[cd].join >= 0 && p < s->combo[cd].nleaves; p++)
