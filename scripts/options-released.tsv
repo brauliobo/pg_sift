@@ -1,4 +1,4 @@
-# released: 4.1, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
+# released: 4.2, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
 # column format read: 43, the newest minor that release reads
 sift(accent_folding)	true
 sift(analyzer)	text
@@ -16,6 +16,7 @@ sift(stemmer)	''
 sift(vacuum_segments)	2
 sift(vacuum_truncate)	true
 sift(write_buffer_limit)	4096
+sift.agg_case_filter	on
 sift.agg_combo_cache	1048576
 sift.agg_dead_delta	15
 sift.agg_dense	on
@@ -67,7 +68,6 @@ sift.col_rollup_worker	on
 sift.col_unit_floor	2048
 sift.count_refusals	off
 sift.enable_agg	on
-sift.enable_col	on
 sift.enable_col_scan	on
 sift.enable_count	on
 sift.enable_scan	on
@@ -95,7 +95,6 @@ sift.table_async_promote	off
 sift.table_auto_defrag	on
 sift.table_auto_defrag_budget	128 MB
 sift.table_auto_defrag_coalesce	on
-sift.table_auto_defrag_dead_pct	5
 sift.table_auto_defrag_delay	10 ms
 sift.table_auto_defrag_free_pct	25
 sift.table_auto_defrag_indexes	on
@@ -141,7 +140,9 @@ sift_col(point_tid_columns)	''
 sift_col(preagg)	''
 sift_col(return_columns)	''
 sift_col(rollup)	''
+sift_col(rollup_columns)	''
 sift_col(rollup_dims)	''
+sift_col(rollup_leaves)	''
 sift_col(rollup_on_demand)	true
 sift_col(superunit)	16
 sift_col(track_changes)	'auto'

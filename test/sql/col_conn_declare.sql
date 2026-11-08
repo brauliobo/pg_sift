@@ -47,6 +47,8 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num) WITH 
 SELECT edges('events_col') AS child_edges, journal_of('dim_a_col') AS journal;
 SELECT o AS option FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'events_col' AND o LIKE 'connect=%';
 SELECT regexp_replace(pg_get_indexdef('events_col'::regclass), '^.*WITH', 'WITH') AS definition;
+SELECT child, parent, declaration, lineage IS NOT NULL AS journal, records, stamp FROM sift.col_connections;
+SELECT lineage IS NULL AS no_journal, stamp FROM sift.col_connection_state('events_col');
 
 -- REINDEX, and ALTER INDEX of another option, keep one dependency
 REINDEX INDEX events_col;

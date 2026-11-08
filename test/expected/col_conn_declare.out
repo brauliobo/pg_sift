@@ -105,6 +105,18 @@ SELECT regexp_replace(pg_get_indexdef('events_col'::regclass), '^.*WITH', 'WITH'
  WITH (connect='dim_a_id -> public.dim_a(id) carries category_id, label via carried', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
 (1 row)
 
+SELECT child, parent, declaration, lineage IS NOT NULL AS journal, records, stamp FROM sift.col_connections;
+   child    |  parent   |                             declaration                             | journal | records | stamp 
+------------+-----------+---------------------------------------------------------------------+---------+---------+-------
+ events_col | dim_a_col | dim_a_id -> public.dim_a(id) carries category_id, label via carried | t       |       0 | ok
+(1 row)
+
+SELECT lineage IS NULL AS no_journal, stamp FROM sift.col_connection_state('events_col');
+ no_journal |   stamp    
+------------+------------
+ t          | no journal
+(1 row)
+
 -- REINDEX, and ALTER INDEX of another option, keep one dependency
 REINDEX INDEX events_col;
 NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)

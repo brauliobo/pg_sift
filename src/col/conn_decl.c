@@ -19,11 +19,13 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_type_d.h"
+#include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "col/conn.h"
@@ -323,4 +325,31 @@ sift_conn_alter(Relation index)
 
 	sift_conn_resolve(heap, index);
 	table_close(heap, NoLock);
+}
+
+PG_FUNCTION_INFO_V1(sift_col_connection_state);
+
+/* sift.col_connection_state(parent index): the lineage of its key journal, the records appended so far, and what a stamp taken now says ('ok' or why not); NULL lineage and records without a journal */
+Datum
+sift_col_connection_state(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	SiftConnStamp st;
+	SiftConnGen gen;
+	TupleDesc	desc;
+	Datum		v[3];
+	bool		nulls[3] = {false};
+	bool		has = sift_conn_gen(index, &gen);
+	SiftConnWhy why = sift_conn_take(heap, index, GetTransactionSnapshot(), &st, NULL);
+	bool		composite = get_call_result_type(fcinfo, NULL, &desc) == TYPEFUNC_COMPOSITE;
+
+	SIFT_INVARIANT(composite, "return type must be a row type");
+	v[0] = Int64GetDatum((int64) gen.lineage);
+	v[1] = Int64GetDatum((int64) gen.records);
+	v[2] = CStringGetTextDatum(sift_conn_why_name(why));
+	nulls[0] = nulls[1] = !has;
+	table_close(heap, NoLock);
+	index_close(index, NoLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
