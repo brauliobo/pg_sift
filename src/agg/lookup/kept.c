@@ -151,7 +151,8 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 
 /*
  * A lookup table whose rows make a tuple only with the keys of another lookup: a later inner or semi join keyed by a column of the table alone (the ids of the
- * request joined to the table of their rows), or a child plan (a CTE or sub-select of ids) inner or semi joined on the same leaf of the scan as the table is.
+ * request joined to the table of their rows), or a child plan (a CTE or sub-select of ids), or a table read by conditions of its own (an index), inner or semi joined on
+ * the same leaf of the scan as the table is (the rows of the scan whose leaf that join does not keep make no tuple: the table is read for its keys alone).
  * The dependent of the fewest keys, with the column of the table that holds them (att, of the integer type typ): -1 when there is none.
  */
 int
@@ -187,7 +188,7 @@ map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ)
 				t = j->coltype[c];
 			}
 		}
-		else if (dj->child >= 0 && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && dj->keypos[0] >= 0 &&
+		else if ((dj->child >= 0 || dj->nidx > 0) && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && dj->keypos[0] >= 0 &&
 				 cc->leaf[dj->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
 		{
 			a = j->keyatt[0];

@@ -1,0 +1,52 @@
+-- A lookup table whose keys another lookup of the same scan leaf already limits (the rows of one subscription's list) is read for those keys alone: a scoped
+-- report does not classify or load the whole table. The plans are the planner's own (nothing is forced): the report of the whole table is the scan's, the scoped ones are the
+-- scan's only when it reads the few rows of the scope, and the answers are those of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, (i * 7) % 100000, i % 11 FROM generate_series(1, 400000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+CREATE TABLE dd (k int PRIMARY KEY, a text, b text) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END FROM generate_series(0, 99999) i;
+CREATE INDEX dd_col ON dd USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+-- 50 lists of 2,000 keys each
+CREATE TABLE asg (sub int, k int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO asg SELECT i % 50, i, CASE WHEN i % 97 = 0 THEN now() END FROM generate_series(0, 99999) i;
+CREATE INDEX asg_sub_k ON asg (sub, k) WHERE deleted_at IS NULL;
+VACUUM (FREEZE, ANALYZE) ev, dd, asg;
+
+CREATE TABLE shapes (n int, sql text, scope_keys int);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT ev.v % 3, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.a), '') IS NOT NULL),
+		count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.b), '') IS NULL) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$, 100000),
+ (2, $q$SELECT ev.v % 3, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.a), '') IS NOT NULL),
+		count(DISTINCT dd.k) FILTER (WHERE nullif(btrim(dd.b), '') IS NULL) FROM ev JOIN dd ON dd.k = ev.k
+		WHERE EXISTS (SELECT 1 FROM asg WHERE asg.deleted_at IS NULL AND asg.k = ev.k AND asg.sub = 3) GROUP BY 1 ORDER BY 1$q$, 2000),
+ (3, $q$SELECT dd.k % 7, count(*), count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k
+		WHERE EXISTS (SELECT 1 FROM asg WHERE asg.deleted_at IS NULL AND asg.k = ev.k AND asg.sub = 11) AND ev.v < 5 GROUP BY 1 ORDER BY 1$q$, 2000);
+
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- the plan the planner chose, and the rows its lookups read
+CREATE FUNCTION chosen(sql text, OUT scan bool, OUT rows_read bigint) LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	scan := false; rows_read := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		IF l ~ '(\d+) rows read' THEN rows_read := substring(l from '(\d+) rows read')::bigint; END IF;
+	END LOOP;
+END $$;
+
+-- shape 1 is the whole table: the scan; the scoped ones: the normal plan, or the scan having read the rows of the scope (a few thousand, not the 100,000 of the table)
+SELECT n, (c).scan AS scan, (c).rows_read < 3 * scope_keys AS reads_the_scope, answer(sql, true) = answer(sql, false) AS same_answers
+FROM (SELECT n, sql, scope_keys, chosen(sql) AS c FROM shapes) s ORDER BY n;
+
+DROP FUNCTION chosen(text), answer(text, bool);
+DROP TABLE shapes, ev, dd, asg;
+DROP EXTENSION pg_sift;

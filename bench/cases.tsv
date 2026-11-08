@@ -461,3 +461,4 @@ lookup_expr_column	is read from the leaf of the index that holds it	events	-	Loo
 semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-
 lookup_bool_filters	are columns of the lookup table read from its index	events	-	Lookup: .* column loads	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
 lookup_dense_kept	is read from the cache of an earlier statement as classes of its keys	events	-	Lookup: .*cached tables	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
+lookup_scoped_keys	is read for the keys of the list alone	events	-	Lookup: [0-9]+ rows read	native	rows:sift.agg_lookup_pushdown = off	ms	faster33	no	-
