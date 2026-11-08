@@ -11,6 +11,7 @@
 #include "bm25/build.h"
 #endif
 #include "col/build/build_int.h"
+#include "col/conn.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_workers = 0;
@@ -137,6 +138,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	{
 		sift_col_log_create(index);
 		sift_col_track_install(heap, index, info->ii_Concurrent);
+		sift_conn_build(heap, index);
 	}
 	else
 		sift_col_track_reconcile(index);

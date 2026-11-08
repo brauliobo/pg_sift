@@ -4,7 +4,18 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
+#include "access/table.h"
+#include "catalog/dependency.h"
+#include "catalog/indexing.h"
+#include "catalog/pg_depend.h"
+#include "catalog/pg_class.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -130,27 +141,18 @@ keep_all(SiftTomb *e, void *arg)
 	return true;
 }
 
-uint64
-sift_conn_enable(Relation heap, Relation index)
+/* The journal of the index, made if it has none; the caller has the writers out or the index hidden from them. Returns the lineage. */
+static uint64
+journal_make(Relation heap, Relation index)
 {
-	SiftTombLog *log;
+	SiftTombLog *log = sift_col_log(index);
 	SiftTombKeys k = {0};
-	AttrNumber	hatt;
-	Oid			typid;
 
-	if (!sift_col_row_key_on(index))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: it does not track a key column", RelationGetRelationName(index)),
-						errhint("Connect to an index with track_changes naming the unique key of its table.")));
-	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
-	typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
-	if (typid != INT2OID && typid != INT4OID && typid != INT8OID)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: its key column is not an integer", RelationGetRelationName(index)),
-						errhint("The key of the parent index is an int2, int4 or int8 column.")));
-	/* writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here */
-	LockRelationOid(RelationGetRelid(heap), ShareLock);
-	if ((log = sift_col_log(index)) == NULL || !sift_col_track_ok(index, heap, NULL))
-		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("index \"%s\" cannot be connected: its tombstone log is not complete", RelationGetRelationName(index)),
-						errhint("REINDEX INDEX %s, without CONCURRENTLY, makes it so.", RelationGetRelationName(index))));
+	if (log == NULL)
+	{
+		sift_col_log_create(index);
+		log = sift_col_log(index);
+	}
 	if (log->keys_cover && log->keys.lineage != 0)
 		return log->keys.lineage;
 	if (!log->keys_cover)
@@ -169,6 +171,87 @@ sift_conn_enable(Relation heap, Relation index)
 	sift_tomb_set_format(index, SIFT_COL_FORMAT_KEYJOURNAL);
 	CacheInvalidateRelcache(index);
 	return k.lineage;
+}
+
+static void
+check_key(Relation heap, Relation index)
+{
+	AttrNumber	hatt;
+	Oid			typid;
+
+	if (!sift_col_row_key_on(index))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: it does not track a key column", RelationGetRelationName(index)),
+						errhint("Connect to an index with track_changes naming the unique key of its table.")));
+	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
+	typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
+	if (typid != INT2OID && typid != INT4OID && typid != INT8OID)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: its key column is not an integer", RelationGetRelationName(index)),
+						errhint("The key of the parent index is an int2, int4 or int8 column.")));
+}
+
+uint64
+sift_conn_enable(Relation heap, Relation index)
+{
+	SiftTombLog *log;
+
+	check_key(heap, index);
+	/* writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here */
+	LockRelationOid(RelationGetRelid(heap), ShareLock);
+	if ((log = sift_col_log(index)) == NULL || !sift_col_track_ok(index, heap, NULL))
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("index \"%s\" cannot be connected: its tombstone log is not complete", RelationGetRelationName(index)),
+						errhint("REINDEX INDEX %s, without CONCURRENTLY, makes it so.", RelationGetRelationName(index))));
+	return journal_make(heap, index);
+}
+
+List *
+sift_conn_children(Oid parent_index)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	List	   *children = NIL;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(parent_index));
+	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->classid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL && d->objsubid == 0 && d->refobjsubid == 0 && get_rel_relkind(d->objid) == RELKIND_INDEX)
+			children = lappend_oid(children, d->objid);
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return children;
+}
+
+void
+sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index)
+{
+	ObjectAddress child,
+				parent;
+
+	(void) sift_conn_enable(parent_heap, parent_index);
+	ObjectAddressSet(child, RelationRelationId, RelationGetRelid(child_index));
+	ObjectAddressSet(parent, RelationRelationId, RelationGetRelid(parent_index));
+	recordDependencyOn(&child, &parent, DEPENDENCY_NORMAL);
+}
+
+void
+sift_conn_build(Relation heap, Relation index)
+{
+	Oid			origin = RelationGetRelid(index);
+	bool		wanted = sift_conn_children(origin) != NIL;
+
+	if (!wanted && (origin = sift_col_track_swap_origin(heap, index)) != InvalidOid)
+		wanted = sift_conn_children(origin) != NIL;
+	if (wanted && sift_col_row_key_on(index))
+	{
+		check_key(heap, index);
+		(void) journal_make(heap, index);
+	}
 }
 
 static bool

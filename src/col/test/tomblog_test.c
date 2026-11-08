@@ -33,6 +33,7 @@ PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
 PG_FUNCTION_INFO_V1(sift_test_col_unit_tombs);
 PG_FUNCTION_INFO_V1(sift_test_conn_enable);
+PG_FUNCTION_INFO_V1(sift_test_conn_connect);
 PG_FUNCTION_INFO_V1(sift_test_conn_take);
 PG_FUNCTION_INFO_V1(sift_test_conn_changed);
 PG_FUNCTION_INFO_V1(sift_test_conn_gen);
@@ -332,6 +333,21 @@ sift_test_conn_enable(PG_FUNCTION_ARGS)
 	table_close(heap, NoLock);
 	index_close(index, NoLock);
 	PG_RETURN_INT64((int64) lineage);
+}
+
+/* sift._test_conn_connect(child, parent): the dependency of the child index on the parent index, and the parent's journal */
+Datum
+sift_test_conn_connect(PG_FUNCTION_ARGS)
+{
+	Relation	child = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	parent = index_open(PG_GETARG_OID(1), ShareUpdateExclusiveLock);
+	Relation	heap = table_open(parent->rd_index->indrelid, ShareLock);
+
+	sift_conn_connect(child, heap, parent);
+	table_close(heap, NoLock);
+	index_close(parent, NoLock);
+	index_close(child, NoLock);
+	PG_RETURN_VOID();
 }
 
 /* sift._test_conn_take(index): the stamp of a derivation under the snapshot of the statement: lineage, horizon, why not */

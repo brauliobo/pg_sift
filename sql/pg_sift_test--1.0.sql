@@ -500,6 +500,8 @@ CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid 
 -- the key journal of a connected parent index (col/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
 CREATE FUNCTION sift._test_conn_enable(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_conn_enable' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_conn_connect(child regclass, parent regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_conn_connect' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_take(index regclass, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_conn_take' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_changed(index regclass, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record

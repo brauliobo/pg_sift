@@ -84,3 +84,5 @@ INSERT INTO dim_b VALUES ('a', 1);
 CREATE INDEX dim_b_col ON dim_b USING sift_col (code, category_id);
 SELECT sift._test_conn_enable('dim_b_col');
 DROP TABLE dim_a, dim_b;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

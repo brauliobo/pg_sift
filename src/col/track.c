@@ -369,8 +369,8 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
  * pg_repack --only-indexes (index_<oid>, in the schema of the table). They are the triggers of the index after the swap: PostgreSQL moves what depends on the old index to the new one,
  * pg_repack swaps the files and leaves the oids. InvalidOid for any other index, and for an old index that has no triggers of its own, or another key.
  */
-static Oid
-swap_origin(Relation heap, Relation index)
+Oid
+sift_col_track_swap_origin(Relation heap, Relation index)
 {
 	const char *name = RelationGetRelationName(index);
 	const char *p = strstr(name, "_ccnew");
@@ -428,7 +428,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	if (channel_as_asked(heap, index, log))
 		return;
 	/* the copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
-	if (!concurrent || !OidIsValid(swap_origin(heap, index)))
+	if (!concurrent || !OidIsValid(sift_col_track_swap_origin(heap, index)))
 	{
 		drop_triggers(heap, index);
 		create_trigger(heap, index, false);

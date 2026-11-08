@@ -1,0 +1,133 @@
+-- A parent index with a connected child index never loses its key journal: CREATE INDEX of the connection makes it, REINDEX and REINDEX CONCURRENTLY make it again for the index they
+-- build (the stamps of the old one are another lineage, so nothing derived before is read), and the child index depends on the parent index.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, i % 10 FROM generate_series(1, 1000) i;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, value_num int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 1000, i FROM generate_series(1, 5000) i;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id);
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num);
+NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+CREATE FUNCTION lineage_of(idx regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT lineage FROM sift._test_conn_gen(idx) $$;
+-- an unconnected parent has no journal after a REINDEX
+REINDEX INDEX dim_a_col;
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+SELECT lineage_of('dim_a_col') = 0 AS no_journal;
+ no_journal 
+------------
+ t
+(1 row)
+
+SELECT sift._test_conn_connect('events_col', 'dim_a_col');
+ _test_conn_connect 
+--------------------
+ 
+(1 row)
+
+SELECT lineage_of('dim_a_col') <> 0 AS journal;
+ journal 
+---------
+ t
+(1 row)
+
+SELECT count(*) AS child_depends FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refobjid = 'dim_a_col'::regclass AND deptype = 'n';
+ child_depends 
+---------------
+             1
+(1 row)
+
+SELECT lineage AS lin, horizon AS hor FROM sift._test_conn_take('dim_a_col') \gset
+SELECT lineage_of('dim_a_col') AS old_lineage \gset
+-- REINDEX: the same index, a journal again, another lineage; the old stamp is not vouched, a new one is
+REINDEX INDEX dim_a_col;
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+SELECT lineage_of('dim_a_col') <> 0 AS journal, lineage_of('dim_a_col') <> :old_lineage AS other_lineage;
+ journal | other_lineage 
+---------+---------------
+ t       | t
+(1 row)
+
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+      why      
+---------------
+ other lineage
+(1 row)
+
+SELECT why FROM sift._test_conn_take('dim_a_col');
+ why 
+-----
+ ok
+(1 row)
+
+SELECT lineage AS lin, horizon AS hor FROM sift._test_conn_take('dim_a_col') \gset
+UPDATE dim_a SET category_id = 99 WHERE id = 5;
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+ why | key 
+-----+-----
+ ok  |   5
+(1 row)
+
+-- REINDEX CONCURRENTLY: the copy has a journal before writers use it; the log is not complete until a VACUUM makes it so, and nothing is vouched meanwhile
+SELECT lineage_of('dim_a_col') AS old_lineage \gset
+REINDEX INDEX CONCURRENTLY dim_a_col;
+NOTICE:  sift_col index "dim_a_col": track_changes log is not complete after a concurrent build
+HINT:  The next VACUUM completes the log; REINDEX INDEX dim_a_col without CONCURRENTLY does it now.
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+SELECT lineage_of('dim_a_col') <> 0 AS journal, lineage_of('dim_a_col') <> :old_lineage AS other_lineage;
+ journal | other_lineage 
+---------+---------------
+ t       | t
+(1 row)
+
+SELECT count(*) AS child_depends FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refobjid = 'dim_a_col'::regclass AND deptype = 'n';
+ child_depends 
+---------------
+             1
+(1 row)
+
+SELECT why FROM sift._test_conn_take('dim_a_col');
+       why        
+------------------
+ log not complete
+(1 row)
+
+UPDATE dim_a SET category_id = 98 WHERE id = 6;
+VACUUM dim_a;
+SELECT why FROM sift._test_conn_take('dim_a_col');
+ why 
+-----
+ ok
+(1 row)
+
+SELECT lineage AS lin, horizon AS hor FROM sift._test_conn_take('dim_a_col') \gset
+UPDATE dim_a SET category_id = 97 WHERE id = 7;
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+ why | key 
+-----+-----
+ ok  |   7
+(1 row)
+
+-- the parent index cannot be dropped under the child index; dropping the child frees it
+DROP INDEX dim_a_col;
+ERROR:  cannot drop index dim_a_col because other objects depend on it
+DETAIL:  index events_col depends on index dim_a_col
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP INDEX events_col;
+DROP INDEX dim_a_col;
+DROP TABLE events, dim_a;
+DROP FUNCTION lineage_of(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

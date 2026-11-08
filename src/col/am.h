@@ -97,6 +97,7 @@ extern const char *sift_col_row_key_why(Relation heap, Relation index, AttrNumbe
 extern bool sift_col_track_incomplete(Relation index);
 extern void sift_col_track_check(Relation heap, Relation index);
 extern void sift_col_track_install(Relation heap, Relation index, bool concurrent);
+extern Oid sift_col_track_swap_origin(Relation heap, Relation index);
 extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_deafened(Oid relid);
 extern void sift_col_track_reconcile(Relation index);

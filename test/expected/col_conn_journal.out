@@ -208,3 +208,5 @@ SELECT sift._test_conn_enable('dim_b_col');
 ERROR:  index "dim_b_col" cannot be connected: its key column is not an integer
 HINT:  The key of the parent index is an int2, int4 or int8 column.
 DROP TABLE dim_a, dim_b;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

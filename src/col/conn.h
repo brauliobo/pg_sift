@@ -22,6 +22,7 @@
 #define SIFT_COL_CONN_H
 
 #include "access/transam.h"
+#include "nodes/pg_list.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
@@ -84,6 +85,20 @@ extern void sift_conn_keys_free(SiftConnKeys *k);
  * lineage.
  */
 extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index);
+
+/*
+ * A child index is connected to the parent index: the dependency of the child on the parent (so that the parent index and its table cannot be dropped under it without CASCADE,
+ * which drops the child index, and so that a dump makes the parent first) and the parent's journal (sift_conn_enable).
+ */
+extern void sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index);
+/* The sift_col indexes connected to the parent index */
+extern List *sift_conn_children(Oid parent_index);
+/*
+ * The build of a parent index (CREATE INDEX, REINDEX, the copy of REINDEX CONCURRENTLY or pg_repack, which the swap puts in the place of an index that has children) makes its journal
+ * when children are connected to the index it is or replaces, so that a parent with a connected child never loses it. The writers are out (the lock of the build) or cannot see the
+ * index yet (a concurrent build before it is ready); whether the log is complete is the vouch's question, not this one's.
+ */
+extern void sift_conn_build(Relation parent_heap, Relation parent_index);
 
 /*
  * The stamp of a derivation that is about to read the parent's entries under resolve (an MVCC snapshot): X = resolve->xmin and the lineage of the journal. Not OK when
