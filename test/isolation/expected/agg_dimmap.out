@@ -1,0 +1,213 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1run s2run s1run s2run
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s3begin s3upd s3ins s2run s3commit s1run s3vacuum s2run s1run s2run
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3begin: BEGIN;
+step s3upd: UPDATE iso_dm_dim SET a = 4, b = 2 WHERE k = 3;
+step s3ins: INSERT INTO iso_dm_dim VALUES (420, 1, 1);
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3commit: COMMIT;
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_dm_dim;
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s3begin s3ins s3del s3abort s2run s3vacuum s1run s2run
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3begin: BEGIN;
+step s3ins: INSERT INTO iso_dm_dim VALUES (420, 1, 1);
+step s3del: DELETE FROM iso_dm_dim WHERE k = 5;
+step s3abort: ROLLBACK;
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_dm_dim;
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s1runl s2runl s3del s1runl s2run s3vacuum s2runl s1runl s2run
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s1runl: SELECT iso_dm_runl();
+iso_dm_runl                                              
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2runl: SELECT iso_dm_runl();
+iso_dm_runl                                              
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3del: DELETE FROM iso_dm_dim WHERE k = 5;
+step s1runl: SELECT iso_dm_runl();
+iso_dm_runl                                              
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s3vacuum: VACUUM iso_dm_dim;
+step s2runl: SELECT iso_dm_runl();
+iso_dm_runl                                              
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s1runl: SELECT iso_dm_runl();
+iso_dm_runl                                              
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2run s2rr s3upd s3del s3vacuum s2run s1run s2end s2run s1run
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 1 made, 0 differences from the normal plan
+(1 row)
+
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+1 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_dm_dim;
+count
+-----
+  400
+(1 row)
+
+step s3upd: UPDATE iso_dm_dim SET a = 4, b = 2 WHERE k = 3;
+step s3del: DELETE FROM iso_dm_dim WHERE k = 5;
+step s3vacuum: VACUUM iso_dm_dim;
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s2end: COMMIT;
+step s2run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
+step s1run: SELECT iso_dm_run();
+iso_dm_run                                               
+---------------------------------------------------------
+0 maps shared, 0 made, 0 differences from the normal plan
+(1 row)
+
