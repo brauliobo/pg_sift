@@ -77,14 +77,36 @@ acut_unique_btree(Relation heap, AttrNumber att)
 	return found;
 }
 
-/* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
+/* the column a CLUSTER of the table leads with (0: none): the order the table was given on purpose */
+AttrNumber
+acut_cluster_att(Relation heap)
+{
+	AttrNumber	att = 0;
+
+	foreach_oid(ioid, RelationGetIndexList(heap))
+	{
+		HeapTuple	tp = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(ioid));
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		if (((Form_pg_index) GETSTRUCT(tp))->indisclustered)
+			att = ((Form_pg_index) GETSTRUCT(tp))->indkey.values[0];
+		ReleaseSysCache(tp);
+	}
+	return att;
+}
+
+/*
+ * whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering). A leaf with
+ * values in fewer than two of the sampled superblocks (all NULL) has no zones that a cut could widen.
+ */
 bool
 acut_scattered(const Track *t, int n)
 {
 	int			m;
 	double		share = acut_zone_share(t, n, &m);
 
-	return m >= 2 && !(share * m <= 2 || share <= 0.25);
+	return m < 2 || !(share * m <= 2 || share <= 0.25);
 }
 
 /* the instructions of a lookup that reads `reads` units over those of one that reads the `ideal` units its rows fill */

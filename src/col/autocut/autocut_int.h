@@ -55,6 +55,8 @@ extern bool	acut_unique_btree(Relation heap, AttrNumber att);
 
 extern bool	acut_scattered(const Track *t, int n);
 
+extern AttrNumber	acut_cluster_att(Relation heap);
+
 extern double	acut_cut_speedup(double reads, double ideal, double rows_per_unit);
 
 extern double	acut_cut_benefit(double speedup, double relevance);

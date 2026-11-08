@@ -1,7 +1,7 @@
 /*
  * col/autocut/autocut.c - the default of the option key_cut: CREATE INDEX and REINDEX of an index without key_cut (or with key_cut = 'auto')
- * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the first leaf, in the order of the index,
- * that is key-shaped (sift_col_key_shaped); when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
+ * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the key-shaped leaf (sift_col_key_shaped) whose
+ * lookups gain most, the leading column of a CLUSTER of the table counting one unit of the formula more; when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
  * chosen when the default formula says the cut pays: the benefit of the lookups it saves (an equality on one of its values, or a range holding the rows of one unit,
  * reads the units its rows fill and not those whose zones hold the key) is at least the cost of the growth of the index and of the build; no other leaf of the index
  * follows the order of the table (key_cut would widen its zones) unless a unique b-tree of the table on that column alone answers its lookups (the primary key). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
@@ -33,6 +33,8 @@
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
 
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
+
+#define AUTOCUT_CLUSTER_UNITS 1.0	/* units of the default formula (a gain of 5%) the leading column of a CLUSTER of the table adds to its benefit when the keys are ranked: the cut keeps the order the table was given */
 
 #define AUTOCUT_SECOND_SLACK 5		/* percent the prediction (with the units of 4,096 rows of a key of 8,192 rows or more, 7.9 KB each in measures of 3 leaves and of 4) may exceed the cut by the key alone for the date to be its second key: about 2 units of cost; the sample does not see the runs and addresses a date order shrinks */
 
@@ -150,6 +152,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				keys_kept;
 	int			widens[AUTOCUT_LEAVES] = {0};	/* 1 + the track of the leaf a cut widens, 0 for none */
 	int			first_open;
+	AttrNumber	cluster = acut_cluster_att(heap);
+	double		best = 0;
 	uint32		cap;
 	int64	   *tmp;
 	TupleTableSlot *slot;
@@ -358,6 +362,13 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	leaf = cut_name(index, sc, tr[nfire > 0 ? fire[0] : first].c);
 	strlcpy(v->leaf, leaf, sizeof(v->leaf));
+	if (nfire > 0)
+	{
+		/* the measures of the leaf the verdict names */
+		v->reads = reads[0];
+		v->ideal = fills[0];
+		v->range = tr[fire[0]].time;
+	}
 	if (nfire == 0)
 	{
 		v->reason = "an equality on the key reads few units, or not many times those its rows fill";
@@ -415,16 +426,19 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->maybe = true;
 		goto done;
 	}
-	/* the first that fires and whose benefit is at least its cost is cut by; when every one that fires costs more than it gains, the first is advised. The exception is a key
-	 * whose rows fit one unit: its key list and bloom filter let an equality read the few units that hold it, so a later candidate whose benefit exceeds its cost by more
-	 * (a scattered time leaf: a window reads every unit without the cut) is cut by instead */
-	for (int i = 0, small = false; i < nfire && (v->res != SIFT_AUTOCUT_CUT || small); i++)
+	/* of the keys whose benefit is at least their cost, the one whose lookups gain most is cut by, the leading column of a CLUSTER of the table counting one unit more, and not
+	 * the first in the order of the index (a column of three values listed before the entity would win): the predicted growth of an index of a few units is too rough to rank by;
+	 * when every one that fires costs more than it gains, the first is advised. A time leaf is cut by
+	 * after no key only, or after a key whose rows fit one unit: its key list and bloom filter let an equality read the few units that hold it, so a later candidate whose
+	 * benefit exceeds its cost by more (a scattered time leaf: a window reads every unit without the cut) is cut by instead */
+	for (int i = 0, small = false; i < nfire; i++)
 	{
 		int			pick = fire[i],
 					sec;
 		double		growth,
 					benefit,
-					cost;
+					cost,
+					rank;
 		bool		pays;
 
 		if (blocked[i])
@@ -456,16 +470,18 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		benefit = acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[pick].shape ? 0.5 : 1.0);
 		cost = acut_cut_cost(growth, ntr + untracked);
 		pays = benefit >= cost;
+		rank = benefit + (tr[pick].hatt == cluster ? AUTOCUT_CLUSTER_UNITS : 0);
 		if (tr[pick].time && !pays)
 		{
 			if (v->res == SIFT_AUTOCUT_NONE && i == first_open)
 				v->reason = "a range of the leaf reads many units, but the cost of the cut is above its benefit";
 			continue;
 		}
-		if (v->res == SIFT_AUTOCUT_CUT && (!pays || benefit - cost <= v->benefit - v->cost))
+		if (v->res == SIFT_AUTOCUT_CUT && (!pays || (tr[pick].time ? !small || benefit - cost <= v->benefit - v->cost : rank <= best)))
 			continue;
 		if (pays || v->res == SIFT_AUTOCUT_NONE)
 		{
+			best = rank;
 			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
 			v->reads = reads[i];
 			v->ideal = fills[i];
