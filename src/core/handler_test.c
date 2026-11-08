@@ -67,6 +67,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_load_segment_kb",
 							"Testing: kB of memory the writer of a segment of a serial COPY into a sift_table holds before the segment ends (0 = half of maintenance_work_mem, at least 64 MB).",
 							NULL, &sift_test_load_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_vacuum_batch_bytes",
+							"Testing: bytes of dead rows a VACUUM of a sift_table holds before it tells the indexes (0 = half of maintenance_work_mem).",
+							NULL, &sift_test_vacuum_batch_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_fanin",
 							"Testing: runs one CREATE INDEX merge reads at a time (0 = by memory).",
 							NULL, &sift_test_fanin, 0, 0, 256, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

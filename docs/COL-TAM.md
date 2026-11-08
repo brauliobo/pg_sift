@@ -280,8 +280,11 @@ Unfrozen groups merge with everything: the output keeps the version vectors of t
 1. Classify tombstone entries against `OldestXmin`: aborted -> drop; committed and removable -> its TID is **dead**; others kept.
 2. Dead TIDs of write buffer rows get the `DEAD` record flag; dead TIDs of group rows clear the engine's liveness bit
    (`sift_cseg_bulkdelete` with a "TID in dead set" callback, WAL logged). Aborted write buffer inserts and the rows of aborted bulk segments are dead too.
-3. `index_bulk_delete` on every index with the dead set (rounds bounded by `maintenance_work_mem`), then `index_vacuum_cleanup`. TIDs are
-   never reused, so an interrupted VACUUM cannot expose a recycled TID; only index bloat stays until the next one.
+3. `index_bulk_delete` on every index with the dead set, then `index_vacuum_cleanup`. The dead set is held a batch at a time, as the dead TID list of a heap
+   VACUUM: the TIDs (6 bytes), the HOT roots that go on (6) and the runs of aborted rows (16) of a batch fill half of `maintenance_work_mem` (`autovacuum_work_mem` in an autovacuum worker),
+   the lists double as they grow; when they are full the batch clears the liveness bits of its group rows (steps 2), every index goes through its TIDs (one pass for
+   each batch, the `INFO` of `VACUUM VERBOSE` says how many), and the next batch starts, in the order of the write buffers, the log and the aborted groups. TIDs are
+   never reused, so an interrupted VACUUM cannot expose a recycled TID (the log keeps the dead set of the group rows until the rewrite of step 5, after the last batch); only index bloat stays until the next one.
    The rows of an aborted writer's group are dead like those of an aborted write buffer: VACUUM finds them from the version vectors (the rows whose xid aborted, as key runs of the dead set that `dead_has` searches), clears their liveness bits after the index cleanup, and the next merge drops them (`sift_tbl_aborted_runs`; `sift_tbl_drop_dead_groups` for a group with nothing live left).
 4. Close the open write buffer (8 pages or more), promote, freeze the unfrozen groups whose live rows are committed and older than the horizon, merge (the mostly dead segments included).
 5. Rewrite the tombstone segment without dropped entries and without LOCK entries of finished transactions; swap it in (skipped when

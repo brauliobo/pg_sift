@@ -52,12 +52,13 @@
 /* The cost delay of the pass (autovacuum's, or a worker's sift.table_auto_defrag_delay): a point where the page accesses so far may make it sleep */
 #define COST_DELAY()	sift_vacuum_delay_point()
 
-/* A growable array of TIDs: the dead rows VACUUM found, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up) */
+/* A growable array of TIDs: the dead rows of a batch of VACUUM, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up); max: the entries it may grow to (0: no limit) */
 typedef struct TidList
 {
 	ItemPointerData *tid;
 	uint64		n;
 	uint64		cap;
+	uint64		max;
 } TidList;
 
 typedef struct VacState
@@ -68,9 +69,20 @@ typedef struct VacState
 	double		live;			/* as a heap counts them: in-progress insertions left out, in-progress deletions in */
 	double		dead;			/* recently dead: deleter committed but not removable yet */
 	double		group_dead;		/* of those, rows of the column groups (their liveness bit is still set) */
+	/* the dead rows of a batch: VACUUM hands them to the indexes when they fill the budget and starts the next (batch_drain) */
 	TidList	dead_tids;
 	TidList	redirects;			/* of the dead TIDs, the roots of HOT chains that go on: their index entries stay, the log keeps the way to the live version */
 	SiftTblKeyRuns dead_runs;	/* sorted: the rows of the groups with unfrozen rows whose inserter aborted */
+	uint64		budget;			/* bytes the lists of a batch may hold: half of maintenance_work_mem, the lists double as they grow */
+	uint32		sb_lo,			/* the superblocks of the group rows of the batch */
+				sb_hi;
+	uint64		removed;		/* dead rows handed to the indexes, all batches */
+	int			batches;
+	int64		cleared;		/* group rows whose liveness the batches cleared */
+	Relation   *irel;			/* the indexes (none for the pass of a worker that skips them), with the result of each for the next batch and the cleanup */
+	int			nindexes;
+	IndexBulkDeleteResult **istat;
+	BufferAccessStrategy bstrategy;
 } VacState;
 
 /* Closes the open write buffer segment once it is worth a column segment (pages) */

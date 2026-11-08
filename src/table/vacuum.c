@@ -3,6 +3,7 @@
  * (docs/COL-TAM.md). The passes of the maintenance worker are in vacuum_maint.c, VACUUM FULL / CLUSTER in vacuum_copy.c.
  */
 #include "vacuum_int.h"
+#include "postmaster/autovacuum.h"
 #include "utils/timestamp.h"
 
 /* A worker's limits, from sift.table_auto_defrag_max_active and sift.table_auto_defrag_wal_rate (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop, and the WAL bytes per second it may average since the worker started */
@@ -41,6 +42,8 @@ tid_push(TidList *d)
 	if (d->n == d->cap)
 	{
 		d->cap = Max(1024, d->cap * 2);
+		if (d->max > 0)
+			d->cap = Min(d->cap, d->max);
 		d->tid = d->tid ? repalloc_huge(d->tid, d->cap * sizeof(ItemPointerData)) :
 			palloc_extended(d->cap * sizeof(ItemPointerData), MCXT_ALLOC_HUGE);
 	}
@@ -208,37 +211,44 @@ in_wbuf(const SiftTblRel *st, uint64 vblock)
 	return false;
 }
 
-/*
- * The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; [*lo, *hi] their
- * superblocks. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
- */
-static void
-group_dead(const SiftTblRel *st, VacState *v, const SiftTomb *a, uint32 n, uint32 *lo, uint32 *hi)
+#ifdef SIFT_TESTING
+int			sift_test_vacuum_batch_bytes = 0;
+#endif
+
+/* maintenance_work_mem as lazy VACUUM takes it (autovacuum_work_mem in an autovacuum worker): a batch of dead rows holds half, the lists double as they grow */
+static uint64
+batch_budget(void)
 {
-	for (uint32 i = 0; i < n; i++)
-	{
-		const SiftTomb *e = &a[i];
-		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
+	int			kb = AmAutoVacuumWorkerProcess() && autovacuum_work_mem != -1 ? autovacuum_work_mem : maintenance_work_mem;
 
-		if (e->kind == SIFT_TOMB_LOCK || in_wbuf(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
-			continue;
-		if (!TransactionIdPrecedes(e->xid, v->oldest))
-		{
-			v->dead += 1;
-			v->group_dead += 1;
-			continue;
-		}
-		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
-		if (e->kind == SIFT_TOMB_UPDATE && (e->flags & SIFT_TOMB_HOT))
-		{
-			uint64		next = e->succ;
+#ifdef SIFT_TESTING
+	if (sift_test_vacuum_batch_bytes > 0)
+		return sift_test_vacuum_batch_bytes;
+#endif
+	return (uint64) kb * 1024 / 2;
+}
 
-			if (!chain_dead(st, v, &next))
-				sift_key_to_tid(e->key, tid_push(&v->redirects));
-		}
-		*lo = Min(*lo, sb);
-		*hi = Max(*hi, sb);
-	}
+static void
+batch_begin(VacState *v)
+{
+	v->budget = batch_budget();
+	v->sb_lo = PG_UINT32_MAX;
+	v->sb_hi = 0;
+}
+
+static uint64
+batch_bytes(const VacState *v)
+{
+	return (v->dead_tids.n + v->redirects.n) * sizeof(ItemPointerData) + (uint64) v->dead_runs.n * sizeof(SiftKey[2]);
+}
+
+/* The runs the batch may take before it is full */
+static int
+runs_room(const VacState *v)
+{
+	uint64		used = batch_bytes(v);
+
+	return used >= v->budget ? 0 : (int) Min(INT_MAX - v->dead_runs.n, (v->budget - used) / sizeof(SiftKey[2]));
 }
 
 /* Is the row dead for the indexes: a dead TID, or a row of an aborted writer in a group (a key in one of the runs) */
@@ -265,6 +275,82 @@ index_dead_has(ItemPointer itemptr, void *state)
 	return dead_has(itemptr, v) && !tid_has(itemptr, &v->redirects);
 }
 
+/*
+ * Ends a batch: the liveness of its group rows is cleared, every index goes through its dead rows (one pass for each, as the index passes of a lazy
+ * VACUUM whose dead TID list filled maintenance_work_mem), and the lists start again. A TID is never given to another row (the vblocks only grow), so
+ * no index can find a TID of a batch handed to a row of the next, and the log, which keeps the dead set of the group rows until the end
+ * (sift_tomb_rewrite, after the last pass), gives a VACUUM that stops between two batches the same rows again.
+ */
+static void
+batch_drain(Relation rel, SiftTblRel *st, VacState *v)
+{
+	if (v->dead_tids.n == 0 && v->dead_runs.n == 0)
+		return;
+	tid_sort(&v->dead_tids);
+	tid_sort(&v->redirects);
+	if (v->dead_runs.n > 0)
+		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), sift_cmp_u64);
+	if (v->sb_lo <= v->sb_hi)
+	{
+		v->cleared += sift_tbl_group_bulkdelete(rel, st, dead_has, v, v->sb_lo, v->sb_hi);
+		/* the bulk delete flagged the segments dirty: their liveness is read from entries that say so */
+		sift_tbl_refresh(rel, st);
+	}
+	for (int i = 0; i < v->nindexes; i++)
+	{
+		IndexVacuumInfo ivinfo = {.index = v->irel[i],.heaprel = rel,.analyze_only = false,.report_progress = false,
+		.estimated_count = true,.message_level = DEBUG2,.num_heap_tuples = rel->rd_rel->reltuples,.strategy = v->bstrategy};
+
+		v->istat[i] = index_bulk_delete(&ivinfo, v->istat[i], index_dead_has, v);
+	}
+	v->removed += v->dead_tids.n;
+	v->batches++;
+	v->dead_tids.n = v->redirects.n = v->dead_runs.n = 0;
+	v->sb_lo = PG_UINT32_MAX;
+	v->sb_hi = 0;
+}
+
+static void
+batch_drain_full(Relation rel, SiftTblRel *st, VacState *v)
+{
+	if (batch_bytes(v) >= v->budget)
+		batch_drain(rel, st, v);
+}
+
+/*
+ * The dead TIDs the tombstones say for rows of the column groups: committed deletions older than OldestXmin; the superblocks of the batch are
+ * widened to theirs. Committed deletions not old enough yet are counted as recently dead. A row has one committed deletion at most.
+ */
+static void
+group_dead(Relation rel, SiftTblRel *st, VacState *v, const SiftTomb *a, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		const SiftTomb *e = &a[i];
+		uint32		sb = (e->key >> 16) / SIFT_SB_PAGES;
+
+		batch_drain_full(rel, st, v);
+		if (e->kind == SIFT_TOMB_LOCK || in_wbuf(st, e->key >> 16) || !TransactionIdDidCommit(e->xid))
+			continue;
+		if (!TransactionIdPrecedes(e->xid, v->oldest))
+		{
+			v->dead += 1;
+			v->group_dead += 1;
+			continue;
+		}
+		sift_key_to_tid(e->key, tid_push(&v->dead_tids));
+		if (e->kind == SIFT_TOMB_UPDATE && (e->flags & SIFT_TOMB_HOT))
+		{
+			uint64		next = e->succ;
+
+			if (!chain_dead(st, v, &next))
+				sift_key_to_tid(e->key, tid_push(&v->redirects));
+		}
+		v->sb_lo = Min(v->sb_lo, sb);
+		v->sb_hi = Max(v->sb_hi, sb);
+	}
+}
+
 /* The writers of the groups with unfrozen rows hold the oldest xid back */
 static void
 note_groups(const SiftTblRel *st, VacState *v)
@@ -274,12 +360,16 @@ note_groups(const SiftTblRel *st, VacState *v)
 			note_xid(v, st->dir.segs[i].reserved);
 }
 
-/* Steps 1 and 2: flags the dead write buffer rows, clears the liveness of the dead group rows, counts the rows */
+/*
+ * Steps 1 to 3: flags the dead write buffer rows, clears the liveness of the dead group rows, tells the indexes, counts the rows. The dead rows are
+ * held a batch at a time (batch_drain): the write buffers, then the log of tombstones, then the aborted rows of the groups, each in the order of
+ * its keys, so that a batch covers a few superblocks and the groups it clears are read once for the batches.
+ */
 static void
 vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 {
-	uint32		sb_lo = PG_UINT32_MAX,
-				sb_hi = 0;
+	SiftTblAbortScan scan = {0};
+	bool		done;
 
 	sift_tomb_sync_all(rel, &st->tomb);
 	for (int i = 0; i < st->nwbuf; i++)
@@ -290,47 +380,37 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 		for (uint32 p = 0; p < seg.npages; p++)
 		{
 			CHECK_FOR_INTERRUPTS();
+			batch_drain_full(rel, st, v);
 			vacuum_page(rel, st, &seg, p, v);
 			pass_delay();
 		}
 	}
-	group_dead(st, v, st->tomb.ents, st->tomb.nents, &sb_lo, &sb_hi);
-	group_dead(st, v, st->tomb.recent, st->tomb.nrecent, &sb_lo, &sb_hi);
+	group_dead(rel, st, v, st->tomb.ents, st->tomb.nents);
+	group_dead(rel, st, v, st->tomb.recent, st->tomb.nrecent);
 	v->dead_runs.mcxt = CurrentMemoryContext;
-	sift_tbl_aborted_runs(rel, st, &v->dead_runs, &sb_lo, &sb_hi);
-	tid_sort(&v->dead_tids);
-	tid_sort(&v->redirects);
-	if (v->dead_runs.n > 0)
-		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), sift_cmp_u64);
-	if (sb_lo <= sb_hi)
-		(void) sift_tbl_group_bulkdelete(rel, st, dead_has, v, sb_lo, sb_hi);
-	/* the bulk delete flagged the segments dirty: their liveness is read from entries that say so */
-	sift_tbl_refresh(rel, st);
+	do
+	{
+		done = sift_tbl_aborted_runs(rel, st, &v->dead_runs, &scan, v->dead_runs.n + runs_room(v), &v->sb_lo, &v->sb_hi);
+		batch_drain_full(rel, st, v);
+	} while (!done);
+	batch_drain(rel, st, v);
 	v->live += sift_tbl_group_live_rows(rel, st) - v->group_dead;
 }
 
-/* Step 3; returns the number of indexes */
-static int
-vacuum_indexes(Relation rel, VacState *v, BufferAccessStrategy bstrategy)
+/* Step 3, the end: the indexes are cleaned up and closed */
+static void
+vacuum_cleanup(Relation rel, VacState *v)
 {
-	Relation   *irel;
-	int			nindexes;
-
-	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &irel);
-	for (int i = 0; i < nindexes; i++)
+	for (int i = 0; i < v->nindexes; i++)
 	{
-		IndexVacuumInfo ivinfo = {.index = irel[i],.heaprel = rel,.analyze_only = false,.report_progress = false,
-		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v->live + v->dead,.strategy = bstrategy};
-		IndexBulkDeleteResult *res = NULL;
+		IndexVacuumInfo ivinfo = {.index = v->irel[i],.heaprel = rel,.analyze_only = false,.report_progress = false,
+		.estimated_count = false,.message_level = DEBUG2,.num_heap_tuples = v->live + v->dead,.strategy = v->bstrategy};
+		IndexBulkDeleteResult *res = index_vacuum_cleanup(&ivinfo, v->istat[i]);
 
-		if (v->dead_tids.n > 0 || v->dead_runs.n > 0)
-			res = index_bulk_delete(&ivinfo, NULL, index_dead_has, v);
-		res = index_vacuum_cleanup(&ivinfo, res);
 		if (res)
 			pfree(res);
 	}
-	vac_close_indexes(nindexes, irel, NoLock);
-	return nindexes;
+	vac_close_indexes(v->nindexes, v->irel, NoLock);
 }
 
 /* Would the tombstone rewrite change the log, by dropping an entry or freezing a root? tomb_keep notes the xids of the entries kept either way */
@@ -440,8 +520,8 @@ vacuum_report(Relation rel, const VacState *v, const struct VacuumCutoffs *cutof
 	vac_update_relstats(rel, nblocks, v->live, 0, hasindex, v->newest_kept, cutoffs->OldestMxact, &fz, &mz, false);
 #endif
 	sift_pgstat_report_vacuum(rel, (PgStat_Counter) v->live, (PgStat_Counter) v->dead, start);
-	ereport(elevel, (errmsg("table \"%s\": rows: %llu removed, %.0f remain, %.0f are dead but not yet removable",
-							RelationGetRelationName(rel), (unsigned long long) v->dead_tids.n, v->live, v->dead)));
+	ereport(elevel, (errmsg("table \"%s\": rows: %llu removed in %d batches, %.0f remain, %.0f are dead but not yet removable",
+							RelationGetRelationName(rel), (unsigned long long) v->removed, v->batches, v->live, v->dead)));
 }
 
 void
@@ -452,20 +532,23 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TimestampTz start = GetCurrentTimestamp();
 	int			elevel = (params->options & VACOPT_VERBOSE) ? INFO : DEBUG2;
-	int			nindexes;
 
 	(void) vacuum_get_cutoffs(rel, params, &cutoffs);
 	v.st = st;
 	v.oldest = cutoffs.OldestXmin;
 	v.newest_kept = cutoffs.OldestXmin;
+	v.bstrategy = bstrategy;
+	batch_begin(&v);
 	sift_tbl_refresh(rel, st);
 	sift_maint_lock(rel, true);
 	maintaining = true;
 	PG_TRY();
 	{
+		vac_open_indexes(rel, RowExclusiveLock, &v.nindexes, &v.irel);
+		v.istat = palloc0(Max(v.nindexes, 1) * sizeof(IndexBulkDeleteResult *));
 		if (st->initialized)
 			vacuum_rows(rel, st, &v);
-		nindexes = vacuum_indexes(rel, &v, bstrategy);
+		vacuum_cleanup(rel, &v);
 		if (st->initialized)
 		{
 			vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, elevel);
@@ -478,7 +561,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	}
 	PG_END_TRY();
 	sift_maint_unlock(rel);
-	vacuum_report(rel, &v, &cutoffs, nindexes > 0, start, elevel);
+	vacuum_report(rel, &v, &cutoffs, v.nindexes > 0, start, elevel);
 }
 
 bool		sift_tbl_auto_defrag = true;
@@ -525,18 +608,10 @@ tbl_truncates(Relation rel)
 int64
 clear_removable(Relation rel, SiftTblRel *st, VacState *v)
 {
-	uint32		sb_lo = PG_UINT32_MAX,
-				sb_hi = 0;
-	int64		removed = 0;
-
+	batch_begin(v);
 	sift_tomb_sync_all(rel, &st->tomb);
-	group_dead(st, v, st->tomb.ents, st->tomb.nents, &sb_lo, &sb_hi);
-	group_dead(st, v, st->tomb.recent, st->tomb.nrecent, &sb_lo, &sb_hi);
-	tid_sort(&v->dead_tids);
-	if (sb_lo <= sb_hi)
-	{
-		removed = sift_tbl_group_bulkdelete(rel, st, dead_has, v, sb_lo, sb_hi);
-		sift_tbl_refresh(rel, st);
-	}
-	return removed;
+	group_dead(rel, st, v, st->tomb.ents, st->tomb.nents);
+	group_dead(rel, st, v, st->tomb.recent, st->tomb.nrecent);
+	batch_drain(rel, st, v);
+	return v->cleared;
 }
