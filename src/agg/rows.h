@@ -42,6 +42,9 @@ typedef struct SiftRowsSpec
 /* at most this many count(DISTINCT) of one argument share a set: a pair carries a bit for each */
 #define SIFT_ROWS_MAX_SHARED	32
 
+/* the bytes the arrays of a group take (its keys are the width of their values besides): the node holds no more groups than a scan that cannot spill may (group_nospill_factor) */
+extern double sift_agg_rows_group_bytes(const SiftRowsSpec *s);
+
 extern List *sift_agg_rows_pack(const SiftRowsSpec *s);
 extern SiftRowsSpec *sift_agg_rows_unpack(List *pack);
 

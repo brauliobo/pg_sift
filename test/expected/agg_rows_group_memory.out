@@ -1,0 +1,100 @@
+-- The node that groups the rows of a plan (Custom Scan (SiftAggRows)) holds its groups to the end, and ends with an error that says what to raise when the
+-- groups it holds pass group_nospill_factor times hash memory, the bytes a scan that cannot spill may take (its estimate of the groups of a join is a guess:
+-- 845 for 47,000 here). The factor is lowered so that a few thousand groups reach it (group_nospill_base: the 8 MB floor of the hash memory).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+-- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
+SET sift.agg_two_level = off;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, bucket int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 50 END, i % 2,
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE jsonb_build_object('items', coalesce((SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                                   'n', CASE WHEN (i + j) % 13 = 0 THEN NULL ELSE (i * j) % 10 END))
+                                              FROM generate_series(1, i % 5) j), '[]')) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
+NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+VACUUM (FREEZE, ANALYZE) facts;
+-- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
+CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
+	                  cells AS (SELECT f.id, f.dim_a_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.dim_a_id, f.bucket, i.k
+	                            UNION ALL
+	                            SELECT f.id, f.dim_a_id, f.bucket, NULL::text, avg(i.n), count(*) FILTER (WHERE i.n > 5)
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.dim_a_id, f.bucket)
+	               SELECT c.k, p.label, %s
+	               FROM periods p LEFT JOIN cells c ON c.bucket = p.bucket GROUP BY c.k, p.label %s$q$, filt, filt, aggs, tail)
+$$;
+CREATE FUNCTION plan_has(q text, node text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%' || node || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- a group for each id and key: tens of thousands of groups
+CREATE FUNCTION many_groups() RETURNS text LANGUAGE sql AS $$
+	SELECT report('count(DISTINCT c.dim_a_id) AS dim_a, count(*) AS n, count(c.id) AS ids', 'true', ', c.id')
+$$;
+SET sift.agg_rows = off;
+DO $$ BEGIN EXECUTE format('CREATE TEMP TABLE want AS %s', many_groups()); END $$;
+RESET sift.agg_rows;
+-- the plan is made at the default factor and has the node; it is run under 1.6 MB (the tables of the arms, 20,000 groups, take 1.2 MB; the 47,000 groups of the node 2 MB)
+SET plan_cache_mode = force_generic_plan;
+SELECT format('PREPARE r AS %s', many_groups()) AS prepare_r \gexec
+PREPARE r AS WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
+	                  cells AS (SELECT f.id, f.dim_a_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE true GROUP BY f.id, f.dim_a_id, f.bucket, i.k
+	                            UNION ALL
+	                            SELECT f.id, f.dim_a_id, f.bucket, NULL::text, avg(i.n), count(*) FILTER (WHERE i.n > 5)
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE true GROUP BY f.id, f.dim_a_id, f.bucket)
+	               SELECT c.k, p.label, count(DISTINCT c.dim_a_id) AS dim_a, count(*) AS n, count(c.id) AS ids
+	               FROM periods p LEFT JOIN cells c ON c.bucket = p.bucket GROUP BY c.k, p.label , c.id
+SELECT plan_has('EXECUTE r', 'SiftAggRows') AS node_at_default_factor;
+ node_at_default_factor 
+------------------------
+ t
+(1 row)
+
+CREATE TEMP TABLE got AS EXECUTE r;
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+ groups | differ 
+--------+--------
+  47273 |      0
+(1 row)
+
+DROP TABLE got;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=1638400';
+DO $$
+DECLARE msg text; hint text;
+BEGIN
+	EXECUTE 'EXECUTE r';
+	RAISE NOTICE 'no error';
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
+	RAISE WARNING 'SQLSTATE % names the groups: % hint: %', SQLSTATE, msg ~ 'groups of the aggregate hold [0-9]+ kB', hint;
+END $$;
+WARNING:  SQLSTATE 54000 names the groups: t hint: Raise work_mem or hash_mem_multiplier, or set sift.agg_rows to off.
+DEALLOCATE r;
+RESET plan_cache_mode;
+RESET sift.test_limits;
+RESET work_mem;
+RESET hash_mem_multiplier;
+DROP FUNCTION many_groups();
+DROP FUNCTION plan_has(text, text);
+DROP FUNCTION report(text, text, text);
+DROP TABLE facts;
+DROP EXTENSION pg_sift;

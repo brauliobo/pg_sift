@@ -34,6 +34,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  generic_args         | SIFT_AGG_MAX_GARGS              |              100 | t         | f
  generic_leaves       | SIFT_AGG_MAX_GLEAVES            |                4 | t         | f
  group_keys           | SIFT_AGG_MAX_KEYS               |               32 | t         | t
+ group_nospill_base   | GROUP_NOSPILL_BASE              |          8388608 | t         | t
  group_nospill_factor | GROUP_NOSPILL_FACTOR            |               32 | t         | t
  group_spill_depth    | SPILL_MAX_DEPTH                 |                8 | t         | t
  group_spill_parts    | SPILL_MAX_PARTS                 |              128 | t         | t
@@ -97,7 +98,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  wide_dict_bytes      | -                               |       1073741823 | t         | t
  wide_digits          | SIFT_COL_MAX_WIDE_SCALE         |               38 | t         | f
  write_buffer_kb      | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |             4096 | t         | f
-(93 rows)
+(94 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';
@@ -106,7 +107,7 @@ SELECT id, dflt, effective FROM sift._test_limits() WHERE effective <> dflt ORDE
 --------------+--------+-----------
  phrase_terms |    128 |         3
  query_bytes  | 262144 |        64
-(2 rows)
+(92 rows)
 
 CREATE TABLE items (id int, body text);
 INSERT INTO items SELECT i, 'alpha beta gamma delta epsilon w' || i % 7 FROM generate_series(1, 300) i;
