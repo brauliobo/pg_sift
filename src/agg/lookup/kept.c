@@ -35,6 +35,10 @@ map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)
 
 	if (sift_aggjoin_preserves(j->kind))
 		return false;
+	/* the columns of an entry are known by their number and type: an expression of the table's columns has no number */
+	for (int c = 0; c < j->ncol; c++)
+		if (j->colexpr[c])
+			return false;
 	if (own && (kept_cond_bad((Node *) cb->slot[j->fslot].expr, &w) || contain_mutable_functions((Node *) cb->slot[j->fslot].expr)))
 		return false;
 	for (int i = 0; i < j->nidx; i++)

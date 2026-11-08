@@ -14,6 +14,8 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "access/htup_details.h"
 
@@ -59,10 +61,19 @@ double
 joined_distinct(AggCtx *c, JoinCtx *jc, int col)
 {
 	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
-	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(jc->rti, c->root)->relid),
-									  Int16GetDatum(jc->j.colatt[col]), BoolGetDatum(false));
+	Node	   *x = jc->j.colexpr[col];
+	HeapTuple	tup;
 	double		nd = 0;
 
+	if (x != NULL)
+	{
+		/* an expression of the table: the statistics of an index on it, as PostgreSQL reads them */
+		x = copyObject(x);
+		ChangeVarNodes(x, 1, jc->rti, 0);
+		return Min(estimate_num_groups(c->root, list_make1(x), Max(rel->tuples, 1.0), NULL, NULL), Max(rel->rows, 1.0));
+	}
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(planner_rt_fetch(jc->rti, c->root)->relid),
+						  Int16GetDatum(jc->j.colatt[col]), BoolGetDatum(false));
 	if (HeapTupleIsValid(tup))
 	{
 		nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;

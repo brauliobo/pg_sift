@@ -138,6 +138,16 @@ col_ref_id(MapTab *m, MapCol *mc, Datum d)
 	return mc->n;
 }
 
+/* column c of the row in slot: the column of the table, or the value of its expression (map_eval_cols) */
+static Datum
+map_slot_col(const MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, int c, bool *isnull)
+{
+	if (j->colexpr[c] == NULL)
+		return slot_getattr(slot, j->colatt[c], isnull);
+	*isnull = m->xn[c];
+	return m->xv[c];
+}
+
 static void
 map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 {
@@ -175,15 +185,15 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	}
 	if (m->lazy)
 		m->rkey[m->nrow] = sift_aggspec_operand_int(j->keytype[0], kv[0]);
-	if (m->kcx)
-		ResetExprContext(m->kcx);
 	for (int c = 0; c < m->ncol; c++)
 	{
 		bool		cnull;
-		Datum		d = slot_getattr(slot, j->colatt[c], &cnull);
+		Datum		d = map_slot_col(m, slot, j, c, &cnull);
 
 		map_col_put(m, c, d, cnull);
 	}
+	if (m->kcx)
+		ResetExprContext(m->kcx);
 	m->nrow++;
 }
 
@@ -216,11 +226,26 @@ map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c)
 	bind_param(ex, param, d, isnull);
 }
 
+/* the columns of the row that are expressions of the table's columns, evaluated on it unless a load from the leaves of an index has their values */
+static void
+map_eval_cols(MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
+{
+	if (m->xfed)
+		return;
+	for (int c = 0; c < j->ncol; c++)
+		if (j->colexpr[c] != NULL)
+		{
+			m->kcx->ecxt_scantuple = slot;
+			m->xv[c] = ExecEvalExprSwitchContext(m->cx[c], m->kcx, &m->xn[c]);
+		}
+}
+
 /* a row the scan of the table returned: into the table when it holds the ON clause's own conditions (`own`, when they read no leaf: a row that fails them matches no tuple) */
 void
 map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own)
 {
 	ex->lookup_read++;
+	map_eval_cols(m, slot, j);
 	if (own)
 	{
 		bool		isnull;
@@ -229,7 +254,7 @@ map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, cons
 		for (int c = 0; c < j->ncol; c++)
 		{
 			bool		cnull;
-			Datum		v = slot_getattr(slot, j->colatt[c], &cnull);
+			Datum		v = map_slot_col(m, slot, j, c, &cnull);
 
 			bind_param(ex, cb->nleaves + c, v, cnull);
 		}

@@ -715,8 +715,8 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 					return agg_refuse_limit(SHAPE_WIDTH, combo_leaves, SIFT_AGG_MAX_CLEAVES, "no room in a value combination for a leaf of the key expression (it holds at most that many, or has the leaf with another type)");
 				use_matched_leaf(c, w.leaf[p]);
 			}
-			foreach_ptr(Var, v, w.vars)
-				if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+			foreach_ptr(Node, v, w.vars)
+				if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 					return agg_refuse_on(JOIN_CONDITION, "a key expression reads a column of another joined table that cannot be looked up first");
 			jc->j.args = lappend(jc->j.args, expr);
 		}

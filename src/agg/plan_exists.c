@@ -609,8 +609,8 @@ scoped_join(AggCtx *c, ExistsScan *x, Index offset)
 				return NULL;
 			use_matched_leaf(c, w.leaf[p]);
 		}
-		foreach_ptr(Var, v, w.vars)
-			if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
+		foreach_ptr(Node, v, w.vars)
+			if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 				return NULL;
 		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr));
 	}

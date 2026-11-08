@@ -70,6 +70,10 @@ typedef struct MapTab
 	bool		fi32;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
 	ExprContext *kcx;
+	ExprState  *cx[SIFT_AGG_MAX_JCOLS];	/* the same for the columns that are expressions (SiftAggJoin.colexpr): while the rows are loaded, their values are in xv and xn, evaluated or, with xfed, put there by a load from the leaves of an index */
+	Datum		xv[SIFT_AGG_MAX_JCOLS];
+	bool		xn[SIFT_AGG_MAX_JCOLS];
+	bool		xfed;
 	uint16	   *dcls;			/* a dense table (map_load_dense): the class of each key in [0, dn), 0 none; the rows are one for each class, the row of class c is c - 1 */
 	uint32		dn;
 } MapTab;

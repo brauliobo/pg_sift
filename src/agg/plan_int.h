@@ -43,6 +43,8 @@ typedef struct JoinCtx
 	int			dense;			/* the executor keeps the table as classes of its keys (map_load_dense): 0 not asked, 1 yes, 2 no (join_dense) */
 	double		classes;		/* ... the most classes the statistics allow */
 	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
+	List	   *iexprs;			/* the expressions of the sift_col indexes of the table (join_of_expr); read once */
+	bool		iexprs_done;
 } JoinCtx;
 
 typedef struct SlotReq
@@ -431,8 +433,9 @@ extern JoinCtx *join_of_var(AggCtx *c, Node *n);
 extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod, Oid pcoll);
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
-extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
-extern int join_col(JoinCtx *jc, Var *v);
+extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Node *v);
+extern int join_col(JoinCtx *jc, Node *v);
+extern JoinCtx *join_of_node(AggCtx *c, Node *n);
 extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);

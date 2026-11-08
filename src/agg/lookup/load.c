@@ -267,7 +267,11 @@ map_index_covers(Relation idx, const SiftAggJoin *j)
 		need[nneed++] = j->keyatt[k];
 	}
 	for (int c = 0; c < j->ncol; c++)
+	{
+		if (j->colexpr[c])
+			return false;
 		need[nneed++] = j->colatt[c];
+	}
 	for (int n = 0; n < nneed; n++)
 	{
 		int			i;
@@ -338,7 +342,7 @@ map_note_table(AggExec *ex, Relation rel)
 
 /*
  * Is the join of combo ci one whose table can be kept as classes of its keys (map_load_dense)? An inner or left join by one int4 leaf, nothing else in its
- * ON clause, and expressions that read the columns alone: then the output rows of a key are those of its class. No other lookup may be keyed by this
+ * ON clause, and expressions that read the columns alone (not the key itself): then the output rows of a key are those of its class. No other lookup may be keyed by this
  * one's rows (they are no longer one for each key); an expression of its columns in a combo of its own is.
  */
 bool
@@ -353,6 +357,10 @@ sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay)
 		return false;
 	for (int sl = 0; sl < cb->nslots; sl++)
 		if (slot_reads_leaf(cb, sl))
+			return false;
+	/* the key as a column would be that of the first key of the class */
+	for (int c = 0; c < j->ncol; c++)
+		if (j->colexpr[c] == NULL && j->colatt[c] == j->keyatt[0])
 			return false;
 	for (int cd = 0; cd < s->ncombo; cd++)
 		for (int p = 0; s->combo[cd].join >= 0 && p < s->combo[cd].nleaves; p++)
@@ -444,6 +452,12 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
 			m->kx[k] = ExecInitExpr((Expr *) j->tkey[k], NULL);
 		}
+	for (int c = 0; c < lj.ncol; c++)
+		if (lj.colexpr[c])
+		{
+			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
+			m->cx[c] = ExecInitExpr((Expr *) lj.colexpr[c], NULL);
+		}
 	MemoryContextSwitchTo(kept.cx);
 	/* a table read whole (no condition of its own, no index) fills the map to about its rows */
 	if (idx == NULL && own == NULL && rel->rd_rel->reltuples > 0)
@@ -513,6 +527,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		FreeExprContext(m->kcx, true);
 		m->kcx = NULL;
 		memset(m->kx, 0, sizeof(m->kx));
+		memset(m->cx, 0, sizeof(m->cx));
 	}
 	if (firstcx)
 		FreeExprContext(firstcx, true);
