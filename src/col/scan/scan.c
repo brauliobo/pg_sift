@@ -121,25 +121,6 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	return src;
 }
 
-/* the bytes of a directory copy: the segments it lists, not the room for the most the directory holds */
-static Size
-dir_bytes(const SiftDirSnapshot *dir)
-{
-	return offsetof(SiftDirSnapshot, segs) + dir->nsegs * sizeof(SiftSegEntry);
-}
-
-Size
-sift_col_view_size(const SiftColSource *src)
-{
-	return dir_bytes(&src->dir);
-}
-
-void
-sift_col_view_export(const SiftColSource *src, void *buf)
-{
-	memcpy(buf, &src->dir, dir_bytes(&src->dir));
-}
-
 SiftColSource *
 sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
 {
@@ -152,10 +133,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
-	if (view != NULL)
-		memcpy(&src->dir, view, dir_bytes(view));
-	else
-		sift_dir_read(index, &src->dir);
+	scan_dir_load(src, view);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
 	col_hf_open(src);
