@@ -25,6 +25,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_split",
 							"Testing: the groups of a scan with workers (0 = by cost, 1 = the participants split the rows, 2 = they split the groups by a key where the scan can).",
 							NULL, &sift_test_split, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_par_leader_wait",
+							 "Testing: the leader of a scan with workers holds the first item it takes until the workers have taken the others.",
+							 NULL, &sift_test_par_leader_wait, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_segfmt",
 							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
 							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_POSBLK, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -267,6 +267,19 @@ item_done(AggExec *ex, uint32 item)
 		par_poll(ex);
 }
 
+bool		sift_test_par_leader_wait = false;
+
+/* Testing: the leader takes one item and holds it until the workers have taken all the others, so that the scan is split between the participants whoever is quicker */
+static void
+test_leader_wait(AggExec *ex)
+{
+	for (int i = 0; sift_test_par_leader_wait && ex->par != NULL && i < 30000 && pg_atomic_read_u32(&ex->shared->next) < ex->shared->nitems; i++)
+	{
+		pg_usleep(1000);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 void
 scan_items(AggExec *ex)
 {
@@ -284,6 +297,7 @@ scan_items(AggExec *ex)
 	}
 	while (!ex->pass_stop && !sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
 	{
+		test_leader_wait(ex);
 		scan_item(ex, item);
 		item_done(ex, item);
 	}
