@@ -403,6 +403,25 @@ sift_colw_full(const SiftColSegWriter *w, Size budget)
 	return sift_colw_memory(w) > budget || w->rows >= SIFT_CPOINT_BUILD_ROWS;
 }
 
+Size
+sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
+{
+	int			leaves = 0;
+
+	for (int c = 0; c < ncols; c++)
+		leaves += spec->point[c] || spec->point_tid[c] || spec->gorder[c];
+	/* a leaf: its accumulators at their largest (twice the entries, with the group of each one), and once the arrays the end of the segment builds for the largest leaf */
+	return leaves ? (Size) leaves * (2 * (sizeof(int64) + sizeof(uint32) + sizeof(uint64)) + 2 * (sizeof(int64) + sizeof(uint8))) + 144 : 0;
+}
+
+Size
+sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left)
+{
+	double		need = (double) rows_left / Max(segs_left, 1);
+
+	return need > (double) seg_rows ? (Size) ((double) budget * need / (double) Max(seg_rows, 1)) : budget;
+}
+
 void
 sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 {

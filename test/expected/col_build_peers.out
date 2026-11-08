@@ -18,9 +18,9 @@ SELECT count(*) > 1 AS peers_from_workers FROM sift.col_segments('nk_idx') WHERE
 (1 row)
 
 SELECT sift.col_maintenance_due('nk_idx', true) AS due_automatic, sift.col_maintenance_due('nk_idx', false) AS due_manual;
-  due_automatic   |    due_manual    
-------------------+------------------
- fragmented units | fragmented units
+   due_automatic    |     due_manual     
+--------------------+--------------------
+ key ranges overlap | key ranges overlap
 (1 row)
 
 SELECT sift.col_maintain('nk_idx') AS rewrote;
@@ -32,7 +32,7 @@ SELECT sift.col_maintain('nk_idx') AS rewrote;
 SELECT count(*) AS segments, sum(units) <= 2 * (SELECT units FROM sift.col_index_info('nk_idx')) AS listed_within_threshold FROM sift.col_segments('nk_idx') WHERE kind = 'immutable';
  segments | listed_within_threshold 
 ----------+-------------------------
-        1 | t
+        6 | t
 (1 row)
 
 SELECT sift.col_maintenance_due('nk_idx', true) IS NULL AS clean;

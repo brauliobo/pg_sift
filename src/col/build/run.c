@@ -219,10 +219,9 @@ colb_write_run(ColBuild *b, bool last)
 static void
 fit_budget(ColBuild *b, uint64 seg_rows)
 {
-	double		per_seg = ((double) b->share * 5 / 4 - b->indexed) / Max(b->maxsegs - b->nsegs, 1);
+	double		left = (double) b->share * 5 / 4 - b->indexed;
 
-	if (per_seg > seg_rows)
-		b->budget = (Size) ((double) b->budget * per_seg / (double) Max(seg_rows, 1));
+	b->budget = sift_colw_fit_budget(b->budget, seg_rows, left > 0 ? (uint64) left : 0, b->maxsegs - b->nsegs);
 }
 
 void

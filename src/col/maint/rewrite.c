@@ -234,7 +234,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	maint_overlay_asked = false;
 	maint_overlay_steps = automatic ? 1 : SIFT_MAX_SEGMENTS;
 	sift_dir_read(index, snap);
-	maint_use_partitions(snap);
+	maint_use_partitions(index, snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
 	nseg = v->n;

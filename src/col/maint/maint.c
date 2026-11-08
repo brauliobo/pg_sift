@@ -38,7 +38,7 @@ int			sift_col_auto_merge_max_workers = 0;
 int	maint_part_kb = 0;
 
 int
-maint_part_kb_for(uint64 bytes)
+maint_part_kb_for(uint64 bytes, double mem_ratio)
 {
 	int			kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
 		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
@@ -46,21 +46,29 @@ maint_part_kb_for(uint64 bytes)
 
 	if (sift_col_auto_merge_partition_kb > 0)
 		return kb;
-	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
+	mem_kb = Max((uint64) (maintenance_work_mem / mem_ratio), Max(bytes / 1024 / PART_DIVISOR, (uint64) (PART_MIN_KB * MAINT_MEM_RATIO / mem_ratio)));
 	if (bytes / 1024 > mem_kb && (kb == 0 || mem_kb < (uint64) kb))
 		kb = (int) Min(mem_kb, (uint64) INT_MAX);
 	return kb;
 }
 
 void
-maint_use_partitions(const SiftDirSnapshot *snap)
+maint_use_partitions(Relation index, const SiftDirSnapshot *snap)
 {
-	uint64		bytes = 0;
+	uint64		bytes = 0,
+				rows = 0;
+	double		ratio = MAINT_MEM_RATIO;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
 			bytes += snap->segs[i].bytes;
-	maint_part_kb = maint_part_kb_for(bytes);
+			rows += snap->segs[i].ndocs;
+		}
+	/* a narrow row costs more memory in the writer for each byte of segment than the usual one does */
+	if (rows > 0 && sift_col_is_index(index))
+		ratio = Max(ratio, (double) sift_colw_row_memory(&sift_col_rel(index)->pagg, sift_col_rel(index)->schema->ncols) * rows / Max(bytes, 1));
+	maint_part_kb = maint_part_kb_for(bytes, ratio);
 }
 
 /*
