@@ -414,7 +414,7 @@ read_units(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Uni
 	ucx = AllocSetContextCreate(old, "lookup columns", ALLOCSET_DEFAULT_SIZES);
 	ux = AllocSetContextCreate(ucx, "lookup columns of a unit", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(ucx);
-	src = sift_colsrc_open(rel, ix, ex->snap, ucx);
+	src = sift_colsrc_open(rel, ix, ex->snap, ucx, NULL);
 	sift_colsrc_begin(src, 0, PG_UINT32_MAX, NULL, 0);
 	while (ok && sift_colsrc_next(src, &unit))
 		for (int p = 0; p < nneed && ok; p++)

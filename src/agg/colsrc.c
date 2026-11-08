@@ -88,13 +88,13 @@ sift_colsrc_preagg(Relation rel, SiftSrcPreagg *pa)
 }
 
 SiftSrcSource *
-sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open(heap, index, snapshot, mcxt);
+	src->impl = prov->open(heap, index, snapshot, mcxt, view);
 	return src;
 }
 
@@ -107,14 +107,26 @@ sift_colsrc_can_part(Oid relam, bool index)
 }
 
 SiftSrcSource *
-sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;
-	src->impl = prov->open_part(heap, index, snapshot, mcxt);
+	src->impl = prov->open_part(heap, index, snapshot, mcxt, view);
 	return src;
+}
+
+Size
+sift_colsrc_view_size(SiftSrcSource *src)
+{
+	return src->prov->view_size ? src->prov->view_size(src->impl) : 0;
+}
+
+void
+sift_colsrc_view_export(SiftSrcSource *src, void *buf)
+{
+	src->prov->view_export(src->impl, buf);
 }
 
 void

@@ -50,7 +50,7 @@ ts_open(TestScan *ts, Oid indexoid)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_colstub index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_colstub test", ALLOCSET_DEFAULT_SIZES);
-	ts->src = sift_colsrc_open(ts->heap, ts->index, GetTransactionSnapshot(), ts->cxt);
+	ts->src = sift_colsrc_open(ts->heap, ts->index, GetTransactionSnapshot(), ts->cxt, NULL);
 	ts->layout = sift_colsrc_source_layout(ts->src);
 }
 

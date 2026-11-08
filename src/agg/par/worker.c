@@ -56,6 +56,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
+	ex->view = shm_toc_lookup(toc, KEY_VIEW, true);
 	/* the executor states below start with the snapshot of the leader's statement as the active one (ExecutorStart asserts it), as in a backend */
 	PushActiveSnapshot(snap);
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;

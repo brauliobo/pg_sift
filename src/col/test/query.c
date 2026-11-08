@@ -209,7 +209,7 @@ ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 	ts->index = sift_col_open_index(indexoid, AccessShareLock);
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0));
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0), NULL);
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)

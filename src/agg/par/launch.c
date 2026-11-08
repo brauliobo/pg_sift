@@ -76,6 +76,7 @@ par_launch(AggExec *ex)
 	Size		plen = EstimateParamListSpace(ex->params),
 				slen = EstimateSnapshotSpace(ex->snap);
 	int			nw = ex->spec->nworkers;
+	Size		vlen;
 	ScanShared  *ps;
 	AggPar	   *par;
 	MapShared  *ml,
@@ -93,6 +94,7 @@ par_launch(AggExec *ex)
 	ex->gp_n = ex->gp_mine = 0;
 	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
 		return;
+	vlen = sift_colsrc_view_size(ex->src);
 	spec_txt = nodeToString(ex->pack);
 	/* the rows of the spine are those of a plan the leader runs once, before the workers start: they read the rows from the shared memory */
 	if (ex->spec->spine)
@@ -151,6 +153,8 @@ par_launch(AggExec *ex)
 	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
+	if (vlen > 0)
+		shm_toc_estimate_chunk(&pcxt->estimator, vlen);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL)
@@ -171,7 +175,7 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, strlen(init_txt) + 1);
 	if (dictshm)
 		shm_toc_estimate_chunk(&pcxt->estimator, 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm + (vlen > 0));
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -195,6 +199,12 @@ par_launch(AggExec *ex)
 	p = shm_toc_allocate(pcxt->toc, slen);
 	SerializeSnapshot(ex->snap, p);
 	shm_toc_insert(pcxt->toc, KEY_SNAP, p);
+	if (vlen > 0)
+	{
+		p = shm_toc_allocate(pcxt->toc, vlen);
+		sift_colsrc_view_export(ex->src, p);
+		shm_toc_insert(pcxt->toc, KEY_VIEW, p);
+	}
 	p = shm_toc_allocate(pcxt->toc, mul_size(MQ_SIZE, nw));
 	for (int i = 0; i < nw; i++)
 		shm_mq_set_receiver(shm_mq_create(p + (Size) i * MQ_SIZE, MQ_SIZE), MyProc);

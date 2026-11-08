@@ -279,7 +279,7 @@ col_scan_source(ColScanOpaque *so, IndexScanDesc scan, uint32 flags)
 	}
 	if (so->src == NULL)
 	{
-		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags);
+		so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->scx, flags, NULL);
 		so->sflags = flags;
 		so->ssnap = scan->xs_snapshot;
 	}

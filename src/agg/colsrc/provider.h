@@ -16,9 +16,13 @@ typedef struct SiftSrcProvider
 	void		(*stats) (Relation rel, SiftSrcStats *st);
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
-	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */
+	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
-	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	/* Optional (NULL: the source reads no directory it could share): the bytes of the directory the source read, and their number; the participants of a parallel scan number the units of its items by one copy */
+	Size		(*view_size) (void *impl);
+	void		(*view_export) (void *impl, void *buf);
 	void		(*close) (void *impl);
 	/* Optional: make a source that has read nothing (no begin, no test but the filters) ready for another scan of the same statement, the counters at zero; false: it holds state of the last (the caller opens again) */
 	bool		(*rescan) (void *impl);
