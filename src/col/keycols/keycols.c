@@ -369,7 +369,7 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 	{
 		if (rel->pagg.set[c])
 			keycols_append_name(&list, keycols_leaf_name(index, &rel->schema->cols[c]));
-		else if (units > 0 && cubed[c] * 100 < (uint64) units * SIFT_COL_AUTO_ADD_PCT && sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]))
+		else if (units > 0 && (uint64) cubed[c] * 100 < (uint64) units * SIFT_COL_AUTO_ADD_PCT && sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]))
 		{
 			keycols_append_name(&list, keycols_leaf_name(index, &rel->schema->cols[c]));
 			added = true;
@@ -476,7 +476,7 @@ sift_col_auto_keys_report(Relation index)
 	{
 		if (!spec->pres[l])
 			continue;
-		if (units > 0 && (cubed[l] * 100 >= (uint64) units * SIFT_COL_AUTO_KEEP_PCT || have[l] * 100 < (uint64) units * SIFT_COL_AUTO_KEEP_PCT))
+		if (units > 0 && ((uint64) cubed[l] * 100 >= (uint64) units * SIFT_COL_AUTO_KEEP_PCT || (uint64) have[l] * 100 < (uint64) units * SIFT_COL_AUTO_KEEP_PCT))
 			keycols_append_name(&left, keycols_leaf_name(index, &rel->schema->cols[l]));
 		else
 			keycols_append_name(&kept, keycols_leaf_name(index, &rel->schema->cols[l]));

@@ -162,6 +162,7 @@ cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
 #define ARR_SAMPLE_ROWS		4096
 #define ARR_SAMPLE_ELEMS	200000
 #define ARR_SET_BITS		19
+#define ARR_MAX_CANDS		16		/* array columns looked at: two sets of 4 MB each, 128 MB at most (the other arrays keep their image) */
 #define ARR_INT_BYTES		0.1		/* bytes an element of an integer array costs beyond log2(distinct elements) / 8 (measured: 0.09 at 20, 500 and 20,000 distinct elements) */
 #define ARR_TEXT_BYTES		1.0		/* the same for text, where the point directory lists the rows of a value (measured 0.1 for common values, 1.0 for values of ten rows) */
 
@@ -226,12 +227,9 @@ arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, in
 			bool		isnull;
 			Datum		d = slot_getattr(slot, c->hatt, &isnull);
 			ArrayType  *a;
-			int16		elen;
-			bool		byval;
-			char		align;
-			Datum	   *vals;
-			bool	   *nulls;
-			int			ne;
+			bool		byval = get_typbyval(c->elem);
+			ArrayIterator it;
+			Datum		val;
 
 			c->seen++;
 			if (isnull)
@@ -240,22 +238,23 @@ arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, in
 			c->rows++;
 			c->bytes += VARSIZE(a);
 			arr_set_add(&c->arrs, DatumGetUInt64(hash_any_extended((unsigned char *) a, VARSIZE(a), 0)));
-			get_typlenbyvalalign(c->elem, &elen, &byval, &align);
-			deconstruct_array(a, c->elem, elen, byval, align, &vals, &nulls, &ne);
-			for (int i = 0; i < ne && c->els.n < ARR_SAMPLE_ELEMS; i++)
+			/* the elements one at a time: an array of a gigabyte holds more of them than a Datum array may */
+			it = array_create_iterator(a, 0, NULL);
+			while (c->els.n < ARR_SAMPLE_ELEMS && array_iterate(it, &val, &isnull))
 			{
 				c->elems++;
-				if (nulls[i])
+				if (isnull)
 					continue;
 				if (byval)
-					arr_set_add(&c->els, sift_fib64((uint64) DatumGetInt64(vals[i])));
+					arr_set_add(&c->els, sift_fib64((uint64) DatumGetInt64(val)));
 				else
 				{
-					text	   *t = DatumGetTextPP(vals[i]);
+					text	   *t = DatumGetTextPP(val);
 
 					arr_set_add(&c->els, DatumGetUInt64(hash_any_extended((unsigned char *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), 0)));
 				}
 			}
+			array_free_iterator(it);
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(row_cx);
@@ -299,7 +298,7 @@ arr_both_pays(Relation heap, const ArrCand *c, double growth)
 void
 keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo only, StringInfo both)
 {
-	ArrCand		cand[SIFT_COL_MAX_COLS];
+	ArrCand		cand[ARR_MAX_CANDS];
 	int			n = 0;
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 	int			nst = (int) Min(CUBE_STRETCHES, (nblocks + CUBE_STRETCH_BLOCKS - 1) / CUBE_STRETCH_BLOCKS);
@@ -308,7 +307,7 @@ keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringI
 
 	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON || keycols_heap_rows(heap) < ARR_AUTO_ROWS || nst == 0)
 		return;
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < SIFT_COL_MAX_COLS; i++)
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < ARR_MAX_CANDS; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
 		Oid			elem = sift_col_is_array_type(att->atttypid) ? get_element_type(att->atttypid) : InvalidOid;

@@ -74,12 +74,33 @@ node_new(Ctx *cx, const char *name)
 	return n;
 }
 
+/* the members of an object by (length, bytes), the order of the keys of a jsonb object: a map of many keys is found in log time, not by a scan of the others */
+static int
+kid_cmp(const SNode *k, const char *key, int len)
+{
+	size_t		klen = strlen(k->name);
+
+	return klen != (size_t) len ? (klen < (size_t) len ? -1 : 1) : memcmp(k->name, key, len);
+}
+
 static SNode *
 kid_find(Ctx *cx, SNode *n, const char *key, int len)
 {
-	for (int i = 0; i < n->nkids; i++)
-		if (strlen(n->kid[i]->name) == (size_t) len && memcmp(n->kid[i]->name, key, len) == 0)
-			return n->kid[i];
+	int			lo = 0,
+				hi = n->nkids;
+
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2,
+					c = kid_cmp(n->kid[mid], key, len);
+
+		if (c == 0)
+			return n->kid[mid];
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
 	if (n->nkids == n->capkids)
 	{
 		n->capkids = n->capkids ? n->capkids * 2 : 8;
@@ -90,7 +111,9 @@ kid_find(Ctx *cx, SNode *n, const char *key, int len)
 		SNode	   *k = node_new(cx, name);
 
 		pfree(name);
-		return n->kid[n->nkids++] = k;
+		memmove(n->kid + lo + 1, n->kid + lo, (n->nkids - lo) * sizeof(SNode *));
+		n->nkids++;
+		return n->kid[lo] = k;
 	}
 }
 
