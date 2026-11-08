@@ -28,7 +28,6 @@
 
 #include "col/am.h"
 #include "col/maint/maint_int.h"
-#include "col/seg_int.h"
 #include "col/wbuf.h"
 #include "core/lane.h"
 
@@ -40,6 +39,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
+extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/seg_int.h, which cannot be included next to maint_int.h */
 uint64		sift_cseg_dict_blocks;
 
 PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);
