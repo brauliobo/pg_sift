@@ -151,6 +151,49 @@ peers_overlap(const RewriteView *v)
 }
 
 /*
+ * Are the segments that overlap each other in the key the runs of a build? Runs overlap each other, and most of the index has to go for none to overlap another: their
+ * rewrite is the build's, not churn. A promotion or merge of new rows that grew to the size of a partition overlaps every partition as well, but taking it out
+ * leaves none overlapping, and it is a few percent of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
+ * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows.
+ */
+#define KEY_RUNS_SHARE	8
+
+static bool
+key_runs(const RewriteView *v)
+{
+	bool		left[SIFT_MAX_SEGMENTS];
+	uint64		cover = 0,
+				all = 0;
+
+	memcpy(left, v->kover, sizeof(left));
+	for (int i = 0; i < v->n; i++)
+		all += v->imm[i].bytes;
+	for (;;)
+	{
+		int			worst = -1,
+					most = 0;
+
+		for (int i = 0; i < v->n; i++)
+		{
+			int			meets = 0;
+
+			for (int j = 0; j < v->n && left[i]; j++)
+				meets += left[j] && j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
+			if (meets > most)
+			{
+				worst = i;
+				most = meets;
+			}
+		}
+		if (worst < 0)
+			break;
+		left[worst] = false;
+		cover += v->imm[worst].bytes;
+	}
+	return cover * KEY_RUNS_SHARE >= all && cover > 0;
+}
+
+/*
  * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
@@ -196,7 +239,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	v = maint_view_open(index, snap, cx);
 	nseg = v->n;
 	key_overlap = v->nkover;
-	build_peers = peers_overlap(v) || key_overlap >= 2;
+	build_peers = peers_overlap(v) || key_runs(v);
 	overlay_due = maint_overlay_set(index, v, take, &ev) && overlay_worth(index, &ev);
 	for (int i = 0; i < v->n; i++)
 	{
