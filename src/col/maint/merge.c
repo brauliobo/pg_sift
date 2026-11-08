@@ -951,37 +951,30 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	if (goal != SIFT_GOAL_REWRITE)
 		cut = maint_part_kb > 0;
 	bool		recut = false;
-
 	/*
 	 * The key is chosen again from the data for the rewrite of every segment: a new key sorts the rows of all of them, the ones left would stay in the order of the old
-	 * key. So a step decides for all the segments once for the rewrite, whichever of them it takes (the overlays alone, the dirty ones: the history of the index), and takes
-	 * them all when the key changes. The decision needs the heap lock, which a VACUUM or the worker holds at times and which is not waited for (the merge holds the metapage
-	 * a VACUUM waits for): the step is left to the next call then, not made without the decision.
+	 * key. So a step decides for all of them once for the rewrite, whichever it takes (the overlays alone, the dirty ones: the history of the index), and takes them all
+	 * when the key changes. It needs the heap lock, which a VACUUM or the worker holds at times and which is not waited for (the merge holds the metapage a VACUUM waits for):
+	 * the step is left to the next call then, not made without the choice.
 	 */
 	if (n > 0 && goal == SIFT_GOAL_REWRITE && !maint_after_build && !maint_redecided)
 	{
+		SiftSegEntry all[SIFT_MAX_SEGMENTS];
+		int			nall = 0;
+
 		if (sift_col_redecide_busy(index))
 		{
 			pfree(snap);
 			return SIFT_STEP_IDLE;
 		}
 		maint_redecided = true;
-		if (n == nimm)
-			recut = sift_col_auto_redecide(index, sel, n);
-		else
+		for (int i = 0; i < snap->nsegs; i++)
+			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+				all[nall++] = snap->segs[i];
+		if ((recut = sift_col_auto_redecide(index, all, nall)))
 		{
-			SiftSegEntry all[SIFT_MAX_SEGMENTS];
-			int			nall = 0;
-
-			for (int i = 0; i < snap->nsegs; i++)
-				if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-					all[nall++] = snap->segs[i];
-			if (nall > n && sift_col_auto_redecide(index, all, nall))
-			{
-				memcpy(sel, all, nall * sizeof(SiftSegEntry));
-				n = nimm = nall;
-				recut = true;
-			}
+			memcpy(sel, all, nall * sizeof(SiftSegEntry));
+			n = nimm = nall;
 		}
 	}
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
