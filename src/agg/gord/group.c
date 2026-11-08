@@ -113,7 +113,8 @@ gord_group_skip(SiftGOrd *g, uint32 k)
 	uint32	   *take;
 	int64		v;
 	uint64	   *addr = NULL;
-	uint32		room = 0;
+	uint32		room = 0,
+				pend_max = (uint32) sift_limit(skip_pending, GORD_PEND_MAX);
 
 	for (int i = 0; i < g->ncur; i++)
 		if (!g->cur[i]->gm || g->cur[i]->gskip != 0)
@@ -176,6 +177,9 @@ gord_group_skip(SiftGOrd *g, uint32 k)
 
 			sift_colsrc_gorder_group_at(g->src, c->src, g->leaf, g->desc ? c->ngrp - 1 - n : n, &grp, &vs, &ve, &ns, &ne);
 			m = (ve - vs) + (ne - ns);
+			/* the group is checked whole: one that is longer than the skip leaves to the heap is walked, with the groups after it */
+			if (m > pend_max)
+				break;
 			if (m > room)
 			{
 				room = Max(m, room * 2);
@@ -189,7 +193,7 @@ gord_group_skip(SiftGOrd *g, uint32 k)
 
 				cur_at(g, c, p, &key, &addr[e]);
 				st[e] = sift_colsrc_gorder_state(g->src, c->src, addr[e]);
-				stuck = st[e] == SIFT_GORD_UNKNOWN || (st[e] == SIFT_GORD_CHECK && g->npend + m > GORD_PEND_MAX);
+				stuck = st[e] == SIFT_GORD_UNKNOWN || (st[e] == SIFT_GORD_CHECK && g->npend + m > pend_max);
 			}
 			if (stuck)
 			{

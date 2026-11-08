@@ -8,6 +8,7 @@
 #include "col/gorder.h"
 #include "agg/gord/int.h"
 #include "core/cmp.h"
+#include "core/limits.h"
 
 #define GORD_HEAD_MIN	32
 
@@ -592,7 +593,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 				st = sift_colsrc_gorder_state(g->src, c->src, a);
 				if (st == SIFT_GORD_EXACT)
 					total++;
-				else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= GORD_PEND_MAX))
+				else if (st == SIFT_GORD_UNKNOWN || (st == SIFT_GORD_CHECK && g->npend >= (uint32) sift_limit(skip_pending, GORD_PEND_MAX)))
 					break;
 				else if (st == SIFT_GORD_CHECK)
 				{
