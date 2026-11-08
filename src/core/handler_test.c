@@ -28,6 +28,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_par_leader_wait",
 							 "Testing: the leader of a scan with workers holds the first item it takes until the workers have taken the others.",
 							 NULL, &sift_test_par_leader_wait, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_item_gate",
+							"Testing: the participants of a parallel aggregate wait for the advisory lock of this number before each item (0 = none).",
+							NULL, &sift_test_item_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_segfmt",
 							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
 							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_POSBLK, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

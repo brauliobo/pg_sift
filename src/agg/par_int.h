@@ -35,6 +35,7 @@ typedef struct AggPar
 
 extern PGDLLIMPORT int sift_test_split;
 extern PGDLLIMPORT bool sift_test_par_leader_wait;
+extern PGDLLIMPORT int sift_test_item_gate;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
