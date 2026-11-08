@@ -539,18 +539,14 @@ done:
 
 /*
  * The first look reads at most AUTOCUT_QUICK_SBS superblocks and ends at the usual answer, none, for a table whose keys sit in few of them; only a key that reads
- * a quarter of the units the rule asks for goes on to the sample of the rule. dry (sift.key_cut_decision) always reads the full sample, for its numbers.
+ * a quarter of the units the rule asks for goes on to the sample of the rule. sift.key_cut_decision takes the same two steps, so that it says what CREATE INDEX decides; its numbers are those of the step that decided (the sampled column).
  */
 static void
 decide(Relation heap, Relation index, bool dry, CutVerdict *v)
 {
-	if (!dry)
-	{
-		decide_stage(heap, index, dry, v, true);
-		if (!v->maybe)
-			return;
-	}
-	decide_stage(heap, index, dry, v, false);
+	decide_stage(heap, index, dry, v, true);
+	if (v->maybe)
+		decide_stage(heap, index, dry, v, false);
 }
 
 /* The keys CREATE INDEX advised for key_cut, kept for the summary the build ends with, which would otherwise decide again */
