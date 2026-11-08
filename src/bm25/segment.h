@@ -65,6 +65,8 @@ typedef struct SiftSegmentWriter SiftSegmentWriter;
 #ifdef SIFT_TESTING
 /* sift.test_segfmt: the segment format a build, promotion or merge writes (0 = the build's own, SIFT_WRITE_SEGFMT) */
 extern PGDLLIMPORT int sift_test_segfmt;
+/* sift.test_dead_windows: the windows the dead postings of the segments were counted in (set 0 before) */
+extern PGDLLIMPORT int sift_test_dead_windows;
 #endif
 
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
