@@ -168,6 +168,7 @@ typedef struct SiftConnSpec
 typedef struct SiftConnSpecs
 {
 	int			n;
+	bool		automatic;		/* the option is 'auto: ..': the connections were chosen from the foreign keys (sift_conn_auto) */
 	SiftConnSpec *c[SIFT_CONN_MAX_CONNECTIONS];
 } SiftConnSpecs;
 
@@ -178,7 +179,7 @@ typedef struct SiftConnLayout
 	int			end;
 } SiftConnLayout;
 
-/* Parses the option text without the catalog; NULL with *err set to what is wrong */
+/* Parses the option text without the catalog (after an 'auto:'); NULL with *err set to what is wrong */
 extern SiftConnSpecs *sift_conn_parse(const char *text, const char **err);
 /* The connections a child index declares (ERROR for text that does not parse), NULL when it declares none */
 extern SiftConnSpecs *sift_conn_specs(Relation child_index);
@@ -190,6 +191,12 @@ extern SiftConnSpecs *sift_conn_specs(Relation child_index);
 extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn);
 /* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent indexes the option names, or removes the connections */
 extern void sift_conn_resolve(Relation child_heap, Relation child_index);
+/*
+ * CREATE INDEX and REINDEX of a child index that has no connect option (or connect = 'auto'): connects it to the parents of its validated foreign keys when sift.col_auto_connect is
+ * on, writing the choice into the option as 'auto: <connections>' (what pg_dump writes, so that a restore does not need the constraints) and saying it in a NOTICE.
+ */
+extern void sift_conn_auto(Relation child_heap, Relation child_index);
+extern PGDLLIMPORT bool sift_col_auto_connect;
 /*
  * The journals of the parents of a connected child, made when the build of the child has read its table: the writers of a parent table are held out from here to the end of the
  * statement, not for the whole scan of a large child. A parent that has a connected child already is not locked at all.

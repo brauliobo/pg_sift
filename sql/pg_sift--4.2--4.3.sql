@@ -62,13 +62,13 @@ CREATE FUNCTION sift.col_connection_state(parent regclass, OUT lineage int8, OUT
 
 COMMENT ON FUNCTION sift.col_connection_state(regclass) IS 'The key journal of a sift_col index that a child index is connected to: its lineage, the records appended so far, and what a stamp taken now says (ok, or why a derived value could not be vouched)';
 
-CREATE FUNCTION sift.col_connection_list(child regclass, OUT ordinal int4, OUT fk text, OUT declaration text, OUT parent_index regclass, OUT via text) RETURNS SETOF record
+CREATE FUNCTION sift.col_connection_list(child regclass, OUT ordinal int4, OUT fk text, OUT declaration text, OUT parent_index regclass, OUT via text, OUT automatic boolean) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_connection_list' LANGUAGE C STRICT STABLE;
 
-COMMENT ON FUNCTION sift.col_connection_list(regclass) IS 'The connections a sift_col index declares with its option connect: their place in the option, the column that holds the parent key, the text, the parent index that serves each (NULL when the names do not resolve now) and how it is read';
+COMMENT ON FUNCTION sift.col_connection_list(regclass) IS 'The connections a sift_col index declares with its option connect: their place in the option, the column that holds the parent key, the text, the parent index that serves each (NULL when the names do not resolve now), how it is read and whether CREATE INDEX or REINDEX chose the connection from the foreign keys';
 
 CREATE VIEW sift.col_connections AS
-	SELECT c.oid::regclass AS child, l.ordinal, l.fk, l.parent_index AS parent, l.declaration, l.via, s.lineage, s.records, s.stamp
+	SELECT c.oid::regclass AS child, l.ordinal, l.fk, l.parent_index AS parent, l.declaration, l.via, l.automatic, s.lineage, s.records, s.stamp
 	FROM pg_class c
 	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
 	JOIN pg_index i ON i.indexrelid = c.oid AND i.indisready

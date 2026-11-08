@@ -1,0 +1,197 @@
+-- CREATE INDEX and REINDEX connect a sift_col index to the sift_col indexes its validated foreign keys reference (docs/COL-CONNECT.md): the choice is written into the option as 'auto: ..',
+-- named in a NOTICE, and turned off by connect = 'off' or sift.col_auto_connect.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, price numeric(10, 2), notes text, tags text[]) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, i % 10, 'l' || i, i, repeat('n', 200), ARRAY['x'] FROM generate_series(1, 500) i;
+ANALYZE dim_a;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id, label, price, notes, tags);
+NOTICE:  sift_col index "dim_a_col": 3 automatic choices (array_lengths, rollup_columns, track_changes)
+DETAIL:  array_lengths = tags; rollup_columns = category_id, notes; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+CREATE TABLE dim_b (id int PRIMARY KEY, zone text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dim_b SELECT i, 'z' || i % 5 FROM generate_series(1, 50) i;
+CREATE INDEX dim_b_col ON dim_b USING sift_col (id, zone);
+NOTICE:  sift_col index "dim_b_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_b_col');
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a, dim_b_id int NOT NULL REFERENCES dim_b, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + i % 500, 1 + i % 50, i FROM generate_series(1, 3000) i;
+\set VERBOSITY default
+-- one index, two foreign keys: two connections, the wide and the array columns left out and said
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, dim_b_id, v);
+NOTICE:  sift_col index "facts_col" connected to dim_a(id) through foreign key "facts_dim_a_id_fkey" carrying category_id, label, price
+DETAIL:  Left out: notes (wider than 32 bytes on average), tags (a type that is not carried).
+HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+NOTICE:  sift_col index "facts_col" connected to dim_b(id) through foreign key "facts_dim_b_id_fkey" carrying zone
+HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+SELECT ordinal, fk, parent, declaration, automatic FROM sift.col_connections WHERE child = 'facts_col'::regclass ORDER BY ordinal;
+ ordinal |    fk    |  parent   |                       declaration                       | automatic 
+---------+----------+-----------+---------------------------------------------------------+-----------
+       1 | dim_a_id | dim_a_col | dim_a_id -> dim_a(id) carries category_id, label, price | t
+       2 | dim_b_id | dim_b_col | dim_b_id -> dim_b(id) carries zone                      | t
+(2 rows)
+
+SELECT regexp_replace(c, '^connect=', '') AS option FROM pg_class, unnest(reloptions) c WHERE relname = 'facts_col' AND c LIKE 'connect=%';
+                                              option                                               
+---------------------------------------------------------------------------------------------------
+ auto: dim_a_id -> dim_a(id) carries category_id, label, price; dim_b_id -> dim_b(id) carries zone
+(1 row)
+
+SELECT DISTINCT format FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
+ format 
+--------
+     45
+(1 row)
+
+-- the option wins: off, a named connection, and the setting
+CREATE INDEX facts_off ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'off');
+NOTICE:  sift_col index "facts_off": 2 automatic choices, 1 advice
+DETAIL:  advice: foreign_keys = dim_b_id; key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_off');
+CREATE INDEX facts_named ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id) carries label');
+NOTICE:  sift_col index "facts_named": 2 automatic choices, 1 advice
+DETAIL:  advice: foreign_keys = dim_b_id; key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_named');
+SET sift.col_auto_connect = off;
+CREATE INDEX facts_guc ON facts USING sift_col (id, dim_a_id, v);
+NOTICE:  sift_col index "facts_guc": 2 automatic choices, 1 advice
+DETAIL:  advice: foreign_keys = dim_b_id; key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_guc');
+CREATE INDEX facts_asked ON facts USING sift_col (id, dim_b_id, v) WITH (connect = 'auto');
+NOTICE:  sift_col index "facts_asked" connected to dim_b(id) through foreign key "facts_dim_b_id_fkey" carrying zone
+HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+NOTICE:  sift_col index "facts_asked": 1 automatic choice (track_changes), 1 advice (foreign_keys)
+DETAIL:  advice: foreign_keys = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_asked');
+RESET sift.col_auto_connect;
+SELECT child, ordinal, fk, declaration, automatic FROM sift.col_connections WHERE child IN ('facts_off'::regclass, 'facts_named'::regclass, 'facts_guc'::regclass, 'facts_asked'::regclass)
+ORDER BY child::text;
+    child    | ordinal |    fk    |             declaration             | automatic 
+-------------+---------+----------+-------------------------------------+-----------
+ facts_asked |       1 | dim_b_id | dim_b_id -> dim_b(id) carries zone  | t
+ facts_named |       1 | dim_a_id | dim_a_id -> dim_a(id) carries label | f
+(2 rows)
+
+-- a foreign key that does not connect: no constraint, not validated, composite, not an integer, a parent without the index, a column outside the index (said in a NOTICE when the parent has a sift_col index)
+SET client_min_messages = notice;
+CREATE TABLE nofk (id int PRIMARY KEY, dim_a_id int NOT NULL);
+CREATE INDEX nofk_col ON nofk USING sift_col (id, dim_a_id);
+NOTICE:  sift_col index "nofk_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nofk_col');
+CREATE TABLE notvalid (id int PRIMARY KEY, dim_a_id int NOT NULL);
+ALTER TABLE notvalid ADD CONSTRAINT notvalid_fk FOREIGN KEY (dim_a_id) REFERENCES dim_a NOT VALID;
+CREATE INDEX notvalid_col ON notvalid USING sift_col (id, dim_a_id);
+NOTICE:  sift_col index "notvalid_col": foreign key "notvalid_fk" is not connected: it is not validated
+NOTICE:  sift_col index "notvalid_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('notvalid_col');
+CREATE TABLE dim_c (id int, k int, label text, PRIMARY KEY (id, k));
+CREATE INDEX dim_c_col ON dim_c USING sift_col (id, k, label);
+NOTICE:  sift_col index "dim_c_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_c_col');
+CREATE TABLE composite (id int PRIMARY KEY, c_id int NOT NULL, c_k int NOT NULL, FOREIGN KEY (c_id, c_k) REFERENCES dim_c);
+CREATE INDEX composite_col ON composite USING sift_col (id, c_id, c_k);
+NOTICE:  sift_col index "composite_col": foreign key "composite_c_id_c_k_fkey" is not connected: it has more than one column
+NOTICE:  sift_col index "composite_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = c_id, c_k; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('composite_col');
+CREATE TABLE dim_t (code text PRIMARY KEY, label text);
+CREATE INDEX dim_t_col ON dim_t USING sift_col (code, label);
+NOTICE:  sift_col index "dim_t_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = code
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_t_col');
+CREATE TABLE bytext (id int PRIMARY KEY, code text NOT NULL REFERENCES dim_t);
+CREATE INDEX bytext_col ON bytext USING sift_col (id, code);
+NOTICE:  sift_col index "bytext_col": foreign key "bytext_code_fkey" is not connected: its column is not an int2, int4 or int8
+NOTICE:  sift_col index "bytext_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('bytext_col');
+CREATE TABLE dim_n (id int PRIMARY KEY, label text);
+CREATE TABLE noparent (id int PRIMARY KEY, n_id int NOT NULL REFERENCES dim_n);
+CREATE INDEX noparent_col ON noparent USING sift_col (id, n_id);
+NOTICE:  sift_col index "noparent_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = n_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('noparent_col');
+CREATE TABLE outside (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a, v int);
+CREATE INDEX outside_col ON outside USING sift_col (id, v);
+NOTICE:  sift_col index "outside_col": 1 automatic choice (track_changes), 1 advice (foreign_keys)
+DETAIL:  advice: foreign_keys = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('outside_col');
+RESET client_min_messages;
+SELECT count(*) AS connected FROM sift.col_connections WHERE child IN ('nofk_col'::regclass, 'notvalid_col'::regclass, 'composite_col'::regclass, 'bytext_col'::regclass, 'noparent_col'::regclass, 'outside_col'::regclass);
+ connected 
+-----------
+         0
+(1 row)
+
+-- a parent with more columns than a connection carries by itself: the first ones that fit, the others said
+CREATE TABLE dim_w (id int PRIMARY KEY, b1 int8, b2 int8, b3 int8, b4 int8, b5 int8, b6 int8, b7 int8, b8 int8, b9 int8, b10 int8) WITH (autovacuum_enabled = false);
+CREATE INDEX dim_w_col ON dim_w USING sift_col (id, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10);
+NOTICE:  sift_col index "dim_w_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_w_col');
+CREATE TABLE wide (id int PRIMARY KEY, w_id int NOT NULL REFERENCES dim_w);
+CREATE INDEX wide_col ON wide USING sift_col (id, w_id);
+NOTICE:  sift_col index "wide_col" connected to dim_w(id) through foreign key "wide_w_id_fkey" carrying b1, b2, b3, b4, b5, b6, b7
+DETAIL:  Left out: b8 (over the budget of carried values), b9 (over the budget of carried values), b10 (over the budget of carried values).
+HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+NOTICE:  sift_col index "wide_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = w_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wide_col');
+-- validating the constraint and a REINDEX connects it; REINDEX keeps what was chosen, and CONCURRENTLY too
+ALTER TABLE notvalid VALIDATE CONSTRAINT notvalid_fk;
+REINDEX INDEX notvalid_col;
+NOTICE:  sift_col index "notvalid_col" connected to dim_a(id) through foreign key "notvalid_fk" carrying category_id, label, price
+DETAIL:  Left out: notes (wider than 32 bytes on average), tags (a type that is not carried).
+HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+NOTICE:  sift_col index "notvalid_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('notvalid_col');
+REINDEX INDEX facts_col;
+NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+REINDEX INDEX CONCURRENTLY facts_col;
+NOTICE:  sift_col index "facts_col": track_changes log is not complete after a concurrent build
+HINT:  The next VACUUM completes the log; REINDEX INDEX facts_col without CONCURRENTLY does it now.
+NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+SELECT child, ordinal, declaration, automatic FROM sift.col_connections WHERE child IN ('notvalid_col'::regclass, 'facts_col'::regclass) ORDER BY child::text, ordinal;
+    child     | ordinal |                       declaration                       | automatic 
+--------------+---------+---------------------------------------------------------+-----------
+ facts_col    |       1 | dim_a_id -> dim_a(id) carries category_id, label, price | t
+ facts_col    |       2 | dim_b_id -> dim_b(id) carries zone                      | t
+ notvalid_col |       1 | dim_a_id -> dim_a(id) carries category_id, label, price | t
+(3 rows)
+
+-- the option turned off, then REINDEX: nothing is connected, and the parent can be dropped
+ALTER INDEX facts_col SET (connect = 'off');
+REINDEX INDEX facts_col;
+NOTICE:  sift_col index "facts_col": 2 automatic choices (key_columns, track_changes)
+DETAIL:  key_columns = dim_a_id; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+SELECT count(*) AS connections FROM sift.col_connections WHERE child = 'facts_col'::regclass;
+ connections 
+-------------
+           0
+(1 row)
+
+-- an index that was connected by itself behaves as one connected by hand: the parent index is under it
+DROP INDEX dim_a_col;
+ERROR:  cannot drop index dim_a_col because other objects depend on it
+DETAIL:  index facts_named depends on index dim_a_col
+index notvalid_col depends on index dim_a_col
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP INDEX dim_b_col;
+ERROR:  cannot drop index dim_b_col because other objects depend on it
+DETAIL:  index facts_asked depends on index dim_b_col
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP TABLE wide, dim_w, facts, nofk, notvalid, composite, dim_c, bytext, dim_t, noparent, dim_n, outside, dim_a, dim_b CASCADE;
+DROP EXTENSION pg_sift;

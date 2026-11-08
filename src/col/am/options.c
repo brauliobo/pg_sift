@@ -163,7 +163,7 @@ connect_syntax(const char *value)
 {
 	const char *err = NULL;
 
-	if (value[0] == '\0' || strcmp(value, "off") == 0)
+	if (value[0] == '\0' || strcmp(value, "off") == 0 || strcmp(value, "auto") == 0 || strcmp(value, "auto:") == 0)
 		return NULL;
 	return sift_conn_parse(value, &err) ? NULL : err;
 }
@@ -241,6 +241,12 @@ sift_col_init(void)
 							 "A request for a rollup refresh starts the background worker that makes it.",
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_auto_connect",
+							 "CREATE INDEX and REINDEX of a sift_col index connect it to the sift_col indexes of the tables its validated foreign keys reference.",
+							 "On: an index without the option connect that holds the column of a validated single column foreign key to an int2, int4 or int8 key of a heap table that has a sift_col index tracking that key "
+							 "is connected to it, carrying the scalar columns of that index that are not wide (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
+							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
+							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "

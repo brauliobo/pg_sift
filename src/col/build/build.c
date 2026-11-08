@@ -116,6 +116,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18"),
 							errhint("Use the default operator class for a numeric column of another precision.")));
 	}
+	sift_conn_auto(heap, index);
 	sift_conn_resolve(heap, index);
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;

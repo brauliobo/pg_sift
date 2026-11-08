@@ -17,10 +17,12 @@
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_type_d.h"
 #include "core/limits.h"
 #include "funcapi.h"
+#include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -177,6 +179,11 @@ sift_conn_parse(const char *text, const char **err)
 	const char *p = text;
 	int			ncarry = 0;
 
+	if (strncmp(p, "auto:", 5) == 0)
+	{
+		all->automatic = true;
+		p += 5;
+	}
 	for (;;)
 	{
 		SiftConnSpec *s;
@@ -225,7 +232,7 @@ sift_conn_specs(Relation child_index)
 	const char *err = NULL;
 	SiftConnSpecs *s;
 
-	if (text[0] == '\0' || strcmp(text, "off") == 0)
+	if (text[0] == '\0' || strcmp(text, "off") == 0 || strcmp(text, "auto") == 0 || strcmp(text, "auto:") == 0)
 		return NULL;
 	s = sift_conn_parse(text, &err);
 	if (s == NULL)
@@ -438,33 +445,40 @@ leaf_width(const SiftColDef *d)
 	}
 }
 
-/* The qualified name the leaves of a carried column are known by: "<fk column>.<parent column>" (two columns of one table that hold the same parent never share a name) */
+/* The leaves a column of the parent gives under the qualified name "<fk column>.<parent column>" (two columns of one table that hold the same parent never share a name); 0 for a type that cannot be carried */
 static int
-carried_column(Oid parent, const char *table, const SiftConnSpec *s, const char *column, AttrNumber fk_att, SiftColDef *out)
+carried_lanes(Form_pg_attribute pa, const char *fk, AttrNumber fk_att, SiftColDef *out)
 {
-	HeapTuple	tup = SearchSysCacheAttName(parent, column);
-	Form_pg_attribute pa;
-	FormData_pg_attribute named;
+	FormData_pg_attribute named = *pa;
 	int			k;
 
-	if (!HeapTupleIsValid(tup))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: table \"%s\" has no column \"%s\"", table, column)));
-	pa = (Form_pg_attribute) GETSTRUCT(tup);
 	if (pa->atttypid == JSONBOID || sift_col_is_array_type(pa->atttypid))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: column \"%s\" of \"%s\" cannot be carried", column, table),
-						errhint("Carry columns of a scalar type: numbers, booleans, dates, times and text.")));
-	named = *pa;
-	namestrcpy(&named.attname, psprintf("%s.%s", s->fk, column));
+		return 0;
+	namestrcpy(&named.attname, psprintf("%s.%s", fk, NameStr(pa->attname)));
 	k = sift_col_att_leaves(&named, out, 0);
 	out[0].path = pstrdup(NameStr(named.attname));
 	for (int i = 0; i < k; i++)
 	{
 		if (out[i].store == SIFT_COLS_VAR || (out[i].flags & SIFT_COLD_SHAPE))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: column \"%s\" of \"%s\" cannot be carried", column, table),
-							errhint("Carry columns of a scalar type: numbers, booleans, dates, times and text.")));
+			return 0;
 		out[i].flags |= SIFT_COLD_CARRIED;
 		out[i].attno = fk_att;
 	}
+	return k;
+}
+
+static int
+carried_column(Oid parent, const char *table, const SiftConnSpec *s, const char *column, AttrNumber fk_att, SiftColDef *out)
+{
+	HeapTuple	tup = SearchSysCacheAttName(parent, column);
+	int			k;
+
+	if (!HeapTupleIsValid(tup))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: table \"%s\" has no column \"%s\"", table, column)));
+	k = carried_lanes((Form_pg_attribute) GETSTRUCT(tup), s->fk, fk_att, out);
+	if (k == 0)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: column \"%s\" of \"%s\" cannot be carried", column, table),
+						errhint("Carry columns of a scalar type: numbers, booleans, dates, times and text.")));
 	ReleaseSysCache(tup);
 	return k;
 }
@@ -557,9 +571,12 @@ connection_text(const SiftConnSpec *s)
 	StringInfoData t;
 
 	initStringInfo(&t);
-	appendStringInfo(&t, "%s -> %s%s%s(%s) carries ", s->fk, s->parent_schema ? s->parent_schema : "", s->parent_schema ? "." : "", s->parent_table, s->parent_key);
+	appendStringInfo(&t, "%s -> ", quote_identifier(s->fk));
+	if (s->parent_schema)
+		appendStringInfo(&t, "%s.", quote_identifier(s->parent_schema));
+	appendStringInfo(&t, "%s(%s) carries ", quote_identifier(s->parent_table), quote_identifier(s->parent_key));
 	for (int i = 0; i < s->ncarry; i++)
-		appendStringInfo(&t, "%s%s", i ? ", " : "", s->carry[i]);
+		appendStringInfo(&t, "%s%s", i ? ", " : "", quote_identifier(s->carry[i]));
 	if (s->via != SIFT_CONN_VIA_AUTO)
 		appendStringInfo(&t, " via %s", s->via == SIFT_CONN_VIA_MAP ? "map" : "carried");
 	return t.data;
@@ -581,8 +598,8 @@ sift_col_connection_list(PG_FUNCTION_ARGS)
 	for (int c = 0; specs != NULL && c < specs->n; c++)
 	{
 		const SiftConnSpec *s = specs->c[c];
-		Datum		v[5];
-		bool		nulls[5] = {false};
+		Datum		v[6];
+		bool		nulls[6] = {false};
 		Oid			poid = parent_table_oid(index->rd_index->indrelid, s, NoLock, true);
 		Oid			pidx = InvalidOid;
 
@@ -605,8 +622,230 @@ sift_col_connection_list(PG_FUNCTION_ARGS)
 		v[3] = ObjectIdGetDatum(pidx);
 		nulls[3] = !OidIsValid(pidx);
 		v[4] = CStringGetTextDatum(s->via == SIFT_CONN_VIA_AUTO ? "auto" : s->via == SIFT_CONN_VIA_MAP ? "map" : "carried");
+		v[5] = BoolGetDatum(specs->automatic);
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	index_close(index, NoLock);
 	return (Datum) 0;
+}
+
+/* ---- automatic connections: the validated foreign keys of the table (docs/COL-CONNECT.md) ---- */
+
+#define AUTO_CARRY_BYTES	64		/* bytes of the carried values of a row for each connection, a string counting its 4 byte code */
+#define AUTO_CARRY_WIDTH	32		/* a column of a larger average width is not carried by itself: its dictionary grows with the parent */
+#define AUTO_LEAF_ROOM		16		/* leaves kept for the paths and arrays that the build decides after this */
+
+bool		sift_col_auto_connect = true;
+
+/* The leaves the index has without a connection (a jsonb column counts the paths the build may add) */
+static int
+leaves_of(Relation index)
+{
+	int			n = 0;
+
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		SiftColDef	d[SIFT_COL_MAX_LANES];
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+
+		n += att->atttypid == JSONBOID ? 32 : Max(1, sift_col_att_leaves(att, d, 0));
+	}
+	return n;
+}
+
+/* The columns of the parent index that the connection carries when none is named: scalar, not wide, within the bytes of a connection and of the index; the others are listed in left_out with the reason */
+static void
+auto_columns(Relation parent, Relation pindex, AttrNumber key, SiftConnSpec *s, int *leaves, int *bytes, StringInfo left_out)
+{
+	int			own = 1;			/* the flag that the parent row was found */
+
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(pindex); i++)
+	{
+		AttrNumber	att = pindex->rd_index->indkey.values[i];
+		Form_pg_attribute pa;
+		SiftColDef	lanes[SIFT_COL_MAX_LANES];
+		const char *why = NULL;
+		int			k,
+					width = 0;
+
+		if (att == InvalidAttrNumber || att == key)
+			continue;
+		pa = TupleDescAttr(RelationGetDescr(parent), att - 1);
+		k = carried_lanes(pa, s->fk, 1, lanes);
+		for (int j = 0; j < k; j++)
+			width += leaf_width(&lanes[j]);
+		if (k == 0)
+			why = "a type that is not carried";
+		else if (pa->attlen < 0 && get_attavgwidth(RelationGetRelid(parent), att) > AUTO_CARRY_WIDTH)
+			why = "wider than 32 bytes on average";
+		else if (own + width > AUTO_CARRY_BYTES || *bytes + own + width > SIFT_CONN_MAX_CARRY_BYTES || *leaves + k > SIFT_COL_MAX_COLS - AUTO_LEAF_ROOM ||
+				 s->ncarry == SIFT_CONN_MAX_CARRY)
+			why = "over the budget of carried values";
+		if (why)
+		{
+			appendStringInfo(left_out, "%s%s (%s)", left_out->len ? ", " : "", NameStr(pa->attname), why);
+			continue;
+		}
+		s->carry[s->ncarry++] = pstrdup(NameStr(pa->attname));
+		own += width;
+		*leaves += k;
+	}
+	*bytes += own;
+	*leaves += 1;
+}
+
+/* Whether the table has a sift_col index at all: a foreign key that does not connect to one is worth a word only then */
+static bool
+has_sift_index(Relation table)
+{
+	bool		found = false;
+
+	foreach_oid(ioid, RelationGetIndexList(table))
+	{
+		Relation	idx = index_open(ioid, AccessShareLock);
+
+		found |= sift_col_is_index(idx);
+		index_close(idx, AccessShareLock);
+	}
+	return found;
+}
+
+/*
+ * The connection a foreign key gives, or NULL with *why set to the reason there is none, and *say when the reason is one a user would expect to be told (the parent has a sift_col
+ * index, and the foreign key is for this index): one validated column of this index that holds an integer, the key of a heap table that has a sift_col index tracking it and a column
+ * to carry.
+ */
+static SiftConnSpec *
+auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **conname, int *leaves, int *bytes, StringInfo left_out, const char **why, bool *say)
+{
+	HeapTuple	tup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(fk->conoid));
+	Form_pg_constraint con;
+	Relation	parent,
+				pindex;
+	SiftConnSpec *s;
+	Oid			pidx;
+	AttrNumber	fkatt = fk->conkey[0],
+				key = fk->confkey[0];
+	bool		valid;
+
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "sift_col: no pg_constraint row for %u", fk->conoid);
+	con = (Form_pg_constraint) GETSTRUCT(tup);
+	*conname = pstrdup(NameStr(con->conname));
+	valid = con->convalidated;
+	ReleaseSysCache(tup);
+	*say = false;
+	if (fk->confrelid == RelationGetRelid(heap))
+		*why = "it references its own table";
+	else
+	{
+		bool		inside = false;
+
+		for (int i = 0; i < fk->nkeys; i++)
+			inside |= index_column(index, fk->conkey[i]) != InvalidAttrNumber;
+		if (!inside)
+			*why = "its columns are not in the index";
+	}
+	if (*why)
+		return NULL;
+	parent = table_open(fk->confrelid, AccessShareLock);
+	if (parent->rd_rel->relkind != RELKIND_RELATION || parent->rd_rel->relam != HEAP_TABLE_AM_OID)
+		*why = "the referenced table is not a plain heap table";
+	else if (!has_sift_index(parent))
+		*why = "the referenced table has no sift_col index";
+	if (*why)
+	{
+		table_close(parent, NoLock);
+		return NULL;
+	}
+	*say = true;
+	if (fk->nkeys != 1)
+		*why = "it has more than one column";
+	else if (index_column(index, fkatt) == InvalidAttrNumber)
+		*why = "its column is not in the index";
+	else if (!valid)
+		*why = "it is not validated";
+	else if (!integer_type(TupleDescAttr(RelationGetDescr(heap), fkatt - 1)->atttypid))
+		*why = "its column is not an int2, int4 or int8";
+	else if (!integer_type(TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid))
+		*why = "the referenced column is not an int2, int4 or int8";
+	else if (!OidIsValid(pidx = parent_index_for(parent, key, NULL, 0)))
+		*why = "no sift_col index of the referenced table is ready and tracks the referenced column";
+	if (*why)
+	{
+		table_close(parent, NoLock);
+		return NULL;
+	}
+	s = palloc0(sizeof(SiftConnSpec));
+	s->fk = get_attname(RelationGetRelid(heap), fkatt, false);
+	s->parent_schema = parent->rd_rel->relnamespace == heap->rd_rel->relnamespace ? NULL : get_namespace_name(parent->rd_rel->relnamespace);
+	s->parent_table = pstrdup(RelationGetRelationName(parent));
+	s->parent_key = get_attname(RelationGetRelid(parent), key, false);
+	s->via = SIFT_CONN_VIA_AUTO;
+	pindex = index_open(pidx, AccessShareLock);
+	auto_columns(parent, pindex, key, s, leaves, bytes, left_out);
+	index_close(pindex, AccessShareLock);
+	table_close(parent, NoLock);
+	if (s->ncarry == 0)
+	{
+		*why = "the referenced index has no column to carry";
+		return NULL;
+	}
+	return s;
+}
+
+/* "a, b" of the carried columns */
+static char *
+carried_list(const SiftConnSpec *s)
+{
+	StringInfoData t;
+
+	initStringInfo(&t);
+	for (int i = 0; i < s->ncarry; i++)
+		appendStringInfo(&t, "%s%s", i ? ", " : "", s->carry[i]);
+	return t.data;
+}
+
+void
+sift_conn_auto(Relation heap, Relation index)
+{
+	const char *opt = sift_col_options_connect(index);
+	StringInfoData text;
+	Bitmapset  *used = NULL;
+	int			leaves,
+				bytes = 0,
+				n = 0;
+
+	if (!sift_col_is_index(index) || heap->rd_rel->relam != HEAP_TABLE_AM_OID || (opt[0] == '\0' ? !sift_col_auto_connect : strcmp(opt, "auto") != 0))
+		return;
+	leaves = leaves_of(index);
+	initStringInfo(&text);
+	foreach_ptr(ForeignKeyCacheInfo, fk, RelationGetFKeyList(heap))
+	{
+		StringInfoData left_out;
+		const char *why = NULL;
+		char	   *conname;
+		SiftConnSpec *s;
+		bool		say;
+
+		initStringInfo(&left_out);
+		if (n == SIFT_CONN_MAX_CONNECTIONS || bms_is_member(fk->conkey[0], used))
+			continue;
+		s = auto_one(heap, index, fk, &conname, &leaves, &bytes, &left_out, &why, &say);
+		if (s == NULL)
+		{
+			if (say)
+				ereport(NOTICE, (errmsg("sift_col index \"%s\": foreign key \"%s\" is not connected: %s", sift_col_final_name(index), conname, why)));
+			else
+				ereport(DEBUG1, (errmsg("sift_col index \"%s\": foreign key \"%s\" is not connected: %s", sift_col_final_name(index), conname, why)));
+			continue;
+		}
+		used = bms_add_member(used, fk->conkey[0]);
+		appendStringInfo(&text, "%s%s", n++ ? "; " : "", connection_text(s));
+		ereport(NOTICE, (errmsg("sift_col index \"%s\" connected to %s(%s) through foreign key \"%s\" carrying %s", sift_col_final_name(index),
+								quote_identifier(s->parent_table), quote_identifier(s->parent_key), conname, carried_list(s)),
+						 left_out.len ? errdetail("Left out: %s.", left_out.data) : 0,
+						 errhint("Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.")));
+	}
+	if (n > 0)
+		sift_col_set_option(index, "connect", psprintf("auto: %s", text.data));
 }

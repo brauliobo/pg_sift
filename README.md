@@ -284,7 +284,7 @@ Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-op
 <!-- sift-options:start -->
 ## Options
 
-175 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
+176 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
 <!-- sift-options:end -->
 
 Every NOTICE, WARNING and `VACUUM VERBOSE` line of the library, with the decision it reports, its benefit and trade-off in numbers, and the switch that changes it, is one row of [docs/MESSAGES.md](docs/MESSAGES.md). `CREATE INDEX` and `REINDEX` of a `sift_col` index print one short NOTICE; `SELECT * FROM sift.index_choices('index')` gives the reason, the cost and the command that turns each choice off, and `sift.help('slug')` returns the row of a message.
