@@ -14,9 +14,11 @@
 #include "access/xact.h"
 #include "storage/bufmgr.h"
 #include "funcapi.h"
+#include "utils/tuplestore.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "col/am.h"
+#include "col/conn.h"
 #include "core/tomb.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
@@ -30,6 +32,10 @@ PG_FUNCTION_INFO_V1(sift_test_hf_taken);
 PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
 PG_FUNCTION_INFO_V1(sift_test_col_unit_tombs);
+PG_FUNCTION_INFO_V1(sift_test_conn_enable);
+PG_FUNCTION_INFO_V1(sift_test_conn_take);
+PG_FUNCTION_INFO_V1(sift_test_conn_changed);
+PG_FUNCTION_INFO_V1(sift_test_conn_gen);
 
 /* sift._test_col_log_create(index): adds the tombstone log to an index that has none */
 Datum
@@ -313,6 +319,93 @@ sift_test_log_chan(PG_FUNCTION_ARGS)
 	v[0] = Int64GetDatum(log->chan.flags);
 	v[1] = TransactionIdGetDatum(log->chan.base_xid);
 	relation_close(index, RowExclusiveLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+/* sift._test_conn_enable(index): the journal of a parent index (ShareLock on its table until the end of the transaction); its lineage */
+Datum
+sift_test_conn_enable(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
+	Relation	heap = table_open(index->rd_index->indrelid, ShareLock);
+	uint64		lineage = sift_conn_enable(heap, index);
+
+	table_close(heap, NoLock);
+	index_close(index, NoLock);
+	PG_RETURN_INT64((int64) lineage);
+}
+
+/* sift._test_conn_take(index): the stamp of a derivation under the snapshot of the statement: lineage, horizon, why not */
+Datum
+sift_test_conn_take(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	SiftConnStamp st = {0};
+	TupleDesc	desc;
+	Datum		v[3];
+	bool		nulls[3] = {false};
+	SiftConnWhy why;
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	why = sift_conn_take(heap, index, GetTransactionSnapshot(), &st, NULL);
+	v[0] = Int64GetDatum((int64) st.lineage);
+	v[1] = TransactionIdGetDatum(st.xmin);
+	v[2] = CStringGetTextDatum(sift_conn_why_name(why));
+	nulls[0] = nulls[1] = why != SIFT_CONN_OK;
+	table_close(heap, NoLock);
+	index_close(index, NoLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+/* sift._test_conn_changed(index, lineage, xmin, cap): why not (one row, key NULL) or 'ok' with the changed keys */
+Datum
+sift_test_conn_changed(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(1),.xmin = PG_GETARG_TRANSACTIONID(2)};
+	SiftConnKeys keys;
+	SiftConnWhy why;
+	Datum		v[2];
+	bool		nulls[2] = {false, true};
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	why = sift_conn_changed(heap, index, &st, GetTransactionSnapshot(), PG_GETARG_INT32(3), &keys);
+	v[0] = CStringGetTextDatum(sift_conn_why_name(why));
+	if (why != SIFT_CONN_OK || keys.n == 0)
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	for (uint32 i = 0; i < keys.n; i++)
+	{
+		v[1] = Int64GetDatum(keys.keys[i]);
+		nulls[1] = false;
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	sift_conn_keys_free(&keys);
+	table_close(heap, NoLock);
+	index_close(index, NoLock);
+	return (Datum) 0;
+}
+
+/* sift._test_conn_gen(index): lineage, records appended so far, trim */
+Datum
+sift_test_conn_gen(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftConnGen g;
+	TupleDesc	desc;
+	Datum		v[3];
+	bool		nulls[3] = {false};
+	bool		has = sift_conn_gen(index, &g);
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	v[0] = Int64GetDatum((int64) g.lineage);
+	v[1] = Int64GetDatum((int64) g.records);
+	v[2] = TransactionIdGetDatum(g.trim);
+	nulls[2] = !has || !TransactionIdIsValid(g.trim);
+	index_close(index, NoLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 #endif							/* SIFT_TESTING */

@@ -22,6 +22,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/conn.h"
 #include "core/compat.h"
 #include "core/tomb.h"
 
@@ -335,6 +336,33 @@ add_dead(SiftTomb **ents, int *nents, int *cap, const SiftTombLog *log, uint64 k
 	(*ents)[(*nents)++] = (SiftTomb) {.key = key, .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE};
 }
 
+/* The key journal of a connected parent: a record for the key of every old row of the statement (more than the entries it ended, which is all the journal needs) */
+static void
+journal_old_rows(Relation index, Relation heap, AttrNumber hatt, SiftTombLog *log, Tuplestorestate *old_rows)
+{
+	Oid			typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
+	TupleTableSlot *old = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsMinimalTuple);
+	SiftTomb   *recs = palloc(DEAD_KEYS_CHUNK * sizeof(SiftTomb));
+	int			n = 0;
+
+	tuplestore_rescan(old_rows);
+	while (tuplestore_gettupleslot(old_rows, true, false, old))
+	{
+		bool		isnull;
+		Datum		key = slot_getattr(old, hatt, &isnull);
+
+		if (!isnull && sift_conn_record(index, typid, key, &recs[n]) && ++n == DEAD_KEYS_CHUNK)
+		{
+			sift_tomb_append_many(index, log, recs, n);
+			n = 0;
+		}
+	}
+	if (n > 0)
+		sift_tomb_append_many(index, log, recs, n);
+	pfree(recs);
+	ExecDropSingleTupleTableSlot(old);
+}
+
 /*
  * A tombstone for each address the table's unique index lists for the key of each old row that no version is live for (a dirty snapshot: a version of an open transaction,
  * this one included, is live): the entries a delete or a key change left. An address that holds no entry of this index is harmless, VACUUM drops its tombstone when it
@@ -374,6 +402,8 @@ sift_col_tomb_dead_keys(Relation index, Relation heap, Tuplestorestate *old_rows
 		sift_col_log_create(index);
 		log = sift_col_log(index);
 	}
+	if (sift_conn_journal_on(index))
+		journal_old_rows(index, heap, hatt, log, old_rows);
 	ents = palloc(cap * sizeof(SiftTomb));
 	if (dead_share_is(heap, uoid, old_rows))
 	{

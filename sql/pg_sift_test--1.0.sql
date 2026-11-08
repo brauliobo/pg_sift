@@ -497,6 +497,16 @@ CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
 CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;
 
+-- the key journal of a connected parent index (col/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
+CREATE FUNCTION sift._test_conn_enable(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_conn_enable' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_conn_take(index regclass, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_conn_take' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_conn_changed(index regclass, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_conn_changed' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT records int8, OUT trim_below xid) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_conn_gen' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
 

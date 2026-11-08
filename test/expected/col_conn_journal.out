@@ -1,0 +1,210 @@
+-- The key journal of a connected parent index (src/col/conn.c, docs/COL-CONNECT.md): once a child index is connected, the parent keeps a record (key, transaction) for every
+-- entry an UPDATE, DELETE or key change ended, and sift_conn_changed(stamp) returns the keys of the records at or after the stamp's horizon, or says why it cannot.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, i % 10, 'l' || i, 'x' FROM generate_series(1, 2000) i;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id, label);
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+-- an index nothing is connected to keeps no journal
+SELECT why FROM sift._test_conn_take('dim_a_col');
+    why     
+------------
+ no journal
+(1 row)
+
+SELECT count(*) AS journal_records FROM sift._test_col_log_entries('dim_a_col') WHERE kind = 4;
+ journal_records 
+-----------------
+               0
+(1 row)
+
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 1;
+SELECT count(*) AS journal_records FROM sift._test_col_log_entries('dim_a_col') WHERE kind = 4;
+ journal_records 
+-----------------
+               0
+(1 row)
+
+-- connecting makes the journal; again, the same one
+SELECT sift._test_conn_enable('dim_a_col') <> 0 AS journal;
+ journal 
+---------
+ t
+(1 row)
+
+SELECT sift._test_conn_enable('dim_a_col') = (SELECT lineage FROM sift._test_conn_gen('dim_a_col')) AS same_lineage;
+ same_lineage 
+--------------
+ t
+(1 row)
+
+SELECT lineage = (SELECT lineage FROM sift._test_conn_gen('dim_a_col')) AS stamp_lineage, why FROM sift._test_conn_take('dim_a_col');
+ stamp_lineage | why 
+---------------+-----
+ t             | ok
+(1 row)
+
+SELECT lineage AS lin, horizon AS hor FROM sift._test_conn_take('dim_a_col') \gset
+-- nothing changed since the stamp
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+ why | key 
+-----+-----
+ ok  |    
+(1 row)
+
+-- UPDATE, DELETE and a key change put their keys in the set; an INSERT of a new key does not (a key the derived value has none for is read by the lookup, never taken for absent)
+UPDATE dim_a SET category_id = category_id + 100 WHERE id IN (10, 11, 12);
+DELETE FROM dim_a WHERE id = 20;
+UPDATE dim_a SET id = 5005 WHERE id = 30;
+INSERT INTO dim_a VALUES (9999, 1, 'new', 'x');
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 10;
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin, :'hor') ORDER BY key;
+ why | key 
+-----+-----
+ ok  |  10
+ ok  |  11
+ ok  |  12
+ ok  |  20
+ ok  |  30
+(5 rows)
+
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin, :'hor', 3) ORDER BY key;
+          why          | key 
+-----------------------+-----
+ too many changed keys |    
+(1 row)
+
+-- a rolled back transaction and a rolled back savepoint leave nothing
+BEGIN;
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 40;
+ROLLBACK;
+BEGIN;
+SAVEPOINT s;
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 41;
+ROLLBACK TO s;
+COMMIT;
+SELECT count(*) AS rolled_back_keys FROM sift._test_conn_changed('dim_a_col', :lin, :'hor') WHERE key IN (40, 41);
+ rolled_back_keys 
+------------------
+                0
+(1 row)
+
+-- the transaction's own change is in the set before it commits
+BEGIN;
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 50;
+SELECT count(*) AS own_change FROM sift._test_conn_changed('dim_a_col', :lin, :'hor') WHERE key = 50;
+ own_change 
+------------
+          1
+(1 row)
+
+ROLLBACK;
+-- a later stamp sees only what came after it
+SELECT lineage AS lin2, horizon AS hor2 FROM sift._test_conn_take('dim_a_col') \gset
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 60;
+SELECT why, key FROM sift._test_conn_changed('dim_a_col', :lin2, :'hor2') ORDER BY key;
+ why | key 
+-----+-----
+ ok  |  60
+(1 row)
+
+-- the records outlive a VACUUM (they are not frozen): the old stamp still sees every key
+VACUUM dim_a;
+SELECT count(*) AS keys_after_vacuum FROM sift._test_conn_changed('dim_a_col', :lin, :'hor') WHERE key IS NOT NULL;
+ keys_after_vacuum 
+-------------------
+                 6
+(1 row)
+
+-- a snapshot older than the horizon, a serializable one, another lineage, a stamp the journal was trimmed past
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin, ((:'hor')::text::bigint + 100000)::text::xid);
+              why              
+-------------------------------
+ snapshot older than the stamp
+(1 row)
+
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin + 1, :'hor');
+      why      
+---------------
+ other lineage
+(1 row)
+
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+   why    
+----------
+ snapshot
+(1 row)
+
+ROLLBACK;
+SELECT sift._test_log_chan('dim_a_col', 0) IS NOT NULL AS cleared;
+ cleared 
+---------
+ t
+(1 row)
+
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+       why        
+------------------
+ log not complete
+(1 row)
+
+SELECT sift._test_log_chan('dim_a_col', 3) IS NOT NULL AS restored;
+ restored 
+----------
+ t
+(1 row)
+
+SELECT why FROM sift._test_conn_changed('dim_a_col', :lin, :'hor');
+   why   
+---------
+ trimmed
+(1 row)
+
+SELECT why FROM sift._test_conn_take('dim_a_col');
+ why 
+-----
+ ok
+(1 row)
+
+-- the generation moves with every record
+SELECT records AS recs FROM sift._test_conn_gen('dim_a_col') \gset
+UPDATE dim_a SET category_id = category_id + 100 WHERE id = 70;
+SELECT records > :recs AS moved FROM sift._test_conn_gen('dim_a_col');
+ moved 
+-------
+ t
+(1 row)
+
+-- a rebuilt parent index is another file with no journal
+REINDEX INDEX dim_a_col;
+NOTICE:  sift_col index "dim_a_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_a_col');
+SELECT why FROM sift._test_conn_take('dim_a_col');
+    why     
+------------
+ no journal
+(1 row)
+
+SELECT count(*) AS journal_records FROM sift._test_col_log_entries('dim_a_col') WHERE kind = 4;
+ journal_records 
+-----------------
+               0
+(1 row)
+
+-- a key that is not an integer cannot be connected
+CREATE TABLE dim_b (code text PRIMARY KEY, category_id int);
+INSERT INTO dim_b VALUES ('a', 1);
+CREATE INDEX dim_b_col ON dim_b USING sift_col (code, category_id);
+NOTICE:  sift_col index "dim_b_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = code
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_b_col');
+SELECT sift._test_conn_enable('dim_b_col');
+ERROR:  index "dim_b_col" cannot be connected: its key column is not an integer
+HINT:  The key of the parent index is an int2, int4 or int8 column.
+DROP TABLE dim_a, dim_b;

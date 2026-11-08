@@ -24,8 +24,8 @@
 			 errmsg("relation \"%s\" has a corrupted tombstone log", RelationGetRelationName(rel)), \
 			 errdetail(__VA_ARGS__)))
 
-static bool
-is_tomb(const SiftSegEntry *e)
+bool
+sift_tomb_is_seg(const SiftSegEntry *e)
 {
 	return e->kind != SIFT_SEG_IMMUTABLE && (e->flags & SIFT_TBL_SEG_TOMB);
 }
@@ -34,7 +34,7 @@ const SiftSegEntry *
 sift_tomb_find_seg(const SiftDirSnapshot *dir)
 {
 	for (int i = 0; i < dir->nsegs; i++)
-		if (is_tomb(&dir->segs[i]))
+		if (sift_tomb_is_seg(&dir->segs[i]))
 			return &dir->segs[i];
 	return NULL;
 }
@@ -69,6 +69,8 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	t->seqbase = 0;
 	t->followed = false;
 	memset(&t->chan, 0, sizeof(t->chan));
+	memset(&t->keys, 0, sizeof(t->keys));
+	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
 	if (t->hotm)
 	{
@@ -301,11 +303,16 @@ tomb_sync(Relation rel, SiftTombLog *t, bool bounded)
 	buf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_SHARE);
 	sift_store_check_page(rel, buf, SIFT_PT_WBUFHEADER, e->gen);
 	n = SIFT_TOMB_HDR(BufferGetPage(buf))->nentries;
-	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing */
-	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr))
+	/* a header written before the completeness record has fewer used bytes, and the bytes past them are whatever the page held: it says nothing. Likewise for the key journal record */
+	if (SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + SIFT_TOMB_HDR_NOKEYS)
 		t->chan = SIFT_TOMB_HDR(BufferGetPage(buf))->chan;
 	else
 		memset(&t->chan, 0, sizeof(t->chan));
+	t->keys_cover = SiftPageGetUsed(BufferGetPage(buf)) >= MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr);
+	if (t->keys_cover)
+		t->keys = SIFT_TOMB_HDR(BufferGetPage(buf))->keys;
+	else
+		memset(&t->keys, 0, sizeof(t->keys));
 	blk = BlockNumberIsValid(t->last) ? t->last : SiftLaneHdr(BufferGetPage(buf))->lanes[0].head;
 	UnlockReleaseBuffer(buf);
 	if (n == t->synced)
@@ -779,27 +786,6 @@ sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, Co
 	sift_tomb_append_many(rel, t, &ent, 1);
 }
 
-void
-sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c)
-{
-	const SiftSegEntry *e;
-	Buffer		hbuf;
-	SiftPageEdit ed;
-
-	LockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	sift_dir_read(rel, t->dir);
-	if ((e = sift_tomb_find_seg(t->dir)) == NULL)
-		corrupt(rel, "There is no tombstone segment.");
-	hbuf = sift_lane_read_locked(rel, e->header_blk, BUFFER_LOCK_EXCLUSIVE);
-	sift_page_edit_begin(&ed, hbuf, SIFT_PAGE_DATA_OFFSET);
-	sift_page_edit_extra(&ed, (char *) &SIFT_TOMB_HDR(ed.page)->chan - (char *) ed.page, sizeof(SiftTombChan));
-	SIFT_TOMB_HDR(ed.page)->chan = *c;
-	sift_page_edit_end(rel, &ed, 1);
-	UnlockReleaseBuffer(hbuf);
-	UnlockPage(rel, SIFT_TOMB_LOCK_BLKNO, ShareLock);
-	t->chan = *c;
-}
-
 typedef struct TombSwap
 {
 	uint64		old_gen;
@@ -896,6 +882,7 @@ sift_tomb_rewrite(Relation rel, SiftTombLog *t, SiftTombKeep keep, void *arg)
 		SIFT_TOMB_HDR(hp)->magic = SIFT_TOMB_MAGIC;
 		SIFT_TOMB_HDR(hp)->nentries = kept;
 		SIFT_TOMB_HDR(hp)->chan = t->chan;
+		SIFT_TOMB_HDR(hp)->keys = t->keys;
 		SiftPageSetUsed(hp, MAXALIGN(sizeof(SiftWbufHeaderData)) + sizeof(SiftTombHdr));
 		GenericXLogFinish(state);
 	}

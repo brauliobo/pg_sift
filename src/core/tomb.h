@@ -42,6 +42,18 @@ typedef struct SiftTombChan
 	uint32		witness[2];
 } SiftTombChan;
 
+/*
+ * The key journal of a connected parent index (col/conn.h): lineage is the id of the journal (zero: the index keeps none), trim the first transaction horizon the journal
+ * vouches for (InvalidTransactionId: all of them, from the lock under which it was made). Records of kind SIFT_TOMB_KEYCHG are the journal; a header written before it
+ * (4.2.1 and earlier) does not cover these bytes and says nothing: no journal.
+ */
+typedef struct SiftTombKeys
+{
+	uint64		lineage;
+	TransactionId trim;
+	uint32		flags;
+} SiftTombKeys;
+
 /* Tombstone segment header page: SiftWbufHeaderData then this; data pages: SiftTombPage then SiftTomb[] */
 typedef struct SiftTombHdr
 {
@@ -49,7 +61,11 @@ typedef struct SiftTombHdr
 	uint32		pad;
 	uint64		nentries;		/* appended so far: the version of the log */
 	SiftTombChan chan;
+	SiftTombKeys keys;
 } SiftTombHdr;
+
+/* The bytes of the header page a log of 4.2.1 and earlier wrote: the header up to the key journal */
+#define SIFT_TOMB_HDR_NOKEYS	offsetof(SiftTombHdr, keys)
 
 typedef struct SiftTombPage
 {
@@ -68,8 +84,12 @@ typedef enum SiftTombKind
 {
 	SIFT_TOMB_DELETE = 1,		/* the version (an index: the entry) is not live from the entry's transaction on */
 	SIFT_TOMB_UPDATE,			/* succ is the new version */
-	SIFT_TOMB_LOCK				/* row lock: never deletes */
+	SIFT_TOMB_LOCK,				/* row lock: never deletes */
+	SIFT_TOMB_KEYCHG			/* key journal (col/conn.h): the entry of key `succ` was ended by xid; key is SIFT_TOMB_KEYS_KEY, not a heap address */
 } SiftTombKind;
+
+/* The key of every KEYCHG record: above the largest heap address (block * 65536 + offset), so the range lookups of the tombstones never reach it and the records sort together at the end */
+#define SIFT_TOMB_KEYS_KEY		(UINT64CONST(1) << 48)
 
 /* UPDATE entries: the new version is a member of the chain of this one, no index has an entry for it */
 #define SIFT_TOMB_HOT		0x0001
@@ -110,6 +130,8 @@ typedef struct SiftTombLog
 	BlockNumber last;
 	uint32		lastcnt;
 	SiftTombChan chan;			/* the completeness record of the header at the last sync */
+	SiftTombKeys keys;			/* the key journal record of the header at the last sync */
+	bool		keys_cover;		/* the header covers it (a log written by 4.2.1 does not: sift_tomb_rewrite writes a header that does) */
 	uint32		seqbase;		/* the entries of the logs read before the current one, which only follows them (tomb_follow) */
 	bool		followed;
 	SiftTomb   *ents;			/* sorted by (key, seq): the bulk of the log */
@@ -125,6 +147,8 @@ typedef struct SiftTombLog
 
 /* The log of a relation that has none yet: cxt holds what it caches, dir is the owner's directory copy */
 extern void sift_tomb_init(SiftTombLog *t, MemoryContext cxt, SiftDirSnapshot *dir);
+/* Is the directory entry the tombstone segment */
+extern bool sift_tomb_is_seg(const SiftSegEntry *e);
 /* The directory entry of the log segment in a directory copy (NULL when the relation has none) */
 extern const SiftSegEntry *sift_tomb_find_seg(const SiftDirSnapshot *dir);
 /* A new empty log segment of the kind and segment format the relation keeps it as (a table: WBUF_OPEN, an index: SIFT_SEG_TOMB): its directory entry, to be added by the caller's directory change */
@@ -141,6 +165,12 @@ extern bool sift_tomb_pressure(uint64 entries);
 extern uint64 sift_tomb_entries(Relation rel, const SiftDirSnapshot *dir);
 /* Writes the completeness record of the header */
 extern void sift_tomb_set_chan(Relation rel, SiftTombLog *t, const SiftTombChan *c);
+/* Writes the key journal record of the header (the log must be rewritten first when keys_cover is false) */
+extern void sift_tomb_set_keys(Relation rel, SiftTombLog *t, const SiftTombKeys *k);
+/* Raises the segment format of the log in the directory (an older release refuses a format it does not know) */
+extern void sift_tomb_set_format(Relation rel, uint8 format);
+/* The header page's journal record and the entries appended so far, read alone (no entry is read): false when the header does not cover it */
+extern bool sift_tomb_peek_keys(Relation rel, const SiftDirSnapshot *dir, SiftTombKeys *k, uint64 *nentries);
 extern void sift_tomb_append(Relation rel, SiftTombLog *t, uint64 key, TransactionId xid, CommandId cid, SiftTombKind kind, uint16 flags, uint64 succ);
 /* The same for n entries: written by the page, in one pass over the segment */
 extern void sift_tomb_append_many(Relation rel, SiftTombLog *t, const SiftTomb *ents, int n);

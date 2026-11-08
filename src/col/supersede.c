@@ -25,6 +25,7 @@
 #include "utils/typcache.h"
 
 #include "col/am.h"
+#include "col/conn.h"
 #include "core/compat.h"
 #include "core/tomb.h"
 
@@ -139,6 +140,16 @@ tomb_hold(Relation index, const SiftTomb *ent)
 		flush_slot(h);
 }
 
+/* The key journal of a connected parent (col/conn.h): the key whose entry the statement ended, held with the tombstones */
+static void
+journal_hold(Relation index, Oid keytype, Datum key)
+{
+	SiftTomb	rec;
+
+	if (sift_conn_record(index, keytype, key, &rec))
+		tomb_hold(index, &rec);
+}
+
 /* A row trigger (track_changes = ctid): the entry at the address of a version a statement ended, held with the others of the transaction */
 void
 sift_col_tomb_hold_tid(Relation index, ItemPointer tid)
@@ -175,6 +186,7 @@ tomb_replaced(Relation index, TupleTableSlot *slot, AttrNumber hatt, Form_pg_att
 	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
 		return false;
 	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	journal_hold(index, att->atttypid, key);
 	probed_found = true;
 	probed_old = *entry;
 	return true;

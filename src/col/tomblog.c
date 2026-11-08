@@ -191,6 +191,7 @@ typedef struct DropArg
 	IndexBulkDeleteCallback cb;	/* NULL: only the transactions are looked at */
 	void	   *state;
 	TransactionId frozen;		/* a tombstone of a transaction that committed before this one holds the same for every snapshot: it is written as frozen */
+	TransactionId aged;			/* a journal record of a transaction before this one is dropped (log_vacuum has raised the trim of the journal to it first) */
 	uint64		changed;
 } DropArg;
 
@@ -207,6 +208,17 @@ drop_keep(SiftTomb *t, void *arg)
 	DropArg    *d = arg;
 	ItemPointerData tid;
 
+	/*
+	 * A journal record (col/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
+	 * the record's transaction. It goes when its transaction aborted, and when it is so old that the comparison would wrap (the journal then vouches from the horizon on).
+	 */
+	if (t->kind == SIFT_TOMB_KEYCHG)
+	{
+		if (!TransactionIdPrecedes(t->xid, d->aged) && (!TransactionIdIsNormal(t->xid) || sift_xid_state(t->xid) != SIFT_XID_ABORTED))
+			return true;
+		d->changed++;
+		return false;
+	}
 	sift_key_to_tid(t->key, &tid);
 	if (d->cb != NULL && d->cb(&tid, d->state))
 		goto drop;
@@ -232,15 +244,35 @@ drop:
 	return false;
 }
 
+/* Records of the journal older than the age limit go with this VACUUM: the journal stops vouching for the horizons before the limit first, so that no reader takes the missing records for none */
+static void
+trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
+{
+	int			n;
+	const SiftTomb *rec = log->keys_cover && log->keys.lineage != 0 ? sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n) : NULL;
+
+	for (int i = 0; rec != NULL && i < n; i++)
+		if (rec[i].kind == SIFT_TOMB_KEYCHG && TransactionIdPrecedes(rec[i].xid, aged))
+		{
+			SiftTombKeys keys = log->keys;
+
+			if (!TransactionIdIsNormal(keys.trim) || TransactionIdPrecedes(keys.trim, aged))
+				keys.trim = aged;
+			sift_tomb_set_keys(index, log, &keys);
+			return;
+		}
+}
+
 static void
 log_vacuum(Relation index, IndexBulkDeleteCallback cb, void *cb_state)
 {
 	SiftTombLog *log = sift_col_log(index);
-	DropArg		d = {cb, cb_state, GetOldestNonRemovableTransactionId(NULL), 0};
+	DropArg		d = {.cb = cb,.state = cb_state,.frozen = GetOldestNonRemovableTransactionId(NULL),.aged = ReadNextTransactionId() - (1U << 30)};
 	SiftTombChan chan;
 
 	if (log == NULL)
 		return;
+	trim_journal(index, log, d.aged);
 	/* a log with nothing to drop or freeze is not rewritten (the rewrite copies it whole): the first change found says so. A changing scan rewrites the copy it made, so it works on one */
 	for (uint32 i = 0; i < log->nents && d.changed == 0; i++)
 	{
