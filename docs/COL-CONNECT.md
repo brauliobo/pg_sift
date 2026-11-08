@@ -31,7 +31,7 @@ transaction id whenever the completeness of the log changes (a new baseline, the
 The parent key is one `int2`, `int4` or `int8` column with a unique index and `track_changes`. A journal is made under a `ShareLock` of the parent table, held to the end of the transaction, so that every
 transaction that wrote the table before is finished.
 
-Format minor 44; an older release refuses the index.
+Format minor 44. A release that does not know it refuses the maintenance of the index (a segment format it does not know is invalid in the directory: VACUUM, merge and promotion fail) and, from 4.3, this build refuses to open the log of a newer format; a release before that appends tombstones without the journal records, so a database must not be written by an older release once a connected child exists (REINDEX of the parent index makes the journal again).
 
 ## The declaration
 

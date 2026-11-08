@@ -135,6 +135,11 @@ sift_col_log(Relation index)
 
 	if (seg == NULL)
 		return NULL;
+	if (seg->format > SIFT_COL_FORMAT_MAX_READ)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, SIFT_COL_FORMAT_MAX_READ),
+				 errhint("Use a newer pg_sift, or REINDEX.")));
 	/*
 	 * A table follows a replaced log and keeps the entries it read (its addresses are never given to another row). A heap address is: VACUUM removes the entries of the
 	 * rows it frees and then the tombstones of those entries, and the heap hands the address to a new row, which an entry kept here would hide. So the cache is the log
