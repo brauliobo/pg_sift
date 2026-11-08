@@ -277,9 +277,9 @@ tomb_budget(Relation rel, const SiftTombLog *t, uint64 n)
 }
 
 static void
-tomb_sync(Relation rel, SiftTombLog *t, bool bounded)
+tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir, bool bounded)
 {
-	const SiftSegEntry *e = sift_tomb_find_seg(t->dir);
+	const SiftSegEntry *e = sift_tomb_find_seg(dir);
 	Buffer		buf;
 	uint64		n;
 	BlockNumber blk;
@@ -362,13 +362,24 @@ tomb_sync(Relation rel, SiftTombLog *t, bool bounded)
 void
 sift_tomb_sync(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, t->bounded);
+	tomb_sync(rel, t, t->dir, t->bounded);
+}
+
+/*
+ * The log of the generation that dir names, whatever the directory is now: a scan whose participants share the directory of its leader reads the
+ * tombstones of that one (a VACUUM that rewrote the log since has released the blocks of the old generation, which the snapshot of the scan keeps from
+ * being reused), so that no participant has the rows of the leader's write buffers without the tombstones that hide them
+ */
+void
+sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
+{
+	tomb_sync(rel, t, dir, t->bounded);
 }
 
 void
 sift_tomb_sync_all(Relation rel, SiftTombLog *t)
 {
-	tomb_sync(rel, t, false);
+	tomb_sync(rel, t, t->dir, false);
 }
 
 /* The run of entries for key in the sorted array a: its first element and length */

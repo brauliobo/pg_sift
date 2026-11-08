@@ -156,6 +156,7 @@ extern SiftSegEntry sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 
 /* Forgets what was read (the cache of the log follows the log of the directory now) */
 extern void sift_tomb_forget(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);
+extern void sift_tomb_sync_at(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir);
 /* ... for what consumes the log (VACUUM, its worker): bound by no limit */
 extern void sift_tomb_sync_all(Relation rel, SiftTombLog *t);
 /* A log of that many entries is more than a backend keeps / a quarter of it, when a worker is asked for to drop the cleared ones */
