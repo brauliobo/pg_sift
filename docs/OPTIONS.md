@@ -2308,7 +2308,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 128 MB — 128 MB (about 6 million rows of index) bounds the rewrite and the exclusive-lock copy of one VACUUM; the first merge always runs; with truncation, table and indexes 200.3 to 154.5 MiB after churn (1,000,000 rows).
 - **Turn off:** SET sift.vacuum_rewrite_limit = 0 (session, ALTER ROLE/DATABASE, postgresql.conf): one merge step and no file move; the free end is still truncated unless vacuum_truncate = false.
 - **Upgrade from 4.1:** unchanged
-- **Advice:** Leave at 128. Raise it for a faster return of space after heavy churn; set 0 to forbid the file move and long locks. An index over it is rewritten in steps of that size by col_auto_merge.
+- **Advice:** Leave at 128. Raise it for a faster return of space after heavy churn; set 0 to forbid the file move and long locks. An index over it is rewritten in steps of that size by col_auto_merge. The trade: a rewrite leaves the file twice the index and the VACUUM after it copies the new segments down into the old holes to give the space back, a second write of the index (index pages written per inserted row, 100,000 rows, a rewrite every 7 batches of 2,000 inserts: 1,072 B with the copy, 636 B without, but the file 1.9 times the live bytes without it); the copy is once per rewrite and goes no faster than this limit a round.
 - **Sources:** [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_wal_pct
