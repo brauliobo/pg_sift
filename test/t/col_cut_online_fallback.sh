@@ -28,7 +28,7 @@ live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
 tight() { test "$(size)" -le "$(( $(live) * ${1:-130} / 100 ))"; }
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # the VACUUM sees no standby (the lock path it takes without one) while one streams and replays
-vacuum() { sql primary "SET sift.async_maintenance = off" "SET sift.test_cut_with_standby = on" "SET lock_timeout = '300ms'" "VACUUM t" >/dev/null; }
+vacuum() { sql primary "SET sift.async_maintenance = off" "SET sift.test_cut_with_standby = on" "SET lock_timeout = '300ms'" "VACUUM t" >/dev/null; }  # timeout-ok: the lock_timeout ends the cut's wait; the cut falls back online
 fragment() {
 	sql primary "DROP INDEX IF EXISTS t_idx" >/dev/null
 	sql primary "SET sift.async_maintenance = off" "CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (key_cut = grp)" >/dev/null || bail "create failed"
@@ -115,7 +115,7 @@ for phase in 5 6; do
 	SIFT_TMP=$(dir primary) leak_expect 1 "terminated by signal 9"
 	# a VACUUM reaches the phase when it has a run to move: ask again, with a transaction between, until the kill
 	for _ in $(seq 8); do
-		sql primary "SET sift.async_maintenance = off" "SET sift.test_cut_with_standby = on" "SET lock_timeout = '300ms'" "SET sift.test_space_crash = $phase" "VACUUM t" >/dev/null 2>&1
+		sql primary "SET sift.async_maintenance = off" "SET sift.test_cut_with_standby = on" "SET lock_timeout = '300ms'" "SET sift.test_space_crash = $phase" "VACUUM t" >/dev/null 2>&1  # timeout-ok: the lock_timeout ends the cut's wait; the cut falls back online
 		for _ in $(seq 20); do [[ -f $D/data/postmaster.pid ]] || break; sleep 0.1; done
 		[[ -f $D/data/postmaster.pid ]] || break
 		sql primary "SELECT pg_current_xact_id()" >/dev/null

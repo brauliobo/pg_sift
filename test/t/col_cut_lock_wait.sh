@@ -45,7 +45,7 @@ loosen
 loose=$(size)
 hold 4
 t0=$(now_ms)
-vacuum "SET lock_timeout = '500ms'"
+vacuum "SET lock_timeout = '500ms'"  # timeout-ok: the lock_timeout ends the cut's wait while the reader holds the table for 4 s
 waited=$(( $(now_ms) - t0 ))
 diag "reader held 4 s, lock_timeout 500 ms: VACUUM took $waited ms, file $loose -> $(size)"
 check "lock_timeout ends the wait" test "$waited" -lt 3000

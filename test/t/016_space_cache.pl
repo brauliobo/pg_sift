@@ -75,7 +75,7 @@ subtest 'tbl a failed table_maintain does not leave the VACUUM cut without its w
 	$writer->query_safe("INSERT INTO s VALUES (100001, 7, 'primed cached writer')");
 	my $session = $node->background_psql('postgres');
 	$session->query_safe('\\set ON_ERROR_STOP 0');
-	$session->query_safe("SET sift.table_auto_defrag = off; SET lock_timeout = '1s'");
+	$session->query_safe("SET sift.table_auto_defrag = off; SET lock_timeout = '1s'");  # timeout-ok: the lock_timeout is the bound the cut asks for its lock until (asserted)
 	$session->query('SET sift.test_space_error = on; SELECT sift.table_maintain(\'s\')');
 	like($session->{stderr}, qr/error after open buffer relocation publication/, 'table_maintain ended with an ERROR inside its space step');
 	$session->query('SET sift.test_space_error = off');

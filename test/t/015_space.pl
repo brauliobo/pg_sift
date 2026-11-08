@@ -145,7 +145,7 @@ for my $kind (qw(col tbl))
 		$bg->query_safe("BEGIN; $cursor_settings; DECLARE c CURSOR FOR $query; FETCH 1 FROM c");
 		my $groups = $primary->safe_psql('postgres', 'SELECT count(DISTINCT v) FROM s WHERE v > 0');
 		# the cut asks for its lock for 5 s (lock_timeout ends the wait), so the statement timeout only proves that the wait ended at the lock timeout
-		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM s");
+		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM s");  # timeout-ok: the lock_timeout (300 ms) ends the cut's wait; a statement over 3 s means it did not
 		my $held = size($primary, $kind);
 		if ($kind eq 'col')
 		{

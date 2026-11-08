@@ -49,6 +49,7 @@ CHECKS=(
 	'plan		scripts/lint-cache.sh plan --names scripts test Makefile sql pg_sift.control src/agg/par '\'':(exclude)test/sql'\'' '\'':(exclude)test/expected'\'' '\''*.py'\'' -- scripts/ci.sh --selftest'
 	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && scripts/plangate.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
 	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
+	'tap-timeouts	scripts/check-tap-timeouts.sh --selftest && scripts/check-tap-timeouts.sh'
 	'port-isa-check	sh scripts/port-isa-check.sh --selftest'
 	'ci-claim	scripts/test-ci-claim.sh'
 	'ci-stop	scripts/test-ci-stop.sh'

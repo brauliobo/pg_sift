@@ -60,7 +60,7 @@ sql n "CREATE INDEX h_y ON h USING sift_col (id, g, v)" >/dev/null
 sql n "BEGIN" "LOCK TABLE h IN ROW EXCLUSIVE MODE" "SELECT pg_sleep(5)" "COMMIT" >/dev/null 2>&1 &
 HOLD=$!
 until [[ $(sql n "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(5)%'") == 1 ]]; do sleep 0.1; done
-out=$(sql n "SET lock_timeout = '300ms'" "DROP INDEX CONCURRENTLY h_y" 2>&1)
+out=$(sql n "SET lock_timeout = '300ms'" "DROP INDEX CONCURRENTLY h_y" 2>&1)  # timeout-ok: the lock_timeout ends the wait for the writer, the failure checked
 check "a DROP INDEX CONCURRENTLY that waits for a writer past lock_timeout fails" grep -q 'lock timeout' <<<"$out"
 check "... the index is invalid and keeps its two triggers, which no other index owns" \
 	test "$(sql n "SELECT count(*) FROM pg_index WHERE indrelid = 'h'::regclass AND NOT indisvalid")|$(ntrig)|$(orphans)" == "1|2|0"

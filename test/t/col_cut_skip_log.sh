@@ -28,7 +28,7 @@ hold() { sql skip "BEGIN" "SELECT count(*) FROM $1 WHERE id < 10" "SELECT pg_sle
 
 loosen t
 hold t 4
-out=$(sql skip "SET sift.async_maintenance = off" "SET lock_timeout = '500ms'" "SET client_min_messages = info" "VACUUM (VERBOSE) t" 2>&1)
+out=$(sql skip "SET sift.async_maintenance = off" "SET lock_timeout = '500ms'" "SET client_min_messages = info" "VACUUM (VERBOSE) t" 2>&1)  # timeout-ok: the lock_timeout ends the cut's wait that the skip log reports
 wait "$HOLDER"
 diag "$(grep 'not truncating' <<<"$out")"
 check "VACUUM VERBOSE says the lock was held and what the online cut did" grep -q 'index "t_idx": a lock is held on it (waited [0-9]* ms): [0-9]* blocks moved, [0-9]* given back online' <<<"$out"

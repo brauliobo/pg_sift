@@ -138,7 +138,7 @@ subtest 'a reader on the primary does not stop VACUUM, which gives the free end 
 	# so what it vacates goes back at the VACUUM after the horizon passed it (the second one, after a new transaction id)
 	for (1 .. 2)
 	{
-		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM $t");
+		$primary->safe_psql('postgres', "SET lock_timeout = '300ms'; SET statement_timeout = '3s'; VACUUM $t");  # timeout-ok: the lock_timeout (300 ms) ends the cut's wait; a statement over 3 s means it did not
 		$primary->safe_psql('postgres', 'SELECT pg_current_xact_id()');
 	}
 	cmp_ok(blocks($primary), '<', $before, 'the free end went back while a reader holds the index');

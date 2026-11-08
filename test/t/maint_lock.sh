@@ -36,7 +36,7 @@ for _ in $(seq 120); do
 done
 check "the worker is merging claimed segments" test "$(sql lock "$CLAIMS")" -ge 2
 # the exclusive SQL functions keep the steps out: with a step in flight, sift.merge waits for it and gives up at the lock timeout
-check "an exclusive SQL function waits for the step in flight" grep -q "lock timeout" <(sql lock "SET lock_timeout = '1s'" "SELECT sift.merge('t_idx')" 2>&1)
+check "an exclusive SQL function waits for the step in flight" grep -q "lock timeout" <(sql lock "SET lock_timeout = '1s'" "SELECT sift.merge('t_idx')" 2>&1)  # timeout-ok: the lock_timeout ends the wait for the step in flight, the failure checked
 
 t0=$SECONDS
 # a stall ends in the timeout, not in a hang: the gate is open only after this
