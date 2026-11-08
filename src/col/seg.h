@@ -442,6 +442,8 @@ extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);
 extern uint64 sift_cseg_live_rows(SiftColSegment *seg);
+/* Do the addresses of every dead row of the segment, listed for the scans of its global order (8 bytes a row), fit work_mem? A segment with more has none listed: its scans read the units and the heap */
+extern bool sift_cseg_dead_fits(SiftColSegment *seg);
 
 /* Replaces the contents of dst with the live rows of unit u (dst: a batch of the segment's schema); the rows keep their versions */
 extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst);
