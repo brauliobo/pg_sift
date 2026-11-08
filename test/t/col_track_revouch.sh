@@ -38,7 +38,6 @@ if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *= *\([0-9]*\).*/\1/p' "$REPO/Makefil
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan 16
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
@@ -48,9 +47,10 @@ overlay "$NEWCFG" "$OV/new" "$ROOT"
 if ((OLD_MAJOR == PG_MAJOR)) && [[ -z $OLD_REF ]]; then
 	overlay "$OLDCFG" "$OV/old" "$ROOT"
 else
-	build_old "$OLDCFG" "$OV/oldroot" || { tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
+	build_old "$OLDCFG" "$OV/oldroot" || { (($? == 77)) && exit 0; tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
 	overlay "$OLDCFG" "$OV/old" "$OV/oldroot"
 fi
+plan 16
 OLDB=$OV/old$("$OLDCFG" --bindir)
 NEWB=$OV/new$("$NEWCFG" --bindir)
 PATH=$NEWB:$PATH
