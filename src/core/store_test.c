@@ -454,18 +454,13 @@ sweep(Relation index)
 {
 	Bitmapset  *orphans;
 	SiftExtent *rel;
-	int			n = 0;
-	int64		blocks = 0;
-	int			b = -1;
+	int			n;
+	int64		blocks;
 
 	MAINT_LOCK(index, ExclusiveLock);
 	orphans = sift_store_orphans(index);
-	rel = palloc(Max(bms_num_members(orphans), 1) * sizeof(SiftExtent));
-	while ((b = bms_next_member(orphans, b)) >= 0)
-	{
-		sift_extent_push(rel, &n, b, 1);
-		blocks++;
-	}
+	blocks = bms_num_members(orphans);
+	rel = sift_store_block_extents(orphans, &n);
 	if (n > 0)
 		sift_dir_update(index, &(SiftDirChange) {.release = rel, .nrelease = n, .extra = InvalidBuffer});
 	MAINT_UNLOCK(index, ExclusiveLock);

@@ -6,6 +6,7 @@
 #include "access/transam.h"
 #include "nodes/bitmapset.h"
 
+#include "core/rowmem.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
@@ -234,6 +235,28 @@ sift_store_orphans(Relation index)
 	bms_free(ref);
 	pfree(snap);
 	return orphans;
+}
+
+/* The runs of the blocks of the set, one extent each: the orphans of a killed write are whole extents, so the array follows the runs and not the blocks */
+SiftExtent *
+sift_store_block_extents(const Bitmapset *set, int *n)
+{
+	SiftExtent *ext;
+	int			x = -1,
+				prev = -2,
+				runs = 0;
+
+	while ((x = bms_next_member(set, x)) >= 0)
+	{
+		runs += x != prev + 1;
+		prev = x;
+	}
+	ext = sift_rows_alloc((runs + 1) * sizeof(SiftExtent));
+	x = -1;
+	*n = 0;
+	while ((x = bms_next_member(set, x)) >= 0)
+		sift_extent_push(ext, n, x, 1);
+	return ext;
 }
 
 void

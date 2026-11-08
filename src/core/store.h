@@ -591,6 +591,7 @@ extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEnt
  * writers are write buffer appenders of published segments.
  */
 extern struct Bitmapset *sift_store_orphans(Relation index);
+extern SiftExtent *sift_store_block_extents(const struct Bitmapset *set, int *n);
 
 /*
  * Checks metapage, directory, free list (bounds, overlap, chain, reference

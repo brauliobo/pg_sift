@@ -3,7 +3,6 @@
  * that moves the segments at the end of the file down (core/store.h P7).
  */
 #include "postgres.h"
-#include "core/rowmem.h"
 
 #include "access/xact.h"
 #include "common/int.h"
@@ -32,18 +31,6 @@
 
 static bool space_worth(int64 blocks, BlockNumber nblocks);
 
-static SiftExtent *
-bitmap_extents(Bitmapset *set, int *n)
-{
-	SiftExtent *ext = sift_rows_alloc((bms_num_members(set) + 1) * sizeof(SiftExtent));
-	int			x = -1;
-
-	*n = 0;
-	while ((x = bms_next_member(set, x)) >= 0)
-		sift_extent_push(ext, n, x, 1);
-	return ext;
-}
-
 /*
  * The scan for candidates runs without blocking appenders. A segment created
  * meanwhile (allocated before it is in the directory) is excluded by marking
@@ -68,7 +55,7 @@ sift_maint_orphan_sweep(Relation index)
 	sift_dir_read(index, snap);
 	ref = sift_store_referenced_blocks(index, snap);
 	cand = bms_del_members(cand, ref);
-	ext = bitmap_extents(cand, &n);
+	ext = sift_store_block_extents(cand, &n);
 	freed = bms_num_members(cand);
 	if (n > 0)
 		sift_dir_update(index, &(SiftDirChange) {.release = ext,.nrelease = n,.extra = InvalidBuffer});
