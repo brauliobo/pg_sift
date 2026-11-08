@@ -42,16 +42,16 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 VACUUM (FREEZE, ANALYZE) ev, dm, dh;
 VACUUM (FREEZE) df;
 -- the tests of a column that an index holds as booleans, written as the query writes them: on the fact table and on the lookup table, `IS NULL` for the leaf of `IS NOT NULL`
-CREATE TABLE fe (id int, k int, t text) WITH (autovacuum_enabled = false);
-INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END FROM generate_series(1, 40000) i;
-CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL));
+CREATE TABLE fe (id int, k int, t text, u int) WITH (autovacuum_enabled = false);
+INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END, CASE WHEN i % 7 = 0 THEN NULL ELSE i END FROM generate_series(1, 40000) i;
+CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL), ((t IS NOT NULL) AND (u IS NOT NULL)));
 NOTICE:  sift_col index "fe_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fe_col');
 CREATE TABLE dq (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO dq SELECT * FROM dm;
 ALTER TABLE dq ADD PRIMARY KEY (k);
-CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL), ((a IS NOT NULL) AND (c IS NOT NULL)));
 NOTICE:  sift_col index "dq_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dq_col');
@@ -71,7 +71,11 @@ INSERT INTO shapes VALUES
  (10, $q$SELECT fe.id % 5, count(DISTINCT dq.k), count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.a), '') IS NOT NULL),
 		count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.b), '') IS NULL) FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$),
  (11, $q$SELECT fe.id % 4, count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NULL), count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NOT NULL) FROM fe GROUP BY 1 ORDER BY 1$q$),
- (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$);
+ (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$),
+ (13, $q$SELECT fe.id % 4, count(*) FILTER (WHERE fe.t IS NOT NULL AND fe.u IS NOT NULL), count(*) FILTER (WHERE fe.t IS NULL OR fe.u IS NULL) FROM fe
+		GROUP BY 1 ORDER BY 1$q$),
+ (14, $q$SELECT fe.id % 5, count(DISTINCT dq.k) FILTER (WHERE dq.a IS NOT NULL AND dq.c IS NOT NULL), count(DISTINCT dq.k) FILTER (WHERE dq.a IS NULL OR dq.c IS NULL)
+		FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$);
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -113,7 +117,9 @@ SELECT * FROM report('settled');
  settled |    10 | t            | t           | t    | t
  settled |    11 | t            | f           | t    | t
  settled |    12 | t            | t           | t    | t
-(12 rows)
+ settled |    13 | t            | f           | t    | t
+ settled |    14 | t            | t           | t    | t
+(14 rows)
 
 -- rows the heap changed after the index saw them, in the transaction that reads them
 BEGIN;
@@ -123,7 +129,7 @@ INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE dq SET a = NULL, b = 'x' WHERE k % 29 = 0;
-UPDATE fe SET t = NULL WHERE id % 17 = 0;
+UPDATE fe SET t = NULL, u = NULL WHERE id % 17 = 0;
 SELECT * FROM report('in the transaction');
        stage        | shape | same_answers | from_leaves | scan | not_empty 
 --------------------+-------+--------------+-------------+------+-----------
@@ -139,7 +145,9 @@ SELECT * FROM report('in the transaction');
  in the transaction |    10 | t            | t           | t    | t
  in the transaction |    11 | t            | f           | t    | t
  in the transaction |    12 | t            | t           | t    | t
-(12 rows)
+ in the transaction |    13 | t            | f           | t    | t
+ in the transaction |    14 | t            | t           | t    | t
+(14 rows)
 
 ROLLBACK;
 -- committed, not vacuumed
@@ -160,7 +168,9 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |    10 | t            | t           | t    | t
  committed, not vacuumed |    11 | t            | f           | t    | t
  committed, not vacuumed |    12 | t            | t           | t    | t
-(12 rows)
+ committed, not vacuumed |    13 | t            | f           | t    | t
+ committed, not vacuumed |    14 | t            | t           | t    | t
+(14 rows)
 
 VACUUM dm;
 SELECT * FROM report('vacuumed');
@@ -178,7 +188,9 @@ SELECT * FROM report('vacuumed');
  vacuumed |    10 | t            | t           | t    | t
  vacuumed |    11 | t            | f           | t    | t
  vacuumed |    12 | t            | t           | t    | t
-(12 rows)
+ vacuumed |    13 | t            | f           | t    | t
+ vacuumed |    14 | t            | t           | t    | t
+(14 rows)
 
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
@@ -201,7 +213,9 @@ SELECT * FROM report('workers');
  workers |    10 | t            | t           | t    | t
  workers |    11 | t            | f           | t    | t
  workers |    12 | t            | t           | t    | t
-(12 rows)
+ workers |    13 | t            | f           | t    | t
+ workers |    14 | t            | t           | t    | t
+(14 rows)
 
 SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
@@ -219,7 +233,9 @@ SELECT * FROM report('lookup columns off');
  lookup columns off |    10 | t            | f           | t    | t
  lookup columns off |    11 | t            | f           | t    | t
  lookup columns off |    12 | t            | f           | t    | t
-(12 rows)
+ lookup columns off |    13 | t            | f           | t    | t
+ lookup columns off |    14 | t            | f           | t    | t
+(14 rows)
 
 DROP FUNCTION report(text), scanned(text), loads(text), answer(text, bool);
 DROP TABLE shapes, ev, dm, dh, df, fe, dq;

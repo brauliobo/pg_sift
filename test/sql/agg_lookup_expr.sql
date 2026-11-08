@@ -34,13 +34,13 @@ VACUUM (FREEZE, ANALYZE) ev, dm, dh;
 VACUUM (FREEZE) df;
 
 -- the tests of a column that an index holds as booleans, written as the query writes them: on the fact table and on the lookup table, `IS NULL` for the leaf of `IS NOT NULL`
-CREATE TABLE fe (id int, k int, t text) WITH (autovacuum_enabled = false);
-INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END FROM generate_series(1, 40000) i;
-CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL));
+CREATE TABLE fe (id int, k int, t text, u int) WITH (autovacuum_enabled = false);
+INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END, CASE WHEN i % 7 = 0 THEN NULL ELSE i END FROM generate_series(1, 40000) i;
+CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL), ((t IS NOT NULL) AND (u IS NOT NULL)));
 CREATE TABLE dq (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO dq SELECT * FROM dm;
 ALTER TABLE dq ADD PRIMARY KEY (k);
-CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL), ((a IS NOT NULL) AND (c IS NOT NULL)));
 VACUUM (FREEZE, ANALYZE) fe, dq;
 
 CREATE TABLE shapes (n int, sql text);
@@ -58,7 +58,11 @@ INSERT INTO shapes VALUES
  (10, $q$SELECT fe.id % 5, count(DISTINCT dq.k), count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.a), '') IS NOT NULL),
 		count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.b), '') IS NULL) FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$),
  (11, $q$SELECT fe.id % 4, count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NULL), count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NOT NULL) FROM fe GROUP BY 1 ORDER BY 1$q$),
- (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$);
+ (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$),
+ (13, $q$SELECT fe.id % 4, count(*) FILTER (WHERE fe.t IS NOT NULL AND fe.u IS NOT NULL), count(*) FILTER (WHERE fe.t IS NULL OR fe.u IS NULL) FROM fe
+		GROUP BY 1 ORDER BY 1$q$),
+ (14, $q$SELECT fe.id % 5, count(DISTINCT dq.k) FILTER (WHERE dq.a IS NOT NULL AND dq.c IS NOT NULL), count(DISTINCT dq.k) FILTER (WHERE dq.a IS NULL OR dq.c IS NULL)
+		FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$);
 
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -97,7 +101,7 @@ INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE dq SET a = NULL, b = 'x' WHERE k % 29 = 0;
-UPDATE fe SET t = NULL WHERE id % 17 = 0;
+UPDATE fe SET t = NULL, u = NULL WHERE id % 17 = 0;
 SELECT * FROM report('in the transaction');
 ROLLBACK;
 
