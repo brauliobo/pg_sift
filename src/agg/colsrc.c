@@ -439,10 +439,16 @@ sift_colsrc_gorder_clean(SiftSrcSource *src, int i)
 	return src->prov->gorder_clean && src->prov->gorder_clean(src->impl, i);
 }
 
-bool
-sift_colsrc_gorder_group_values(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+void *
+sift_colsrc_gorder_groups_open(SiftSrcSource *src, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt)
 {
-	return src->prov->gorder_group_values && src->prov->gorder_group_values(src->impl, gleaf, kleaf, only, vals, n);
+	return src->prov->gorder_groups_open ? src->prov->gorder_groups_open(src->impl, gleaf, kleaf, only, desc, cxt) : NULL;
+}
+
+bool
+sift_colsrc_gorder_groups_next(SiftSrcSource *src, void *cursor, int64 *group)
+{
+	return src->prov->gorder_groups_next(cursor, group);
 }
 
 bool

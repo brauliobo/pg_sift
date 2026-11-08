@@ -251,10 +251,16 @@ col_gorder_clean(void *impl, int i)
 	return sift_col_gorder_clean(((ColSource *) impl)->cs, i);
 }
 
-bool
-col_gorder_group_values(void *impl, int gleaf, int kleaf, const int64 *only, int64 **vals, uint32 *n)
+void *
+col_gorder_groups_open(void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt)
 {
-	return sift_col_gorder_group_values(((ColSource *) impl)->cs, gleaf, kleaf, only, vals, n);
+	return sift_col_gorder_groups_open(((ColSource *) impl)->cs, gleaf, kleaf, only, desc, cxt);
+}
+
+bool
+col_gorder_groups_next(void *cursor, int64 *group)
+{
+	return sift_col_gorder_groups_next(cursor, group);
 }
 
 bool

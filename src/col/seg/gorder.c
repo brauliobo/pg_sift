@@ -481,6 +481,8 @@ sift_cseg_gorder_group(SiftColSegment *seg, int col)
 	return g == NULL ? -1 : g->hdr.gcol;
 }
 
+static void gord_group_table(SiftColSegment *seg, int col);
+
 /*
  * The entries of a group of a grouped block: the value entries [*vs, *ve) and the NULL ones [*ns, *ne); empty ranges when the group has none. A block that is not
  * grouped has one group of all its entries.
@@ -508,7 +510,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	 * change while the source is open, so the copy cannot go stale.
 	 */
 	if (g->grps == NULL && ++g->gprobes > 1 && (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
-		sift_cseg_gorder_group_table(seg, col);
+		gord_group_table(seg, col);
 	if (g->grps != NULL)
 		for (int64 c = (int64) g->ghint + 1; c >= (int64) g->ghint - 1; c--)
 			if (c >= 0 && c < hi && g->grps[c].group == group)
@@ -565,21 +567,20 @@ sift_cseg_gorder_ngroups(SiftColSegment *seg, int col)
 	return g->hdr.gcol < 0 ? 1 : g->hdr.ngroups;
 }
 
-/*
- * The group at place gi in the order of the groups of a grouped block, and its entries as sift_cseg_gorder_range gives them. A scan that walks the groups one after the other
- * reads the table whole, once (as a segment probed again does).
- */
-void
-sift_cseg_gorder_group_table(SiftColSegment *seg, int col)
+/* The group table of a block in memory, for a table of at most SIFT_CGORD_GRP_EAGER bytes (the callers ask): a larger one is read entry by entry through the buffers, whatever its groups */
+static void
+gord_group_table(SiftColSegment *seg, int col)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
 	if (g == NULL || g->hdr.gcol < 0 || g->grps != NULL || g->hdr.ngroups == 0)
 		return;
-	g->grps = MemoryContextAllocHuge(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
+	Assert((uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER);
+	g->grps = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
 	seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, g->grps);
 }
 
+/* The group at place gi in the order of the groups of a grouped block, and its entries as sift_cseg_gorder_range gives them */
 void
 sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
@@ -589,7 +590,7 @@ sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group,
 	if (g == NULL || g->hdr.gcol < 0 || gi >= g->hdr.ngroups)
 		corrupt(seg, "The global order of leaf %d has no group %u.", col, gi);
 	if ((uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER)
-		sift_cseg_gorder_group_table(seg, col);
+		gord_group_table(seg, col);
 	if (g->grps != NULL)
 		e = g->grps[gi];
 	else

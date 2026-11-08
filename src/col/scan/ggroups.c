@@ -3,45 +3,53 @@
  */
 #include "postgres.h"
 #include "core/cmp.h"
-#include "core/rowmem.h"
 #include "col/scan_int.h"
 
-/* The ascending values a (na) and b (nb) as one ascending run of each value once, in out; the length */
-static uint64
-gorder_merge_runs(const int64 *a, uint64 na, const int64 *b, uint64 nb, int64 *out)
+/* a stored segment: the groups of its table, read one by one from `at` in the direction of the scan (the table is not held, whatever its size) */
+typedef struct GroupSeg
 {
-	uint64		i = 0,
-				j = 0,
-				n = 0;
+	int			slot;
+	uint32		ngroups;
+	int64		at;
+	int64		head;
+	bool		ok;
+} GroupSeg;
 
-	while (i < na || j < nb)
-	{
-		int64		v = j >= nb || (i < na && a[i] <= b[j]) ? a[i] : b[j];
+struct SiftColGroups
+{
+	SiftColSource *src;
+	bool		desc;
+	bool		single;			/* the one group of g = value */
+	int64		only;
+	GroupSeg   *seg;
+	int64	   *mem;			/* the values of the write buffers, ascending, once each: the buffers are bounded by write_buffer_limit */
+	int64		memat;
+	uint32		nmem;
+};
 
-		if (n == 0 || out[n - 1] != v)
-			out[n++] = v;
-		i += i < na && a[i] == v;
-		j += j < nb && b[j] == v;
-	}
-	return n;
+static void
+seg_head(SiftColGroups *c, GroupSeg *s, int j)
+{
+	uint32		vs,
+				ve,
+				ns,
+				ne;
+
+	s->ok = s->at >= 0 && s->at < (int64) s->ngroups;
+	if (s->ok)
+		sift_cseg_gorder_group_at(c->src->seg[j].seg, s->slot, (uint32) s->at, &s->head, &vs, &ve, &ns, &ne);
 }
 
 /*
- * The values of the leaf gcol that the rows of the scan have, ascending, once each: the groups of the second order of leaf kcol grouped by gcol in every stored segment (a block of every
- * row, so that the table of groups lists every value) and the rows of the write buffers. The groups of a scan that reads kcol group after group, in the order of gcol (an index-only scan
- * ordered by both). False when a segment has no such block, or a buffer holds an overflow or no value of gcol: the order of the pair is not there to read. With only, the one group it
- * names is the result (a scan with g = value reads that group alone) and the groups of the segments are not listed.
+ * The cursor over the values of the leaf gcol that the rows of the scan have, once each, ascending (descending: from the largest): the groups of the second order of leaf kcol grouped by gcol in every
+ * stored segment (a block of every row, so that the table of groups lists every value) and the rows of the write buffers, merged as they are asked for. NULL when a segment has no such block, or a
+ * buffer holds an overflow or no value of gcol: the order of the pair is not there to read. With only, the one group it names is the result (a scan with g = value reads that group alone).
  */
-bool
-sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64 *only, int64 **vals, uint32 *nvals)
+SiftColGroups *
+sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 *only, bool desc, MemoryContext cxt)
 {
-	uint64		total = 0,
-				longest = 0,
-				memrows = 0,
-				n = 0;
-	int64	   *acc,
-			   *run,
-			   *tmp;
+	SiftColGroups *c;
+	uint64		memrows = 0;
 
 	for (int j = 0; j < src->nseg; j++)
 	{
@@ -50,12 +58,7 @@ sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64
 					values;
 
 		if (slot < 0 || sift_cseg_gorder_group(src->seg[j].seg, slot) != gcol || !sift_cseg_gorder(src->seg[j].seg, slot, &entries, &values) || entries != (uint32) src->seg[j].seg->entry.ndocs)
-			return false;
-		if (only != NULL)
-			continue;
-		sift_cseg_gorder_group_table(src->seg[j].seg, slot);
-		longest = Max(longest, sift_cseg_gorder_ngroups(src->seg[j].seg, slot));
-		total += sift_cseg_gorder_ngroups(src->seg[j].seg, slot);
+			return NULL;
 	}
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
@@ -66,62 +69,86 @@ sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64
 
 		for (uint32 r = 0; r < b->nrows; r++)
 			if (sift_col_bit_test(gv->ovf, r) || sift_col_bit_test(gv->nulls, r))
-				return false;
-		total += b->nrows;
+				return NULL;
 		memrows += b->nrows;
 	}
+	c = MemoryContextAllocZero(cxt, sizeof(SiftColGroups));
+	c->src = src;
+	c->desc = desc;
 	if (only != NULL)
 	{
-		*vals = palloc(sizeof(int64));
-		(*vals)[0] = *only;
-		*nvals = 1;
-		return true;
+		c->single = true;
+		c->only = *only;
+		return c;
 	}
-	/* the runs of the segments, each ascending, are merged one into the result: a few runs of many groups */
-	acc = sift_rows_alloc((total + 1) * sizeof(int64));
-	run = sift_rows_alloc((Max(longest, memrows) + 1) * sizeof(int64));
-	tmp = sift_rows_alloc((total + 1) * sizeof(int64));
+	c->seg = MemoryContextAllocZero(cxt, Max(src->nseg, 1) * sizeof(GroupSeg));
 	for (int j = 0; j < src->nseg; j++)
 	{
-		int			slot = sift_cseg_gorder_slot(src->seg[j].seg, kcol, true);
-		uint32		ng = sift_cseg_gorder_ngroups(src->seg[j].seg, slot);
-		int64	   *t;
+		GroupSeg   *s = &c->seg[j];
 
-		for (uint32 gi = 0; gi < ng; gi++)
-		{
-			uint32		vs,
-						ve,
-						ns,
-						ne;
-
-			sift_cseg_gorder_group_at(src->seg[j].seg, slot, gi, &run[gi], &vs, &ve, &ns, &ne);
-		}
-		n = gorder_merge_runs(acc, n, run, ng, tmp);
-		t = acc;
-		acc = tmp;
-		tmp = t;
+		s->slot = sift_cseg_gorder_slot(src->seg[j].seg, kcol, true);
+		s->ngroups = sift_cseg_gorder_ngroups(src->seg[j].seg, s->slot);
+		s->at = desc ? (int64) s->ngroups - 1 : 0;
+		seg_head(c, s, j);
 	}
-	if (src->nmem > 0)
+	if (memrows > 0)
 	{
 		uint64		m = 0;
-		int64	   *t;
 
+		c->mem = MemoryContextAllocHuge(cxt, memrows * sizeof(int64));
 		for (int i = 0; i < src->nmem; i++)
 		{
 			const SiftColBatch *b = src->mem[i].b;
 
 			for (uint32 r = 0; r < b->nrows; r++)
-				run[m++] = b->col[gcol].key[r];
+				c->mem[m++] = b->col[gcol].key[r];
 		}
-		qsort(run, m, sizeof(int64), sift_cmp_i64);
-		n = gorder_merge_runs(acc, n, run, m, tmp);
-		t = acc;
-		acc = tmp;
-		tmp = t;
+		qsort(c->mem, m, sizeof(int64), sift_cmp_i64);
+		for (uint64 i = 0; i < m; i++)
+			if (c->nmem == 0 || c->mem[c->nmem - 1] != c->mem[i])
+				c->mem[c->nmem++] = c->mem[i];
+		c->memat = desc ? (int64) c->nmem - 1 : 0;
 	}
-	pfree(run);
-	pfree(tmp);
-	*vals = acc;
-	*nvals = (uint32) n;
+	return c;
+}
+
+/* The next value of the groups in the direction of the scan, once each; false after the last */
+bool
+sift_col_gorder_groups_next(SiftColGroups *c, int64 *group)
+{
+	int			step = c->desc ? -1 : 1;
+	bool		have = false;
+	int64		best = 0;
+
+	if (c->single)
+	{
+		*group = c->only;
+		c->single = false;
+		return true;
+	}
+	if (c->seg == NULL)
+		return false;
+	for (int j = 0; j < c->src->nseg; j++)
+		if (c->seg[j].ok && (!have || (c->desc ? c->seg[j].head > best : c->seg[j].head < best)))
+		{
+			best = c->seg[j].head;
+			have = true;
+		}
+	if (c->memat >= 0 && c->memat < (int64) c->nmem && (!have || (c->desc ? c->mem[c->memat] > best : c->mem[c->memat] < best)))
+	{
+		best = c->mem[c->memat];
+		have = true;
+	}
+	if (!have)
+		return false;
+	for (int j = 0; j < c->src->nseg; j++)
+		if (c->seg[j].ok && c->seg[j].head == best)
+		{
+			c->seg[j].at += step;
+			seg_head(c, &c->seg[j], j);
+		}
+	if (c->memat >= 0 && c->memat < (int64) c->nmem && c->mem[c->memat] == best)
+		c->memat += step;
+	*group = best;
 	return true;
 }
