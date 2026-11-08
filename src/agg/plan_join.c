@@ -533,6 +533,55 @@ scanned_key(AggCtx *c, List *quals, Var *v, Oid opno)
 }
 
 /*
+ * A column of an inner lookup that the scan's own column equals in its ON clause: in a tuple that passes the join they are one value, so a query that reads the lookup's
+ * key (count(DISTINCT t.id), a group by t.id) reads the scanned column, a leaf of the scan, in place of a column of a table it would look up. An integer or date key only: an
+ * equal value of another type may have another image.
+ */
+typedef struct KeySub
+{
+	AggCtx	   *c;
+} KeySub;
+
+static Node *
+inner_key_mutator(Node *n, KeySub *ks)
+{
+	AggCtx	   *c = ks->c;
+	JoinCtx    *jc;
+	Var		   *v;
+
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && (jc = join_of_var(c, n)) != NULL && jc->kind == SJ_INNER && jc->cpath == NULL)
+	{
+		v = (Var *) n;
+		foreach_ptr(Node, q, jc->clauses)
+		{
+			Var		   *a,
+					   *b;
+			Oid			opno;
+
+			if (!column_equality(q, &a, &b, &opno) || (type_class(a->vartype) != TC_INT && type_class(a->vartype) != TC_DATE))
+				continue;
+			if (a->varno == v->varno && a->varattno == v->varattno && b->varno == c->relid && match_leaf(c, (Node *) b) >= 0)
+				return (Node *) copyObject(b);
+			if (b->varno == v->varno && b->varattno == v->varattno && a->varno == c->relid && match_leaf(c, (Node *) a) >= 0)
+				return (Node *) copyObject(a);
+		}
+	}
+	return expression_tree_mutator(n, inner_key_mutator, ks);
+}
+
+Node *
+inner_key_sub(AggCtx *c, Node *n)
+{
+	KeySub		ks = {c};
+
+	if (c->joins == NIL || c->nulling != NULL || preserved_join(c))
+		return n;
+	return inner_key_mutator(n, &ks);
+}
+
+/*
  * `scanned.k = A.id AND A.id = B.id` (A an inner lookup, B an inner, semi or anti one: an IN or NOT EXISTS over a plan, on the column of A) holds the same rows as
  * `scanned.k = A.id AND scanned.k = B.id`: B is then probed with a column of the scanned row, where its chain through A needs A resolved first. The keys of B become a conjunct of the scan (join_filters), as
  * when B is joined to the table itself: the units they miss are not read.

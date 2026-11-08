@@ -522,6 +522,7 @@ extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
 extern bool preserved_join(AggCtx *c);
+extern Node *inner_key_sub(AggCtx *c, Node *n);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
 extern int	parallel_verdict(AggCtx *c, SiftAggSpec *s, const char *refused);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);

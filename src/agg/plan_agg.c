@@ -58,7 +58,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 
 	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
-	expr = normalize_expr(c, expr);
+	expr = normalize_expr(c, inner_key_sub(c, expr));
 	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
 	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
 		return false;
@@ -672,7 +672,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
-	a = (Aggref *) scalar_initplans(c, strict_placeholders(c, (Node *) a));
+	a = (Aggref *) inner_key_sub(c, scalar_initplans(c, strict_placeholders(c, (Node *) a)));
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;
