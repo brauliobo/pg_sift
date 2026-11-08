@@ -194,6 +194,21 @@ key_runs(const RewriteView *v)
 }
 
 /*
+ * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
+ * answers no more units and leaves as much again behind (the file grew 1.6 times faster, for 5% more WAL, under a snapshot held through 16 rounds
+ * of churn). A pass writes its output to new blocks and frees its input only for the horizon, so the file stands at the live bytes plus the blocks held:
+ * the rewrite waits for the horizon when they reach what one pass leaves behind, sift.col_auto_merge_pass_mb, or half the index when that is less
+ * (the rewrite of the whole index is one pass of the index). A paced rewrite of a large index stops after its first pass, not after half the index.
+ */
+static bool
+rewrite_held(Relation index, uint64 bytes)
+{
+	uint64		held = sift_store_held_blocks(index) * BLCKSZ;
+
+	return held * 2 >= bytes || (sift_col_auto_merge_pass_mb > 0 && held >= (uint64) sift_col_auto_merge_pass_mb << 20);
+}
+
+/*
  * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
@@ -319,12 +334,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 			return NULL;
 		why = WHY_BUFFER;
 	}
-	/*
-	 * A snapshot older than the last rewrite keeps the blocks it freed from being reused, and its rows out of the visibility map: another rewrite
-	 * answers no more units and leaves as much again behind (the file grew 1.6 times faster, for 5% more WAL, under a snapshot held through 16 rounds
-	 * of churn). The rewrite waits for the horizon when the blocks held back are half the index.
-	 */
-	if (why != NULL && automatic && sift_store_held_blocks(index) * BLCKSZ * 2 >= bytes)
+	if (why != NULL && automatic && rewrite_held(index, bytes))
 	{
 		maint_overlay_asked = false;
 		if (gates != NULL)

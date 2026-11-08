@@ -266,7 +266,8 @@ sift_col_init(void)
 							"Megabytes of overlapping runs one pass of the automatic rewrite of a sift_col index rewrites.",
 							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
 							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next VACUUM, worker pass or sift.col_maintain(index) goes on, "
-							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). 0: one pass does all of it.",
+							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). The blocks a pass frees are reusable only when the snapshots that may read them end, "
+							"so the automatic rewrite waits for them once they reach this much (or half the index, when that is less): the file stands at the live bytes plus one pass meanwhile. 0: one pass does all of it.",
 							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_active",
 							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
