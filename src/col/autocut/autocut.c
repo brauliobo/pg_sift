@@ -377,8 +377,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		goto done;
 	}
 	/*
-	 * A leaf that follows the order of the table would lose its zones to the cut, and the cut of a lane serves a test on the lane only, so any other leaf whose zones
-	 * skip units (its equality keeps less than all of them) would keep all of them under it. The loss is priced against the benefit of the cut (acut_zone_loss), by the
+	 * A leaf that follows the order of the table would lose its zones to the cut, and so would any other leaf whose zones skip units (its equality keeps less than all of
+	 * them): the rows of a unit of the cut are those of a key (or of a lane, which serves a test on the lane only), not of a range of the heap. The loss is priced against the benefit of the cut (acut_zone_loss), by the
 	 * rows that have a value in the leaf: the first look ends where it alone is above the benefit, the rest of it is a cost of the cut.
 	 */
 	for (int i = 0; i < nfire; i++)
@@ -406,10 +406,10 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 					what = "follows the order of the table, and the cut would widen its zones";
 				}
 			}
-			else if (tr[fire[i]].shape && share * (100 + AUTOCUT_OTHER_PCT) < 100)
+			else if (share * (100 + AUTOCUT_OTHER_PCT) < 100)
 			{
 				loss = acut_zone_loss(&tr[t], samp->n, nsb, rows_per_unit, share);
-				what = "has zones that skip units, and the cut by a lane would keep them all";
+				what = tr[fire[i]].shape ? "has zones that skip units, and the cut by a lane would keep them all" : "has zones that skip units, and the cut would keep most of them";
 			}
 			zone_loss[i] += loss;
 			if (loss > worst)
