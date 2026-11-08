@@ -25,29 +25,21 @@ typedef struct Walk
 	bool		verify;
 	bool		stops;			/* the index's text search configuration drops stop words, which keep a position: positions may pass dl */
 	SiftSegStats *st;
-	SiftTermVisit visit;
+	SiftWalkVisit visit;
 	void	   *arg;
-	SiftKey    *keys;			/* every doc, ascending */
-	uint16	   *dl;
 	uint64		ndocs;
+	DocCache	dc;				/* the dl of the docs the postings of a term name: the SBs it touches, within maintenance_work_mem */
 	/* current term */
 	MemoryContext tcxt;
-	SiftKey    *tkeys;
-	uint8	   *ttf;
-	uint16	   *tdl;
-	uint32	   *tpoff;			/* positions: offset and length of each posting's record in the stream */
-	uint32	   *tplen;
-	const uint8 *tprec;			/* the term's records, back to back */
-	uint32		tcap;
 	sift_tid   *tids;			/* SIFT_GRP_MAXTIDS */
 	uint8	   *gtf;
+	uint16	   *gdl;
 	char		prev[SIFT_MAX_TERM_BYTES];
 	int			prevlen;
-	bool		stopped;
 	uint32		nslots;			/* terms with a slot so far (format 2) */
 } Walk;
 
-/* Every doc of the segment with its dl; checks the docmap on the way */
+/* Every doc of the segment; checks the docmap on the way */
 static void
 walk_docs(Walk *w)
 {
@@ -55,8 +47,6 @@ walk_docs(Walk *w)
 	DocMap	   *dm = docmap(seg);
 	uint64		sum = 0;
 
-	w->keys = MemoryContextAllocHuge(CurrentMemoryContext, seg->hdr->ndocs * sizeof(SiftKey));
-	w->dl = MemoryContextAllocHuge(CurrentMemoryContext, seg->hdr->ndocs * sizeof(uint16));
 	for (int64 i = 0; i < dm->nsb; i++)
 	{
 		load_sb(seg, dm, i);
@@ -83,8 +73,7 @@ walk_docs(Walk *w)
 						corrupt(seg, "Absent slot (%u,%d) has dl %u.", blk, o + 1, v);
 					continue;
 				}
-				w->keys[w->ndocs] = ((SiftKey) blk << 16) | (o + 1);
-				w->dl[w->ndocs++] = v;
+				w->ndocs++;
 				sum += v;
 			}
 		}
@@ -230,63 +219,25 @@ df_class(uint32 df)
 	return c;
 }
 
-/* dl of key, searching forward from *pos (keys of a term ascend) */
-static uint16
-doc_dl(Walk *w, SiftKey key, uint64 *pos)
-{
-	uint64		lo = *pos,
-				hi = w->ndocs,
-				step = 1;
-
-	while (lo + step < hi && w->keys[lo + step] <= key)
-		step *= 2;
-	hi = Min(hi, lo + step + 1);
-	SIFT_BISECT(uint64, mid, lo, hi, w->keys[mid] < key);
-	if (lo == w->ndocs || w->keys[lo] != key)
-		corrupt(w->seg, "Posting (%u,%u) is not a doc of the segment.", sift_key_block(key), (uint32) (key & 0xFFFF));
-	*pos = lo;
-	return w->dl[lo];
-}
-
 /*
- * The position records of the term in rank order: offsets and lengths of each, and with verify the
- * counts against tf, the occurrences against dl and the checkpoints
+ * The position record of posting number rank of the term: the count of occurrences against tf, the last one against dl, and the
+ * checkpoint of its block
  */
 static void
-term_positions(Walk *w, SiftPostingCursor *c, const char *term, int len, const SiftTermInfo *info)
+check_record(Walk *w, SiftPosReader *pr, const char *term, int len, uint32 rank, SiftKey key, uint8 tf, uint16 dl)
 {
-	SiftSegment *seg = w->seg;
-	const uint32 *ck;
-	const uint8 *rec,
-			   *p,
-			   *end;
-	uint32		reclen;
+	uint32		reclen,
+				cnt,
+				last;
+	bool		ckpt = sift_post_pos_ckpt_ok(pr, rank);
+	const uint8 *rec = sift_post_pos_next(pr, &reclen);
 
-	sift_post_pos_stream(c, &ck, &rec, &reclen);
-	p = rec;
-	end = rec + reclen;
-	for (uint32 j = 0; j < info->df; j++)
-	{
-		uint32		cnt,
-					last;
-		const uint8 *q = sift_pos_skip(p, end, &cnt, &last);
-
-		if (w->verify)
-		{
-			uint16		dl = w->tdl[j];
-
-			if ((ck && j % SIFT_POS_EVERY == 0 && ck[j / SIFT_POS_EVERY] != (uint32) (p - rec)) ||
-				(w->ttf[j] < SIFT_MAX_TF ? cnt != w->ttf[j] : cnt < SIFT_MAX_TF) || (dl < SIFT_MAX_DL && last >= dl && !w->stops))
-				corrupt(seg, "Posting (%u,%u) of \"%.*s\" has %u positions ending at %u for tf %u, dl %u.",
-						sift_key_block(w->tkeys[j]), (uint32) (w->tkeys[j] & 0xFFFF), len, term, cnt, last, w->ttf[j], dl);
-		}
-		w->tpoff[j] = p - rec;
-		w->tplen[j] = q - p;
-		p = q;
-	}
-	if (p != end)
-		corrupt(seg, "Term \"%.*s\" has %u bytes of positions after its %u postings.", len, term, (uint32) (end - p), info->df);
-	w->tprec = rec;
+	if (sift_pos_skip(rec, rec + reclen, &cnt, &last) != rec + reclen)
+		corrupt(w->seg, "Posting (%u,%u) of \"%.*s\" has a position record of %u bytes holding another number.",
+				sift_key_block(key), (uint32) (key & 0xFFFF), len, term, reclen);
+	if (!ckpt || (tf < SIFT_MAX_TF ? cnt != tf : cnt < SIFT_MAX_TF) || (dl < SIFT_MAX_DL && last >= dl && !w->stops))
+		corrupt(w->seg, "Posting (%u,%u) of \"%.*s\" has %u positions ending at %u for tf %u, dl %u.",
+				sift_key_block(key), (uint32) (key & 0xFFFF), len, term, cnt, last, tf, dl);
 }
 
 static int
@@ -372,12 +323,13 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	SiftSegment *seg = w->seg;
 	MemoryContext old = MemoryContextSwitchTo(w->tcxt);
 	SiftPostingCursor *c;
+	SiftPosReader *pr = NULL;
 	const SiftGroupBounds *b;
 	int			nb,
 				bi = 0,
 				shared = 0;
 	uint32		n = 0;
-	uint64		pos = 0;
+	SiftKey		prev = 0;
 	SiftDfClassStats *cls = &w->st->cls[df_class(Max(info->df, 1))];
 
 	if (w->verify && w->prevlen >= 0 && sift_term_cmp(w->prev, w->prevlen, term, len) >= 0)
@@ -394,41 +346,38 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		info->slot != ((info->flags & SIFT_TERM_INLINE) ? -1 : (int32) w->nslots++))
 		corrupt(seg, "Term \"%.*s\" has slot %d, expected %d.", len, term, info->slot,
 				(info->flags & SIFT_TERM_INLINE) ? -1 : (int) w->nslots - 1);
-	if (info->df > w->tcap)
-	{
-		w->tcap = Max(info->df, w->tcap * 2);
-		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tkeys, w->tcap * sizeof(SiftKey));
-		SIFT_REGROW_HUGE_IN(seg->mcxt, w->ttf, w->tcap);
-		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tdl, w->tcap * sizeof(uint16));
-		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tpoff, w->tcap * sizeof(uint32));
-		SIFT_REGROW_HUGE_IN(seg->mcxt, w->tplen, w->tcap * sizeof(uint32));
-	}
 	c = w->verify ? sift_post_open_verified(&seg->sr, info, w->tcxt) : sift_post_open(&seg->sr, info, w->tcxt);
 	if (w->verify)
 		sift_post_check(c);
+	if (w->verify && (info->flags & SIFT_TERM_POS))
+		pr = sift_post_pos_reader(c, w->tcxt);
 	b = sift_post_bounds(c, &nb);
 	account_term(&w->st->parts, seg->fmt >= SIFT_SEGFMT_PACKED, shared, len, info, c);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
 		uint32		k = sift_grp_tids(g, NULL, w->tids);
+		SBDocs	   *docs;
 
-		if (n + k > info->df || (g->n && g->n != k) || g->base != n)
+		if (k == 0 || n + k > info->df || (g->n && g->n != k) || g->base != n)
 			corrupt(seg, "Term \"%.*s\" decodes past its df %u.", len, term, info->df);
 		sift_post_group_tf(c, w->gtf);
 		while (bi < nb && b[bi].gid < g->gid)
 			bi++;
 		if (bi == nb || b[bi].gid != g->gid)
 			corrupt(seg, "Term \"%.*s\" has no bound for SB %u.", len, term, g->gid);
+		docs = sbdocs_get(&w->dc, g->gid);
 		for (uint32 j = 0; j < k; j++)
 		{
-			uint16		dl = doc_dl(w, w->tids[j], &pos);
+			uint32		slot;
+			uint16		dl;
 			uint8		ub;
 
-			if (n + j > 0 && w->tids[j] <= (j ? w->tids[j - 1] : w->tkeys[n - 1]))
+			if (sift_block_sb(sift_key_block(w->tids[j])) != g->gid)
+				corrupt(seg, "Posting (%u,%u) of \"%.*s\" lies in a group of SB %u.", sift_key_block(w->tids[j]),
+						(uint32) (w->tids[j] & 0xFFFF), len, term, g->gid);
+			dl = w->gdl[j] = sbdocs_raw(&w->dc, docs, w->tids[j], &slot);
+			if (n + j > 0 && w->tids[j] <= (j ? w->tids[j - 1] : prev))
 				corrupt(seg, "Postings of \"%.*s\" are out of order.", len, term);
-			w->tkeys[n + j] = w->tids[j];
-			w->ttf[n + j] = w->gtf[j];
-			w->tdl[n + j] = dl;
 			ub = sift_bound_u8(&w->ref, w->gtf[j], dl);
 			if (w->verify && (w->gtf[j] == 0 || ub > info->max_bound || ub > b[bi].bound ||
 				ub > b[bi].blk_bound[(SIFT_BLK(w->tids[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT]))
@@ -436,14 +385,18 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 						SIFT_BLK(w->tids[j]), SIFT_OFF(w->tids[j]), len, term, w->gtf[j], dl, ub,
 						info->max_bound, b[bi].bound,
 						b[bi].blk_bound[(SIFT_BLK(w->tids[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT]);
+			if (pr)
+				check_record(w, pr, term, len, n + j, w->tids[j], w->gtf[j], dl);
 		}
+		prev = w->tids[k - 1];
+		if (w->visit)
+			w->visit(w->arg, term, len, info, w->tids, w->gtf, w->gdl, k);
 		n += k;
 	}
 	if (n != info->df)
 		corrupt(seg, "Term \"%.*s\" has %u postings, df %u.", len, term, n, info->df);
-	w->tprec = NULL;
-	if ((info->flags & SIFT_TERM_POS) && (w->verify || w->visit))
-		term_positions(w, c, term, len, info);
+	if (pr && sift_post_pos_rest(pr) != 0)
+		corrupt(seg, "Term \"%.*s\" has %llu bytes of positions after its %u postings.", len, term, ULL(sift_post_pos_rest(pr)), info->df);
 	cls->terms++;
 	cls->postings += n;
 	if (info->flags & SIFT_TERM_INLINE)
@@ -458,14 +411,13 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	w->st->nterms++;
 	w->st->postings += n;
 	MemoryContextSwitchTo(old);
-	w->stopped = w->visit && !w->visit(w->arg, term, len, info, w->tkeys, w->ttf, w->tdl, w->tprec, w->tplen);
 	MemoryContextReset(w->tcxt);
-	return !w->stopped;
+	return true;
 }
 
 void
 sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegStats *st,
-			  SiftTermVisit visit, void *arg)
+			  SiftWalkVisit visit, void *arg)
 {
 	Walk		w = {0};
 	const SiftSectionRef *s = seg->hdr->sections;
@@ -483,6 +435,8 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.tcxt = AllocSetContextCreate(CurrentMemoryContext, "sift walk term", ALLOCSET_DEFAULT_SIZES);
 	w.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	w.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
+	w.gdl = palloc(SIFT_GRP_MAXTIDS * sizeof(uint16));
+	doccache_init(&w.dc, seg, CurrentMemoryContext, (Size) maintenance_work_mem * 1024 / 2);
 	st->dict_bytes = s[SIFT_SEC_DICT].len + s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	walk_docs(&w);
 	if (verify && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
@@ -490,7 +444,7 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	else if (verify)
 		verify_live(&w);
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
-	if (!w.stopped && st->nterms != seg->hdr->nterms)
+	if (st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
 	{
 		DocMap	   *dm = docmap(seg);
@@ -502,7 +456,7 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -
 		st->parts.dict_inline_pos;
-	if (verify && !w.stopped && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+	if (verify && seg->fmt >= SIFT_SEGFMT_LIVEROWS)
 		verify_dead2(&w);
 	MemoryContextDelete(w.tcxt);
 }

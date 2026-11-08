@@ -21,9 +21,9 @@ typedef struct PostingsOut
 	uint64		gen;
 } PostingsOut;
 
-static bool
-emit_term(void *arg, const char *term, int len, const SiftTermInfo *info,
-		  const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen)
+static void
+emit_group(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys, const uint8 *tf, const uint16 *dl,
+		   int n)
 {
 	PostingsOut *o = arg;
 	Datum		v[5];
@@ -31,7 +31,7 @@ emit_term(void *arg, const char *term, int len, const SiftTermInfo *info,
 
 	v[0] = Int64GetDatum(o->gen);
 	v[1] = PointerGetDatum(cstring_to_text_with_len(term, len));
-	for (uint32 i = 0; i < info->df; i++)
+	for (int i = 0; i < n; i++)
 	{
 		ItemPointerData tid;
 
@@ -41,7 +41,6 @@ emit_term(void *arg, const char *term, int len, const SiftTermInfo *info,
 		v[4] = Int32GetDatum(dl[i]);
 		tuplestore_putvalues(o->rsinfo->setResult, o->rsinfo->setDesc, v, nulls);
 	}
-	return true;
 }
 
 /* sift._test_postings(index): every posting of every immutable segment, decoded */
@@ -66,7 +65,7 @@ sift_test_postings(PG_FUNCTION_ARGS)
 			continue;
 		o.gen = snap->segs[i].gen;
 		seg = sift_seg_open(index, &snap->segs[i], cxt);
-		sift_seg_walk(seg, &ref, false, &st, emit_term, &o);
+		sift_seg_walk(seg, &ref, false, &st, emit_group, &o);
 		sift_seg_close(seg);
 		MemoryContextReset(cxt);
 	}

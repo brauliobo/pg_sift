@@ -87,6 +87,41 @@ typedef struct DocMap
 	uint64	   *live_om;		/* nwmax words per present page, in the order of om */
 } DocMap;
 
+/*
+ * The dl of every doc of an SB, in the rows of its DOCMAP record, and which of them were vacuumed: what the postings of the SB
+ * look up. Terms come in dictionary order and each one runs through the SBs, so the SBs a term touches are kept (the most
+ * recently used within a budget) instead of the dl of the whole segment.
+ */
+typedef struct SBDocs
+{
+	struct SBDocs *newer;
+	struct SBDocs *older;
+	int64		at;				/* in the SB directory */
+	Size		size;
+	uint16	   *dl;				/* the rows of its pages one after the other */
+	uint8	   *dead;			/* a bit for each doc slot of dl: vacuumed (NULL in a clean SB) */
+	uint32		start[SIFT_SB_PAGES];	/* of the row of each page in dl */
+	uint16		len[SIFT_SB_PAGES];		/* 0: no docs on the page */
+} SBDocs;
+
+typedef struct DocCache
+{
+	SiftSegment *seg;
+	MemoryContext mcxt;
+	SBDocs	  **sb;				/* by position in the SB directory */
+	SBDocs	   *newest;
+	SBDocs	   *oldest;
+	Size		used;
+	Size		budget;
+	uint16	   *rows;			/* scratch of a build: SIFT_SB_PAGES * MAXOFF slots and their dead bits */
+	uint8	   *dead;
+} DocCache;
+
+/* livestream.c: the dl cache, for what looks the docs of the postings of a term up */
+extern SIFT_INTERNAL void doccache_init(DocCache *dc, SiftSegment *seg, MemoryContext mcxt, Size budget);
+extern SIFT_INTERNAL SBDocs *sbdocs_get(DocCache *dc, uint32 sb);
+extern SIFT_INTERNAL uint16 sbdocs_raw(DocCache *dc, const SBDocs *e, SiftKey key, uint32 *slot);
+
 /* The header of the LIVE run, and the region of one SB (its live offsets as a group of bitmaps) read last */
 typedef struct Live2
 {

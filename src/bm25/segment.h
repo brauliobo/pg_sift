@@ -356,16 +356,22 @@ typedef bool (*SiftTermVisit) (void *arg, const char *term, int len, const SiftT
 							   const SiftKey *keys, const uint8 *tf, const uint16 *dl,
 							   const uint8 *pos, const uint32 *poslen);
 
+/* The postings of one group of a term, in key order, with their tf and the dl of their docs (a term comes in several groups) */
+typedef void (*SiftWalkVisit) (void *arg, const char *term, int len, const SiftTermInfo *info,
+							   const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n);
+
 /*
  * Walks every term of the segment (dictionary order) and decodes its
  * postings. With verify, checks the docmap, liveness, dictionary order and
  * counts, postings (subset of the docmap, count == df, tf stream lengths,
  * group and block bounds >= the true maximum computed with ref's k1 and b
- * and the segment's avgdl_ref) and raises ERRCODE_INDEX_CORRUPTED. visit
- * may be NULL. Memory: O(segment docs) for the dl map.
+ * and the segment's avgdl_ref, position records against tf and dl) and
+ * raises ERRCODE_INDEX_CORRUPTED. visit may be NULL. Memory: the dl of the SBs a
+ * term touches within maintenance_work_mem / 2 (as sift_seg_stream), a group and
+ * a window of the position records, whatever the segment.
  */
 extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify,
-						  SiftSegStats *st, SiftTermVisit visit, void *arg);
+						  SiftSegStats *st, SiftWalkVisit visit, void *arg);
 
 /*
  * Dumps the live part of the segment: docs first (ascending key, dl), then every term with a live posting in dictionary

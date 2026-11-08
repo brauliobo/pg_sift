@@ -8,36 +8,6 @@
 
 #include "bm25/segment_int.h"
 
-/*
- * The dl of every doc of an SB, in the rows of its DOCMAP record, and which of them were vacuumed: what the postings of the SB
- * look up. Terms come in dictionary order and each one runs through the SBs, so the SBs a term touches are kept (the most
- * recently used within a budget) instead of the dl of the whole segment.
- */
-typedef struct SBDocs
-{
-	struct SBDocs *newer;
-	struct SBDocs *older;
-	int64		at;				/* in the SB directory */
-	Size		size;
-	uint16	   *dl;				/* the rows of its pages one after the other */
-	uint8	   *dead;			/* a bit for each doc slot of dl: vacuumed (NULL in a clean SB) */
-	uint32		start[SIFT_SB_PAGES];	/* of the row of each page in dl */
-	uint16		len[SIFT_SB_PAGES];		/* 0: no docs on the page */
-} SBDocs;
-
-typedef struct DocCache
-{
-	SiftSegment *seg;
-	MemoryContext mcxt;
-	SBDocs	  **sb;				/* by position in the SB directory */
-	SBDocs	   *newest;
-	SBDocs	   *oldest;
-	Size		used;
-	Size		budget;
-	uint16	   *rows;			/* scratch of a build: SIFT_SB_PAGES * MAXOFF slots and their dead bits */
-	uint8	   *dead;
-} DocCache;
-
 static void
 lru_unlink(DocCache *dc, SBDocs *e)
 {
@@ -120,7 +90,7 @@ sbdocs_build(DocCache *dc, int64 at)
 	return e;
 }
 
-static SBDocs *
+SBDocs *
 sbdocs_get(DocCache *dc, uint32 sb)
 {
 	DocMap	   *dm = docmap(dc->seg);
@@ -157,17 +127,38 @@ sbdocs_get(DocCache *dc, uint32 sb)
 	return e;
 }
 
-/* The dl of the doc with this key, 0 when it was vacuumed; a posting of a doc the SB does not have is corruption */
-static uint16
-sbdocs_dl(DocCache *dc, const SBDocs *e, SiftKey key)
+/* The dl of the doc with this key, vacuumed or not; a posting of a doc the SB does not have is corruption */
+uint16
+sbdocs_raw(DocCache *dc, const SBDocs *e, SiftKey key, uint32 *slot)
 {
 	int			page = sift_key_block(key) & (SIFT_SB_PAGES - 1),
 				off = (key & 0xFFFF) - 1;
-	uint32		slot;
 
-	if (off < 0 || off >= e->len[page] || e->dl[slot = e->start[page] + off] == 0)
+	if (off < 0 || off >= e->len[page] || e->dl[*slot = e->start[page] + off] == 0)
 		corrupt(dc->seg, "Posting (%u,%u) is not a doc of the segment.", sift_key_block(key), (uint32) (key & 0xFFFF));
-	return e->dead && (e->dead[slot / 8] >> (slot % 8) & 1) ? 0 : e->dl[slot];
+	return e->dl[*slot];
+}
+
+/* The dl of the doc with this key, 0 when it was vacuumed */
+static uint16
+sbdocs_dl(DocCache *dc, const SBDocs *e, SiftKey key)
+{
+	uint32		slot;
+	uint16		dl = sbdocs_raw(dc, e, key, &slot);
+
+	return e->dead && (e->dead[slot / 8] >> (slot % 8) & 1) ? 0 : dl;
+}
+
+void
+doccache_init(DocCache *dc, SiftSegment *seg, MemoryContext mcxt, Size budget)
+{
+	*dc = (DocCache) {.seg = seg,.mcxt = mcxt,.budget = budget};
+	if (budget == 0)
+		return;
+	dc->sb = MemoryContextAllocHuge(mcxt, docmap(seg)->nsb * sizeof(SBDocs *));
+	memset(dc->sb, 0, docmap(seg)->nsb * sizeof(SBDocs *));
+	dc->rows = MemoryContextAlloc(mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+	dc->dead = MemoryContextAlloc(mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
 }
 
 /* A term can have this many postings (a group, the most the evaluator decodes at once) */
@@ -337,11 +328,7 @@ sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *ar
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	Stream		s = {.seg = seg,.sink = sink,.arg = arg,.dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0};
 
-	s.dc = (DocCache) {.seg = seg,.mcxt = cxt,.budget = budget};
-	s.dc.sb = MemoryContextAllocHuge(cxt, docmap(seg)->nsb * sizeof(SBDocs *));
-	memset(s.dc.sb, 0, docmap(seg)->nsb * sizeof(SBDocs *));
-	s.dc.rows = palloc(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-	s.dc.dead = palloc((SIFT_SB_PAGES * MAXOFF + 7) / 8);
+	doccache_init(&s.dc, seg, cxt, budget);
 	s.tcxt = AllocSetContextCreate(cxt, "sift stream term", ALLOCSET_DEFAULT_SIZES);
 	s.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	s.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
@@ -389,16 +376,12 @@ sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen)
 	c->cxt = cxt;
 	s->seg = seg;
 	s->dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0;
-	s->dc = (DocCache) {.seg = seg,.mcxt = cxt,.budget = budget};
+	doccache_init(&s->dc, seg, cxt, budget);
 	c->page = SIFT_SB_PAGES;
 	c->wd = SIFT_OFFMASK_WORDS;
 	c->next_sb = seg->hdr->sb_lo;
 	if (budget > 0)
 	{
-		s->dc.sb = MemoryContextAllocHuge(cxt, docmap(seg)->nsb * sizeof(SBDocs *));
-		memset(s->dc.sb, 0, docmap(seg)->nsb * sizeof(SBDocs *));
-		s->dc.rows = palloc(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-		s->dc.dead = palloc((SIFT_SB_PAGES * MAXOFF + 7) / 8);
 		s->tcxt = AllocSetContextCreate(cxt, "sift cursor term", ALLOCSET_DEFAULT_SIZES);
 		s->tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 		s->gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);

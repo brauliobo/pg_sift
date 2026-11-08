@@ -316,22 +316,33 @@ fp_add(bloom_filter *bf, uint64 term_hash, SiftKey key, uint8 tf)
 	bloom_add_element(bf, fp, sizeof(fp));
 }
 
+/* The filter and the hash of the term whose postings come next */
+typedef struct HeapDump
+{
+	bloom_filter *bf;
+	uint64		term_hash;
+} HeapDump;
+
 static void
 dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
 {
 	for (int i = 0; i < n; i++)
-		fp_add(arg, 0, keys[i], 0);
+		fp_add(((HeapDump *) arg)->bf, 0, keys[i], 0);
 }
 
-static bool
-dump_term(void *arg, const char *term, int len, const SiftTermInfo *info, const SiftKey *keys,
-		  const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen)
+static void
+dump_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
-	uint64		h = sift_term_hash64(term, len);
+	((HeapDump *) arg)->term_hash = sift_term_hash64(term, len);
+}
 
-	for (uint32 i = 0; i < info->df; i++)
-		fp_add(arg, h, keys[i], tf[i]);
-	return true;
+static void
+dump_postings(void *arg, const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos, const uint32 *poslen, int n)
+{
+	HeapDump   *d = arg;
+
+	for (int i = 0; i < n; i++)
+		fp_add(d->bf, d->term_hash, keys[i], tf[i]);
 }
 
 static void
@@ -399,16 +410,17 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	IndexInfo  *info = BuildIndexInfo(index);
 	SiftAnalyzerConfig cfg;
 	HeapCheck	hc = {.index = index};
-	SiftScoreRef ref = meta_ref(snap);
+	HeapDump	dump = {0};
 
 	hc.bf = bloom_create(Max(nelems, 1), maintenance_work_mem, pg_prng_uint64(&pg_global_prng_state));
+	dump.bf = hc.bf;
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
 			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], cxt);
 
-			sift_seg_dump(seg, &ref, dump_docs, dump_term, hc.bf);
+			sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &dump);
 			sift_seg_close(seg);
 		}
 		else

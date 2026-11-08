@@ -232,64 +232,6 @@ sift_post_positions(SiftPostingCursor *c, uint32 rank, SiftPosBuf *out)
 	}
 }
 
-/* All the blocks of the term as the records of the postings in rank order, and the checkpoints of those */
-static void
-pos_stream_blocks(SiftPostingCursor *c, const uint8 *blocks, uint32 **ckpt, StringInfo recs)
-{
-	uint64		total = c->poslen - (uint64) c->nck * sizeof(uint32),
-				start = 0;
-	Size		lend[SIFT_POS_EVERY];
-	const uint32 *at = (const uint32 *) blocks;
-
-	*ckpt = MemoryContextAlloc(c->mcxt, (Size) c->nck * sizeof(uint32));
-	for (uint32 b = 0; b < c->nck; b++)
-	{
-		uint64		end = b + 1 < c->nck ? at[b + 1] : total;
-
-		if (at[b] != start || end <= start || end > total)
-			corrupt_pos(c);
-		(*ckpt)[b] = recs->len;
-		if (!sift_posblk_leb(blocks + (Size) c->nck * sizeof(uint32) + start, end - start,
-							 Min(SIFT_POS_EVERY, c->info.df - b * SIFT_POS_EVERY), recs, lend))
-			corrupt_pos(c);
-		start = end;
-	}
-}
-
-void
-sift_post_pos_stream(SiftPostingCursor *c, const uint32 **ckpt, const uint8 **rec, uint32 *len)
-{
-	uint8	   *buf;
-
-	if (c->info.flags & SIFT_TERM_INLINE)
-	{
-		*ckpt = NULL;
-		*rec = c->info.inline_pos;
-		*len = c->poslen;
-		return;
-	}
-	buf = MemoryContextAllocHuge(c->mcxt, (Size) c->poslen + POS_SLACK);
-	pos_read(c, 0, c->poslen, buf);
-	if (c->info.flags & SIFT_TERM_POS2)
-	{
-		StringInfoData recs;
-		MemoryContext old = MemoryContextSwitchTo(c->mcxt);
-		uint32	   *ck;
-
-		initStringInfo(&recs);
-		pos_stream_blocks(c, buf, &ck, &recs);
-		MemoryContextSwitchTo(old);
-		pfree(buf);
-		*ckpt = ck;
-		*rec = (const uint8 *) recs.data;
-		*len = recs.len;
-		return;
-	}
-	*ckpt = (const uint32 *) buf;
-	*rec = buf + (Size) c->nck * sizeof(uint32);
-	*len = c->poslen - c->nck * sizeof(uint32);
-}
-
 struct SiftPosReader
 {
 	SiftPostingCursor *c;
@@ -398,4 +340,25 @@ sift_post_pos_next(SiftPosReader *r, uint32 *len)
 		r->pos = 0;
 		r->len = keep + have;
 	}
+}
+
+/* The next record starts where the checkpoint of its block says (a term with checkpoints of its own: not an inline one, nor one in position blocks) */
+bool
+sift_post_pos_ckpt_ok(SiftPosReader *r, uint32 rank)
+{
+	SiftPostingCursor *c = r->c;
+
+	if ((c->info.flags & (SIFT_TERM_INLINE | SIFT_TERM_POS2)) || rank % SIFT_POS_EVERY != 0)
+		return true;
+	pos_ckpt(c);
+	return c->ckpt[rank / SIFT_POS_EVERY] == (uint32) (r->next - (r->len - r->pos));
+}
+
+/* The bytes of the records (position blocks: the records and blocks) the reader has not given */
+uint64
+sift_post_pos_rest(const SiftPosReader *r)
+{
+	if (r->c->info.flags & SIFT_TERM_POS2)
+		return (r->npost - r->given) + (r->c->nck - r->blk);
+	return (r->len - r->pos) + (r->recs - r->next);
 }
