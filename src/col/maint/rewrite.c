@@ -247,6 +247,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	OverlayEv	ev;
 
 	maint_overlay_asked = false;
+	maint_redecided = false;
 	maint_overlay_steps = automatic ? 1 : SIFT_MAX_SEGMENTS;
 	sift_dir_read(index, snap);
 	maint_use_partitions(index, snap);

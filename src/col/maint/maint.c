@@ -95,6 +95,7 @@ maint_throttle(SiftWriteTarget *wt)
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
 int	maint_merge_workers = 0;
 bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
+bool		maint_redecided = false;	/* the rewrite in hand has chosen again from the data (col/maint/merge.c): once for all its steps */
 
 const SiftMaintOps maint_col_ops = {
 	.name = "sift_col",
