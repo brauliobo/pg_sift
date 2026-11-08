@@ -158,6 +158,7 @@ extern void sift_col_caps(Relation index, SiftChoiceFn add, void *ctx);
 extern char *sift_col_key_cut_note(Relation index);
 extern const char *sift_col_key_cut_advised(Relation index);
 extern char *sift_col_key_cut_advised_now(Relation heap, Relation index);
+extern const char *sift_col_key_cut_hot(Relation heap, Relation index, bool build);
 /* The default of key_columns (col/keycols/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);

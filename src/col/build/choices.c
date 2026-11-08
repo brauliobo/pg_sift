@@ -395,6 +395,15 @@ d_key_cut_advice(Derive *d)
 		add(d, "key-cut-advised", pstrdup(keys), NULL);
 }
 
+static void
+d_key_cut_hot(Derive *d)
+{
+	const char *why = d->heap == NULL ? NULL : sift_col_key_cut_hot(d->heap, d->index, d->build);
+
+	if (why != NULL)
+		add(d, "key-cut-hot-value", pstrdup(why), NULL);
+}
+
 /* The keys of a wildcard path (m.*) past the dictionary of the shredder leave the key and its values as overflow, and a query that reads the leaf keeps the normal plan */
 static void
 d_key_overflow(Derive *d)
@@ -553,6 +562,7 @@ static const struct
 	{"sift-col-index-does-not-track-changes", d_track},
 	{"track-changes-concurrent", d_track},
 	{"key-cut-advised", d_key_cut_advice},
+	{"key-cut-hot-value", d_key_cut_hot},
 	{"wildcard-keys-overflow", d_key_overflow},
 	{"foreign-key-not-indexed", d_foreign_keys},
 	{"hot-update-columns", d_hot_updates},
