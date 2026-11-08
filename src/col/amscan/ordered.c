@@ -12,9 +12,13 @@
 #include "access/relscan.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
+#include "storage/buffile.h"
 #include "utils/rel.h"
+#include "utils/tuplesort.h"
 #include "col/am.h"
 #include "agg/gord.h"
 #include "col/amscan/amscan_int.h"
@@ -22,6 +26,9 @@
 
 /* the rows of 2^28 that the scan will ask the blocks of the order for: more than a block of the ends only answers */
 #define ORD_ROWS	(1 << 28)
+
+/* '>' of int8: the descending sort of the rows sorted here (the operator of Int8LessOperator's pair) */
+#define ORD_INT8_GT	413
 
 typedef struct ColOrd
 {
@@ -31,8 +38,13 @@ typedef struct ColOrd
 	bool		desc;
 	GOrdPair   *pairs;			/* the rows with a key, ascending by (key, address) */
 	uint32		npairs;
+	uint32		pcap;
 	uint64	   *nulls;			/* the addresses of the rows without one */
 	uint32		nnulls;
+	uint32		ncap;
+	Tuplesortstate *sort;		/* the rows sorted here once they take more than work_mem: (g, key, address) in the order of the scan (the arrays are then empty) */
+	TupleTableSlot *sput;
+	TupleTableSlot *sget;
 	int			run;			/* the runs of the sequence given: the rows with a key and those without (NULL rows first for desc) */
 	bool		nullrun;
 	uint32		left;			/* the rows of the run not yet given, the next at idx (step 1 or -1) */
@@ -50,6 +62,8 @@ typedef struct ColOrd
 	struct OrdMark *mark;		/* the rows given since the last mark, which a restore gives again (a merge join marks at the start of a group of equal keys: the group is all it keeps) */
 	uint32		nmark;
 	uint32		cmark;
+	BufFile    *mfile;			/* ... in a temporary file from the entry that takes more than work_mem: the entries are then mbase.. of it, and mark is not used */
+	uint64		mbase;
 	uint32		replay;			/* the next of them to give again; nmark: the scan goes on */
 	bool		marked;
 	bool		pair;			/* the order of (g, k): the type above is k's, g is attribute 1 */
@@ -59,14 +73,14 @@ typedef struct ColOrd
 	int			gleaf;
 	int			kleaf;
 	int64		gcur;			/* the group being read */
-	int64	   *groups;			/* the values of g in the order of the scan; NULL: the rows were sorted here (rows) */
-	uint32		ngroups;
-	uint32		gi;
+	void	   *gcursor;		/* the values of g in the order of the scan; bygroup without one: no group */
+	bool		bygroup;		/* the groups are read one after the other; else the rows were sorted here (rows) */
 	uint32		grows;			/* the rows to expect from a group */
 	MemoryContext gcxt[2];		/* the merge of the group being read and of the one before: the next one starts from the chunks the last decoded, then the older context is reset */
 	int			gsel;
 	struct OrdRow *rows;
 	uint32		nrows;
+	uint32		rcap;
 	bool		bad;
 } ColOrd;
 
@@ -261,42 +275,119 @@ ord_heap_key(IndexScanDesc scan, ColScanOpaque *so, ItemPointer tid, int64 *key,
 	return true;
 }
 
-/* The order is not whole in some segment: the rows are read from the units, in the order of the heap, and sorted here */
-static void
-ord_sort(IndexScanDesc scan, ColScanOpaque *so)
+/* work_mem, and no more than 4 GB: the counts of the arrays are 32 bits */
+static Size
+ord_budget(void)
 {
-	ColOrd	   *o = so->ord;
-	uint32		cap = 1024,
-				ncap = 1024;
+	return Min((Size) work_mem * 1024, (Size) 4 << 30);
+}
+
+static Size
+ord_held(const ColOrd *o)
+{
+	return (Size) o->pcap * sizeof(GOrdPair) + (Size) o->ncap * sizeof(uint64) + (Size) o->rcap * sizeof(OrdRow);
+}
+
+/* a tuplesort of (g, key, address) ordered as the scan gives them: g, the keys (NULL last, first for desc) and the addresses, ascending (descending for desc); a plain scan has no g to order by */
+static void
+ord_sort_begin(ColOrd *o)
+{
+	TupleDesc	desc = CreateTemplateTupleDesc(3);
+	AttrNumber	att[3] = {1, 2, 3};
+	Oid			op = o->desc ? ORD_INT8_GT : Int8LessOperator,
+				ops[3] = {op, op, op},
+				coll[3] = {InvalidOid, InvalidOid, InvalidOid};
+	bool		nulls_first[3] = {o->desc, o->desc, o->desc};
+	int			skip = o->pair ? 0 : 1;
 	MemoryContext old = MemoryContextSwitchTo(o->cxt);
 
-	o->pairs = palloc(cap * sizeof(GOrdPair));
-	o->nulls = palloc(ncap * sizeof(uint64));
+	for (int i = 1; i <= 3; i++)
+		TupleDescInitEntry(desc, i, "c", INT8OID, -1, 0);
+	sift_tupdesc_finalize(desc);
+	o->sput = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	o->sget = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	o->sort = tuplesort_begin_heap(desc, 3 - skip, att + skip, ops + skip, coll + skip, nulls_first + skip, work_mem, NULL, TUPLESORT_NONE);
+	MemoryContextSwitchTo(old);
+}
+
+static void
+ord_sort_put(ColOrd *o, int64 g, int64 k, bool knull, uint64 tid)
+{
+	TupleTableSlot *slot = o->sput;
+
+	ExecClearTuple(slot);
+	slot->tts_values[0] = Int64GetDatum(g);
+	slot->tts_values[1] = Int64GetDatum(k);
+	slot->tts_values[2] = Int64GetDatum((int64) tid);
+	slot->tts_isnull[0] = false;
+	slot->tts_isnull[1] = knull;
+	slot->tts_isnull[2] = false;
+	ExecStoreVirtualTuple(slot);
+	tuplesort_puttupleslot(o->sort, slot);
+}
+
+/* The rows held in the arrays take work_mem: they move to a tuplesort, which spills to disk, and the rows that follow go to it */
+static void
+ord_spill(ColOrd *o)
+{
+	ord_sort_begin(o);
+	for (uint32 r = 0; r < o->npairs; r++)
+		ord_sort_put(o, 0, o->pairs[r].key, false, o->pairs[r].tid);
+	for (uint32 r = 0; r < o->nnulls; r++)
+		ord_sort_put(o, 0, 0, true, o->nulls[r]);
+	for (uint32 r = 0; r < o->nrows; r++)
+		ord_sort_put(o, o->rows[r].g, o->rows[r].k, o->rows[r].knull, o->rows[r].tid);
+	if (o->pairs)
+		pfree(o->pairs);
+	if (o->nulls)
+		pfree(o->nulls);
+	if (o->rows)
+		pfree(o->rows);
+	o->pairs = NULL;
+	o->nulls = NULL;
+	o->rows = NULL;
+	o->npairs = o->nnulls = o->nrows = o->pcap = o->ncap = o->rcap = 0;
+}
+
+/* Room for one more entry of an array of esize bytes: doubled, or the rows go to the tuplesort when that would pass work_mem (false) */
+static bool
+ord_room(ColOrd *o, void **arr, uint32 *cap, Size esize)
+{
+	uint32		ncap = Max(*cap * 2, 1024);
+
+	if (ord_held(o) + (Size) (ncap - *cap) * esize > ord_budget())
 	{
-		uint32		n;
-		const ItemPointerData *tids;
-		const int64 *vals;
-		const uint64 *isnull;
+		ord_spill(o);
+		return false;
+	}
+	*arr = *arr ? repalloc_huge(*arr, (Size) ncap * esize) : MemoryContextAllocHuge(o->cxt, (Size) ncap * esize);
+	*cap = ncap;
+	return true;
+}
 
-		while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, NULL, NULL))
+/* One row read from the units: in the arrays, or in the tuplesort once they have taken work_mem */
+static void
+ord_add(ColOrd *o, int64 g, int64 k, bool knull, uint64 tid)
+{
+	if (o->sort == NULL)
+	{
+		if (o->pair && (o->nrows < o->rcap || ord_room(o, (void **) &o->rows, &o->rcap, sizeof(OrdRow))))
 		{
-			if (o->npairs + n > cap)
-				o->pairs = repalloc_huge(o->pairs, (cap = Max(cap * 2, o->npairs + n)) * sizeof(GOrdPair));
-			if (o->nnulls + n > ncap)
-				o->nulls = repalloc_huge(o->nulls, (ncap = Max(ncap * 2, o->nnulls + n)) * sizeof(uint64));
-			for (uint32 k = 0; k < n; k++)
-			{
-				uint64		tid = ((uint64) ItemPointerGetBlockNumber(&tids[k]) << 16) | ItemPointerGetOffsetNumber(&tids[k]);
-
-				if (isnull != NULL && (isnull[k >> 6] >> (k & 63) & 1))
-					o->nulls[o->nnulls++] = tid;
-				else
-					o->pairs[o->npairs++] = (GOrdPair) {vals[k], tid};
-			}
+			o->rows[o->nrows++] = (OrdRow) {g, k, tid, knull};
+			return;
+		}
+		if (!o->pair && knull && (o->nnulls < o->ncap || ord_room(o, (void **) &o->nulls, &o->ncap, sizeof(uint64))))
+		{
+			o->nulls[o->nnulls++] = tid;
+			return;
+		}
+		if (!o->pair && !knull && (o->npairs < o->pcap || ord_room(o, (void **) &o->pairs, &o->pcap, sizeof(GOrdPair))))
+		{
+			o->pairs[o->npairs++] = (GOrdPair) {k, tid};
+			return;
 		}
 	}
-	gord_pairs_sort(o->pairs, o->npairs);
-	MemoryContextSwitchTo(old);
+	ord_sort_put(o, g, k, knull, tid);
 }
 
 static int
@@ -314,31 +405,59 @@ ord_row_cmp(const void *a, const void *b)
 	return x->tid < y->tid ? -1 : x->tid > y->tid;
 }
 
-/* The rows are read from the units, in the order of the heap, and sorted by (g, k) here: the pair has no order to read */
+/*
+ * The order is not whole in some segment (a pair: the second order is not there to read group after group): the rows are read from the units, in the order of the heap, and sorted here,
+ * by (key, address), with the rows without a key after them (first for desc); a pair by (g, key, address). Up to work_mem in arrays, then in a tuplesort that spills.
+ */
 static void
-ord_pair_sort(IndexScanDesc scan, ColOrd *o)
+ord_sort(IndexScanDesc scan, ColOrd *o)
 {
-	uint32		cap = 1024,
-				n;
 	const ItemPointerData *tids;
 	const int64 *vals,
 			   *vals2;
 	const uint64 *isnull,
 			   *isnull2;
+	uint32		n;
 
-	o->rows = palloc(cap * sizeof(OrdRow));
-	while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, &vals2, &isnull2))
-	{
-		if (o->nrows + n > cap)
-			o->rows = repalloc_huge(o->rows, (cap = Max(cap * 2, o->nrows + n)) * sizeof(OrdRow));
+	while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, o->pair ? &vals2 : NULL, o->pair ? &isnull2 : NULL))
 		for (uint32 r = 0; r < n; r++)
-			o->rows[o->nrows++] = (OrdRow) {vals[r], vals2[r], ((uint64) ItemPointerGetBlockNumber(&tids[r]) << 16) | ItemPointerGetOffsetNumber(&tids[r]),
-											isnull2 != NULL && (isnull2[r >> 6] >> (r & 63) & 1)};
+		{
+			uint64		tid = ((uint64) ItemPointerGetBlockNumber(&tids[r]) << 16) | ItemPointerGetOffsetNumber(&tids[r]);
+
+			if (o->pair)
+				ord_add(o, vals[r], vals2[r], isnull2 != NULL && (isnull2[r >> 6] >> (r & 63) & 1), tid);
+			else
+				ord_add(o, 0, vals[r], isnull != NULL && (isnull[r >> 6] >> (r & 63) & 1), tid);
+		}
+	if (o->sort)
+		tuplesort_performsort(o->sort);
+	else if (o->pair)
+	{
+		qsort(o->rows, o->nrows, sizeof(OrdRow), ord_row_cmp);
+		o->left = o->nrows;
+		o->idx = o->desc ? (int64) o->nrows - 1 : 0;
 	}
-	qsort(o->rows, o->nrows, sizeof(OrdRow), ord_row_cmp);
-	o->left = o->nrows;
+	else
+		gord_pairs_sort(o->pairs, o->npairs);
 	o->step = o->desc ? -1 : 1;
-	o->idx = o->desc ? (int64) o->nrows - 1 : 0;
+}
+
+/* The next row of the tuplesort; false after the last */
+static bool
+ord_sorted_next(ColOrd *o, int64 *g, int64 *k, bool *knull, ItemPointer tid)
+{
+	TupleTableSlot *slot = o->sget;
+	uint64		t;
+
+	if (!tuplesort_gettupleslot(o->sort, true, false, slot, NULL))
+		return false;
+	slot_getallattrs(slot);
+	*g = DatumGetInt64(slot->tts_values[0]);
+	*knull = slot->tts_isnull[1];
+	*k = *knull ? 0 : DatumGetInt64(slot->tts_values[1]);
+	t = (uint64) DatumGetInt64(slot->tts_values[2]);
+	ItemPointerSet(tid, (BlockNumber) (t >> 16), (OffsetNumber) (t & 0xFFFF));
+	return true;
 }
 
 /*
@@ -353,12 +472,11 @@ ord_next_group(ColOrd *o)
 
 	o->g = NULL;
 	o->ahead = false;
-	if (o->desc ? o->gi == 0 : o->gi >= o->ngroups)
+	if (o->gcursor == NULL || !sift_colsrc_gorder_groups_next(o->src, o->gcursor, &o->gcur))
 	{
 		MemoryContextReset(o->gcxt[o->gsel]);
 		return false;
 	}
-	o->gcur = o->groups[o->desc ? --o->gi : o->gi++];
 	b.npin = 1;
 	b.pinleaf[0] = o->gleaf;
 	b.pinval[0] = o->gcur;
@@ -396,18 +514,22 @@ ord_pair_open(IndexScanDesc scan, ColScanOpaque *so)
 		}
 	}
 	if (scan->numberOfKeys > 0 && onlyp == NULL)
-		o->groups = palloc(sizeof(int64));
-	else if (sift_colsrc_gorder_group_values(o->src, o->gleaf, o->kleaf, onlyp, &o->groups, &o->ngroups))
 	{
-		o->gi = o->desc ? o->ngroups : 0;
+		o->bygroup = true;
+		return;
+	}
+	o->gcursor = sift_colsrc_gorder_groups_open(o->src, o->gleaf, o->kleaf, onlyp, o->desc, o->cxt);
+	if (o->gcursor != NULL)
+	{
+		o->bygroup = true;
 		ord_next_group(o);
 		if (!o->bad)
 			return;
-		pfree(o->groups);
-		o->groups = NULL;
+		o->gcursor = NULL;
+		o->bygroup = false;
 		o->bad = false;
 	}
-	ord_pair_sort(scan, o);
+	ord_sort(scan, o);
 }
 
 static void
@@ -425,26 +547,59 @@ ord_fill(IndexScanDesc scan, ColOrd *o, int64 g, int64 key, bool isnull, ItemPoi
 	scan->xs_recheck = false;
 }
 
-/* The row given after a mark is kept for a restore */
+/*
+ * The row given after a mark is kept for a restore: in an array until the rows kept take work_mem, then in a temporary file (a run of equal keys is as long as the data has it, and a b-tree keeps a position
+ * for it). The entries are then in the file from mbase, each OrdMark long.
+ */
 static pg_noinline void
 ord_remember(ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 {
-	OrdMark    *m;
+	OrdMark		m = {o->gcur, key, isnull, *tid};
 
-	if (o->nmark >= o->cmark)
+	if (o->mfile == NULL && o->nmark >= o->cmark)
 	{
 		MemoryContext old = MemoryContextSwitchTo(o->cxt);
+		uint32		ncap = Max(64, o->cmark * 2);
 
-		o->cmark = Max(64, o->cmark * 2);
-		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, o->mark, o->cmark * sizeof(OrdMark));
+		if ((Size) ncap * sizeof(OrdMark) > ord_budget())
+		{
+			o->mfile = BufFileCreateTemp(false);
+			o->mbase = 0;
+			for (uint32 i = 0; i < o->nmark; i++)
+				BufFileWrite(o->mfile, &o->mark[i], sizeof(OrdMark));
+			pfree(o->mark);
+			o->mark = NULL;
+			o->cmark = 0;
+		}
+		else
+		{
+			o->cmark = ncap;
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, o->mark, o->cmark * sizeof(OrdMark));
+		}
 		MemoryContextSwitchTo(old);
 	}
-	m = &o->mark[o->nmark++];
-	m->g = o->gcur;
-	m->key = key;
-	m->isnull = isnull;
-	m->tid = *tid;
+	if (o->mfile)
+	{
+		BufFileSeek(o->mfile, 0, (off_t) ((o->mbase + o->nmark) * sizeof(OrdMark)), SEEK_SET);
+		BufFileWrite(o->mfile, &m, sizeof(m));
+		o->nmark++;
+	}
+	else
+		o->mark[o->nmark++] = m;
 	o->replay = o->nmark;
+}
+
+/* The entry i of the rows kept since the mark */
+static OrdMark
+ord_kept(ColOrd *o, uint32 i)
+{
+	OrdMark		m;
+
+	if (o->mfile == NULL)
+		return o->mark[i];
+	BufFileSeek(o->mfile, 0, (off_t) ((o->mbase + i) * sizeof(OrdMark)), SEEK_SET);
+	BufFileReadExact(o->mfile, &m, sizeof(m));
+	return m;
 }
 
 static pg_attribute_always_inline void
@@ -463,7 +618,9 @@ sift_col_ordered_mark(ColScanOpaque *so)
 	ColOrd	   *o = so->ord;
 
 	Assert(o != NULL);
-	if (o->replay > 0)
+	if (o->mfile)
+		o->mbase = o->nmark == o->replay ? 0 : o->mbase + o->replay;
+	else if (o->replay > 0)
 		memmove(o->mark, o->mark + o->replay, (o->nmark - o->replay) * sizeof(OrdMark));
 	o->nmark -= o->replay;
 	o->replay = 0;
@@ -484,9 +641,9 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 
 	if (unlikely(o != NULL && o->marked) && o->replay < o->nmark)
 	{
-		OrdMark    *m = &o->mark[o->replay++];
+		OrdMark		m = ord_kept(o, o->replay++);
 
-		ord_fill(scan, o, m->g, m->key, m->isnull, &m->tid);
+		ord_fill(scan, o, m.g, m.key, m.isnull, &m.tid);
 		return true;
 	}
 	if (o == NULL)
@@ -496,9 +653,22 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		ord_open(scan, so, dir);
 		o = so->ord;
 		if (o->g == NULL && !o->pair)
-			ord_sort(scan, so);
+			ord_sort(scan, o);
 	}
-	if (o->pair && o->groups == NULL)
+	if (o->sort)
+	{
+		int64		g,
+					key;
+		bool		isnull;
+		ItemPointerData tid;
+
+		if (!ord_sorted_next(o, &g, &key, &isnull, &tid))
+			return false;
+		o->gcur = g;
+		ord_give(scan, o, key, isnull, &tid);
+		return true;
+	}
+	if (o->pair && !o->bygroup)
 	{
 		const OrdRow *r;
 		ItemPointerData tid;
@@ -605,6 +775,14 @@ sift_col_ordered_end(ColScanOpaque *so)
 {
 	if (so->ord == NULL)
 		return;
+	if (so->ord->sort)
+	{
+		tuplesort_end(so->ord->sort);
+		ExecDropSingleTupleTableSlot(so->ord->sput);
+		ExecDropSingleTupleTableSlot(so->ord->sget);
+	}
+	if (so->ord->mfile)
+		BufFileClose(so->ord->mfile);
 	if (so->ord->src != NULL)
 	{
 		SiftSrcCounters cc;

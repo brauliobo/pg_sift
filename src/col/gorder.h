@@ -254,8 +254,20 @@ extern bool sift_cgord_leaf_time(const SiftColDef *d);
 /* Parses the header of a block of len bytes; false when it is malformed (magic, counts, directory out of the block) */
 extern bool sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h);
 
-/* The groups of a version 2 block of len bytes whose header was parsed, false when they are out of the block, not ascending, or do not tile the entries */
-extern bool sift_cgord_groups(const uint8 *blk, const SiftCGOrdHdr *h, uint64 len, SiftCGOrdGrp *out);
+/* The groups of a version 2 block, checked as they are read in windows of any size, in order: the state between two windows */
+typedef struct SiftCGOrdGrpRun
+{
+	uint32		vnext;
+	uint32		nnext;
+	int64		prev;
+	bool		started;
+} SiftCGOrdGrpRun;
+
+/* the state before the first group of a block whose header was parsed */
+#define SIFT_CGORD_GRPRUN(h)	((SiftCGOrdGrpRun) {0, (h)->values, 0, false})
+/* The n groups e that follow those checked: false when they are out of the block, not ascending, or do not tile the entries; _done: after the last group, that they tile all of them */
+extern bool sift_cgord_groups_check(const SiftCGOrdHdr *h, SiftCGOrdGrpRun *st, const SiftCGOrdGrp *e, uint32 n);
+extern bool sift_cgord_groups_done(const SiftCGOrdHdr *h, const SiftCGOrdGrpRun *st);
 
 /* The directory entry ent (SIFT_CGORD_DIRENT bytes) of chunk c of a block whose header was parsed, false when the entry is out of the block or its offsets are */
 extern bool sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c, SiftCGOrdDir *d);

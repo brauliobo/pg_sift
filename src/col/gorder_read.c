@@ -120,23 +120,27 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 }
 
 bool
-sift_cgord_groups(const uint8 *blk, const SiftCGOrdHdr *h, uint64 len, SiftCGOrdGrp *out)
+sift_cgord_groups_check(const SiftCGOrdHdr *h, SiftCGOrdGrpRun *st, const SiftCGOrdGrp *e, uint32 n)
 {
-	uint32		vnext = 0,
-				nnext = h->values;
-
-	memcpy(out, blk + len - (uint64) h->ngroups * SIFT_CGORD_GRPENT, (Size) h->ngroups * SIFT_CGORD_GRPENT);
-	for (uint32 i = 0; i < h->ngroups; i++)
+	for (uint32 i = 0; i < n; i++)
 	{
-		const SiftCGOrdGrp *g = &out[i];
+		const SiftCGOrdGrp *g = &e[i];
 
-		if ((i > 0 && g->group <= out[i - 1].group) || g->vstart != vnext || g->nstart != nnext || (g->vcount == 0 && g->ncount == 0) ||
+		if ((st->started && g->group <= st->prev) || g->vstart != st->vnext || g->nstart != st->nnext || (g->vcount == 0 && g->ncount == 0) ||
 			(uint64) g->vstart + g->vcount > h->values || (uint64) g->nstart + g->ncount > h->entries)
 			return false;
-		vnext += g->vcount;
-		nnext += g->ncount;
+		st->prev = g->group;
+		st->started = true;
+		st->vnext += g->vcount;
+		st->nnext += g->ncount;
 	}
-	return vnext == h->values && nnext == h->entries;
+	return true;
+}
+
+bool
+sift_cgord_groups_done(const SiftCGOrdHdr *h, const SiftCGOrdGrpRun *st)
+{
+	return st->vnext == h->values && st->nnext == h->entries;
 }
 
 bool
