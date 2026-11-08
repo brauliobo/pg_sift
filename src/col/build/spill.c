@@ -18,8 +18,10 @@ bool		sift_col_build_key_ranges = true;
 
 #ifdef SIFT_TESTING
 int			sift_test_col_temp_free_kb = -1;
+int			sift_test_col_spill_run_kb = 0;
 #endif
 
+#define SPILL_RUN_BYTES	((Size) 768 << 20)	/* the rows of a run of the ranges are read into one batch, whose dictionary of a column of strings holds at most 1 GB */
 #define SAMPLE_KEYS		100000
 #define SAMPLE_SBS		512			/* superblocks the keys are taken from */
 #define CHUNKS_PER_RUN	4			/* a run is the chunks of the key that fit its memory, cut at a chunk end: its size is within a quarter of the budget */
@@ -327,6 +329,19 @@ temp_space_fits(double need)
 	return need <= room * Max(n, 1) / 2;
 }
 
+/* The rows of a run of the ranges: those the first run held, or the share of them that fits SPILL_RUN_BYTES when a large maintenance_work_mem made that run larger */
+static uint64
+spill_run_rows(const ColBuild *b, Size held_bytes)
+{
+	Size		cap = SPILL_RUN_BYTES;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_spill_run_kb > 0)
+		cap = (Size) sift_test_col_spill_run_kb * 1024;
+#endif
+	return Max((uint64) ((double) b->held_rows * Min(1.0, (double) cap / held_bytes)), 1);
+}
+
 /*
  * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
  * of those rows. False (the rows stay to be written as a run) for a table that fits about two runs, a key that is not a number, a parallel participant
@@ -337,6 +352,8 @@ colb_spill_start(ColBuild *b)
 {
 	int			leaf = range_leaf(b);
 	int			nr;
+	Size		held_bytes;
+	uint64		run_rows;
 	double		need;
 	ColSpill   *s;
 	SiftColBatch **in;
@@ -345,15 +362,16 @@ colb_spill_start(ColBuild *b)
 
 	if (!sift_col_build_key_ranges)
 		return false;
-	/* a run is one batch, whose dictionary of a column of strings holds at most 1 GB */
-	if (leaf < 0 || b->ksample == NULL || b->total_rows == 0 || b->held_rows == 0 || b->budget > ((Size) 768 << 20))
+	if (leaf < 0 || b->ksample == NULL || b->total_rows == 0 || b->held_rows == 0)
 		return false;
-	nr = (int) ceil((double) CHUNKS_PER_RUN * b->total_rows / (double) b->held_rows);
+	held_bytes = MemoryContextMemAllocated(b->heldcxt, true);
+	run_rows = spill_run_rows(b, held_bytes);
+	nr = (int) ceil((double) CHUNKS_PER_RUN * b->total_rows / (double) run_rows);
 	if (nr < 3 || b->nksample < (uint32) nr * 8)
 		return false;
 	nr = Min(nr, MAX_RANGES);
 	/* the rows go to temporary files, about the memory of the first run for each of its rows: neither temp_file_limit nor the disk may refuse them */
-	need = (double) MemoryContextMemAllocated(b->heldcxt, true) / b->held_rows * (double) b->total_rows;
+	need = (double) held_bytes / b->held_rows * (double) b->total_rows;
 	if ((temp_file_limit >= 0 && need > (double) temp_file_limit * 1024.0) || !temp_space_fits(need))
 		return false;
 
@@ -374,7 +392,7 @@ colb_spill_start(ColBuild *b)
 	in = palloc_array(SiftColBatch *, list_length(b->held));
 	foreach(lc, b->held)
 		in[nin++] = lfirst(lc);
-	b->spill_run_rows = b->held_rows;
+	b->spill_run_rows = run_rows;
 	b->spill_aim = sift_colk_run_rows(b->index, in, nin);
 	s->file = MemoryContextAlloc(b->cxt, s->n * sizeof(BufFile *));
 	s->rows = MemoryContextAllocZero(b->cxt, s->n * sizeof(uint64));

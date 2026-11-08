@@ -78,6 +78,7 @@ extern bool sift_colp_merge(Relation index, const SiftSegEntry *in, int n, int n
 extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
+extern PGDLLIMPORT int sift_test_col_spill_run_kb;	/* kB of memory a run of the ranges of a build by key ranges may take (0 = the fixed cap) */
 extern PGDLLIMPORT int sift_test_col_max_segments;
 extern PGDLLIMPORT bool sift_test_col_no_present;	/* a build writes no presence leaf: the layout of an index made before it */
 extern PGDLLIMPORT int sift_test_col_merge_slices;	/* slices the participants of the last parallel build merged in (0 = one process merged) */
