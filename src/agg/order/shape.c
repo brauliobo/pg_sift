@@ -268,6 +268,18 @@ topn_walk_fetches(AggCtx *c, int key, int group, double rows)
 	return rows / Min(Max(pass, 1e-9), 1.0);
 }
 
+/* the group the order array of the key is grouped by when a condition pins it to a value or a list (-1: none): the walk reads that group alone, and the rows of other groups are no fetch */
+int
+topn_pinned_group(const AggCtx *c, const SiftAggSpec *s, int key)
+{
+	int			gl = key >= 0 ? c->stats.gord_group[key] : -1;
+
+	for (int i = 0; gl >= 0 && i < s->npred; i++)
+		if (s->pred[i]->leaf == gl && ((s->pred[i]->kind == SAP_CMP && s->pred[i]->op == SCMP_EQ) || (s->pred[i]->kind == SAP_IN && s->pred[i]->op == 0)))
+			return gl;
+	return -1;
+}
+
 /* does the condition leave the key a lower or an upper bound (an AND does when a conjunct does, an OR when every arm does) */
 static bool
 topn_array_bounded(const SiftAggPred *p, int key)

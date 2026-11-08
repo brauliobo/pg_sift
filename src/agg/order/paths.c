@@ -455,7 +455,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		{
 			int			nkeys;
 			double		share,
-						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], -1, rows),
+						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], topn_pinned_group(c, s, leaf[0]), rows),
 						kept = zone_kept(c, s, &nkeys, &share);
 
 			if (kept <= TOPN_ZONE_FRAC && kept * input_rel->rows <= TOPN_ROWS_PER_FETCH * fetches)

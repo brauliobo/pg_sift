@@ -100,6 +100,7 @@ extern bool topn_windows(AggCtx *c, SiftAggSpec *s, List *funcs, List **scan_tli
 extern bool topn_joins_ok(AggCtx *c, SiftAggSpec *s);
 extern double topn_walk_fetches(AggCtx *c, int key, int group, double rows);
 extern bool topn_one_leaf(AggCtx *c);
+extern int topn_pinned_group(const AggCtx *c, const SiftAggSpec *s, int key);
 extern bool topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid, double rows, double *walked);
 extern bool topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, bool *resid);
 extern bool topn_heads_win(const AggCtx *c, const SiftAggSpec *s, int leaf, double rows);
