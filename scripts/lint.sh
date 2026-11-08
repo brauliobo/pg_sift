@@ -38,6 +38,7 @@ CHECKS=(
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
 	'pg-includes	scripts/check-pg-includes.sh && scripts/check-pg-includes.sh --selftest'
 	'alternates	scripts/check-alternates.sh --selftest && scripts/check-alternates.sh'
+	'quick-skip	scripts/check-quick-skip.sh --selftest && scripts/check-quick-skip.sh'
 	'undefined-symbols	scripts/check-undefined.sh --selftest'
 	'bench-tests	for f in bench/test/test_*.py; do python3 -I "$f" || exit 1; done'
 	'bench-resume	bash bench/test/test_resume.sh'

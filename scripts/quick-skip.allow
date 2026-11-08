@@ -1,0 +1,1 @@
+# Tests that read SIFT_QUICK themselves, so the quick tier may not run their body (scripts/check-quick-skip.sh): path TAB reason.
