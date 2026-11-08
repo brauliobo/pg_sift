@@ -37,6 +37,7 @@ intids_init(IntIds *x)
 	x->cxt = CurrentMemoryContext;
 	x->free_span = FREE_SPAN;
 	x->nslot = 64;
+	/* check-memory: allow the first 64 slots */
 	x->tab = MemoryContextAllocZero(x->cxt, x->nslot * sizeof(IntIdEnt));
 	x->kmin = PG_INT64_MAX;
 	x->kmax = PG_INT64_MIN;
@@ -82,7 +83,7 @@ to_hash(IntIds *x)
 
 	while (nslot < 4 * x->n)
 		nslot *= 2;
-	tab = MemoryContextAllocZero(x->cxt, nslot * sizeof(IntIdEnt));
+	tab = MemoryContextAllocExtended(x->cxt, nslot * sizeof(IntIdEnt), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	x->kmin = PG_INT64_MAX;
 	x->kmax = PG_INT64_MIN;
 	for (uint32 i = 0; i < x->npg; i++)
@@ -184,7 +185,7 @@ grow(IntIds *x)
 	if (to_direct(x))
 		return;
 	x->nslot *= 2;
-	x->tab = MemoryContextAllocZero(x->cxt, x->nslot * sizeof(IntIdEnt));
+	x->tab = MemoryContextAllocExtended(x->cxt, x->nslot * sizeof(IntIdEnt), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	for (uint32 h = 0; h < onslot; h++)
 		if (old[h].id)
 			tab_put(x->tab, x->nslot - 1, old[h].key, old[h].id);

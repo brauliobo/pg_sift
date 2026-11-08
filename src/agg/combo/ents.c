@@ -41,12 +41,12 @@ combo_grow_ent(ComboSt *cs)
 	if (cs->nent < cs->entcap)
 		return;
 	cs->entcap = Max(cs->entcap * 2, 64);
-	cs->vid = cs->vid ? repalloc(cs->vid, (size_t) cs->entcap * cs->ninputs * sizeof(uint64)) :
-		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * cs->ninputs * sizeof(uint64));
-	cs->ent = cs->ent ? repalloc(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
-		MemoryContextAlloc(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
-	cs->null_input = cs->null_input ? repalloc(cs->null_input, cs->entcap * sizeof(bool)) :
-		MemoryContextAlloc(cs->cxt, cs->entcap * sizeof(bool));
+	cs->vid = cs->vid ? repalloc_huge(cs->vid, (size_t) cs->entcap * cs->ninputs * sizeof(uint64)) :
+		MemoryContextAllocHuge(cs->cxt, (size_t) cs->entcap * cs->ninputs * sizeof(uint64));
+	cs->ent = cs->ent ? repalloc_huge(cs->ent, (size_t) cs->entcap * sizeof(ComboEnt)) :
+		MemoryContextAllocHuge(cs->cxt, (size_t) cs->entcap * sizeof(ComboEnt));
+	cs->null_input = cs->null_input ? repalloc_huge(cs->null_input, cs->entcap * sizeof(bool)) :
+		MemoryContextAllocHuge(cs->cxt, cs->entcap * sizeof(bool));
 }
 
 /* the entry of a value id of a by_id combo: the entries up to it exist (ids come in order from 1, 0 is the NULL) */

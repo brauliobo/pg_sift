@@ -2,6 +2,7 @@
  * agg/gord/group.c - the cursors of the global order that read the second order of another leaf group after group (ORDER BY group, key), and the skip of an OFFSET over them.
  */
 #include "postgres.h"
+#include "core/rowmem.h"
 
 #include "agg/gord/int.h"
 
@@ -178,9 +179,9 @@ gord_group_skip(SiftGOrd *g, uint32 k)
 			if (m > room)
 			{
 				room = Max(m, room * 2);
-				addr = addr == NULL ? palloc(room * sizeof(uint64)) : repalloc(addr, room * sizeof(uint64));
+				addr = addr == NULL ? sift_rows_alloc(room * sizeof(uint64)) : repalloc_huge(addr, room * sizeof(uint64));
 			}
-			st = palloc(Max(m, 1) * sizeof(int));
+			st = sift_rows_alloc(Max(m, 1) * sizeof(int));
 			for (uint32 e = 0; e < m && !stuck; e++)
 			{
 				uint32		p = e < ve - vs ? vs + e : ns + (e - (ve - vs));

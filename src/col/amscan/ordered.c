@@ -281,9 +281,9 @@ ord_sort(IndexScanDesc scan, ColScanOpaque *so)
 		while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, NULL, NULL))
 		{
 			if (o->npairs + n > cap)
-				o->pairs = repalloc(o->pairs, (cap = Max(cap * 2, o->npairs + n)) * sizeof(GOrdPair));
+				o->pairs = repalloc_huge(o->pairs, (cap = Max(cap * 2, o->npairs + n)) * sizeof(GOrdPair));
 			if (o->nnulls + n > ncap)
-				o->nulls = repalloc(o->nulls, (ncap = Max(ncap * 2, o->nnulls + n)) * sizeof(uint64));
+				o->nulls = repalloc_huge(o->nulls, (ncap = Max(ncap * 2, o->nnulls + n)) * sizeof(uint64));
 			for (uint32 k = 0; k < n; k++)
 			{
 				uint64		tid = ((uint64) ItemPointerGetBlockNumber(&tids[k]) << 16) | ItemPointerGetOffsetNumber(&tids[k]);
@@ -330,7 +330,7 @@ ord_pair_sort(IndexScanDesc scan, ColOrd *o)
 	while (sift_col_unordered_batch(scan, &n, &tids, &vals, &isnull, &vals2, &isnull2))
 	{
 		if (o->nrows + n > cap)
-			o->rows = repalloc(o->rows, (cap = Max(cap * 2, o->nrows + n)) * sizeof(OrdRow));
+			o->rows = repalloc_huge(o->rows, (cap = Max(cap * 2, o->nrows + n)) * sizeof(OrdRow));
 		for (uint32 r = 0; r < n; r++)
 			o->rows[o->nrows++] = (OrdRow) {vals[r], vals2[r], ((uint64) ItemPointerGetBlockNumber(&tids[r]) << 16) | ItemPointerGetOffsetNumber(&tids[r]),
 											isnull2 != NULL && (isnull2[r >> 6] >> (r & 63) & 1)};
@@ -436,7 +436,7 @@ ord_remember(ColOrd *o, int64 key, bool isnull, ItemPointer tid)
 		MemoryContext old = MemoryContextSwitchTo(o->cxt);
 
 		o->cmark = Max(64, o->cmark * 2);
-		SIFT_REGROW(o->mark, o->cmark * sizeof(OrdMark));
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, o->mark, o->cmark * sizeof(OrdMark));
 		MemoryContextSwitchTo(old);
 	}
 	m = &o->mark[o->nmark++];

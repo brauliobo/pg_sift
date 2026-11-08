@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 #include "core/cmp.h"
+#include "core/rowmem.h"
 #include "col/scan_int.h"
 
 /* The ascending values a (na) and b (nb) as one ascending run of each value once, in out; the length */
@@ -77,9 +78,9 @@ sift_col_gorder_group_values(SiftColSource *src, int gcol, int kcol, const int64
 		return true;
 	}
 	/* the runs of the segments, each ascending, are merged one into the result: a few runs of many groups */
-	acc = palloc((total + 1) * sizeof(int64));
-	run = palloc((Max(longest, memrows) + 1) * sizeof(int64));
-	tmp = palloc((total + 1) * sizeof(int64));
+	acc = sift_rows_alloc((total + 1) * sizeof(int64));
+	run = sift_rows_alloc((Max(longest, memrows) + 1) * sizeof(int64));
+	tmp = sift_rows_alloc((total + 1) * sizeof(int64));
 	for (int j = 0; j < src->nseg; j++)
 	{
 		int			slot = sift_cseg_gorder_slot(src->seg[j].seg, kcol, true);

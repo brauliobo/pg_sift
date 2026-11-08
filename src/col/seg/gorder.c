@@ -576,7 +576,7 @@ sift_cseg_gorder_group_table(SiftColSegment *seg, int col)
 
 	if (g == NULL || g->hdr.gcol < 0 || g->grps != NULL || g->hdr.ngroups == 0)
 		return;
-	g->grps = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
+	g->grps = MemoryContextAllocHuge(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
 	seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, g->grps);
 }
 

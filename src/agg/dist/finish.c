@@ -4,6 +4,7 @@
  * and the end of the sets.
  */
 #include "postgres.h"
+#include "core/rowmem.h"
 
 #include "agg/dist/int.h"
 
@@ -141,8 +142,8 @@ dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv
 	for (uint32 g = 0; g < n; g++)
 		if (cidx[g] != UINT32_MAX)
 			total += ex->acc[ai].n[g];
-	dp.pg = palloc(Max(total, 1) * sizeof(uint32));
-	dp.pv = palloc(Max(total, 1) * sizeof(uint32));
+	dp.pg = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
+	dp.pv = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
 	dist_each(ex, ai, dist_collect, &dp);
 	*pg_out = dp.pg;
 	*pv_out = dp.pv;
@@ -156,8 +157,8 @@ dset_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv
 	const DSet *s = &ex->dset[ai];
 	uint32		np = 0;
 
-	*pg_out = palloc(Max(s->n, 1) * sizeof(uint32));
-	*pv_out = palloc(Max(s->n, 1) * sizeof(uint32));
+	*pg_out = sift_rows_alloc(Max(s->n, 1) * sizeof(uint32));
+	*pv_out = sift_rows_alloc(Max(s->n, 1) * sizeof(uint32));
 	for (uint64 i = 0; i < s->cap; i++)
 		if (s->slot[i] && cidx[(s->slot[i] >> 32) & 0x7fffffff] != UINT32_MAX)
 		{

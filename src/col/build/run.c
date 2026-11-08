@@ -3,6 +3,7 @@
  * the memory budget of a run and the compaction of the rows
  * the end of a segment
  */
+/* check-memory: allow-allocs the rows of one page of the heap (maxrows doubles to the rows of a block) */
 #include "postgres.h"
 #include "access/heapam.h"
 #include "commands/progress.h"
@@ -10,6 +11,7 @@
 #ifdef SIFT_TESTING
 #endif
 #include "col/build/build_int.h"
+#include "col/point.h"
 
 /*
  * col/build/build.c - CREATE INDEX / REINDEX of a sift_col index: the heap scan forms the rows of one superblock at a time (a batch)
@@ -429,6 +431,10 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
+	if (!sift_col_key_cut(b->r) && b->share > (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the heap has about " UINT64_FORMAT " rows for each process of the build: its %d segments hold " UINT64_FORMAT,
+							   b->share, maxsegs, (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS),
+						errhint("Set key_cut on a column to build by runs, or build on a partition of the table.")));
 	return b;
 }
 

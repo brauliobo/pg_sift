@@ -13,6 +13,7 @@
  * The child plan is made by the planner (agg/plan_rows.c) to return only the columns this node reads, in the order of SiftRowsSpec:
  * PostgreSQL evaluates the group expressions, the arguments and the FILTERs, and the node never runs an expression.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
@@ -210,20 +211,20 @@ rows_groups_grow(RowsExec *ex)
 	SiftRowsSpec *s = ex->spec;
 	uint32		cap = Max(ex->gcap * 2, 1024);
 
-	ex->kval = ex->kval ? repalloc(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
-	ex->knull = ex->knull ? repalloc(ex->knull, (Size) cap * s->nkeys) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys);
-	ex->ghash = ex->ghash ? repalloc(ex->ghash, cap * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, cap * sizeof(uint32));
+	ex->kval = ex->kval ? repalloc_huge(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
+	ex->knull = ex->knull ? repalloc_huge(ex->knull, (Size) cap * s->nkeys) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys);
+	ex->ghash = ex->ghash ? repalloc_huge(ex->ghash, cap * sizeof(uint32)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(uint32));
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (s->agg[i].kind == SRA_PG)
 		{
-			ex->val[i] = ex->val[i] ? repalloc(ex->val[i], cap * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
-			ex->has[i] = ex->has[i] ? repalloc(ex->has[i], cap) : MemoryContextAlloc(ex->cxt, cap);
+			ex->val[i] = ex->val[i] ? repalloc_huge(ex->val[i], cap * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(Datum));
+			ex->has[i] = ex->has[i] ? repalloc_huge(ex->has[i], cap) : MemoryContextAllocHuge(ex->cxt, cap);
 			memset(ex->has[i] + ex->gcap, 0, cap - ex->gcap);
 		}
 		else
 		{
-			ex->cnt[i] = ex->cnt[i] ? repalloc(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAlloc(ex->cxt, cap * sizeof(int64));
+			ex->cnt[i] = ex->cnt[i] ? repalloc_huge(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(int64));
 			memset(ex->cnt[i] + ex->gcap, 0, (cap - ex->gcap) * sizeof(int64));
 		}
 	}
@@ -237,7 +238,7 @@ rows_rehash(RowsExec *ex)
 
 	if (ex->tab)
 		pfree(ex->tab);
-	ex->tab = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
+	ex->tab = MemoryContextAllocExtended(ex->cxt, cap * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	ex->tabcap = cap;
 	for (uint32 g = 0; g < ex->ng; g++)
 	{

@@ -3,6 +3,7 @@
  * reads: the global order and the point directory against the units
  * they were built from; run by the verify functions, never by a scan
  */
+#include "core/rowmem.h"
 #include "col/seg_int.h"
 
 /* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */
@@ -49,9 +50,9 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	/* the entries of a range ascend by (key, address), those of a NULL range by address; a block that is not grouped is two ranges, the values and the NULL rows */
 	if (g->hdr.gcol >= 0)
 	{
-		uint8	   *gb = palloc((Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
+		uint8	   *gb = sift_rows_alloc((Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
 
-		grp = palloc((Size) g->hdr.ngroups * sizeof(SiftCGOrdGrp));
+		grp = sift_rows_alloc((Size) g->hdr.ngroups * sizeof(SiftCGOrdGrp));
 		seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, gb);
 		if (!sift_cgord_groups(gb, &g->hdr, (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT, grp))
 			corrupt(seg, "The global order of leaf %d has malformed groups.", col);

@@ -185,7 +185,7 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	if (limit > 0 && bytes >= limit)
 		goto done;
 	dirbytes = ((uint64) (par->nbuckets + 1) * 4 + 7) & ~UINT64CONST(7);
-	buf = palloc0(bytes + 16);
+	buf = MemoryContextAllocExtended(CurrentMemoryContext, bytes + 16, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	dir = (uint32 *) buf;
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -355,7 +355,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 	}
 	if (dense > 0)
 	{
-		uint32	   *fp = palloc(Max(nk, 1) * sizeof(uint32));
+		uint32	   *fp = sift_rows_alloc(Max(nk, 1) * sizeof(uint32));
 		uint32		m = 0;
 		bool		clash = false;
 

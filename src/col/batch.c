@@ -1,6 +1,7 @@
 /*
  * col/batch.c - L1 of the column engine: batches, the decoded rows of one superblock, and the decoding of a unit into one.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "core/host.h"
 
 #include "core/limits.h"
@@ -68,15 +69,15 @@ sift_cbatch_trim(SiftColBatch *b)
 		return;
 	if (b->rowcap > b->nrows)
 	{
-		b->keys = repalloc(b->keys, b->nrows * sizeof(SiftKey));
+		b->keys = repalloc_huge(b->keys, b->nrows * sizeof(SiftKey));
 		if (b->xmin)
 		{
-			b->xmin = repalloc(b->xmin, b->nrows * sizeof(uint32));
-			b->cmin = repalloc(b->cmin, b->nrows * sizeof(uint32));
+			b->xmin = repalloc_huge(b->xmin, b->nrows * sizeof(uint32));
+			b->cmin = repalloc_huge(b->cmin, b->nrows * sizeof(uint32));
 		}
 		for (int i = 0; i < b->schema->ncols; i++)
 			if (b->col[i].eoff)
-				b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->nrows + 1) * sizeof(uint32));
+				b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->nrows + 1) * sizeof(uint32));
 		b->rowcap = b->nrows;
 	}
 	for (int i = 0; i < b->schema->ncols; i++)
@@ -85,18 +86,18 @@ sift_cbatch_trim(SiftColBatch *b)
 
 		if (v->n == 0 || v->cap <= v->n)
 			continue;
-		v->key = repalloc(v->key, v->n * sizeof(int64));
+		v->key = repalloc_huge(v->key, v->n * sizeof(int64));
 		if (v->nulls)
-			v->nulls = repalloc(v->nulls, words_of(v->n) * sizeof(uint64));
+			v->nulls = repalloc_huge(v->nulls, words_of(v->n) * sizeof(uint64));
 		if (v->ovf)
-			v->ovf = repalloc(v->ovf, words_of(v->n) * sizeof(uint64));
+			v->ovf = repalloc_huge(v->ovf, words_of(v->n) * sizeof(uint64));
 		if (v->otag)
-			v->otag = repalloc(v->otag, v->n);
+			v->otag = repalloc_huge(v->otag, v->n);
 		if (v->voff)
 		{
-			v->voff = repalloc(v->voff, ((Size) v->n + 1) * sizeof(uint32));
+			v->voff = repalloc_huge(v->voff, ((Size) v->n + 1) * sizeof(uint32));
 			v->vcap = Max(v->voff[v->n], 1);
-			v->vb = repalloc(v->vb, v->vcap);
+			v->vb = repalloc_huge(v->vb, v->vcap);
 		}
 		v->cap = v->n;
 	}
@@ -121,20 +122,20 @@ vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
 		return;
 	while (v->n + extra > cap)
 		cap = Max(64, cap * 2);
-	SIFT_REGROW_IN(mcxt, v->key, cap * sizeof(int64));
+	SIFT_REGROW_HUGE_IN(mcxt, v->key, cap * sizeof(int64));
 	if (v->nulls)
 	{
-		v->nulls = repalloc(v->nulls, words_of(cap) * sizeof(uint64));
+		v->nulls = repalloc_huge(v->nulls, words_of(cap) * sizeof(uint64));
 		memset(v->nulls + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
 	}
 	if (v->ovf)
 	{
-		v->ovf = repalloc(v->ovf, words_of(cap) * sizeof(uint64));
+		v->ovf = repalloc_huge(v->ovf, words_of(cap) * sizeof(uint64));
 		memset(v->ovf + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
 	}
 	if (v->otag)
 	{
-		v->otag = repalloc(v->otag, cap);
+		v->otag = repalloc_huge(v->otag, cap);
 		memset(v->otag + v->cap, 0, cap - v->cap);
 	}
 	v->cap = cap;
@@ -177,12 +178,12 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 		v->voff[0] = 0;
 	}
 	if (v->n == v->cap)
-		v->voff = repalloc(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
+		v->voff = repalloc_huge(v->voff, ((Size) Max(64, v->cap * 2) + 1) * sizeof(uint32));
 	vals_put(mcxt, v, len, isnull, ovf, tag);
 	if (v->vb == NULL || start + len > v->vcap)
 	{
 		v->vcap = Max(Max(1024, v->vcap * 2), (Size) start + len);
-		SIFT_REGROW_IN(mcxt, v->vb, v->vcap);
+		SIFT_REGROW_HUGE_IN(mcxt, v->vb, v->vcap);
 	}
 	if (len > 0)
 		memcpy(v->vb + start, s, len);
@@ -208,15 +209,15 @@ batch_reserve_rows(SiftColBatch *b, uint32 extra)
 		return;
 	while (b->nrows + extra > b->rowcap)
 		b->rowcap *= 2;
-	b->keys = repalloc(b->keys, b->rowcap * sizeof(SiftKey));
+	b->keys = repalloc_huge(b->keys, b->rowcap * sizeof(SiftKey));
 	if (b->xmin)
 	{
-		b->xmin = repalloc(b->xmin, b->rowcap * sizeof(uint32));
-		b->cmin = repalloc(b->cmin, b->rowcap * sizeof(uint32));
+		b->xmin = repalloc_huge(b->xmin, b->rowcap * sizeof(uint32));
+		b->cmin = repalloc_huge(b->cmin, b->rowcap * sizeof(uint32));
 	}
 	for (int i = 0; i < b->schema->ncols; i++)
 		if (b->col[i].eoff)
-			b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+			b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
 }
 
 /* Validates the key against the batch and makes room for the row; the row is counted by batch_row_end */

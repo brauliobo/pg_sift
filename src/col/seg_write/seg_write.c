@@ -113,7 +113,7 @@ count_rows(SiftColSegWriter *w, const SiftColBatch *b)
 		{
 			uint32		cap = Max(n, 2 * a->cap);
 
-			a->rows = a->rows ? repalloc(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(w->mcxt, (Size) cap * sizeof(uint32));
+			a->rows = a->rows ? repalloc_huge(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAllocHuge(w->mcxt, (Size) cap * sizeof(uint32));
 			memset(a->rows + a->cap, 0, (Size) (cap - a->cap) * sizeof(uint32));
 			a->cap = cap;
 		}
@@ -377,7 +377,7 @@ rows_memory(const SiftColSegWriter *w)
 		/* the end of the segment builds one leaf at a time: the largest of them is what it adds */
 		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * (sizeof(int64) * 3 + sizeof(int64) * 3) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
 	}
-	m += build;
+	m += build + w->vblob.len;
 	for (int c = 0; c < w->schema->ncols; c++)
 	{
 		m += (w->set ? w->set[c].blobs.len : 0) + (w->run ? w->run[c].blobs.len : 0) + (w->hll ? w->hll[c].blobs.len : 0);
