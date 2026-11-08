@@ -194,7 +194,7 @@ void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j,
 bool map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric);
 bool map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel);
 bool map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, Relation rel);
-bool map_load_dense_possible(Relation rel, const SiftAggJoin *j);
+bool map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound);
 bool sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);

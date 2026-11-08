@@ -23,6 +23,14 @@ INSERT INTO dm SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'a' |
 CREATE TABLE dh (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO dh SELECT * FROM dm;
 ALTER TABLE dh ADD PRIMARY KEY (k);
+-- the same, never analyzed: the classes of the mask are priced from the index
+CREATE TABLE df (LIKE dm) WITH (autovacuum_enabled = false);
+INSERT INTO df SELECT * FROM dm;
+ALTER TABLE df ADD PRIMARY KEY (k);
+CREATE INDEX df_col ON df USING sift_col (k, presence(a, b, c));
+NOTICE:  sift_col index "df_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('df_col');
 CREATE INDEX dm_col ON dm USING sift_col (k, presence(a, b, c));
 NOTICE:  sift_col index "dm_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = k
@@ -32,6 +40,7 @@ NOTICE:  sift_col index "dh_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dh_col');
 VACUUM (FREEZE, ANALYZE) ev, dm, dh;
+VACUUM (FREEZE) df;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(*) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
@@ -41,7 +50,9 @@ INSERT INTO shapes VALUES
  (4, $q$SELECT presence(dh.a, dh.b, dh.c) AS m, count(*) FROM ev JOIN dh ON dh.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (5, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, dm.a, count(*) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (6, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(DISTINCT dm.k) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$);
+ (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$),
+ (8, $q$SELECT presence(df.a, df.b, df.c) AS m, count(*) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -70,7 +81,9 @@ SELECT * FROM report('settled');
  settled |     5 | t            | f           | t
  settled |     6 | t            | t           | t
  settled |     7 | t            | t           | t
-(7 rows)
+ settled |     8 | t            | t           | t
+ settled |     9 | t            | t           | t
+(9 rows)
 
 -- rows the heap changed after the index saw them, in the transaction that reads them
 BEGIN;
@@ -78,6 +91,7 @@ UPDATE dm SET a = 'changed', c = NULL WHERE k % 31 = 0;
 DELETE FROM dm WHERE k % 53 = 0;
 INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
 SELECT * FROM report('in the transaction');
        stage        | shape | same_answers | from_leaves | not_empty 
 --------------------+-------+--------------+-------------+-----------
@@ -88,7 +102,9 @@ SELECT * FROM report('in the transaction');
  in the transaction |     5 | t            | f           | t
  in the transaction |     6 | t            | t           | t
  in the transaction |     7 | t            | t           | t
-(7 rows)
+ in the transaction |     8 | t            | t           | t
+ in the transaction |     9 | t            | t           | t
+(9 rows)
 
 ROLLBACK;
 -- committed, not vacuumed
@@ -104,7 +120,9 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |     5 | t            | f           | t
  committed, not vacuumed |     6 | t            | t           | t
  committed, not vacuumed |     7 | t            | t           | t
-(7 rows)
+ committed, not vacuumed |     8 | t            | t           | t
+ committed, not vacuumed |     9 | t            | t           | t
+(9 rows)
 
 VACUUM dm;
 SELECT * FROM report('vacuumed');
@@ -117,7 +135,9 @@ SELECT * FROM report('vacuumed');
  vacuumed |     5 | t            | f           | t
  vacuumed |     6 | t            | t           | t
  vacuumed |     7 | t            | t           | t
-(7 rows)
+ vacuumed |     8 | t            | t           | t
+ vacuumed |     9 | t            | t           | t
+(9 rows)
 
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
@@ -135,7 +155,9 @@ SELECT * FROM report('workers');
  workers |     5 | t            | f           | t
  workers |     6 | t            | t           | t
  workers |     7 | t            | t           | t
-(7 rows)
+ workers |     8 | t            | t           | t
+ workers |     9 | t            | t           | t
+(9 rows)
 
 SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
@@ -148,9 +170,11 @@ SELECT * FROM report('lookup columns off');
  lookup columns off |     5 | t            | f           | t
  lookup columns off |     6 | t            | f           | t
  lookup columns off |     7 | t            | f           | t
-(7 rows)
+ lookup columns off |     8 | t            | f           | t
+ lookup columns off |     9 | t            | f           | t
+(9 rows)
 
 DROP FUNCTION report(text), loads(text), answer(text, bool);
-DROP TABLE shapes, ev, dm, dh;
+DROP TABLE shapes, ev, dm, dh, df;
 DROP FUNCTION presence(text, text, int);
 DROP EXTENSION pg_sift;

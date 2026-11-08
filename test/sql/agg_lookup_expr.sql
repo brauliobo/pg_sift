@@ -23,9 +23,15 @@ INSERT INTO dm SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'a' |
 CREATE TABLE dh (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO dh SELECT * FROM dm;
 ALTER TABLE dh ADD PRIMARY KEY (k);
+-- the same, never analyzed: the classes of the mask are priced from the index
+CREATE TABLE df (LIKE dm) WITH (autovacuum_enabled = false);
+INSERT INTO df SELECT * FROM dm;
+ALTER TABLE df ADD PRIMARY KEY (k);
+CREATE INDEX df_col ON df USING sift_col (k, presence(a, b, c));
 CREATE INDEX dm_col ON dm USING sift_col (k, presence(a, b, c));
 CREATE INDEX dh_col ON dh USING sift_col (k, a);
 VACUUM (FREEZE, ANALYZE) ev, dm, dh;
+VACUUM (FREEZE) df;
 
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
@@ -36,7 +42,9 @@ INSERT INTO shapes VALUES
  (4, $q$SELECT presence(dh.a, dh.b, dh.c) AS m, count(*) FROM ev JOIN dh ON dh.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (5, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, dm.a, count(*) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (6, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(DISTINCT dm.k) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$);
+ (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$),
+ (8, $q$SELECT presence(df.a, df.b, df.c) AS m, count(*) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -65,6 +73,7 @@ UPDATE dm SET a = 'changed', c = NULL WHERE k % 31 = 0;
 DELETE FROM dm WHERE k % 53 = 0;
 INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
 SELECT * FROM report('in the transaction');
 ROLLBACK;
 
@@ -87,6 +96,6 @@ SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
 
 DROP FUNCTION report(text), loads(text), answer(text, bool);
-DROP TABLE shapes, ev, dm, dh;
+DROP TABLE shapes, ev, dm, dh, df;
 DROP FUNCTION presence(text, text, int);
 DROP EXTENSION pg_sift;
