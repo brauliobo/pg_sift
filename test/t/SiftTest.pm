@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift install_sift_test check_dump_restore ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait);
+our @EXPORT = qw(sift_node install_sift install_sift_test check_dump_restore ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait wait_for);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -207,12 +207,20 @@ sub kill9_wait
 	my ($node) = @_;
 	my @children = grep { ppid($_) == $node->{_pid} } map { m{(\d+)$} } glob('/proc/[0-9]*');
 	$node->kill9;
-	for (1 .. 1200)
+	wait_for(sub { !grep { running($_) } @children }, 120) or die "children of the killed postmaster still run: @children";
+}
+
+# wait_for(CODE, SECONDS): true as soon as CODE returns true, false when it still does not after SECONDS; polls every 0.1 s and does not sleep after
+# success. A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer (poll_query_until for SQL)
+sub wait_for
+{
+	my ($cond, $seconds) = @_;
+	for (1 .. $seconds * 10)
 	{
-		return unless grep { running($_) } @children;
+		return 1 if $cond->();
 		usleep(100_000);
 	}
-	die "children of the killed postmaster still run: @children";
+	return $cond->();
 }
 
 # the parent of a process (a process that is gone has none); no pgrep, which a minimal container lacks and whose failed exec in a

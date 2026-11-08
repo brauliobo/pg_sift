@@ -53,6 +53,13 @@ not_ok() {
 	for n in "${NODES[@]}"; do [[ -f $(dir "$n")/postgres.log ]] && diag "log of node $n:"$'\n'"$(tail -25 "$(dir "$n")/postgres.log" | cut -c1-240)"; done
 	return 0
 }
+# wait_for COND SECONDS: 0 as soon as the shell condition COND holds, 1 when it still does not after SECONDS; polls every 0.1 s and does not sleep after success.
+# A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer. A short timeout literal needs a note (scripts/check-tap-timeouts.sh)
+wait_for() {
+	local i
+	for ((i = 0; i < $2 * 10; i++)); do eval "$1" && return 0; sleep 0.1; done
+	eval "$1"
+}
 diag() { sed 's/^/# /' <<<"$*"; }
 # a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }
