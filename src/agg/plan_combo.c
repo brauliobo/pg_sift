@@ -45,6 +45,14 @@ join_var(JoinCtx *jc, Var *v)
 	jc->cvars = lappend(jc->cvars, copyObject(v));
 }
 
+/* an expression an index can hold as a column, other than a column: a call, an operator, a test, a condition */
+static bool
+join_expr_node(Node *n)
+{
+	return IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, NullTest) || IsA(n, BooleanTest) || IsA(n, BoolExpr) || IsA(n, CaseExpr) ||
+		IsA(n, CoalesceExpr) || IsA(n, NullIfExpr) || IsA(n, DistinctExpr) || IsA(n, CoerceViaIO);
+}
+
 /* the expressions of the sift_col indexes of the table, over its columns as varno 1 */
 static List *
 join_index_exprs(JoinCtx *jc)
@@ -59,7 +67,7 @@ join_index_exprs(JoinCtx *jc)
 
 			if (sift_colsrc_is_index(ix->rd_rel->relam))
 				foreach_ptr(Node, e, RelationGetIndexExpressions(ix))
-					if (IsA(e, FuncExpr) || IsA(e, OpExpr))
+					if (join_expr_node(e))
 						jc->iexprs = lappend(jc->iexprs, copyObject(e));
 			index_close(ix, AccessShareLock);
 		}
@@ -108,7 +116,7 @@ join_of_expr(AggCtx *c, Node *n)
 JoinCtx *
 join_of_node(AggCtx *c, Node *n)
 {
-	return IsA(n, Var) ? join_of_var(c, n) : IsA(n, FuncExpr) || IsA(n, OpExpr) ? join_of_expr(c, n) : NULL;
+	return IsA(n, Var) ? join_of_var(c, n) : join_expr_node(n) ? join_of_expr(c, n) : NULL;
 }
 
 /* the index of column v (a Var, or an expression the table has an index on) of the joined table among the columns the expressions read; -1 when there are too many */
@@ -135,6 +143,23 @@ join_col(JoinCtx *jc, Node *v)
 	j->colcoll[j->ncol] = exprCollation(v);
 	j->colexpr[j->ncol] = x;
 	return j->ncol++;
+}
+
+/*
+ * The leaf an inner join's key column stands for: the rows that join have the key equal to the leaf (p.id of `p.id = c.parent_id`), so the column is not one to look up
+ * (-1: v is not the key of such a join)
+ */
+static int
+join_key_leaf(AggCtx *c, Var *v)
+{
+	JoinCtx    *jc = join_of_var(c, (Node *) v);
+	int			id;
+
+	if (jc == NULL || jc->kind != SJ_INNER || jc->cpath != NULL || jc->j.child >= 0 || jc->j.params != NIL || jc->j.nkey != 1 || jc->j.keynull[0] ||
+		jc->j.keypos[0] < 0 || jc->j.keyexpr[0] != NULL || jc->j.tkey[0] != NULL || jc->j.keyatt[0] != v->varattno)
+		return -1;
+	id = ((ComboCtx *) list_nth(c->combos, jc->combo))->leaf[jc->j.keypos[0]];
+	return id >= 0 && leaf_of(c, id)->typid == v->vartype ? id : -1;
 }
 
 /* the position of leaf `id` in the combo (added if new), its type fixed by the first reference that has one; -1 when it does not fit */
@@ -351,16 +376,17 @@ combo_walker(Node *n, ComboWalk *w)
 	/* a relabel keeps the representation: the leaf is read as what it is, and the relabel stays around the parameter */
 	if (IsA(n, RelabelType))
 		return combo_walker((Node *) ((RelabelType *) n)->arg, w);
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
+	if (IsA(n, Var) || join_expr_node(n))
 	{
-		if ((jc = join_of_node(w->c, n)) != NULL)
+		id = w->key_leaf && IsA(n, Var) ? join_key_leaf(w->c, (Var *) n) : -1;
+		if (id < 0 && (jc = join_of_node(w->c, n)) != NULL)
 		{
 			if (w->jc == NULL || jc->combo > w->jc->combo)
 				w->jc = jc;
 			w->vars = lappend(w->vars, n);
 			return false;
 		}
-		if ((id = match_leaf(w->c, n)) >= 0)
+		if (id >= 0 || (id = match_leaf(w->c, n)) >= 0)
 		{
 			int			p = 0;
 
@@ -564,7 +590,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 bool
 combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si)
 {
-	ComboWalk	w = {c};
+	ComboWalk	w = {c, .key_leaf = true};
 	ComboCtx   *cb = NULL;
 	SlotReq    *rq;
 
@@ -634,6 +660,7 @@ typedef struct ComboSub
 	AggCtx	   *c;
 	ComboCtx   *cb;
 	JoinCtx    *jc;
+	bool		key_leaf;		/* as ComboWalk */
 } ComboSub;
 
 static Node *
@@ -650,18 +677,19 @@ combo_sub_mutator(Node *n, ComboSub *s)
 		hash_param_saop((ScalarArrayOpExpr *) r);
 		return r;
 	}
-	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
+	if (IsA(n, Var) || join_expr_node(n))
 	{
-		JoinCtx    *jc = join_of_node(s->c, n);
+		JoinCtx    *jc;
 
-		if (jc != NULL)
+		id = s->key_leaf && IsA(n, Var) ? join_key_leaf(s->c, (Var *) n) : -1;
+		if (id < 0 && (jc = join_of_node(s->c, n)) != NULL)
 		{
 			int			paramid = jc == s->jc ? s->cb->nl + join_col(jc, n) : combo_reference(s->c, s->cb, jc, n);
 
 			Assert(paramid >= 0);
 			return (Node *) exec_param(paramid, exprType(n), exprTypmod(n), exprCollation(n));
 		}
-		if ((id = match_leaf(s->c, n)) >= 0)
+		if (id >= 0 || (id = match_leaf(s->c, n)) >= 0)
 		{
 			int			pos = combo_leaf(s->cb, id, false, 0, 0, 0);
 
@@ -673,10 +701,10 @@ combo_sub_mutator(Node *n, ComboSub *s)
 
 /* the expression of an argument or slot of combo ci over Params, now: the scope that resolves its columns is the one the caller is in */
 Node *
-lower_scoped(AggCtx *c, int ci, Node *expr)
+lower_scoped(AggCtx *c, int ci, Node *expr, bool key_leaf)
 {
 	ComboCtx   *cb = list_nth(c->combos, ci);
-	ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL};
+	ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL, key_leaf};
 
 	return combo_sub_mutator(expr, &sub);
 }
@@ -694,7 +722,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 	foreach_ptr(ComboCtx, cb, c->combos)
 	{
 		SiftAggCombo *o = &s->combo[foreach_current_index(cb)];
-		ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL};
+		ComboSub	sub = {c, cb, cb->join >= 0 ? list_nth(c->joins, cb->join) : NULL, false};
 
 		o->nleaves = cb->nl;
 		o->join = cb->join;
@@ -717,6 +745,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 		for (int k = 0; sub.jc && k < sub.jc->j.nkey; k++)
 			if (sub.jc->kexpr[k])
 				s->join[cb->join].keyexpr[k] = combo_sub_mutator(sub.jc->kexpr[k], &sub);
+		sub.key_leaf = true;
 		o->nslots = list_length(cb->slots);
 		o->slot = palloc0(Max(o->nslots, 1) * sizeof(SiftAggSlot));
 		foreach_ptr(SlotReq, rq, cb->slots)

@@ -61,7 +61,8 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT dn.lvl, count(*) FROM ev JOIN dn ON dn.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT dw.lvl, dw.grade, count(*) FROM ev JOIN dw ON dw.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (9, $q$SELECT dt.t, dt.lvl, count(*) FROM ev JOIN dt ON dt.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (10, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (10, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (11, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 -- the rows of the answer, and the rows the load made classes of
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -92,8 +93,9 @@ SELECT * FROM report('settled');
  settled |     7 | t            | f       | t
  settled |     8 | t            | f       | t
  settled |     9 | t            | f       | t
- settled |    10 | t            | f       | t
-(10 rows)
+ settled |    10 | t            | t       | t
+ settled |    11 | t            | f       | t
+(11 rows)
 
 -- rows the heap changed after the index saw them: updated, deleted, inserted (the write buffer), in the transaction that reads them
 BEGIN;
@@ -113,8 +115,9 @@ SELECT * FROM report('in the transaction');
  in the transaction |     7 | t            | f       | t
  in the transaction |     8 | t            | f       | t
  in the transaction |     9 | t            | f       | t
- in the transaction |    10 | t            | f       | t
-(10 rows)
+ in the transaction |    10 | t            | t       | t
+ in the transaction |    11 | t            | f       | t
+(11 rows)
 
 ROLLBACK;
 -- committed, not vacuumed: pages that are not all-visible
@@ -132,8 +135,9 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |     7 | t            | f       | t
  committed, not vacuumed |     8 | t            | f       | t
  committed, not vacuumed |     9 | t            | f       | t
- committed, not vacuumed |    10 | t            | f       | t
-(10 rows)
+ committed, not vacuumed |    10 | t            | t       | t
+ committed, not vacuumed |    11 | t            | f       | t
+(11 rows)
 
 VACUUM dd;
 SELECT * FROM report('vacuumed');
@@ -148,8 +152,9 @@ SELECT * FROM report('vacuumed');
  vacuumed |     7 | t            | f       | t
  vacuumed |     8 | t            | f       | t
  vacuumed |     9 | t            | f       | t
- vacuumed |    10 | t            | f       | t
-(10 rows)
+ vacuumed |    10 | t            | t       | t
+ vacuumed |    11 | t            | f       | t
+(11 rows)
 
 -- the workers read the classes from the leader's shared memory
 SET max_parallel_workers_per_gather = 2;
@@ -170,8 +175,9 @@ SELECT * FROM report('workers');
  workers |     7 | t            | f       | t
  workers |     8 | t            | f       | t
  workers |     9 | t            | f       | t
- workers |    10 | t            | f       | t
-(10 rows)
+ workers |    10 | t            | t       | t
+ workers |    11 | t            | f       | t
+(11 rows)
 
 -- switched off with the load from the leaves: the rows are loaded one by one
 SET sift.agg_lookup_columns = off;
@@ -188,7 +194,8 @@ SELECT * FROM report('lookup columns off');
  lookup columns off |     8 | t            | f       | t
  lookup columns off |     9 | t            | f       | t
  lookup columns off |    10 | t            | f       | t
-(10 rows)
+ lookup columns off |    11 | t            | f       | t
+(11 rows)
 
 DROP FUNCTION report(text), classed(text), answer(text, bool);
 DROP TABLE shapes, ev, dd, dr, dn, dw, dt;

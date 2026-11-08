@@ -33,6 +33,16 @@ CREATE INDEX dh_col ON dh USING sift_col (k, a);
 VACUUM (FREEZE, ANALYZE) ev, dm, dh;
 VACUUM (FREEZE) df;
 
+-- the tests of a column that an index holds as booleans, written as the query writes them: on the fact table and on the lookup table, `IS NULL` for the leaf of `IS NOT NULL`
+CREATE TABLE fe (id int, k int, t text) WITH (autovacuum_enabled = false);
+INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END FROM generate_series(1, 40000) i;
+CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL));
+CREATE TABLE dq (LIKE dm) WITH (autovacuum_enabled = false);
+INSERT INTO dq SELECT * FROM dm;
+ALTER TABLE dq ADD PRIMARY KEY (k);
+CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+VACUUM (FREEZE, ANALYZE) fe, dq;
+
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(*) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
@@ -44,7 +54,11 @@ INSERT INTO shapes VALUES
  (6, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(DISTINCT dm.k) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT presence(df.a, df.b, df.c) AS m, count(*) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (10, $q$SELECT fe.id % 5, count(DISTINCT dq.k), count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.a), '') IS NOT NULL),
+		count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.b), '') IS NULL) FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$),
+ (11, $q$SELECT fe.id % 4, count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NULL), count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NOT NULL) FROM fe GROUP BY 1 ORDER BY 1$q$),
+ (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$);
 
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
@@ -61,8 +75,16 @@ DECLARE l text; r int := 0; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, from_leaves bool, not_empty bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), loads(sql) > 0, answer(sql, true) <> '' FROM shapes ORDER BY n
+CREATE FUNCTION scanned(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		r := r OR l ~ 'Custom Scan \(SiftAgg\)';
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, from_leaves bool, scan bool, not_empty bool) LANGUAGE sql AS $$
+	SELECT stage, n, answer(sql, true) = answer(sql, false), loads(sql) > 0, scanned(sql), answer(sql, true) <> '' FROM shapes ORDER BY n
 $$;
 
 SELECT * FROM report('settled');
@@ -74,6 +96,8 @@ DELETE FROM dm WHERE k % 53 = 0;
 INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE dq SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE fe SET t = NULL WHERE id % 17 = 0;
 SELECT * FROM report('in the transaction');
 ROLLBACK;
 
@@ -95,7 +119,7 @@ SELECT * FROM report('workers');
 SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
 
-DROP FUNCTION report(text), loads(text), answer(text, bool);
-DROP TABLE shapes, ev, dm, dh, df;
+DROP FUNCTION report(text), scanned(text), loads(text), answer(text, bool);
+DROP TABLE shapes, ev, dm, dh, df, fe, dq;
 DROP FUNCTION presence(text, text, int);
 DROP EXTENSION pg_sift;

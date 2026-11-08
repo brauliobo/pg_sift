@@ -612,7 +612,7 @@ scoped_join(AggCtx *c, ExistsScan *x, Index offset)
 		foreach_ptr(Node, v, w.vars)
 			if (combo_reference(c, cb, join_of_node(c, v), v) < 0)
 				return NULL;
-		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr));
+		jc->j.args = lappend(jc->j.args, lower_scoped(c, jc->combo, expr, false));
 	}
 	return jc;
 }
@@ -714,7 +714,7 @@ compile_exists_post(AggCtx *c, SubPlan *sp)
 
 			p->leaf = ci;
 			p->op = si;
-			rq->expr = lower_scoped(c, ci, rq->expr);
+			rq->expr = lower_scoped(c, ci, rq->expr, true);
 			rq->lowered = true;
 			p->desc = psprintf("EXISTS %s[] (%s)", leaf_name(c, grp), combo_text(c, ci, expr));
 			c->elem_work += (p->nchild + 1) * elems_of(c, grp);

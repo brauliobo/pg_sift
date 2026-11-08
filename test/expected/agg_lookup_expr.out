@@ -41,6 +41,21 @@ DETAIL:  track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dh_col');
 VACUUM (FREEZE, ANALYZE) ev, dm, dh;
 VACUUM (FREEZE) df;
+-- the tests of a column that an index holds as booleans, written as the query writes them: on the fact table and on the lookup table, `IS NULL` for the leaf of `IS NOT NULL`
+CREATE TABLE fe (id int, k int, t text) WITH (autovacuum_enabled = false);
+INSERT INTO fe SELECT i, i % 3300, CASE i % 3 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'v' END FROM generate_series(1, 40000) i;
+CREATE INDEX fe_col ON fe USING sift_col (id, k, (nullif(btrim(t), '') IS NOT NULL));
+NOTICE:  sift_col index "fe_col": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fe_col');
+CREATE TABLE dq (LIKE dm) WITH (autovacuum_enabled = false);
+INSERT INTO dq SELECT * FROM dm;
+ALTER TABLE dq ADD PRIMARY KEY (k);
+CREATE INDEX dq_col ON dq USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+NOTICE:  sift_col index "dq_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dq_col');
+VACUUM (FREEZE, ANALYZE) fe, dq;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(*) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
@@ -52,7 +67,11 @@ INSERT INTO shapes VALUES
  (6, $q$SELECT presence(dm.a, dm.b, dm.c) AS m, count(DISTINCT dm.k) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (7, $q$SELECT ev.v, count(*) FROM ev JOIN dm ON dm.k = ev.k WHERE (presence(dm.a, dm.b, dm.c) & 2) <> 0 GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT presence(df.a, df.b, df.c) AS m, count(*) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (9, $q$SELECT ev.id % 5, count(DISTINCT ev.k) FILTER (WHERE (presence(df.a, df.b, df.c) & 1) <> 0) FROM ev JOIN df ON df.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (10, $q$SELECT fe.id % 5, count(DISTINCT dq.k), count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.a), '') IS NOT NULL),
+		count(DISTINCT dq.k) FILTER (WHERE nullif(btrim(dq.b), '') IS NULL) FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$),
+ (11, $q$SELECT fe.id % 4, count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NULL), count(*) FILTER (WHERE nullif(btrim(fe.t), '') IS NOT NULL) FROM fe GROUP BY 1 ORDER BY 1$q$),
+ (12, $q$SELECT dq.k, count(*) FROM fe JOIN dq ON dq.k = fe.k WHERE nullif(btrim(dq.a), '') IS NULL GROUP BY 1 ORDER BY 1$q$);
 -- the rows of the answer, and what the load of the table read
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -68,22 +87,33 @@ DECLARE l text; r int := 0; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, from_leaves bool, not_empty bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), loads(sql) > 0, answer(sql, true) <> '' FROM shapes ORDER BY n
+CREATE FUNCTION scanned(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; r bool := false; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		r := r OR l ~ 'Custom Scan \(SiftAgg\)';
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, from_leaves bool, scan bool, not_empty bool) LANGUAGE sql AS $$
+	SELECT stage, n, answer(sql, true) = answer(sql, false), loads(sql) > 0, scanned(sql), answer(sql, true) <> '' FROM shapes ORDER BY n
 $$;
 SELECT * FROM report('settled');
-  stage  | shape | same_answers | from_leaves | not_empty 
----------+-------+--------------+-------------+-----------
- settled |     1 | t            | t           | t
- settled |     2 | t            | t           | t
- settled |     3 | t            | f           | t
- settled |     4 | t            | f           | t
- settled |     5 | t            | f           | t
- settled |     6 | t            | t           | t
- settled |     7 | t            | t           | t
- settled |     8 | t            | t           | t
- settled |     9 | t            | t           | t
-(9 rows)
+  stage  | shape | same_answers | from_leaves | scan | not_empty 
+---------+-------+--------------+-------------+------+-----------
+ settled |     1 | t            | t           | t    | t
+ settled |     2 | t            | t           | t    | t
+ settled |     3 | t            | f           | t    | t
+ settled |     4 | t            | f           | t    | t
+ settled |     5 | t            | f           | t    | t
+ settled |     6 | t            | t           | t    | t
+ settled |     7 | t            | t           | t    | t
+ settled |     8 | t            | t           | t    | t
+ settled |     9 | t            | t           | t    | t
+ settled |    10 | t            | t           | t    | t
+ settled |    11 | t            | f           | t    | t
+ settled |    12 | t            | t           | t    | t
+(12 rows)
 
 -- rows the heap changed after the index saw them, in the transaction that reads them
 BEGIN;
@@ -92,52 +122,63 @@ DELETE FROM dm WHERE k % 53 = 0;
 INSERT INTO dm SELECT i, 'new', '', 1 FROM generate_series(3200, 3249) i;
 UPDATE dh SET a = NULL, b = 'x' WHERE k % 29 = 0;
 UPDATE df SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE dq SET a = NULL, b = 'x' WHERE k % 29 = 0;
+UPDATE fe SET t = NULL WHERE id % 17 = 0;
 SELECT * FROM report('in the transaction');
-       stage        | shape | same_answers | from_leaves | not_empty 
---------------------+-------+--------------+-------------+-----------
- in the transaction |     1 | t            | t           | t
- in the transaction |     2 | t            | t           | t
- in the transaction |     3 | t            | f           | t
- in the transaction |     4 | t            | f           | t
- in the transaction |     5 | t            | f           | t
- in the transaction |     6 | t            | t           | t
- in the transaction |     7 | t            | t           | t
- in the transaction |     8 | t            | t           | t
- in the transaction |     9 | t            | t           | t
-(9 rows)
+       stage        | shape | same_answers | from_leaves | scan | not_empty 
+--------------------+-------+--------------+-------------+------+-----------
+ in the transaction |     1 | t            | t           | t    | t
+ in the transaction |     2 | t            | t           | t    | t
+ in the transaction |     3 | t            | f           | t    | t
+ in the transaction |     4 | t            | f           | t    | t
+ in the transaction |     5 | t            | f           | t    | t
+ in the transaction |     6 | t            | t           | t    | t
+ in the transaction |     7 | t            | t           | t    | t
+ in the transaction |     8 | t            | t           | t    | t
+ in the transaction |     9 | t            | t           | t    | t
+ in the transaction |    10 | t            | t           | t    | t
+ in the transaction |    11 | t            | f           | t    | t
+ in the transaction |    12 | t            | t           | t    | t
+(12 rows)
 
 ROLLBACK;
 -- committed, not vacuumed
 UPDATE dm SET b = NULL WHERE k % 41 = 0;
 DELETE FROM dm WHERE k % 61 = 0;
 SELECT * FROM report('committed, not vacuumed');
-          stage          | shape | same_answers | from_leaves | not_empty 
--------------------------+-------+--------------+-------------+-----------
- committed, not vacuumed |     1 | t            | t           | t
- committed, not vacuumed |     2 | t            | t           | t
- committed, not vacuumed |     3 | t            | f           | t
- committed, not vacuumed |     4 | t            | f           | t
- committed, not vacuumed |     5 | t            | f           | t
- committed, not vacuumed |     6 | t            | t           | t
- committed, not vacuumed |     7 | t            | t           | t
- committed, not vacuumed |     8 | t            | t           | t
- committed, not vacuumed |     9 | t            | t           | t
-(9 rows)
+          stage          | shape | same_answers | from_leaves | scan | not_empty 
+-------------------------+-------+--------------+-------------+------+-----------
+ committed, not vacuumed |     1 | t            | t           | t    | t
+ committed, not vacuumed |     2 | t            | t           | t    | t
+ committed, not vacuumed |     3 | t            | f           | t    | t
+ committed, not vacuumed |     4 | t            | f           | t    | t
+ committed, not vacuumed |     5 | t            | f           | t    | t
+ committed, not vacuumed |     6 | t            | t           | t    | t
+ committed, not vacuumed |     7 | t            | t           | t    | t
+ committed, not vacuumed |     8 | t            | t           | t    | t
+ committed, not vacuumed |     9 | t            | t           | t    | t
+ committed, not vacuumed |    10 | t            | t           | t    | t
+ committed, not vacuumed |    11 | t            | f           | t    | t
+ committed, not vacuumed |    12 | t            | t           | t    | t
+(12 rows)
 
 VACUUM dm;
 SELECT * FROM report('vacuumed');
-  stage   | shape | same_answers | from_leaves | not_empty 
-----------+-------+--------------+-------------+-----------
- vacuumed |     1 | t            | t           | t
- vacuumed |     2 | t            | t           | t
- vacuumed |     3 | t            | f           | t
- vacuumed |     4 | t            | f           | t
- vacuumed |     5 | t            | f           | t
- vacuumed |     6 | t            | t           | t
- vacuumed |     7 | t            | t           | t
- vacuumed |     8 | t            | t           | t
- vacuumed |     9 | t            | t           | t
-(9 rows)
+  stage   | shape | same_answers | from_leaves | scan | not_empty 
+----------+-------+--------------+-------------+------+-----------
+ vacuumed |     1 | t            | t           | t    | t
+ vacuumed |     2 | t            | t           | t    | t
+ vacuumed |     3 | t            | f           | t    | t
+ vacuumed |     4 | t            | f           | t    | t
+ vacuumed |     5 | t            | f           | t    | t
+ vacuumed |     6 | t            | t           | t    | t
+ vacuumed |     7 | t            | t           | t    | t
+ vacuumed |     8 | t            | t           | t    | t
+ vacuumed |     9 | t            | t           | t    | t
+ vacuumed |    10 | t            | t           | t    | t
+ vacuumed |    11 | t            | f           | t    | t
+ vacuumed |    12 | t            | t           | t    | t
+(12 rows)
 
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
@@ -146,35 +187,41 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
-  stage  | shape | same_answers | from_leaves | not_empty 
----------+-------+--------------+-------------+-----------
- workers |     1 | t            | t           | t
- workers |     2 | t            | t           | t
- workers |     3 | t            | f           | t
- workers |     4 | t            | f           | t
- workers |     5 | t            | f           | t
- workers |     6 | t            | t           | t
- workers |     7 | t            | t           | t
- workers |     8 | t            | t           | t
- workers |     9 | t            | t           | t
-(9 rows)
+  stage  | shape | same_answers | from_leaves | scan | not_empty 
+---------+-------+--------------+-------------+------+-----------
+ workers |     1 | t            | t           | t    | t
+ workers |     2 | t            | t           | t    | t
+ workers |     3 | t            | f           | t    | t
+ workers |     4 | t            | f           | t    | t
+ workers |     5 | t            | f           | t    | t
+ workers |     6 | t            | t           | t    | t
+ workers |     7 | t            | t           | t    | t
+ workers |     8 | t            | t           | t    | t
+ workers |     9 | t            | t           | t    | t
+ workers |    10 | t            | t           | t    | t
+ workers |    11 | t            | f           | t    | t
+ workers |    12 | t            | t           | t    | t
+(12 rows)
 
 SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
-       stage        | shape | same_answers | from_leaves | not_empty 
---------------------+-------+--------------+-------------+-----------
- lookup columns off |     1 | t            | f           | t
- lookup columns off |     2 | t            | f           | t
- lookup columns off |     3 | t            | f           | t
- lookup columns off |     4 | t            | f           | t
- lookup columns off |     5 | t            | f           | t
- lookup columns off |     6 | t            | f           | t
- lookup columns off |     7 | t            | f           | t
- lookup columns off |     8 | t            | f           | t
- lookup columns off |     9 | t            | f           | t
-(9 rows)
+       stage        | shape | same_answers | from_leaves | scan | not_empty 
+--------------------+-------+--------------+-------------+------+-----------
+ lookup columns off |     1 | t            | f           | t    | t
+ lookup columns off |     2 | t            | f           | t    | t
+ lookup columns off |     3 | t            | f           | t    | t
+ lookup columns off |     4 | t            | f           | t    | t
+ lookup columns off |     5 | t            | f           | t    | t
+ lookup columns off |     6 | t            | f           | t    | t
+ lookup columns off |     7 | t            | f           | t    | t
+ lookup columns off |     8 | t            | f           | t    | t
+ lookup columns off |     9 | t            | f           | t    | t
+ lookup columns off |    10 | t            | f           | t    | t
+ lookup columns off |    11 | t            | f           | t    | t
+ lookup columns off |    12 | t            | f           | t    | t
+(12 rows)
 
-DROP FUNCTION report(text), loads(text), answer(text, bool);
-DROP TABLE shapes, ev, dm, dh, df;
+DROP FUNCTION report(text), scanned(text), loads(text), answer(text, bool);
+DROP TABLE shapes, ev, dm, dh, df, fe, dq;
 DROP FUNCTION presence(text, text, int);
 DROP EXTENSION pg_sift;
