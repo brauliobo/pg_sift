@@ -1,0 +1,38 @@
+Parsed test spec with 4 sessions
+
+starting permutation: s4b s3d s1b s2l s1q s3v s2u s1c s4c
+step s4b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_bd;
+count
+-----
+ 3000
+(1 row)
+
+step s3d: DELETE FROM iso_bd WHERE id % 4 = 0;
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_bd;
+count
+-----
+ 2250
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(20983, 1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT iso_bd_q(true); <waiting ...>
+step s3v: VACUUM iso_bd;
+step s2u: SELECT pg_advisory_unlock(20983, 1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+iso_bd_q
+--------
+agree   
+(1 row)
+
+step s1c: COMMIT;
+step s4c: COMMIT;

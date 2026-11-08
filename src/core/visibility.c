@@ -12,6 +12,7 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -49,6 +50,13 @@ sift_test_wait(int key)
 	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, 0x51F7, key, 2);
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);
+}
+
+void
+sift_test_wait_inval(int key)
+{
+	sift_test_wait(key);
+	AcceptInvalidationMessages();
 }
 
 /* Waits until the test lets go of the advisory lock of this number (the one-argument int8 form; 0 or less: no gate) */
@@ -606,7 +614,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 		return 0;
 	}
 	if (sift_tbl_is_table(v->heap))
-		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
+		return sift_tbl_filter_page(v->fetch, v->snapshot, blk, offmask);
 	if (sift_vis_page_cache)
 	{
 		e = page_cache_entry(v, blk, &found);

@@ -255,11 +255,17 @@ sift_tbl_filter_page_vers(Relation rel, SiftTblRel *st, Snapshot snapshot, SiftT
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }
 
-/* The same for a reader that goes by the directory this backend holds (the BM25 index's heap check) */
+/*
+ * The same for a reader that goes by the directory its fetch scan began with (the heap check of the BM25 and column indexes): the tombstones of that
+ * scan, not those of the cache entry the backend holds when it asks, which an invalidation (a VACUUM of the table) may have replaced by an entry that
+ * has read none
+ */
 int
-sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
+sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftTblFetch *f = (SiftTblFetch *) fetch;
+	SiftTblRel *st = f->st;
+	Relation	rel = fetch->rel;
 
 	if (st->curvers == NULL || st->curvers_version != st->dir.version || st->curvers_rel != rel)
 	{

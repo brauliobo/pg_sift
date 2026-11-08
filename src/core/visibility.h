@@ -89,10 +89,14 @@ extern PGDLLIMPORT bool sift_test_worker_gate;
 extern PGDLLIMPORT bool sift_test_release_gate;
 extern PGDLLIMPORT bool sift_test_build_gate;
 extern void sift_test_wait(int key);
+extern void sift_test_wait_inval(int key);
 extern void sift_test_hold(int64 key);
 #define SIFT_TEST_GATE(flag, key) do { if (flag) sift_test_wait(key); } while (0)
+/* the same, then what the next lock of a statement does: the cache entry of a table that was vacuumed meanwhile is replaced */
+#define SIFT_TEST_GATE_INVAL(flag, key) do { if (flag) sift_test_wait_inval(key); } while (0)
 #else
 #define SIFT_TEST_GATE(flag, key) ((void) 0)
+#define SIFT_TEST_GATE_INVAL(flag, key) ((void) 0)
 #endif
 
 /*

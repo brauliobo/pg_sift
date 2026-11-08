@@ -200,7 +200,7 @@ count_visible(SiftPlan *plan, SiftVis *vis, SiftNextRangeFn next, void *next_arg
 	bool		delta;
 	uint32		sb;
 
-	SIFT_TEST_GATE(sift_test_count_gate, 1);
+	SIFT_TEST_GATE_INVAL(sift_test_count_gate, 1);
 	n = next ? -1 : count_by_df(plan);
 	delta = n >= 0;
 retry:
