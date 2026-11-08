@@ -271,6 +271,7 @@ typedef struct ComboWalk
 	Oid			pcoll[SIFT_AGG_MAX_CLEAVES];
 	bool		null_input;
 	bool		bad;
+	bool		key_leaf;		/* a join's key column is read as the leaf it equals (in a slot; a join key keeps its chain) */
 	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
 } ComboWalk;
 
@@ -442,7 +443,7 @@ extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si);
 extern bool combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si);
-extern Node *lower_scoped(AggCtx *c, int ci, Node *expr);
+extern Node *lower_scoped(AggCtx *c, int ci, Node *expr, bool key_leaf);
 extern void finish_combos(AggCtx *c, SiftAggSpec *s);
 extern char *combo_text(AggCtx *c, int ci, Node *expr);
 extern SiftAggPred *compile_combo_pred_at(AggCtx *c, Node *n, bool after_joins);

@@ -759,6 +759,22 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
+/* `x IS NULL` where the index holds `x IS NOT NULL` as a boolean leaf (never NULL), or the other way: the test of the leaf that is not its value */
+static SiftAggPred *
+compile_null_complement(AggCtx *c, NullTest *t)
+{
+	NullTest   *opp;
+
+	if (attr_of_expr(c, (Node *) t) > 0)
+		return NULL;
+	opp = makeNode(NullTest);
+	*opp = *t;
+	opp->nulltesttype = t->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
+	if (attr_of_expr(c, (Node *) opp) <= 0)
+		return NULL;
+	return compile_lut(c, (Node *) makeBoolExpr(NOT_EXPR, list_make1(opp), -1));
+}
+
 SiftAggPred *
 compile_pred(AggCtx *c, Node *n)
 {
@@ -811,6 +827,8 @@ compile_pred(AggCtx *c, Node *n)
 		}
 		not_true = p;
 	}
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (p = compile_null_complement(c, (NullTest *) n)) != NULL)
+		return p;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow &&
 		((leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0 || (leaf = present_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0))
 	{

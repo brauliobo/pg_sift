@@ -43,6 +43,16 @@ nulltest_mutator(Node *n, AggCtx *c)
 			return (Node *) out;
 		}
 	}
+	/* `x IS NULL` where an index holds `x IS NOT NULL` (a boolean that is never NULL) as a column of a joined table, or the other way: the negation of it (of the scan's: compile_null_complement) */
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && join_of_node(c, n) == NULL)
+	{
+		NullTest   *opp = makeNode(NullTest);
+
+		*opp = *(NullTest *) n;
+		opp->nulltesttype = opp->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
+		if (join_of_node(c, (Node *) opp) != NULL)
+			return (Node *) makeBoolExpr(NOT_EXPR, list_make1(opp), -1);
+	}
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
 

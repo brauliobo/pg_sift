@@ -46,7 +46,8 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT dn.lvl, count(*) FROM ev JOIN dn ON dn.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT dw.lvl, dw.grade, count(*) FROM ev JOIN dw ON dw.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (9, $q$SELECT dt.t, dt.lvl, count(*) FROM ev JOIN dt ON dt.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (10, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (10, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (11, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 -- the rows of the answer, and the rows the load made classes of
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
