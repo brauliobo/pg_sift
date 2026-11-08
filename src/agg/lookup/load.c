@@ -480,7 +480,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
 	}
-	else if (!none && !(own == NULL && kept.cols.n == 0 && !m->lazy && sift_agg_dense_join(ex->spec, ci, ex->lay) && map_load_dense(ex, m, &lj, cb, rel)) &&
+	else if (!none && !(own == NULL && !m->lazy && sift_agg_dense_join(ex->spec, ci, ex->lay) && map_load_dense(ex, m, &lj, cb, rel)) &&
 			 !map_load_cols(ex, m, &lj, cb, own, rel))
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
@@ -622,6 +622,9 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	if (lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))
 		appendStringInfoString(&k, "|keys");
+	/* the rows of a dense table are the classes of its keys: only an arm that takes it that way can read them */
+	if (sift_agg_dense_join(ex->spec, ci, ex->lay))
+		appendStringInfoString(&k, "|dense");
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
 	if (j->first.hybrid)

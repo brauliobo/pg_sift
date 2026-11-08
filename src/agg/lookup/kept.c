@@ -143,7 +143,7 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 {
 	LookFinger *after;
 
-	if (t->before != NULL && m->dcls == NULL && (after = lookcache_finger(rel)) != NULL)
+	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
 		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
 	if (t->before != NULL)
 		lookshm_unclaim(t->key);
