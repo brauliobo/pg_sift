@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
+SET sift.agg_dimmap_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
@@ -26,7 +27,8 @@ INSERT INTO shapes VALUES
  (6, $q$SELECT count(*) FILTER (WHERE 100 / (dd.b - 3) > 5) FROM ev JOIN dd ON dd.k = ev.k WHERE dd.b <> 3$q$),
  (7, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k$q$),
  (8, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(*) FILTER (WHERE ev.v = 3) FROM dd RIGHT JOIN ev ON dd.k = ev.k$q$),
- (9, $q$SELECT count(*) FROM ev JOIN dd ON dd.k = ev.k AND dd.b = 5$q$);
+ (9, $q$SELECT count(*) FROM ev JOIN dd ON dd.k = ev.k AND dd.b = 5$q$),
+ (10, $q$SELECT count(*) FILTER (WHERE ev.k > 9000 AND dd.a IS NOT NULL), count(*) FILTER (WHERE ev.k < 9000 OR dd.a IS NULL) FROM ev JOIN dd ON dd.k = ev.k$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN

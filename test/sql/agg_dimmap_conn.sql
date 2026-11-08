@@ -20,8 +20,7 @@ CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (2, $q$SELECT dim.a, dim.b, count(*) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (3, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
-		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (3, $q$SELECT ev.id % 4, sum(dim.a), count(dim.flag), max(dim.b), count(DISTINCT ev.k) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -70,6 +69,7 @@ SELECT * FROM report('shared after the rollback');
 
 -- the connection switched off: the journal of the dimension stays, and so does its stamp
 ALTER INDEX ev_col SET (connect = 'off');
+REINDEX INDEX ev_col;
 UPDATE dim SET a = 5 WHERE k = 11;
 SELECT * FROM report('connection off, written');
 SELECT * FROM report('connection off, shared');

@@ -321,8 +321,9 @@ combo_row_parent(AggExec *ex, int ci)
 		}
 	if (par < 0 || ex->spec->combo[par].join < 0 || ex->spec->combo[par].nleaves != 1)
 		return -1;
+	/* the row of a dense table is that of the first key of its class: it names no key */
 	for (int p = 0; p < cb->nleaves; p++)
-		if (cb->leaf[p] >= 0 && cb->leaf[p] != ex->spec->combo[par].leaf[0])
+		if (cb->leaf[p] >= 0 && (cb->leaf[p] != ex->spec->combo[par].leaf[0] || (ex->cs[par].map != NULL && ex->cs[par].map->dcls != NULL)))
 			return -1;
 	return par;
 }

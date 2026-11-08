@@ -58,7 +58,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 
 	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
-	expr = normalize_expr(c, expr);
+	expr = normalize_expr(c, inner_key_sub(c, expr));
 	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
 	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
 		return false;
@@ -658,19 +658,6 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	return compile_leaf_agg(c, a, arg, out, ai);
 }
 
-/* the key column of an inner join in an argument, as the scan's column it equals: the aggregate reads a leaf, not a table of the joined rows */
-static Node *
-key_scan_mutator(Node *n, AggCtx *c)
-{
-	Node	   *e;
-
-	if (n == NULL)
-		return NULL;
-	if (IsA(n, Var) && (e = join_key_scan(c, (Var *) n)) != NULL)
-		return e;
-	return expression_tree_mutator(n, key_scan_mutator, c);
-}
-
 /*
  * The aggregate a: a kernel of the scan when there is one, else PostgreSQL's own functions on the decoded values (compile_gen).
  * What the kernel attempt marked as used is undone when it fails.
@@ -685,9 +672,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
-	a = (Aggref *) scalar_initplans(c, strict_placeholders(c, (Node *) a));
-	a = (Aggref *) copyObject(a);
-	a->args = (List *) key_scan_mutator((Node *) a->args, c);
+	a = (Aggref *) inner_key_sub(c, scalar_initplans(c, strict_placeholders(c, (Node *) a)));
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;

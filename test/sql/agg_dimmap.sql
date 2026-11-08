@@ -3,6 +3,7 @@
 -- state of the table it was made at, so a write (committed, rolled back, or the reader's own) is a table with no map until it is vacuumed again, a budget too small
 -- for a map is a statement that reads the classes itself, and the rows of keys the table has no row for (orphans, NULL keys) are the ones the join gives. A column of
 -- the key itself that the query reads is the scanned column in an inner join (shape 4: it has a map) and no class's in a left join (shape 5: loaded row by row, never a map).
+-- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the query computes (agg_lookup_tests): no map, the answers are the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -27,12 +28,13 @@ CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (2, $q$SELECT dim.a, dim.b, count(*) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (3, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
-		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (3, $q$SELECT ev.id % 4, sum(dim.a), count(dim.flag), max(dim.b), count(DISTINCT ev.k) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (4, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (5, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (6, $q$SELECT count(*) FILTER (WHERE dim2.x = 3), count(*) FILTER (WHERE dim2.y = 5), sum(ev.v) FILTER (WHERE dim2.x + dim2.y = 60) FROM ev JOIN dim2 ON dim2.k = ev.k$q$),
- (7, $q$SELECT dim2.x, count(*) FILTER (WHERE dim2.y < 9) FROM ev LEFT JOIN dim2 ON dim2.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (6, $q$SELECT sum(dim2.x), sum(dim2.y), sum(dim2.x * dim2.y) FROM ev JOIN dim2 ON dim2.k = ev.k$q$),
+ (7, $q$SELECT dim2.x, count(*) FILTER (WHERE dim2.y < 9) FROM ev LEFT JOIN dim2 ON dim2.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (8, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
+		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN

@@ -557,6 +557,9 @@ inner_key_mutator(Node *n, KeySub *ks)
 
 	if (n == NULL)
 		return NULL;
+	/* a test or indexed expression of one table is a column of its lookup table (join_of_node): it keeps the key it reads */
+	if (!IsA(n, Var) && join_of_node(c, n) != NULL)
+		return n;
 	if (IsA(n, Var) && (jc = join_of_var(c, n)) != NULL && jc->kind == SJ_INNER && jc->cpath == NULL)
 	{
 		v = (Var *) n;

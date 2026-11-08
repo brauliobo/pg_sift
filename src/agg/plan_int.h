@@ -345,7 +345,6 @@ extern int match_leaf(AggCtx *c, Node *e);
 extern int present_leaf(AggCtx *c, Node *e);	/* the leaf that is NULL where a jsonb document is SQL NULL, -1 if the index has none */
 extern Node *typed_member(AggCtx *c, Node *arg);
 extern Node *negated_cond(Node *n);
-extern Node *join_key_scan(AggCtx *c, Var *v);
 extern bool is_cond(Node *n);
 extern double leaf_correlation(AggCtx *c, int leaf);
 extern Node *normalize_expr(AggCtx *c, Node *n);
