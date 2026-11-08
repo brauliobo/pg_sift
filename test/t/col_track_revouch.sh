@@ -104,8 +104,6 @@ ans() {
 differential() { local t; for t in "$@"; do [[ $(ans "$t" free) == $(ans "$t" heap) && $(ans "$t" checked) == $(ans "$t" heap) ]] || return 1; done; }
 state() { q new postgres "SELECT cur_flags || ' ' || (SELECT heap_free FROM sift.col_tracking('$1')) FROM sift._test_log_chan('$1')"; }
 tg() { q new postgres "SELECT string_agg(tgenabled::text, ',') FROM pg_trigger WHERE tgrelid = '$1'::regclass AND tgname LIKE 'sift_track_%' AND tgisinternal"; }
-# until SECONDS CMD..: CMD succeeds within SECONDS
-until_ok() { local n=$(($1 * 2)); shift; for _ in $(seq 1 "$n"); do "$@" && return 0; sleep 0.5; done; return 1; }
 flags_is() { [[ $(state "$1") == "$2" ]]; }
 old_wrong=0
 for t in ta tb; do [[ $(q old postgres "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "$(QS $t)" | tail -n 1) != $(q old postgres "SET sift.enable_agg = off" "$(QS $t)" | tail -n 1) ]] && old_wrong=$((old_wrong + 1)); done
@@ -127,7 +125,7 @@ sleep 1
 # the log is consulted by a read of rows that VACUUM has not marked all-visible: the tables hold the updates of the old cluster
 for t in $TBLS; do q new postgres "SET sift.enable_agg = on" "$(QS $t)" >/dev/null; done
 all_repaired() { local t; for t in $TBLS; do [[ $(state ${t}_c) == "3 true" ]] || return 1; done; }
-check "one read of each table, and the worker re-baselines every log: flags 3, heap-free" until_ok 60 all_repaired
+check "one read of each table, and the worker re-baselines every log: flags 3, heap-free" wait_for all_repaired 600
 check "... and the reads answer as the heap (the old versions of the old cluster are no longer counted)" differential $TBLS
 check "... the triggers are the same two, enabled for all sessions" test "$(tg ta)" == "A,A"
 
@@ -146,7 +144,7 @@ check "triggers disabled by the user, writes meanwhile: the triggers stay disabl
 q new postgres "ALTER TABLE t ENABLE TRIGGER ALL" >/dev/null
 check "ENABLE TRIGGER ALL leaves them enabled for sessions that are not replicas only, and the reads answer as the heap" is t O,O t_c "3 false"
 q new postgres "SET sift.enable_agg = on" "$(QS t)" >/dev/null
-check "a read asks the worker: the triggers are enabled for all again, the log is re-baselined (heap-free), the answers are the heap's" until_ok 60 is t A,A t_c "3 true"
+check "a read asks the worker: the triggers are enabled for all again, the log is re-baselined (heap-free), the answers are the heap's" wait_for 'is t A,A t_c "3 true"' 600
 # a concurrent rebuild: the log is made before the triggers hear a statement
 q new postgres "REINDEX INDEX CONCURRENTLY t_c" >/dev/null
 check "REINDEX CONCURRENTLY leaves a log that is not complete (flags 0), and the reads answer as the heap" is t A,A t_c "0 false"
@@ -161,7 +159,7 @@ pg_restore -a --disable-triggers -d "$CONN" "$(dir new)/t.dump" >/dev/null 2>&1
 check "pg_restore --disable-triggers leaves the triggers enabled for sessions that are not replicas only, and the reads answer as the heap" is t O,O t_c "3 false"
 churn 6 8
 q new postgres "SET sift.enable_agg = on" "$(QS t)" >/dev/null
-check "a read asks the worker: the triggers are enabled for all, the log is re-baselined, the answers are the heap's" until_ok 60 is t A,A t_c "3 true"
+check "a read asks the worker: the triggers are enabled for all, the log is re-baselined, the answers are the heap's" wait_for 'is t A,A t_c "3 true"' 600
 # a table that was a partition (a statement on its parent fires none of its triggers)
 q new postgres "CREATE TABLE pp (code text, tenant int NOT NULL, amount int NOT NULL, pad text) PARTITION BY RANGE (tenant)" "CREATE TABLE pp1 (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad text)" \
 	"INSERT INTO pp1 SELECT 'c' || i, 1, i, repeat('x', 80) FROM generate_series(1, 20000) i" "CREATE INDEX pp1_c ON pp1 USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) pp1" \

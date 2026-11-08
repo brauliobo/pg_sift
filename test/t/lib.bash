@@ -60,6 +60,19 @@ wait_for() {
 	for ((i = 0; i < $2 * 10; i++)); do eval "$1" && return 0; sleep 0.1; done
 	eval "$1"
 }
+# wait_stable NODE SQL SECONDS: the background work has stopped changing what the query SQL returns: no 'sift maintenance' backend and the same value for 10 polls
+# in a row (progress stops; the target is checked by the test). SECONDS is a safety cap that a loaded host does not reach
+wait_stable() {
+	local node=$1 query=$2 last= same=0
+	stable_poll() {
+		local v
+		v=$(sql "$node" "SELECT ($query), EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance')")
+		[[ $v == *'|f' && $v == "$last" ]] && same=$((same + 1)) || same=0
+		last=$v
+		((same >= 10))
+	}
+	wait_for stable_poll "$3"
+}
 diag() { sed 's/^/# /' <<<"$*"; }
 # a failed check shows what the test had captured in $out: a hosted run lost the cause of one failure because its log said only which check failed
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; [[ -z ${out:-} ]] || diag "what the check read (out):"$'\n'"$(head -n 40 <<<"$out" | cut -c1-240)"; fi; }

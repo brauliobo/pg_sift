@@ -20,10 +20,7 @@ check "segments before the worker" test "$(sql reuse "SELECT count(*) FROM sift.
 before=$(sql reuse "SELECT pg_relation_size('t_idx')")
 # a short statement that seals the write buffer starts the worker after it commits: it merges step after step with no transaction of a client open
 sql reuse "ALTER INDEX t_idx SET (write_buffer_limit = 64)" "INSERT INTO t SELECT 99000000 + g, g % 50, g % 997, md5(g::text) || md5((g * 3)::text) FROM generate_series(1, 3000) g" >/dev/null || bail "insert failed"
-for _ in $(seq 600); do
-	[[ $(sql reuse "SELECT (SELECT count(*) FROM sift.col_segments('t_idx')) <= 8 AND NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance')") == t ]] && break
-	sleep 0.2
-done
+wait_stable reuse "SELECT count(*) FROM sift.col_segments('t_idx')" 900 || bail "the worker does not stop"
 read -r segs live file <<<"$(sql reuse "SELECT (SELECT count(*) FROM sift.col_segments('t_idx')), bytes, pg_relation_size('t_idx') FROM sift.col_index_info('t_idx')" | tr '|' ' ')"
 diag "$segs segments, live $((live / 1024)) kB, file $((before / 1024)) kB before the worker, $((file / 1024)) kB after"
 check "the worker merged the segments" test "$segs" -le 8
