@@ -494,7 +494,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			pfree(kept[c]);
 }
 
-/* The version section: every unit's vectors decode, say what the directory of the section says, and the range of the xmins is the header's and the entry's */
+/* The version section: every unit's vectors decode, say what the directory of the section says, and the range of the xmins is the header's and the entry's. A group whose rows are final (the owner cleared SIFT_SEG_VERS) keeps the section in the file, but its rows read as frozen */
 static void
 verify_vers(SiftColSegment *seg)
 {
@@ -506,7 +506,7 @@ verify_vers(SiftColSegment *seg)
 				hi = 0;
 	bool		any = false;
 
-	if (pv->vers_len == 0)
+	if (pv->vers_len == 0 || !sift_cseg_vers(seg))
 		return;
 	vu = vers_units(seg);
 	xm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));

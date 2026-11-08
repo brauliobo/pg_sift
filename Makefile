@@ -95,7 +95,7 @@ TESTING_REGRESS += build_large_docs
 # sift.grouped_min_df, a setting only the testing build has
 TESTING_REGRESS += list_slice_seek rank_or_union rank_page_live
 # sift.table_max_segments and sift.table_vblock_floor, settings only the testing build has
-TESTING_REGRESS += tbl_bulk_groups tbl_cap tbl_vblocks
+TESTING_REGRESS += tbl_bulk_groups tbl_cap tbl_vblocks tbl_verify_frozen
 # an asserted value differs on the release library
 TESTING_REGRESS += agg_preagg agg_preagg_rows agg_workers_few_units col_build_peers col_merge_memory
 ifdef SIFT_SB_SHIFT
