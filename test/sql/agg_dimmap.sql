@@ -1,0 +1,90 @@
+-- The dimension map: the class of each key of a joined table (one int4 key, a few columns the query reads), read from the leaves of its sift_col index once and kept in
+-- shared memory (sift.agg_dimmap_kb) for every later statement. Whatever happens to the table, the answers are those of the normal plan: a map is read only for the
+-- state of the table it was made at, so a write (committed, rolled back, or the reader's own) is a table with no map until it is vacuumed again, a budget too small
+-- for a map is a statement that reads the classes itself, and the rows of keys the table has no row for (orphans, NULL keys) are the ones the join gives.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+
+CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+-- 5000 keys in a few classes; the events of keys 5000 to 5099 have no row
+CREATE TABLE dim (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);
+INSERT INTO dim SELECT i, i % 7, i % 3, i % 5 = 0 FROM generate_series(0, 4999) i;
+CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
+VACUUM (FREEZE, ANALYZE) ev, dim;
+
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (2, $q$SELECT dim.a, dim.b, count(*) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (3, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
+		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- the maps the statement shared and the ones it made, from EXPLAIN ANALYZE
+CREATE FUNCTION maps(sql text, OUT shared int, OUT built int) LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	shared := 0; built := 0;
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ '(\d+) maps shared' THEN shared := substring(l from '(\d+) maps shared')::int; END IF;
+		IF l ~ '(\d+) maps built' THEN built := substring(l from '(\d+) maps built')::int; END IF;
+	END LOOP;
+END $$;
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, shared bool, built bool) LANGUAGE sql AS $$
+	SELECT stage, n, answer(sql, true) = answer(sql, false), m.shared > 0, m.built > 0 FROM shapes, LATERAL maps(sql) m ORDER BY n
+$$;
+
+-- the first statement of a shape reads the leaves and keeps the map; the next ones share it
+SELECT * FROM report('first');
+SELECT * FROM report('shared');
+
+-- a write, in the reader's own transaction: no map is the table's, and the answers see the change
+BEGIN;
+UPDATE dim SET a = 6, flag = NULL WHERE k % 31 = 0;
+DELETE FROM dim WHERE k % 53 = 0;
+INSERT INTO dim SELECT i, 1, 1, true FROM generate_series(5000, 5049) i;
+SELECT * FROM report('in the transaction');
+ROLLBACK;
+
+-- committed, not vacuumed: pages that are not all-visible
+UPDATE dim SET b = 2 WHERE k % 29 = 0;
+DELETE FROM dim WHERE k % 61 = 0;
+SELECT * FROM report('committed, not vacuumed');
+VACUUM dim;
+SELECT * FROM report('vacuumed');
+SELECT * FROM report('shared again');
+
+-- a budget too small for the map of a new state of the table: the statement reads the classes itself, and keeps nothing
+UPDATE dim SET a = 5 WHERE k % 67 = 0;
+VACUUM dim;
+SET sift.agg_dimmap_kb = 1;
+SELECT * FROM report('budget too small');
+SET sift.agg_dimmap_kb = 0;
+SELECT * FROM report('budget off');
+RESET sift.agg_dimmap_kb;
+SELECT * FROM report('map made');
+SELECT * FROM report('map shared');
+
+-- the workers read the classes from the leader's shared memory
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET sift.agg_par_min_rows = 0;
+SELECT * FROM report('workers');
+
+DROP FUNCTION report(text), maps(text), answer(text, bool);
+DROP TABLE shapes, ev, dim;
+DROP EXTENSION pg_sift;

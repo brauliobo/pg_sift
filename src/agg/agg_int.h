@@ -255,6 +255,8 @@ typedef struct AggExec
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
+	int			ndim_shared;	/* the dimension maps another statement had kept in shared memory (lookdim_load), and those this one read and kept */
+	int			ndim_built;
 	int			nfirst;			/* the correlated children read as lookup tables (join_first_rows) */
 	struct SiftAggJoin **fjoin;	/* per join: the lookup table a hybrid first-row lookup loads (first_table_join), NULL for the others */
 	char	  **pfmaps;			/* worker: the leader's table of each hybrid first-row lookup, by combo */
@@ -408,6 +410,7 @@ extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_lookup_shared_kb;
+extern int		sift_agg_dimmap_kb;
 extern int		sift_verdict_cache_kb;
 extern bool		sift_agg_verdict_cache;
 #ifdef SIFT_TESTING

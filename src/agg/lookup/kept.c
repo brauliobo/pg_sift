@@ -107,7 +107,7 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 		return map_view(m, &have, j, cxt);
 	}
 	/* sessions that run the same query at once: one loads the rows, the others wait for them */
-	if (!ex->first_peek && lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if (!ex->first_peek && lookshm_claim(LOOK_ROWS, t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
@@ -142,7 +142,7 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 	if (t->before != NULL && m->dcls == NULL && (after = lookcache_finger(rel)) != NULL)
 		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
 	if (t->before != NULL)
-		lookshm_unclaim(t->key);
+		lookshm_unclaim(LOOK_ROWS, t->key);
 }
 
 /*

@@ -219,6 +219,8 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Cached Lookup Tables", NULL, "cached tables", c->ncached, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Dimension Maps Shared", NULL, "maps shared", c->ndim_shared, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Dimension Maps Built", NULL, "maps built", c->ndim_built, SIFT_XI_OPT);
 	sift_explain_int(&ln, "First Row Lookup Tables", NULL, "first row tables", c->nfirst, SIFT_XI_OPT);
 	if (c->first_hit > 0 || c->first_differ > 0)
 	{

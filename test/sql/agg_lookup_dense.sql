@@ -8,6 +8,7 @@ SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_dimmap_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 3300, i % 11 FROM generate_series(1, 40000) i;

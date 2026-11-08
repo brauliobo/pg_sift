@@ -162,6 +162,13 @@ typedef struct MapShared
 
 #define DENSE_MAX_CLASSES	4096	/* the tuples of column values a dense table (map_load_dense) tells apart */
 
+typedef enum LookPool
+{
+	LOOK_ROWS,
+	LOOK_DIM,
+	LOOK_POOLS
+} LookPool;
+
 /* the columns of a joined table that a MapTab holds, by column number and type */
 typedef struct LookCols
 {
@@ -209,6 +216,8 @@ void map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, 
 MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt);
 
 /* lookcache.c */
+LookFinger *look_finger(Relation rel, Size budget);
+bool look_finger_same(const LookFinger *a, const LookFinger *b);
 LookFinger *lookcache_finger(Relation rel);
 bool lookcache_refused(const char *key, Relation rel);
 bool lookcache_known(const char *key);
@@ -216,13 +225,20 @@ MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *nee
 bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 bool cols_cover(const LookCols *have, const LookCols *need);
 
-/* lookshm.c */
-bool lookshm_known(const char *key);
-MapTab *lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
-bool lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
-bool lookshm_claim(const char *key, MemoryContext mcxt);
-void lookshm_unclaim(const char *key);
-Size lookshm_bytes(void);
+/* dimgen.c, lookdim.c: the dimension map */
+typedef struct DimStamp DimStamp;
+DimStamp *dimgen_take(Relation rel);
+bool dimgen_same(const DimStamp *a, const DimStamp *b);
+const LookFinger *dimgen_finger(const DimStamp *st);
+MapTab *lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt);
+
+/* lookshm.c: the rows of the joined tables, and the dimension maps (lookdim.c), each with a directory and a budget of its own */
+bool lookshm_known(LookPool pool, const char *key);
+MapTab *lookshm_find(LookPool pool, const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
+bool lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
+bool lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt);
+void lookshm_unclaim(LookPool pool, const char *key);
+Size lookshm_bytes(LookPool pool);
 
 #pragma GCC visibility pop
 

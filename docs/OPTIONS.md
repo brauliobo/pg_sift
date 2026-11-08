@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 98 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
@@ -755,6 +755,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 4.1:** unchanged
 - **Advice:** Leave on; the planner compares it with an ordered btree by cost. Off gives the normal plan for ORDER BY .. LIMIT n. Needs sift.enable_agg.
 - **Sources:** benchmark `topn_page_totals`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
+
+#### sift.agg_dimmap_kb
+
+`sift_col` · default · since 4.3 · default 65536 kB
+
+- **What it does:** keeps the class of each key of a joined dimension table (one int4 key, a few columns, a few distinct tuples of them), read once from the leaves of its sift_col index, for every query of every backend
+- **Gain:** group by an attribute of the dimension, 1,000,000 events over 100,000 dimension rows, 60 values: 271 to 137 million instructions of the backend (the default plan without the map reads the dimension through the lookup cache and cannot class its keys); the same query with several FILTER aggregates over three attributes: 755 to 476
+- **Gain and cost:** 1.97x fewer instructions (134000k saved a query), index +0.0%, build +0.0%, automatic
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: dynamic shared memory taken as maps are kept (2 bytes a key of the table and a row for each class); 64 MB by default; with posix shared memory keep it below what /dev/shm holds
+- **When:** An inner or left join of a fact to a dimension with one int4 key whose columns the query reads take few distinct tuples of values (at most 4096 classes), the dimension has a sift_col index holding the key and the columns, and every page of it is visible to every transaction (after VACUUM); a written, unvacuumed or too large table has no map and is read as before.
+- **Default:** 65536 kB — 64 MB: the map of a dimension of 1,000,000 keys is 2 MB and a few classes, so the default holds dozens of dimensions; a map that does not fit is not kept and the query reads the classes itself. Default on: the speedup is over 1.05 for a common class and the map costs no index growth or write.
+- **Turn off:** SET sift.agg_dimmap_kb = 0 (superuser; ALTER ROLE/DATABASE .. SET or postgresql.conf): each query reads the classes itself, no restart. Dynamic shared memory is returned as maps go.
+- **Upgrade from 4.1:** ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed.
+- **Advice:** Leave at the default. 0 turns the maps off, superuser; more room helps a server with many large dimension tables read by many backends.
+- **Sources:** benchmark `test:agg_dimmap`; [AGG](AGG.md#join-key-filters-and-shared-lookups)
 
 #### sift.verdict_cache_kb
 
@@ -2569,13 +2584,14 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
+No default changed since 4.1; new: `sift.agg_case_filter`, `sift.agg_dimmap_kb`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
 
 | Option | 4.1 | 4.2 | Column format | What a 4.1 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | new | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | new | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
 | `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
+| `sift.agg_dimmap_kb` | new | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 <!-- sift-upgrade:end -->
 

@@ -118,6 +118,12 @@ sift_agg_init(void)
 							"Backends that run the same query at once wait for the one that loads the rows (30 s at most); a segment the system has no room for gives a notice and the backend loads its own tables.",
 							&sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_dimmap_kb",
+							"Shared memory, for all backends together, that keeps the dimension maps (the class of each key of a joined table, read from its sift_col index) for the queries of every backend, while the table does not change (0: off).",
+							"Dynamic shared memory, taken as maps are kept and returned as they go, so it needs no restart; with posix shared memory it comes from /dev/shm, which it must stay below. "
+							"A map is 2 bytes a key of the table and a row for each class of its columns; one that does not fit is not kept and the query reads the classes itself.",
+							&sift_agg_dimmap_kb, 64 * 1024, 0, MAX_KILOBYTES,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.verdict_cache_kb",
 							"Shared memory, for all backends together, that keeps the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the one as written, so that a new backend plans the form that won only (0: off).",
 							"The table is allocated, at the size of this setting, by the first backend that plans such a statement after the server starts; a later change turns the use of it on and off (0), not its size. An entry is 56 bytes and a statement keeps up to three; the largest table is about 1 MB.",

@@ -400,6 +400,14 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
 	if (idx == NULL && !none && sift_agg_lookup_pushdown)
 		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL);
+	if (idx == NULL && !none && own == NULL && (m = lookdim_load(ex, ci, rel, cxt)) != NULL)
+	{
+		MemoryContextSwitchTo(old);
+		ExecDropSingleTupleTableSlot(slot);
+		table_close(rel, NoLock);
+		map_loaded(ex, 0, t0);
+		return m;
+	}
 	if (idx == NULL && !none && (m = map_kept_find(ex, ci, rel, cxt, own != NULL, &kept)) != NULL)
 	{
 		MemoryContextSwitchTo(old);
