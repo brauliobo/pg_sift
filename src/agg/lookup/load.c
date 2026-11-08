@@ -336,6 +336,31 @@ map_note_table(AggExec *ex, Relation rel)
 	ex->lookup_allvis += Min((BlockNumber) rel->rd_rel->relallvisible, pages);
 }
 
+/*
+ * Is the join of combo ci one whose table can be kept as classes of its keys (map_load_dense)? An inner or left join by one int4 leaf, nothing else in its
+ * ON clause, and expressions that read the columns alone: then the output rows of a key are those of its class. No other lookup may be keyed by this
+ * one's rows (they are no longer one for each key); an expression of its columns in a combo of its own is.
+ */
+bool
+sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay)
+{
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
+
+	if (!sift_agg_lookup_columns || (j->kind != SJ_INNER && j->kind != SJ_LEFT) || j->nkey != 1 || j->keytype[0] != INT4OID || j->keynull[0] ||
+		j->keypos[0] < 0 || j->keyexpr[0] != NULL || j->tkey[0] != NULL || j->fslot >= 0 || j->nidx > 0 || j->params != NIL || j->child >= 0 ||
+		j->first.qual != NIL || j->first.hybrid || j->first.nord > 0 || cb->nleaves != 1 || cb->leaf[0] < 0 || cb->level != 0)
+		return false;
+	for (int sl = 0; sl < cb->nslots; sl++)
+		if (slot_reads_leaf(cb, sl))
+			return false;
+	for (int cd = 0; cd < s->ncombo; cd++)
+		for (int p = 0; s->combo[cd].join >= 0 && p < s->combo[cd].nleaves; p++)
+			if (s->combo[cd].leaf[p] < 0 && s->combo[cd].refcombo[p] == ci)
+				return false;
+	return lay->leaf[cb->leaf[0]].vtype == SCV_I32;
+}
+
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 MapTab *
 map_load_table(AggExec *ex, int ci, MemoryContext cxt)
@@ -441,7 +466,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
 	}
-	else if (!none && !map_load_cols(ex, m, &lj, cb, own, rel))
+	else if (!none && !(own == NULL && kept.cols.n == 0 && !m->lazy && sift_agg_dense_join(ex->spec, ci, ex->lay) && map_load_dense(ex, m, &lj, cb, rel)) &&
+			 !map_load_cols(ex, m, &lj, cb, own, rel))
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
 		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();

@@ -447,7 +447,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 				ex->cs[ci].map = map_load(ex, ci);
 				MemoryContextSwitchTo(ex->cxt);
 			}
-			if (ex->cs[ci].map->ktext[k])
+			if (ex->cs[ci].map->ktext[k] || ex->cs[ci].map->dcls)
 				continue;
 			/* the table of the predicate is the state of the id it is given: make room first */
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
@@ -675,6 +675,8 @@ table_reset(AggExec *ex)
 			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)
 				cs->dir[cs->vid[x]] = 0;
 		cs->nent = cs->nout = 0;
+		if (cs->cent)
+			memset(cs->cent, 0, ((Size) cs->map->nrow + 1) * sizeof(uint32));
 		memset(cs->ht, 0, cs->nht * sizeof(uint32));
 		combo_forget_priors(ex, ci);
 	}

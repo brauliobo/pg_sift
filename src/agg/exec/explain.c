@@ -193,6 +193,7 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", c->lookup_index, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Heap Fetches", NULL, "heap fetches", c->lookup_heap, SIFT_XI_OPT);
 		sift_explain_int(&ln, "Lookup Column Loads", NULL, "column loads", c->lookup_cols, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Rows Classed", NULL, "rows classed", c->lookup_dense, SIFT_XI_OPT);
 		if (es->timing)
 			sift_explain_ms(&ln, "Lookup Load Time", "to load", c->lookup_us / 1000.0, SIFT_XI_KEEP);
 	}

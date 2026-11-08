@@ -427,15 +427,45 @@ sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, doub
 	return Max(rpk, 1.0);
 }
 
+/*
+ * Will the executor keep the table of the join as classes of its keys (map_load_dense)? The join is one it takes (sift_agg_dense_join), an index holds the key
+ * and the columns as integer leaves, and the tuples of their values, by the statistics, are at most half the classes it tells apart. jc->classes: how many.
+ */
+bool
+join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
+{
+	if (jc->dense == 0)
+	{
+		jc->dense = 2;
+		if (jc->cpath == NULL && sift_agg_dense_join(s, jc->combo, c->lay))
+		{
+			Relation	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
+			bool		ok = map_load_dense_possible(rel, &jc->j);
+
+			relation_close(rel, NoLock);
+			jc->classes = 1.0;
+			for (int col = 0; col < jc->j.ncol; col++)
+				jc->classes *= joined_distinct(c, jc, col);
+			if (ok && jc->classes <= DENSE_MAX_CLASSES / 2)
+				jc->dense = 1;
+		}
+	}
+	return jc->dense == 1;
+}
+
 /* the price, in operators, of the table of a join read whole */
 static double
 join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 {
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
-	Relation	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	Relation	rel;
 	int			nnum = 0;
-	bool		cols = map_load_cols_possible(rel, &jc->j, &nnum);
+	bool		cols;
 
+	if (join_dense(c, s, jc))
+		return Max(jrel->tuples, 1.0) * AGG_LOAD_DENSE;
+	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
+	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
 	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc));
 }
@@ -701,7 +731,7 @@ agg_share_rows(AggCtx *c, SiftAggSpec *s)
 		double		row_cost;
 
 		if (jc->j.params == NIL)
-			rows += join_load_rows(c, s, jc, &row_cost);
+			rows += join_load_rows(c, s, jc, &row_cost) / (join_dense(c, s, jc) ? AGG_SHARE_DENSE : 1.0);
 	}
 	return rows;
 }

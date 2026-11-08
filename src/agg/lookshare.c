@@ -41,6 +41,11 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
 	memcpy(l->knull, m->knull, sizeof(l->knull));
 	l->lazy = m->lazy;
+	if (m->dcls)
+	{
+		l->dn = m->dn;
+		l->dcls = share_array(&off, m->dn, sizeof(uint16));
+	}
 	if (m->lazy)
 		l->rkey = share_array(&off, m->nrow, sizeof(int64));
 	else
@@ -106,6 +111,8 @@ map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char 
 	Size		at = l->data;
 
 	memcpy(dst, l, sizeof(MapShared));
+	if (m->dcls)
+		put_array(dst + l->dcls, m->dcls, (size_t) m->dn * sizeof(uint16));
 	if (l->lazy)
 		put_array(dst + l->rkey, m->rkey, (size_t) m->nrow * sizeof(int64));
 	else
@@ -182,6 +189,11 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
 	memcpy(m->knull, l->knull, sizeof(m->knull));
 	m->lazy = l->lazy;
+	if (l->dn > 0)
+	{
+		m->dcls = (uint16 *) (src + l->dcls);
+		m->dn = l->dn;
+	}
 	if (l->lazy)
 		m->rkey = l->nrow > 0 ? (int64 *) (src + l->rkey) : NULL;
 	else

@@ -3,6 +3,7 @@
  * The vid of a wide value, the resolve of the combos of the rows of a chunk and the rows and
  * outputs it leaves.
  */
+/* check-memory: allow-allocs the entries of the classes of a dense table, at most DENSE_MAX_CLASSES + 1 */
 #include "postgres.h"
 
 #include "agg/combo/int.h"
@@ -25,6 +26,23 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
 }
 
 /*
+ * The entry of the key x (the value + 1 of an int4 leaf) of a dense table: the keys of a class share one, made for the first key seen of it (the table's own
+ * row of the class, the key it was loaded with), and the keys without a row share one made for the first of them.
+ */
+static uint32
+dense_ent(AggExec *ex, int ci, uint64 x, uint32 c)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const MapTab *m = cs->map;
+	uint64		v = c == 0 ? x : (uint64) (uint32) map_kint(m, c - 1, 0) + 1;
+
+	if (cs->cent == NULL)
+		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
+	cs->cent[c] = combo_ent(ex, ci, &v) + 1;
+	return cs->cent[c] - 1;
+}
+
+/*
  * combo_resolve of a combo of one leaf of the scan, the common case: a loop per kind of leaf (`kind` is a constant where it is inlined), the
  * directory of the entries probed inline, and the value of a position read once for the tuples that share it (a row seen from each of its
  * elements). The values and the entries come in the order of the tuples, as in the general loop, so the ids are the same.
@@ -37,6 +55,7 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 	uint32	   *map = kind == SCV_CODE ? dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, 0) : NULL;
 	uint32		last = UINT32_MAX;
 	uint64		x = 0;
+	bool		dense = kind == SCV_I32 && cs->map != NULL && cs->map->dcls != NULL;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -59,7 +78,14 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 			else
 				x = (uint64) (uint32) ((const int32 *) v->data)[last] + 1;
 		}
-		eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
+		if (dense && x != 0)
+		{
+			uint32		c = map_dense_class(cs->map, (int64) (int32) (x - 1));
+
+			eid[i] = cs->cent != NULL && cs->cent[c] != 0 ? cs->cent[c] - 1 : dense_ent(ex, ci, x, c);
+		}
+		else
+			eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
 	}
 }
 

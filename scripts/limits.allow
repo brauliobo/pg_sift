@@ -1,6 +1,7 @@
 # Macros named *_MAX_* or *_LIMIT* that are not limits a user can reach, so they have no row in SIFT_LIMITS (src/core/limits.h).
 # NAME, a tab, the reason. scripts/gen-limits.sh --check fails for a macro that is neither here nor a row, and for a line whose macro is gone.
 # A bound that a user can reach gets a row, not a line here.
+DENSE_MAX_CLASSES	the tuples of column values a dense lookup table tells apart (agg/lookcol.c): past it the table is hashed row by row and the rows are the same
 ARR_MAX_CANDS	array columns whose elements the default of paths samples: a memory bound of the sample (128 MB of sets), the others keep their image
 CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
 COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)

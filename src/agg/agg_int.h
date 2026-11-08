@@ -268,6 +268,7 @@ typedef struct AggExec
 	int			lookup_index;
 	uint64		lookup_heap;	/* the entries of an index-only load whose page is not all-visible: their rows were fetched from the heap */
 	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
+	uint64		lookup_dense;	/* ... and the rows of those that became classes of their keys (map_load_dense) */
 	uint64		lookup_us;
 	uint64		probe_direct;	/* the keys of correlated children probed in the index directly (combo/probe.c) */
 	uint64		probe_leaves;	/* ... the leaf pages those probes moved to (a probe on the leaf of the one before does not count), the pages above the leaves they pinned, */

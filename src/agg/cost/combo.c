@@ -138,6 +138,9 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		entries *= parent_nd[i];
 	if (exprs != NIL)
 		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
+	/* the keys of a dense table share the entry of their class, and the keys it has no row for one */
+	if (cb->join >= 0 && join_dense(c, s, list_nth(c->joins, cb->join)))
+		entries = ((JoinCtx *) list_nth(c->joins, cb->join))->classes + 1;
 	return Max(Min(entries * elem_nd, tuples), 1.0);
 }
 
@@ -252,7 +255,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				for (int p = 0; p < cb->nleaves; p++)
 					if (cb->leaf[p] < 0)
 						probes = Min(alive, sqrt(alive * Max(agg_rows, 1.0)));
-				cost += probes * (join_lut(c, s, jc) ? AGG_JOIN_LUT : AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0));
+				cost += probes * (join_lut(c, s, jc) || join_dense(c, s, jc) ? AGG_JOIN_LUT : AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0));
 				/* the rest of the ON clause is PostgreSQL's expression, for each entry; the executor's evaluation does not get AGG_SCAN_SPEED's share (110 ns an entry measured, 36 counted) */
 				if (on_tests_tuple(s, ci) && !combo_wsum_only(s, ci))
 				{

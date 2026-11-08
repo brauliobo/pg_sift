@@ -40,6 +40,8 @@ typedef struct JoinCtx
 	PlannerInfo *subroot;		/* the query level its native plan was made in */
 	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
 	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
+	int			dense;			/* the executor keeps the table as classes of its keys (map_load_dense): 0 not asked, 1 yes, 2 no (join_dense) */
+	double		classes;		/* ... the most classes the statistics allow */
 	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
 } JoinCtx;
 

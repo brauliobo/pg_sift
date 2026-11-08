@@ -122,6 +122,7 @@ typedef struct ComboSt
 	bool		reuse_off;		/* the debt ran out: no more tests */
 	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
 	uint32	   *dir;
+	uint32	   *cent;			/* a dense table (MapTab.dcls): the entry + 1 of each class of its keys, 0 not made yet; slot 0 is the class of the keys it has no row for */
 	uint32	   *byrow;			/* a combo of one earlier lookup's output row (and of that lookup's own leaf): entry + 1 by that row, 0 not seen (combo_resolve) */
 	uint32		nbyrow;
 	int8		prow;			/* the earlier lookup that byrow is by, plus one; -1: none, 0: not asked yet (combo_row_parent) */

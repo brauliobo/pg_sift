@@ -55,6 +55,7 @@ extern void workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path
 extern double num_cost(const SiftAggNum *o);
 extern double pred_num_cost(const SiftAggPred *p);
 extern double joined_distinct(AggCtx *c, JoinCtx *jc, int col);
+extern bool join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc);
 extern double combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted);
 extern double child_rows(Path *p);
 extern int join_extra_leaves(const SiftAggCombo *cb, const SiftAggJoin *j);

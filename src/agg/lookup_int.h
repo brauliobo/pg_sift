@@ -70,7 +70,16 @@ typedef struct MapTab
 	bool		fi32;
 	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
 	ExprContext *kcx;
+	uint16	   *dcls;			/* a dense table (map_load_dense): the class of each key in [0, dn), 0 none; the rows are one for each class, the row of class c is c - 1 */
+	uint32		dn;
 } MapTab;
+
+/* the class of a key of a dense table, 0: no row has it */
+static inline uint32
+map_dense_class(const MapTab *m, int64 key)
+{
+	return key >= 0 && key < (int64) m->dn ? m->dcls[key] : 0;
+}
 
 /* does a NULL key of the row equal nothing, so that it is in no chain? */
 static inline bool
@@ -118,6 +127,8 @@ typedef struct MapShared
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
+	uint32		dn;				/* a dense table: the keys it spans, and its classes (Size dcls) */
+	Size		dcls;
 	bool		keep;			/* the side is preserved: each participant keeps its own hit[] */
 	bool		lazy;
 	Size		rkey;			/* a table that is only its keys (MapTab.rkey): the one array, and 0 in the others */
@@ -149,6 +160,8 @@ typedef struct MapShared
 	Size		size;
 } MapShared;
 
+#define DENSE_MAX_CLASSES	4096	/* the tuples of column values a dense table (map_load_dense) tells apart */
+
 /* the columns of a joined table that a MapTab holds, by column number and type */
 typedef struct LookCols
 {
@@ -176,6 +189,9 @@ void map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c);
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
 bool map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric);
 bool map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel);
+bool map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, Relation rel);
+bool map_load_dense_possible(Relation rel, const SiftAggJoin *j);
+bool sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
 MapTab *map_load_first(AggExec *ex, int ci);

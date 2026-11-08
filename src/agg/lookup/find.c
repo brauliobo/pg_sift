@@ -108,6 +108,13 @@ map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows)
 				first[8];
 	int			n = 0;
 
+	if (m->dcls)
+	{
+		*rows = kid[0] > 0 ? palloc(sizeof(uint32)) : NULL;
+		if (kid[0] > 0)
+			(*rows)[0] = kid[0] - 1;
+		return kid[0] > 0;
+	}
 	map_ensure((MapTab *) m);
 	h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
 	*rows = NULL;
@@ -140,6 +147,8 @@ map_key_id(const MapTab *m, int k, const char *ptr, uint32 len, int64 iv)
 {
 	uint32		at;
 
+	if (m->dcls)
+		return map_dense_class(m, iv);
 	map_ensure((MapTab *) m);
 	return m->ktext[k] ? kd_text_find(&m->kd[k], ptr, len, hash_bytes((const unsigned char *) ptr, len), &at) : kd_int_find(&m->kd[k], iv, &at);
 }

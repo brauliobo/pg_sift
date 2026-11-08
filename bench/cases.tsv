@@ -403,6 +403,7 @@ lookup_in_keyed	the keys of the scan's IN list that a joined btree table is keye
 group_order_many_keys	takes less work for each group	orders	default	\([1-9][0-9]* order keys\)	native	-	ms,minstr	faster33	no	-
 group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
 lookup_index_only	the rows of a table joined by the scan's IN list are taken from the entries of a btree that holds their columns	events	-	Lookup: .* index scans	native	whole:sift.agg_lookup_pushdown = off	ms	faster33	no	-
+lookup_dense_classes	is kept as classes of its keys	events	-	Lookup: .* rows classed	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
 group_lookup_scalar_key	a row of the table looked up by its unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 group_filter_exists_key	its `FILTER` of a grouped query	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 group_two_keys_hash	probes the table with the comparison unrolled	orders	default	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-

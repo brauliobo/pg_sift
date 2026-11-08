@@ -176,6 +176,7 @@ combo_reset(AggExec *ex, int ci)
 	cs->dircap = 0;
 	cs->byrow = NULL;
 	cs->nbyrow = 0;
+	cs->cent = NULL;
 	cs->qtab = NULL;
 	cs->qcap = 0;
 	cs->fq = NULL;
