@@ -96,7 +96,8 @@ maint_vacuum_truncates(Relation index)
  * WAL budget of the automatic rewrite counts from the write of the oldest large segment, so every move put it off by another 100 / sift.col_auto_merge_wal_pct
  * times the segment, and the churn it was to answer went on. An index that is due for a rewrite gets the segments written into those free blocks by it, when the
  * automatic rewrite will start: one that waits for its WAL budget or for the snapshots that hold the blocks of the last rewrite is no reason to leave the file loose,
- * and neither is a write buffer that is due alone (the budget lets its promotion through): promoting it moves no segment.
+ * and neither is a write buffer that is due alone (the budget lets its promotion through): promoting it moves no segment. Nor is a file that the rewrite
+ * made twice the index: the copies down into the holes of the old index would write it a second time (sift_maint_space_copy_pays), and the next rewrite fills the holes.
  */
 bool
 maint_space_deferred(Relation index)
@@ -106,7 +107,7 @@ maint_space_deferred(Relation index)
 	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return false;
 	why = maint_rewrite_check(index, true, NULL);
-	return why != NULL && maint_rewrite_all(why);
+	return (why != NULL && maint_rewrite_all(why)) || !sift_maint_space_copy_pays(index);
 }
 
 /* The LSN of the write of a segment: its header block, written once with the rest of the segment */
