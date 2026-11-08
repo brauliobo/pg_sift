@@ -39,6 +39,45 @@ typedef struct MapCol
 } MapCol;
 
 /* the rows of a joined table, hashed by the ids of their key values; the columns the expressions read are kept once per distinct value */
+/*
+ * The keys of a semi or anti join as a membership test of the scan (semi_lut_build): a byte for each value of [lo, lo + n), or, where the keys span more than
+ * sift.agg_semi_lut_size, an open-addressing set of them (PG_INT64_MIN marks a free slot; that key is has_min).
+ */
+typedef struct SemiSet
+{
+	uint8	   *tab;
+	int64		lo;
+	uint32		n;
+	int64	   *key;
+	uint32		mask;
+	bool		has_min;
+} SemiSet;
+
+static inline bool
+semi_set_ready(const SemiSet *s)
+{
+	return s->tab != NULL || s->key != NULL;
+}
+
+static inline Size
+semi_set_bytes(const SemiSet *s)
+{
+	return s->tab ? s->n : (Size) (s->mask + 1) * sizeof(int64);
+}
+
+static inline bool
+semi_set_has(const SemiSet *s, int64 k)
+{
+	if (s->tab)
+		return (uint64) k - (uint64) s->lo < s->n && s->tab[(uint64) k - (uint64) s->lo];
+	if (k == PG_INT64_MIN)
+		return s->has_min;
+	for (uint32 h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & s->mask; s->key[h] != PG_INT64_MIN; h = (h + 1) & s->mask)
+		if (s->key[h] == k)
+			return true;
+	return false;
+}
+
 typedef struct MapTab
 {
 	int			nkey;
@@ -59,10 +98,9 @@ typedef struct MapTab
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
-	uint8	   *slut;			/* the byte table of semi_lut_build over [slo, slo + snlut) of the keys, kept with the rows for the next statement (slut_kind: the join kind it answers) */
-	int32		slo;
-	uint32		snlut;
+	SemiSet		sset;			/* the membership test of semi_lut_build over the keys, kept with the rows for the next statement (slut_kind: the join kind it answers) */
 	int			slut_kind;
+	bool		slut_wide;		/* ... and whether the leaf it was made for is an int64 one: an int32 leaf drops the keys outside its range */
 	int64	   *fvals;			/* the keys of the rows that join_filter_pred makes a filter of (fn of them within [flo, fhi]; fi32: those outside int32 were left out), kept for the next statement */
 	int			fn;
 	int64		flo;
@@ -212,6 +250,7 @@ int map_first_row(AggExec *ex, int ci, EState *estate);
 bool map_unique(const MapTab *m);
 void map_ensure(MapTab *m);
 bool semi_lut_possible(const SiftAggSpec *s, int ci, int nbase);
+bool semi_lut_leaf(const SiftSrcLayout *lay, int leaf);
 bool lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nbase);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 

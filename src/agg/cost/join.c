@@ -86,7 +86,7 @@ join_lut(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc)
 	const SiftAggJoin *j = &s->join[cb->join];
 	double		rpk;
 
-	if (!semi_lut_possible(s, jc->combo, c->lay->nleaves - c->nvleaf) || c->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
+	if (!semi_lut_possible(s, jc->combo, c->lay->nleaves - c->nvleaf) || !semi_lut_leaf(c->lay, cb->leaf[0]))
 		return false;
 	if (j->kind != SJ_INNER)
 		return true;

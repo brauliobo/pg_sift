@@ -134,8 +134,8 @@ Costing: semi and anti joins of a `SiftAgg` path are priced by the rows PostgreS
 
 Limits and fallbacks (each falls back to the generic lookup join with the same rows; `test/sql/agg_semi_lut.sql` and the `j_semi_lut_*` fixtures of `scripts/coldiff.sh` compare both and the normal plan in every heap state):
 
-- the keys span more than `sift.agg_semi_lut_size` (default 4 MB, one byte per value of the range; a key outside the range of the leaf's type is ignored, it matches no row);
-- the leaf is not an integer, date or `int2` column in the index (text keys, `int8` leaves, array elements), a join has two or more keys, or the table's own condition reads a column of the fact row;
+- the keys span more than `sift.agg_semi_lut_size` (default 4 MB, one byte per value of the range) and are too many for a hash set in the same memory (16 bytes a key: 262,144 keys at 4 MB); a key outside the range of the leaf's type is ignored, it matches no row;
+- the leaf is not an `int2`, `int4`, `int8` or date column in the index (text keys, `timestamp` and `numeric` leaves, array elements), a join has two or more keys, or the table's own condition reads a column of the fact row;
 - `NULL` keys: a `NULL` in the table matches nothing, a `NULL` leaf matches nothing (dropped by `IN` and `EXISTS`, kept by `NOT EXISTS`), as in SQL;
 - `NOT IN (SELECT ..)` is not a join: PostgreSQL plans it as a hashed subplan (a `NULL` in the table makes the whole answer empty), and the scan asks that subplan for each distinct value of the column (`docs/AGG.md`, "Uncorrelated sub-selects"), not this table;
 - each worker of a parallel `SiftAgg` builds its own table, and a rescan keeps it (the groups are replayed). The table is built from the rows visible to the scan's snapshot.

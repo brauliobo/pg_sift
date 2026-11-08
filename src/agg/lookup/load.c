@@ -594,7 +594,7 @@ lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nba
 	const SiftAggCombo *cb = &s->combo[ci];
 	const SiftAggJoin *j = &s->join[cb->join];
 
-	return semi_lut_possible(s, ci, nbase) && lay->leaf[cb->leaf[0]].vtype == SCV_I32 && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
+	return semi_lut_possible(s, ci, nbase) && semi_lut_leaf(lay, cb->leaf[0]) && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
 		j->first.nord == 0;
 }
 
