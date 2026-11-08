@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "col/am.h"
 #include "table/table.h"
 #include "table/scan_int.h"
 
@@ -44,6 +45,7 @@ par_fill(Relation rel, SiftTblParallel *par)
 	par->dir = st->dir;
 	par->nunits += SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) / SIFT_SB_PAGES + 1;
 	pg_atomic_write_u64(&par->next, 0);
+	SIFT_COL_OPEN_GATE();
 }
 
 Size
@@ -92,11 +94,14 @@ scan_open_state(Relation rel, SiftTblScan *s)
 	SiftTblRel *st = s->st;
 
 	sift_tbl_refresh(rel, st);
-	sift_tomb_sync(rel, &st->tomb);
 	if (s->par)
+	{
 		s->dir = &s->par->dir;
+		sift_tomb_sync_at(rel, &st->tomb, s->dir);
+	}
 	else
 	{
+		sift_tomb_sync(rel, &st->tomb);
 		s->dir = palloc(sizeof(SiftDirSnapshot));
 		*s->dir = st->dir;
 	}
