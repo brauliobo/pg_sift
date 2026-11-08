@@ -1,0 +1,48 @@
+-- A key_cut build of a table that makes more runs than the directory has segments (128) merges them as it scans, and the segments it ends with are bounded:
+-- the longest of them holds at most twice the rows an even split over the directory would (the arrays its end builds are up to 48 bytes a row, so the memory
+-- of its end is bounded by the table and the directory, never by the key), and the participants of a parallel build leave the merge to slices of the same size.
+-- sift.test_limits makes the arrays of the build fail over the limit, so the build itself proves the bound; a limit under it fails the build cleanly.
+-- A key that has a value holding a large part of the table is another shape: that value's rows are one segment (docs/OPTIONS.md, key_cut).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+
+-- 3.2 million rows of 5,000 keys; the budget of a run (64 kB) is 20,000 rows or less: 160 runs for 128 segments
+CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false, parallel_workers = 3);
+INSERT INTO cap SELECT g, (g::bigint * 7919 % 5000)::int, date '2020-01-01' + (g % 2000) FROM generate_series(1, 3200000) g;
+VACUUM (FREEZE, ANALYZE) cap;
+SET sift.test_col_segment_kb = 64;
+
+-- an even split over 127 segments is 25,197 rows; twice that is 50,394: 2,418,912 bytes of arrays at 48 bytes a row
+SET sift.test_limits = 'array_bytes=2418912';
+CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
+SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 2 * 3200000 / 127 AS longest_under_twice_even
+FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
+SELECT sift.col_verify('cap_i', true);
+DROP INDEX cap_i;
+
+-- a limit under the even split fails the build with an error, not with a bad array
+SET sift.test_limits = 'array_bytes=1209456';
+CREATE FUNCTION cap_build_fails() RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
+	RETURN false;
+EXCEPTION WHEN program_limit_exceeded THEN
+	RETURN true;
+END $$;
+SELECT cap_build_fails() AS fails_under_the_even_split;
+DROP FUNCTION cap_build_fails();
+RESET sift.test_limits;
+
+-- participants: the slices of the merge are of one size
+SET max_parallel_maintenance_workers = 3;
+SET min_parallel_table_scan_size = 0;
+SET maintenance_work_mem = 65536;
+CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
+SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.1 * sum(rows) / count(*) AS slices_even
+FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
+SELECT sift.col_verify('cap_i', true);
+
+DROP TABLE cap;
+DROP EXTENSION pg_sift;
