@@ -178,6 +178,7 @@ extern char * shared_map_key(AggExec *ex, int ci, bool cols);
 
 extern void map_index_rows(MapTab *m);
 
+extern int	look_col_att(const SiftAggJoin *j, int c);
 extern MapTab * map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mcxt);
 extern MapTab * map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, KeptTry *t);
 extern void map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);

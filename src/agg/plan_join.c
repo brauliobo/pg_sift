@@ -235,9 +235,15 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 	int			ci,
 				si;
 
+	bool		ok;
+
 	join_index_quals(c, jc, conds);
 
-	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) || ci != jc->combo)
+	/* the tests of the table's own columns stay in the filter: the load matches them to its index (map_index) and holds them on the leaves (collect_tests) */
+	c->own_filter = true;
+	ok = combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) && ci == jc->combo;
+	c->own_filter = false;
+	if (!ok)
 		return agg_refuse_on(JOIN_CONDITION, "the join filter is not an expression of the scanned table's leaves and the joined columns");
 	jc->j.fslot = si;
 	return true;

@@ -15,7 +15,9 @@
 #include "catalog/pg_index.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
+#include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
@@ -35,6 +37,7 @@ typedef struct ColNeed
 	int			att;			/* the column of the table; 0 for an expression */
 	Node	   *expr;			/* the column of the join that is an expression of the table's columns (SiftAggJoin.colexpr), whose leaf is read */
 	int			xcol;			/* ... and the column of the join it is; -1 for a column of the table */
+	bool		feeder;			/* read only to compute an expression column (CompCol), not a column of the join */
 	const SiftSrcLeaf *lf;
 	SiftSrcVec	vec;
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
@@ -42,6 +45,16 @@ typedef struct ColNeed
 	uint32		dn;
 	MemoryContext cx;			/* the unit's: reset with it */
 } ColNeed;
+
+/* a column of the join that is an expression of the table's columns no index holds: computed from the leaves of the columns it reads, for each row */
+typedef struct CompCol
+{
+	Node	   *expr;
+	int			xcol;			/* the column of the join it is */
+	ExprState  *st;
+} CompCol;
+
+#define MAX_NEED	(SIFT_AGG_MAX_JKEYS + 2 * SIFT_AGG_MAX_JCOLS)
 
 static bool
 leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
@@ -81,31 +94,6 @@ column_leaf(const SiftSrcLayout *lay, int att, Node *expr, Oid typid)
 		e = list_nth(lay->attexprs, lf->attno - 1);
 		if (e != NULL && (expr ? equal(e, expr) : IsA(e, Var) && ((Var *) e)->varattno == att))
 			return leaf_of_type(lf, typid) ? lf : NULL;
-	}
-	return NULL;
-}
-
-/* a valid sift_col index of the whole table with a leaf for each column of need, those leaves in need[].lf; NULL when no index has them all */
-static Relation
-covering_index(Relation rel, ColNeed *need, int nneed)
-{
-	foreach_oid(ixoid, RelationGetIndexList(rel))
-	{
-		Relation	ix = index_open(ixoid, AccessShareLock);
-		bool		ok = sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
-			heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL);
-
-		if (ok)
-		{
-			SiftSrcLayout *lay = sift_colsrc_layout(ix);
-
-			for (int i = 0; i < nneed && ok; i++)
-				ok = (need[i].lf = column_leaf(lay, need[i].att, need[i].expr, need[i].expr ? exprType(need[i].expr) :
-											   TupleDescAttr(RelationGetDescr(rel), need[i].att - 1)->atttypid)) != NULL;
-		}
-		if (ok)
-			return ix;
-		index_close(ix, AccessShareLock);
 	}
 	return NULL;
 }
@@ -347,43 +335,98 @@ apply_test(const ColTest *t, const ColNeed *nd, int nrow, uint64 *rows)
 	}
 }
 
-/* the index the load of the table reads when the join's columns are all in one (map_load_cols), NULL when the heap is read; need and nneed are the columns */
-static Relation
-load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed)
+/* adds the column att of the table to need unless it is there; a column that is read for the join as well is not a feeder */
+static bool
+need_att(ColNeed *need, int *nneed, int att, bool feeder)
 {
-	*nneed = 0;
+	for (int p = 0; p < *nneed; p++)
+		if (need[p].expr == NULL && need[p].att == att)
+		{
+			need[p].feeder &= feeder;
+			return true;
+		}
+	if (*nneed == MAX_NEED)
+		return false;
+	memset(&need[*nneed], 0, sizeof(ColNeed));
+	need[*nneed].att = att;
+	need[*nneed].xcol = -1;
+	need[(*nneed)++].feeder = feeder;
+	return true;
+}
+
+/*
+ * The columns the load reads from the leaves of the index with layout lay, each with its leaf: the keys and the columns, and for an expression the leaf that holds it,
+ * or, when the index has none, the leaves of the columns it reads and the expression to compute (comp). False when the index lacks one.
+ */
+static bool
+index_needs(const SiftSrcLayout *lay, TupleDesc desc, const SiftAggJoin *j, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
+{
+	bool		ok = true;
+
+	*nneed = *ncomp = 0;
+	for (int i = 0; i < j->nkey + j->ncol && ok; i++)
+	{
+		Node	   *expr = i < j->nkey ? NULL : j->colexpr[i - j->nkey];
+
+		if (expr == NULL)
+			ok = need_att(need, nneed, i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey], false);
+		else if (column_leaf(lay, 0, expr, exprType(expr)) != NULL)
+		{
+			if ((ok = *nneed < MAX_NEED))
+			{
+				memset(&need[*nneed], 0, sizeof(ColNeed));
+				need[*nneed].expr = expr;
+				need[(*nneed)++].xcol = i - j->nkey;
+			}
+		}
+		else
+			comp[(*ncomp)++] = (CompCol) {expr, i - j->nkey, NULL};
+	}
+	for (int k = 0; k < *ncomp && ok; k++)
+		foreach_ptr(Var, u, pull_var_clause(comp[k].expr, 0))
+			ok = ok && u->varattno > 0 && need_att(need, nneed, u->varattno, true);
+	for (int p = 0; p < *nneed && ok; p++)
+		ok = (need[p].lf = column_leaf(lay, need[p].att, need[p].expr, need[p].expr ? exprType(need[p].expr) :
+									   TupleDescAttr(desc, need[p].att - 1)->atttypid)) != NULL;
+	return ok;
+}
+
+/*
+ * A valid sift_col index of the whole table with a leaf for each column the load reads (map_load_cols), NULL when the heap is read; need and nneed are the columns,
+ * comp the expressions to compute from them.
+ */
+static Relation
+load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
+{
+	*nneed = *ncomp = 0;
 	if (!sift_agg_lookup_columns || rel->rd_rel->relkind != RELKIND_RELATION || rel->rd_tableam != GetHeapamTableAmRoutine() || (j->nidx > 0 && !own) || j->first.qual != NIL ||
 		j->first.nord > 0)
 		return NULL;
 	for (int k = 0; k < j->nkey; k++)
 		if (j->tkey[k] != NULL)
 			return NULL;
-	for (int i = 0; i < j->nkey + j->ncol; i++)
+	foreach_oid(ixoid, RelationGetIndexList(rel))
 	{
-		Node	   *expr = i < j->nkey ? NULL : j->colexpr[i - j->nkey];
-		int			att = expr ? 0 : i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
-		bool		seen = false;
+		Relation	ix = index_open(ixoid, AccessShareLock);
 
-		for (int p = 0; p < *nneed; p++)
-			seen |= expr ? need[p].expr != NULL && equal(need[p].expr, expr) : need[p].expr == NULL && need[p].att == att;
-		if (!seen)
-		{
-			memset(&need[*nneed], 0, sizeof(ColNeed));
-			need[*nneed].att = att;
-			need[*nneed].expr = expr;
-			need[(*nneed)++].xcol = expr ? i - j->nkey : -1;
-		}
+		if (sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
+			heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+			index_needs(sift_colsrc_layout(ix), RelationGetDescr(rel), j, need, nneed, comp, ncomp))
+			return ix;
+		index_close(ix, AccessShareLock);
 	}
-	return covering_index(rel, need, *nneed);
+	return NULL;
 }
 
 /* will the load of the table read the leaves of an index (the planner prices it by that)? *nnumeric: how many of the columns it makes a numeric of, one allocation a row each */
 bool
 map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 {
-	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
-	int			nneed;
-	Relation	ix = load_index(rel, j, j->fslot >= 0, need, &nneed);
+	ColNeed		need[MAX_NEED];
+	CompCol		comp[SIFT_AGG_MAX_JCOLS];
+	int			nneed,
+				ncomp;
+	Relation	ix = load_index(rel, j, j->fslot >= 0, need, &nneed, comp, &ncomp);
 
 	if (ix == NULL)
 		return false;
@@ -458,6 +501,16 @@ read_units(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Uni
 	return ok;
 }
 
+/* the columns of the join that are expressions, evaluated over the slot of the row into v/isnull by column of the join */
+static void
+comp_eval(CompCol *comp, int ncomp, ExprContext *ectx, TupleTableSlot *slot, Datum *v, bool *isnull)
+{
+	ResetExprContext(ectx);
+	ectx->ecxt_scantuple = slot;
+	for (int k = 0; k < ncomp; k++)
+		v[comp[k].xcol] = ExecEvalExprSwitchContext(comp[k].st, ectx, &isnull[comp[k].xcol]);
+}
+
 typedef struct ColLoad
 {
 	AggExec    *ex;
@@ -469,6 +522,9 @@ typedef struct ColLoad
 	ColTest		test[MAX_TESTS];
 	int			ntest;
 	int			ntotal;
+	CompCol		comp[SIFT_AGG_MAX_JCOLS];
+	int			ncomp;
+	ExprContext *ectx;
 } ColLoad;
 
 static void
@@ -489,6 +545,8 @@ load_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *
 					cl->m->xv[need[p].xcol] = cell_datum(&need[p], i, &cl->m->xn[need[p].xcol]);
 				else
 					cl->slot->tts_values[need[p].att - 1] = cell_datum(&need[p], i, &cl->slot->tts_isnull[need[p].att - 1]);
+			if (cl->ncomp > 0)
+				comp_eval(cl->comp, cl->ncomp, cl->ectx, cl->slot, cl->m->xv, cl->m->xn);
 			map_row(cl->ex, cl->m, cl->slot, cl->j, cl->cb, cl->ntest == cl->ntotal ? NULL : cl->own);
 		}
 }
@@ -500,15 +558,18 @@ load_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *
 bool
 map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel)
 {
-	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
+	ColNeed		need[MAX_NEED];
 	int			nneed;
 	Relation	ix;
 	TupleDesc	desc = RelationGetDescr(rel);
 	ColLoad		cl = {.ex = ex,.m = m,.j = j,.cb = cb,.own = own};
 	bool		ok;
 
-	if ((ix = load_index(rel, j, own != NULL, need, &nneed)) == NULL)
+	if ((ix = load_index(rel, j, own != NULL, need, &nneed, cl.comp, &cl.ncomp)) == NULL)
 		return false;
+	for (int k = 0; k < cl.ncomp; k++)
+		cl.comp[k].st = ExecInitExpr((Expr *) cl.comp[k].expr, NULL);
+	cl.ectx = cl.ncomp > 0 ? CreateStandaloneExprContext() : NULL;
 	if (own != NULL && j->fslot >= 0)
 		collect_tests((Node *) cb->slot[j->fslot].expr, j, cb->nleaves, need, nneed, cl.test, &cl.ntest, &cl.ntotal);
 	cl.slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
@@ -518,6 +579,8 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	ok = read_units(ex, rel, ix, need, nneed, load_unit, &cl);
 	m->xfed = false;
 	ExecDropSingleTupleTableSlot(cl.slot);
+	if (cl.ectx)
+		FreeExprContext(cl.ectx, true);
 	index_close(ix, AccessShareLock);
 	ex->lookup_cols += ok;
 	return ok;
@@ -533,8 +596,14 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 typedef struct DenseLoad
 {
 	int			key;			/* the key's column, in need[] */
-	int			ncol;
-	int			col[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];	/* the other columns, in need[] */
+	int			ncol;			/* the columns that tell the classes apart: the columns of the join but the key */
+	int			col[SIFT_AGG_MAX_JCOLS];	/* ... each one in need[], or -1 for an expression computed over the slot (comp[]) */
+	CompCol	   *comp;
+	int			ncomp;
+	TupleTableSlot *slot;		/* the row, for the expressions */
+	ExprContext *ectx;
+	int64		cv[SIFT_AGG_MAX_JCOLS];	/* the value of each computed column of the row, and whether it is NULL */
+	bool		cvnull[SIFT_AGG_MAX_JCOLS];
 	uint16	   *lut;			/* the class (1..) of each key, 0 none */
 	uint32		cap;
 	uint32		n;				/* the keys the table spans: the largest + 1 */
@@ -561,22 +630,24 @@ dense_value(const ColNeed *nd, int64 i)
 static uint32
 dense_class(DenseLoad *d, const ColNeed *need, int64 i, int32 key)
 {
-	int64		tv[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
+	int64		tv[SIFT_AGG_MAX_JCOLS];
 	uint32		nulls = 0;
 	uint64		h = SIFT_FIB64;
 	uint32		s;
+	int			k = 0;
 
 	for (int c = 0; c < d->ncol; c++)
 	{
-		const ColNeed *nd = &need[d->col[c]];
+		const ColNeed *nd = d->col[c] >= 0 ? &need[d->col[c]] : NULL;
 
-		if (nd->vec.isnull != NULL && nd->vec.isnull[i])
+		if (nd == NULL ? d->cvnull[k] : nd->vec.isnull != NULL && nd->vec.isnull[i])
 		{
 			nulls |= 1U << c;
 			tv[c] = 0;
 		}
 		else
-			tv[c] = dense_value(nd, i);
+			tv[c] = nd == NULL ? d->cv[k] : dense_value(nd, i);
+		k += nd == NULL;
 		h = sift_fold64(h, (uint64) tv[c]);
 		h ^= h >> 32;
 	}
@@ -597,6 +668,19 @@ dense_class(DenseLoad *d, const ColNeed *need, int64 i, int32 key)
 	return d->ncls;
 }
 
+/* the expression columns of row i: the slot gets the columns they read, and the outcome of each goes to cv */
+static void
+dense_comp(DenseLoad *d, ColNeed *need, int nneed, int64 i)
+{
+	for (int p = 0; p < nneed; p++)
+		if (need[p].expr == NULL)
+			d->slot->tts_values[need[p].att - 1] = cell_datum(&need[p], i, &d->slot->tts_isnull[need[p].att - 1]);
+	ResetExprContext(d->ectx);
+	d->ectx->ecxt_scantuple = d->slot;
+	for (int k = 0; k < d->ncomp; k++)
+		d->cv[k] = DatumGetBool(ExecEvalExprSwitchContext(d->comp[k].st, d->ectx, &d->cvnull[k]));
+}
+
 static void
 dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows)
 {
@@ -614,6 +698,8 @@ dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 
 			if (kn->vec.isnull != NULL && kn->vec.isnull[i])
 				continue;
 			key = ((const int32 *) kn->vec.data)[i];
+			if (d->ncomp > 0 && key >= 0)
+				dense_comp(d, need, nneed, i);
 			if (key < 0 || (uint32) key >= d->limit || (cls = dense_class(d, need, i, key)) == 0)
 			{
 				d->bad = true;
@@ -645,6 +731,8 @@ dense_leaves_ok(const ColNeed *need, int nneed, int key)
 	{
 		const SiftSrcLeaf *lf = need[p].lf;
 
+		if (need[p].feeder)
+			continue;
 		if (p == key ? !(lf->vtype == SCV_I32 && lf->typid == INT4OID) : !((lf->vtype == SCV_I32 || lf->vtype == SCV_I64) && lf->typid != NUMERICOID))
 			return false;
 	}
@@ -652,28 +740,26 @@ dense_leaves_ok(const ColNeed *need, int nneed, int key)
 }
 
 /*
- * The index of the table (open, the caller closes it) that holds the key and the columns of the join as integer leaves (map_load_dense), else NULL. bound[c], when
- * given, is how many values the index says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an
- * expression are), 0 when it cannot tell.
+ * Does an index of the table hold the key and the columns of the join as integer leaves (map_load_dense)? bound[c], when given, is how many values the index
+ * says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an expression are), 0 when it cannot tell.
  */
-Relation
-map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
+bool
+map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 {
-	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
+	ColNeed		need[MAX_NEED];
+	CompCol		comp[SIFT_AGG_MAX_JCOLS];
 	int			nneed,
+				ncomp,
 				key = 0;
-	Relation	ix = load_index(rel, j, false, need, &nneed);
+	Relation	ix = load_index(rel, j, false, need, &nneed, comp, &ncomp);
+	bool		ok;
 
 	if (ix == NULL)
-		return NULL;
+		return false;
 	while (need[key].att != j->keyatt[0])
 		key++;
-	if (!dense_leaves_ok(need, nneed, key))
-	{
-		index_close(ix, AccessShareLock);
-		return NULL;
-	}
-	if (bound != NULL)
+	ok = dense_leaves_ok(need, nneed, key);
+	if (ok && bound != NULL)
 	{
 		SiftSrcStats st;
 
@@ -682,19 +768,11 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 			for (int p = 0; p < nneed; p++)
 				if (j->colexpr[c] ? need[p].xcol == c : need[p].expr == NULL && need[p].att == j->colatt[c])
 					bound[c] = st.ndistinct[need[p].lf->id] > 0 ? st.ndistinct[need[p].lf->id] + 1 : 0;
+		for (int k = 0; k < ncomp; k++)
+			bound[comp[k].xcol] = 3;	/* true, false, NULL: a computed column is a test */
 	}
-	return ix;
-}
-
-bool
-map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
-{
-	Relation	ix = map_dense_index(rel, j, bound);
-
-	if (ix == NULL)
-		return false;
 	index_close(ix, AccessShareLock);
-	return true;
+	return ok;
 }
 
 /*
@@ -704,15 +782,17 @@ map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 bool
 map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, Relation rel)
 {
-	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
-	int			nneed;
+	ColNeed		need[MAX_NEED];
+	CompCol		comp[SIFT_AGG_MAX_JCOLS];
+	int			nneed,
+				ncomp;
 	Relation	ix;
 	DenseLoad	d = {.cxt = m->cxt,.limit = (uint32) Min((int64) sift_agg_lookup_max_kb * 1024 / sizeof(uint16), PG_INT32_MAX)};
 	TupleDesc	desc = RelationGetDescr(rel);
 	TupleTableSlot *slot;
 	bool		ok;
 
-	if ((ix = load_index(rel, j, false, need, &nneed)) == NULL)
+	if ((ix = load_index(rel, j, false, need, &nneed, comp, &ncomp)) == NULL)
 		return false;
 	for (d.key = 0; need[d.key].att != j->keyatt[0]; d.key++)
 		;
@@ -722,14 +802,32 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		return false;
 	}
 	for (int p = 0; p < nneed; p++)
-		if (p != d.key && need[p].att != j->keyatt[0])
+		if (p != d.key && need[p].att != j->keyatt[0] && !need[p].feeder)
 			d.col[d.ncol++] = p;
+	for (int k = 0; k < ncomp; k++)
+		d.col[d.ncol++] = -1;
+	d.comp = comp;
+	d.ncomp = ncomp;
+	for (int k = 0; k < ncomp; k++)
+		comp[k].st = ExecInitExpr((Expr *) comp[k].expr, NULL);
+	if (ncomp > 0)
+	{
+		d.ectx = CreateStandaloneExprContext();
+		d.slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+		memset(d.slot->tts_isnull, true, desc->natts * sizeof(bool));
+		ExecStoreVirtualTuple(d.slot);
+	}
 	d.tv = palloc((Size) DENSE_MAX_CLASSES * Max(d.ncol, 1) * sizeof(int64));
 	d.tnull = palloc(DENSE_MAX_CLASSES * sizeof(uint32));
 	d.ckey = palloc(DENSE_MAX_CLASSES * sizeof(int32));
 	d.ctab = palloc0(DENSE_SLOTS * sizeof(uint16));
 	ok = read_units(ex, rel, ix, need, nneed, dense_unit, &d) && !d.bad && d.rows > 0 && d.n <= 8 * d.rows + 65536;
 	index_close(ix, AccessShareLock);
+	if (ncomp > 0)
+	{
+		ExecDropSingleTupleTableSlot(d.slot);
+		FreeExprContext(d.ectx, true);
+	}
 	if (ok)
 	{
 		slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
@@ -737,18 +835,22 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		ExecStoreVirtualTuple(slot);
 		for (uint32 k = 0; k < d.ncls; k++)
 		{
+			int			x = 0;
+
 			slot->tts_values[j->keyatt[0] - 1] = Int32GetDatum(d.ckey[k]);
 			slot->tts_isnull[j->keyatt[0] - 1] = false;
 			for (int c = 0; c < d.ncol; c++)
 			{
-				const ColNeed *nd = &need[d.col[c]];
+				const ColNeed *nd = d.col[c] >= 0 ? &need[d.col[c]] : NULL;
 				bool		isnull = (d.tnull[k] >> c) & 1;
-				Datum		v = isnull ? (Datum) 0 : leaf_datum(nd->lf->typid, d.tv[(size_t) k * d.ncol + c]);
+				int64		tv = d.tv[(size_t) k * d.ncol + c];
+				Datum		v = isnull ? (Datum) 0 : nd == NULL ? BoolGetDatum(tv) : leaf_datum(nd->lf->typid, tv);
+				int			xcol = nd == NULL ? comp[x++].xcol : nd->xcol;
 
-				if (nd->xcol >= 0)
+				if (xcol >= 0)
 				{
-					m->xv[nd->xcol] = v;
-					m->xn[nd->xcol] = isnull;
+					m->xv[xcol] = v;
+					m->xn[xcol] = isnull;
 				}
 				else
 				{

@@ -87,13 +87,57 @@ join_table_expr(JoinCtx *jc, Node *n)
 	return x;
 }
 
+static bool may_raise_walker(Node *n, AggCtx *c);
+
+/* does the expression have a part that is one of the expressions the index holds? */
+static bool
+join_holds_walker(Node *n, void *ctx)
+{
+	List	   *held = ctx;
+
+	if (n == NULL)
+		return false;
+	foreach_ptr(Node, e, held)
+		if (equal(e, n))
+			return true;
+	return expression_tree_walker(n, join_holds_walker, held);
+}
+
+/* a column of a table an outer join nulls is NULL on the rows it preserves: a test that is not strict would give its value for a NULL, the load of the table does not */
+static bool
+join_test_walker(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return !bms_is_empty(((Var *) n)->varnullingrels);
+	if (IsA(n, Param) || IsA(n, SubPlan) || IsA(n, SubLink) || IsA(n, Aggref) || IsA(n, WindowFunc) || IsA(n, PlaceHolderVar))
+		return true;
+	return expression_tree_walker(n, join_test_walker, ctx);
+}
+
 /*
- * The inner lookup join whose table has a sift_col index on the expression n (a call or an operator on the columns of that table alone): the expression is one
- * column of the table, which the load reads from the leaf of the index, where it was a combination of the values of the columns it reads. Not a left join: the
+ * A test of the columns of one table (a comparison, a NULL test, a condition): true, false or NULL for each row, so the table tells its rows apart by the three
+ * outcomes however many values the columns have. The load computes it for each row of the table, where the combos computed it for the rows the scan reaches: a test
+ * that may raise an error (a division) is left to them.
+ */
+static bool
+join_test_expr(AggCtx *c, Node *n)
+{
+	/* the rows a preserving join keeps without a match have NULL in the columns of the other tables: a test of those is not the test of a NULL (IS NULL, COALESCE) */
+	if (c->own_filter || preserved_join(c))
+		return false;
+	return exprType(n) == BOOLOID && !contain_mutable_functions(n) && !join_test_walker(n, NULL) && !may_raise_walker(n, c);
+}
+
+/*
+ * The inner lookup join whose table has a sift_col index on the expression n (a call or an operator on the columns of that table alone), or the expression is a
+ * test (join_test_expr): the expression is one column of the table, which the load reads from the leaf of the index or computes, where it was a combination of the
+ * values of the columns it reads. Not a left join: the
  * expression of the columns of a row nothing matched is not NULL (a function that is not strict), the column is
  */
 static JoinCtx *
-join_of_expr(AggCtx *c, Node *n)
+join_of_expr(AggCtx *c, Node *n, bool held_only)
 {
 	Relids		v = pull_varnos(c->root, n);
 
@@ -101,22 +145,32 @@ join_of_expr(AggCtx *c, Node *n)
 		return NULL;
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (bms_is_member(jc->rti, v) && jc->cpath == NULL && jc->j.child < 0 && jc->j.subplan == 0 && OidIsValid(jc->j.relid) &&
-			jc->kind == SJ_INNER && join_index_exprs(jc) != NIL)
+			jc->kind == SJ_INNER)
 		{
 			Node	   *x = join_table_expr(jc, n);
 
-			foreach_ptr(Node, e, jc->iexprs)
+			foreach_ptr(Node, e, join_index_exprs(jc))
 				if (equal(e, x))
 					return jc;
+			/* a test that has an expression the index holds in it is read through that one: the walker goes on into it */
+			if (!held_only && join_test_expr(c, n) && !join_holds_walker(x, join_index_exprs(jc)))
+				return jc;
 		}
 	return NULL;
 }
 
-/* the join a column or an indexed expression of a table belongs to */
+/* the join whose table has a sift_col index on the expression n (join_of_node also takes a test the load computes) */
+JoinCtx *
+join_held_of_node(AggCtx *c, Node *n)
+{
+	return join_expr_node(n) ? join_of_expr(c, n, true) : NULL;
+}
+
+/* the join a column, an indexed expression or a test of a table belongs to */
 JoinCtx *
 join_of_node(AggCtx *c, Node *n)
 {
-	return IsA(n, Var) ? join_of_var(c, n) : join_expr_node(n) ? join_of_expr(c, n) : NULL;
+	return IsA(n, Var) ? join_of_var(c, n) : join_expr_node(n) ? join_of_expr(c, n, false) : NULL;
 }
 
 /* the index of column v (a Var, or an expression the table has an index on) of the joined table among the columns the expressions read; -1 when there are too many */
@@ -664,6 +718,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 	for (int p = 0; p < w.nl; p++)
 		use_matched_leaf(c, w.leaf[p]);
 	rq = palloc0(sizeof(SlotReq));
+	rq->own_filter = c->own_filter;
 	rq->expr = expr;
 	rq->is_key = is_key;
 	rq->agg = -1;
@@ -782,8 +837,10 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 			sl->agg = rq->agg;
 			sl->direct = rq->direct;
 			sub.key_leaf = rq->key_leaf;
+			c->own_filter = rq->own_filter;
 			sl->expr = rq->lowered ? rq->expr : combo_sub_mutator(rq->expr, &sub);
 		}
+		c->own_filter = false;
 	}
 }
 

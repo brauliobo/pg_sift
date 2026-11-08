@@ -57,6 +57,7 @@ typedef struct SlotReq
 	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
 	bool		lowered;		/* expr is over Params already (lower_scoped): finish_combos leaves it */
 	bool		key_leaf;		/* a join's key column in expr is read as the leaf it equals (ComboWalk.key_leaf) */
+	bool		own_filter;		/* the ON clause of a joined table (AggCtx.own_filter) */
 } SlotReq;
 
 typedef struct ComboCtx
@@ -129,6 +130,7 @@ typedef struct AggCtx
 	double		part_tuples;	/* ... and their rows (rel->tuples counts every partition of the table, the ones pruning left out too) */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
+	bool		own_filter;		/* the ON clause of a joined table is being lowered (join_filter) */
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
@@ -442,6 +444,7 @@ extern int combo_index(AggCtx *c, ComboCtx *cb);
 extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Node *v);
 extern int join_col(JoinCtx *jc, Node *v);
 extern JoinCtx *join_of_node(AggCtx *c, Node *n);
+extern JoinCtx *join_held_of_node(AggCtx *c, Node *n);
 extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
 extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
