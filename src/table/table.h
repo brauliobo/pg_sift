@@ -490,11 +490,20 @@ typedef struct SiftTblKeyRuns
 	SiftKey	   (*run)[2];
 } SiftTblKeyRuns;
 
+/* Where sift_tbl_aborted_runs stopped: the group and the unit it goes on at */
+typedef struct SiftTblAbortScan
+{
+	int			seg;
+	uint32		unit;
+} SiftTblAbortScan;
+
 /*
  * The live rows of the unfrozen groups whose inserter aborted, as runs of keys appended to runs (the rows are dead: VACUUM clears their liveness
- * once the indexes know, and a merge drops them); [*sb_lo, *sb_hi] widened to their superblocks. The maintenance lock held.
+ * once the indexes know, and a merge drops them); [*sb_lo, *sb_hi] widened to their superblocks. It stops at the end of the unit that takes
+ * runs to max_runs, so that VACUUM holds them a batch at a time: false when it stopped there, to be called again with the same scan after the
+ * runs were used; true when every group was read. The maintenance lock held.
  */
-extern void sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32 *sb_lo, uint32 *sb_hi);
+extern bool sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTblAbortScan *scan, int max_runs, uint32 *sb_lo, uint32 *sb_hi);
 /* Drops the unfrozen groups that have no live row left (every row aborted, VACUUM cleared them after the indexes forgot them); the maintenance lock held. The groups dropped. */
 extern int	sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st);
 /* The rows of the groups that count as live for the statistics: not those of a writer that is still running or aborted */
@@ -534,6 +543,7 @@ extern PGDLLIMPORT int sift_test_load_publish;
 extern PGDLLIMPORT bool sift_test_load_reap_late;
 extern PGDLLIMPORT int sift_test_load_unit_bytes;
 extern PGDLLIMPORT int sift_test_load_segment_kb;
+extern PGDLLIMPORT int sift_test_vacuum_batch_bytes;
 extern PGDLLIMPORT bool sift_test_bitmap_no_visible;
 extern PGDLLIMPORT int sift_test_bitmap_bulk_rows;
 #endif

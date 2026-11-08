@@ -199,8 +199,8 @@ unit_aborted_runs(SiftColSegment *seg, uint32 u, SiftTblKeyRuns *runs, uint32 *x
 	return any;
 }
 
-void
-sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32 *sb_lo, uint32 *sb_hi)
+bool
+sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, SiftTblAbortScan *scan, int max_runs, uint32 *sb_lo, uint32 *sb_hi)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table aborted rows", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -208,33 +208,41 @@ sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *runs, uint32
 			   *cm = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
+	bool		done = true;
 
-	for (int i = 0; i < st->dir.nsegs; i++)
+	for (; done && scan->seg < st->dir.nsegs; scan->seg++, scan->unit = 0)
 	{
-		const SiftSegEntry *e = &st->dir.segs[i];
+		const SiftSegEntry *e = &st->dir.segs[scan->seg];
 		SiftColSegment *seg;
 
 		if (!sift_tbl_seg_unfrozen(e))
 			continue;
 		seg = sift_cseg_open(rel, e, cx);
-		for (uint32 u = 0; u < seg->nsb; u++)
+		while (scan->unit < seg->nsb)
 		{
+			uint32		u = scan->unit++;
 			SiftColVerSum sum;
 
 			sift_cseg_ver_sum(seg, u, &sum);
-			if (!sum.any)
-				continue;
-			if (unit_aborted_runs(seg, u, runs, xm, cm, live, keys))
+			if (sum.any && unit_aborted_runs(seg, u, runs, xm, cm, live, keys))
 			{
 				*sb_lo = Min(*sb_lo, sift_cseg_unit_sb(seg, u));
 				*sb_hi = Max(*sb_hi, sift_cseg_unit_sb(seg, u));
 			}
 			CHECK_FOR_INTERRUPTS();
+			if (runs->n >= max_runs)
+			{
+				done = false;
+				break;
+			}
 		}
 		sift_cseg_close(seg);
+		if (!done)
+			break;
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+	return done;
 }
 
 int

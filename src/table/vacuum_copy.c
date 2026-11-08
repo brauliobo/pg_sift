@@ -141,11 +141,11 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 	EState	   *estate = CreateExecutorState();
 	ExprContext *econtext = GetPerTupleExprContext(estate);
 	TupleTableSlot *slot = table_slot_create(table_rel, NULL);
-	TidList		have = {0};
+	uint64		cap = Max((uint64) maintenance_work_mem * 1024 / sizeof(ItemPointerData), 1024);
+	TidList		have = {.max = cap};
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	SiftTblRel *st = sift_tbl_rel(table_rel);
-	uint64		cap = Max((uint64) maintenance_work_mem * 1024 / sizeof(ItemPointerData), 1024);
 	ItemPointerData lo = {0},
 				hi = {0};
 	Datum		ts_val;
