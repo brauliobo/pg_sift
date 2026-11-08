@@ -92,6 +92,8 @@ extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index);
  * which drops the child index, and so that a dump makes the parent first) and the parent's journal (sift_conn_enable).
  */
 extern void sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index);
+/* Only the dependency of the first half: the journal is made when the child has read its table (sift_conn_start) */
+extern void sift_conn_depend(Relation child_index, Relation parent_index);
 /* The sift_col indexes connected to the parent index */
 extern List *sift_conn_children(Oid parent_index);
 /*
@@ -188,6 +190,11 @@ extern SiftConnSpecs *sift_conn_specs(Relation child_index);
 extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn);
 /* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent indexes the option names, or removes the connections */
 extern void sift_conn_resolve(Relation child_heap, Relation child_index);
+/*
+ * The journals of the parents of a connected child, made when the build of the child has read its table: the writers of a parent table are held out from here to the end of the
+ * statement, not for the whole scan of a large child. A parent that has a connected child already is not locked at all.
+ */
+extern void sift_conn_start(Relation child_heap, Relation child_index);
 extern void sift_conn_alter(Relation child_index);
 
 #endif							/* SIFT_COL_CONN_H */

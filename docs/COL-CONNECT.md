@@ -55,8 +55,8 @@ join. `via` says how they are read once that exists (`auto`, the default, lets t
 Resolving finds the `sift_col` index of the parent table that tracks the key column and holds every carried column as a plain column (the lowest oid when several do), and fails with a hint when there
 is none, when a name does not exist, when the key of this index is not an integer, or when the parent is this table. The child index then depends on the parent index (`pg_depend`, normal): `DROP INDEX` of
 the parent index, and `DROP TABLE` of the parent table, are refused unless `CASCADE` is given, which drops the whole child index (an index with one connection missing would carry values that no
-longer follow their parent), whatever its other connections; a dump makes the parent index first. The parent table is locked against
-writers (`ShareLock`) until the end of the transaction that makes the connection, for its journal. `ALTER INDEX .. SET (connect = 'off')` or `RESET (connect)` removes the dependency; the parent's journal stays
+longer follow their parent), whatever its other connections; a dump makes the parent index first. The journal of the parent is made for the first child connected to it, when the build of the child has read its table, and holds the writers of the parent table out (`ShareLock`) from then to the end of the
+transaction: a large child does not hold them out for its scan, and a parent that has a connected child already is not locked at all (`col_conn_lock`). `ALTER INDEX .. SET (connect = 'off')` or `RESET (connect)` removes the dependency; the parent's journal stays
 until its next `REINDEX`.
 
 A parent index with a connected child keeps its journal through `REINDEX` and `REINDEX CONCURRENTLY` (and the copy of `pg_repack`): the build makes it for the index it is or replaces. Until the log of a

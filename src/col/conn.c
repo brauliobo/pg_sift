@@ -192,7 +192,12 @@ check_key(Relation heap, Relation index)
 uint64
 sift_conn_enable(Relation heap, Relation index)
 {
+	SiftConnGen gen;
+
 	check_key(heap, index);
+	/* a child that was connected before (its dependency is committed) made the journal under the lock, and every writer records since: nothing to hold out */
+	if (sift_conn_children(RelationGetRelid(index)) != NIL && sift_conn_gen(index, &gen))
+		return gen.lineage;
 	/*
 	 * Writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here. The log need not be
 	 * complete yet (a parallel restore connects before the primary key of the table exists): nothing is vouched while it is not, and the trim of the journal moves when it becomes so.
@@ -226,21 +231,23 @@ sift_conn_children(Oid parent_index)
 }
 
 void
-sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index)
+sift_conn_depend(Relation child_index, Relation parent_index)
 {
 	ObjectAddress child,
 				parent;
-	SiftConnGen gen;
 
-	/* connected already, and the parent keeps its journal: nothing to lock or write (an ALTER INDEX of another option of a connected child resolves it again) */
-	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)) && sift_conn_gen(parent_index, &gen))
-		return;
-	(void) sift_conn_enable(parent_heap, parent_index);
 	if (list_member_oid(sift_conn_children(RelationGetRelid(parent_index)), RelationGetRelid(child_index)))
 		return;
 	ObjectAddressSet(child, RelationRelationId, RelationGetRelid(child_index));
 	ObjectAddressSet(parent, RelationRelationId, RelationGetRelid(parent_index));
 	recordDependencyOn(&child, &parent, DEPENDENCY_NORMAL);
+}
+
+void
+sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index)
+{
+	(void) sift_conn_enable(parent_heap, parent_index);
+	sift_conn_depend(child_index, parent_index);
 }
 
 void

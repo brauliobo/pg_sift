@@ -355,22 +355,12 @@ connection_parent(Relation heap, Relation index, const SiftConnSpec *s, Relation
 	return pidx;
 }
 
-/*
- * CREATE INDEX, REINDEX and ALTER INDEX of a child index: finds the parent index of each connection the option names and connects to it (the parent index is the one that tracks the
- * key; its table is locked against writers until the end of the transaction, for its journal), or removes the connections when the option is off or not set. A parent index two
- * connections share is one dependency.
- */
-void
-sift_conn_resolve(Relation heap, Relation index)
+/* The parent index of each connection the option names, once for a parent two connections share: the dependency of the child on it, or its journal when start */
+static void
+connect_each(Relation heap, Relation index, SiftConnSpecs *specs, bool start)
 {
-	SiftConnSpecs *specs = sift_conn_specs(index);
-	List	   *keep = NIL;
+	List	   *seen = NIL;
 
-	if (specs == NULL)
-	{
-		drop_stale_edges(RelationGetRelid(index), NIL);
-		return;
-	}
 	if (!sift_col_is_index(index) || heap->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: the index must be a sift_col index on a heap table"),
 						errhint("Connect a sift_col index of a heap table to a sift_col index of another heap table.")));
@@ -378,19 +368,47 @@ sift_conn_resolve(Relation heap, Relation index)
 	{
 		Relation	parent;
 		Oid			pidx = connection_parent(heap, index, specs->c[i], &parent);
-		Relation	pindex;
 
-		if (!list_member_oid(keep, pidx))
+		if (!list_member_oid(seen, pidx))
 		{
-			pindex = index_open(pidx, ShareUpdateExclusiveLock);
-			sift_conn_connect(index, parent, pindex);
+			Relation	pindex = index_open(pidx, ShareUpdateExclusiveLock);
+
+			if (start)
+				(void) sift_conn_enable(parent, pindex);
+			else
+				sift_conn_depend(index, pindex);
 			index_close(pindex, NoLock);
-			keep = lappend_oid(keep, pidx);
+			seen = lappend_oid(seen, pidx);
 		}
 		table_close(parent, NoLock);
 	}
-	drop_stale_edges(RelationGetRelid(index), keep);
-	list_free(keep);
+	if (!start)
+		drop_stale_edges(RelationGetRelid(index), seen);
+	list_free(seen);
+}
+
+/*
+ * CREATE INDEX, REINDEX and ALTER INDEX of a child index: finds the parent index of each connection the option names (the one that tracks the key) and makes the dependency of the
+ * child on it, or removes the connections when the option is off or not set.
+ */
+void
+sift_conn_resolve(Relation heap, Relation index)
+{
+	SiftConnSpecs *specs = sift_conn_specs(index);
+
+	if (specs == NULL)
+		drop_stale_edges(RelationGetRelid(index), NIL);
+	else
+		connect_each(heap, index, specs, false);
+}
+
+void
+sift_conn_start(Relation heap, Relation index)
+{
+	SiftConnSpecs *specs = sift_conn_specs(index);
+
+	if (specs != NULL)
+		connect_each(heap, index, specs, true);
 }
 
 /* After ALTER INDEX of any option of a sift_col index: the connections follow the option */
@@ -400,6 +418,7 @@ sift_conn_alter(Relation index)
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 	sift_conn_resolve(heap, index);
+	sift_conn_start(heap, index);
 	table_close(heap, NoLock);
 }
 
