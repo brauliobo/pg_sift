@@ -197,12 +197,16 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 	return sift_tbl_visible(t->rel, t->st, t->snapshot, &rv) || chain_visible(t, rv.key);
 }
 
-/* Keeps the offsets of vblock whose row is visible to snapshot (chain: or whose HOT chain has a version that is: the TIDs of an index); the write buffer page is read once; a unit the snapshot sees no insertion of is no row at all */
+/*
+ * Keeps the offsets of vblock whose row is visible to snapshot (chain: or whose HOT chain has a version that is: the TIDs of an index); the write buffer
+ * page is read once; a unit the snapshot sees no insertion of is no row at all. st is the state of the table the scan began with (its write buffers,
+ * its tombstones), and vers the versions of the same directory: the table the backend holds now may be another since an invalidation
+ */
 int
-sift_tbl_filter_page_vers(Relation rel, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain)
+sift_tbl_filter_page_vers(Relation rel, SiftTblRel *st, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain)
 {
 	PGAlignedBlock copy;
-	VblockTest	t = {.rel = rel,.st = sift_tbl_rel(rel),.snapshot = snapshot,.copy = copy.data,.chain = chain};
+	VblockTest	t = {.rel = rel,.st = st,.snapshot = snapshot,.copy = copy.data,.chain = chain};
 
 	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
 	{
@@ -266,7 +270,7 @@ sift_tbl_filter_page(Relation rel, Snapshot snapshot, BlockNumber vblock, uint64
 		st->curvers_version = st->dir.version;
 		st->curvers_rel = rel;
 	}
-	return sift_tbl_filter_page_vers(rel, snapshot, st->curvers, vblock, offmask, true);
+	return sift_tbl_filter_page_vers(rel, st, snapshot, st->curvers, vblock, offmask, true);
 }
 
 bool

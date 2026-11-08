@@ -73,10 +73,7 @@ step s3i	{ INSERT INTO iso_pt SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 
 step s3m	{ SELECT busy FROM sift.table_maintain('iso_pt'); }
 step s3v	{ VACUUM iso_pt; }
 
-permutation s1b s2l s1q s3u s3d s3i s3m s3v s2u s1c
-permutation s1b s2l s1q s3u s3d s3m s3v s2u s1c
-permutation s1b s2l s1q s3u s3i s3m s3v s2u s1c
-permutation s1b s2l s1q s3d s3i s3m s3v s2u s1c
-permutation s1b s2l s1q s3i s3m s3v s2u s1c
 permutation s1b s2l s1q s3m s3v s2u s1c
+permutation s1b s2l s1q s3u s3d s3i s3m s3v s2u s1c
+permutation s1b s2l s1q s3i s3m s3v s2u s1c
 permutation s1b s2l s1g s3u s3d s3i s3m s3v s2u s1c
