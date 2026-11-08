@@ -409,6 +409,7 @@ extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
+extern PGDLLIMPORT int sift_test_col_log_max_read;	/* sift.test_col_log_max_read: the newest column format whose tombstone log is opened (0 = the build's own); a newer log is refused */
 extern PGDLLIMPORT bool sift_test_col_rel_inval;	/* sift.test_col_rel_inval: the build and the recheck invalidate the index's relcache entry at every tuple (sift_col_test_inval) */
 extern PGDLLIMPORT bool sift_test_col_net;	/* sift.test_col_net: VACUUM writes the pre-aggregates net of dead rows (col/maint/net.c, table/net.c); off, the dirty units are left to the delta of sift.agg_dead_delta */
 extern void sift_col_test_inval(Relation index);	/* does so when it is on, after it overwrote the cached state the entry held */

@@ -122,6 +122,21 @@ log_ent(Relation index)
 	return e;
 }
 
+#ifdef SIFT_TESTING
+int			sift_test_col_log_max_read = 0;
+#endif
+
+/* The newest column format whose tombstone log this build appends to: an older build would append tombstones without the records a newer one keeps in the log */
+static int
+log_max_read(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_col_log_max_read > 0)
+		return sift_test_col_log_max_read;
+#endif
+	return SIFT_COL_FORMAT_MAX_READ;
+}
+
 SiftTombLog *
 sift_col_log(Relation index)
 {
@@ -135,10 +150,10 @@ sift_col_log(Relation index)
 
 	if (seg == NULL)
 		return NULL;
-	if (seg->format > SIFT_COL_FORMAT_MAX_READ)
+	if (seg->format > log_max_read())
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, SIFT_COL_FORMAT_MAX_READ),
+				 errmsg("index \"%s\" has a tombstone log of column format 1.%d, this build reads up to 1.%d", RelationGetRelationName(index), seg->format, log_max_read()),
 				 errhint("Use a newer pg_sift, or REINDEX.")));
 	/*
 	 * A table follows a replaced log and keeps the entries it read (its addresses are never given to another row). A heap address is: VACUUM removes the entries of the

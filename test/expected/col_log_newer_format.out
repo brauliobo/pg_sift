@@ -1,0 +1,41 @@
+-- A build opens the tombstone log of an index only when it reads the column format of the log: a log of a newer format may hold records an older build would not keep when it
+-- appended, so the older build stops with an error and a hint instead (sift.test_col_log_max_read stands in for the older build).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE t (id int PRIMARY KEY, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT i, i FROM generate_series(1, 1000) i;
+CREATE INDEX t_c ON t USING sift_col (id, v);
+NOTICE:  sift_col index "t_c": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_c');
+UPDATE t SET v = v + 1 WHERE id = 1;
+SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
+ entries 
+---------
+       1
+(1 row)
+
+\c -
+SET sift.test_col_log_max_read = 42;
+UPDATE t SET v = v + 1 WHERE id = 2;
+ERROR:  index "t_c" has a tombstone log of column format 1.43, this build reads up to 1.42
+HINT:  Use a newer pg_sift, or REINDEX.
+DELETE FROM t WHERE id = 3;
+ERROR:  index "t_c" has a tombstone log of column format 1.43, this build reads up to 1.42
+HINT:  Use a newer pg_sift, or REINDEX.
+SELECT count(*) FROM sift._test_col_log_entries('t_c');
+ERROR:  index "t_c" has a tombstone log of column format 1.43, this build reads up to 1.42
+HINT:  Use a newer pg_sift, or REINDEX.
+\c -
+SET sift.test_col_log_max_read = 43;
+UPDATE t SET v = v + 1 WHERE id = 2;
+SELECT count(*) AS entries FROM sift._test_col_log_entries('t_c');
+ entries 
+---------
+       2
+(1 row)
+
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

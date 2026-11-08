@@ -417,6 +417,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_no_present",
 							 "Testing: a sift_col build writes no presence leaf for the jsonb documents (the layout of an index made before 4.2).",
 							 NULL, &sift_test_col_no_present, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_log_max_read",
+							"Testing: the newest column format whose tombstone log a sift_col index opens (0 = the build's own); a log of a newer format is refused.",
+							NULL, &sift_test_col_log_max_read, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_max_segments",
 							"Testing: segments a participant of a sift_col build with key_cut may hold before it merges runs (0 = what the directory has room for).",
 							NULL, &sift_test_col_max_segments, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
