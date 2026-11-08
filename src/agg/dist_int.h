@@ -98,6 +98,15 @@ struct Dist
 	uint64	   *cnt;			/* per sort id: distinct values, once sorted */
 };
 
+/* pairs a hash set holds at most (a table of 8 MB at half full): past the cache every pair is a miss, which the radix sort of the pairs of a set that big does in a third of the time */
+#define DIST_HASH_PAIRS		((uint64) 1 << 18)
+
+static inline uint64
+dist_hash_cap(const Dist *d)
+{
+	return Max(Min(d->budget / (4 * sizeof(uint64)), DIST_HASH_PAIRS), 256);
+}
+
 static inline uint64
 dset_hash(uint64 x)
 {
