@@ -21,13 +21,17 @@ extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*
  * Opens the source of an index relation (heap == its table) or of a sift_table table (index == NULL). The snapshot is the
- * scan's. mcxt holds everything the source allocates until sift_colsrc_close.
+ * scan's. mcxt holds everything the source allocates until sift_colsrc_close. view: the directory another source of the statement exported
+ * (sift_colsrc_view_export), NULL to read it now.
  */
-extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+/* The bytes of the directory the source read, 0 when the provider has none to share; the participants of a parallel scan open on the leader's copy, whose superblocks and units all number the same */
+extern Size sift_colsrc_view_size(SiftSrcSource *src);
+extern void sift_colsrc_view_export(SiftSrcSource *src, void *buf);
 
 /* Can the sources of an index (or, with index false, a table) of this access method be read as the partitions of one table (src/agg/part.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
 extern bool sift_colsrc_can_part(Oid relam, bool index);
-extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 extern void sift_colsrc_close(SiftSrcSource *src);
 extern bool sift_colsrc_rescan(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);

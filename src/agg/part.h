@@ -15,7 +15,7 @@
  * partitioned table `parent`, checked here, as PostgreSQL checks them for a query on it. Superblock numbers are the partition's own plus the
  * superblocks of the partitions before it (sift_aggpart_offsets).
  */
-extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt);
+extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view);
 
 /*
  * The partitions the conditions refute (bounds against conditions on the partitioned table's columns, varno 1, operands already constants) are

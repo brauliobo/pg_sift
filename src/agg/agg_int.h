@@ -193,6 +193,7 @@ typedef struct AggExec
 	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
+	const void *view;			/* a worker: the directory its leader read, which its source opens on (sift_colsrc_view_export) */
 	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
 	uint32		gp_n;			/* a scan whose participants split the groups by a key (SiftAggSpec.gpart): the shares, one for each participant; 0: they split the rows */

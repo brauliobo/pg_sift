@@ -25,6 +25,7 @@ typedef struct PartSource
 	Relation   *heap;			/* NULL until a partition is opened or its bound read the first time; the pruned ones are not opened at all (the first's always is: the layout) */
 	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads; always NULL for a sift_table */
 	SiftSrcSource **src;
+	const void **view;			/* the directory copy of each partition's source another process exported (part_view_export), NULL for a partition without one */
 	Oid		   *indexoid;
 	Snapshot	snapshot;
 	MemoryContext mcxt;
@@ -80,6 +81,8 @@ unit_of(void *impl)
 extern const SiftSrcProvider part_provider;
 
 extern void part_close(void *impl);
+extern Size part_view_size(void *impl);
+extern void part_view_export(void *impl, void *buf);
 extern void part_counters(const void *impl, SiftSrcCounters *c);
 extern bool part_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool part_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows);

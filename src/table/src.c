@@ -261,7 +261,7 @@ part_open(TblSource *t, TblPart *p, const SiftColSchema *schema, const SiftColSc
 }
 
 static void *
-tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	TblSource  *t = palloc0(sizeof(TblSource));

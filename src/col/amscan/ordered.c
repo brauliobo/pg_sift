@@ -217,7 +217,7 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 	o->pair = so->ordpair;
 	old = MemoryContextSwitchTo(o->cxt);
 	ord_tuples(scan, o);
-	o->src = sift_colsrc_open(so->heap, scan->indexRelation, scan->xs_snapshot, o->cxt);
+	o->src = sift_colsrc_open(so->heap, scan->indexRelation, scan->xs_snapshot, o->cxt, NULL);
 	if (so->first == NULL)
 	{
 		int			n = sift_col_rel(scan->indexRelation)->natts + 1;

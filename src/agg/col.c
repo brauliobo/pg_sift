@@ -302,7 +302,7 @@ col_stamp(Relation index, SiftSrcStamp *st)
 }
 
 static void *
-col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags)
+col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	ColSource  *src = palloc0(sizeof(ColSource));
@@ -311,7 +311,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->heap = heap;
 	src->index = index;
 	src->snapshot = snapshot;
-	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
+	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view);
 	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too: maint/rewrite.c overlay_worth reads it */
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
@@ -329,20 +329,32 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 }
 
 static void *
-col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
-col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
 	return src;
+}
+
+static Size
+col_view_size(void *impl)
+{
+	return sift_col_view_size(((ColSource *) impl)->cs);
+}
+
+static void
+col_view_export(void *impl, void *buf)
+{
+	sift_col_view_export(((ColSource *) impl)->cs, buf);
 }
 
 static void
@@ -877,6 +889,8 @@ static const SiftSrcProvider col_provider = {
 	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
+	.view_size = col_view_size,
+	.view_export = col_view_export,
 	.close = col_close,
 	.unpin = col_unpin,
 	.source_layout = col_source_layout,

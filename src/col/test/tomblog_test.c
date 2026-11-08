@@ -178,7 +178,7 @@ sift_test_col_unit_tombs(PG_FUNCTION_ARGS)
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftTombLog *log = sift_col_log(index);
-	SiftColSource *src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0);
+	SiftColSource *src = sift_col_open(heap, index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL);
 	SiftColUnit unit;
 
 	InitMaterializedSRF(fcinfo, 0);

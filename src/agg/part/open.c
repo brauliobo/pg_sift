@@ -40,7 +40,7 @@ open_part(PartSource *ps, int i)
 		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
 	if (OidIsValid(ps->indexoid[i]))
 		ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
-	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt);
+	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt, ps->view[i]);
 }
 
 /* the sources of the partitions the scan reads: opened at the first use (the pruned ones are not opened at all) */
@@ -55,8 +55,54 @@ open_rest(PartSource *ps)
 			open_part(ps, i);
 }
 
+/*
+ * The directories the partitions' sources read, for the workers of a parallel scan to open on (the layout is, per partition, the bytes it exported and their
+ * number as a Size, 0 for none): the partitions the leader counted are open when it exports them, and the pruned ones have no superblocks in the items.
+ */
+Size
+part_view_size(void *impl)
+{
+	PartSource *ps = impl;
+	Size		size = 0;
+
+	count_sbs(ps);
+	for (int i = 0; i < ps->n; i++)
+		size += sizeof(Size) + (ps->src[i] ? sift_colsrc_view_size(ps->src[i]) : 0);
+	return size;
+}
+
+void
+part_view_export(void *impl, void *buf)
+{
+	PartSource *ps = impl;
+	char	   *p = buf;
+
+	for (int i = 0; i < ps->n; i++)
+	{
+		Size		len = ps->src[i] ? sift_colsrc_view_size(ps->src[i]) : 0;
+
+		memcpy(p, &len, sizeof(Size));
+		if (len > 0)
+			sift_colsrc_view_export(ps->src[i], p + sizeof(Size));
+		p += sizeof(Size) + len;
+	}
+}
+
+static void
+slice_views(PartSource *ps, const char *view)
+{
+	for (int i = 0; view != NULL && i < ps->n; i++)
+	{
+		Size		len;
+
+		memcpy(&len, view, sizeof(Size));
+		ps->view[i] = len > 0 ? view + sizeof(Size) : NULL;
+		view += sizeof(Size) + len;
+	}
+}
+
 SiftSrcSource *
-sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt)
+sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	PartSource *ps = MemoryContextAllocZero(mcxt, sizeof(PartSource));
 	SiftSrcSource *out = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
@@ -73,6 +119,8 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	ps->heap = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->index = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->src = MemoryContextAllocZero(mcxt, n * sizeof(SiftSrcSource *));
+	ps->view = MemoryContextAllocZero(mcxt, n * sizeof(void *));
+	slice_views(ps, view);
 	ps->indexoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
 	memcpy(ps->indexoid, indexes, n * sizeof(Oid));
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
