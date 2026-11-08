@@ -3,6 +3,7 @@
  * address, the probes and lookups of a key, the addresses a unit holds
  * and the stream that hands them to a scan in order
  */
+/* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/host.h"
 #include "core/cmp.h"
 #include "col/seg_int.h"

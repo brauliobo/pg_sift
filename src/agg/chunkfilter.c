@@ -1,6 +1,7 @@
 /*
  * agg/chunkfilter.c - the integer filters of a scan on the encoded chunks of a unit (agg/chunkfilter.h).
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "agg/chunkfilter.h"

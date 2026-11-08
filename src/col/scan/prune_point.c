@@ -3,6 +3,7 @@
  * a window of units, the points and ranges a predicate names
  * and the lists of addresses it intersects
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "col/point.h"
 #include "col/scan_int.h"

@@ -1,6 +1,7 @@
 /*
  * agg/init_table.c - the lookup tables: the join key filters, the load of a table and its reset
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "catalog/pg_collation_d.h"

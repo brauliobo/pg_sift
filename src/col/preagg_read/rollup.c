@@ -3,6 +3,7 @@
  * the tuples, a projection of the dimensions, the leaves of the unit
  * the inverse of preagg/rollup.c
  */
+/* check-memory: allow-allocs a rollup holds at most SIFT_PAGG_ROLLUP_TUPLES (4096) tuples */
 #include "core/cmp.h"
 #include "col/preagg_read/preagg_read_int.h"
 

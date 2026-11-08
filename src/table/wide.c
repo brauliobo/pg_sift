@@ -1,6 +1,7 @@
 /*
  * table/wide.c - the wide leaves of the column source of a sift_table: the dictionary of exact datum images and the conjuncts decided by the type's own comparison
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "access/htup_details.h"

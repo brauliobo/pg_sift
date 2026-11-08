@@ -3,6 +3,7 @@
  * Which ORDER BY ... LIMIT queries the scan answers, how a path for them is made and
  * priced, and the rows that tie with the last.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include <math.h>

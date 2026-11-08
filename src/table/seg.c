@@ -8,6 +8,7 @@
  * Reads go through the engine's column source (sift_col_open_table); a segment written for another column layout (after ALTER TABLE)
  * is read with its own schema, the columns being matched by attribute number.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "access/genam.h"

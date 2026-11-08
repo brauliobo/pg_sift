@@ -1,6 +1,7 @@
 /*
  * agg/plan_combo.c - lookup joins and combos: expressions PostgreSQL evaluates over value combinations
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_collation.h"

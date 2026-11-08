@@ -3,6 +3,7 @@
  * the groups, the counts, the sums and the minima and maxima
  * emitted as the cube blob
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "core/hash.h"
 #include "col/preagg/pagg_build_int.h"
 

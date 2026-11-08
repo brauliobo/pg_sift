@@ -4,6 +4,7 @@
  * One function per struct does both: the Codec either appends the fields it walks to the list (pack) or sets them from it (unpack), so a field that is added
  * here is written and read in the same place and in the same order. The packed list is only read by the same build (the workers' copy of the plan).
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/value.h"

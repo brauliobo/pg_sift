@@ -3,6 +3,7 @@
  * seeded key sequences of many shapes (ascending, descending, dense and sparse in random order, clusters, walks, strides, the ends of int64,
  * a dense range that turns sparse and the reverse) are looked up in an IntIds table and in a plain hash of another make; every id must agree.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #ifdef SIFT_TESTING

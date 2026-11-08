@@ -1,6 +1,7 @@
 /*
  * agg/plan_rows.c - the path of Custom Scan (SiftAggRows): count(DISTINCT) over the rows of a plan that reads SiftAgg nodes
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_aggregate.h"

@@ -3,6 +3,7 @@
  * the hash table of the strings and its growth
  * the other files order, serialize and parse a dictionary
  */
+/* check-memory: allow-allocs a dictionary is cut at SIFT_COL_DICT_MAX_BYTES (64 MiB): its slots are at most 512 MB */
 #include "core/limits.h"
 #include "core/hash.h"
 #include "col/dict/dict_int.h"

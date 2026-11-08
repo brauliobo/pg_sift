@@ -3,6 +3,7 @@
  * pair of keys, (lane 0, lane 1) in turn, which the column source builds out of ordinary tests of the lanes. Only the public API of the source
  * and the kernel table are used; col/scan/scan.c and col/scan_filter.c call into this file from sift_col_begin and sift_col_filter.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "utils/numeric.h"

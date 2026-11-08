@@ -1,6 +1,7 @@
 /*
  * agg/init.c - scan setup from the spec: states, predicates, keys, combos, tables, buffers
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"

@@ -3,6 +3,7 @@
  * Which leaves can be a key or an output, the spec the planner hands over, the bounds, and
  * the heap, the sort and the fetch a reader opens with, and its close.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "access/stratnum.h"

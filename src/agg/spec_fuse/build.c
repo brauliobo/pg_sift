@@ -10,6 +10,7 @@
  * read different leaves, load different columns of a joined table and ask for different slots of a combo; the pass has the union of them,
  * and every arm is rewritten over it (its keys, aggregates and conjuncts name the slots of the pass) before it is compared with the others.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_operator.h"

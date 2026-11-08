@@ -8,6 +8,7 @@
  *              units and whose cells take at most GROWTH_PCT of the index: rollup_columns would answer a GROUP BY of both from cells
  *   key        an int2, int4, int8 or date foreign key or column named *_id that is not unique: key_columns keeps a key list or bitmap of it (col/keycols/keycols.c)
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "access/genam.h"

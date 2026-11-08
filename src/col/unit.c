@@ -1,6 +1,7 @@
 /*
  * col/unit.c - L1 of the column engine: reading a unit record, its row directory and its chunks.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "core/host.h"
 
 #include "col/enc.h"

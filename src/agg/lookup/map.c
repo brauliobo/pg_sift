@@ -3,6 +3,7 @@
  * The growth of the map, the add of a row by its key ids, the binding to a column and the
  * index over the rows of a unique map.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "access/genam.h"

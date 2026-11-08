@@ -3,6 +3,7 @@
  * The index over the rows of a map, the load on demand, and the find of a row by key ids
  * or by a key.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "common/hashfn.h"

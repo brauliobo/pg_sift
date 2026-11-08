@@ -107,6 +107,7 @@ sbdocs_build(DocCache *dc, int64 at)
 		total += len;
 	}
 	e->at = at;
+	/* check-memory: allow the docs of one superblock (at most 256 pages of 291 rows) */
 	e->dl = MemoryContextAlloc(dc->mcxt, total * sizeof(uint16));
 	memcpy(e->dl, dc->rows, total * sizeof(uint16));
 	e->size = sizeof(SBDocs) + total * sizeof(uint16);

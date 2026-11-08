@@ -3,6 +3,7 @@
  * one byte, one chunk, one object
  * to see the verification refuse it
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 #ifdef SIFT_TESTING
 #include "funcapi.h"

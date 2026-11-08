@@ -1,6 +1,7 @@
 /*
  * agg/unit.c - answering one unit: late conjuncts, overflow checks, filters, process_unit (its pre-aggregates are agg/preagg/)
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>

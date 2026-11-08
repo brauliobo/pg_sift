@@ -9,6 +9,11 @@
 #     the point directory ran past its array on `timestamp = 'infinity'`): count the iterations, or say why hi is bounded.
 #   A 64-bit loop whose condition also bounds the counter with `<` is fine. Any other site says `check-memory: allow <why>` in a comment on
 #   the line or the line above it. Test-only files are checked like the others.
+#   - a plain palloc/repalloc/MemoryContextAlloc (not huge, not sift_rows_alloc) whose size multiplies a count named for rows, tuples, values,
+#     documents, units, slots, keys, entries, postings or blocks: the allocation that follows the table is the one that fails a build of hundreds of millions of rows
+#     at 1 GB ("invalid memory alloc request size", 16 bytes a row in one segment). Bound it by a memory budget, take sift_rows_alloc
+#     (core/rowmem.h) or the huge allocation where the algorithm needs one array, or say what bounds the count: `check-memory: allow <why>` on the line
+#     or the line above, or `check-memory: allow-allocs <why>` in the first 40 lines of a file whose arrays all follow one unit, one plan or one query.
 #
 #   scripts/check-memory.sh [--selftest]
 set -euo pipefail
@@ -20,6 +25,8 @@ import os, re, sys, tempfile
 AMCACHE_FILES = {"col/am/rel.c", "bm25/wbuf.c", "agg/stub_src.c", "table/store.c"}
 loop = re.compile(r"\bfor\s*\(\s*(?:const\s+)?(?:int64|uint64|int64_t|uint64_t)\s+(\w+)\s*=[^;]*;\s*\1\s*<=([^;]*);")
 amcache = re.compile(r"\brd_amcache\b")
+alloc = re.compile(r"\b(palloc0?|repalloc|MemoryContextAlloc(?:Zero)?|palloc_array|palloc0_array|repalloc_array)\s*\(")
+counted = re.compile(r"\b(\w*rows?|\w*ntuples?|\w*ntids?|\w*nentr\w*|\w*nvals?|\w*ndocs?|\w*nunits?|total|\w*nslots?|nstr|\w*nkeys?|\w*npost\w*|\w*ntomb\w*|\w*nblocks?)\b")
 held = re.compile(r"\bSiftColRel\s*\*\s*\w+\s*=\s*sift_col_rel\(")
 
 
@@ -34,6 +41,7 @@ def scan(src):
             with open(path, encoding="utf-8") as f:
                 lines = f.read().split("\n")
             files += 1
+            allocs_ok = any("check-memory: allow-allocs" in l for l in lines[:40])
             for i, line in enumerate(lines):
                 if "check-memory: allow" in line or (i and "check-memory: allow" in lines[i - 1]):
                     continue
@@ -44,6 +52,11 @@ def scan(src):
                     bad.append(f"{rel}:{i + 1}: rd_amcache outside its accessors ({', '.join(sorted(AMCACHE_FILES))}): the relcache frees it on every reload, ask the accessor where it is used")
                 if held.search(code):
                     bad.append(f"{rel}:{i + 1}: a local kept from sift_col_rel(): the relcache frees that state on every reload (a lock, a catalog read); fetch it where it is used, take sift_col_rel_private, or allow with the reason nothing of the kind comes before its last use")
+                m = alloc.search(code)
+                if m and not allocs_ok and name.endswith(".c"):
+                    args = code[m.end():]
+                    if ("sizeof" in args or "array" in m.group(1)) and counted.search(args):
+                        bad.append(f"{rel}:{i + 1}: allocation sized by a count of rows, values or units: a table of hundreds of millions of rows makes this one fail at 1 GB; bound it by a memory budget, use sift_rows_alloc (core/rowmem.h), or allow with what bounds the count")
                 m = loop.search(code)
                 if m and not re.search(r"&&.*\b" + m.group(1) + r"\s*<[^=]|\b" + m.group(1) + r"\s*<[^=].*&&", m.group(2) + ";"):
                     bad.append(f"{rel}:{i + 1}: inclusive loop over a 64-bit counter wraps when the bound is the largest value: count the iterations, or allow with the reason the bound is small")
@@ -62,8 +75,13 @@ def selftest():
         "g.c": "SiftColRel *r = sift_col_rel_private(index, cx);\n",
         "h.c": "/* check-memory: allow nothing is read between the fetch and the copy */\nSiftColRel *r = sift_col_rel(index);\n",
         "e.c": "for (uint64 w = 0; w <= m; w++) /* check-memory: allow m is a table size */\n",
+        "p.c": "e = palloc(n * sizeof(PointEnt));\nq = palloc(nrows * sizeof(uint32));\n",
+        "q.c": "q = sift_rows_alloc(nrows * sizeof(uint32));\nw = MemoryContextAllocHuge(cx, nrows * 8);\nz = palloc(ncols * sizeof(int));\n",
+        "r.c": "/* check-memory: allow a unit has at most 4096 rows */\nq = palloc(nrows * sizeof(uint32));\n",
+        "s.c": "/* check-memory: allow-allocs every array here follows one unit */\nq = palloc0(nrows * sizeof(uint32));\nq = palloc_array(uint32, ntuples);\n",
+        "t.c": "q = palloc_array(uint32, ntuples);\n",
     }
-    want = {"col/other.c", "a.c", "f.c"}
+    want = {"col/other.c", "a.c", "f.c", "p.c", "t.c"}
     with tempfile.TemporaryDirectory() as d:
         for name, text in cases.items():
             os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)

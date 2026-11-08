@@ -1,6 +1,7 @@
 /*
  * agg/zoneprune.c - the prune entries of a scan as zone predicates (agg/zoneprune.h).
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "agg/zoneprune.h"

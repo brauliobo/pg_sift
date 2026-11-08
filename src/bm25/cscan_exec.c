@@ -1,6 +1,7 @@
 /*
  * bm25/cscan_exec.c - executor side of SiftScan and SiftCount: the LIMIT hint, begin, exec, end, rescan, EXPLAIN and the parallel (DSM) hooks.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include <math.h>

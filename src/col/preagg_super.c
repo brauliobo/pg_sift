@@ -4,6 +4,7 @@
  * the stored bytes are what the units say, byte for byte.
  */
 
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "col/preagg.h"
 #include "col/preagg_int.h"
 #include "core/cmp.h"

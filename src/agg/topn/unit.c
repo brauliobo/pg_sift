@@ -3,6 +3,7 @@
  * The buffers of a unit, the keys and the outputs read for its rows, the rank of a row
  * against the bar, and the sorted rows a unit gives the heap.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "miscadmin.h"

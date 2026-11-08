@@ -1,6 +1,7 @@
 /*
  * col/gen_test.c - L1 tests: random schemas, rows and batches, the reference values of a leaf and the naive evaluation of predicates.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #ifdef SIFT_TESTING

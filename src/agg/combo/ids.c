@@ -3,6 +3,7 @@
  * The ids of the dictionary and the 64-bit values a combo reads, the prior ids, and the
  * binding of the leaves a combo is computed from.
  */
+/* check-memory: allow-allocs the cache of combinations stops at COMBO_MAX_ENTRIES (16 million) and its hash slots follow them */
 #include "postgres.h"
 
 #include "common/hashfn.h"

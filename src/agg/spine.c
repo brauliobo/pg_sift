@@ -1,6 +1,7 @@
 /*
  * agg/spine.c - the spine of a two level aggregate: its rows, and the rows each cell of the arms joins
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "access/tupdesc.h"

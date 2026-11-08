@@ -3,6 +3,7 @@
  * extension. The standalone harness (tools/colcodec) is the exhaustive check; these run the codec inside the backend: through the
  * sift.simd dispatch, with the build's LZ4 and zstd, on bytea blobs and the backend's error reporting.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #ifdef SIFT_TESTING

@@ -14,6 +14,7 @@
  *     the way to it (an IN list), and no other node is in either set. A mask over 62 bits of IPv6 is a node of the 62nd bit: a test of such a mask
  *     is answered by PostgreSQL's operator on the candidates.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <sys/socket.h>

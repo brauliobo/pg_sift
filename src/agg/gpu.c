@@ -11,6 +11,7 @@
  * Settings: sift.gpu (off, auto, on), sift.gpu_min_rows, sift.gpu_device, sift.gpu_cache_mb. Without SIFT_VULKAN (the default build) only the
  * settings exist, and a scan that asks for the device says once that the build has none and runs on the CPU.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "storage/ipc.h"

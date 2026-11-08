@@ -3,6 +3,7 @@
  * Which join and which combo slot of the pass each join and slot of an arm is, and the
  * slot that holds the rest of an ON clause.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"

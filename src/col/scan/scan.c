@@ -3,6 +3,7 @@
  * and the selections of a unit
  * the pruning and the point and order lists are in the files next to it
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "utils/rls.h"
 #include "executor/instrument.h"

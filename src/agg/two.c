@@ -1,6 +1,7 @@
 /*
  * agg/two.c - two level aggregation: arms and cells
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>

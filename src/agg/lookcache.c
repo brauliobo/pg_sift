@@ -11,6 +11,7 @@
  * shared memory of all backends too (sift.agg_lookup_shared_kb, agg/lookshm.c), under the same key and pages, and a query that finds none of its
  * own reads them there.
  */
+/* check-memory: allow-allocs the cache of block LSNs stops at LOOKCACHE_MAX_BLOCKS (at most MaxAllocSize / 8 blocks) */
 #include "postgres.h"
 
 #include "access/parallel.h"

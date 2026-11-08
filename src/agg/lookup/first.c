@@ -3,6 +3,7 @@
  * The order that picks the first row of each key, the keep of agreeing rows, the count of the
  * first rows of a table and the load and peek of a first map.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"

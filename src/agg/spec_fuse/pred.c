@@ -3,6 +3,7 @@
  * The conjuncts over the joined rows each once, the aggregates the arms share, and the
  * split of the conjuncts over the rows between the pass and the arms.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"

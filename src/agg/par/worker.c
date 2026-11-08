@@ -2,6 +2,7 @@
  * agg/par/worker.c - the entry point of a worker of a parallel scan
  * A worker opens the leader's statement from the shared memory, takes items, and sends its tables, hits and counters through its queue.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 #include "storage/proc.h"
 

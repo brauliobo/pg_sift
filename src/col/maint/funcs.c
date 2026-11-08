@@ -3,6 +3,7 @@
  * promote, merge, index info, segments and leaves
  * what an operator calls to see or drive a sift_col index
  */
+/* check-memory: allow-allocs a diagnostic list of the extents of one index (40 bytes each) */
 #include "postgres.h"
 #include "access/relation.h"
 #include "common/int.h"

@@ -2,6 +2,7 @@
  * agg/topn/gwalk.c - the walk of a top-N over the global order: the groups of ties, the entries read ahead for a
  * condition on another column, the queue of the rows before the first goes out
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
 #include "lib/stringinfo.h"

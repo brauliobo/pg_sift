@@ -4,6 +4,7 @@
  * Two values that are equal but spelled differently (1.0 and 1.00, 1 month and 30 days) are two entries; the executor decides what
  * equal values mean with the type's own equality.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "fmgr.h"

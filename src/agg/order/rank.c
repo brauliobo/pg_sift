@@ -11,6 +11,7 @@
  * What the Sort does that the node does not do, it leaves to the Sort: a Sort under a Limit stays (the bounded heapsort), so does one under a Gather. A node that finds
  * its input too small, its keys too varied or its rows more than work_mem hands what it read to a tuplesort (the Sort's own) and goes on with that.
  */
+/* check-memory: allow-allocs a rank sort takes at most RANK_MAX_ROWS rows (40 million) and hands over to a tuplesort */
 #include "postgres.h"
 
 #include "common/hashfn.h"

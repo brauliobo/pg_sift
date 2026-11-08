@@ -2,6 +2,7 @@
  * agg/leaf.c - reading the leaves of a unit and mapping their values: conversions, dictionaries, unit vectors, id tables, numeric
  * programs
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include <float.h>

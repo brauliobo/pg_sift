@@ -3,6 +3,7 @@
  * the units a cut yields and the rows a unit holds on a table that was never analyzed
  * the sort of a sample
  */
+/* check-memory: allow-allocs the sample of the autocut is capped at AUTOCUT_ROWS rows and AUTOCUT_SBS superblocks */
 #include "postgres.h"
 #include <math.h>
 #include "access/heapam.h"

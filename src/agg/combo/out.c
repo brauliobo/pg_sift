@@ -3,6 +3,7 @@
  * The output table of a combo, the decoding of a numeric, the evaluation of a slot and the
  * emit of the rows of a combination.
  */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
 #include "postgres.h"
 
 #include "executor/executor.h"

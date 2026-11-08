@@ -1,6 +1,7 @@
 /*
  * col/scan/gmem.c - the rows of the write buffers sorted for the global order of a leaf, made from the batches of a scan or found where the backend kept them from the last scan
  */
+/* check-memory: allow-allocs the write-buffer rows sorted for an order are at most SIFT_CGORD_MEM_MAX (2 million), checked before the allocation */
 #include "postgres.h"
 #include "col/point.h"
 #include "col/wbuf.h"

@@ -2,6 +2,7 @@
  * col/seg/gorder_group.c - the rows of one group of a second order (a global order grouped by another leaf) between two keys: the group's run
  * in the table of groups, the two bounds as seeks among its entries
  */
+/* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/cmp.h"
 #include "col/seg_int.h"
 

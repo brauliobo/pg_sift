@@ -3,6 +3,7 @@
  * Which rollup answers the scan, whether it is cheaper than the rows, and its cells folded
  * into the groups.
  */
+/* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "agg/agg_int.h"
