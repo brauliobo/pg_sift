@@ -455,6 +455,7 @@ jsonb_key_forms	answered by the index in a FILTER, an OR or a CASE	events	-	Push
 jsonb_key_read	the value of a key read beside the test of the key	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	-	ms	faster33	no	-
 agg_case_else	an average, a minimum or a count of a CASE with an ELSE that is a value	events	-	Pushed Aggregates: .*sum\(qty\)	native	-	ms	faster33	no	-
 subselect_max_per_entity	a correlated `min()` or `max()` sub-select of a table is the first row of its entity	orders	default	Global Order: true	native	btree:search_path = c_subselect_max_per_entity__btree	ms,minstr	faster33	no	-
+dimmap_shared_classes	once a backend has read them from the leaves	events	-	Lookup: .*[1-9][0-9]* maps (built|shared)	native	nomap:sift.agg_dimmap_kb = 0	ms,minstr	faster33	no	-
 count_distinct_big_set	gets its pairs sorted once the hash set outgrows the cache	events	-	Pushed Aggregates	native	-	ms	faster33	no	-
 lookup_expr_column	is read from the leaf of the index that holds it	events	-	Lookup: .* column loads	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
 semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-

@@ -652,24 +652,28 @@ dense_leaves_ok(const ColNeed *need, int nneed, int key)
 }
 
 /*
- * Does an index of the table hold the key and the columns of the join as integer leaves (map_load_dense)? bound[c], when given, is how many values the index
- * says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an expression are), 0 when it cannot tell.
+ * The index of the table (open, the caller closes it) that holds the key and the columns of the join as integer leaves (map_load_dense), else NULL. bound[c], when
+ * given, is how many values the index says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an
+ * expression are), 0 when it cannot tell.
  */
-bool
-map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
+Relation
+map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 {
 	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				key = 0;
 	Relation	ix = load_index(rel, j, false, need, &nneed);
-	bool		ok;
 
 	if (ix == NULL)
-		return false;
+		return NULL;
 	while (need[key].att != j->keyatt[0])
 		key++;
-	ok = dense_leaves_ok(need, nneed, key);
-	if (ok && bound != NULL)
+	if (!dense_leaves_ok(need, nneed, key))
+	{
+		index_close(ix, AccessShareLock);
+		return NULL;
+	}
+	if (bound != NULL)
 	{
 		SiftSrcStats st;
 
@@ -679,8 +683,18 @@ map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 				if (j->colexpr[c] ? need[p].xcol == c : need[p].expr == NULL && need[p].att == j->colatt[c])
 					bound[c] = st.ndistinct[need[p].lf->id] > 0 ? st.ndistinct[need[p].lf->id] + 1 : 0;
 	}
+	return ix;
+}
+
+bool
+map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
+{
+	Relation	ix = map_dense_index(rel, j, bound);
+
+	if (ix == NULL)
+		return false;
 	index_close(ix, AccessShareLock);
-	return ok;
+	return true;
 }
 
 /*

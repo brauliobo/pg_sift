@@ -56,6 +56,7 @@ typedef struct SlotReq
 	bool		direct;			/* the value itself (SiftAggSlot.direct) */
 	bool		late;			/* a boolean slot whose expression may raise an error (SiftAggPred.late) */
 	bool		lowered;		/* expr is over Params already (lower_scoped): finish_combos leaves it */
+	bool		key_leaf;		/* a join's key column in expr is read as the leaf it equals (ComboWalk.key_leaf) */
 } SlotReq;
 
 typedef struct ComboCtx
