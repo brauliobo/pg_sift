@@ -590,7 +590,7 @@ join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 bool
 combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si)
 {
-	ComboWalk	w = {c, .key_leaf = true};
+	ComboWalk	w = {c, .key_leaf = force == NULL};
 	ComboCtx   *cb = NULL;
 	SlotReq    *rq;
 
@@ -643,6 +643,7 @@ combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joi
 	rq->is_key = is_key;
 	rq->agg = -1;
 	rq->late = !is_key && w.jc == NULL && may_raise_walker(expr, c);
+	rq->key_leaf = w.key_leaf;
 	cb->slots = lappend(cb->slots, rq);
 	*ci = combo_index(c, cb);
 	*si = list_length(cb->slots) - 1;
@@ -745,7 +746,6 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 		for (int k = 0; sub.jc && k < sub.jc->j.nkey; k++)
 			if (sub.jc->kexpr[k])
 				s->join[cb->join].keyexpr[k] = combo_sub_mutator(sub.jc->kexpr[k], &sub);
-		sub.key_leaf = true;
 		o->nslots = list_length(cb->slots);
 		o->slot = palloc0(Max(o->nslots, 1) * sizeof(SiftAggSlot));
 		foreach_ptr(SlotReq, rq, cb->slots)
@@ -756,6 +756,7 @@ finish_combos(AggCtx *c, SiftAggSpec *s)
 			sl->key = rq->key;
 			sl->agg = rq->agg;
 			sl->direct = rq->direct;
+			sub.key_leaf = rq->key_leaf;
 			sl->expr = rq->lowered ? rq->expr : combo_sub_mutator(rq->expr, &sub);
 		}
 	}

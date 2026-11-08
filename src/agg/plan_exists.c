@@ -714,7 +714,7 @@ compile_exists_post(AggCtx *c, SubPlan *sp)
 
 			p->leaf = ci;
 			p->op = si;
-			rq->expr = lower_scoped(c, ci, rq->expr, true);
+			rq->expr = lower_scoped(c, ci, rq->expr, rq->key_leaf);
 			rq->lowered = true;
 			p->desc = psprintf("EXISTS %s[] (%s)", leaf_name(c, grp), combo_text(c, ci, expr));
 			c->elem_work += (p->nchild + 1) * elems_of(c, grp);
