@@ -28,6 +28,7 @@
 
 #include "col/am.h"
 #include "col/maint/maint_int.h"
+#include "col/seg_int.h"
 #include "col/wbuf.h"
 #include "core/lane.h"
 
