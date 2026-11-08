@@ -455,3 +455,4 @@ jsonb_key_forms	answered by the index in a FILTER, an OR or a CASE	events	-	Push
 jsonb_key_read	the value of a key read beside the test of the key	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	-	ms	faster33	no	-
 agg_case_else	an average, a minimum or a count of a CASE with an ELSE that is a value	events	-	Pushed Aggregates: .*sum\(qty\)	native	-	ms	faster33	no	-
 subselect_max_per_entity	a correlated `min()` or `max()` sub-select of a table is the first row of its entity	orders	default	Global Order: true	native	btree:search_path = c_subselect_max_per_entity__btree	ms,minstr	faster33	no	-
+dimmap_shared_classes	once a backend has read them from the leaves	events	-	Lookup: .*[1-9][0-9]* maps (built|shared)	native	nomap:sift.agg_dimmap_kb = 0	ms,minstr	faster33	no	-
