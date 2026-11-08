@@ -31,6 +31,7 @@
 #include "agg/accum_int.h"
 #include "agg/dist_int.h"
 #include "agg/rows.h"
+#include "agg/spec/spec.h"
 #include "core/explain.h"
 #include "core/hash.h"
 
@@ -163,6 +164,17 @@ typedef struct RowsExec
 	uint32		gpos;
 } RowsExec;
 
+double
+sift_agg_rows_group_bytes(const SiftRowsSpec *s)
+{
+	/* the keys and their null flags, the hash of the group and its slots in the table (at most half full), the states of the aggregates */
+	double		b = s->nkeys * (sizeof(Datum) + sizeof(bool)) + sizeof(uint32) + 2 * sizeof(uint32);
+
+	for (int i = 0; i < s->naggs; i++)
+		b += s->agg[i].kind == SRA_PG ? sizeof(Datum) + sizeof(bool) : sizeof(int64);
+	return b;
+}
+
 static void rows_rehash(RowsExec *ex);
 static void set_alloc(RowsExec *ex, RowsSet *st, uint64 cap);
 
@@ -205,11 +217,29 @@ rows_reset(RowsExec *ex)
 		rows_rehash(ex);
 }
 
+/* the groups are held to the end: past what the planner leaves the node (group_nospill_factor times hash memory) it ends with an error that says what to raise */
+static void
+rows_groups_check(RowsExec *ex)
+{
+	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true),
+				limit = sift_agg_nospill_bytes(NULL, NULL);
+
+	if (ex->pgstate)
+		held += (double) MemoryContextMemAllocated(ex->pgstate->curaggcontext->ecxt_per_tuple_memory, true);
+	if (held > limit)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: the groups of the aggregate hold %.0f kB, past the %.0f kB the node that groups rows may take", held / 1024.0, limit / 1024.0),
+				 errhint("Raise work_mem or hash_mem_multiplier, or set sift.agg_rows to off.")));
+}
+
 static void
 rows_groups_grow(RowsExec *ex)
 {
 	SiftRowsSpec *s = ex->spec;
 	uint32		cap = Max(ex->gcap * 2, 1024);
+
+	rows_groups_check(ex);
 
 	ex->kval = ex->kval ? repalloc_huge(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
 	ex->knull = ex->knull ? repalloc_huge(ex->knull, (Size) cap * s->nkeys) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys);

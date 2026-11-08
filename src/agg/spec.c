@@ -794,7 +794,7 @@ double
 sift_agg_nospill_bytes(int *factor, double *floor_bytes)
 {
 	int			f = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
-	double		base = Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE);
+	double		base = Max((double) get_hash_memory_limit(), (double) sift_limit(group_nospill_base, GROUP_NOSPILL_BASE));
 
 	if (factor)
 		*factor = f;
