@@ -215,9 +215,16 @@ semi_pass(AggExec *ex, int ci)
 	ex->njpass++;
 }
 
+/* does the leaf hold the keys of a byte table: an int32 leaf (int2, int4, date, bool) or an int8 one (a numeric or timestamp leaf is an int64 of another scale) */
+bool
+semi_lut_leaf(const SiftSrcLayout *lay, int leaf)
+{
+	return lay->leaf[leaf].vtype == SCV_I32 || (lay->leaf[leaf].vtype == SCV_I64 && lay->leaf[leaf].typid == INT8OID);
+}
+
 /*
  * Is the join answered from a byte table of its keys, which semi_lut_build makes from the keys of the table alone? A semi, anti or inner join by one integer
- * key of an int4 leaf of the rows, whose combo gives nothing but the rest of the ON clause (a condition of the table's own, which the load tests).
+ * key of an integer leaf of the rows (semi_lut_leaf), whose combo gives nothing but the rest of the ON clause (a condition of the table's own, which the load tests).
  */
 bool
 semi_lut_possible(const SiftAggSpec *s, int ci, int nbase)
@@ -226,8 +233,76 @@ semi_lut_possible(const SiftAggSpec *s, int ci, int nbase)
 	const SiftAggJoin *j = &s->join[cb->join];
 
 	return (j->kind == SJ_SEMI || j->kind == SJ_ANTI || j->kind == SJ_INNER) && j->nkey == 1 && j->keypos[0] >= 0 && !j->keynull[0] && cb->nleaves == 1 &&
-		j->keytype[0] != TEXTOID && j->keytype[0] != VARCHAROID && cb->leaf[0] >= 0 && cb->leaf[0] < nbase && sift_agg_semi_lut && !combo_read(s, ci) &&
+		sift_aggspec_integer_type(j->keytype[0]) && cb->leaf[0] >= 0 && cb->leaf[0] < nbase && sift_agg_semi_lut && !combo_read(s, ci) &&
 		cb->nslots == (j->fslot >= 0 ? 1 : 0) && !(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot));
+}
+
+/* the slots of the open-addressing set of n keys (at most half full) */
+static uint32
+semi_set_slots(uint32 n)
+{
+	uint32		slots = 16;
+
+	while (slots / 2 < n)
+		slots *= 2;
+	return slots;
+}
+
+/* the byte table over [lo, hi] of the kept keys; false when the key of an inner join repeats (it repeats a tuple: only a key that holds once is a membership test) */
+static bool
+semi_tab_fill(SemiSet *ss, const MapTab *m, const bool *keep, int64 lo, int64 hi, MemoryContext cx, bool unique)
+{
+	ss->lo = lo <= hi ? lo : 0;
+	ss->n = lo <= hi ? (uint32) (hi - lo + 1) : 0;
+	ss->tab = MemoryContextAllocZero(cx, ss->n + SIFT_AGG_PAD);
+	for (uint32 r = 0; r < m->nrow; r++)
+		if (keep[r])
+		{
+			if (ss->tab[map_kint(m, r, 0) - ss->lo] && unique)
+			{
+				pfree(ss->tab);
+				memset(ss, 0, sizeof(SemiSet));
+				return false;
+			}
+			ss->tab[map_kint(m, r, 0) - ss->lo] = 1;
+		}
+	return true;
+}
+
+/* the open-addressing set of the kept keys, for keys that span more than a byte table holds; false as semi_tab_fill */
+static bool
+semi_hash_fill(SemiSet *ss, const MapTab *m, const bool *keep, uint32 nkeys, MemoryContext cx, bool unique)
+{
+	uint32		slots = semi_set_slots(nkeys);
+
+	ss->mask = slots - 1;
+	ss->key = MemoryContextAlloc(cx, (Size) slots * sizeof(int64));
+	for (uint32 h = 0; h < slots; h++)
+		ss->key[h] = PG_INT64_MIN;
+	for (uint32 r = 0; r < m->nrow; r++)
+		if (keep[r])
+		{
+			int64		k = map_kint(m, r, 0);
+			uint32		h = (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & ss->mask;
+
+			if (k == PG_INT64_MIN)
+			{
+				if (ss->has_min && unique)
+					goto repeated;
+				ss->has_min = true;
+				continue;
+			}
+			while (ss->key[h] != PG_INT64_MIN && ss->key[h] != k)
+				h = (h + 1) & ss->mask;
+			if (ss->key[h] == k && unique)
+				goto repeated;
+			ss->key[h] = k;
+		}
+	return true;
+repeated:
+	pfree(ss->key);
+	memset(ss, 0, sizeof(SemiSet));
+	return false;
 }
 
 static void
@@ -237,33 +312,41 @@ semi_lut_build(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	int64		lo = PG_INT32_MAX,
-				hi = PG_INT32_MIN;
+	const bool	wide = ex->lay->leaf[cb->leaf[0]].vtype == SCV_I64;
+	const uint64 limit = (uint64) sift_agg_semi_lut_size * 1024;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+	uint32		nkeys = 0;
 	bool	   *keep;
+	bool		ok;
 	/* the table depends on the rows alone when the load tested the table's own conditions: the same rows give the same table */
 	bool		kept = m->filtered || j->fslot < 0;
+	MemoryContext cx = kept ? m->cxt : ex->cxt;
 
 	if (!semi_lut_possible(ex->spec, ci, ex->nbase))
 		return;
-	if (ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
+	if (!semi_lut_leaf(ex->lay, cb->leaf[0]))
 	{
 		semi_pass(ex, ci);
 		return;
 	}
-	if (kept && m->slut && m->slut_kind == j->kind && m->snlut <= (uint64) sift_agg_semi_lut_size * 1024)
+	/* an int8 leaf the scan's key filter has tested needs no test of its own (the pass an int8 leaf had before it had a table) */
+	if (wide)
+		semi_pass(ex, ci);
+	if (cs->spass)
+		return;
+	if (kept && semi_set_ready(&m->sset) && m->slut_kind == j->kind && m->slut_wide == wide && semi_set_bytes(&m->sset) <= limit)
 	{
-		cs->slo = m->slo;
-		cs->snlut = m->snlut;
-		cs->slut = m->slut;
+		cs->sset = m->sset;
 		ex->nsemi++;
-		ex->semi_bytes += cs->snlut;
+		ex->semi_bytes += semi_set_bytes(&cs->sset);
 		return;
 	}
-	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside int32 matches no leaf */
+	/* the rest of the ON clause (the table's own conditions) holds or not per row of the table: once, not per probe; a key outside the range of an int32 leaf matches none of its values */
 	keep = palloc(Max(m->nrow, 1) * sizeof(bool));
 	for (uint32 r = 0; r < m->nrow; r++)
 	{
-		keep[r] = map_kint(m, r, 0) >= PG_INT32_MIN && map_kint(m, r, 0) <= PG_INT32_MAX;
+		keep[r] = wide || (map_kint(m, r, 0) >= PG_INT32_MIN && map_kint(m, r, 0) <= PG_INT32_MAX);
 		if (keep[r] && j->fslot >= 0 && !m->filtered)
 		{
 			bool		isnull;
@@ -280,42 +363,34 @@ semi_lut_build(AggExec *ex, int ci)
 		{
 			lo = Min(lo, map_kint(m, r, 0));
 			hi = Max(hi, map_kint(m, r, 0));
+			nkeys++;
 		}
 	}
 	ResetExprContext(ex->lutcx);
-	if (lo <= hi && hi - lo + 1 > (int64) sift_agg_semi_lut_size * 1024)
+	if (lo <= hi && (uint64) hi - (uint64) lo >= limit)
 	{
-		pfree(keep);
+		/* more values than the byte table holds: nothing to test where the scan's key filter has (semi_pass), else the keys as a set if that fits the same memory */
 		semi_pass(ex, ci);
-		return;
-	}
-	cs->slo = lo <= hi ? (int32) lo : 0;
-	cs->snlut = lo <= hi ? (uint32) (hi - lo + 1) : 0;
-	cs->slut = MemoryContextAllocZero(kept ? m->cxt : ex->cxt, cs->snlut + SIFT_AGG_PAD);
-	for (uint32 r = 0; r < m->nrow; r++)
-		if (keep[r])
+		if (cs->spass || (Size) semi_set_slots(nkeys) * sizeof(int64) > limit)
 		{
-			/* an inner join repeats a tuple per row of its key: only a key that holds once is a membership test */
-			if (cs->slut[map_kint(m, r, 0) - cs->slo] && j->kind == SJ_INNER)
-			{
-				pfree(cs->slut);
-				cs->slut = NULL;
-				cs->snlut = 0;
-				pfree(keep);
-				return;
-			}
-			cs->slut[map_kint(m, r, 0) - cs->slo] = 1;
+			pfree(keep);
+			return;
 		}
+		ok = semi_hash_fill(&cs->sset, m, keep, nkeys, cx, j->kind == SJ_INNER);
+	}
+	else
+		ok = semi_tab_fill(&cs->sset, m, keep, lo, hi, cx, j->kind == SJ_INNER);
 	pfree(keep);
+	if (!ok)
+		return;
 	if (kept)
 	{
-		m->slut = cs->slut;
-		m->slo = cs->slo;
-		m->snlut = cs->snlut;
+		m->sset = cs->sset;
 		m->slut_kind = j->kind;
+		m->slut_wide = wide;
 	}
 	ex->nsemi++;
-	ex->semi_bytes += cs->snlut;
+	ex->semi_bytes += semi_set_bytes(&cs->sset);
 }
 
 /* the tuples of `in` that pass a semi (the key is in the table) or anti (it is not, or NULL) join of the table, to the next stage */

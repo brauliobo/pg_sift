@@ -113,9 +113,9 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN d8_dup d ON d.id = e
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM d8 d WHERE d.id = ev.k8 AND d.country < 30) GROUP BY kind');
-   plan   | result_rows | vs_no_filter | vs_normal_plan 
-----------+-------------+--------------+----------------
- SiftAgg, |           4 |            0 |              0
+         plan          | result_rows | vs_no_filter | vs_normal_plan 
+-----------------------+-------------+--------------+----------------
+ SiftAgg,1 semi tables |           4 |            0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev LEFT JOIN d8 d ON d.id = ev.k8 AND d.country = 7 GROUP BY d.country');

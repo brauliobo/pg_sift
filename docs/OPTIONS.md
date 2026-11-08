@@ -2061,14 +2061,14 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · diagnostic · since 3.2 · default on
 
-- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer or date leaf is answered from a byte table over the keys of the joined table
+- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an int2, int4, int8 or date leaf is answered from a byte table over the keys of the joined table, or a hash set of them where they span more
 - **Gain:** IN or EXISTS over a group of 1,000 keys, 3,000,000 rows: 66.0 ms normal plan, 27.0 generic lookup join, 6.0 byte table; NOT EXISTS 85.2 to 10.4 ms
-- **Impact:** index size: -; build, merge and writes: -; other: memory of that table, 4096 kB by default per scan and per worker; keys that span more keep the generic join
-- **When:** Semi and anti joins (IN, EXISTS, NOT EXISTS) on an integer or date leaf whose key range fits sift.agg_semi_lut_size; NOT IN (SELECT ..) stays on the hashed subplan, other key types use the generic lookup join.
+- **Impact:** index size: -; build, merge and writes: -; other: memory of that table, 4096 kB by default per scan and per worker; keys that do not fit keep the generic join
+- **When:** Semi and anti joins (IN, EXISTS, NOT EXISTS) on an int2, int4, int8 or date leaf whose key range, or whose keys, fit sift.agg_semi_lut_size; NOT IN (SELECT ..) stays on the hashed subplan, other key types use the generic lookup join.
 - **Default:** on — On: 1,000 keys over 3,000,000 rows 6.0 ms against 27.0 (generic lookup join) and 66.0 (normal plan); NOT EXISTS 85.2 to 10.4 ms; no index growth or write cost.
 - **Turn off:** SET sift.agg_semi_lut = off (session, role, database or postgresql.conf): the generic lookup join runs, 3.5x-4.5x slower for 100-5,000 keys. No REINDEX.
 - **Upgrade from 4.1:** unchanged
-- **Advice:** Leave on. Off uses the generic lookup join, 3.5x to 4.5x slower for groups of 100 to 5,000 keys. It applies to integer or date join keys whose range fits sift.agg_semi_lut_size.
+- **Advice:** Leave on. Off uses the generic lookup join, 3.5x to 4.5x slower for groups of 100 to 5,000 keys. It applies to int2, int4, int8 or date join keys whose range, or number of keys, fits sift.agg_semi_lut_size.
 - **Sources:** benchmark [docs/SET-FILTERS.md](SET-FILTERS.md); [SET-FILTERS 3](SET-FILTERS.md#3-the-set-as-a-table-in-select--exists-not-exists-siftagg_semi_lut)
 
 #### sift.agg_key_skew
@@ -2413,14 +2413,14 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · safety · since 3.2 · default 4096 kB
 
-- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer or date leaf is answered from a byte table over the keys of the joined table
+- **What it does:** a semi or anti join (IN, EXISTS, NOT EXISTS) on an int2, int4, int8 or date leaf is answered from a byte table over the keys of the joined table, or a hash set of them where they span more
 - **Gain:** as `sift.agg_semi_lut`
-- **Impact:** index size: as `sift.agg_semi_lut`; build, merge and writes: as `sift.agg_semi_lut`; other: memory of that table, 4096 kB by default per scan and per worker; keys that span more keep the generic join
-- **When:** The byte table (one byte per key value) of a semi or anti join on an integer or date leaf, per scan and per worker; a key range wider than size x 1024 values keeps the generic lookup join.
-- **Default:** 4096 kB — 4096 kB covers key ranges up to 4,194,304 values per scan and worker and bounds the memory; wider keys fall back to the generic join. The choice of 4096 is not argued in a source.
+- **Impact:** index size: as `sift.agg_semi_lut`; build, merge and writes: as `sift.agg_semi_lut`; other: memory of that table, 4096 kB by default per scan and per worker; keys that do not fit keep the generic join
+- **When:** The membership test of a semi or anti join on an integer or date leaf, per scan and per worker: a byte table (one byte per key value) while the keys span at most size x 1024 values, else a hash set of the keys (16 bytes per key) while that fits; larger keeps the generic lookup join.
+- **Default:** 4096 kB — 4096 kB covers key ranges up to 4,194,304 values, or 262,144 keys of any range, per scan and worker, and bounds the memory; more keys over a wider range fall back to the generic join. The choice of 4096 is not argued in a source.
 - **Turn off:** n/a: a memory limit; lower it to cap memory. 0 sends every semi or anti join with a key to the generic join; sift.agg_semi_lut = off is the switch.
 - **Upgrade from 4.1:** unchanged
-- **Advice:** Default 4096 kB per scan and per worker (one byte per value of the key range). Raise it when keys span more (a wider range keeps the generic join); lower it to cap memory.
+- **Advice:** Default 4096 kB per scan and per worker (one byte per value of the key range, or eight bytes per slot of the hash set of the keys, twice as many slots as keys). Raise it when the keys span more and are more than the set holds (they keep the generic join); lower it to cap memory.
 - **Sources:** benchmark as `sift.agg_semi_lut`; [SET-FILTERS 3](SET-FILTERS.md#3-the-set-as-a-table-in-select--exists-not-exists-siftagg_semi_lut)
 
 #### sift.agg_combo_cache

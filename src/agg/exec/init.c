@@ -128,7 +128,7 @@ sift_agg_init(void)
 							 NULL, &sift_agg_verdict_cache, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
-							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
+							"Memory of the byte table (or hash set) of the keys of a semi or anti join, per scan and per worker; keys that do not fit keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_topn",
