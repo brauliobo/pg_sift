@@ -121,6 +121,7 @@ extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
  * on a standby the mismatch path unlocks it to consult the directory.
  */
 extern void sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen);
+extern void sift_store_require_ready(Relation index);
 
 /* Directory snapshot: plain copy of metapage + directory (invariant I3) */
 typedef struct SiftDirSnapshot

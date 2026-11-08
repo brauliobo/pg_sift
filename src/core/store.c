@@ -151,6 +151,22 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 }
 
 /*
+ * The SQL functions and views that look inside an index read its metapage, which an index of CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not got until its
+ * build ends (the file is empty, or written past shared buffers with the metapage last, and a standby replays the build from the same WAL): while it is not ready, or when the
+ * build failed and left it so, the read is no corruption but a question the index cannot answer yet.
+ */
+void
+sift_store_require_ready(Relation index)
+{
+	if (!index->rd_index->indisready)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("sift index \"%s\" is not ready to be read", RelationGetRelationName(index)),
+				 errdetail("Its CREATE INDEX CONCURRENTLY or REINDEX CONCURRENTLY has not finished building it."),
+				 errhint("Wait for the build to finish, or DROP INDEX the one a failed build left.")));
+}
+
+/*
  * The metapage minor a build must read to understand the segment: the segment format of a BM25 segment, 1.3 for a column segment with unfrozen
  * rows (which an older build would show as final); the other column segments need no more than the base, their format is the column engine's own
  */

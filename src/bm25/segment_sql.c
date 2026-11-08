@@ -153,6 +153,8 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	if (index->rd_rel->relkind == RELKIND_INDEX)
+		sift_store_require_ready(index);
 	snap = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)

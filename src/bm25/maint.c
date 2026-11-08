@@ -488,6 +488,7 @@ sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE lock)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index", RelationGetRelationName(index), ops->name)));
+	sift_store_require_ready(index);
 	return index;
 }
 
