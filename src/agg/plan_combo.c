@@ -159,6 +159,9 @@ join_key_leaf(AggCtx *c, Var *v)
 		jc->j.keypos[0] < 0 || jc->j.keyexpr[0] != NULL || jc->j.tkey[0] != NULL || jc->j.keyatt[0] != v->varattno)
 		return -1;
 	id = ((ComboCtx *) list_nth(c->combos, jc->combo))->leaf[jc->j.keypos[0]];
+	/* equal values of these types are the same value (a numeric 1.0 and 1.00, a text of another collation are not) */
+	if (type_class(v->vartype) != TC_INT && type_class(v->vartype) != TC_DATE && type_class(v->vartype) != TC_TS && type_class(v->vartype) != TC_TSTZ)
+		return -1;
 	return id >= 0 && leaf_of(c, id)->typid == v->vartype ? id : -1;
 }
 
@@ -296,6 +299,28 @@ join_equality(AggCtx *c, JoinCtx *jc, Node *q, Node **m, Node **e, Oid *lt, Oid 
 	else
 		return NULL;
 	return op;
+}
+
+/* the expression of the scan an inner join's key column equals (c.parent_id for p.id of `p.id = c.parent_id`); NULL when v is not such a key */
+Node *
+join_key_scan(AggCtx *c, Var *v)
+{
+	JoinCtx    *jc;
+
+	if (join_key_leaf(c, v) < 0)
+		return NULL;
+	jc = join_of_var(c, (Node *) v);
+	foreach_ptr(Node, q, jc->clauses)
+	{
+		Node	   *m,
+				   *e;
+		Oid			lt,
+					rt;
+
+		if (join_equality(c, jc, q, &m, &e, &lt, &rt) != NULL && IsA(m, Var) && ((Var *) m)->varattno == v->varattno && exprType(e) == v->vartype)
+			return e;
+	}
+	return NULL;
 }
 
 /* the column (or computed key) m of the joined table is the next key of the join (nullsafe: a NULL equals a NULL) */
