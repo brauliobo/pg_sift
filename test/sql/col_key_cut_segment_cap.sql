@@ -2,7 +2,7 @@
 -- the longest of them holds at most twice the rows an even split over the directory would (the arrays its end builds are up to 48 bytes a row, so the memory
 -- of its end is bounded by the table and the directory, never by the key), and the participants of a parallel build leave the merge to slices of the same size.
 -- sift.test_limits makes the arrays of the build fail over the limit, so the build itself proves the bound; a limit under it fails the build cleanly.
--- A key that has a value holding a large part of the table is another shape: that value's rows are one segment (docs/OPTIONS.md, key_cut).
+-- A key with a value that holds a third of the table is cut the same way: the rows of that value are read back in runs of the memory of one, not as one.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
@@ -43,6 +43,27 @@ CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'ten
 SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.1 * sum(rows) / count(*) AS slices_even
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
+
+-- a third of the rows are one value of the key (the key_cut of the user's): the segments are those of an even key, in the same arrays, and the rows are the heap's
+DROP TABLE cap;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false);
+INSERT INTO cap SELECT g, CASE WHEN g % 3 = 0 THEN 1 ELSE (g::bigint * 7919 % 5000)::int END, date '2020-01-01' + (g % 2000) FROM generate_series(1, 3200000) g;
+VACUUM (FREEZE, ANALYZE) cap;
+SET sift.test_limits = 'array_bytes=2418912';
+CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
+SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 2 * 3200000 / 127 AS longest_under_twice_even
+FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
+SELECT sift.col_verify('cap_i', true);
+RESET sift.test_limits;
+SET sift.enable_agg = on;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = off;
+SELECT count(*), sum(id) FROM cap WHERE tenant_id = 1;
+SET sift.enable_agg = off;
+SET enable_seqscan = on;
+SELECT count(*), sum(id) FROM cap WHERE tenant_id = 1;
 
 DROP TABLE cap;
 DROP EXTENSION pg_sift;

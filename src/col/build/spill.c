@@ -411,10 +411,25 @@ colb_spill_start(ColBuild *b)
 	return true;
 }
 
+/* The rows read back are sorted and written as a run, and the next run starts from a batch that has none of them */
+static void
+spill_run(ColBuild *b)
+{
+	if (b->batch->nrows == 0)
+		return;
+	sift_cbatch_trim(b->batch);
+	b->held = list_make1(b->batch);
+	b->held_rows = b->batch->nrows;
+	colb_write_run(b, false);
+	b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);	/* the batch lived in the memory the run released */
+	b->batch->keyed = b->batch->unsorted = true;
+}
+
 /*
  * The scan is over. The chunks, in the order of the key, are packed into runs of as many rows as the first run held (about the memory of a run), and the rows
  * of a run are read back into one batch (the rows of any superblock, in any order: a keyed batch), which is sorted and written as a run is. A run ends at the end
- * of a chunk, so the runs do not overlap in the key.
+ * of a chunk, so the runs do not overlap in the key. A chunk of more rows than a run (one value of the key holds them, or a few) is read back in pieces of a run,
+ * in the order of the scan, each sorted and written as a run: they overlap, as the runs of a build without ranges do, and the rewrite orders them.
  */
 void
 colb_spill_finish(ColBuild *b)
@@ -458,19 +473,13 @@ colb_spill_finish(ColBuild *b)
 				SIFT_INVARIANT(more, "sift_col build: the file of a key range ends before its rows");
 				sift_cbatch_add(b->batch, &row);
 				MemoryContextReset(rcx);
+				if (b->batch->nrows >= target)
+					spill_run(b);
 			}
 			BufFileClose(f);
 		}
 		elog(DEBUG1, "sift_col build: chunks %d..%d, %llu rows", i, j - 1, (unsigned long long) rows);
-		if (b->batch->nrows > 0)
-		{
-			sift_cbatch_trim(b->batch);
-			b->held = list_make1(b->batch);
-			b->held_rows = b->batch->nrows;
-			colb_write_run(b, false);
-			b->batch = sift_cbatch_create(b->heldcxt, sc);	/* the batch lived in the memory the run released */
-			b->batch->keyed = b->batch->unsorted = true;
-		}
+		spill_run(b);
 		i = j;
 	}
 	MemoryContextDelete(rcx);

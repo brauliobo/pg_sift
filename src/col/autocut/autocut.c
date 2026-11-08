@@ -108,6 +108,7 @@ typedef struct CutVerdict
 	bool		decided;		/* the options let a build decide */
 	bool		maybe;			/* the first look found a key that may be worth cutting by: the full sample decides */
 	const char *reason;
+	const char *hot;		/* a key that fires was left alone because a value of it holds more rows than a segment: what the NOTICE says */
 	char		leaf[NAMEDATALEN];
 	char		second[NAMEDATALEN];	/* the date or timestamp leaf the rows of a key are sorted by, or empty */
 	char		widened[NAMEDATALEN];	/* the leaf that follows the table and whose zones the cut widens, its lookups being a unique b-tree's, or empty */
@@ -386,6 +387,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	for (int i = 0; i < nfire; i++)
 	{
 		double		worst = 0,
+					hot,
 					benefit = acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0);
 
 		/* a key_order of the user's names the lookups the index is for, the group and the key: the zones of the other leaves are not weighed against them */
@@ -426,6 +428,15 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			blocked[i] = true;
 			if (i == 0)
 				v->reason = zone_why[i];
+		}
+		/* a value of the key that holds more rows than a segment makes the runs of a build the rewrite must order, not the units of a key */
+		else if (!tr[fire[i]].time && (hot = acut_hot_share(heap, &tr[fire[i]], samp->n) * rows_per_unit * nsb) > acut_segment_rows())
+		{
+			blocked[i] = true;
+			if (v->hot == NULL)
+				v->hot = psprintf("%s, one value of %.0f rows", cut_name(index, sc, tr[fire[i]].c), hot);
+			if (i == 0)
+				v->reason = psprintf("the key \"%s\" has a value of about %.0f rows, more than the %.0f a segment holds", cut_name(index, sc, tr[fire[i]].c), hot, acut_segment_rows());
 		}
 	}
 	for (first_open = 0; first_open < nfire && blocked[first_open];)
@@ -537,6 +548,8 @@ done:
 	MemoryContextSwitchTo(old);
 	if (v->reason != NULL)
 		v->reason = pstrdup(v->reason);
+	if (v->hot != NULL)
+		v->hot = pstrdup(v->hot);
 	MemoryContextDelete(cx);
 }
 
@@ -559,6 +572,13 @@ static struct
 	char		keys[2 * NAMEDATALEN + 4];
 } advised;
 
+/* ... and the value that kept it from cutting by a key that fires */
+static struct
+{
+	Oid			index;
+	char		text[256];
+} hotnote;
+
 static void
 advise_keys(const CutVerdict *v, char *out)
 {
@@ -570,6 +590,21 @@ const char *
 sift_col_key_cut_advised(Relation index)
 {
 	return advised.index == RelationGetRelid(index) ? advised.keys : NULL;
+}
+
+/* Why the build left a key alone that fires (a value of it holds more rows than a segment), or NULL; for an index that was built before, decided now from a sample */
+const char *
+sift_col_key_cut_hot(Relation heap, Relation index, bool build)
+{
+	CutVerdict	v;
+	const char *have = sift_col_options_key_cut(index);
+
+	if (build)
+		return hotnote.index == RelationGetRelid(index) ? hotnote.text : NULL;
+	if (have[0] != '\0' && strcmp(have, "auto") != 0)
+		return NULL;
+	decide(heap, index, true, &v);
+	return v.res == SIFT_AUTOCUT_NONE ? v.hot : NULL;
 }
 
 /* The same, decided now from a sample of the table (sift.key_cut_decision): for an index that was built before */
@@ -599,7 +634,13 @@ sift_col_auto_cut(Relation heap, Relation index)
 	CutVerdict	v;
 
 	advised.index = InvalidOid;
+	hotnote.index = InvalidOid;
 	decide(heap, index, false, &v);
+	if (v.res == SIFT_AUTOCUT_NONE && v.hot != NULL)
+	{
+		hotnote.index = RelationGetRelid(index);
+		strlcpy(hotnote.text, v.hot, sizeof(hotnote.text));
+	}
 	if (v.res == SIFT_AUTOCUT_CUT)
 	{
 		StringInfoData opt;

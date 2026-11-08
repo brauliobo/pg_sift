@@ -6,7 +6,12 @@
 /* check-memory: allow-allocs the sample of the autocut is capped at AUTOCUT_ROWS rows and AUTOCUT_SBS superblocks */
 #include "postgres.h"
 #include <math.h>
+#include "access/htup_details.h"
+#include "catalog/pg_statistic.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "col/point.h"
+#include "core/limits.h"
 #include "core/cmp.h"
 #include "col/autocut/autocut_int.h"
 
@@ -276,4 +281,48 @@ acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, d
 	held = Min(nsb, filled * nsb * rows_per_unit);
 	kept = Min(held, Max(1.0, kept_share * held));
 	return filled * acut_cut_benefit(acut_cut_speedup(held, kept, rows_per_unit), 1.0);
+}
+
+/* The rows a segment may hold: those whose arrays (24 bytes a row, 48 at the end of the segment) fit array_bytes, and the writer's SIFT_CPOINT_BUILD_ROWS */
+double
+acut_segment_rows(void)
+{
+	return Min((double) SIFT_CPOINT_BUILD_ROWS, (double) sift_limit(array_bytes, SIFT_ARRAY_UNLIMITED) / 48);
+}
+
+/*
+ * The share of the rows that the most common value of the leaf holds: the first of the most common values of the statistics of the column when it has them
+ * (none: no value holds more than the rarest of the list), else the most common value of the sample.
+ */
+double
+acut_hot_share(Relation heap, const Track *t, uint32 nsampled)
+{
+	HeapTuple	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(t->hatt), BoolGetDatum(false));
+	AttStatsSlot sslot;
+	Cell	   *cells;
+	uint32		top = 0,
+				run = 0;
+
+	if (HeapTupleIsValid(tup))
+	{
+		double		share = 0.0;
+
+		if (get_attstatsslot(&sslot, tup, STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_NUMBERS))
+		{
+			share = sslot.numbers[0];
+			free_attstatsslot(&sslot);
+		}
+		ReleaseSysCache(tup);
+		return share;
+	}
+	cells = palloc_array(Cell, Max(t->ncells, 1));
+	memcpy(cells, t->cells, t->ncells * sizeof(Cell));
+	qsort(cells, t->ncells, sizeof(Cell), acut_cell_cmp);
+	for (int64 i = 0; i < t->ncells; i++)
+	{
+		run = (i > 0 && cells[i].key == cells[i - 1].key ? run : 0) + cells[i].n;
+		top = Max(top, run);
+	}
+	pfree(cells);
+	return (double) top / Max(nsampled, 1);
 }
