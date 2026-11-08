@@ -22,6 +22,12 @@ send_blob(shm_mq_handle *mqh, const void *data, Size len)
 				 errhint("More details may be available in the server log.")));
 }
 
+static void
+send_part(void *mqh, int p, StringInfo b)
+{
+	send_blob(mqh, b->data, b->len);
+}
+
 void
 sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 {
@@ -113,11 +119,10 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		scan_items(ex);
 	if (!ex->topn)
 	{
-		StringInfoData b;
+		MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift worker blobs", ALLOCSET_DEFAULT_SIZES);
 
-		initStringInfo(&b);
-		blob_dump(ex, -1, &b);
-		send_blob(ex->mqh, b.data, b.len);
+		blob_dump_chunks(ex, tmp, send_part, ex->mqh);
+		MemoryContextDelete(tmp);
 	}
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
