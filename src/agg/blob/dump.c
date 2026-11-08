@@ -9,6 +9,11 @@
 
 #include "agg/blob/int.h"
 #include "agg/group/int.h"
+#include "agg/plan_int.h"
+#include "core/limits.h"
+
+/* the bytes of a blob a worker sends in one message, by the estimate of its groups */
+#define BLOB_CHUNK_BYTES	268435456
 
 /* a sum or average of numerics added as 38-digit integers until one does not fit (numeric_sum_add) */
 bool
@@ -291,22 +296,6 @@ blob_group_hashes(AggExec *ex, const uint32 *gl, uint32 ng, uint32 *h)
 	}
 }
 
-void
-blob_dump(AggExec *ex, int lane, StringInfo b)
-{
-	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
-				ng = 0,
-			   *gl = palloc(Max(n, 1) * sizeof(uint32));
-
-	dist_finish_all(ex);
-	for (uint32 g = 0; g < n; g++)
-		if (ex->seen[g] > 0)
-			gl[ng++] = g;
-	blob_dump_list(ex, lane, gl, ng, b);
-	dist_end_all(ex);
-	pfree(gl);
-}
-
 /*
  * The groups gl[0..ng) of the table (their rows have seen > 0) as a blob. cidx[g] is the number of group g in the blob. pairs, from
  * blob_pairs_split, holds the pairs of the sets of these groups (cidx is then not read for them): a table spilled to many partitions
@@ -436,3 +425,81 @@ blob_dump_parts(AggExec *ex, int nparts, const uint32 *order, const uint32 *star
 	pfree(cidx);
 }
 
+/* the bytes the blob of group g takes: its state, and 8 bytes for each pair of the sets it holds */
+static double
+blob_group_bytes(const AggExec *ex, uint32 g, double state)
+{
+	double		b = state;
+
+	for (int i = 0; i < ex->spec->naggs; i++)
+		if (set_agg(&ex->spec->agg[i]))
+			b += 2 * sizeof(uint32) * (double) ex->acc[i].n[g];
+	return b;
+}
+
+/*
+ * The table as blobs of about blob_bytes each, handed to put one by one (a message of a worker's table: a blob is one buffer of at most 1 GB, in the worker and in the leader
+ * that receives it). The groups go in the order of their numbers, slice after slice, each slice walking the sets for its own groups only, so a slice holds its pairs and no more. The merge
+ * of the leader adds the blobs one after the other, as it adds those of different workers. A table whose states are one structure for all its groups (an ordered-set aggregate)
+ * is one blob; a group alone that takes more than a blob may (four times blob_bytes, 1 GB at most) ends the scan.
+ */
+void
+blob_dump_chunks(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, StringInfo b), void *arg)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+				ng = 0,
+				first = 0,
+			   *gl = palloc(Max(n, 1) * sizeof(uint32));
+	double		state,
+				held = 0,
+				cap = (double) sift_limit(blob_bytes, BLOB_CHUNK_BYTES),
+				most = Min(4 * cap, (double) MaxAllocSize);
+	bool		splittable = blob_splittable(ex);
+
+	(void) group_table_bytes(ex->spec, 1.0, &state);
+	dist_finish_all(ex);
+	for (uint32 g = 0; g < n; g++)
+		if (ex->seen[g] > 0)
+			gl[ng++] = g;
+	for (uint32 r = 0; r < ng; r++)
+	{
+		double		w = blob_group_bytes(ex, gl[r], state);
+
+		if (w > most)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("sift: the partial result of a group of a parallel aggregate takes about %.0f kB, more than the %.0f kB a message may", w / 1024.0, most / 1024.0),
+					 errhint("Set max_parallel_workers_per_gather to 0 for this query, or sift.enable_agg to off.")));
+		if (splittable && r > first && held + w > cap)
+		{
+			uint32		zero = 0,
+						count = r - first;
+
+			blob_dump_parts(ex, 1, gl + first, &zero, &count, tmp, put, arg);
+			first = r;
+			held = 0;
+		}
+		held += w;
+	}
+	if (ng > first || ng == 0)
+	{
+		uint32		zero = 0,
+					count = ng - first;
+
+		if (count > 0)
+			blob_dump_parts(ex, 1, gl + first, &zero, &count, tmp, put, arg);
+		else
+		{
+			StringInfoData b;
+			MemoryContext old = MemoryContextSwitchTo(tmp);
+
+			initStringInfo(&b);
+			blob_dump_list(ex, -1, gl, 0, &b);
+			put(arg, 0, &b);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(tmp);
+		}
+	}
+	dist_end_all(ex);
+	pfree(gl);
+}
