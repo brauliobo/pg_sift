@@ -321,6 +321,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 			part_open(t, &t->part[t->nparts++], schema, cur, &vis, sbs);
 	}
 	MemoryContextSwitchTo(old);
+	SIFT_COL_OPEN_GATE();
 	return t;
 }
 

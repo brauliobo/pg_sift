@@ -13,6 +13,14 @@
  * a participant keeps the float sums of each lane it scanned apart (AggAcc.lv), in the one table it scans into; the leader adds the lanes in lane
  * order, whoever scanned them. The other aggregates are exact in any order: items are MORSEL_SBS superblocks.
  */
+#ifdef SIFT_TESTING
+/* Testing: every participant waits for the advisory lock of this number before it scans an item (sift.test_item_gate), so that what runs meanwhile is after the open of all of them */
+int			sift_test_item_gate = 0;
+#define ITEM_GATE()	sift_test_hold(sift_test_item_gate)
+#else
+#define ITEM_GATE()	((void) 0)
+#endif
+
 #define MORSEL_SBS	2
 #define MORSEL_SUPER_DIV	4
 
@@ -202,6 +210,8 @@ static void
 scan_item(AggExec *ex, uint32 item)
 {
 	ScanShared *sh = ex->shared;
+
+	ITEM_GATE();
 
 	if (part_flush_on(ex))
 		scan_range(ex, sh->partoff[item], sh->partoff[item + 1]);
