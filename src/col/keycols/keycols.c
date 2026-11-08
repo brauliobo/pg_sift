@@ -240,8 +240,17 @@ auto_cut_text(Relation index)
 	return *c && sift_col_options_key_cut_auto(index) ? psprintf("auto: %s", c) : pstrdup(c);
 }
 
+/* Whether the choice of sift_col_auto_redecide could be made but for the heap lock it does not wait for (someone else holds it): a step that needs the choice is left to the next call */
+bool
+sift_col_redecide_busy(Relation index)
+{
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || IsInParallelMode())
+		return false;
+	return !ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
+}
+
 /*
- * Before a merge of every immutable segment: what a build chooses from the data and keeps in an option it wrote itself (key_cut, order_array_columns, point_tid_columns,
+ * Before a step of the rewrite, with every immutable segment in hand (col/maint/merge.c takes them all when the key changes): what a build chooses from the data and keeps in an option it wrote itself (key_cut, order_array_columns, point_tid_columns,
  * each 'auto' or 'auto: list') is chosen again, in the order of the build, so the segments about to be written are those a REINDEX would write: rows of every tenant appended
  * at the end of a heap built in the order of its tenants make a cut pay, the cut makes the ends of an order array and a point directory the better choices, and the index
  * a merge kept at the choices of the day of its build was a third larger. The rewrite is due for its own reasons (dead or fragmented units, the buffer), so the decision
