@@ -111,6 +111,9 @@ extern bool sift_gorder_call_free(const SiftAggOrd *o);
 extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 
+/* the group table of a scan that cannot spill (and of the node that groups rows) may take this much: the planner leaves the scan to the normal plan, which spills, past it, and the scan raises an error */
+extern double sift_agg_nospill_bytes(int *factor, double *floor_bytes);
+
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
 extern bool sift_aggspec_gstream(const SiftAggSpec *s);

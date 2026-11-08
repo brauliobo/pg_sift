@@ -591,6 +591,7 @@ table_init(AggExec *ex)
 	ex->gcap = total;
 	ex->seen = palloc0(total * sizeof(int64));
 	ex->acc = acc_alloc(ex, total);
+	table_nospill_check(ex);
 	arms_resize(ex, total, NULL, 0);
 	ex->dset = palloc0(Max(s->naggs, 1) * sizeof(DSet));
 	ex->dist = palloc0(Max(s->naggs, 1) * sizeof(Dist *));

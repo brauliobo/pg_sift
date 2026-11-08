@@ -36,9 +36,9 @@
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
-	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/plan/finish.c", 32, "times hash memory", \
-	  "estimated group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos), as a multiple of work_mem times hash_mem_multiplier (8 MB at least)", \
-	  "normal plan (slug group_memory, the detail names the groups and the limit)", "work_mem, hash_mem_multiplier", 1) \
+	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/spec.c", 32, "times hash memory", \
+	  "group table of a scan that cannot spill (a two level aggregate, grouping sets, ordered, generic and numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
+	  "normal plan (slug group_memory, the detail names the groups and the limit); ERROR 54000 naming work_mem and hash_mem_multiplier when the table the scan holds passes it", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill.c", 8, "levels", \

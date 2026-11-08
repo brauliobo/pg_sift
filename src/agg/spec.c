@@ -5,6 +5,7 @@
 
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "executor/nodeHash.h"
 #include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
@@ -17,6 +18,12 @@
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
+#include "core/limits.h"
+
+/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
+#define GROUP_NOSPILL_FACTOR	32
+/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
+#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
 
 sift_i128
 sift_pow10(int e)
@@ -777,6 +784,23 @@ sift_aggspec_spillable(const SiftAggSpec *s)
 		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
 			return false;
 	return true;
+}
+
+/*
+ * The bytes a group table that cannot spill may take: the factor (group_nospill_factor) times the hash memory, or times the base when that is more. The planner leaves a
+ * scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does. *factor and *floor_bytes: the two terms, for the message.
+ */
+double
+sift_agg_nospill_bytes(int *factor, double *floor_bytes)
+{
+	int			f = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+	double		base = Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE);
+
+	if (factor)
+		*factor = f;
+	if (floor_bytes)
+		*floor_bytes = base;
+	return f * base;
 }
 
 /*

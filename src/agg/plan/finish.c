@@ -20,11 +20,6 @@
 #include "agg/par_int.h"
 #include "agg/plan/int.h"
 
-/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
-#define GROUP_NOSPILL_FACTOR	32
-/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
-#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
-
 /* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
 #define AGG_LOOKUP_ROW_OVERHEAD	64
 
@@ -456,9 +451,10 @@ void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
 	int			nworkers,
-				nospill = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+				nospill;
 	double		state,
-				table;
+				table,
+				floor_bytes;
 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
@@ -473,11 +469,10 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	}
 	table = group_table_bytes(s, group_count(c, s), &state);
 	/* a scan that cannot spill holds all its groups: the estimate may go far past hash memory (an OOM kill is the other end of it) but not to the sizes of a table of millions of groups */
-	if (table > (double) nospill * Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) && !sift_aggspec_spillable(s))
+	if (table > sift_agg_nospill_bytes(&nospill, &floor_bytes) && !sift_aggspec_spillable(s))
 	{
 		agg_refused_on(GROUP_MEMORY, psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB",
-											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill,
-											  Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) / 1024.0));
+											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill, floor_bytes / 1024.0));
 		return;
 	}
 	if (!child_paths(c, s))
