@@ -15,7 +15,7 @@
 /* Rows the heap keeps at most for a plan to be priced as a sort as well (the sort has no zones to skip units by, but no heap to keep) */
 #define TOPN_SORT_ROWS	1024
 #define TOPN_ZONE_FRAC	0.25		/* the share of the units the zones leave, at the most, for the units to be read in place of the walk of a filter */
-#define TOPN_ROWS_PER_FETCH	64		/* the rows of a unit that a scan reads for one heap fetch of the order-array walk of a filter (a row of a unit ~30 instructions, a fetch ~3,400, half of that margin) */
+#define TOPN_ROWS_PER_FETCH	64		/* the rows of a unit that a scan reads for one heap fetch of the order-array walk of a filter (a row of a unit ~35 instructions, a fetch ~2,600: they break even at about 75 rows of the units for a fetch, measured on 16 list pages; 64 keeps a margin) */
 /* What a row of the heap costs past TOPN_SORT_ROWS, in operator steps: 1.5, 3.1, 9.8 and 19.4 ms over a page of 100 for 2,000, 5,000, 20,000 and 50,000 rows of offset */
 #define TOPN_ROW_STEP	70.0
 /*
