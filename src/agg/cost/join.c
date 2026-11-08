@@ -479,7 +479,7 @@ index_covers(const IndexOptInfo *ii, const SiftAggJoin *j)
 		int			att = n < j->nkey ? j->keyatt[n] : j->colatt[n - j->nkey],
 					i;
 
-		if (n < j->nkey && j->tkey[n])
+		if (n < j->nkey ? j->tkey[n] != NULL : j->colexpr[n - j->nkey] != NULL)
 			return false;
 		for (i = 0; i < ii->ncolumns; i++)
 			if (ii->indexkeys[i] == att && ii->canreturn[i])

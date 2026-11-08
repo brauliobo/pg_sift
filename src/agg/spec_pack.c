@@ -385,6 +385,7 @@ codec_joins(Codec *c, SiftAggSpec *s)
 			PK(c, j->coltype[k]);
 			PK(c, j->coltypmod[k]);
 			PK(c, j->colcoll[k]);
+			PKN(c, j->colexpr[k]);
 		}
 		PK(c, j->first.ok);
 		if (j->first.ok)

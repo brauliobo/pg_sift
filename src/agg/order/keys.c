@@ -388,7 +388,7 @@ lookup_add(JoinCtx *jc, Var *v, List **lookups)
 	l = palloc(sizeof(TopLookup));
 	l->jc = jc;
 	l->var = v;
-	if ((l->col = join_col(jc, v)) < 0)
+	if ((l->col = join_col(jc, (Node *) v)) < 0)
 		return false;
 	*lookups = lappend(*lookups, l);
 	return true;

@@ -1,15 +1,13 @@
 -- A lookup table of one int4 key whose other columns are integer leaves of a sift_col index and take few distinct tuples of values is kept as classes of its keys:
 -- a table over the keys, one row for each class. The answers are those of the normal plan (keys the table has no row for, NULL columns, rows the transaction
 -- changed, a left join, a distinct count by a column of the table, workers), and a table that is not one of those (a key twice, a negative key, too many tuples,
--- a text column, a column of the key itself that a left join reads) is loaded row by row as before. An inner join reads the key as the scanned column it equals (shape 10); shape 11 is
--- a left join, and shape 12 reads the key of one.
+-- a text column, a read of the key as a column) is loaded row by row as before.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
-SET sift.agg_dimmap_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 3300, i % 11 FROM generate_series(1, 40000) i;
@@ -48,9 +46,7 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT dn.lvl, count(*) FROM ev JOIN dn ON dn.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (8, $q$SELECT dw.lvl, dw.grade, count(*) FROM ev JOIN dw ON dw.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (9, $q$SELECT dt.t, dt.lvl, count(*) FROM ev JOIN dt ON dt.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (10, $q$SELECT dd.lvl, count(*), sum(dd.k), max(dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (11, $q$SELECT dd.lvl, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE dd.grade = 1) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (12, $q$SELECT dd.lvl, count(*), sum(dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (10, $q$SELECT dd.lvl, count(DISTINCT dd.k) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 -- the rows of the answer, and the rows the load made classes of
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$

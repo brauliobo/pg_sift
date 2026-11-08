@@ -15,6 +15,7 @@
 #include "catalog/pg_index.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
+#include "nodes/nodeFuncs.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
@@ -31,7 +32,9 @@
 
 typedef struct ColNeed
 {
-	int			att;			/* the column of the table */
+	int			att;			/* the column of the table; 0 for an expression */
+	Node	   *expr;			/* the column of the join that is an expression of the table's columns (SiftAggJoin.colexpr), whose leaf is read */
+	int			xcol;			/* ... and the column of the join it is; -1 for a column of the table */
 	const SiftSrcLeaf *lf;
 	SiftSrcVec	vec;
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
@@ -64,9 +67,9 @@ leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
 	return false;
 }
 
-/* the leaf that holds the whole of column att, as a value of its type: a column of the index that is not an expression, not a path of a jsonb value */
+/* the leaf that holds the whole of column att, or of the expression expr, as a value of its type: not a path of a jsonb value */
 static const SiftSrcLeaf *
-column_leaf(const SiftSrcLayout *lay, int att, Oid typid)
+column_leaf(const SiftSrcLayout *lay, int att, Node *expr, Oid typid)
 {
 	for (int i = 0; i < lay->nleaves; i++)
 	{
@@ -76,7 +79,7 @@ column_leaf(const SiftSrcLayout *lay, int att, Oid typid)
 		if (lf->parent >= 0 || lf->kind != SCL_SCALAR || lf->path != NIL || lf->lossy || lf->wide || lf->astext)
 			continue;
 		e = list_nth(lay->attexprs, lf->attno - 1);
-		if (e != NULL && IsA(e, Var) && ((Var *) e)->varattno == att)
+		if (e != NULL && (expr ? equal(e, expr) : IsA(e, Var) && ((Var *) e)->varattno == att))
 			return leaf_of_type(lf, typid) ? lf : NULL;
 	}
 	return NULL;
@@ -97,7 +100,8 @@ covering_index(Relation rel, ColNeed *need, int nneed)
 			SiftSrcLayout *lay = sift_colsrc_layout(ix);
 
 			for (int i = 0; i < nneed && ok; i++)
-				ok = (need[i].lf = column_leaf(lay, need[i].att, TupleDescAttr(RelationGetDescr(rel), need[i].att - 1)->atttypid)) != NULL;
+				ok = (need[i].lf = column_leaf(lay, need[i].att, need[i].expr, need[i].expr ? exprType(need[i].expr) :
+											   TupleDescAttr(RelationGetDescr(rel), need[i].att - 1)->atttypid)) != NULL;
 		}
 		if (ok)
 			return ix;
@@ -248,6 +252,8 @@ collect_tests(Node *n, const SiftAggJoin *j, int nleaves, const ColNeed *need, i
 	if (o < 0 || pm->paramkind != PARAM_EXEC || pm->paramid < nleaves || pm->paramid - nleaves >= j->ncol || cn->constisnull)
 		return;
 	c = pm->paramid - nleaves;
+	if (j->colexpr[c] != NULL)
+		return;
 	for (int p = 0; p < nneed; p++)
 		if (need[p].att == j->colatt[c])
 		{
@@ -354,15 +360,18 @@ load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nne
 			return NULL;
 	for (int i = 0; i < j->nkey + j->ncol; i++)
 	{
-		int			att = i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
+		Node	   *expr = i < j->nkey ? NULL : j->colexpr[i - j->nkey];
+		int			att = expr ? 0 : i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
 		bool		seen = false;
 
 		for (int p = 0; p < *nneed; p++)
-			seen |= need[p].att == att;
+			seen |= expr ? need[p].expr != NULL && equal(need[p].expr, expr) : need[p].expr == NULL && need[p].att == att;
 		if (!seen)
 		{
 			memset(&need[*nneed], 0, sizeof(ColNeed));
-			need[(*nneed)++].att = att;
+			need[*nneed].att = att;
+			need[*nneed].expr = expr;
+			need[(*nneed)++].xcol = expr ? i - j->nkey : -1;
 		}
 	}
 	return covering_index(rel, need, *nneed);
@@ -476,7 +485,10 @@ load_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *
 			int64		i = (int64) w * 64 + __builtin_ctzll(bits);
 
 			for (int p = 0; p < nneed; p++)
-				cl->slot->tts_values[need[p].att - 1] = cell_datum(&need[p], i, &cl->slot->tts_isnull[need[p].att - 1]);
+				if (need[p].xcol >= 0)
+					cl->m->xv[need[p].xcol] = cell_datum(&need[p], i, &cl->m->xn[need[p].xcol]);
+				else
+					cl->slot->tts_values[need[p].att - 1] = cell_datum(&need[p], i, &cl->slot->tts_isnull[need[p].att - 1]);
 			map_row(cl->ex, cl->m, cl->slot, cl->j, cl->cb, cl->ntest == cl->ntotal ? NULL : cl->own);
 		}
 }
@@ -502,7 +514,9 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	cl.slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	memset(cl.slot->tts_isnull, true, desc->natts * sizeof(bool));
 	ExecStoreVirtualTuple(cl.slot);
+	m->xfed = true;
 	ok = read_units(ex, rel, ix, need, nneed, load_unit, &cl);
+	m->xfed = false;
 	ExecDropSingleTupleTableSlot(cl.slot);
 	index_close(ix, AccessShareLock);
 	ex->lookup_cols += ok;
@@ -711,12 +725,24 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 			slot->tts_isnull[j->keyatt[0] - 1] = false;
 			for (int c = 0; c < d.ncol; c++)
 			{
-				int			att = need[d.col[c]].att;
+				const ColNeed *nd = &need[d.col[c]];
+				bool		isnull = (d.tnull[k] >> c) & 1;
+				Datum		v = isnull ? (Datum) 0 : leaf_datum(nd->lf->typid, d.tv[(size_t) k * d.ncol + c]);
 
-				slot->tts_isnull[att - 1] = (d.tnull[k] >> c) & 1;
-				slot->tts_values[att - 1] = slot->tts_isnull[att - 1] ? (Datum) 0 : leaf_datum(need[d.col[c]].lf->typid, d.tv[(size_t) k * d.ncol + c]);
+				if (nd->xcol >= 0)
+				{
+					m->xv[nd->xcol] = v;
+					m->xn[nd->xcol] = isnull;
+				}
+				else
+				{
+					slot->tts_isnull[nd->att - 1] = isnull;
+					slot->tts_values[nd->att - 1] = v;
+				}
 			}
+			m->xfed = true;
 			map_row(ex, m, slot, j, cb, NULL);
+			m->xfed = false;
 		}
 		ExecDropSingleTupleTableSlot(slot);
 		m->dcls = d.lut;
