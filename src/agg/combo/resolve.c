@@ -37,7 +37,10 @@ dense_ent(AggExec *ex, int ci, uint64 x, uint32 c)
 	uint64		v = c == 0 ? x : (uint64) (uint32) map_kint(m, c - 1, 0) + 1;
 
 	if (cs->cent == NULL)
+	{
 		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
+		cs->cbase = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
+	}
 	cs->cent[c] = combo_ent(ex, ci, &v) + 1;
 	return cs->cent[c] - 1;
 }
@@ -70,6 +73,59 @@ resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const 
 		}
 		eid[i] = e - 1;
 	}
+}
+
+#define CBASE_MANY	UINT32_MAX
+
+/*
+ * The output row of each tuple's key against a dense table whose every class has one row, in one pass: the class of a key and the row of a class are two
+ * array reads, with no entry of the tuple made in between. False, with nothing written that matters, when the join is not that kind (a leaf that is not an
+ * int4 without NULLs) or a class has no row (an orphan key of an INNER join) or several: the caller resolves the entries as for any join, and this
+ * one is not tried again.
+ */
+bool
+combo_dense_outs(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *cout)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const MapTab *m = cs->map;
+	const SiftSrcLeaf *lf;
+	const SiftSrcVec *v;
+	const int32 *key;
+	const uint32 *idx;
+	uint32		dn;
+
+	if (m == NULL || m->dcls == NULL || cs->dmany || cb->nleaves != 1 || cb->leaf[0] < 0 || cs->by_id || combo_null_input(ex))
+		return false;
+	lf = &ex->lay->leaf[cb->leaf[0]];
+	v = get_vec(ex, cb->leaf[0]);
+	if (leaf_wide(lf) || lf->vtype != SCV_I32 || v->isnull != NULL)
+		return false;
+	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
+		combo_reset(ex, ci);
+	idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
+	key = (const int32 *) v->data;
+	dn = m->dn;
+	for (int i = 0; i < n; i++)
+	{
+		int32		k = key[idx[i]];
+		uint32		c = (uint32) k < dn ? m->dcls[k] : 0;
+		uint32		b = cs->cbase != NULL ? cs->cbase[c] : 0;
+
+		if (b == 0)
+		{
+			uint32		e = dense_ent(ex, ci, (uint64) (uint32) k + 1, c);
+
+			b = cs->cbase[c] = cs->ent[e].nout == 1 ? cs->ent[e].base + 1 : CBASE_MANY;
+		}
+		if (b == CBASE_MANY)
+		{
+			cs->dmany = true;
+			return false;
+		}
+		cout[i] = b - 1;
+	}
+	return true;
 }
 
 /*

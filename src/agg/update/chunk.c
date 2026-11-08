@@ -98,13 +98,16 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 	own = &ex->stage[s];
 	eid = ex->peid;
-	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL, in);
-	for (int i = 0; i < n; i++)
+	if (!combo_dense_outs(ex, ci, ex->qlevel, n, in->tidx, in->ridx, own->cout[ci]))
 	{
-		const ComboEnt *en = &cs->ent[eid[i]];
+		combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL, in);
+		for (int i = 0; i < n; i++)
+		{
+			const ComboEnt *en = &cs->ent[eid[i]];
 
-		plain &= en->nout == 1;
-		own->cout[ci][i] = en->base;
+			plain &= en->nout == 1;
+			own->cout[ci][i] = en->base;
+		}
 	}
 	if (plain)
 	{
