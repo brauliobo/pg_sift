@@ -2,6 +2,7 @@
  * col/order.c - key-cut units: the rows of a build, a promotion or a merge are sorted by the declared order key (the option key_cut) and cut
  * into units of a range of the key, whatever their heap pages. Each unit lists its TIDs (enc.c, unit.c).
  */
+#include "core/rowmem.h"
 #include "postgres.h"
 
 #include "catalog/pg_class.h"
@@ -198,7 +199,7 @@ ent_cmp(const OrderCtx *c, const SortEnt *x, const SortEnt *y)
 static void
 sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 {
-	SortEnt    *e = palloc_array(SortEnt, n);
+	SortEnt    *e = sift_rows_alloc((Size) n * sizeof(SortEnt));
 
 	for (uint64 i = 0; i < n; i++)
 	{
@@ -429,7 +430,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		total += in[i]->nrows;
 	if (total == 0)
 		return 0;
-	refs = palloc_array(RowRef, total);
+	refs = sift_rows_alloc((Size) total * sizeof(RowRef));
 	for (int i = 0; i < nin; i++)
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};

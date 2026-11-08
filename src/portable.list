@@ -75,6 +75,7 @@ core/cmp.h
 core/hash.h
 core/i64set.h
 core/limits.h
+core/rowmem.h
 core/cpu.h
 bm25/dict.h
 bm25/dict_int.h

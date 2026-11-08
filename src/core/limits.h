@@ -26,6 +26,9 @@
 
 #include <stdint.h>
 
+/* the default of array_bytes: no limit (a segment is bounded by its memory budget); a test lowers it */
+#define SIFT_ARRAY_UNLIMITED	1125899906842624
+
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
 	  "leaf partitions per SiftAgg scan, after PostgreSQL's pruning", "normal plan (slug partition_count, the detail has the count)", "-", 1) \
@@ -182,6 +185,9 @@
 	  "a key of a jsonb wildcard object", "the value is OVERFLOW (read from the heap)", "-", 0) \
 	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
 	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE)", "-", 1) \
+	X(array_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
+	  "the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array)", \
+	  "none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size)", "maintenance_work_mem", 1) \
 	X(max_segments, "SIFT_MAX_SEGMENTS", "core/sift.h", SIFT_MAX_SEGMENTS, "segments", \
 	  "directory entries of a sift or sift_col index (a sift_table has sift.table_max_segments for a test)", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \

@@ -3,6 +3,7 @@
  * from the keys of the units to the blobs of the file
  * build, then write
  */
+#include "core/rowmem.h"
 #include "core/limits.h"
 #include "col/seg_write/seg_write_int.h"
 
@@ -82,11 +83,11 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		/* the arrays of the entries are the point directory's too, so the others are copied */
 		uint32		nv = 0,
 					nl = 0;
-		int64	   *key = palloc((a->n + 1) * sizeof(int64)),
-				   *grp = palloc((a->n + 1) * sizeof(int64)),
-				   *ngrp = palloc((a->nn + 1) * sizeof(int64));
-		uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
-				   *ntid = palloc((a->nn + 1) * sizeof(uint64));
+		int64	   *key = sift_rows_alloc(((Size) a->n + 1) * sizeof(int64)),
+				   *grp = sift_rows_alloc(((Size) a->n + 1) * sizeof(int64)),
+				   *ngrp = sift_rows_alloc(((Size) a->nn + 1) * sizeof(int64));
+		uint64	   *tid = sift_rows_alloc(((Size) a->n + 1) * sizeof(uint64)),
+				   *ntid = sift_rows_alloc(((Size) a->nn + 1) * sizeof(uint64));
 
 		for (uint32 i = 0; i < a->n; i++)
 			if (a->gok[i])

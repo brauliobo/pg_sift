@@ -1,6 +1,7 @@
 /*
  * col/point.c - the point directory of a leaf in a segment (col/point.h). Portable (core/host.h only).
  */
+#include "core/rowmem.h"
 #include "core/hash.h"
 
 #include "col/point.h"
@@ -146,7 +147,7 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	*par = (SiftCPackPar) {.pbase = pbase,.pmul = pmul,.pbits = pbits};
 	if (pbits > 48)
 		return false;
-	e = palloc(n * sizeof(PointEnt));
+	e = sift_rows_alloc((Size) n * sizeof(PointEnt));
 	memcpy(e, src, n * sizeof(PointEnt));
 	if (span < (UINT64CONST(1) << 56))
 	{
@@ -268,7 +269,7 @@ pk_try(const PointEnt *e, uint32 n, uint32 nk, bool tid, SiftCPackPar *par, Stri
 				pbase = UINT64_MAX;
 	uint32		pmul = 1,
 				at = out->len;
-	PointEnt   *q = palloc(n * sizeof(PointEnt));
+	PointEnt   *q = sift_rows_alloc((Size) n * sizeof(PointEnt));
 	bool		ok;
 
 	for (uint32 i = 0, j; i < n; i = j)
@@ -320,7 +321,7 @@ pk_try(const PointEnt *e, uint32 n, uint32 nk, bool tid, SiftCPackPar *par, Stri
 static void
 point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, uint32 dense, bool exact, bool packed, SiftCPackPar *par, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
-	PointEnt   *e = palloc(n * sizeof(PointEnt));
+	PointEnt   *e = sift_rows_alloc((Size) n * sizeof(PointEnt));
 	uint32		nk = 0,
 				nr = 0;
 	uint64	   *t;
@@ -378,7 +379,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 	*nslots = sift_cpoint_slots(nk, exact);
 	*nkeys = nk;
 	*nrows = nr;
-	t = palloc(*nslots * sizeof(uint64));
+	t = sift_rows_alloc((Size) *nslots * sizeof(uint64));
 	memset(t, 0xFF, *nslots * sizeof(uint64));
 	initStringInfo(&lists);
 	for (uint32 i = 0, j; i < n; i = j)

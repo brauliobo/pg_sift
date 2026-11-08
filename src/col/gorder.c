@@ -2,6 +2,7 @@
  * col/gorder.c - the global order of a leaf in a segment (col/gorder.h). Portable (core/host.h only).
  */
 
+#include "core/rowmem.h"
 #include "col/codec.h"
 #include "col/enc_int.h"
 #include "col/gquant.h"
@@ -404,9 +405,10 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		uint32		i = 0,
 					j = 0;
 
-		gv = palloc((nvals + 1) * sizeof(SiftCGOrdGrp));
-		gn = palloc((nnull + 1) * sizeof(SiftCGOrdGrp));
-		gs = palloc0((nvals + nnull + 1) * sizeof(SiftCGOrdGrp));
+		gv = sift_rows_alloc(((Size) nvals + 1) * sizeof(SiftCGOrdGrp));
+		gn = sift_rows_alloc(((Size) nnull + 1) * sizeof(SiftCGOrdGrp));
+		gs = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(SiftCGOrdGrp));
+		memset(gs, 0, ((Size) nvals + nnull + 1) * sizeof(SiftCGOrdGrp));
 		memset(gv, 0, (nvals + 1) * sizeof(SiftCGOrdGrp));
 		memset(gn, 0, (nnull + 1) * sizeof(SiftCGOrdGrp));
 		ngv = group_runs(ent, 0, nvals, gv, false);
@@ -632,7 +634,7 @@ ends_reduce(OrdEnt *ent, uint32 *nvals, uint32 *nnull, uint32 *head, uint32 *vto
 void
 sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out)
 {
-	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
+	OrdEnt	   *ent = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(OrdEnt));
 	uint32		head = 0,
 				vtotal = 0;
 
@@ -653,7 +655,7 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 void
 sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, int layout, StringInfo out)
 {
-	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
+	OrdEnt	   *ent = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(OrdEnt));
 
 	for (uint32 i = 0; i < nvals; i++)
 		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
@@ -721,7 +723,7 @@ static RankEnt *
 rank_strings(const SiftCDict *d, uint32 collid)
 {
 	uint32		nstr = d->n;
-	RankEnt    *ent = palloc((nstr + 1) * sizeof(RankEnt));
+	RankEnt    *ent = sift_rows_alloc(((Size) nstr + 1) * sizeof(RankEnt));
 
 	for (uint32 i = 0; i < nstr; i++)
 	{
@@ -748,7 +750,7 @@ uint32 *
 sift_cgord_text_order(const SiftCDict *d, uint32 collid)
 {
 	RankEnt    *re = rank_strings(d, collid);
-	uint32	   *order = palloc((d->n + 1) * sizeof(uint32));
+	uint32	   *order = sift_rows_alloc(((Size) d->n + 1) * sizeof(uint32));
 
 	for (uint32 r = 0; r < d->n; r++)
 		order[r] = re[r].code;
@@ -761,9 +763,9 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 {
 	uint32		nstr = d->n,
 				nblk = (nstr + SIFT_CGORD_STR_BLK - 1) / SIFT_CGORD_STR_BLK;
-	uint32	   *rank = palloc((nstr + 1) * sizeof(uint32)),
+	uint32	   *rank = sift_rows_alloc(((Size) nstr + 1) * sizeof(uint32)),
 			   *boff = palloc((nblk + 1) * sizeof(uint32));
-	OrdEnt	   *ent = palloc(((uint64) nvals + nnull + 1) * sizeof(OrdEnt));
+	OrdEnt	   *ent = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(OrdEnt));
 	StringInfoData body,
 				strs;
 	uint32		hdr[4] = {nstr, SIFT_CGORD_STR_BLK, nblk, 0};
