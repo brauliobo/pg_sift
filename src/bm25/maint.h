@@ -219,7 +219,6 @@ extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage reloca
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern BlockNumber sift_maint_cut_released(Relation rel, int elevel);
 extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
-extern bool sift_maint_space_copy_pays(Relation rel);
 
 /* Worker entry point, resolved by name from pg_sift.so; main_arg = index OID */
 extern PGDLLEXPORT void sift_maint_worker_main(Datum main_arg);

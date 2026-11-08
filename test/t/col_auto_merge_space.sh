@@ -29,14 +29,14 @@ for i in 1 2 3 4 5 6; do round t_on on "$i"; done
 check "on: VACUUM moved none, the rewrite writes them" test "$(moves t_on)" == 0
 check "on: every unit answers from its pre-aggregates after the last round" test "$(exact t_on)" == "$(sql sp "SELECT count(*) || '/' || count(*) FROM sift.col_unit_agg('t_on_idx', 'amount')")"
 check "on: the answers are those of the heap" test "$(sql sp "SET sift.enable_agg = on" "SELECT sum(amount) FROM t_on")" == "$(sql sp "SET sift.enable_agg = off" "SELECT sum(amount) FROM t_on")"
-# A rewrite leaves the file twice the index, the new copy above the holes of the old one. The VACUUM after it copies nothing down (that would write the index
-# a second time): the file keeps its size, and the next rewrite takes the holes and leaves an end the cut takes with no copy.
+# A rewrite leaves the file twice the index, the new copy above the holes of the old one. While another rewrite is coming (the rounds above) the VACUUM copies
+# nothing down, which would write the index a second time, and the rewrite takes the holes. When none is coming (its rule has nothing due, as after this one)
+# nothing would fill the holes: the VACUUM moves the segments down and the file goes back to the live bytes.
 settled=$(moves t_on)
 sql sp "UPDATE t_on SET amount = amount + 1 WHERE id % 3 = 1" "SELECT sift.col_maintain('t_on_idx')" >/dev/null
 doubled=$(size t_on)
+check "on: a rewrite leaves the file over 1.4 times the live bytes" test "$doubled" -gt "$(( $(sql sp "SELECT bytes FROM sift.col_index_info('t_on_idx')") * 14 / 10 ))"
 sql sp "SET sift.col_auto_merge = on" "SET sift.async_maintenance = on" "VACUUM t_on" >/dev/null
-check "on: VACUUM after a rewrite copied no segment" test "$(moves t_on)" == "$settled"
-check "on: the file keeps the size the rewrite gave it" test "$(size t_on)" == "$doubled"
-sql sp "UPDATE t_on SET amount = amount + 1 WHERE id % 3 = 2" "SET sift.col_auto_merge = on" "SET sift.async_maintenance = on" "VACUUM t_on" "SELECT sift.col_maintain('t_on_idx')" >/dev/null
-check "on: the next rewrite fills the holes and the file is cut back" test "$(size t_on)" -lt "$doubled"
+check "on: the VACUUM after it, no rewrite coming, moved a segment" test "$(moves t_on)" -gt "$settled"
+check "on: ... and the file is back near the live bytes" test "$(size t_on)" -lt "$(( doubled * 8 / 10 ))"
 finish

@@ -435,35 +435,6 @@ space_segments(Relation rel, const SiftDirSnapshot *snap, SpaceSeg *seg)
 }
 
 /*
- * Do the copies that give the file its live size write at most 1 / SPACE_RETURN of the blocks they return? The segments that end above the live blocks must go
- * down, and the file shrinks by what lies above. A rewrite leaves the index twice its size, the new copy above the holes of the old one: moving it down writes
- * the index a second time for a file that the next rewrite fills again (it takes the lowest free blocks, and the end it leaves is cut with no copy).
- */
-#define SPACE_RETURN		2
-
-bool
-sift_maint_space_copy_pays(Relation rel)
-{
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	SpaceSeg   *seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SpaceSeg));
-	int			n;
-	uint64		live = 0,
-				above = 0;
-	BlockNumber hwm;
-
-	sift_dir_read(rel, snap);
-	hwm = snap->meta.high_water;
-	n = space_segments(rel, snap, seg);
-	for (int i = 0; i < n; i++)
-		live += seg[i].blocks;
-	for (int i = 0; i < n; i++)
-		above += seg[i].end > live ? seg[i].blocks : 0;
-	pfree(seg);
-	pfree(snap);
-	return above * SPACE_RETURN <= (hwm > live ? hwm - live : 0);
-}
-
-/*
  * Rank tail prefixes by the expected file shrinkage within the remaining copy allowance. The destination boundary already includes
  * the free capacity occupied by the copies: subtracting their size again would reject useful moves in interleaved layouts.
  * sift_store_relocate proves each exact reservation fits below that boundary before accepting the candidate.
