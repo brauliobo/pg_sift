@@ -35,6 +35,7 @@
 #define SIFT_CPOINT_CHUNK_ROWS	(UINT32_C(16) << 20)	/* a segment of more rows is looked up whole: one key cannot list more addresses than it has rows (8 bytes each) */
 #define SIFT_CPOINT_MAX_ROWS	65536		/* a lookup that finds more rows is not a point lookup: the units answer it */
 #define SIFT_CPOINT_SEG_ROWS	(UINT32_C(1) << 30)	/* a segment of this many rows or more has no tables: a slot keeps a list offset in 31 bits */
+#define SIFT_CPOINT_BUILD_ROWS	(UINT32_C(1) << 26)	/* a segment is cut at this many rows whatever its budget: the blocks the end of a segment writes in one piece (a packed table of 6 bytes an entry, the slots of a directory, an order block) stay under 1 GB */
 #define SIFT_CPOINT_LIST		(UINT32_C(1) << 31)	/* in a slot, the low 32 bits are this flag and the word offset of a list of rows, not the only row of the key */
 #define SIFT_CPOINT_DENSE	UINT32_C(0x7FFFFFFF)	/* in a slot, the payload of a key too common to list: the units answer it; no row of a segment is this */
 #define SIFT_CPOINT_RECLEN		32			/* the bytes of a record of the header */

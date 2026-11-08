@@ -1,0 +1,67 @@
+-- The arrays a build allocates in proportion to the rows of a segment (the entries of a point directory, a sort copy of an order array) are bounded by the
+-- memory budget of the build, not by the table: a writer counts the keys and addresses it keeps for them, with the arrays the end of the segment builds from them,
+-- and cuts the segment at the budget. A key_order index that is not cut by a key (a group and a date) used to hold every row of the table in one segment, and
+-- its order array asked for 24 bytes a row at the end of the build (an ERROR at 1 GB: 260 million rows after twelve minutes of scan). sift.test_limits
+-- lowers array_bytes, the limit of the helper every such array is allocated with, so that a few rows reach it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+
+CREATE TABLE al (id bigint PRIMARY KEY, tenant_id int, event_date date, updated_at timestamptz, deleted_at timestamptz, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO al SELECT g, (g * 7919 % 400)::int, date '2020-01-01' + (g % 2000), timestamptz '2020-01-01' + g * interval '7 seconds',
+	CASE WHEN g % 50 = 0 THEN timestamptz '2021-01-01' END, md5(g::text) FROM generate_series(1, 200000) g;
+VACUUM (FREEZE, ANALYZE) al;
+
+-- the memory budget of a build: 2 MB; no array of the build may pass 4 MB (the whole table: 200,000 rows of 24 bytes is 4.8 MB)
+SET sift.test_col_segment_kb = 2000;
+SET sift.test_limits = 'array_bytes=4194304';
+CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date');
+SELECT count(*) > 4 AS segments_by_budget, max(rows) * 24 < 4194304 AS arrays_under_limit FROM sift.col_segments('al_col') WHERE kind = 'immutable';
+SELECT sift.col_verify('al_col', true);
+
+-- the rows are the heap's
+SET sift.enable_agg = on;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = off;
+SELECT count(*), sum(id), min(event_date) FROM al WHERE tenant_id = 17;
+SELECT count(*) FILTER (WHERE deleted_at IS NOT NULL), count(*) FROM al;
+SET sift.enable_agg = off;
+SET enable_seqscan = on;
+SELECT count(*), sum(id), min(event_date) FROM al WHERE tenant_id = 17;
+SELECT count(*) FILTER (WHERE deleted_at IS NOT NULL), count(*) FROM al;
+
+-- the limit is what finds an array that follows the table: below the arrays of the budget it fails the build
+SET sift.test_limits = 'array_bytes=65536';
+DROP INDEX al_col;
+CREATE FUNCTION al_build_fails() RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date');
+	RETURN false;
+EXCEPTION WHEN program_limit_exceeded THEN
+	RETURN true;
+END $$;
+SELECT al_build_fails() AS fails_over_the_limit;
+RESET sift.test_limits;
+DROP FUNCTION al_build_fails();
+
+-- a directory of 4 segments: the budget grows to what the rest of the table needs, the last segment does not hold the rows no budget cut
+SET sift.test_col_max_segments = 4;
+SET sift.test_limits = 'array_bytes=3145728';
+CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date');
+SELECT count(*) AS segments, max(rows) * 24 < 3145728 AS arrays_under_limit FROM sift.col_segments('al_col') WHERE kind = 'immutable';
+SELECT sift.col_verify('al_col', true);
+RESET sift.test_col_max_segments;
+DROP INDEX al_col;
+
+-- REINDEX CONCURRENTLY and a second build are bounded the same way
+SET sift.test_limits = 'array_bytes=4194304';
+CREATE INDEX al_col ON al USING sift_col (id, tenant_id, event_date, updated_at, deleted_at, pad) WITH (key_order = 'tenant_id, event_date');
+REINDEX INDEX CONCURRENTLY al_col;
+SELECT count(*) > 4 AS segments_by_budget, max(rows) * 24 < 4194304 AS arrays_under_limit FROM sift.col_segments('al_col') WHERE kind = 'immutable';
+SELECT sift.col_verify('al_col', true);
+RESET sift.test_limits;
+
+DROP TABLE al;
+DROP EXTENSION pg_sift;

@@ -210,6 +210,19 @@ colb_write_run(ColBuild *b, bool last)
 		compact(b);
 }
 
+/*
+ * The directory holds maxsegs segments, the last of them whatever is left: the rest of the table (the heap's estimate, a quarter over) must fit the segments
+ * that remain, so a budget that would overrun them grows to what they need, instead of the last segment holding the rows no budget cut.
+ */
+static void
+fit_budget(ColBuild *b, uint64 seg_rows)
+{
+	double		per_seg = ((double) b->share * 5 / 4 - b->indexed) / Max(b->maxsegs - b->nsegs, 1);
+
+	if (per_seg > seg_rows)
+		b->budget = (Size) ((double) b->budget * per_seg / (double) Max(seg_rows, 1));
+}
+
 void
 colb_flush_batch(ColBuild *b)
 {
@@ -248,8 +261,13 @@ colb_flush_batch(ColBuild *b)
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
-	if (sift_colw_memory(b->w) > b->budget && b->nsegs + 1 < b->maxsegs)
+	if (sift_colw_full(b->w, b->budget) && b->nsegs + 1 < b->maxsegs)
+	{
+		uint64		rows = sift_colw_rows(b->w);
+
 		end_segment(b);
+		fit_budget(b, rows);
+	}
 	sift_cbatch_reset(b->batch, 0);
 }
 

@@ -87,7 +87,7 @@ static void
 bulk_flush(SiftTblBulk *b)
 {
 	seal_flush(&b->sw);
-	if (b->sw.w && sift_colw_memory(b->sw.w) > b->budget && b->nsegs < SIFT_MAX_SEGMENTS - 8)
+	if (b->sw.w && sift_colw_full(b->sw.w, b->budget) && b->nsegs < SIFT_MAX_SEGMENTS - 8)
 		bulk_end_segment(b);
 }
 

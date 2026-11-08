@@ -63,8 +63,10 @@ extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
 /* Bytes of units written to the stream so far (the rest of the segment, dictionaries, zones and the like, comes at sift_colw_finish): where a merge cuts its output into partitions */
 extern uint64 sift_colw_bytes(const SiftColSegWriter *w);
-/* Memory the writer holds until the segment ends (zones, unit directory, dictionaries): the caller cuts a segment when it passes its budget */
+/* Memory the writer holds until the segment ends (zones, unit directory, dictionaries, and the keys and addresses of the point directories and order arrays with the arrays their end builds) */
 extern Size sift_colw_memory(const SiftColSegWriter *w);
+/* The segment is done: it holds a budget of memory or SIFT_CPOINT_BUILD_ROWS rows; the caller cuts it */
+extern bool sift_colw_full(const SiftColSegWriter *w, Size budget);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */
 extern void sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry);
 

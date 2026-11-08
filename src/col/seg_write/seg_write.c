@@ -356,6 +356,36 @@ sift_colw_bytes(const SiftColSegWriter *w)
 	return sift_sw_tell(w->sw);
 }
 
+/*
+ * The bytes of a segment that grow with its rows and not with its units: the keys, rows and addresses kept for each point directory and order array, with the
+ * arrays the end of the segment builds from them (a sort copy of 24 bytes an entry for an order, 16 for each of the two copies of a directory), the blobs of the
+ * summaries, runs and sketches of the units, and the rows of the counted codes. Without them a table whose units are small never reaches the budget, and
+ * the segment holds every row of it.
+ */
+static Size
+rows_memory(const SiftColSegWriter *w)
+{
+	Size		m = 0,
+				build = 0;
+
+	for (int c = 0; w->pt && c < w->schema->ncols; c++)
+	{
+		const PointAcc *a = &w->pt[c];
+
+		m += (Size) a->cap * (sizeof(int64) + sizeof(uint32)) + (a->tid ? (Size) a->cap * sizeof(uint64) : 0) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
+			(Size) a->ncap * (sizeof(uint64) + (a->ngk ? sizeof(int64) + sizeof(uint8) : 0));
+		/* the end of the segment builds one leaf at a time: the largest of them is what it adds */
+		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * (sizeof(int64) * 3 + sizeof(int64) * 3) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
+	}
+	m += build;
+	for (int c = 0; c < w->schema->ncols; c++)
+	{
+		m += (w->set ? w->set[c].blobs.len : 0) + (w->run ? w->run[c].blobs.len : 0) + (w->hll ? w->hll[c].blobs.len : 0);
+		m += w->cnt ? (Size) w->cnt[c].cap * sizeof(uint32) : 0;
+	}
+	return m;
+}
+
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
@@ -364,7 +394,13 @@ sift_colw_memory(const SiftColSegWriter *w)
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
 			m += w->dict[c]->nbytes + (Size) w->dict[c]->n * 3 * sizeof(uint32);
-	return m;
+	return m + rows_memory(w);
+}
+
+bool
+sift_colw_full(const SiftColSegWriter *w, Size budget)
+{
+	return sift_colw_memory(w) > budget || w->rows >= SIFT_CPOINT_BUILD_ROWS;
 }
 
 void

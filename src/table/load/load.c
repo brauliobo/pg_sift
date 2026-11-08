@@ -186,7 +186,7 @@ stream_end_unit(Load *ld)
 	ld->seg_next = ld->run.first + (uint64) ld->run.units * SIFT_TBL_VBLOCKS_SB;
 	if (ld->run.units == ld->maxunits)
 		ld->open = false;
-	if (ld->sw.w && sift_colw_memory(ld->sw.w) > ld->budget)
+	if (ld->sw.w && sift_colw_full(ld->sw.w, ld->budget))
 		stream_end_segment(ld);
 }
 
