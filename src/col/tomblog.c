@@ -7,6 +7,7 @@
 
 #include "access/table.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
@@ -329,8 +330,12 @@ maint_vacuum_log(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, NoLock);	/* VACUUM holds ShareUpdateExclusiveLock on it */
 
-	/* the addresses this VACUUM left dead (it skipped the indexes) get their tombstones here, and the entries it freed lose theirs below */
-	(void) sift_col_track_rebaseline(index, heap);
+	/*
+	 * the addresses this VACUUM left dead (it skipped the indexes) get their tombstones here, and the entries it freed lose theirs below; a VACUUM with parallel workers for the b-trees
+	 * runs this in the leader under parallel mode, where no transaction id can be assigned: the baseline waits for a VACUUM without them, and the reads check the heap until then
+	 */
+	if (!IsInParallelMode())
+		(void) sift_col_track_rebaseline(index, heap);
 	table_close(heap, NoLock);
 	log_vacuum(index, NULL, NULL);
 }
