@@ -437,9 +437,23 @@ blob_group_bytes(const AggExec *ex, uint32 g, double state)
 	return b;
 }
 
+/* the groups gl[0..ng) as one blob handed to put: the sets keep the form of blob_dump_list (the bitmaps of a count(DISTINCT) go as chunks, not as pairs) */
+static void
+blob_put_slice(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, StringInfo b), void *arg, const uint32 *gl, uint32 ng)
+{
+	StringInfoData b;
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+
+	initStringInfo(&b);
+	blob_dump_list(ex, -1, gl, ng, &b);
+	put(arg, 0, &b);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(tmp);
+}
+
 /*
  * The table as blobs of about blob_bytes each, handed to put one by one (a message of a worker's table: a blob is one buffer of at most 1 GB, in the worker and in the leader
- * that receives it). The groups go in the order of their numbers, slice after slice, each slice walking the sets for its own groups only, so a slice holds its pairs and no more. The merge
+ * that receives it). The groups go in the order of their numbers, slice after slice, each slice holding the sets of its own groups only. The merge
  * of the leader adds the blobs one after the other, as it adds those of different workers. A table whose states are one structure for all its groups (an ordered-set aggregate)
  * is one blob; a group alone that takes more than a blob may (four times blob_bytes, 1 GB at most) ends the scan.
  */
@@ -472,34 +486,13 @@ blob_dump_chunks(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, 
 					 errhint("Set max_parallel_workers_per_gather to 0 for this query, or sift.enable_agg to off.")));
 		if (splittable && r > first && held + w > cap)
 		{
-			uint32		zero = 0,
-						count = r - first;
-
-			blob_dump_parts(ex, 1, gl + first, &zero, &count, tmp, put, arg);
+			blob_put_slice(ex, tmp, put, arg, gl + first, r - first);
 			first = r;
 			held = 0;
 		}
 		held += w;
 	}
-	if (ng > first || ng == 0)
-	{
-		uint32		zero = 0,
-					count = ng - first;
-
-		if (count > 0)
-			blob_dump_parts(ex, 1, gl + first, &zero, &count, tmp, put, arg);
-		else
-		{
-			StringInfoData b;
-			MemoryContext old = MemoryContextSwitchTo(tmp);
-
-			initStringInfo(&b);
-			blob_dump_list(ex, -1, gl, 0, &b);
-			put(arg, 0, &b);
-			MemoryContextSwitchTo(old);
-			MemoryContextReset(tmp);
-		}
-	}
+	blob_put_slice(ex, tmp, put, arg, gl + first, ng - first);
 	dist_end_all(ex);
 	pfree(gl);
 }
