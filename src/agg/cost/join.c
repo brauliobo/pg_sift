@@ -828,6 +828,9 @@ child_probe_ops(const JoinCtx *jc)
 			break;
 		}
 	}
+	/* a table of another access method has no visibility map: every entry is a row through the access method, an Index Only Scan too */
+	if (get_rel_relam(planner_rt_fetch(rel->relid, jc->subroot)->relid) != HEAP_TABLE_AM_OID)
+		return run + entries * AGG_PROBE_ENTRY_AM;
 	return run + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
 }
 
