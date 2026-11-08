@@ -759,20 +759,16 @@ expand_row_compare(RowCompareExpr *rc)
 	return out;
 }
 
-/* `x IS NULL` where the index holds `x IS NOT NULL` as a boolean leaf (never NULL), or the other way: the test of the leaf that is not its value */
+/* the condition whose negation the index holds as a boolean leaf (`x IS NULL` for `x IS NOT NULL`, the OR of such tests for their AND): NOT of the leaf */
 static SiftAggPred *
-compile_null_complement(AggCtx *c, NullTest *t)
+compile_cond_negated(AggCtx *c, Node *n)
 {
-	NullTest   *opp;
+	Node	   *neg;
 
-	if (attr_of_expr(c, (Node *) t) > 0)
+	if (attr_of_expr(c, n) > 0)
 		return NULL;
-	opp = makeNode(NullTest);
-	*opp = *t;
-	opp->nulltesttype = t->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
-	if (attr_of_expr(c, (Node *) opp) <= 0)
-		return NULL;
-	return compile_lut(c, (Node *) makeBoolExpr(NOT_EXPR, list_make1(opp), -1));
+	neg = negated_cond(n);
+	return attr_of_expr(c, neg) > 0 ? compile_lut(c, (Node *) make_notclause((Expr *) neg)) : NULL;
 }
 
 SiftAggPred *
@@ -803,6 +799,9 @@ compile_pred(AggCtx *c, Node *n)
 		return p;
 	if (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == NOT_EXPR && (p = compile_not_haskey(c, (BoolExpr *) n)) != NULL)
 		return p;
+	/* a junction of tests the index holds whole as a boolean leaf (`lat IS NOT NULL AND lon IS NOT NULL`), or its negation */
+	if (IsA(n, BoolExpr) && is_cond(n) && (p = attr_of_expr(c, n) > 0 ? compile_lut(c, n) : compile_cond_negated(c, n)) != NULL)
+		return p;
 	if (IsA(n, BoolExpr))
 		return compile_bool(c, (BoolExpr *) n);
 	if (IsA(n, RowCompareExpr))
@@ -827,7 +826,7 @@ compile_pred(AggCtx *c, Node *n)
 		}
 		not_true = p;
 	}
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (p = compile_null_complement(c, (NullTest *) n)) != NULL)
+	if (IsA(n, NullTest) && is_cond(n) && (p = compile_cond_negated(c, n)) != NULL)
 		return p;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow &&
 		((leaf = match_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0 || (leaf = present_leaf(c, (Node *) ((NullTest *) n)->arg)) >= 0))

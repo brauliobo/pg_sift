@@ -7,11 +7,26 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/prep.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/leaf/int.h"
+
+/* the negation of a condition with the NOT pushed to its tests: `a IS NULL OR b IS NULL` is that of `a IS NOT NULL AND b IS NOT NULL` */
+Node *
+negated_cond(Node *n)
+{
+	return negate_clause(copyObject(n));
+}
+
+/* a test or a junction of tests: the conditions an index holds as a boolean column, or the negation of one */
+bool
+is_cond(Node *n)
+{
+	return (IsA(n, NullTest) && !((NullTest *) n)->argisrow) || (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop != NOT_EXPR);
+}
 
 /* `x->>'k' IS [NOT] NULL` of such a member is the null test of the typed leaf */
 static Node *
@@ -43,15 +58,13 @@ nulltest_mutator(Node *n, AggCtx *c)
 			return (Node *) out;
 		}
 	}
-	/* `x IS NULL` where an index holds `x IS NOT NULL` (a boolean that is never NULL) as a column of a joined table, or the other way: the negation of it (of the scan's: compile_null_complement) */
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && join_of_node(c, n) == NULL)
+	/* the condition whose negation an index holds as a boolean column of a joined table (`x IS NULL` for `x IS NOT NULL`, the OR of such tests for their AND): NOT of the column (of the scan's: compile_cond_negated) */
+	if (is_cond(n) && join_of_node(c, n) == NULL)
 	{
-		NullTest   *opp = makeNode(NullTest);
+		Node	   *neg = negated_cond(n);
 
-		*opp = *(NullTest *) n;
-		opp->nulltesttype = opp->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
-		if (join_of_node(c, (Node *) opp) != NULL)
-			return (Node *) makeBoolExpr(NOT_EXPR, list_make1(opp), -1);
+		if (join_of_node(c, neg) != NULL)
+			return (Node *) make_notclause((Expr *) neg);
 	}
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
