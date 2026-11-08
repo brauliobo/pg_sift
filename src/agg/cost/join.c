@@ -476,7 +476,13 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 	bool		cols;
 
 	if (join_dense(c, s, jc))
-		return Max(jrel->tuples, 1.0) * AGG_LOAD_DENSE;
+	{
+		int			ntests = 0;
+
+		for (int col = 0; col < jc->j.ncol; col++)
+			ntests += jc->j.colexpr[col] != NULL;
+		return Max(jrel->tuples, 1.0) * (AGG_LOAD_DENSE + ntests * AGG_LOAD_TEST);
+	}
 	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
 	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);

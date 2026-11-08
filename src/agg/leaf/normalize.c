@@ -59,11 +59,11 @@ nulltest_mutator(Node *n, AggCtx *c)
 		}
 	}
 	/* the condition whose negation an index holds as a boolean column of a joined table (`x IS NULL` for `x IS NOT NULL`, the OR of such tests for their AND): NOT of the column (of the scan's: compile_cond_negated) */
-	if (is_cond(n) && join_of_node(c, n) == NULL)
+	if (is_cond(n) && join_held_of_node(c, n) == NULL)
 	{
 		Node	   *neg = negated_cond(n);
 
-		if (join_of_node(c, neg) != NULL)
+		if (join_held_of_node(c, neg) != NULL)
 			return (Node *) make_notclause((Expr *) neg);
 	}
 	return expression_tree_mutator(n, nulltest_mutator, c);

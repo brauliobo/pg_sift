@@ -432,7 +432,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		lj.ncol = kept.cols.n;
 		for (int c = 0; c < lj.ncol; c++)
 		{
-			lj.colatt[c] = kept.cols.att[c];
+			lj.colatt[c] = lj.colexpr[c] ? 0 : kept.cols.att[c];
 			lj.coltype[c] = kept.cols.type[c];
 		}
 	}
@@ -618,6 +618,10 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 		for (int i = 0; i < j->ncol; i++)
 			appendStringInfo(&k, "%d/%u ", j->colatt[i], j->coltype[i]);
 	}
+	/* the columns that are expressions are named by their place: the key says which they are */
+	for (int i = 0; i < j->ncol; i++)
+		if (j->colexpr[i])
+			appendStringInfo(&k, "|expr %s", nodeToString(j->colexpr[i]));
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	if (lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))

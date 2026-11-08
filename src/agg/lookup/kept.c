@@ -28,6 +28,19 @@ SIFT_WALKER(kept_cond_bad, KeptWalk *, w,
 	if (IsA(n, SubPlan) || IsA(n, SubLink))
 		return true;)
 
+/* what names column c of the join in an entry: its column of the table, or, for an expression, a negative number by its place among the expressions (its text is in the key) */
+int
+look_col_att(const SiftAggJoin *j, int c)
+{
+	int			x = 0;
+
+	if (j->colexpr[c] == NULL)
+		return j->colatt[c];
+	for (int i = 0; i < c; i++)
+		x += j->colexpr[i] != NULL;
+	return -1 - x;
+}
+
 static bool
 map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)
 {
@@ -35,10 +48,6 @@ map_kept_conds(const SiftAggCombo *cb, const SiftAggJoin *j, bool own)
 
 	if (sift_aggjoin_preserves(j->kind))
 		return false;
-	/* the columns of an entry are known by their number and type: an expression of the table's columns has no number */
-	for (int c = 0; c < j->ncol; c++)
-		if (j->colexpr[c])
-			return false;
 	if (own && (kept_cond_bad((Node *) cb->slot[j->fslot].expr, &w) || contain_mutable_functions((Node *) cb->slot[j->fslot].expr)))
 		return false;
 	for (int i = 0; i < j->nidx; i++)
@@ -55,7 +64,7 @@ map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mc
 	bool		same = have->n == j->ncol;
 
 	for (int c = 0; c < j->ncol && same; c++)
-		same = have->att[c] == j->colatt[c] && have->type[c] == j->coltype[c];
+		same = have->att[c] == look_col_att(j, c) && have->type[c] == j->coltype[c];
 	if (same)
 		return m;
 	v = MemoryContextAlloc(mcxt, sizeof(MapTab));
@@ -67,7 +76,7 @@ map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mc
 		int			p;
 
 		for (p = 0; p < have->n; p++)
-			if (have->att[p] == j->colatt[c] && have->type[p] == j->coltype[c])
+			if (have->att[p] == look_col_att(j, c) && have->type[p] == j->coltype[c])
 				break;
 		Assert(p < have->n);
 		v->mcol[c] = m->mcol[p];
@@ -101,7 +110,7 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 		return NULL;
 	for (int c = 0; c < j->ncol; c++)
 	{
-		need.att[c] = j->colatt[c];
+		need.att[c] = look_col_att(j, c);
 		need.type[c] = j->coltype[c];
 	}
 	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
