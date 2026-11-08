@@ -173,6 +173,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_phase_gate",
 							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
 							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_dead_windows",
+							"Testing: windows of superblocks the dead postings of the segments of this session were counted in (set 0 before).",
+							NULL, &sift_test_dead_windows, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);

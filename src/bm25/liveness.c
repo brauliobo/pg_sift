@@ -9,6 +9,10 @@
 
 #include "bm25/segment_int.h"
 
+#ifdef SIFT_TESTING
+int			sift_test_dead_windows = 0;
+#endif
+
 #define PAGE_RANK_WORDS	((MAXOFF + 63) / 64)	/* words of rank bits of a page of docs */
 
 Live2 *
@@ -599,15 +603,18 @@ typedef struct DeadScan
 {
 	SiftSegment *seg;
 	MemoryContext tcxt;
-	sift_grp  **grp;			/* by SB from sb_lo: the dead docs as rows, NULL when the SB has none */
+	sift_grp  **grp;			/* by SB from sb_lo: the dead docs as rows, NULL when the SB has none or is not in the window */
 	sift_dead_sb *flat;			/* ... and as a row for each of the group's pages, to test a posting by its page and offset */
 	uint32	   *dead;			/* by slot */
 	uint32		nslots;
+	bool		windowed;		/* the dead rows of the segment are counted in more than one window: a posting is looked for from the first SB of the window */
+	uint32		wlo,
+				whi;			/* the SBs of the window */
 } DeadScan;
 
-/* The dead docs of the SB at position i of the SB directory (present and not live), as a group of the rows' width */
+/* The dead docs of the SB at position i of the SB directory (present and not live), as a group of the rows' width; *bytes: what it and its row for each page take */
 static sift_grp *
-dead_rows(SiftSegment *seg, DocMap *dm, int64 i, MemoryContext cx)
+dead_rows(SiftSegment *seg, DocMap *dm, int64 i, MemoryContext cx, Size *bytes)
 {
 	uint32		sb = dm->dir[i].sb;
 	const sift_grp *rows;
@@ -637,6 +644,7 @@ dead_rows(SiftSegment *seg, DocMap *dm, int64 i, MemoryContext cx)
 		}
 	*g = (sift_grp) {.gid = sb,.w = rows->w,.off = (const uint8 *) out};
 	memcpy(g->pages, rows->pages, sizeof(g->pages));
+	*bytes += sizeof(sift_grp) + (Size) (dm->np + SIFT_GROUP_PAGES) * rows->w;
 	return any ? g : NULL;
 }
 
@@ -656,16 +664,16 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	c = sift_post_open(&seg->sr, info, ds->tcxt);
 	sift_sr_unlock(&seg->sr);
 	cur = sift_post_cursor(c);
-	n = sift_cur_count_in(cur, ds->flat, seg->hdr->sb_lo, seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
+	n = ds->windowed ? ~(uint64) 0 : sift_cur_count_in(cur, ds->flat, seg->hdr->sb_lo, seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
 	if (n != ~(uint64) 0)
 	{
-		ds->dead[info->slot] = n;
+		ds->dead[info->slot] += n;
 		MemoryContextReset(ds->tcxt);
 		CHECK_FOR_INTERRUPTS();
 		return true;
 	}
 	n = 0;
-	for (const sift_grp *g = sift_next(cur); g; g = sift_next(cur))
+	for (const sift_grp *g = ds->windowed ? sift_seek(cur, ds->wlo) : sift_next(cur); g && (!ds->windowed || g->gid <= ds->whi); g = sift_next(cur))
 	{
 		const sift_grp *d;
 
@@ -675,35 +683,29 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		if (d)
 			n += sift_grp_and_count(g, d);
 	}
-	ds->dead[info->slot] = n;
+	ds->dead[info->slot] += n;
 	MemoryContextReset(ds->tcxt);
 	CHECK_FOR_INTERRUPTS();
 	return true;
 }
 
-/* Counts again, for every term with a slot, the postings of the docs that are dead now: the whole table, so that a repeat is harmless */
-void
-count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
+/* The dead rows of the dirty SBs from position i of the SB directory, up to rows bytes: the position it stopped at, *any false when no SB of the window has a dead doc */
+static int64
+dead_window(DeadScan *ds, DocMap *dm, const uint8 *dirty, int64 i, Size rows, MemoryContext cx, bool *any)
 {
-	SiftLive	l = seg_live(seg);
-	DocMap	   *dm = docmap(seg);
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift dead postings", ALLOCSET_DEFAULT_SIZES);
-	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
-	uint8	   *dirty = palloc((h->nsb + 7) / 8);
+	SiftSegment *seg = ds->seg;
+	Size		used = 0;
 
-	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
-	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
-	ds.flat = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_dead_sb));
-	memset(dead, 0, (Size) h->nslots * sizeof(uint32));
-	sift_live2_dirty(&l, h, dirty);
-	live2(seg)->rok = false;
-	for (int64 i = 0; i < dm->nsb; i++)
+	*any = false;
+	ds->wlo = dm->dir[i].sb;
+	for (; i < dm->nsb && used < rows; i++)
 	{
 		uint32		idx = dm->dir[i].sb - seg->hdr->sb_lo;
 
+		ds->whi = dm->dir[i].sb;
 		if (dirty[idx / 8] >> (idx % 8) & 1)
 		{
-			const sift_grp *g = ds.grp[idx] = dead_rows(seg, dm, i, cx);
+			const sift_grp *g = ds->grp[idx] = dead_rows(seg, dm, i, cx, &used);
 
 			if (g != NULL)
 			{
@@ -713,13 +715,63 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 				for (int j = 0; j < 4; j++)
 					for (uint64 m = g->pages[j]; m != 0; m &= m - 1, row += g->w)
 						memcpy(bits + ((Size) j * 64 + pg_rightmost_one_pos64(m)) * g->w, row, g->w);
-				ds.flat[idx] = (sift_dead_sb) {.bits = bits,.w = g->w};
+				ds->flat[idx] = (sift_dead_sb) {.bits = bits,.w = g->w};
+				*any = true;
 			}
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
+	return i;
+}
+
+/*
+ * Counts again, for every term with a slot, the postings of the docs that are dead now: the whole table, so that a repeat is harmless. The dead rows of the
+ * dirty SBs (5 to 20 kB each) are held a window of them at a time within maintenance_work_mem; the arrays by SB (24 bytes for each SB of the segment, of the size
+ * of the directory the docmap keeps) are not windowed. Every window reads the dictionary again and, for each term, looks for its postings from the first SB of
+ * the window, so that the postings of a term are read once in all: a table that fits is counted in one window, with the postings of the short lists walked once.
+ */
+void
+count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
+{
+	SiftLive	l = seg_live(seg);
+	DocMap	   *dm = docmap(seg);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift dead postings", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext wcx = AllocSetContextCreate(cx, "sift dead rows", ALLOCSET_DEFAULT_SIZES);
+	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
+	uint8	   *dirty = palloc((h->nsb + 7) / 8);
+	Size		budget = (Size) maintenance_work_mem * 1024 / 2;
+
+	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
+	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
+	ds.flat = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_dead_sb));
+	memset(dead, 0, (Size) h->nslots * sizeof(uint32));
+	sift_live2_dirty(&l, h, dirty);
 	live2(seg)->rok = false;
-	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, dead_term, &ds);
+	for (int64 i = 0, next; i < dm->nsb; i = next)
+	{
+		bool		any;
+
+		next = dead_window(&ds, dm, dirty, i, budget, wcx, &any);
+		ds.windowed = i > 0 || next < dm->nsb;
+		if (any)
+		{
+#ifdef SIFT_TESTING
+			sift_test_dead_windows++;
+#endif
+			live2(seg)->rok = false;
+			sift_dict_scan(seg->dict, NULL, 0, NULL, 0, dead_term, &ds);
+			sift_sr_release(&seg->sr);
+		}
+		for (int64 k = i; k < next; k++)
+		{
+			uint32		idx = dm->dir[k].sb - seg->hdr->sb_lo;
+
+			ds.grp[idx] = NULL;
+			ds.flat[idx] = (sift_dead_sb) {0};
+		}
+		MemoryContextReset(wcx);
+	}
+	live2(seg)->rok = false;
 	sift_sr_release(&seg->sr);
 	pfree(dirty);
 	MemoryContextDelete(cx);
