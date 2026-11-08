@@ -651,34 +651,36 @@ dense_leaves_ok(const ColNeed *need, int nneed, int key)
 	return true;
 }
 
-/* the index of the table (open, the caller closes it) that holds the key and the columns of the join as integer leaves (map_load_dense), else NULL */
-Relation
-map_dense_index(Relation rel, const SiftAggJoin *j)
+/*
+ * Does an index of the table hold the key and the columns of the join as integer leaves (map_load_dense)? bound[c], when given, is how many values the index
+ * says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an expression are), 0 when it cannot tell.
+ */
+bool
+map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 {
 	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				key = 0;
 	Relation	ix = load_index(rel, j, false, need, &nneed);
-
-	if (ix == NULL)
-		return NULL;
-	while (need[key].att != j->keyatt[0])
-		key++;
-	if (dense_leaves_ok(need, nneed, key))
-		return ix;
-	index_close(ix, AccessShareLock);
-	return NULL;
-}
-
-bool
-map_load_dense_possible(Relation rel, const SiftAggJoin *j)
-{
-	Relation	ix = map_dense_index(rel, j);
+	bool		ok;
 
 	if (ix == NULL)
 		return false;
+	while (need[key].att != j->keyatt[0])
+		key++;
+	ok = dense_leaves_ok(need, nneed, key);
+	if (ok && bound != NULL)
+	{
+		SiftSrcStats st;
+
+		sift_colsrc_stats(ix, &st);
+		for (int c = 0; c < j->ncol; c++)
+			for (int p = 0; p < nneed; p++)
+				if (j->colexpr[c] ? need[p].xcol == c : need[p].expr == NULL && need[p].att == j->colatt[c])
+					bound[c] = st.ndistinct[need[p].lf->id] > 0 ? st.ndistinct[need[p].lf->id] + 1 : 0;
+	}
 	index_close(ix, AccessShareLock);
-	return true;
+	return ok;
 }
 
 /*

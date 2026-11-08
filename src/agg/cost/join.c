@@ -440,17 +440,30 @@ join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
 		if (jc->cpath == NULL && sift_agg_dense_join(s, jc->combo, c->lay))
 		{
 			Relation	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
-			bool		ok = map_load_dense_possible(rel, &jc->j);
+			double		bound[SIFT_AGG_MAX_JCOLS] = {0};
+			bool		ok = map_load_dense_possible(rel, &jc->j, bound);
 
 			relation_close(rel, NoLock);
 			jc->classes = 1.0;
 			for (int col = 0; col < jc->j.ncol; col++)
-				jc->classes *= joined_distinct(c, jc, col);
+				jc->classes *= bound[col] > 0 ? Min(bound[col], joined_distinct(c, jc, col)) : joined_distinct(c, jc, col);
 			if (ok && jc->classes <= DENSE_MAX_CLASSES / 2)
 				jc->dense = 1;
 		}
 	}
 	return jc->dense == 1;
+}
+
+/* the values a group key computed from the columns of a dense lookup table can take: no more than its classes (0: the key is not one) */
+double
+key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k)
+{
+	JoinCtx    *jc;
+
+	if (k->kind != SAK_COMBO || s->combo[k->leaf].join < 0)
+		return 0;
+	jc = list_nth(c->joins, s->combo[k->leaf].join);
+	return join_dense(c, s, jc) ? jc->classes : 0;
 }
 
 /* the price, in operators, of the table of a join read whole */

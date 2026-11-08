@@ -38,6 +38,8 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 
 			if (s->nsets != 0 && !(s->setmask[set] >> j & 1))
 				continue;
+			if (b <= 0)
+				b = key_dense_groups(c, s, &s->key[j]);
 			if (b > 0)
 				bucketed *= b;
 			else
