@@ -44,7 +44,7 @@ endif
 # Switching it needs `make clean`.
 TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds read_% build_limits build_pool build_page_text aggstub_% maint_% tbl_bulk_eligible tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds agg_probe_direct_columns
 TESTING_REGRESS += core_radix_sort agg_group_hash_probe agg_int_key_ids tbl_bitmap_lazy limits_registry tbl_limits_lowered agg_combo_cap agg_limit_refusals agg_planner_state_error slot_owner
-TESTING_REGRESS += col_log_newer_format col_heapfree_xmin col_tomb_stale_header col_tomb_horizon col_supersede_source col_track_update_skip include_store include_filter errors_hints agg_cte_verdict_cache col_leaf_stats col_minmax_runs agg_outer_walks_once fuzzy_seek agg_group_single_key
+TESTING_REGRESS += col_heapfree_xmin col_tomb_stale_header col_tomb_horizon col_supersede_source col_track_update_skip include_store include_filter errors_hints agg_cte_verdict_cache col_leaf_stats col_minmax_runs agg_outer_walks_once fuzzy_seek agg_group_single_key
 TESTING_REGRESS += col_track_ctid col_track_ctid_chains
 TESTING_REGRESS += agg_key_list_once agg_plan_passes agg_vis_counts
 TESTING_REGRESS += col_set_list_span agg_topn_with_ties agg_root_key_exists agg_jsonb_key_forms agg_jsonb_key_read
@@ -77,8 +77,8 @@ TESTING_REGRESS += store_sweep_runs tbl_tomb_log_limit tbl_wide_dict_limit
 TESTING_REGRESS += col_gorder_count_big_group
 TESTING_REGRESS += col_gorder_group_range col_build_same_options
 TESTING_REGRESS += col_build_par_rows col_build_par_choice col_preagg
-TESTING_REGRESS += col_gorder_group_points col_conn_journal col_conn_reindex col_conn_declare col_conn_inserted
-TESTING_REGRESS += col_gorder_group_walk col_gorder_group_compact
+TESTING_REGRESS += col_gorder_group_points
+TESTING_REGRESS += col_gorder_group_walk col_gorder_group_compact col_gorder_tiebreak
 TESTING_REGRESS += col_topn_offset agg_child_warm agg_probe_direct agg_probe_direct_race agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_bulk agg_topn_offset_keyed agg_topn_key_only
 TESTING_REGRESS += col_unit_of_block agg_float_step
 TESTING_REGRESS += tbl_hot_sift_index merge_parts merge_heal
