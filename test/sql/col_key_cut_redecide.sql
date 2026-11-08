@@ -20,7 +20,7 @@ SELECT reloptions::text ~ 'key_cut' AS cut_at_build FROM pg_class WHERE relname 
 
 -- rows of every tenant appended at the end of the heap, a tenth of the rows deleted
 INSERT INTO rc SELECT i, (hashint4(i) & 2147483647) % 800, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
-FROM generate_series(120001, 144000) i;
+FROM generate_series(120001, 240000) i;
 DELETE FROM rc WHERE id % 10 = 3;
 VACUUM ANALYZE rc;
 -- the NOTICE names the choice as the option holds it
