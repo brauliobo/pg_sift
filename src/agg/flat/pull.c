@@ -260,6 +260,7 @@ flatten_query(Query *q, bool apply)
 	flat_fenced |= fence_sublinks(q, apply);
 	/* before the joins are read as probes: the queries they move have their tables joined as written (a table read as a probe is a sub-select the keys are not looked up in) */
 	changed |= sift_agg_eager_lookup(q, apply);
+	changed |= sift_agg_distinct_split(q, apply);
 	changed |= sift_agg_partial_left(q, apply);
 	changed |= sift_agg_pct_arrays(q, apply);
 	changed |= sift_agg_push_dim_keys(q, apply);
@@ -297,6 +298,7 @@ sift_agg_flatten_laterals(Query *q)
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
 	sift_agg_flat_any = false;
+	sift_agg_flat_margin = 0;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
 	sift_agg_fence_alone = false;

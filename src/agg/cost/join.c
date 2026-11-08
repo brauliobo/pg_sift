@@ -454,16 +454,25 @@ join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
 	return jc->dense == 1;
 }
 
-/* the values a group key computed from the columns of a dense lookup table can take: no more than its classes (0: the key is not one) */
+/*
+ * the values the group keys computed from the columns of one dense lookup table can take together: no more than its classes, the first key of the table takes them all
+ * (0: the key is not one; `seen`: the tables whose classes an earlier key took)
+ */
 double
-key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k)
+key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k, Bitmapset **seen)
 {
 	JoinCtx    *jc;
+	int			join;
 
-	if (k->kind != SAK_COMBO || s->combo[k->leaf].join < 0)
+	if (k->kind != SAK_COMBO || (join = s->combo[k->leaf].join) < 0)
 		return 0;
-	jc = list_nth(c->joins, s->combo[k->leaf].join);
-	return join_dense(c, s, jc) ? jc->classes : 0;
+	jc = list_nth(c->joins, join);
+	if (!join_dense(c, s, jc))
+		return 0;
+	if (bms_is_member(join, *seen))
+		return 1.0;
+	*seen = bms_add_member(*seen, join);
+	return jc->classes;
 }
 
 /* the price, in operators, of the table of a join read whole */

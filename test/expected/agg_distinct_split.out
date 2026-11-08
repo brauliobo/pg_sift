@@ -1,0 +1,62 @@
+-- Distinct counts of one parent key under filters of the parent's own columns share one set: the scan groups by the filters' outcomes and counts each id once, and the
+-- statement adds up the counts of the groups each filter keeps. The plans are the planner's own (nothing is forced): the split is the scan's where it costs less, and the answers are
+-- those of the normal plan. The tables are 500,000 parents and 1,000,000 rows (under 10 s): the scan saves the sets of the ids only where they are large, and the planner keeps the
+-- plan of a set for each count on smaller tables.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+CREATE TABLE par (id int PRIMARY KEY, a text, b text, c text, lat float8, lon float8) WITH (autovacuum_enabled = false);
+INSERT INTO par SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END,
+	CASE WHEN i % 7 = 0 THEN '' ELSE 'c' END, CASE WHEN i % 11 = 0 THEN NULL ELSE i END, CASE WHEN i % 13 = 0 THEN NULL ELSE i END
+FROM generate_series(1, 500000) i;
+CREATE INDEX par_col ON par USING sift_col (id, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL), (nullif(btrim(c), '') IS NOT NULL),
+	(lat IS NOT NULL AND lon IS NOT NULL));
+CREATE TABLE grp (id int PRIMARY KEY, name text) WITH (autovacuum_enabled = false);
+INSERT INTO grp SELECT i, 'grp' || i FROM generate_series(1, 20) i;
+CREATE TABLE child (id int, foreign_id int, par_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO child SELECT i, 1 + i % 20, 1 + (i * 7) % 500000, i % 11 FROM generate_series(1, 1000000) i;
+CREATE INDEX child_col ON child USING sift_col (id, foreign_id, par_id, v);
+VACUUM (FREEZE, ANALYZE) par, grp, child;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT grp.id, grp.name, count(DISTINCT par.id), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.a), '') IS NOT NULL),
+		count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.b), '') IS NOT NULL), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.c), '') IS NOT NULL),
+		count(DISTINCT par.id) FILTER (WHERE par.lat IS NOT NULL AND par.lon IS NOT NULL)
+		FROM child JOIN par ON par.id = child.par_id JOIN grp ON grp.id = child.foreign_id GROUP BY grp.id, grp.name ORDER BY grp.name$q$),
+ (2, $q$SELECT grp.id, count(DISTINCT par.id), round(100.0 * count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.a), '') IS NOT NULL) / nullif(count(DISTINCT par.id), 0), 2),
+		count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.b), '') IS NOT NULL), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.c), '') IS NOT NULL),
+		count(DISTINCT par.id) FILTER (WHERE par.lat IS NOT NULL AND par.lon IS NOT NULL)
+		FROM child JOIN par ON par.id = child.par_id JOIN grp ON grp.id = child.foreign_id GROUP BY grp.id ORDER BY grp.id$q$),
+ (3, $q$SELECT grp.id, count(DISTINCT par.id), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.a), '') IS NOT NULL), count(*)
+		FROM child JOIN par ON par.id = child.par_id JOIN grp ON grp.id = child.foreign_id WHERE child.v < 5 GROUP BY grp.id ORDER BY grp.id$q$),
+ (4, $q$SELECT grp.id, count(DISTINCT child.id), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.a), '') IS NOT NULL)
+		FROM child JOIN par ON par.id = child.par_id JOIN grp ON grp.id = child.foreign_id GROUP BY grp.id ORDER BY grp.id$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- the groups the scan makes: one set of ids when the split is the plan, one for each filter otherwise
+CREATE FUNCTION chosen(sql text, OUT scan bool, OUT sets int) LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	scan := false; sets := 0;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		IF l ~ 'Pushed Aggregates' THEN sets := (SELECT count(*) FROM regexp_matches(l, 'count\(DISTINCT', 'g')); END IF;
+	END LOOP;
+END $$;
+SELECT n, (c).scan AS scan, (c).sets AS distinct_sets, answer(sql, true) = answer(sql, false) AS same_answers
+FROM (SELECT n, sql, chosen(sql) AS c FROM shapes) s ORDER BY n;
+ n | scan | distinct_sets | same_answers 
+---+------+---------------+--------------
+ 1 | t    |             1 | t
+ 2 | t    |             1 | t
+ 3 | t    |             1 | t
+ 4 | t    |             2 | t
+(4 rows)
+
+DROP FUNCTION chosen(text), answer(text, bool);
+DROP TABLE shapes, child, grp, par;
+DROP EXTENSION pg_sift;

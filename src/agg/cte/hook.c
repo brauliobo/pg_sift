@@ -363,7 +363,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_distinct_split_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		shared_cte = has_shared_cte(parse);
@@ -446,7 +446,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * FLAT_KEYS_MARGIN < plain->planTree->total_cost)
+	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * (sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN) < plain->planTree->total_cost)
 	{
 		discard_plan(plain_cx);
 		if (quiet)
