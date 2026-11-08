@@ -192,7 +192,7 @@ SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('rc');
 SET max_parallel_maintenance_workers = 0;
 REINDEX INDEX rc_col;
 SELECT * FROM pa_check('rc');
--- the default key_cut is d here: a date no row has lies between the zones of the units, and nothing is read
+-- the rows are in the order of their months, so the default leaves the units as they are (a cut by d gains nothing): a date no row has lies between the zones of two units, which are read
 SELECT * FROM pa_units('SELECT a, count(*), sum(v) FROM rc WHERE d = date ''2024-05-01'' GROUP BY a');
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
