@@ -320,3 +320,4 @@ tap-009_tbl_concurrent	13	20
 tap-shell-col_rollup_ondemand	20	19
 tap-shell-col_track_restore	20	20
 tap-shell-col_connect_dump	20	20
+tap-shell-col_connect_downgrade	35	35
