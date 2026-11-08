@@ -32,6 +32,8 @@ sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact)
 		minor = Max(minor, SIFT_COL_FORMAT_WIDE);	/* a wide schema has no older form */
 	if (schema->contain)
 		minor = Max(minor, SIFT_COL_FORMAT_CONTAIN);
+	if (schema->carried)
+		minor = Max(minor, SIFT_COL_FORMAT_CARRIED);
 	return minor;
 }
 
@@ -468,6 +470,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONTAIN);
+	if (w->schema->carried)
+		w->format = Max(w->format, SIFT_COL_FORMAT_CARRIED);
 	if (w->anymeaslen)
 		w->format = Max(w->format, SIFT_COL_FORMAT_MEASLEN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */

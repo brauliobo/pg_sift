@@ -26,6 +26,7 @@
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
+#include "col/col.h"
 #include "core/tomb.h"
 
 /* Why the parent cannot vouch (SIFT_CONN_OK: it can). EXPLAIN says it as "fallback: <why>" */
@@ -115,13 +116,13 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * out empty); the cost is the journal records at or after X, not the index. The records this backend holds back are written first, so S's own changes are in the
  * set. Every verdict other than OK means "read the join path for these rows".
  */
-extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 /*
  * Could a row have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
  * count)? Conservative: false only when every segment says its inserters finished before the horizon (SIFT_SEG_XSTAMP) and no live record of the write buffer is from
  * the horizon on. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
  */
 extern bool sift_conn_inserted_since(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
+extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 
 /* Short words for EXPLAIN and the tests */
 extern const char *sift_conn_why_name(SiftConnWhy why);
@@ -133,7 +134,12 @@ extern bool sift_conn_record(Relation index, Oid keytype, Datum key, SiftTomb *r
 /* The same checks without the keys: may a derivation stamped so be read by snap at all (the first four conditions above) */
 extern SiftConnWhy sift_conn_vouches(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap);
 
-/* ---- the declaration: WITH (connect = 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]') ---- */
+/*
+ * ---- the declaration: WITH (connect = 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]; fk2 -> parent2(key) carries c') ----
+ *
+ * One connection for each column of the index that holds a parent key (the same parent twice through two columns is two connections); each has its own parent index, stamp and via, and
+ * the journal of one parent that does not vouch leaves the others as they are.
+ */
 
 typedef enum SiftConnVia
 {
@@ -142,12 +148,14 @@ typedef enum SiftConnVia
 	SIFT_CONN_VIA_MAP			/* the shared dimension map only: nothing is stored in the child */
 } SiftConnVia;
 
-#define SIFT_CONN_MAX_CARRY	16
+#define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
+#define SIFT_CONN_MAX_CARRY			32		/* carried columns of one index, all connections together */
+#define SIFT_CONN_MAX_CARRY_BYTES	512		/* bytes of the carried values of a row, all connections together (the width of each leaf; a string counts its 4 byte code) */
 
 typedef struct SiftConnSpec
 {
 	char	   *fk;				/* column of the child index that holds the parent key */
-	char	   *parent_schema;	/* NULL: the search path */
+	char	   *parent_schema;	/* NULL: the schema of the child's table */
 	char	   *parent_table;
 	char	   *parent_key;
 	int			ncarry;
@@ -155,11 +163,30 @@ typedef struct SiftConnSpec
 	SiftConnVia via;
 } SiftConnSpec;
 
+typedef struct SiftConnSpecs
+{
+	int			n;
+	SiftConnSpec *c[SIFT_CONN_MAX_CONNECTIONS];
+} SiftConnSpecs;
+
+/* The leaves of one connection: the flag that the parent row was found is leaf found, its carried leaves follow up to end (exclusive) */
+typedef struct SiftConnLayout
+{
+	int			found;
+	int			end;
+} SiftConnLayout;
+
 /* Parses the option text without the catalog; NULL with *err set to what is wrong */
-extern SiftConnSpec *sift_conn_parse(const char *text, const char **err);
-/* The connection a child index declares (ERROR for text that does not parse), NULL when it declares none */
-extern SiftConnSpec *sift_conn_spec(Relation child_index);
-/* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent index the option names, or removes the connection */
+extern SiftConnSpecs *sift_conn_parse(const char *text, const char **err);
+/* The connections a child index declares (ERROR for text that does not parse), NULL when it declares none */
+extern SiftConnSpecs *sift_conn_specs(Relation child_index);
+
+/*
+ * The leaves a connected index takes from its parents (SIFT_COLD_CARRIED): for each connection, in the order of the option, the flag that the parent row was found
+ * ("<fk>#found") and the leaves of each carried column ("<fk>.<column>"). Appended to defs from n; returns the new count, and lay[] the leaves of each of the *nconn connections.
+ */
+extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn);
+/* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent indexes the option names, or removes the connections */
 extern void sift_conn_resolve(Relation child_heap, Relation child_index);
 extern void sift_conn_alter(Relation child_index);
 

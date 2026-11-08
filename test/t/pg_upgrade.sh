@@ -75,10 +75,14 @@ TRKOPT=
 CONNSQL=
 [[ -n $OLD_REF ]] || CONNSQL="CREATE TABLE cdim (id int PRIMARY KEY, cat int NOT NULL, label text) WITH (autovacuum_enabled = false);
 INSERT INTO cdim SELECT g, g % 10, 'l' || g FROM generate_series(1, 500) g;
-CREATE TABLE cfact (id int PRIMARY KEY, dim_id int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO cfact SELECT g, 1 + g % 500, g FROM generate_series(1, 2000) g;
+CREATE TABLE cdim2 (id int PRIMARY KEY, zone text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO cdim2 SELECT g, 'r' || g % 5 FROM generate_series(1, 50) g;
+CREATE TABLE cfact (id int PRIMARY KEY, dim_id int NOT NULL, dim2_id int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO cfact SELECT g, 1 + g % 500, 1 + g % 50, g FROM generate_series(1, 2000) g;
 CREATE INDEX cdim_c ON cdim USING sift_col (id, cat, label);
-CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> cdim(id) carries cat, label');
+CREATE INDEX cdim2_c ON cdim2 USING sift_col (id, zone);
+CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, dim2_id, v)
+  WITH (connect = 'dim_id -> cdim(id) carries cat, label; dim2_id -> cdim2(id) carries zone');
 UPDATE cdim SET cat = cat + 1 WHERE id % 50 = 0;"
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
@@ -166,8 +170,8 @@ VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_ex
 BEFORE=$(fingerprint old)
 TRK_BEFORE=$(q old postgres "SELECT trkq_off()")
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
-CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections"
-[[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT records FROM sift.col_connections"); }
+CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections ORDER BY ordinal"
+[[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT sum(records) FROM sift.col_connections"); }
 FILES_BEFORE=$(q old postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')")
 if [[ -n $TSC ]]; then
 	check "the tablespace holds an index of each access method and a table" test "$(grep -o 'pg_tblspc' <<<"$FILES_BEFORE" | wc -l | tr -d ' ')" == 3
@@ -232,13 +236,13 @@ check "REINDEX gives the tracked index its baseline: complete, heap-free, the an
 # the connection: the option, the dependency and the journal (its lineage and records came with the files); the triggers of the tracked parent index are made again, so its log is
 # not complete and nothing is vouched until the index is rebuilt
 if [[ -z $OLD_REF ]]; then
-	check "the connected pair is as before and nothing is vouched while the log is not complete" test "$(q new postgres "$CONNECTION")" == "${CONN_BEFORE% ok} log not complete"
+	check "the connected pair is as before and nothing is vouched while the log is not complete" test "$(q new postgres "$CONNECTION")" == "$(sed 's/ ok$/ log not complete/' <<<"$CONN_BEFORE")"
 	q new postgres "UPDATE cdim SET cat = cat + 1 WHERE id = 7" >/dev/null
-	check "the journal of the parent index hears the upgraded cluster and the parent index stays under the child" test "$(q new postgres "SELECT records > $RECS_BEFORE FROM sift.col_connections" 2>&1 | head -n 1)" == t \
-		-a "$(q new postgres "DROP INDEX cdim_c" 2>&1 | grep -c 'cannot drop index')" == 1
-	q new postgres "REINDEX INDEX cdim_c" >/dev/null
-	check "REINDEX of the parent index makes its journal again: the stamp vouches and both indexes verify" test "$(q new postgres "SELECT stamp FROM sift.col_connections")" == ok \
-		-a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('cdim_c', true), sift.col_verify('cfact_c', true)) v")" == 1
+	check "the journal of the parent index hears the upgraded cluster and the parent index stays under the child" test "$(q new postgres "SELECT sum(records) > $RECS_BEFORE FROM sift.col_connections" 2>&1 | head -n 1)" == t \
+		-a "$(q new postgres "DROP INDEX cdim_c" 2>&1 | grep -c 'cannot drop index')$(q new postgres "DROP INDEX cdim2_c" 2>&1 | grep -c 'cannot drop index')" == 11
+	q new postgres "REINDEX INDEX cdim_c" "REINDEX INDEX cdim2_c" >/dev/null
+	check "REINDEX of the parent indexes makes their journals again: both stamps vouch and the indexes verify" test "$(q new postgres "SELECT string_agg(stamp, ',' ORDER BY ordinal) FROM sift.col_connections")" == ok,ok \
+		-a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('cdim_c', true), sift.col_verify('cdim2_c', true), sift.col_verify('cfact_c', true)) v")" == 1
 else skip 3 "an index of a release has no connection"; fi
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote

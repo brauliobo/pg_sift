@@ -192,14 +192,12 @@ check_key(Relation heap, Relation index)
 uint64
 sift_conn_enable(Relation heap, Relation index)
 {
-	SiftTombLog *log;
-
 	check_key(heap, index);
-	/* writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here */
+	/*
+	 * Writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here. The log need not be
+	 * complete yet (a parallel restore connects before the primary key of the table exists): nothing is vouched while it is not, and the trim of the journal moves when it becomes so.
+	 */
 	LockRelationOid(RelationGetRelid(heap), ShareLock);
-	if ((log = sift_col_log(index)) == NULL || !sift_col_track_ok(index, heap, NULL))
-		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("index \"%s\" cannot be connected: its tombstone log is not complete", RelationGetRelationName(index)),
-						errhint("REINDEX INDEX %s, without CONCURRENTLY, makes it so.", RelationGetRelationName(index))));
 	return journal_make(heap, index);
 }
 

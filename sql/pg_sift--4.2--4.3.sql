@@ -53,24 +53,27 @@ CREATE OR REPLACE VIEW sift.col_index_status AS
 						FROM sift.col_segments(c.oid)) s
 	WHERE has_table_privilege(i.indrelid, 'SELECT') AND w.segments IS NOT NULL;
 
--- Connected indexes (docs/COL-CONNECT.md): a sift_col index with the option connect names the sift_col index of its parent table, and that index keeps a journal of the keys
--- that changed. col_connection_state tells the journal of a parent index (its lineage and the records appended so far) and whether a derived value could be vouched now
--- ('ok', or why not: no journal, the log is not complete, a snapshot that cannot be vouched); col_connections lists the connections with it.
+-- Connected indexes (docs/COL-CONNECT.md): a sift_col index with the option connect names, for each column that holds a parent key, the sift_col index of that parent table, and that
+-- index keeps a journal of the keys that changed. col_connection_state tells the journal of a parent index (its lineage and the records appended so far) and whether a derived value could
+-- be vouched now ('ok', or why not: no journal, the log is not complete, a snapshot that cannot be vouched); col_connection_list gives the connections a child index declares and the
+-- parent index that serves each; col_connections lists them all with it.
 CREATE FUNCTION sift.col_connection_state(parent regclass, OUT lineage int8, OUT records int8, OUT stamp text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_connection_state' LANGUAGE C STRICT;
 
 COMMENT ON FUNCTION sift.col_connection_state(regclass) IS 'The key journal of a sift_col index that a child index is connected to: its lineage, the records appended so far, and what a stamp taken now says (ok, or why a derived value could not be vouched)';
 
+CREATE FUNCTION sift.col_connection_list(child regclass, OUT ordinal int4, OUT fk text, OUT declaration text, OUT parent_index regclass, OUT via text) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_col_connection_list' LANGUAGE C STRICT STABLE;
+
+COMMENT ON FUNCTION sift.col_connection_list(regclass) IS 'The connections a sift_col index declares with its option connect: their place in the option, the column that holds the parent key, the text, the parent index that serves each (NULL when the names do not resolve now) and how it is read';
+
 CREATE VIEW sift.col_connections AS
-	SELECT c.oid::regclass AS child, p.oid::regclass AS parent, substr(o, 9) AS declaration, s.lineage, s.records, s.stamp
-	FROM pg_depend d
-	JOIN pg_class c ON c.oid = d.objid AND c.relkind = 'i'
-	JOIN pg_class p ON p.oid = d.refobjid AND p.relkind = 'i'
+	SELECT c.oid::regclass AS child, l.ordinal, l.fk, l.parent_index AS parent, l.declaration, l.via, s.lineage, s.records, s.stamp
+	FROM pg_class c
 	JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_col'
 	JOIN pg_index i ON i.indexrelid = c.oid AND i.indisready
-	CROSS JOIN LATERAL unnest(c.reloptions) o
-	CROSS JOIN LATERAL sift.col_connection_state(p.oid) s
-	WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n'
-	  AND o LIKE 'connect=%' AND has_table_privilege(i.indrelid, 'SELECT');
+	CROSS JOIN LATERAL sift.col_connection_list(c.oid) l
+	LEFT JOIN LATERAL sift.col_connection_state(l.parent_index) s ON true
+	WHERE c.relkind = 'i' AND has_table_privilege(i.indrelid, 'SELECT');
 
-COMMENT ON VIEW sift.col_connections IS 'The sift_col indexes with the option connect: the child index, the parent index it depends on, the text of the option and the state of the key journal of the parent';
+COMMENT ON VIEW sift.col_connections IS 'The connections of the sift_col indexes with the option connect: the child index, the parent index that serves each, the text and how it is read, and the state of the key journal of the parent';

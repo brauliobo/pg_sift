@@ -16,6 +16,7 @@
 #include "col/preagg.h"
 #include "core/visibility.h"
 #include "col/wbuf.h"
+#include "col/conn.h"
 
 /* The xid before which every transaction that inserted an entry of the segment committed; false when the segment does not say */
 static inline bool
@@ -46,6 +47,9 @@ typedef struct SiftColRel
 	SiftColSchema *schema;
 	SiftColIndexMeta meta;		/* cols point into schema->cols; stats zero */
 	int			natts;
+	int			carry_first;	/* the leaves from this id on are taken from the parent tables of the connections (SIFT_COLD_CARRIED); none when it is ncols */
+	int			nconn;			/* connections of the index (col/conn.h) and the leaves of each */
+	SiftConnLayout conn[SIFT_CONN_MAX_CONNECTIONS];
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
@@ -75,9 +79,9 @@ extern struct SiftTombLog *sift_col_log_appender(Relation index);
 extern void sift_col_batch_hook(void);
 extern void sift_col_tomb_hold_tid(Relation index, ItemPointer tid);
 extern void sift_col_tombs_flush(void);
-extern void sift_col_tombs_discard(void);
 /* Writes the rows this transaction holds back for the write buffers (and its tombstones), as before a savepoint */
 extern void sift_col_batch_flush(void);
+extern void sift_col_tombs_discard(void);
 /* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
 extern bool sift_col_track_ctid(Relation index);

@@ -76,6 +76,8 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
 	if (hd->schema->wide && seg->entry.format < SIFT_COL_FORMAT_WIDE)
 		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->carried && seg->entry.format < SIFT_COL_FORMAT_CARRIED)
+		corrupt(seg, "The schema has carried leaves, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
 	pfree(schema);

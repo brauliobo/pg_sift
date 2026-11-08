@@ -12,6 +12,7 @@
 #include "col/setsum.h"
 #include "core/limits.h"
 #include "col/am/am_int.h"
+#include "col/conn.h"
 
 COL_OPT_STR_KO(sift_col_options_order_columns, order_columns, ko_last)
 
@@ -106,6 +107,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		}
 		n += k;
 	}
+	r->carry_first = n;
+	n = sift_conn_leaves(index, defs, n, r->conn, &r->nconn);
 	r->ret = palloc0((natts + 1) * sizeof(bool));
 	{
 		const char *err = am_return_walk(sift_col_options_return_columns(index), r, desc);

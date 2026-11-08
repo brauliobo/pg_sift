@@ -100,6 +100,8 @@ sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 {
 	if (sift_col_def_arrlen_lane(def))
 		return INT4OID;
+	if (def->flags & SIFT_COLD_CARRIED)
+		return type_of_tag(def->type);
 	if (def->attno > 0 && (def->path[0] == '\0' || def->lane > 0))
 		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
 	return type_of_tag(def->type);
