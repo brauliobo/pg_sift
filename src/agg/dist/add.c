@@ -106,7 +106,7 @@ void
 dist_start_hash(Dist *d)
 {
 	d->mode = DD_HASH;
-	d->maxn = Max(d->budget / (4 * sizeof(uint64)), 256);
+	d->maxn = dist_hash_cap(d);
 }
 
 /* the pairs the groups of the table hold in the set of aggregate ai: the counts that were taken as they were added */
