@@ -17,7 +17,11 @@ CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
 CREATE TABLE dim (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);
 INSERT INTO dim SELECT i, i % 7, i % 3, i % 5 = 0 FROM generate_series(0, 4999) i;
 CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
-VACUUM (FREEZE, ANALYZE) ev, dim;
+-- 2,820 classes of two columns: a chunk of the scan meets the rare ones for many chunks, and the aggregates that filter on the class resolve the classes they have not seen alone
+CREATE TABLE dim2 (k int PRIMARY KEY, x int, y int) WITH (autovacuum_enabled = false);
+INSERT INTO dim2 SELECT i, i % 60, i % 47 FROM generate_series(0, 4999) i;
+CREATE INDEX dim2_col ON dim2 USING sift_col (k, x, y);
+VACUUM (FREEZE, ANALYZE) ev, dim, dim2;
 
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
@@ -26,7 +30,9 @@ INSERT INTO shapes VALUES
  (3, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
 		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (4, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (5, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (5, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (6, $q$SELECT count(*) FILTER (WHERE dim2.x = 3), count(*) FILTER (WHERE dim2.y = 5), sum(ev.v) FILTER (WHERE dim2.x + dim2.y = 60) FROM ev JOIN dim2 ON dim2.k = ev.k$q$),
+ (7, $q$SELECT dim2.x, count(*) FILTER (WHERE dim2.y < 9) FROM ev LEFT JOIN dim2 ON dim2.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -89,5 +95,5 @@ SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
 
 DROP FUNCTION report(text), maps(text), answer(text, bool);
-DROP TABLE shapes, ev, dim;
+DROP TABLE shapes, ev, dim, dim2;
 DROP EXTENSION pg_sift;

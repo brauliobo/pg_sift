@@ -100,13 +100,16 @@ join_stage(AggExec *ex, int s, Tup *in)
 	eid = ex->peid;
 	combo_resolve(ex, ci, ex->qlevel, n, in->tidx, in->ridx, eid, NULL, in);
 	for (int i = 0; i < n; i++)
-		plain &= cs->ent[eid[i]].nout == 1;
+	{
+		const ComboEnt *en = &cs->ent[eid[i]];
+
+		plain &= en->nout == 1;
+		own->cout[ci][i] = en->base;
+	}
 	if (plain)
 	{
 		Tup			al = *in;
 
-		for (int i = 0; i < n; i++)
-			own->cout[ci][i] = cs->ent[eid[i]].base;
 		al.cout = memcpy(ex->alcout[s], in->cout, ex->spec->ncombo * sizeof(uint32 *));
 		al.cout[ci] = own->cout[ci];
 		join_stage(ex, s + 1, &al);

@@ -22,7 +22,14 @@ CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
 NOTICE:  sift_col index "dim_col": 2 automatic choices (rollup_columns, track_changes)
 DETAIL:  rollup_columns = b, flag; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_col');
-VACUUM (FREEZE, ANALYZE) ev, dim;
+-- 2,820 classes of two columns: a chunk of the scan meets the rare ones for many chunks, and the aggregates that filter on the class resolve the classes they have not seen alone
+CREATE TABLE dim2 (k int PRIMARY KEY, x int, y int) WITH (autovacuum_enabled = false);
+INSERT INTO dim2 SELECT i, i % 60, i % 47 FROM generate_series(0, 4999) i;
+CREATE INDEX dim2_col ON dim2 USING sift_col (k, x, y);
+NOTICE:  sift_col index "dim2_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim2_col');
+VACUUM (FREEZE, ANALYZE) ev, dim, dim2;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
@@ -30,7 +37,9 @@ INSERT INTO shapes VALUES
  (3, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
 		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (4, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
- (5, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
+ (5, $q$SELECT dim.a, count(DISTINCT dim.k), sum(dim.k) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (6, $q$SELECT count(*) FILTER (WHERE dim2.x = 3), count(*) FILTER (WHERE dim2.y = 5), sum(ev.v) FILTER (WHERE dim2.x + dim2.y = 60) FROM ev JOIN dim2 ON dim2.k = ev.k$q$),
+ (7, $q$SELECT dim2.x, count(*) FILTER (WHERE dim2.y < 9) FROM ev LEFT JOIN dim2 ON dim2.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
@@ -59,7 +68,9 @@ SELECT * FROM report('first');
  first |     3 | t            | f      | t
  first |     4 | t            | t      | f
  first |     5 | t            | f      | f
-(5 rows)
+ first |     6 | t            | f      | t
+ first |     7 | t            | t      | f
+(7 rows)
 
 SELECT * FROM report('shared');
  stage  | shape | same_answers | shared | built 
@@ -69,7 +80,9 @@ SELECT * FROM report('shared');
  shared |     3 | t            | t      | f
  shared |     4 | t            | t      | f
  shared |     5 | t            | f      | f
-(5 rows)
+ shared |     6 | t            | t      | f
+ shared |     7 | t            | t      | f
+(7 rows)
 
 -- a write, in the reader's own transaction: no map is the table's, and the answers see the change
 BEGIN;
@@ -84,7 +97,9 @@ SELECT * FROM report('in the transaction');
  in the transaction |     3 | t            | f      | f
  in the transaction |     4 | t            | f      | f
  in the transaction |     5 | t            | f      | f
-(5 rows)
+ in the transaction |     6 | t            | t      | f
+ in the transaction |     7 | t            | t      | f
+(7 rows)
 
 ROLLBACK;
 -- committed, not vacuumed: pages that are not all-visible
@@ -98,7 +113,9 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |     3 | t            | f      | f
  committed, not vacuumed |     4 | t            | f      | f
  committed, not vacuumed |     5 | t            | f      | f
-(5 rows)
+ committed, not vacuumed |     6 | t            | t      | f
+ committed, not vacuumed |     7 | t            | t      | f
+(7 rows)
 
 VACUUM dim;
 SELECT * FROM report('vacuumed');
@@ -109,7 +126,9 @@ SELECT * FROM report('vacuumed');
  vacuumed |     3 | t            | f      | t
  vacuumed |     4 | t            | t      | f
  vacuumed |     5 | t            | f      | f
-(5 rows)
+ vacuumed |     6 | t            | t      | f
+ vacuumed |     7 | t            | t      | f
+(7 rows)
 
 SELECT * FROM report('shared again');
     stage     | shape | same_answers | shared | built 
@@ -119,7 +138,9 @@ SELECT * FROM report('shared again');
  shared again |     3 | t            | t      | f
  shared again |     4 | t            | t      | f
  shared again |     5 | t            | f      | f
-(5 rows)
+ shared again |     6 | t            | t      | f
+ shared again |     7 | t            | t      | f
+(7 rows)
 
 -- a budget too small for the map of a new state of the table: the statement reads the classes itself, and keeps nothing
 UPDATE dim SET a = 5 WHERE k % 67 = 0;
@@ -133,7 +154,9 @@ SELECT * FROM report('budget too small');
  budget too small |     3 | t            | f      | t
  budget too small |     4 | t            | f      | t
  budget too small |     5 | t            | f      | f
-(5 rows)
+ budget too small |     6 | t            | t      | f
+ budget too small |     7 | t            | t      | f
+(7 rows)
 
 SET sift.agg_dimmap_kb = 0;
 SELECT * FROM report('budget off');
@@ -144,7 +167,9 @@ SELECT * FROM report('budget off');
  budget off |     3 | t            | f      | f
  budget off |     4 | t            | f      | f
  budget off |     5 | t            | f      | f
-(5 rows)
+ budget off |     6 | t            | f      | f
+ budget off |     7 | t            | f      | f
+(7 rows)
 
 RESET sift.agg_dimmap_kb;
 SELECT * FROM report('map made');
@@ -155,7 +180,9 @@ SELECT * FROM report('map made');
  map made |     3 | t            | f      | t
  map made |     4 | t            | t      | f
  map made |     5 | t            | f      | f
-(5 rows)
+ map made |     6 | t            | t      | f
+ map made |     7 | t            | t      | f
+(7 rows)
 
 SELECT * FROM report('map shared');
    stage    | shape | same_answers | shared | built 
@@ -165,7 +192,9 @@ SELECT * FROM report('map shared');
  map shared |     3 | t            | t      | f
  map shared |     4 | t            | t      | f
  map shared |     5 | t            | f      | f
-(5 rows)
+ map shared |     6 | t            | t      | f
+ map shared |     7 | t            | t      | f
+(7 rows)
 
 -- the workers read the classes from the leader's shared memory
 SET max_parallel_workers_per_gather = 2;
@@ -182,8 +211,10 @@ SELECT * FROM report('workers');
  workers |     3 | t            | t      | f
  workers |     4 | t            | t      | f
  workers |     5 | t            | f      | f
-(5 rows)
+ workers |     6 | t            | t      | f
+ workers |     7 | t            | t      | f
+(7 rows)
 
 DROP FUNCTION report(text), maps(text), answer(text, bool);
-DROP TABLE shapes, ev, dim;
+DROP TABLE shapes, ev, dim, dim2;
 DROP EXTENSION pg_sift;
