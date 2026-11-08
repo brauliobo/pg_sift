@@ -27,6 +27,8 @@ for s in "${ORDER[@]}" leakcheck; do
 	# the log of a split suite: the logs of its jobs, in order
 	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
+	# on a hosted runner the failed ids are an annotation of the job (readable through the API while the run goes) and a line of the step summary
+	[[ -z ${bad:-} || -z ${GITHUB_ACTIONS:-} ]] || { echo "::error title=FAILED JOB::$s:$bad"; echo "- **$s** failed:$bad" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"; }
 	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
 	for id in ${bad:-}; do
 		pat='^not ok'; [[ $id != installcheck-* ]] || pat='^(not ok|@@|[-+][^-+])'
