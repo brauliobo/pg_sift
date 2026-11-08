@@ -63,6 +63,8 @@ extern double	acut_cut_benefit(double speedup, double relevance);
 
 extern double	acut_cut_cost(double growth_pct, int nleaves);
 
+extern double	acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, double kept_share);
+
 extern double	acut_units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, bool kept, double *ideal, bool *fired);
 
 extern double	acut_ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double rows_per_unit, double *ideal, bool *fired);

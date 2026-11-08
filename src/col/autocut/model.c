@@ -257,3 +257,23 @@ acut_ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double 
 	*fired = cut_pays_a_lookup(reads[AUTOCUT_KEYS / 2], *ideal, rows_per_unit);
 	return reads[AUTOCUT_KEYS / 2];
 }
+
+/*
+ * What the cut takes from the lookups of a leaf whose zones it would widen: an equality or a window on the leaf reads the units that hold its values (`held`, the
+ * units with a row that has one) and not the `kept` (a share of them, at least one) it reads now. The loss is that speedup priced like a benefit and weighed by the share of the rows that have a value,
+ * the rows a lookup of the leaf is about: a leaf that follows the table and is filled loses all it has, one filled in 0.2% of the rows almost nothing, one all NULL nothing.
+ */
+double
+acut_zone_loss(const Track *t, uint32 nrows, double nsb, double rows_per_unit, double kept_share)
+{
+	double		filled = 0,
+				held,
+				kept;
+
+	for (uint32 i = 0; i < nrows; i++)
+		filled += !t->nl[i];
+	filled /= Max(nrows, 1);
+	held = Min(nsb, filled * nsb * rows_per_unit);
+	kept = Min(held, Max(1.0, kept_share * held));
+	return filled * acut_cut_benefit(acut_cut_speedup(held, kept, rows_per_unit), 1.0);
+}
