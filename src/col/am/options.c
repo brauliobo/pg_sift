@@ -566,7 +566,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 
 /*
  * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
- * group and a key (the group of the order arrays; key_cut and the point directory are left to the build, which cuts by the group only where its rule says), 'a' is
+ * group and a key (the group of the order arrays; the point directory is left out and key_cut to the build, which cuts by the group where the units read by an equality on it are many), 'a' is
  * a key (key_cut, order_columns, order_array_columns and point_tid_columns). The columns are trimmed: 'a,b' and 'a , b' are the same option.
  */
 static void
@@ -750,6 +750,17 @@ sift_col_options_order_columns_set(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return (o->order_columns && *((const char *) o + o->order_columns)) || (o->ko_last && !o->ko_auto);
+}
+
+/* the group of a key_order of the user's, 'group, key', with no order_columns of their own (NULL for any other): the column a build with no key_cut cuts the units by */
+const char *
+sift_col_options_key_order_group(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	if (o->ko_group == 0 || o->ko_auto || (o->order_columns && *((const char *) o + o->order_columns)))
+		return NULL;
+	return (const char *) o + o->ko_group;
 }
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */

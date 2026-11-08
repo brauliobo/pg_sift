@@ -176,6 +176,7 @@ extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 /* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
 extern bool sift_col_auto_cut_again(Relation heap, Relation index, bool fits);
 extern bool sift_col_options_key_cut_auto(Relation index);
+extern const char *sift_col_options_key_order_group(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build/build.c) */
 extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */

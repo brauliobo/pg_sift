@@ -8,8 +8,8 @@ SET jit = off;
 CREATE TABLE sk (id int, ent_id int NOT NULL, ts timestamptz NOT NULL, amount float8);
 INSERT INTO sk SELECT i, 1 + i % 10, timestamptz '2026-01-01' + (i * 7 % 100000) * interval '1 second', i % 97 FROM generate_series(1, 100000) i ORDER BY random();
 CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_changes = 'off');
-NOTICE:  sift_col index "sk_col": 3 automatic choices (key_order, order_array_columns, order_layout)
-DETAIL:  key_order = ent_id, ts; order_array_columns = ts; order_layout = ts exact
+NOTICE:  sift_col index "sk_col": 3 automatic choices, 1 advice
+DETAIL:  advice: key_cut = ent_id, ts; key_order = ent_id, ts; order_array_columns = ts; order_layout = ts exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sk_col');
 NOTICE:  sift_col index "sk_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

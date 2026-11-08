@@ -160,6 +160,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	int64	   *tmp;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
+	const char *kgroup = sift_col_options_key_order_group(index);	/* key_order = 'group, key': the group is the only key to cut by */
 
 	*v = (CutVerdict) {.res = SIFT_AUTOCUT_NONE, .units = nsb};
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
@@ -168,7 +169,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "key_cut is set";
 	else if (point_tid_set(index))
 		v->reason = "point_tid_columns is set";
-	else if (sift_col_options_order_columns_set(index))
+	else if (sift_col_options_order_columns_set(index) && kgroup == NULL)
 		v->reason = "order_columns is set";
 	else if (!ActiveSnapshotSet())
 		v->reason = "no snapshot";
@@ -188,8 +189,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		if (ntr < AUTOCUT_LEAVES && d->kind == SIFT_COLK_SCALAR && d->store == SIFT_COLS_INT && d->lane == 0 && d->parent < 0 && (d->path == NULL || d->path[0] == '\0') &&
 			hatt != 0 && value_of(d->type, 0, &x))
 		{
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type, .cand = cand_type(d->type) && sift_col_key_shaped(heap, index, sc, d)};
-			tr[ntr].time = !tr[ntr].cand && time_type(d->type);
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type,
+				.cand = cand_type(d->type) && (kgroup != NULL ? strcmp(cut_name(index, sc, c), kgroup) == 0 : sift_col_key_shaped(heap, index, sc, d))};
+			tr[ntr].time = kgroup == NULL && !tr[ntr].cand && time_type(d->type);
 			tr[ntr].btree = acut_unique_btree(heap, hatt);
 			ncand += tr[ntr].cand || tr[ntr].time;
 			ntr++;
@@ -198,8 +200,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		{
 			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
 			 * do not repeat, and a range of them is read like a range of dates */
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
-			ncand += d->lane == 1;
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1 && kgroup == NULL, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
+			ncand += d->lane == 1 && kgroup == NULL;
 			untracked -= d->lane == 1;
 			untracked_bytes -= (d->lane == 1) * AUTOCUT_LEAF_BYTES;
 			ntr++;
@@ -386,7 +388,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		double		worst = 0,
 					benefit = acut_cut_benefit(acut_cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0);
 
-		for (int t = 0; t < ntr; t++)
+		/* a key_order of the user's names the lookups the index is for, the group and the key: the zones of the other leaves are not weighed against them */
+		for (int t = 0; kgroup == NULL && t < ntr; t++)
 		{
 			int			m;
 			double		loss = 0,
