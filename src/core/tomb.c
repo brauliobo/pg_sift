@@ -16,6 +16,7 @@
 
 #include "core/cmp.h"
 #include "core/tomb.h"
+#include "core/rowmem.h"
 
 #define corrupt(rel, ...) \
 	ereport(ERROR, \
@@ -105,7 +106,7 @@ merge_tombs(SiftTombLog *t, SiftTomb **a, uint32 *na, uint32 *cap, const SiftTom
 	if (k > *cap)
 	{
 		*cap = Max(64, Max(*cap * 2, k));
-		SIFT_REGROW_IN(t->cxt, *a, *cap * sizeof(SiftTomb));
+		SIFT_REGROW_HUGE_IN(t->cxt, *a, *cap * sizeof(SiftTomb));
 	}
 	while (j > 0)
 		(*a)[--k] = i > 0 && cmp_tomb(&(*a)[i - 1], &b[j - 1]) > 0 ? (*a)[--i] : b[--j];
@@ -152,7 +153,7 @@ tomb_sort(SiftTomb *a, uint32 n)
 		qsort(a, n, sizeof(SiftTomb), cmp_tomb);
 		return;
 	}
-	dst = palloc(n * sizeof(SiftTomb));
+	dst = sift_rows_alloc(n * sizeof(SiftTomb));
 	for (int shift = 0; shift < 64 && ((hi - lo) >> shift) != 0; shift += TOMB_RADIX_BITS)
 	{
 		uint32		count[(1 << TOMB_RADIX_BITS) + 1] = {0};
@@ -287,7 +288,7 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		return;
 	/* the header says how many entries are new: the batch is allocated once (appenders may add more while it is read) */
 	capbatch = Max(64, n - t->synced + SIFT_TOMB_CAP);
-	batch = palloc(capbatch * sizeof(SiftTomb));
+	batch = sift_rows_alloc(capbatch * sizeof(SiftTomb));
 	while (BlockNumberIsValid(blk))
 	{
 		const SiftTombPage *tp;
@@ -304,7 +305,7 @@ sift_tomb_sync(Relation rel, SiftTombLog *t)
 		if (nbatch + (tp->nent - from) > capbatch)
 		{
 			capbatch = Max(64, Max(capbatch * 2, nbatch + tp->nent));
-			SIFT_REGROW(batch, capbatch * sizeof(SiftTomb));
+			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, batch, capbatch * sizeof(SiftTomb));
 		}
 		for (uint32 i = from; i < tp->nent; i++)
 		{

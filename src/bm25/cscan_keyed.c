@@ -1,7 +1,9 @@
 /*
  * bm25/cscan_keyed.c - SiftScan ordered by leading sort keys, then score: the rounds of a keyed scan.
  */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
+#include "core/rowmem.h"
 
 #include "executor/executor.h"
 #include "lib/binaryheap.h"
@@ -154,8 +156,8 @@ static KeyRow **
 keytop_rows(KeyTop *t, int64 *nrows)
 {
 	int64		nheap = binaryheap_size(t->heap);
-	KeyRow	  **rows = palloc((nheap + t->ntie) * sizeof(KeyRow *));
-	KeyRow	   *tied = palloc(t->ntie * sizeof(KeyRow));
+	KeyRow	  **rows = sift_rows_alloc((nheap + t->ntie) * sizeof(KeyRow *));
+	KeyRow	   *tied = sift_rows_alloc(t->ntie * sizeof(KeyRow));
 
 	for (int64 i = 0; i < nheap; i++)
 		rows[i] = (KeyRow *) DatumGetPointer(binaryheap_get_node(t->heap, i));

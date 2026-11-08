@@ -539,7 +539,7 @@ val_cmp(const void *a, const void *b, void *arg)
 static Value *
 collect_values(Facets *f, int64 *nvals)
 {
-	Value	   *vals = MemoryContextAlloc(f->mcxt, Max(f->nent, 1) * sizeof(Value));
+	Value	   *vals = MemoryContextAllocHuge(f->mcxt, Max(f->nent, 1) * sizeof(Value));
 	int64		n = 0;
 
 	qsort_arg(f->ent, f->nent, sizeof(Entry), ent_cmp, f);

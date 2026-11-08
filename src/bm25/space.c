@@ -3,6 +3,7 @@
  * that moves the segments at the end of the file down (core/store.h P7).
  */
 #include "postgres.h"
+#include "core/rowmem.h"
 
 #include "access/xact.h"
 #include "common/int.h"
@@ -34,7 +35,7 @@ static bool space_worth(int64 blocks, BlockNumber nblocks);
 static SiftExtent *
 bitmap_extents(Bitmapset *set, int *n)
 {
-	SiftExtent *ext = palloc((bms_num_members(set) + 1) * sizeof(SiftExtent));
+	SiftExtent *ext = sift_rows_alloc((bms_num_members(set) + 1) * sizeof(SiftExtent));
 	int			x = -1;
 
 	*n = 0;
