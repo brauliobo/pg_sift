@@ -60,12 +60,31 @@ acc_free(AggAcc *a, int naggs)
 	pfree(a);
 }
 
+/* a table that cannot spill grows with its groups: past what the planner leaves it, it ends the scan and names what to raise */
+void
+table_nospill_check(const AggExec *ex)
+{
+	double		held,
+				limit = sift_agg_nospill_bytes(NULL, NULL);
+
+	if (sift_aggspec_spillable(ex->spec) || (held = (double) MemoryContextMemAllocated(ex->tcxt, true)) <= limit)
+		return;
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: the group table of the aggregate holds %.0f kB and cannot spill, past the %.0f kB it may take", held / 1024.0, limit / 1024.0),
+			 errhint("Raise work_mem or hash_mem_multiplier, or set sift.enable_agg to off.")));
+}
+
 /* every per-group array to newcap groups; remap[old] = new index (UINT32_MAX: drop), NULL: identity */
 void
 groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 {
-	AggAcc	   *na = acc_alloc(ex, newcap);
-	int64	   *nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
+	AggAcc	   *na;
+	int64	   *nseen;
+
+	table_nospill_check(ex);
+	na = acc_alloc(ex, newcap);
+	nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
 
 	/* the groups keep their numbers: copy the arrays whole, an unseen slot holds what a new one does */
 	if (remap == NULL)
