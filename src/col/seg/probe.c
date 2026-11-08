@@ -35,7 +35,7 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 	Oid			ty = InvalidOid;
 	bool		ok = false;
 
-	if (col >= 2 * seg->schema->ncols)
+	if (col >= 2 * seg->schema->ncols || ((seg->entry.flags & SIFT_SEG_DIRTY) && !sift_cseg_dead_fits(seg)))
 		return false;
 	d = &seg->schema->cols[col % seg->schema->ncols];
 	if (d->attno < 1 || d->attno > ix->indnatts || ix->indkey.values[d->attno - 1] <= 0 || !sift_cgord_leaf_ok(seg->schema, d))

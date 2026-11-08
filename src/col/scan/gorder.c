@@ -795,6 +795,8 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 			SIFT_COL_JITTER();
 			if (!keyed)
 				ok = sift_cseg_unit_dead(seg, u, gexact_cx(src), &x->dead, &x->ndead, &room);
+			else if (!sift_cseg_dead_fits(seg))
+				ok = false;
 			else
 			{
 				uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
