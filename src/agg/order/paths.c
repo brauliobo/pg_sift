@@ -449,8 +449,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
 		/* the walk of a filter fetches the heap row of each entry it takes (3,400 instructions, 127 for 20 rows of a tenant out of 40, 785 when the sort has a second key), where the units the
-		 * zones leave are read a row in about 30: when the zones leave a quarter of the units or less and those hold fewer rows than TOPN_ROWS_PER_FETCH times the fetches the statistics
-		 * price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
+		 * zones leave are read a row in about 35 (the units hold every row of their range, not the rows the filters pass): when the zones leave a quarter of the units or less and those hold fewer rows
+		 * than TOPN_ROWS_PER_FETCH times the fetches the statistics price, the units are read (the executor tries the walk of its own accord for a sort of more keys, so the plan says no to it) */
 		if (s->npred > 0 && leaf[0] >= 0 && !(c->topn_array && walked == 0))
 		{
 			int			nkeys;
@@ -458,7 +458,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 						fetches = c->topn_array ? walked : topn_walk_fetches(c, leaf[0], topn_pinned_group(c, s, leaf[0]), rows),
 						kept = zone_kept(c, s, &nkeys, &share);
 
-			if (kept <= TOPN_ZONE_FRAC && kept * input_rel->rows <= TOPN_ROWS_PER_FETCH * fetches)
+			if (kept <= TOPN_ZONE_FRAC && kept * c->rel->tuples <= TOPN_ROWS_PER_FETCH * fetches)
 			{
 				c->topn_array = false;
 				c->topn_walk = 0.0;

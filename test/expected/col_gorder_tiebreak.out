@@ -42,7 +42,7 @@ SELECT cond, count(*) FILTER (WHERE result LIKE 'DIFFERS%') AS differ, count(*) 
  g = 7                                             |      0 | t
  g = 7 AND d >= date '2018-06-01' AND gone IS NULL |      0 | t
  g = 7 AND gone IS NULL                            |      0 | t
- g = 7 AND gone IS NULL AND kind = 3               |      0 | f
+ g = 7 AND gone IS NULL AND kind = 3               |      0 | t
  g IN (3, 7, 11) AND gone IS NULL                  |      0 | t
 (5 rows)
 
