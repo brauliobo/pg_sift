@@ -79,6 +79,8 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
  * All live rows of the segment, sorted by key (a repeated TID keeps its first record), as batches, one per superblock, ascending, in
  * mcxt. *n = the number of batches (0 for none).
  */
+/* Does a live record of the write buffer entry come from a transaction at or after x that did not abort (or from one that says nothing of itself)? Reads the headers of the records */
+extern bool sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, TransactionId x);
 extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp);
 
 /*

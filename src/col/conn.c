@@ -351,6 +351,31 @@ cmp_key(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
+bool
+sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *stamp)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	const SiftColSchema *schema = sift_col_rel(index)->schema;
+	bool		since = false;
+
+	sift_col_batch_flush();
+	sift_dir_read(index, dir);
+	for (int i = 0; !since && i < dir->nsegs; i++)
+	{
+		const SiftSegEntry *e = &dir->segs[i];
+		TransactionId xs;
+
+		if (sift_tomb_is_seg(e))
+			continue;
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+			since = !sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin);
+		else if (sift_seg_is_wbuf(e))
+			since = sift_cwbuf_inserted_since(index, e, schema, stamp->xmin);
+	}
+	pfree(dir);
+	return since;
+}
+
 SiftConnWhy
 sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {

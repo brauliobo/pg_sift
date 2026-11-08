@@ -117,6 +117,12 @@ batch_flush_all(void)
 	}
 }
 
+void
+sift_col_batch_flush(void)
+{
+	batch_flush_all();
+}
+
 static void
 batch_xact(XactEvent event, void *arg)
 {

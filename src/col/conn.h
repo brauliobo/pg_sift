@@ -116,6 +116,12 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * set. Every verdict other than OK means "read the join path for these rows".
  */
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+/*
+ * Could a row have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
+ * count)? Conservative: false only when every segment says its inserters finished before the horizon (SIFT_SEG_XSTAMP) and no live record of the write buffer is from
+ * the horizon on. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
+ */
+extern bool sift_conn_inserted_since(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 
 /* Short words for EXPLAIN and the tests */
 extern const char *sift_conn_why_name(SiftConnWhy why);

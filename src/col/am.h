@@ -76,6 +76,8 @@ extern void sift_col_batch_hook(void);
 extern void sift_col_tomb_hold_tid(Relation index, ItemPointer tid);
 extern void sift_col_tombs_flush(void);
 extern void sift_col_tombs_discard(void);
+/* Writes the rows this transaction holds back for the write buffers (and its tombstones), as before a savepoint */
+extern void sift_col_batch_flush(void);
 /* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
 extern bool sift_col_track_ctid(Relation index);

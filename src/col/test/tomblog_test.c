@@ -37,6 +37,7 @@ PG_FUNCTION_INFO_V1(sift_test_conn_connect);
 PG_FUNCTION_INFO_V1(sift_test_conn_take);
 PG_FUNCTION_INFO_V1(sift_test_conn_changed);
 PG_FUNCTION_INFO_V1(sift_test_conn_gen);
+PG_FUNCTION_INFO_V1(sift_test_conn_inserted_since);
 
 /* sift._test_col_log_create(index): adds the tombstone log to an index that has none */
 Datum
@@ -423,5 +424,19 @@ sift_test_conn_gen(PG_FUNCTION_ARGS)
 	nulls[2] = !has || !TransactionIdIsValid(g.trim);
 	index_close(index, NoLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+/* sift._test_conn_inserted_since(index, lineage, xmin): sift_conn_inserted_since for the stamp */
+Datum
+sift_test_conn_inserted_since(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(1),.xmin = PG_GETARG_TRANSACTIONID(2)};
+	bool		since = sift_conn_inserted_since(heap, index, &st);
+
+	table_close(heap, NoLock);
+	index_close(index, NoLock);
+	PG_RETURN_BOOL(since);
 }
 #endif							/* SIFT_TESTING */
