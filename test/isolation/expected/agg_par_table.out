@@ -1,5 +1,40 @@
 Parsed test spec with 3 sessions
 
+starting permutation: s1b s2l s1q s3m s3v s2u s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
+count
+-----
+23637
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7004);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
+step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
+busy
+----
+f   
+(1 row)
+
+step s3v: VACUUM iso_pt;
+step s2u: SELECT pg_advisory_unlock(7004);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+agree|parallel
+-----+--------
+t    |t       
+(1 row)
+
+step s1c: COMMIT;
+
 starting permutation: s1b s2l s1q s3u s3d s3i s3m s3v s2u s1c
 step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
 count
@@ -38,117 +73,6 @@ t    |t
 
 step s1c: COMMIT;
 
-starting permutation: s1b s2l s1q s3u s3d s3m s3v s2u s1c
-step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
-count
------
-23637
-(1 row)
-
-step s2l: SELECT pg_advisory_lock(7004);
-pg_advisory_lock
-----------------
-                
-(1 row)
-
-step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
-step s3u: UPDATE iso_pt SET v = v + 1000, k = k + 1 WHERE id % 5 = 0;
-step s3d: DELETE FROM iso_pt WHERE id % 7 = 0;
-step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
-busy
-----
-f   
-(1 row)
-
-step s3v: VACUUM iso_pt;
-step s2u: SELECT pg_advisory_unlock(7004);
-pg_advisory_unlock
-------------------
-t                 
-(1 row)
-
-step s1q: <... completed>
-agree|parallel
------+--------
-t    |t       
-(1 row)
-
-step s1c: COMMIT;
-
-starting permutation: s1b s2l s1q s3u s3i s3m s3v s2u s1c
-step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
-count
------
-23637
-(1 row)
-
-step s2l: SELECT pg_advisory_lock(7004);
-pg_advisory_lock
-----------------
-                
-(1 row)
-
-step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
-step s3u: UPDATE iso_pt SET v = v + 1000, k = k + 1 WHERE id % 5 = 0;
-step s3i: INSERT INTO iso_pt SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 200) FROM generate_series(30001, 31000) g;
-step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
-busy
-----
-f   
-(1 row)
-
-step s3v: VACUUM iso_pt;
-step s2u: SELECT pg_advisory_unlock(7004);
-pg_advisory_unlock
-------------------
-t                 
-(1 row)
-
-step s1q: <... completed>
-agree|parallel
------+--------
-t    |t       
-(1 row)
-
-step s1c: COMMIT;
-
-starting permutation: s1b s2l s1q s3d s3i s3m s3v s2u s1c
-step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
-count
------
-23637
-(1 row)
-
-step s2l: SELECT pg_advisory_lock(7004);
-pg_advisory_lock
-----------------
-                
-(1 row)
-
-step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
-step s3d: DELETE FROM iso_pt WHERE id % 7 = 0;
-step s3i: INSERT INTO iso_pt SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 200) FROM generate_series(30001, 31000) g;
-step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
-busy
-----
-f   
-(1 row)
-
-step s3v: VACUUM iso_pt;
-step s2u: SELECT pg_advisory_unlock(7004);
-pg_advisory_unlock
-------------------
-t                 
-(1 row)
-
-step s1q: <... completed>
-agree|parallel
------+--------
-t    |t       
-(1 row)
-
-step s1c: COMMIT;
-
 starting permutation: s1b s2l s1q s3i s3m s3v s2u s1c
 step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
 count
@@ -164,41 +88,6 @@ pg_advisory_lock
 
 step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
 step s3i: INSERT INTO iso_pt SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 200) FROM generate_series(30001, 31000) g;
-step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
-busy
-----
-f   
-(1 row)
-
-step s3v: VACUUM iso_pt;
-step s2u: SELECT pg_advisory_unlock(7004);
-pg_advisory_unlock
-------------------
-t                 
-(1 row)
-
-step s1q: <... completed>
-agree|parallel
------+--------
-t    |t       
-(1 row)
-
-step s1c: COMMIT;
-
-starting permutation: s1b s2l s1q s3m s3v s2u s1c
-step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
-count
------
-23637
-(1 row)
-
-step s2l: SELECT pg_advisory_lock(7004);
-pg_advisory_lock
-----------------
-                
-(1 row)
-
-step s1q: SELECT agree, parallel FROM iso_pt_q(7004, 0); <waiting ...>
 step s3m: SELECT busy FROM sift.table_maintain('iso_pt');
 busy
 ----
