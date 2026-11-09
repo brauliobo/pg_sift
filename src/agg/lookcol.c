@@ -43,7 +43,7 @@ typedef struct ColNeed
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
 	bool	   *dmade;
 	uint32		dn;
-	MemoryContext cx;			/* the unit's: reset with it */
+	MemoryContext cx;			/* the unit's: reset with it; the dictionary strings and the numerics of the unit live here */
 } ColNeed;
 
 /* a column of the join that is an expression of the table's columns no index holds: computed from the leaves of the columns it reads, for each row */
@@ -149,11 +149,17 @@ cell_datum(ColNeed *nd, int64 i, bool *isnull)
 	}
 	{
 		int64		iv = sift_src_int(v->data, lf->vtype, i);
+		Datum		d;
+		MemoryContext old;
 
-		if (lf->typid == NUMERICOID)
-			return iv == PG_INT64_MAX ? DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)) :
-				NumericGetDatum(int64_div_fast_to_numeric(iv, lf->scale));
-		return leaf_datum(lf->typid, iv);
+		if (lf->typid != NUMERICOID)
+			return leaf_datum(lf->typid, iv);
+		/* a numeric is a fresh allocation the table copies: it ends with the unit, not with the load */
+		old = MemoryContextSwitchTo(nd->cx);
+		d = iv == PG_INT64_MAX ? DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)) :
+			NumericGetDatum(int64_div_fast_to_numeric(iv, lf->scale));
+		MemoryContextSwitchTo(old);
+		return d;
 	}
 }
 
@@ -538,11 +544,11 @@ read_units(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Uni
 			{
 				ColNeed    *nd = &need[p];
 
+				nd->cx = ux;
 				sift_colsrc_read(src, &unit, nd->lf->id, &nd->vec);
 				if (nd->lf->vtype == SCV_CODE)
 				{
 					nd->dn = nd->vec.dict->n;
-					nd->cx = ux;
 					nd->dval = MemoryContextAlloc(ux, nd->dn * sizeof(Datum));
 					nd->dmade = MemoryContextAllocZero(ux, nd->dn);
 				}
