@@ -32,8 +32,8 @@ selftest() {
 	echo 'check-undefined selftest: ok'
 }
 
-[[ ${1:-} != --selftest ]] || { selftest; exit; }
 [[ $(uname) == Linux ]] || { echo "check-undefined: ELF libraries only, nothing to check on $(uname)"; exit 0; }
+[[ ${1:-} != --selftest ]] || { selftest; exit; }
 lib=${1:?usage: check-undefined.sh LIB [POSTGRES]}
 missing=$(check "$lib" "${2:-$(pg_config --bindir)/postgres}")
 [[ -z $missing ]] || { sed 's/^/undefined: /' <<<"$missing"; exit 1; }
