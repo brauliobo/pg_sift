@@ -1,0 +1,49 @@
+-- A parent table whose tests have a few outcomes is kept as classes of its keys: an array over the key values, so the keys must fall within the lookup budget. A table whose
+-- keys are spread over a range larger than the budget is read as rows and probed in a hash table, which costs a probe for each tuple (a cache miss each, past the cache): the
+-- planner prices the classes only for a table that can be one. The answers are those of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_lookup_max_kb = 64;
+CREATE TABLE par_dense (id int PRIMARY KEY, a int) WITH (autovacuum_enabled = false);
+INSERT INTO par_dense SELECT g, g % 7 FROM generate_series(1, 20000) g;
+CREATE TABLE par_sparse (id int PRIMARY KEY, a int) WITH (autovacuum_enabled = false);
+INSERT INTO par_sparse SELECT g * 10000, g % 7 FROM generate_series(1, 20000) g;
+CREATE TABLE fact_dense (id int, par_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO fact_dense SELECT g, 1 + (g * 7) % 20000, g % 100 FROM generate_series(1, 400000) g;
+CREATE TABLE fact_sparse (id int, par_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO fact_sparse SELECT id, par_id * 10000, v FROM fact_dense;
+SET client_min_messages = warning;
+CREATE INDEX par_dense_col ON par_dense USING sift_col (id, a);
+CREATE INDEX par_sparse_col ON par_sparse USING sift_col (id, a);
+CREATE INDEX fact_dense_col ON fact_dense USING sift_col (id, par_id, v);
+CREATE INDEX fact_sparse_col ON fact_sparse USING sift_col (id, par_id, v);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) par_dense, par_sparse, fact_dense, fact_sparse;
+CREATE FUNCTION scan_cost(kind text) RETURNS float8 LANGUAGE sql AS $$
+	SELECT scan_cost FROM sift.explain_why(format($q$SELECT sum(f.v) FILTER (WHERE p.a = 1), sum(f.v) FILTER (WHERE p.a < 3) FROM fact_%s f JOIN par_%s p ON p.id = f.par_id$q$, kind, kind))
+$$;
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT scan_cost('sparse') > 1.3 * scan_cost('dense') AS sparse_keys_cost_more;
+ sparse_keys_cost_more 
+-----------------------
+ t
+(1 row)
+
+SELECT answer(format($q$SELECT p.a, sum(f.v) FROM fact_%s f JOIN par_%s p ON p.id = f.par_id GROUP BY 1$q$, k, k), true) =
+       answer(format($q$SELECT p.a, sum(f.v) FROM fact_%s f JOIN par_%s p ON p.id = f.par_id GROUP BY 1$q$, k, k), false) AS same_answers, k
+FROM (VALUES ('dense'), ('sparse')) v (k) ORDER BY k;
+ same_answers |   k    
+--------------+--------
+ t            | dense
+ t            | sparse
+(2 rows)
+
+DROP FUNCTION scan_cost(text), answer(text, bool);
+DROP TABLE fact_dense, fact_sparse, par_dense, par_sparse;
+DROP EXTENSION pg_sift;
