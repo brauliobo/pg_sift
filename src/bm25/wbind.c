@@ -435,7 +435,7 @@ weigh_leaf(SiftPlan *p, EvalLeaf *l)
 void
 bind_scoring(SiftPlan *p)
 {
-	const SiftOptions *o = p->st->opts;
+	const SiftOptions *o = sift_index_options(p->st->index);
 
 	sift_kern_bm25_init(&p->bm, (float4) o->k1, (float4) o->b, p->stats.avgdl > 0 ? (float4) p->stats.avgdl : 1.0f);
 	for (int i = 0; i < p->nleaves; i++)
