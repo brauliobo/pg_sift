@@ -203,6 +203,12 @@ typedef struct MapShared
 } MapShared;
 
 #define DENSE_MAX_CLASSES	4096	/* the tuples of column values a dense table (map_load_dense) tells apart */
+/* may a table whose largest key is span - 1 and that has `rows` rows be kept as an array of classes over its keys (map_load_dense, and the planner that prices it as one)? */
+static inline bool
+dense_span_ok(double span, double rows, double limit)
+{
+	return span <= limit && span <= 8.0 * rows + 65536;
+}
 
 /* the columns of a joined table that a MapTab holds, by column number and type */
 typedef struct LookCols
