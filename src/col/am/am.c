@@ -189,6 +189,9 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	bool		updating = plan_updates(ps->planTree);
 	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 
+	/* a worker of a Gather scans the pages and has none of the rows and tombstones this backend holds back */
+	if (ps->parallelModeNeeded)
+		batch_flush_all();
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
