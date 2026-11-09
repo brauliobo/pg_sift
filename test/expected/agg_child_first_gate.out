@@ -1,0 +1,54 @@
+-- sift.agg_child_first gates the plans that scan the child of a LEFT JOIN with the preserved parent as its lookup (and the two rewrites around it, docs/COL-CONNECT.md):
+-- on, the statement counts the children of each parent from a scan of the child; off, it is the lookup join, a scan of the parent that loads the child. The answers are the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE cf_parent (id int PRIMARY KEY, region int) WITH (autovacuum_enabled = false);
+INSERT INTO cf_parent SELECT g, g % 50 FROM generate_series(1, 20000) g;
+CREATE TABLE cf_child (id int PRIMARY KEY, parent_id int NOT NULL REFERENCES cf_parent, v int) WITH (autovacuum_enabled = false);
+INSERT INTO cf_child SELECT g, 1 + (g::bigint * 7919) % 20000, g % 1000 FROM generate_series(1, 200000) g;
+CREATE INDEX cf_parent_col ON cf_parent USING sift_col (id, region);
+NOTICE:  sift_col index "cf_parent_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cf_parent_col');
+CREATE INDEX cf_child_col ON cf_child USING sift_col (id, parent_id, v);
+NOTICE:  sift_col index "cf_child_col" connected to cf_parent(id) through foreign key "cf_child_parent_id_fkey"
+HINT:  connect = 'off' on the index turns it off.
+NOTICE:  sift_col index "cf_child_col": 4 automatic choices
+DETAIL:  key_columns = parent_id; key_cut = parent_id; order_array_columns = v; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cf_child_col');
+NOTICE:  sift_col index "cf_child_col" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+VACUUM (FREEZE, ANALYZE) cf_parent, cf_child;
+CREATE FUNCTION joins(q text, child_first bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'none'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_child_first', child_first::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Lookup Joins:' THEN r := trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION answer(q text, scan bool, child_first bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_child_first', child_first::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO r;
+	RETURN r;
+END $$;
+SELECT q.name, joins(q.sql, true) AS child_first_on, joins(q.sql, false) AS child_first_off,
+       answer(q.sql, true, true) = answer(q.sql, false, true) AS on_equals_native,
+       answer(q.sql, true, false) = answer(q.sql, false, true) AS off_equals_native
+FROM (VALUES
+	('count per parent', 'SELECT p.id, count(c.id) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10'),
+	('sum per region', 'SELECT p.region, count(c.id), sum(c.v) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.region ORDER BY 1')
+) q (name, sql) ORDER BY q.name;
+       name       |           child_first_on            |        child_first_off        | on_equals_native | off_equals_native 
+------------------+-------------------------------------+-------------------------------+------------------+-------------------
+ count per parent | Lookup Joins: cf_parent (preserved) | Lookup Joins: cf_child (left) | t                | t
+ sum per region   | Lookup Joins: cf_parent (preserved) | none                          | t                | t
+(2 rows)
+
+DROP FUNCTION joins(text, bool), answer(text, bool, bool);
+DROP TABLE cf_child, cf_parent;
+DROP EXTENSION pg_sift;
