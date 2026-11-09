@@ -14,10 +14,14 @@ SELECT attname, round(max(f)::numeric, 2) AS hottest FROM pg_stats s, unnest(s.m
  grp_id  |    0.30
 (1 row)
 
+-- CREATE INDEX stores the count of rows it saw in reltuples (PostgreSQL 17 does): the estimate of a large table is set again before the build and before the decision
+CREATE TEMP TABLE hv_est (n bigint);
 -- the cut the build wrote, and what sift.key_cut_decision says of it under the segment bound given
 CREATE FUNCTION hv_cut(cols text, opts text, array_kb int DEFAULT NULL) RETURNS TABLE (built text, decision text, why text) LANGUAGE plpgsql AS
 $$ BEGIN
+	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
 	EXECUTE format('CREATE INDEX hv_i ON hv USING sift_col (%s) WITH (%s)', cols, opts);
+	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
 	IF array_kb IS NOT NULL THEN
 		PERFORM set_config('sift.test_limits', 'array_bytes=' || array_kb * 1024, true);
 	END IF;
@@ -51,7 +55,7 @@ SELECT * FROM hv_cut('id, tenant_id', 'key_cut = auto', 480);
 (1 row)
 
 -- the same value of a table of 257 million rows (77 million) is over the segment of the library (2^26 rows)
-UPDATE pg_class SET reltuples = 257000000 WHERE relname = 'hv';
+INSERT INTO hv_est VALUES (257000000);
 SELECT * FROM hv_cut('id, grp_id', 'key_cut = auto');
  built | decision |                                      why                                      
 -------+----------+-------------------------------------------------------------------------------
@@ -67,7 +71,9 @@ SELECT * FROM hv_cut('id, tenant_id', 'key_cut = auto');
 -- the build says it (the NOTICE and sift.index_choices), for the group of a key_order that would imply a cut as for a key of its own
 CREATE FUNCTION hv_say(cols text, opts text) RETURNS TABLE (choice text, value text) LANGUAGE plpgsql AS
 $$ BEGIN
+	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
 	EXECUTE format('CREATE INDEX hv_i ON hv USING sift_col (%s) WITH (%s)', cols, opts);
+	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
 	RETURN QUERY SELECT c.choice, regexp_replace(c.value, '[0-9]+', 'N', 'g') FROM sift.index_choices('hv_i') c WHERE c.choice = 'key_cut';
 	DROP INDEX hv_i;
 END $$;
