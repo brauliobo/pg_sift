@@ -524,7 +524,7 @@ extern bool agg_stock_rows;
 extern bool agg_rows_lifted;
 extern bool has_column_source(Oid relid);
 extern bool column_source_reads(Oid relid, Bitmapset *attnos);
-extern double column_distinct(AggCtx *c, Var *v);
+extern double column_distinct(AggCtx *c, Var *v, bool conditions);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);

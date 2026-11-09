@@ -50,7 +50,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 		{
 			double		nd;
 
-			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e)) > 0)
+			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e, true)) > 0)
 				g *= nd;
 			else
 				rest = lappend(rest, e);

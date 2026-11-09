@@ -18,6 +18,8 @@
 #include "agg/cost/int.h"
 
 static bool real_cost_walker(Node *n, double *excess);
+static bool hashed_subplan_walker(Node *n, double *ops);
+static double combo_subplan_ops(const SiftAggCombo *cb);
 static bool calendar_cost_walker(Node *n, double *ops);
 
 double
@@ -74,12 +76,16 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 	List	   *exprs = NIL;
 	double		entries = 1.0,
 				elem_nd = 1.0;
+	bool		tested = false;
 	Bitmapset  *lookups = NULL;
 	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
 	int			parents[SIFT_AGG_MAX_CLEAVES],
 				nparents = 0;
 	double		parent_nd[SIFT_AGG_MAX_CLEAVES] = {0};
 
+	/* the entries of a filter of the table are made for the values it rejects too; the groups of a count are those it keeps */
+	for (int sl = 0; sl < cb->nslots && cb->join < 0; sl++)
+		tested |= !cb->slot[sl].is_key;
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		SiftSrcLeaf *lf;
@@ -129,7 +135,7 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		}
 		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
-		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e)) > 0)
+		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e, counted || !tested)) > 0)
 			entries *= nd;
 		else
 			exprs = lappend(exprs, e);
@@ -330,7 +336,11 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		}
 		if (combo_wsum_only(s, ci))
 			continue;
-		cost += tuples * (wide * AGG_WIDE_LEAF + (direct ? AGG_DIRECT_ROW : 0.0)) + combo_entries(c, s, cb, tuples, false) * cb->nslots * (direct ? AGG_EVAL_DIRECT : AGG_EVAL_SLOT);
+		double		entries = combo_entries(c, s, cb, tuples, false);
+
+		cost += tuples * (wide * AGG_WIDE_LEAF + (direct ? AGG_DIRECT_ROW : 0.0)) + entries * cb->nslots * (direct ? AGG_EVAL_DIRECT : AGG_EVAL_SLOT);
+		k->ms_ops += entries * combo_subplan_ops(cb) +
+			wide * Max(tuples - entries, 0.0) * AGG_WIDE_MISS * entries * entries / (entries * entries + AGG_WIDE_MISS_HALF * AGG_WIDE_MISS_HALF);
 	}
 	return cost + *entry_cost;
 }
@@ -384,6 +394,28 @@ calendar_cost_walker(Node *n, double *ops)
 				break;
 		}
 	return expression_tree_walker(n, calendar_cost_walker, ops);
+}
+
+/* a hashed SubPlan is looked up by the executor for each value combination: its call and the probe of the hash of the subplan's rows, which PostgreSQL prices as one operator */
+static bool
+hashed_subplan_walker(Node *n, double *ops)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) && ((SubPlan *) n)->useHashTable)
+		*ops += AGG_REAL_SUBPLAN;
+	return expression_tree_walker(n, hashed_subplan_walker, ops);
+}
+
+/* what the hashed subplans of the slots of a combo cost for each value combination it has not seen, beyond the evaluation of the slot */
+static double
+combo_subplan_ops(const SiftAggCombo *cb)
+{
+	double		ops = 0;
+
+	for (int sl = 0; sl < cb->nslots; sl++)
+		hashed_subplan_walker((Node *) cb->slot[sl].expr, &ops);
+	return ops;
 }
 
 /*

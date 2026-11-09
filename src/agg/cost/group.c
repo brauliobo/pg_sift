@@ -148,7 +148,7 @@ tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
 					continue;
 				}
 			}
-			else if ((e = list_nth(c->attexpr, lf->attno - 1)) == NULL || !IsA(e, Var) || (d = column_distinct(c, (Var *) e)) <= 0)
+			else if ((e = list_nth(c->attexpr, lf->attno - 1)) == NULL || !IsA(e, Var) || (d = column_distinct(c, (Var *) e, true)) <= 0)
 				return 0;
 			nd *= d;
 		}

@@ -416,7 +416,7 @@ date_key_groups(AggCtx *c, const SiftAggKey *k)
 	e = list_nth(c->attexpr, l->attno - 1);
 	if (e != NULL && IsA(e, Var))
 	{
-		double		nd = column_distinct(c, (Var *) e);
+		double		nd = column_distinct(c, (Var *) e, true);
 
 		if (nd > 0)
 			days = days > 0 ? Min(days, nd) : nd;

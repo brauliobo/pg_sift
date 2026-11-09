@@ -19,6 +19,7 @@ typedef struct CostAcc
 	double		scan_cost;
 	double		recheck;		/* of the scan, the rows read again from the heap (recheck_cost): PostgreSQL's executor, in the operators of AGG_SCAN_SPEED but not of ms */
 	double		ms;				/* the operators of the scan in the units of the normal plan it is compared with (agg_cost): 1 where a lookup join or a search keeps the fitted prices */
+	double		ms_ops;			/* operators measured in time (a hashed subplan's call, the cache misses of a table of many values): priced at AGG_NORMAL_UNITS_MS a millisecond whatever the shape, after ms */
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
 	double		entry_ops;		/* the entries of the lookup joins at AGG_ENTRY_ROW, which each process that takes rows of a key makes again, ... */

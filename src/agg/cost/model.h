@@ -48,10 +48,13 @@
 #define AGG_FAN_CAP			2.0	/* ... and no more than twice: the cost per tuple measured is the same at 720,000 rows as at 2.9 million */
 #define AGG_FAN_SLOT		80.0	/* ... and each expression of the combos evaluated for it: 97 ns measured at 2.9 million rows, a numeric CASE of a column of the lookup table */
 #define AGG_WIDE_LEAF		3.0		/* a 64-bit leaf of a combo, per tuple: the hash probe for the id of its value */
+#define AGG_WIDE_MISS		880.0	/* ... more for each tuple of a value seen before when the values are many: the probe misses the cache (1,000,000 rows in random order: 31 ns a tuple at 100,000 distinct values, 380 at 632,000, none at 1,000; a value seen for the first time is a sequential insert) */
+#define AGG_WIDE_MISS_HALF	400000.0	/* the distinct values at which half of it is paid (the square of the values against the square of this) */
 #define AGG_DIRECT_NUM		2.0		/* the transition of a PostgreSQL-evaluated value (numeric_add): the normal plan pays it per row too, at the price PostgreSQL gives a transition function */
 #define AGG_DIRECT_CMP		1.0		/* the type's comparison of one (min, max): the same in both plans */
 #define AGG_REAL_CALL		5.0		/* what the executor really spends on a function or operator node (the fmgr call and its arguments), in operators */
 #define AGG_REAL_NUMERIC	40.0	/* the same for a numeric function: the allocation and the digit arithmetic */
+#define AGG_REAL_SUBPLAN	53.0	/* the same for a hashed SubPlan test (NOT IN, IN of a list): the call and the probe of its hash, 68 ns an entry measured against the 36 the combo's slot is priced at (1,000,000 rows, 1,000 to 1,000,000 distinct values of a bigint: 720 to 800 instructions an entry) */
 #define AGG_REAL_JSON		70.0	/* the same for a function that builds a jsonb value: 1,400 instructions measured for jsonb_build_array of one element, against 100 for an fmgr call */
 #define AGG_REAL_CALENDAR	80.0	/* the same for a function that breaks a timestamp into calendar fields (date_trunc, a timestamptz cast to date, extract, to_char): 260 ns measured in the executor, against 20 to 70 for the other casts and comparisons of dates and timestamps */
 #define AGG_PAIR_OPS		43.0	/* a (cached input, child row) pair of a join with no equality key, before the ON clause: 130 ns measured for the bind, the lookup and the dispatch of a clause of one addition */
