@@ -87,15 +87,3 @@ CREATE VIEW sift.col_connections AS
 	WHERE c.relkind = 'i' AND has_table_privilege(i.indrelid, 'SELECT');
 
 COMMENT ON VIEW sift.col_connections IS 'The connections of the sift_col indexes with the option connect: the child index, the parent index that serves each, the text, the state of the key journal of the parent, and whether the found flags of its segments are filled (fill; refused when the keys of the parent did not fit maintenance_work_mem)';
-
-
-COMMENT ON COLUMN sift.col_connections.child IS 'The connected sift_col index (the child)';
-COMMENT ON COLUMN sift.col_connections.ordinal IS 'Place of the connection in the option connect of the child';
-COMMENT ON COLUMN sift.col_connections.fk IS 'The column of the child that holds the key of the parent';
-COMMENT ON COLUMN sift.col_connections.parent IS 'The sift_col index of the parent table that serves the connection (NULL when the names do not resolve now)';
-COMMENT ON COLUMN sift.col_connections.declaration IS 'The connection as the option writes it: fk -> parent(key)';
-COMMENT ON COLUMN sift.col_connections.automatic IS 'True when CREATE INDEX or REINDEX chose the connection from a foreign key';
-COMMENT ON COLUMN sift.col_connections.lineage IS 'The key journal of the PARENT index (lineage); NULL without a journal';
-COMMENT ON COLUMN sift.col_connections.records IS 'Records appended to the journal of the PARENT index so far';
-COMMENT ON COLUMN sift.col_connections.stamp IS 'State of the PARENT journal now: ok when a stamp could be taken from it this moment, else why not. It says nothing about the segments of the child: whether they hold found flags is fill';
-COMMENT ON COLUMN sift.col_connections.fill IS 'What the SEGMENTS of the child hold for this connection: filled (every segment has its flags under a stamp), partly filled, unfilled (no stamp yet: the next promotion or merge fills it; the first build of a first child is unfilled by design) or refused (the keys of the parent did not fit maintenance_work_mem). Check fill, not stamp, to know the flags exist';

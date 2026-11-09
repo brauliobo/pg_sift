@@ -222,7 +222,7 @@ combo_tests_elements(const SiftAggCombo *cb)
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost, CostAcc *k)
 {
 	double		cost = 0;
 
@@ -255,7 +255,17 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				for (int p = 0; p < cb->nleaves; p++)
 					if (cb->leaf[p] < 0)
 						probes = Min(alive, sqrt(alive * Max(agg_rows, 1.0)));
-				cost += probes * (join_lut(c, s, jc) || join_dense(c, s, jc) ? AGG_JOIN_LUT : AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0));
+				if (join_lut(c, s, jc) || join_dense(c, s, jc))
+					cost += probes * AGG_JOIN_LUT;
+				else
+				{
+					double		probe = probes * AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0);
+
+					/* what of the probes the entries are: each process that takes rows of a key makes its entry (cost_work) */
+					k->entry_ops += combo_entries(c, s, cb, probes, false) * AGG_ENTRY_ROW / AGG_SCAN_SPEED;
+					k->entry_all += probes * AGG_ENTRY_ROW / AGG_SCAN_SPEED;
+					cost += probe;
+				}
 				/* the rest of the ON clause is PostgreSQL's expression, for each entry; the executor's evaluation does not get AGG_SCAN_SPEED's share (110 ns an entry measured, 36 counted) */
 				if (on_tests_tuple(s, ci) && !combo_wsum_only(s, ci))
 				{

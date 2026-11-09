@@ -44,7 +44,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS * k->ms);
 	/* the participants that split the groups by a key each read every row and aggregate a share of the keys, and the leader adds their disjoint tables to its own */
 	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * k->ms * cpu_operator_cost : 0)) *
-		(s->gpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * k->ms * cpu_operator_cost +
+		(s->gpart > 0 || s->jpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * k->ms * cpu_operator_cost +
 		(s->gpart > 0 ? Min(k->rows_out, k->agg_rows) : tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0))) * (priced ? merge : 0.0) * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;
 	if (priced && s->gpart == 0)
 		k->scan_cost += Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_TABLE_GROUP * AGG_SCAN_SPEED * k->ms * cpu_operator_cost;

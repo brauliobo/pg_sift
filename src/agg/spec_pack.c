@@ -564,6 +564,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	pk_dbl(c, &s->est_rows);
 	PK(c, s->nworkers);
 	PK(c, s->gpart);
+	PK(c, s->jpart);
 	pk_dbl(c, &s->wide_unit_rows);
 	PKS_OPT(c, s->serial);
 	PKS(c, s->desc_quals);

@@ -68,6 +68,7 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
+	int			jpart;			/* > 0 with workers: the lookup join (jpart - 1) whose key the participants split the rows by, each reading every row and aggregating those of its share of the key, so that each key is resolved by one of them (agg/par/split.c); 0: they split the rows or the groups */
 	int			gpart;			/* > 0 with workers: the key (gpart - 1) the participants split the groups by, each reading every row and aggregating those of its share of the key (agg/par/part.c); 0: they split the rows */
 	double		wide_unit_rows;	/* the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins (workers_ratio): the rows of a unit, > 0 where they are, and then par_launch keeps one process for a scan of few rows; 0 where they are not */
 	const char *serial;			/* why the plan asks for none whatever the cost, for EXPLAIN VERBOSE (the planner's reasons; sift_aggspec_serial_reason has those of the spec); else NULL */

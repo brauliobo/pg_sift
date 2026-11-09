@@ -276,7 +276,7 @@ par_launch(AggExec *ex)
 		return;
 	}
 	if (ps->gpart_n)
-		split_begin(ex, ex->spec->gpart - 1, ps->gpart_n, ((UINT64CONST(1) << ps->gpart_n) - 1) & ~(((UINT64CONST(1) << (pcxt->nworkers_launched + 1)) - 1) & ~UINT64CONST(1)));
+		split_begin(ex, split_leaf(ex->spec), ps->gpart_n, ((UINT64CONST(1) << ps->gpart_n) - 1) & ~(((UINT64CONST(1) << (pcxt->nworkers_launched + 1)) - 1) & ~UINT64CONST(1)));
 	par = MemoryContextAllocZero(ex->cxt, sizeof(AggPar));
 	par->pcxt = pcxt;
 	par->nlaunched = pcxt->nworkers_launched;

@@ -255,6 +255,7 @@ Every label that `src/` raises is named in a document. The ones not described wh
 | `Lookup Class Workers` | `SiftAgg` | workers that made the classes of the lookup table's keys together with the leader (`agg_lookup_gang`) |
 | `Pre-aggregate Measures` | `SiftAgg` | the measures the node reads from the pre-aggregates (`Pre-aggregate Dims` are the dimensions) |
 | `Top-N Units By Order Code` | `SiftAgg` | units a top-N compared with its bar by an exact order code, by a prefix of it, or as bytes (text under `C`, `uuid`, `bytea` keys) |
+| `Rows Split By` | `SiftAgg` | `the key of a lookup join` when the workers split the rows of the scan by that key (each takes the rows whose key is in its share, so a key is resolved by one participant), instead of taking the rows of a unit |
 | `Units Net Of Dead Rows`, `Units With Dead Rows Scanned` | `SiftAgg` | units answered from their pre-aggregates net of their dead rows (`sift.agg_dead_delta`), and units with dead rows that were scanned instead |
 | `Unnests` | `SiftAgg` | `yes` when the node unnests a list of the row |
 | `Workers Priced For` | `SiftAgg` | `the rows the scan reads`: the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins |

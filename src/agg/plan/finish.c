@@ -446,6 +446,25 @@ split_key_of(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, List *keys)
 	return top < AGG_SPLIT_GROUPS * (s->nworkers + 1) ? -1 : best;
 }
 
+/*
+ * The lookup join a scan with the spec's workers splits the rows by: the participants that each take the rows of a unit make the entry of a key of the join (its id and
+ * rows in the table) every one of them that meets the key, so the work of the keys grows with the participants; split by the key, each key is met by one. -1 for none.
+ */
+static int
+split_join_of(AggCtx *c, SiftAggSpec *s)
+{
+	if (!split_shape_ok(s) || !parallel_leader_participation || preagg_share(c, s) > 0)
+		return -1;
+	for (int ji = 0; ji < s->njoin; ji++)
+	{
+		int			leaf = split_join_leaf(s, ji);
+
+		if (leaf >= 0 && split_leaf_ok(leaf_of(c, leaf)))
+			return ji;
+	}
+	return -1;
+}
+
 /* the cost; adds the paths to output_rel */
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
@@ -485,11 +504,13 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 	{
-		int			key;
+		int			key,
+					jkey;
 
 		s->nworkers = nworkers;
 		key = sift_test_split == 1 ? -1 : split_key_of(c, s, root, keys);
-		if (key < 0 || sift_test_split != 2)
+		jkey = sift_test_split == 1 ? -1 : split_join_of(c, s);
+		if ((key < 0 && jkey < 0) || sift_test_split != 2)
 			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
 		/* many groups: the participants split them by a key instead of the rows, which keeps each table small and the leader's merge short (agg/par/split.c) */
 		if (key >= 0)
@@ -497,6 +518,12 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 			s->gpart = key + 1;
 			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
 			s->gpart = 0;
+		}
+		if (jkey >= 0)
+		{
+			s->jpart = jkey + 1;
+			add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+			s->jpart = 0;
 		}
 	}
 	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);

@@ -32,11 +32,9 @@ split_shape_ok(const SiftAggSpec *s)
 
 /* the values that are equal when their bytes are, and a word each: an integer, a date or a timestamp (a text key would be hashed for every row of every participant: 16,000 rows a unit, a dictionary of its own) */
 bool
-split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
+split_leaf_ok(const SiftSrcLeaf *lf)
 {
-	const SiftAggKey *k = &s->key[j];
-
-	if (k->kind != SAK_LEAF || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->wide || lf->lossy)
+	if (lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->wide || lf->lossy)
 		return false;
 	switch (lf->typid)
 	{
@@ -49,6 +47,33 @@ split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
 			return lf->vtype == SCV_I32 || lf->vtype == SCV_I64;
 	}
 	return false;
+}
+
+bool
+split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
+{
+	return s->key[j].kind == SAK_LEAF && split_leaf_ok(lf);
+}
+
+/* the leaf of the scanned table that a lookup join with one plain key is keyed by: its rows split by it keep the keys of the join apart; -1 when the key is not one */
+int
+split_join_leaf(const SiftAggSpec *s, int ji)
+{
+	const SiftAggJoin *j = &s->join[ji];
+
+	if (j->params != NIL || j->nkey != 1 || j->keyexpr[0])
+		return -1;
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (s->combo[ci].join == ji)
+			return s->combo[ci].leaf[j->keypos[0]];
+	return -1;
+}
+
+/* the leaf a scan that splits by a key reads it from: the key of the groups or of the join */
+int
+split_leaf(const SiftAggSpec *s)
+{
+	return s->gpart > 0 ? s->key[s->gpart - 1].leaf : s->jpart > 0 ? split_join_leaf(s, s->jpart - 1) : -1;
 }
 
 /* a text key too, for the passes of a serial scan (agg/spill/pass.c): it is hashed once for each entry of the dictionary of a unit, not for each row */
@@ -67,10 +92,10 @@ split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf)
 bool
 split_run_ok(const AggExec *ex)
 {
-	int			j = ex->spec->gpart - 1;
+	int			leaf = split_leaf(ex->spec);
 
-	return j >= 0 && split_shape_ok(ex->spec) && parallel_leader_participation && !ex->pa_on && !ex->pcount && ex->fuse == NULL && !ex->topn &&
-		split_key_ok(ex->spec, j, &ex->lay->leaf[ex->spec->key[j].leaf]);
+	return leaf >= 0 && split_shape_ok(ex->spec) && parallel_leader_participation && !ex->pa_on && !ex->pcount && ex->fuse == NULL && !ex->topn &&
+		split_leaf_ok(&ex->lay->leaf[leaf]);
 }
 
 /* not the golden ratio of the tables of the ids of the values (group/int.h wide_hash): the values of one share would crowd one part of those */
@@ -172,14 +197,14 @@ code_flags(AggExec *ex, const SiftSrcDict *d)
 	return ex->gp_code;
 }
 
-/* The shares of this process (gp_mine) out of the n of the scan: the leader's is 0, a worker's its number + 1; a NULL key is the leader's */
+/* The shares of this process (gp_mine) out of the n of the scan, of the rows' values of leaf: the leader's is 0, a worker's its number + 1; a NULL key is the leader's */
 void
-split_begin(AggExec *ex, int key, uint32 n, uint32 mine)
+split_begin(AggExec *ex, int leaf, uint32 n, uint32 mine)
 {
 	uint32		first = (uint32) __builtin_ctz(mine),
 				count = sift_pc64(mine);
 
-	ex->gp_leaf = ex->spec->key[key].leaf;
+	ex->gp_leaf = leaf;
 	ex->gp_n = n;
 	ex->gp_mine = mine;
 	ex->gp_dict = NULL;
@@ -231,10 +256,8 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 			keep = word_i64((const int64 *) v->data + w * 64, ex->gp_lo, ex->gp_w);
 		if (v->isnull)
 		{
-			uint64		nulls = 0;
+			uint64		nulls = pack_flags((const uint8 *) v->isnull + w * 64);
 
-			for (int b = 0; b < 64; b++)
-				nulls |= (uint64) (v->isnull[w * 64 + b] != 0) << b;
 			keep = (keep & ~nulls) | ((ex->gp_mine & 1) ? nulls : 0);
 		}
 		rmask[w] &= keep;

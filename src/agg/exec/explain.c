@@ -412,6 +412,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
 	if (s->gpart > 0)
 		ExplainPropertyText("Groups Split By", s->key[s->gpart - 1].desc, es);
+	if (s->jpart > 0)
+		ExplainPropertyText("Rows Split By", "the key of a lookup join", es);
 	if (s->wide_unit_rows > 0)
 		ExplainPropertyText("Workers Priced For", "the rows the scan reads", es);
 	if (es->analyze && ex->started)

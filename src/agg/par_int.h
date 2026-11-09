@@ -56,8 +56,11 @@ void par_finish(AggExec *ex);
 bool split_shape_ok(const SiftAggSpec *s);
 bool split_pass_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);
 bool split_key_ok(const SiftAggSpec *s, int j, const SiftSrcLeaf *lf);
+bool split_leaf_ok(const SiftSrcLeaf *lf);
+int split_join_leaf(const SiftAggSpec *s, int ji);
+int split_leaf(const SiftAggSpec *s);
 bool split_run_ok(const AggExec *ex);
-void split_begin(AggExec *ex, int key, uint32 n, uint32 mine);
+void split_begin(AggExec *ex, int leaf, uint32 n, uint32 mine);
 void split_rows(AggExec *ex, uint64 *rmask, int nrow);
 
 #pragma GCC visibility pop

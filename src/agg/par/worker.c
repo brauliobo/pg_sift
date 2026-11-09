@@ -90,7 +90,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	if (sh->gpart_n)
-		split_begin(ex, ex->spec->gpart - 1, sh->gpart_n, 1u << (ParallelWorkerNumber + 1));
+		split_begin(ex, split_leaf(ex->spec), sh->gpart_n, 1u << (ParallelWorkerNumber + 1));
 	if (ex->topn)
 	{
 		sift_topn_share(ex->topn, &sh->topn_bound);
