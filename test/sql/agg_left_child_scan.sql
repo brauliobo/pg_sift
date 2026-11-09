@@ -18,16 +18,16 @@ CREATE INDEX parent_col ON parent USING sift_col (id, region, kind, name);
 CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, ts, flag);
 VACUUM (FREEZE, ANALYZE) parent, child;
 
-CREATE TABLE shapes (n int, sql text);
+CREATE TABLE shapes (slug text, sql text);
 INSERT INTO shapes VALUES
- (1, $q$SELECT p.id, count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10$q$),
- (2, $q$SELECT p.region, count(c.id), count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1$q$),
- (3, $q$SELECT p.region, sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.flag AND c.ts >= date '2026-06-01' GROUP BY 1$q$),
- (4, $q$SELECT p.region, count(*), count(c.flag), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.v < 5 WHERE p.id > 100 GROUP BY p.region$q$),
- (5, $q$SELECT p.kind, count(DISTINCT c.v), max(c.ts), min(p.name) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE p.region < 50 GROUP BY 1$q$),
- (6, $q$SELECT count(*) FILTER (WHERE c.id IS NULL), count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id$q$),
- (7, $q$SELECT p.name IS NULL, c.flag, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$),
- (8, $q$SELECT p.region, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE c.v > 90 OR c.v IS NULL GROUP BY 1$q$);
+ ('left_join_top_parents_by_children', $q$SELECT p.id, count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10$q$),
+ ('left_join_count_by_region', $q$SELECT p.region, count(c.id), count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1$q$),
+ ('left_join_flagged_recent_sum_by_region', $q$SELECT p.region, sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.flag AND c.ts >= date '2026-06-01' GROUP BY 1$q$),
+ ('left_join_small_values_by_region', $q$SELECT p.region, count(*), count(c.flag), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.v < 5 WHERE p.id > 100 GROUP BY p.region$q$),
+ ('left_join_count_distinct_value_by_kind', $q$SELECT p.kind, count(DISTINCT c.v), max(c.ts), min(p.name) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE p.region < 50 GROUP BY 1$q$),
+ ('left_join_childless_count_and_sum', $q$SELECT count(*) FILTER (WHERE c.id IS NULL), count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id$q$),
+ ('left_join_orphans_by_flag', $q$SELECT p.name IS NULL, c.flag, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$),
+ ('left_join_high_or_missing_by_region', $q$SELECT p.region, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE c.v > 90 OR c.v IS NULL GROUP BY 1$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
@@ -44,7 +44,7 @@ DECLARE l text; r text := 'normal'; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape int, same_answers bool, scan text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape text, same_answers bool, scan text) LANGUAGE plpgsql AS $$
 DECLARE w int; BEGIN
 	FOREACH w IN ARRAY ARRAY[0, 2] LOOP
 		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
@@ -52,7 +52,7 @@ DECLARE w int; BEGIN
 		PERFORM set_config('parallel_tuple_cost', '0', true);
 		PERFORM set_config('min_parallel_table_scan_size', '0', true);
 		PERFORM set_config('sift.agg_par_min_rows', '0', true);
-		RETURN QUERY SELECT label, w, n, answer(sql, true) = answer(sql, false), scanned(sql) FROM shapes ORDER BY n;
+		RETURN QUERY SELECT label, w, slug, answer(sql, true) = answer(sql, false), scanned(sql) FROM shapes ORDER BY slug;
 	END LOOP;
 END $$;
 

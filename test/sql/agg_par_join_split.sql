@@ -18,17 +18,17 @@ CREATE INDEX jp_parent_col ON jp_parent USING sift_col (id, big, grp, state, ran
 CREATE INDEX jp_child_col ON jp_child USING sift_col (id, parent_id, parent_big, kind, at, amount);
 VACUUM (FREEZE, ANALYZE) jp_parent, jp_child;
 
-CREATE TABLE jp_q (n int, sql text);
+CREATE TABLE jp_q (slug text, sql text);
 INSERT INTO jp_q VALUES
- (1, 'SELECT p.grp, c.kind, count(*) AS joined, count(c.id) AS kids FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.at >= timestamp ''2024-07-01'' GROUP BY 1, 2'),
- (2, 'SELECT p.grp, count(*) AS parents FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.kind = ''d'' WHERE c.id IS NULL GROUP BY 1'),
- (3, 'SELECT p.state, count(c.id) AS kids, count(DISTINCT p.id) AS parents, sum(c.amount) AS amount FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.kind = ''b'' WHERE p.rank >= 50 GROUP BY 1'),
- (4, 'SELECT p.grp, count(c.id) AS kids, count(*) AS joined FROM jp_child c RIGHT JOIN jp_parent p ON c.parent_id = p.id GROUP BY 1'),
- (5, 'SELECT (p.id IS NULL) AS orphan, (c.id IS NULL) AS childless, count(*) AS joined FROM jp_parent p FULL JOIN jp_child c ON c.parent_id = p.id GROUP BY 1, 2'),
- (6, 'SELECT p.grp, count(*) AS n, sum(c.amount) AS amount, count(DISTINCT c.kind) AS kinds FROM jp_child c JOIN jp_parent p ON p.id = c.parent_id GROUP BY 1'),
- (7, 'SELECT p.state, count(*) AS n, min(c.id) AS lo, max(c.amount) AS hi FROM jp_child c LEFT JOIN jp_parent p ON p.id = c.parent_id GROUP BY 1'),
- (8, 'SELECT p.grp, count(c.id) AS kids FROM jp_parent p LEFT JOIN jp_child c ON c.parent_big = p.big GROUP BY 1'),
- (9, 'SELECT c.kind, count(*) AS n FROM jp_child c WHERE EXISTS (SELECT 1 FROM jp_parent p WHERE p.id = c.parent_id AND p.rank < 20) GROUP BY 1');
+ ('left_join_recent_children_by_group_kind', 'SELECT p.grp, c.kind, count(*) AS joined, count(c.id) AS kids FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.at >= timestamp ''2024-07-01'' GROUP BY 1, 2'),
+ ('left_join_childless_parents_by_group', 'SELECT p.grp, count(*) AS parents FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.kind = ''d'' WHERE c.id IS NULL GROUP BY 1'),
+ ('left_join_count_distinct_parents_by_state', 'SELECT p.state, count(c.id) AS kids, count(DISTINCT p.id) AS parents, sum(c.amount) AS amount FROM jp_parent p LEFT JOIN jp_child c ON c.parent_id = p.id AND c.kind = ''b'' WHERE p.rank >= 50 GROUP BY 1'),
+ ('right_join_children_count_by_group', 'SELECT p.grp, count(c.id) AS kids, count(*) AS joined FROM jp_child c RIGHT JOIN jp_parent p ON c.parent_id = p.id GROUP BY 1'),
+ ('full_join_orphans_and_childless_count', 'SELECT (p.id IS NULL) AS orphan, (c.id IS NULL) AS childless, count(*) AS joined FROM jp_parent p FULL JOIN jp_child c ON c.parent_id = p.id GROUP BY 1, 2'),
+ ('inner_join_count_distinct_kind_by_group', 'SELECT p.grp, count(*) AS n, sum(c.amount) AS amount, count(DISTINCT c.kind) AS kinds FROM jp_child c JOIN jp_parent p ON p.id = c.parent_id GROUP BY 1'),
+ ('left_join_child_to_parent_by_state', 'SELECT p.state, count(*) AS n, min(c.id) AS lo, max(c.amount) AS hi FROM jp_child c LEFT JOIN jp_parent p ON p.id = c.parent_id GROUP BY 1'),
+ ('left_join_bigint_key_count_by_group', 'SELECT p.grp, count(c.id) AS kids FROM jp_parent p LEFT JOIN jp_child c ON c.parent_big = p.big GROUP BY 1'),
+ ('exists_parent_rank_count_by_kind', 'SELECT c.kind, count(*) AS n FROM jp_child c WHERE EXISTS (SELECT 1 FROM jp_parent p WHERE p.id = c.parent_id AND p.rank < 20) GROUP BY 1');
 
 -- how the workers share a scan the plan gives them: by the key of a join, or the rows
 CREATE FUNCTION jp_set(mode text) RETURNS void LANGUAGE plpgsql AS $$
@@ -64,12 +64,12 @@ BEGIN
 	RETURN r;
 END $$;
 
-SELECT n, jp_plan(sql, 'scan') AS scan, jp_plan(sql, 'rows') AS rows, jp_plan(sql, 'join') AS by_key
-FROM jp_q ORDER BY n;
+SELECT slug, jp_plan(sql, 'scan') AS scan, jp_plan(sql, 'rows') AS rows, jp_plan(sql, 'join') AS by_key
+FROM jp_q ORDER BY slug;
 
 -- the rows of every statement under every way of sharing the scan equal those of the normal plan
-SELECT n, jp_answer(sql, 'scan') = want AS scan, jp_answer(sql, 'rows') = want AS rows, jp_answer(sql, 'join') = want AS by_key, jp_answer(sql, 'join_two') = want AS leader_takes_shares
-FROM (SELECT n, sql, jp_answer(sql, 'normal') AS want FROM jp_q) q ORDER BY n;
+SELECT slug, jp_answer(sql, 'scan') = want AS scan, jp_answer(sql, 'rows') = want AS rows, jp_answer(sql, 'join') = want AS by_key, jp_answer(sql, 'join_two') = want AS leader_takes_shares
+FROM (SELECT slug, sql, jp_answer(sql, 'normal') AS want FROM jp_q) q ORDER BY slug;
 
 -- by cost the read of the key column that every participant repeats in a split by the key is dearer than the keys the participants repeat at this size
 -- (the split by the key wins where the scan has millions of rows)

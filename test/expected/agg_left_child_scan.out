@@ -25,16 +25,16 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "child_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) parent, child;
-CREATE TABLE shapes (n int, sql text);
+CREATE TABLE shapes (slug text, sql text);
 INSERT INTO shapes VALUES
- (1, $q$SELECT p.id, count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10$q$),
- (2, $q$SELECT p.region, count(c.id), count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1$q$),
- (3, $q$SELECT p.region, sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.flag AND c.ts >= date '2026-06-01' GROUP BY 1$q$),
- (4, $q$SELECT p.region, count(*), count(c.flag), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.v < 5 WHERE p.id > 100 GROUP BY p.region$q$),
- (5, $q$SELECT p.kind, count(DISTINCT c.v), max(c.ts), min(p.name) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE p.region < 50 GROUP BY 1$q$),
- (6, $q$SELECT count(*) FILTER (WHERE c.id IS NULL), count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id$q$),
- (7, $q$SELECT p.name IS NULL, c.flag, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$),
- (8, $q$SELECT p.region, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE c.v > 90 OR c.v IS NULL GROUP BY 1$q$);
+ ('left_join_top_parents_by_children', $q$SELECT p.id, count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10$q$),
+ ('left_join_count_by_region', $q$SELECT p.region, count(c.id), count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1$q$),
+ ('left_join_flagged_recent_sum_by_region', $q$SELECT p.region, sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.flag AND c.ts >= date '2026-06-01' GROUP BY 1$q$),
+ ('left_join_small_values_by_region', $q$SELECT p.region, count(*), count(c.flag), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.v < 5 WHERE p.id > 100 GROUP BY p.region$q$),
+ ('left_join_count_distinct_value_by_kind', $q$SELECT p.kind, count(DISTINCT c.v), max(c.ts), min(p.name) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE p.region < 50 GROUP BY 1$q$),
+ ('left_join_childless_count_and_sum', $q$SELECT count(*) FILTER (WHERE c.id IS NULL), count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.parent_id = p.id$q$),
+ ('left_join_orphans_by_flag', $q$SELECT p.name IS NULL, c.flag, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$),
+ ('left_join_high_or_missing_by_region', $q$SELECT p.region, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id WHERE c.v > 90 OR c.v IS NULL GROUP BY 1$q$);
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
@@ -50,7 +50,7 @@ DECLARE l text; r text := 'normal'; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape int, same_answers bool, scan text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape text, same_answers bool, scan text) LANGUAGE plpgsql AS $$
 DECLARE w int; BEGIN
 	FOREACH w IN ARRAY ARRAY[0, 2] LOOP
 		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
@@ -58,28 +58,28 @@ DECLARE w int; BEGIN
 		PERFORM set_config('parallel_tuple_cost', '0', true);
 		PERFORM set_config('min_parallel_table_scan_size', '0', true);
 		PERFORM set_config('sift.agg_par_min_rows', '0', true);
-		RETURN QUERY SELECT label, w, n, answer(sql, true) = answer(sql, false), scanned(sql) FROM shapes ORDER BY n;
+		RETURN QUERY SELECT label, w, slug, answer(sql, true) = answer(sql, false), scanned(sql) FROM shapes ORDER BY slug;
 	END LOOP;
 END $$;
 SELECT * FROM report('built');
- stage | workers | shape | same_answers | scan  
--------+---------+-------+--------------+-------
- built |       0 |     1 | t            | child
- built |       0 |     2 | t            | child
- built |       0 |     3 | t            | child
- built |       0 |     4 | t            | child
- built |       0 |     5 | t            | child
- built |       0 |     6 | t            | child
- built |       0 |     7 | t            | child
- built |       0 |     8 | t            | child
- built |       2 |     1 | t            | child
- built |       2 |     2 | t            | child
- built |       2 |     3 | t            | child
- built |       2 |     4 | t            | child
- built |       2 |     5 | t            | child
- built |       2 |     6 | t            | child
- built |       2 |     7 | t            | child
- built |       2 |     8 | t            | child
+ stage | workers |                 shape                  | same_answers | scan  
+-------+---------+----------------------------------------+--------------+-------
+ built |       0 | left_join_childless_count_and_sum      | t            | child
+ built |       0 | left_join_count_by_region              | t            | child
+ built |       0 | left_join_count_distinct_value_by_kind | t            | child
+ built |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ built |       0 | left_join_high_or_missing_by_region    | t            | child
+ built |       0 | left_join_orphans_by_flag              | t            | child
+ built |       0 | left_join_small_values_by_region       | t            | child
+ built |       0 | left_join_top_parents_by_children      | t            | child
+ built |       2 | left_join_childless_count_and_sum      | t            | child
+ built |       2 | left_join_count_by_region              | t            | child
+ built |       2 | left_join_count_distinct_value_by_kind | t            | child
+ built |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ built |       2 | left_join_high_or_missing_by_region    | t            | child
+ built |       2 | left_join_orphans_by_flag              | t            | child
+ built |       2 | left_join_small_values_by_region       | t            | child
+ built |       2 | left_join_top_parents_by_children      | t            | child
 (16 rows)
 
 -- the parent written: parents with no child, a parent deleted, a region changed
@@ -87,24 +87,24 @@ INSERT INTO parent SELECT i, i % 100, i % 10, 'new' FROM generate_series(20001, 
 DELETE FROM parent WHERE id % 97 = 0;
 UPDATE parent SET region = (region + 1) % 100 WHERE id % 13 = 0;
 SELECT * FROM report('parent written');
-     stage      | workers | shape | same_answers | scan  
-----------------+---------+-------+--------------+-------
- parent written |       0 |     1 | t            | child
- parent written |       0 |     2 | t            | child
- parent written |       0 |     3 | t            | child
- parent written |       0 |     4 | t            | child
- parent written |       0 |     5 | t            | child
- parent written |       0 |     6 | t            | child
- parent written |       0 |     7 | t            | child
- parent written |       0 |     8 | t            | child
- parent written |       2 |     1 | t            | child
- parent written |       2 |     2 | t            | child
- parent written |       2 |     3 | t            | child
- parent written |       2 |     4 | t            | child
- parent written |       2 |     5 | t            | child
- parent written |       2 |     6 | t            | child
- parent written |       2 |     7 | t            | child
- parent written |       2 |     8 | t            | child
+     stage      | workers |                 shape                  | same_answers | scan  
+----------------+---------+----------------------------------------+--------------+-------
+ parent written |       0 | left_join_childless_count_and_sum      | t            | child
+ parent written |       0 | left_join_count_by_region              | t            | child
+ parent written |       0 | left_join_count_distinct_value_by_kind | t            | child
+ parent written |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ parent written |       0 | left_join_high_or_missing_by_region    | t            | child
+ parent written |       0 | left_join_orphans_by_flag              | t            | child
+ parent written |       0 | left_join_small_values_by_region       | t            | child
+ parent written |       0 | left_join_top_parents_by_children      | t            | child
+ parent written |       2 | left_join_childless_count_and_sum      | t            | child
+ parent written |       2 | left_join_count_by_region              | t            | child
+ parent written |       2 | left_join_count_distinct_value_by_kind | t            | child
+ parent written |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ parent written |       2 | left_join_high_or_missing_by_region    | t            | child
+ parent written |       2 | left_join_orphans_by_flag              | t            | child
+ parent written |       2 | left_join_small_values_by_region       | t            | child
+ parent written |       2 | left_join_top_parents_by_children      | t            | child
 (16 rows)
 
 -- the child written: a child of a parent that had none, a child moved to another parent, a key made NULL, rows deleted
@@ -113,24 +113,24 @@ UPDATE child SET parent_id = 5 WHERE id % 61 = 0;
 UPDATE child SET parent_id = NULL WHERE id % 71 = 0;
 DELETE FROM child WHERE id % 53 = 2;
 SELECT * FROM report('child written');
-     stage     | workers | shape | same_answers | scan  
----------------+---------+-------+--------------+-------
- child written |       0 |     1 | t            | child
- child written |       0 |     2 | t            | child
- child written |       0 |     3 | t            | child
- child written |       0 |     4 | t            | child
- child written |       0 |     5 | t            | child
- child written |       0 |     6 | t            | child
- child written |       0 |     7 | t            | child
- child written |       0 |     8 | t            | child
- child written |       2 |     1 | t            | child
- child written |       2 |     2 | t            | child
- child written |       2 |     3 | t            | child
- child written |       2 |     4 | t            | child
- child written |       2 |     5 | t            | child
- child written |       2 |     6 | t            | child
- child written |       2 |     7 | t            | child
- child written |       2 |     8 | t            | child
+     stage     | workers |                 shape                  | same_answers | scan  
+---------------+---------+----------------------------------------+--------------+-------
+ child written |       0 | left_join_childless_count_and_sum      | t            | child
+ child written |       0 | left_join_count_by_region              | t            | child
+ child written |       0 | left_join_count_distinct_value_by_kind | t            | child
+ child written |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ child written |       0 | left_join_high_or_missing_by_region    | t            | child
+ child written |       0 | left_join_orphans_by_flag              | t            | child
+ child written |       0 | left_join_small_values_by_region       | t            | child
+ child written |       0 | left_join_top_parents_by_children      | t            | child
+ child written |       2 | left_join_childless_count_and_sum      | t            | child
+ child written |       2 | left_join_count_by_region              | t            | child
+ child written |       2 | left_join_count_distinct_value_by_kind | t            | child
+ child written |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ child written |       2 | left_join_high_or_missing_by_region    | t            | child
+ child written |       2 | left_join_orphans_by_flag              | t            | child
+ child written |       2 | left_join_small_values_by_region       | t            | child
+ child written |       2 | left_join_top_parents_by_children      | t            | child
 (16 rows)
 
 -- the transaction's own rows
@@ -139,47 +139,47 @@ INSERT INTO parent VALUES (99999, 7, 7, 'own');
 INSERT INTO child VALUES (999999, 99999, 1, date '2026-01-01', false), (999998, 99999, 2, date '2026-01-02', true);
 UPDATE parent SET region = 8 WHERE id = 5;
 SELECT * FROM report('own rows');
-  stage   | workers | shape | same_answers | scan  
-----------+---------+-------+--------------+-------
- own rows |       0 |     1 | t            | child
- own rows |       0 |     2 | t            | child
- own rows |       0 |     3 | t            | child
- own rows |       0 |     4 | t            | child
- own rows |       0 |     5 | t            | child
- own rows |       0 |     6 | t            | child
- own rows |       0 |     7 | t            | child
- own rows |       0 |     8 | t            | child
- own rows |       2 |     1 | t            | child
- own rows |       2 |     2 | t            | child
- own rows |       2 |     3 | t            | child
- own rows |       2 |     4 | t            | child
- own rows |       2 |     5 | t            | child
- own rows |       2 |     6 | t            | child
- own rows |       2 |     7 | t            | child
- own rows |       2 |     8 | t            | child
+  stage   | workers |                 shape                  | same_answers | scan  
+----------+---------+----------------------------------------+--------------+-------
+ own rows |       0 | left_join_childless_count_and_sum      | t            | child
+ own rows |       0 | left_join_count_by_region              | t            | child
+ own rows |       0 | left_join_count_distinct_value_by_kind | t            | child
+ own rows |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ own rows |       0 | left_join_high_or_missing_by_region    | t            | child
+ own rows |       0 | left_join_orphans_by_flag              | t            | child
+ own rows |       0 | left_join_small_values_by_region       | t            | child
+ own rows |       0 | left_join_top_parents_by_children      | t            | child
+ own rows |       2 | left_join_childless_count_and_sum      | t            | child
+ own rows |       2 | left_join_count_by_region              | t            | child
+ own rows |       2 | left_join_count_distinct_value_by_kind | t            | child
+ own rows |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ own rows |       2 | left_join_high_or_missing_by_region    | t            | child
+ own rows |       2 | left_join_orphans_by_flag              | t            | child
+ own rows |       2 | left_join_small_values_by_region       | t            | child
+ own rows |       2 | left_join_top_parents_by_children      | t            | child
 (16 rows)
 
 ROLLBACK;
 VACUUM parent, child;
 SELECT * FROM report('vacuumed');
-  stage   | workers | shape | same_answers | scan  
-----------+---------+-------+--------------+-------
- vacuumed |       0 |     1 | t            | child
- vacuumed |       0 |     2 | t            | child
- vacuumed |       0 |     3 | t            | child
- vacuumed |       0 |     4 | t            | child
- vacuumed |       0 |     5 | t            | child
- vacuumed |       0 |     6 | t            | child
- vacuumed |       0 |     7 | t            | child
- vacuumed |       0 |     8 | t            | child
- vacuumed |       2 |     1 | t            | child
- vacuumed |       2 |     2 | t            | child
- vacuumed |       2 |     3 | t            | child
- vacuumed |       2 |     4 | t            | child
- vacuumed |       2 |     5 | t            | child
- vacuumed |       2 |     6 | t            | child
- vacuumed |       2 |     7 | t            | child
- vacuumed |       2 |     8 | t            | child
+  stage   | workers |                 shape                  | same_answers | scan  
+----------+---------+----------------------------------------+--------------+-------
+ vacuumed |       0 | left_join_childless_count_and_sum      | t            | child
+ vacuumed |       0 | left_join_count_by_region              | t            | child
+ vacuumed |       0 | left_join_count_distinct_value_by_kind | t            | child
+ vacuumed |       0 | left_join_flagged_recent_sum_by_region | t            | child
+ vacuumed |       0 | left_join_high_or_missing_by_region    | t            | child
+ vacuumed |       0 | left_join_orphans_by_flag              | t            | child
+ vacuumed |       0 | left_join_small_values_by_region       | t            | child
+ vacuumed |       0 | left_join_top_parents_by_children      | t            | child
+ vacuumed |       2 | left_join_childless_count_and_sum      | t            | child
+ vacuumed |       2 | left_join_count_by_region              | t            | child
+ vacuumed |       2 | left_join_count_distinct_value_by_kind | t            | child
+ vacuumed |       2 | left_join_flagged_recent_sum_by_region | t            | child
+ vacuumed |       2 | left_join_high_or_missing_by_region    | t            | child
+ vacuumed |       2 | left_join_orphans_by_flag              | t            | child
+ vacuumed |       2 | left_join_small_values_by_region       | t            | child
+ vacuumed |       2 | left_join_top_parents_by_children      | t            | child
 (16 rows)
 
 DROP FUNCTION report(text), scanned(text), answer(text, bool);

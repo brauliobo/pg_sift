@@ -16,16 +16,16 @@ CREATE INDEX child_col ON child USING sift_col (id, parent_id, kind, at, amount)
 CREATE INDEX child_kind_idx ON child (kind);
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) parent, child;
-CREATE TABLE shapes (n int, sql text);
+CREATE TABLE shapes (slug text, sql text);
 INSERT INTO shapes VALUES
- (1, $q$SELECT p.grp, count(*) FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.amount > 990) GROUP BY p.grp$q$),
- (2, $q$SELECT p.state, count(*), sum(p.rank) FROM parent p WHERE p.id IN (SELECT parent_id FROM child WHERE kind = 'a' AND at >= timestamp '2024-06-01') AND p.rank < 50 GROUP BY p.state$q$),
- (3, $q$SELECT p.grp, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.kind = 'd' WHERE c.id IS NULL GROUP BY p.grp$q$),
- (4, $q$SELECT p.grp, c.kind, count(*), count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.at >= timestamp '2024-07-01' GROUP BY p.grp, c.kind$q$),
- (5, $q$SELECT p.state, count(c.id), count(DISTINCT p.id), sum(c.amount) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.kind = 'b' WHERE p.rank >= 50 GROUP BY p.state$q$),
- (6, $q$SELECT p.grp, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.at >= timestamp '2024-12-01' WHERE c.id IS NULL GROUP BY p.grp$q$),
- (7, $q$SELECT p.grp, count(c.id), count(*) FROM child c RIGHT JOIN parent p ON c.parent_id = p.id GROUP BY p.grp$q$),
- (8, $q$SELECT (p.id IS NULL), (c.id IS NULL), count(*) FROM parent p FULL JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$);
+ ('exists_big_child_count_by_group', $q$SELECT p.grp, count(*) FROM parent p WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.amount > 990) GROUP BY p.grp$q$),
+ ('in_list_children_sum_by_state', $q$SELECT p.state, count(*), sum(p.rank) FROM parent p WHERE p.id IN (SELECT parent_id FROM child WHERE kind = 'a' AND at >= timestamp '2024-06-01') AND p.rank < 50 GROUP BY p.state$q$),
+ ('left_join_childless_parents_by_group', $q$SELECT p.grp, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.kind = 'd' WHERE c.id IS NULL GROUP BY p.grp$q$),
+ ('left_join_recent_children_by_group_kind', $q$SELECT p.grp, c.kind, count(*), count(c.id) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.at >= timestamp '2024-07-01' GROUP BY p.grp, c.kind$q$),
+ ('left_join_count_distinct_parents_by_state', $q$SELECT p.state, count(c.id), count(DISTINCT p.id), sum(c.amount) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.kind = 'b' WHERE p.rank >= 50 GROUP BY p.state$q$),
+ ('left_join_no_late_children_by_group', $q$SELECT p.grp, count(*) FROM parent p LEFT JOIN child c ON c.parent_id = p.id AND c.at >= timestamp '2024-12-01' WHERE c.id IS NULL GROUP BY p.grp$q$),
+ ('right_join_children_count_by_group', $q$SELECT p.grp, count(c.id), count(*) FROM child c RIGHT JOIN parent p ON c.parent_id = p.id GROUP BY p.grp$q$),
+ ('full_join_orphans_and_childless_count', $q$SELECT (p.id IS NULL), (c.id IS NULL), count(*) FROM parent p FULL JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$);
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
@@ -40,17 +40,17 @@ DECLARE l text; r text := 'normal'; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-SELECT n, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
- n |  plan   | same_answers 
----+---------+--------------
- 1 | SiftAgg | t
- 2 | SiftAgg | t
- 3 | SiftAgg | t
- 4 | SiftAgg | t
- 5 | SiftAgg | t
- 6 | SiftAgg | t
- 7 | SiftAgg | t
- 8 | SiftAgg | t
+SELECT slug, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+                   slug                    |  plan   | same_answers 
+-------------------------------------------+---------+--------------
+ exists_big_child_count_by_group           | SiftAgg | t
+ full_join_orphans_and_childless_count     | SiftAgg | t
+ in_list_children_sum_by_state             | SiftAgg | t
+ left_join_childless_parents_by_group      | SiftAgg | t
+ left_join_count_distinct_parents_by_state | SiftAgg | t
+ left_join_no_late_children_by_group       | SiftAgg | t
+ left_join_recent_children_by_group_kind   | SiftAgg | t
+ right_join_children_count_by_group        | SiftAgg | t
 (8 rows)
 
 DROP FUNCTION answer(text, bool), plan(text);
