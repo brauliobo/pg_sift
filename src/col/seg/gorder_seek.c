@@ -117,3 +117,24 @@ seg_gord_seek_before(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32
 			break;
 	return i;
 }
+
+/* The addresses of the entries [from, to) of the plain chunk c of a block into buf, which holds its keys already (a seek read them): the keys are not decoded again. False when it does not */
+bool
+seg_gord_plain_addrs(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf, uint32 from, uint32 to)
+{
+	uint32		m = sift_cgord_chunk_rows(&g->hdr, c),
+				a0 = from;
+	Size		klen8 = ALIGN8((Size) d->klen);
+	uint8	   *raw;
+
+	if ((d->pad & SIFT_CGORD_SEEK) || buf->at != c * g->hdr.crows || buf->compact || buf->rows != m || buf->kfrom != 0 || buf->kn < m)
+		return false;
+	raw = palloc(ALIGN8((Size) d->alen) + SIFT_COL_PAD);
+	seg_read(seg, g->at + d->off + klen8, ALIGN8((Size) d->alen), raw);
+	if (!sift_cgord_decode_addrs(seg->mcxt, raw, d->alen, d->pad, m, buf->key, &a0, to, buf->addr))
+		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
+	pfree(raw);
+	buf->afrom = from;
+	buf->an = to - from;
+	return true;
+}

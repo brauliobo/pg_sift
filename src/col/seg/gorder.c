@@ -781,14 +781,17 @@ sift_cseg_gorder_count(SiftColSegment *seg, int col, bool str, bool group, int64
 void
 seg_gord_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n)
 {
-	uint32		crows = seg_gord_leaf(seg, col)->hdr.crows;
+	GOrdLeaf   *g = seg_gord_leaf(seg, col);
+	uint32		crows = g->hdr.crows;
 
 	for (uint32 c = a / crows; a < b && c <= (b - 1) / crows; c++)
 	{
+		SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
 		uint32		from = Max(a, c * crows),
 					to = Min(b, (c + 1) * crows);
 
-		(void) seg_gord_chunk_memo(seg, col, c, memo);
+		if (!seg_gord_plain_addrs(seg, g, col, c, &d, memo, from - c * crows, to - c * crows))
+			(void) seg_gord_chunk_memo(seg, col, c, memo);
 		for (uint32 i = from; i < to; i++)
 			t[(*n)++] = memo->addr[i - c * crows];
 	}
