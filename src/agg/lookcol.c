@@ -783,8 +783,12 @@ dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 
 
 /* can the leaves of the key and the columns be classified as integers? */
 static bool
-dense_leaves_ok(const ColNeed *need, int nneed, int key)
+dense_leaves_ok(const ColNeed *need, int nneed, int key, const CompCol *comp, int ncomp)
 {
+	/* a computed column is kept as the outcome of a test (true, false, NULL) */
+	for (int k = 0; k < ncomp; k++)
+		if (exprType(comp[k].expr) != BOOLOID)
+			return false;
 	for (int p = 0; p < nneed; p++)
 	{
 		const SiftSrcLeaf *lf = need[p].lf;
@@ -817,7 +821,7 @@ map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 		return false;
 	while (need[key].att != j->keyatt[0])
 		key++;
-	ok = dense_leaves_ok(need, nneed, key);
+	ok = dense_leaves_ok(need, nneed, key, comp, ncomp);
 	if (ok)
 	{
 		sift_colsrc_stats(ix, &st);
@@ -858,7 +862,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		return false;
 	for (d.key = 0; need[d.key].att != j->keyatt[0]; d.key++)
 		;
-	if (!dense_leaves_ok(need, nneed, d.key))
+	if (!dense_leaves_ok(need, nneed, d.key, comp, ncomp))
 	{
 		index_close(ix, AccessShareLock);
 		return false;
