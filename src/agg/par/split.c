@@ -134,24 +134,49 @@ pack_flags(const uint8 *flag)
 	return keep;
 }
 
-SPLIT_CLONES static uint64
-word_i32(const int32 *d, uint32 lo, uint32 w)
+/* the hashes of 64 values (the vectors are padded past their end): a loop of a fixed length over arrays that cannot overlap is the one the compiler vectorizes at -O2 */
+SPLIT_CLONES static void
+hash64_i32(const int32 *restrict d, uint32 *restrict h)
 {
-	uint8		flag[64];
-
 	for (int b = 0; b < 64; b++)
-		flag[b] = ((uint32) d[b] * SPLIT_MUL - lo) < w;
-	return pack_flags(flag);
+		h[b] = (uint32) d[b] * SPLIT_MUL;
 }
 
-SPLIT_CLONES static uint64
-word_i64(const int64 *d, uint32 lo, uint32 w)
+SPLIT_CLONES static void
+hash64_i64(const int64 *restrict d, uint32 *restrict h)
 {
-	uint8		flag[64];
-
 	for (int b = 0; b < 64; b++)
-		flag[b] = (((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL - lo) < w;
-	return pack_flags(flag);
+		h[b] = ((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL;
+}
+
+static void *
+split_scratch(AggExec *ex, Size bytes)
+{
+	return (void *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, bytes + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));
+}
+
+/* The rows of a unit in the one share of the process (a range of hashes), as bits: the hashes of the keys, then the range test of the column kernels; a NULL key is in the first share */
+static uint64 *
+share_bits(AggExec *ex, const SiftSrcVec *v, bool wide, int nrow)
+{
+	uint32	   *h = split_scratch(ex, ((Size) nrow + 63) / 64 * 64 * sizeof(uint32));
+	uint64	   *keep = split_scratch(ex, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+
+	for (int i = 0; i < nrow; i += 64)
+		if (wide)
+			hash64_i64((const int64 *) v->data + i, h + i);
+		else
+			hash64_i32((const int32 *) v->data + i, h + i);
+	sift_colk->range[SIFT_COLW_32](h, nrow, ex->gp_lo, (uint64) ex->gp_w - 1, keep);
+	if (v->isnull)
+	{
+		uint64	   *nulls = split_scratch(ex, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+
+		sift_colk_nonzero((const uint8 *) v->isnull, nrow, nulls);
+		for (int w = 0; w < (nrow + 63) / 64; w++)
+			keep[w] = (keep[w] & ~nulls[w]) | ((ex->gp_mine & 1) ? nulls[w] : 0);
+	}
+	return keep;
 }
 
 /* the same for the shares of a process that has several (the workers that did not start): by the share of each row */
@@ -233,6 +258,14 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 	if (ex->gp_one && ex->gp_w == 0)
 		return;
 	v = get_vec(ex, ex->gp_leaf);
+	if (ex->gp_one && lf->vtype != SCV_CODE)
+	{
+		const uint64 *keep = share_bits(ex, v, lf->vtype == SCV_I64, nrow);
+
+		for (int w = 0; w < (nrow + 63) / 64; w++)
+			rmask[w] &= keep[w];
+		return;
+	}
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 	{
 		uint64		keep;
@@ -248,12 +281,8 @@ split_rows(AggExec *ex, uint64 *rmask, int nrow)
 			for (int b = 0; b < 64; b++)
 				keep |= (uint64) flag[v->isnull && v->isnull[w * 64 + b] ? 0 : code[b]] << b;
 		}
-		else if (!ex->gp_one)
-			keep = word_shares(v, lf->vtype == SCV_I64, w * 64, ex->gp_n, ex->gp_mine);
-		else if (lf->vtype == SCV_I32)
-			keep = word_i32((const int32 *) v->data + w * 64, ex->gp_lo, ex->gp_w);
 		else
-			keep = word_i64((const int64 *) v->data + w * 64, ex->gp_lo, ex->gp_w);
+			keep = word_shares(v, lf->vtype == SCV_I64, w * 64, ex->gp_n, ex->gp_mine);
 		if (v->isnull)
 		{
 			uint64		nulls = pack_flags((const uint8 *) v->isnull + w * 64);
