@@ -260,6 +260,78 @@ part_open(TblSource *t, TblPart *p, const SiftColSchema *schema, const SiftColSc
 	}
 }
 
+/*
+ * What a worker opens its source on: the directory and the write buffers the leader's source read (the items of the scan are superblocks of that
+ * directory, and its tombstones are those of the log it names), so that no participant reads another table than the leader does
+ */
+typedef struct TblView
+{
+	int			nwbuf;
+	Size		dir_len;
+	char		data[FLEXIBLE_ARRAY_MEMBER];	/* the directory (dir_len bytes), then the write buffers */
+} TblView;
+
+static Size
+view_wbuf_at(Size dir_len)
+{
+	return MAXALIGN(offsetof(TblView, data) + dir_len);
+}
+
+static Size
+tbl_view_size(void *impl)
+{
+	TblSource  *t = impl;
+
+	return view_wbuf_at(sift_dir_bytes(t->dir)) + t->nwbuf * sizeof(SiftTblSeg);
+}
+
+static void
+tbl_view_export(void *impl, void *buf)
+{
+	TblSource  *t = impl;
+	TblView    *v = buf;
+
+	v->nwbuf = t->nwbuf;
+	v->dir_len = sift_dir_bytes(t->dir);
+	memcpy(v->data, t->dir, v->dir_len);
+	memcpy((char *) buf + view_wbuf_at(v->dir_len), t->wbuf, t->nwbuf * sizeof(SiftTblSeg));
+}
+
+/* The directory, write buffers and tombstones the scan reads: the leader's (view), else the table's now. Its versions follow the directory */
+static void
+tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
+{
+	t->dir = palloc0(sizeof(SiftDirSnapshot));
+	if (view != NULL)
+	{
+		memcpy(t->dir, view->data, view->dir_len);
+		t->nwbuf = view->nwbuf;
+		t->wbuf = palloc(t->nwbuf * sizeof(SiftTblSeg));
+		memcpy(t->wbuf, (char *) view + view_wbuf_at(view->dir_len), t->nwbuf * sizeof(SiftTblSeg));
+		sift_tomb_sync_at(t->rel, &st->tomb, t->dir);
+	}
+	else
+	{
+		sift_tomb_sync(t->rel, &st->tomb);
+		*t->dir = st->dir;
+		t->nwbuf = st->nwbuf;
+		t->wbuf = palloc(t->nwbuf * sizeof(SiftTblSeg));
+		memcpy(t->wbuf, st->wbuf, t->nwbuf * sizeof(SiftTblSeg));
+		for (int i = 0; i < t->nwbuf; i++)
+			sift_tbl_seg_load(t->rel, &t->wbuf[i]);
+	}
+	t->vers = sift_tbl_vers_build(t->rel, st, t->dir, t->cxt);
+	t->wbuf_lo = PG_UINT32_MAX;
+	for (int i = 0; i < t->nwbuf; i++)
+	{
+		if (t->wbuf[i].npages == 0)
+			continue;
+		t->wbuf_lo = Min(t->wbuf_lo, t->wbuf[i].vbase / SIFT_SB_PAGES);
+		t->wbuf_hi = Max(t->wbuf_hi, (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES);
+	}
+	t->ss = (SiftTblScanState) {.st = st,.wbuf = t->wbuf,.nwbuf = t->nwbuf,.vers = t->vers,.snapshot = t->snapshot};
+}
+
 static void *
 tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
@@ -280,23 +352,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 	pgstat_count_heap_scan(heap);
 	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);
-	sift_tomb_sync(heap, &st->tomb);
-	t->dir = palloc(sizeof(SiftDirSnapshot));
-	*t->dir = st->dir;
-	t->vers = sift_tbl_vers_build(heap, st, t->dir, mcxt);
-	t->nwbuf = st->nwbuf;
-	t->wbuf = t->nwbuf ? palloc(t->nwbuf * sizeof(SiftTblSeg)) : NULL;
-	t->wbuf_lo = PG_UINT32_MAX;
-	for (int i = 0; i < t->nwbuf; i++)
-	{
-		t->wbuf[i] = st->wbuf[i];
-		sift_tbl_seg_load(heap, &t->wbuf[i]);
-		if (t->wbuf[i].npages == 0)
-			continue;
-		t->wbuf_lo = Min(t->wbuf_lo, t->wbuf[i].vbase / SIFT_SB_PAGES);
-		t->wbuf_hi = Max(t->wbuf_hi, (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES);
-	}
-	t->ss = (SiftTblScanState) {.st = st,.wbuf = t->wbuf,.nwbuf = t->nwbuf,.vers = t->vers,.snapshot = t->snapshot};
+	tbl_load_state(t, st, view);
 	t->lay = tbl_layout(heap);
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
@@ -517,6 +573,8 @@ static const SiftSrcProvider tbl_provider = {
 	.owns_table = tbl_owns_table,
 	.layout = tbl_layout,
 	.stats = tbl_stats,
+	.view_size = tbl_view_size,
+	.view_export = tbl_view_export,
 	.open = tbl_open,
 	.open_part = tbl_open,
 	.close = tbl_close,

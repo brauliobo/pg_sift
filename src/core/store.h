@@ -132,6 +132,13 @@ typedef struct SiftDirSnapshot
 	SiftSegEntry segs[SIFT_MAX_SEGMENTS];
 } SiftDirSnapshot;
 
+/* The bytes of a directory copy that matter: the segments it lists, not the room for the most the directory holds */
+static inline Size
+sift_dir_bytes(const SiftDirSnapshot *dir)
+{
+	return offsetof(SiftDirSnapshot, segs) + dir->nsegs * sizeof(SiftSegEntry);
+}
+
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
