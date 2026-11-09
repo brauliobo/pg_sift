@@ -444,27 +444,30 @@ bool
 sift_cgord_group_bounds(int64 *kmin, int64 *key, uint64 *exact, uint32 m, int64 first, const uint8 *anch, uint32 n)
 {
 	const uint8 *pk = anch + GORD_ALIGN8((uint64) n * sizeof(uint16));
-	uint32		next = 0;
+	uint32		i = 1;
 	int64		base = first,
 				qa = kmin[0];
 
-	for (uint32 i = 1; i < m; i++)
+	/* the entries between two anchors move by one offset: a plain loop over the run, not a test per entry */
+	for (uint32 next = 0; next <= n; next++)
 	{
 		uint16		p = m;
+		uint64		shift = (uint64) base - (uint64) qa;
 
 		if (next < n)
 			memcpy(&p, anch + (Size) next * sizeof(uint16), sizeof(uint16));
-		if (p < i)
+		if (p < i || p > m || (next < n && p == m))
 			return false;
-		if (p == i)
-		{
-			memcpy(&base, pk + (Size) next * sizeof(int64), sizeof(int64));
-			qa = kmin[i];
-			key[i] = base;
-			exact[i / 64] |= UINT64CONST(1) << (i % 64);
-			next++;
-		}
-		kmin[i] = (int64) ((uint64) base + ((uint64) kmin[i] - (uint64) qa));
+		for (uint32 j = i; j < p; j++)
+			kmin[j] = (int64) ((uint64) kmin[j] + shift);
+		if (next == n)
+			break;
+		memcpy(&base, pk + (Size) next * sizeof(int64), sizeof(int64));
+		qa = kmin[p];
+		key[p] = base;
+		exact[p / 64] |= UINT64CONST(1) << (p % 64);
+		kmin[p] = base;
+		i = p + 1;
 	}
-	return next == n;
+	return true;
 }
