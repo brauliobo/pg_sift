@@ -186,6 +186,10 @@ sift_col_rescan(SiftColSource *src)
 	if (src->gcx)
 		MemoryContextReset(src->gcx);
 	memset(src->gmem, 0, sizeof(src->gmem));
+	src->gb = NULL;
+	src->ngb = 0;
+	src->gd = NULL;
+	src->gdrows = 0;
 	src->gpin_leaf = -1;
 	src->galeaf1 = 0;
 	src->gpin_n = src->gper = 0;

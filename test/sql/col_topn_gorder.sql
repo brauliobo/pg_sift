@@ -149,7 +149,7 @@ SET sift.test_topn_gorder = off;
 SELECT result, count(*) FROM gt_all(ARRAY[10, 200]) GROUP BY 1 ORDER BY 1;
 RESET sift.test_topn_gorder;
 
--- a segment without the array (an index built without the option and then given it): the scan reads the units
+-- a segment without the array (an index built without the option and then given it): the scan sorts its rows in memory and walks the arrays of the others
 CREATE INDEX gt_m ON gt USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b');
 DROP INDEX gt_i;
 ALTER INDEX gt_m SET (order_array_columns = 'id, b');

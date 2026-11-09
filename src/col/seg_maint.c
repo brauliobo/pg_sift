@@ -13,27 +13,38 @@
 #include "col/ver.h"
 #include "core/live.h"
 
-void
-sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
+/* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries */
+static void
+decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, SiftColFreezeFn freeze, void *arg)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	SiftCUnitView v;
 	uint32		len;
-	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 	SiftCDict **dicts = palloc0(seg->schema->ncols * sizeof(SiftCDict *));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(r->nrows) * sizeof(uint64));
 	bool		dirty = unit_dirty(seg, u);
 
-	if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
+	if (want == NULL)
+	{
+		const uint8 *rec = sift_cseg_unit(seg, u, &len);
+
+		if (!sift_cunit_parse(rec, len, seg->schema, &v) || v.nrows != r->nrows)
+			corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
+	}
+	else if (!sift_cseg_unit_view(seg, u, &v))
 		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
 	for (int c = 0; c < seg->schema->ncols; c++)
-		dicts[c] = sift_cseg_dict(seg, c);
+	{
+		if (want != NULL && want[c] && v.chunk_len[c] > 0)
+			sift_cseg_unit_fill(seg, u, v.chunk_off[c], v.chunk_len[c]);
+		dicts[c] = want == NULL || want[c] ? sift_cseg_dict(seg, c) : NULL;
+	}
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->id);
 	dst->keyed = v.keyed;
-	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, dst);
+	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, want, dst);
 	pfree(dicts);
-	if (sift_cseg_vers(seg))
+	if (want == NULL && sift_cseg_vers(seg))
 	{
 		SiftColVerSum sum;
 
@@ -62,9 +73,21 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 }
 
 void
+sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
+{
+	decode_unit(seg, u, dst, NULL, freeze, arg);
+}
+
+void
 sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 {
-	sift_cseg_decode_unit_freeze(seg, u, dst, NULL, NULL);
+	decode_unit(seg, u, dst, NULL, NULL, NULL);
+}
+
+void
+sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst)
+{
+	decode_unit(seg, u, dst, want, NULL, NULL);
 }
 
 static bool

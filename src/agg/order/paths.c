@@ -346,7 +346,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
 	c->topn_array = false;
-	c->topn_walk = 0;
+	c->topn_walk = c->topn_free = 0;
 	c->topn_runs = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
@@ -444,6 +444,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			flags |= TOPN_NOGORD;
 		}
 		c->topn_walk = c->topn_array ? walked : 0.0;
+		c->topn_free = c->topn_array && leaf[0] >= 0 ? c->stats.gord_free[leaf[0]] * (leaf_of(c, leaf[0])->typid == TEXTOID || leaf_of(c, leaf[0])->typid == VARCHAROID ? AGG_GORD_MEM_TEXT : 1.0) : 0.0;
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),

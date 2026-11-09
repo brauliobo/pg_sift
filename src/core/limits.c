@@ -18,6 +18,7 @@
 #include "agg/topn.h"
 #include "bm25/query.h"
 #include "col/col.h"
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/setsum.h"
 #include "col/shred.h"

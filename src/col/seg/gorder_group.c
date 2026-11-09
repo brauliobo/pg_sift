@@ -18,6 +18,12 @@ gorder_group_view(SiftColSegment *seg, int col, int gcol)
 	return g != NULL && g->hdr.gcol == gcol && g->hdr.vtotal == 0 && seg_gord_probe_ok(seg, g, slot) ? slot : -1;
 }
 
+bool
+sift_cseg_gorder_has(SiftColSegment *seg, int col)
+{
+	return seg_gord_leaf(seg, col) != NULL || seg_gord_leaf(seg, seg->schema->ncols + col) != NULL;
+}
+
 /* Does leaf col have a second order grouped by leaf gcol (sift_cseg_gorder_tids_group) */
 bool
 sift_cseg_gorder_grouped_by(SiftColSegment *seg, int col, int gcol)

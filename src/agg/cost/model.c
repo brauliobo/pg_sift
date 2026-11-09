@@ -395,8 +395,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
 	{
-		startup = c->level_params != NIL ? (AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0)) * cpu_operator_cost :
-			(AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS)) * cpu_operator_cost;
+		/* the rows sorted in memory are read and sorted again by each scan, a probe restarted for each row of a join included */
+		startup = (c->level_params != NIL ? AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0) :
+				   AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS) +
+				   AGG_GORD_MEM_ROW * c->topn_free) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}
 	/* the price of the scan is in the operators of the model: its share against the native plan (SIFT_COST_AGG_SHARE); the plans PostgreSQL makes for the child and the sub-plans are its own prices */

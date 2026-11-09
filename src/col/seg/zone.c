@@ -447,6 +447,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->head_units += (double) seg->nsb * with / Max(seen, 1);
 	}
 	{
+		acc->gord_free_rows += sift_cseg_gorder_has(seg, col) ? 0 : seg->entry.ndocs;
 		for (int k = 0; k < 2; k++)
 		{
 			GOrdLeaf   *g = seg_gord_leaf(seg, col + k * seg->schema->ncols);

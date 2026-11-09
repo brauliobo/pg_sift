@@ -58,6 +58,7 @@ typedef struct SiftColLeafStats
 	double		gord_perm;		/* the blocks of a text leaf that name their strings by dictionary codes (column format minor 42) */
 	double		gord_ends_bytes;	/* ... and their bytes (gord_bytes is those of the complete blocks) */
 	double		gord_ends_rows;	/* the values of the segments whose block holds the ends of the order only (column format minor 40): gord_rows leaves them out, as a range is not counted from them */
+	double		gord_free_rows;	/* the rows of the segments that keep no order block of the leaf: a scan of the global order sorts them in memory (col/scan/gorder.c) */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
 	int			gord_gcol;
 	uint32		gord_coll;		/* the collation of the text blocks of the leaf (UINT32_MAX when they differ), 0: none is text */

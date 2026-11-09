@@ -50,6 +50,7 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "core/limits.h"
 
 #define SIFT_CGORD_MAGIC	0x44474F43		/* "COGD" */
 #define SIFT_CGORD_VERSION	1
@@ -91,8 +92,12 @@
 #define SIFT_GORD_PIN_MAX	16		/* the values of a group a scan reads at once: the elements of an IN list, or the equalities of a conjunction (a scan with more reads the plain order or the units) */
 #define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan/scan.c, prune_range_tids) */
 #define SIFT_CORDER_MAX_KEYS 512		/* an IN list of more keys is read from the units: each key seeks a chunk of its own, which past this many costs more than the key columns of the units (col/scan/prune_point.c, scan_prune_set_tids) */
-#define SIFT_CGORD_MEM_ROWS	16384		/* rows of the write buffers a scan sorts for the order of a text key, at least (sift_col_gorder_open) */
-#define SIFT_CGORD_MEM_MAX	2097152		/* rows of the write buffers past which a scan reads them as units: the memory of their order (about 64 bytes a row), not the time of it (sift_col_gorder_open) */
+#define SIFT_CGORD_MEM_ROWS	16384		/* rows of the write buffers a scan sorts for the order of a text key under a locale, at least (sift_col_gorder_open) */
+#define SIFT_CGORD_MEM_MAX	2097152		/* rows the scan sorts in memory for an order, those of the write buffers and of the segments without an order block, past which it reads units: the memory of their order (about 64 bytes a row), not the time of it */
+#define SIFT_CGORD_FREE_MAX	65536		/* ... of which those of the segments without an order block, for a key of numbers or times: each scan makes their order, 100 instructions a row, and the cheapest read of the units a top-N falls back to is 6.9 M instructions of 1 and of 5 million rows (a top-N by key; an OFFSET, a range and an IN list cost 14 to 48 M), so more rows than this lose to the units in every class; a text key costs about 10 times as much a row (strings of a dictionary compared by the collation) */
+/* the rows of a read of `rows` rows that may be sorted in memory: a text key under a locale at least SIFT_CGORD_MEM_ROWS (more for a long read), any other SIFT_CGORD_MEM_MAX. The planner prices no walk that the scan refuses */
+#define SIFT_CGORD_MEM_CAP(locale_text, rows)	((locale_text) ? Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) (rows)) : (uint64) sift_limit(gord_mem_rows, SIFT_CGORD_MEM_MAX))
+#define SIFT_CGORD_FREE_CAP(text)	((uint64) sift_limit(gord_free_rows, SIFT_CGORD_FREE_MAX) >> ((text) ? 4 : 0))
 #define SIFT_CGORD_CAP		(SIFT_CGORD_ROWS + 8)		/* slots of the arrays sift_cgord_decode fills */
 
 /* A chunk of a global order decoded whole: the seek that ends in a chunk leaves it to the cursor that reads the entries from there (at UINT32_MAX: none).

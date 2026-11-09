@@ -338,6 +338,8 @@ extern void sift_cseg_verify_points(SiftColSegment *seg);
 extern uint32 sift_cseg_gorder_collation(SiftColSegment *seg, int col);	/* the collation of the strings of a text block, 0 for any other */
 extern const char *sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 rank, uint32 *len);	/* the string of a key of a text block, valid until the next call for the leaf */
 extern uint32 sift_cseg_gorder_strrank(SiftColSegment *seg, int col, const char *s, uint32 len, bool after);	/* the strings of a text block that come before s (after: before or equal), which is the rank of the first one that does not */
+/* Does the segment keep an order block of leaf col at all (plain or grouped)? A segment that does not is read as a memory source by a scan of the global order */
+extern bool sift_cseg_gorder_has(SiftColSegment *seg, int col);
 extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
 extern bool sift_cseg_gorder_compact(SiftColSegment *seg, int col);
@@ -463,6 +465,8 @@ extern void sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *d
  */
 typedef bool (*SiftColFreezeFn) (void *arg, uint32 xmin, uint32 cmin);
 extern void sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg);
+/* The live rows of unit u with only the scalar leaves want names (their keys, nulls and overflow flags, dictionaries of strings): the keys of the rows are complete, no version is read */
+extern void sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst);
 
 /*
  * Does a unit flag the overflow of a leaf while no live row holds an overflow value in it (the rows that did are dead)? The flag stays with the

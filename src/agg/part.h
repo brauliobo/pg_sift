@@ -80,7 +80,8 @@ typedef struct SiftPartStats
 					ndistinct,
 					min,
 					max,
-					gord_cover;
+					gord_cover,
+					gord_free;
 		uint32		gord_coll;
 		int			gord_group;
 		bool		gord_bygroup,

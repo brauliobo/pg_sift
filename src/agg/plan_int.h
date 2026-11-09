@@ -198,6 +198,7 @@ typedef struct AggCtx
 	bool		topn_array;		/* ... the executor reads the order array of the first key (sift_topn_gorder): no unit is read */
 	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
 	double		topn_fetch;		/* ... the rows it reads from the heap */
+	double		topn_free;		/* ... and the rows of the segments without an order of the key that it sorts in memory (SiftSrcStats.gord_free; 0: none) */
 	double		topn_walk;		/* ... the heap rows a walk of the order array fetches to test a condition on another column (topn_array_ok; 0: none) */
 	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
 	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */

@@ -76,6 +76,12 @@
 	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/gorder.h", 115, "percent", \
 	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
 	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
+	X(gord_mem_rows, "SIFT_CGORD_MEM_MAX", "col/gorder.h", SIFT_CGORD_MEM_MAX, "rows", \
+	  "rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted)", \
+	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
+	X(gord_free_rows, "SIFT_CGORD_FREE_MAX", "col/gorder.h", SIFT_CGORD_FREE_MAX, "rows", \
+	  "rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory for each scan", \
+	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
 	X(blob_bytes, "BLOB_CHUNK_BYTES", "agg/blob/dump.c", 268435456, "bytes", \
 	  "the partial result a worker of a parallel aggregate sends in one message: the groups of its table go in messages of about this many bytes (a pair of a count(DISTINCT) takes 8); a group that alone takes more than four times this (1 GB at most) ends the scan", \
 	  "more messages (the leader adds them one after the other); ERROR 54000 for a single group that takes more than four times it, naming max_parallel_workers_per_gather", "-", 1) \

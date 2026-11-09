@@ -65,6 +65,7 @@ typedef struct ColCursor
 	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
 	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
 	SiftCGOrdCuts gcuts;
+	bool		gfree;			/* the segment keeps no order block of the leaf the scan reads: its rows are sorted in memory with those of the write buffers (sift_col_gorder_open) */
 	int8		gclean;			/* sift_col_gorder_exact: 1 every entry of the segment is exact (no dead row, every page of its superblocks all-visible), 2 not, 0 not asked yet */
 	struct GExact *gexact;	/* sift_col_gorder_exact: per unit (nsb of them, in the source's gxcx: kept from one probe of a rescanned source to the next, as long as the segments are current) */
 	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
@@ -266,6 +267,12 @@ struct SiftColSource
 	int			nmem;
 	int			capmem;
 	bool		mem_loaded;
+	SiftColBatch **gb;			/* the rows of the segments without an order block of leaf gb_leaf (and of group leaf gb_gleaf), one batch for each unit, in gcx */
+	int			ngb;
+	struct GOrdFree *gd;		/* ... or, for an integer leaf, the gdrows rows of those segments, made straight from their units once for the scan and split by the group it pins (gord_mem_load) */
+	uint64		gdrows;
+	int			gb_leaf,
+				gb_gleaf;
 	int			gdirect;		/* the orders of one group of the write buffers made by reading all their rows (col/scan/gmem.c): past a few, the rows are put in groups once */
 	struct SiftCWbufToken *wtok;	/* the state of each kept batch set the write buffer batches came from, in the order of the segments; NULL when some batch came from elsewhere (sift_col_add_batches) */
 	int			nwtok;

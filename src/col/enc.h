@@ -612,9 +612,10 @@ extern uint32 sift_cunit_row_page(const SiftCUnitView *v, uint32 row);
 
 /*
  * Appends the live rows of the unit (live: bit vector over its rows, NULL = all) to dst, whose schema is the unit's and whose sb is sb.
- * dicts[col]: the segment's dictionary of each STR leaf (read), the rows' strings are re-interned in dst's own dictionaries.
+ * dicts[col]: the segment's dictionary of each STR leaf (read), the rows' strings are re-interned in dst's own dictionaries. want (NULL: every leaf) names the
+ * scalar leaves to decode: the others are left empty in dst (its keys and rows are complete), and need no dictionary.
  */
-extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, SiftColBatch *dst);
+extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst);
 
 /* The zone recomputed from a chunk (for verification: C4). set is meaningful for STR leaves only. */
 extern void sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z);

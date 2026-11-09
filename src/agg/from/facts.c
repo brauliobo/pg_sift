@@ -237,6 +237,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->zone_span, src->zone_span, d);
 	memcpy(dst->head_cover, src->head_cover, d);
 	memcpy(dst->gord_cover, src->gord_cover, d);
+	memcpy(dst->gord_free, src->gord_free, d);
 	memcpy(dst->gord_group, src->gord_group, n * sizeof(int));
 	memcpy(dst->gord_bygroup, src->gord_bygroup, n * sizeof(bool));
 	memcpy(dst->gord_coll, src->gord_coll, n * sizeof(uint32));

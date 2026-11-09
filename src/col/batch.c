@@ -766,7 +766,7 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 }
 
 void
-sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, SiftColBatch *dst)
+sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst)
 {
 	const SiftColSchema *s = v->schema;
 	SiftKey    *keys = palloc(Max(v->nrows, 1) * sizeof(SiftKey));
@@ -778,6 +778,8 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 	{
 		UnitLeaf   *l = &lf[col];
 
+		if (want != NULL && !want[col])
+			continue;
 		l->present = sift_cunit_chunk(v, col, &l->c);
 		if (!l->present)
 			continue;
@@ -820,7 +822,7 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		batch_row_begin(dst, keys[r]);
 		for (int col = 0; col < s->ncols; col++)
 		{
-			if (s->cols[col].parent >= 0)
+			if (s->cols[col].parent >= 0 || (want != NULL && !want[col]))
 				continue;
 			unit_emit(dst, dicts, &lf[col], col, r);
 			if (s->cols[col].kind != SIFT_COLK_GROUP)

@@ -328,7 +328,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b0, const SiftColRow *row
 
 	dst = sift_cbatch_create(CurrentMemoryContext, s);
 	sift_cbatch_reset(dst, b->sb);
-	sift_cunit_decode(&v, b->sb, dicts, NULL, dst);
+	sift_cunit_decode(&v, b->sb, dicts, NULL, NULL, dst);
 	check_batch_rows(t, "unit decode", c, dst, want, n);
 
 	live = palloc0(SIFT_COL_NWORDS(n) * sizeof(uint64));
@@ -343,7 +343,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b0, const SiftColRow *row
 				kept[nk++] = want[r];
 			}
 		sift_cbatch_reset(dst, b->sb);
-		sift_cunit_decode(&v, b->sb, dicts, live, dst);
+		sift_cunit_decode(&v, b->sb, dicts, live, NULL, dst);
 		check_batch_rows(t, "unit decode of live rows", c, dst, kept, nk);
 	}
 	if (b->keyed)

@@ -117,6 +117,7 @@ typedef struct SiftSrcStats
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
 	double		head_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose sorted run of the leaf holds a head, the best 32 keys at each end with their heap addresses (order_columns): ORDER BY .. LIMIT 32 or less reads the head of a few units (0: none does) */
 	double		gord_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that the segments keep in a plain global order (order_array_columns): ORDER BY .. LIMIT reads n entries of it, not the units (0: none does) */
+	double		gord_free[SIFT_COLSRC_MAX_LEAVES];	/* ... of which the rows of the segments that keep no order of the leaf (written lean): a walk of the order sorts them in memory, a few instructions a row (AGG_GORD_MEM_ROW), and counts them as covered */
 	uint32		gord_coll[SIFT_COLSRC_MAX_LEAVES];	/* the collation of the text order arrays of a leaf (UINT32_MAX: they differ), 0: the leaf's are not text */
 	bool		gord_bygroup[SIFT_COLSRC_MAX_LEAVES];	/* the leaf, with a value in every row, is the group of the second order of a leaf that holds every row: ORDER BY it reads those orders group after group (gord_open) */
 	int			gord_group[SIFT_COLSRC_MAX_LEAVES];	/* the leaf by which most of the values are also (or only) kept in an order sorted by group (order_array_group): a scan that pins that leaf reads n entries of its group, -1: none */

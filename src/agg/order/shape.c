@@ -18,6 +18,7 @@
 #include "agg/topn.h"
 #include "agg/order/int.h"
 #include "agg/lookup_int.h"
+#include "col/gorder.h"
 
 /* Is the window the whole set of rows: no PARTITION BY and no ORDER BY (every row is a peer of every other), and a frame that is not cut (the default one ends at the last peer) */
 bool
@@ -343,6 +344,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 {
 	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
 	bool		bygroup = leaf[0] >= 0 && c->stats.gord_bygroup[leaf[0]] && s->npred == 0,
+				text,
 				bounded = false,
 				key_pinned = false,
 				group_pinned = false,
@@ -362,7 +364,11 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 			return false;
 	}
 	/* the strings of a text array are ranked by the collation of the column: a query that sorts by another reads the units; any other key has no collation */
-	if (c->stats.gord_coll[leaf[0]] != (leaf_of(c, leaf[0])->typid == TEXTOID || leaf_of(c, leaf[0])->typid == VARCHAROID ? (uint32) collid : 0))
+	text = leaf_of(c, leaf[0])->typid == TEXTOID || leaf_of(c, leaf[0])->typid == VARCHAROID;
+	if (c->stats.gord_coll[leaf[0]] != (text ? (uint32) collid : 0))
+		return false;
+	/* the segments without an order of the key are sorted in memory, which the scan does within its cap only (sift_col_gorder_open) */
+	if (c->stats.gord_free[leaf[0]] > SIFT_CGORD_FREE_CAP(text) || c->stats.gord_free[leaf[0]] > SIFT_CGORD_MEM_CAP(text && collid != InvalidOid && !sift_collate_is_c(collid), rows))
 		return false;
 	for (int i = 0; i < s->npred; i++)
 		key_pinned |= s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf == leaf[0] && s->pred[i]->op == SCMP_EQ;
