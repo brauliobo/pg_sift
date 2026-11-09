@@ -396,6 +396,19 @@ PostgreSQL prices a parallel plan of hash joins 1.2 to 1.5 times faster than its
 
 Compensating in the scan's price by a factor against a parallel normal plan fixes these and moves `linksemi_all_parents` (a scan win of 1.85 times, 205 ms against 379) to the normal plan, so the price of each scan shape is fitted first and the normal plan's speed is left as PostgreSQL prices it. With `max_parallel_workers_per_gather = 0` the three choose by the serial prices, which agree with the times.
 
+The scans of the join shapes of the plan gate at 250,000 rows are not priced above the time they take loading their table, so there is no price to lower before a factor on the parallel normal plan (at 30,000 rows `linkleft_all_parents` is: 0.92 against a time ratio of 0.35, the heap-row term of the probe of a table that fits the cache; it stays a scan win). At 250,000 rows with two workers, a scan that loads its lookup table (the caches that keep the rows of a table for the next statement off, `sift.agg_lookup_cache_kb` and `sift.agg_lookup_shared_kb` 0; median of 5, milliseconds) against the normal plan, and the price of the scan over the plan's:
+
+| shape | normal plan | scan loading its table | scan with the rows kept | price ratio |
+|---|---|---|---|---|
+| `linksemi_all_parents` | 49.2 | 49.1 | 51.1 | 0.78 |
+| `linksemi_2000_parents` | 50.7 | 23.5 | 22.4 | 0.11 |
+| `linkjoin_all_parents` | 148 | 133 | 143 | 0.29 |
+| `linkjoin_2000_parents` | 87.5 | 27.5 | 25.8 | 0.11 |
+| `linkleft_all_parents` | 117 | 54.2 | 24.1 | 0.23 |
+| `linkanti_all_parents` | 47.2 | 38.9 | 5.9 | 0.14 |
+
+The plan gate times the scan with the rows kept (7.0 ms against 139 ms for `linksemi_all_parents`), which is why it reads a ratio of 0.05 where the price, which counts the load, reads 0.78: against a plan that loads the table too the scan ties, and the price is right for it. A factor of 1.7 on the parallel normal plan (the ratio of its real speed-up to its priced one) would take `linksemi_all_parents` to the normal plan, a tie loaded and 7 ms against 139 kept, and `linkleft_all_parents` at 30,000 rows (priced 0.92, 28.4 ms scan against 81.6 native with two workers, loading) to the normal plan as well: both are scans that win. The factor stays out until the price of a load counts the rows kept for the next statement, which a plan cannot know before it runs.
+
 ## Plan-choice gate
 
 `scripts/plangate.sh` guards the choice between the normal plan and `Custom Scan (SiftAgg)`. It builds the tables of `test/plan/gen.sql` (events, dims, facts, a month spine, a partitioned copy; `--rows`, default 30000, and `--seed`; rows are hashes of their number and `ANALYZE` reads all of them, so statistics repeat) and runs each shape of `test/plan/shapes.sql` three ways: native (`sift.enable_agg` off), chosen (the planner's own choice) and scan (table scans off, so the pushdown runs where the query allows). Results must agree by the differential suite's contract (floats within 1e-12 + 1e-9 of the larger), the plan chosen must be the expected one, and the scan-over-native planner cost ratio must stay in the shape's band, so drift shows before it flips a choice. For each shape the table prints plan chosen, expected plan, ratio and band, native and scan times (median of `--runs`, default 3) and a verdict: `win`/`lose` when the scan is chosen and faster/slower by more than 1 ms and 20%, `miss` when it is not chosen but would win by as much, else `tie`. A wrong result, unexpected plan or out-of-band ratio fails; so does a `lose`, unless `--warn-time` (the full tier runs at 50000 rows with it: hosted runners are noisy). The quick tier runs without timings (`--runs 0`). Expectations hold from 20000 to 50000 rows; a shape whose plan changes inside that range expects `either`.
