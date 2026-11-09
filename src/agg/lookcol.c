@@ -75,14 +75,18 @@ leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
+		case TIMEOID:
 			return lf->vtype == SCV_I64;
+		case FLOAT4OID:
+		case FLOAT8OID:
+			return lf->vtype == SCV_F64;
 	}
 	return false;
 }
 
-/* the leaf that holds the whole of column att, or of the expression expr, as a value of its type: not a path of a jsonb value */
+/* the leaf that holds the whole of column att, or of the expression expr, whatever its type: not a path of a jsonb value */
 static const SiftSrcLeaf *
-column_leaf(const SiftSrcLayout *lay, int att, Node *expr, Oid typid)
+column_leaf_any(const SiftSrcLayout *lay, int att, Node *expr)
 {
 	for (int i = 0; i < lay->nleaves; i++)
 	{
@@ -93,9 +97,18 @@ column_leaf(const SiftSrcLayout *lay, int att, Node *expr, Oid typid)
 			continue;
 		e = list_nth(lay->attexprs, lf->attno - 1);
 		if (e != NULL && (expr ? equal(e, expr) : IsA(e, Var) && ((Var *) e)->varattno == att))
-			return leaf_of_type(lf, typid) ? lf : NULL;
+			return lf;
 	}
 	return NULL;
+}
+
+/* ... and of the type typid, as the load decodes it */
+static const SiftSrcLeaf *
+column_leaf(const SiftSrcLayout *lay, int att, Node *expr, Oid typid)
+{
+	const SiftSrcLeaf *lf = column_leaf_any(lay, att, expr);
+
+	return lf != NULL && leaf_of_type(lf, typid) ? lf : NULL;
 }
 
 static Datum
@@ -127,6 +140,12 @@ cell_datum(ColNeed *nd, int64 i, bool *isnull)
 			MemoryContextSwitchTo(old);
 		}
 		return nd->dval[c];
+	}
+	if (lf->vtype == SCV_F64)
+	{
+		double		d = ((const double *) v->data)[i];
+
+		return lf->typid == FLOAT4OID ? Float4GetDatum((float4) d) : Float8GetDatum(d);
 	}
 	{
 		int64		iv = sift_src_int(v->data, lf->vtype, i);
@@ -418,6 +437,44 @@ load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nne
 }
 
 /* will the load of the table read the leaves of an index (the planner prices it by that)? *nnumeric: how many of the columns it makes a numeric of, one allocation a row each */
+/*
+ * Why the rows of the table are read from the heap though a sift_col index of it exists: the first column of the join that the first such index does not hold as a leaf the load decodes,
+ * named with its type; NULL when no sift_col index fits the other conditions of the load (EXPLAIN VERBOSE shows it).
+ */
+char *
+map_cols_why(Relation rel, const SiftAggJoin *j)
+{
+	foreach_oid(ixoid, RelationGetIndexList(rel))
+	{
+		Relation	ix = index_open(ixoid, AccessShareLock);
+		char	   *why = NULL;
+
+		if (sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
+			heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL))
+		{
+			const SiftSrcLayout *lay = sift_colsrc_layout(ix);
+
+			for (int i = 0; i < j->nkey + j->ncol && why == NULL; i++)
+			{
+				int			att = i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
+				Oid			typ = TupleDescAttr(RelationGetDescr(rel), att - 1)->atttypid;
+				const SiftSrcLeaf *lf;
+
+				if (i >= j->nkey && j->colexpr[i - j->nkey] != NULL)
+					continue;
+				lf = column_leaf_any(lay, att, NULL);
+				if (lf == NULL || !leaf_of_type(lf, typ))
+					why = psprintf("column %s (%s) is %s of index %s", NameStr(TupleDescAttr(RelationGetDescr(rel), att - 1)->attname), format_type_be(typ),
+								   lf == NULL ? "not a plain leaf (a wide type, a lossy leaf or a path)" : "a leaf of a type the load does not decode", RelationGetRelationName(ix));
+			}
+		}
+		index_close(ix, AccessShareLock);
+		if (why != NULL)
+			return why;
+	}
+	return NULL;
+}
+
 bool
 map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 {
