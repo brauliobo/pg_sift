@@ -367,10 +367,11 @@ bool
 sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *stamp)
 {
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
-	const SiftColSchema *schema = sift_col_rel(index)->schema;
+	const SiftColSchema *schema;
 	bool		since = false;
 
 	sift_col_batch_flush();
+	schema = sift_col_rel(index)->schema;
 	sift_dir_read(index, dir);
 	for (int i = 0; !since && i < dir->nsegs; i++)
 	{
