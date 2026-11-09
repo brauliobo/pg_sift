@@ -247,6 +247,12 @@ sift_col_init(void)
 							 "is connected to it, carrying the scalar columns of that index that are not wide (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
 							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
 							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_connect_refresh_pct",
+							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which the automatic rewrite fills the segment again.",
+							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the carried values it holds are as of its stamp). "
+							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
+							"within the rules of sift.col_auto_merge (the WAL budget included).",
+							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "

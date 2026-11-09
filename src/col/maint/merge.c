@@ -73,10 +73,6 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	return dead;
 }
 
-static SbSpans seg_spans(SiftColSegment *seg);
-
-static bool share_superblock(const SbSpans *a, const SbSpans *b, int allowed);
-
 /*
  * The tier merge of segments that are clean and share at most the superblock at their edge gain a reader nothing (the same units with the same pre-aggregates, one file
  * fewer to open) and writes all their bytes: a parallel build leaves such a tier, and at 100 million rows the first VACUUM after it would rewrite the index.
@@ -103,11 +99,11 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 	for (int i = 0; i < n; i++)
 	{
 		seg[i] = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
-		span[i] = seg_spans(seg[i]);
+		span[i] = maint_seg_spans(seg[i]);
 	}
 	for (int i = 0; i < n && apart; i++)
 		for (int j = i + 1; j < n && apart; j++)
-			apart = !share_superblock(&span[i], &span[j], 1);
+			apart = !maint_share_superblock(&span[i], &span[j], 1);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
 	return apart;
@@ -146,120 +142,6 @@ uint32
 maint_dirty_units(SiftColSegment *seg)
 {
 	return sift_cseg_net_uncovered(seg);
-}
-
-static SbSpans
-seg_spans(SiftColSegment *seg)
-{
-	SbSpans		sp = {0};
-	bool		key_cut = sift_col_is_index(seg->index) && sift_col_key_cut(sift_col_rel(seg->index));
-
-	if (!key_cut)
-	{
-		sp.n = sift_cseg_sb_spans(seg, &sp.r);
-		sp.by_tid = sift_cseg_keyed(&seg->entry);
-		return sp;
-	}
-	/* the units of a key-cut index are told by their sequence, as they always were: the rows of a key range lie in any block */
-	{
-		SiftCSbSpan *r = palloc(Max(seg->nsb, 1) * sizeof(SiftCSbSpan));
-
-		for (uint32 u = 0; u < seg->nsb; u++)
-			if (sp.n > 0 && seg->sbdir[u].id <= r[sp.n - 1].hi + 1)
-				r[sp.n - 1].hi = Max(r[sp.n - 1].hi, seg->sbdir[u].id);
-			else
-				r[sp.n++] = (SiftCSbSpan) {seg->sbdir[u].id, seg->sbdir[u].id};
-		sp.r = r;
-	}
-	return sp;
-}
-
-/* Do the two segments hold rows of more than `allowed` superblocks in common? */
-static bool
-share_superblock(const SbSpans *a, const SbSpans *b, int allowed)
-{
-	uint64		shared = 0;
-
-	for (uint32 i = 0, j = 0; i < a->n && j < b->n;)
-	{
-		uint32		lo = Max(a->r[i].lo, b->r[j].lo),
-					hi = Min(a->r[i].hi, b->r[j].hi);
-
-		if (lo <= hi && (shared += (uint64) hi - lo + 1) > allowed)
-			return true;
-		if (a->r[i].hi <= b->r[j].hi)
-			i++;
-		else
-			j++;
-	}
-	return false;
-}
-
-/* The range of the key leaf over the units of a key-cut segment */
-static void
-seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 *hi)
-{
-	*lo = PG_INT64_MAX;
-	*hi = PG_INT64_MIN;
-	for (uint32 u = 0; u < seg->nsb; u++)
-	{
-		SiftCZone	z;
-
-		sift_cseg_zone(seg, leaf, u, &z);
-		if (z.nvals == 0)
-			continue;
-		*lo = Min(*lo, z.min);
-		*hi = Max(*hi, z.max);
-	}
-}
-
-/*
- * The segments of a key-cut index that the partitions of a rewrite are not: a rewrite cuts the key range into partitions that share at most a boundary key, so a key
- * is in one of them; the runs of a build that outgrew the memory of a segment writer are as large as partitions but each holds rows of every key (a lookup of a key
- * reads a unit in each). They are overlays, which the rewrite merges.
- */
-static void
-mark_key_overlap(Relation index, RewriteView *v)
-{
-	int			leaf = sift_col_rel(index)->cut[0];
-
-	for (int i = 0; i < v->n; i++)
-		seg_key_range(v->seg[i], leaf, &v->klo[i], &v->khi[i]);
-	/* the rewrite right after a build is the build's own (its choices stand): the runs are for the next one */
-	for (int i = 0; i < v->n && !maint_after_build; i++)
-		for (int j = i + 1; j < v->n; j++)
-			if (maint_is_partition(&v->imm[i]) && maint_is_partition(&v->imm[j]) && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i])
-				v->kover[i] = v->kover[j] = true;
-	for (int i = 0; i < v->n; i++)
-		v->nkover += v->kover[i];
-}
-
-RewriteView *
-maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
-{
-	RewriteView *v = MemoryContextAllocZero(cx, sizeof(RewriteView));
-
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-		{
-			v->imm[v->n] = snap->segs[i];
-			v->seg[v->n] = sift_cseg_open(index, &v->imm[v->n], cx);
-			v->span[v->n] = seg_spans(v->seg[v->n]);
-			v->over[v->n] = !maint_is_partition(&v->imm[v->n]);
-			v->n++;
-		}
-	for (int i = 0; i < v->n; i++)
-		for (int j = 0; j < v->n && !v->over[i]; j++)
-		{
-			/* rows per unit, compared as products; the older of two alike is the one to keep. A segment of the floor's units is an overlay by its size alone */
-			uint64		di = v->imm[i].ndocs * v->seg[j]->nsb,
-						dj = v->imm[j].ndocs * v->seg[i]->nsb;
-
-			v->over[i] = j != i && !v->span[j].by_tid && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(&v->span[i], &v->span[j], 0);
-		}
-	if (maint_part_kb > 0 && sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
-		mark_key_overlap(index, v);
-	return v;
 }
 
 /*
@@ -356,6 +238,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	uint64		worst_share = 0,
 				listed = 0;
 	bool		dirty_over = false,
+				refresh = false,
 				work = false,
 				keyed = sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index));
 
@@ -369,14 +252,14 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	*cut = keyed && maint_part_kb > 0;
 	for (int i = 0; i < v->n; i++)
 	{
-		uint32		d = (v->imm[i].flags & SIFT_SEG_DIRTY) ? maint_dirty_units(v->seg[i]) : 0;
+		uint32		d = v->stale[i] ? v->seg[i]->nsb : (v->imm[i].flags & SIFT_SEG_DIRTY) ? maint_dirty_units(v->seg[i]) : 0;
 
 		listed += v->seg[i]->nsb;
 		if (maint_part_kb == 0)
 			take[i] = true;
 		else if (keyed)
 		{
-			work |= (v->imm[i].flags & SIFT_SEG_DIRTY) != 0;
+			work |= (v->imm[i].flags & SIFT_SEG_DIRTY) != 0 || v->stale[i];
 			nover += !maint_is_partition(&v->imm[i]);
 		}
 		else if (v->over[i])
@@ -421,14 +304,17 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	else if (nover == 1 && (double) listed >= sift_col_auto_merge_fragmentation * (double) sift_cseg_dir_units(snap))
 	{
 		for (int i = 0; i < v->n; i++)
-			take[i] = i == over || dirty_part[i] || share_superblock(&v->span[i], &v->span[over], 0);
+			take[i] = i == over || dirty_part[i] || maint_share_superblock(&v->span[i], &v->span[over], 0);
 		*cut = true;
 	}
 	else if (worst >= 0)
 		take[worst] = *cut = true;
 	for (int i = 0; i < v->n; i++)
 		if (take[i])
+		{
 			sel[nsel++] = v->imm[i];
+			refresh |= v->stale[i];
+		}
 	/* without partitions the end state of a key-cut index over the input a merge by workers starts from is also segments no dead row and no unit in common keep apart: its slices */
 	if (keyed && maint_part_kb == 0 && nsel > 1 && nsel == v->n)
 	{
@@ -442,7 +328,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
 		for (int i = 0; i < v->n && apart; i++)
 			for (int j = i + 1; j < v->n && apart; j++)
-				apart = !share_superblock(&v->span[i], &v->span[j], 1);
+				apart = !maint_share_superblock(&v->span[i], &v->span[j], 1);
 		if (apart)
 			nsel = 0;
 	}
@@ -450,7 +336,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 		sift_cseg_close(v->seg[i]);
 	MemoryContextDelete(cx);
 	/* one clean segment is the end state (and segments no unit is in two of, above) */
-	return nsel > 1 || (nsel == 1 && (sel[0].flags & SIFT_SEG_DIRTY)) ? nsel : 0;
+	return nsel > 1 || (nsel == 1 && ((sel[0].flags & SIFT_SEG_DIRTY) || refresh)) ? nsel : 0;
 }
 
 /*

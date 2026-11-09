@@ -196,7 +196,7 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 		{
 			fc->tab = table_of(fc, mcxt, r->schema, parent, key, carry, s->ncarry, snap);
 			if (fc->tab == NULL)
-				fc->stamp = (SiftConnStamp) {0};
+				fc->stamp = (SiftConnStamp) {.reserved = SIFT_CONN_STAMP_REFUSED};
 		}
 		index_close(pindex, NoLock);
 		table_close(parent, NoLock);
@@ -243,4 +243,82 @@ static SiftConnStamp
 fill_stamp(const SiftColFill *hook, int i)
 {
 	return ((const SiftConnFill *) hook)->c[i].stamp;
+}
+
+int			sift_col_connect_refresh_pct = 10;
+
+struct SiftConnStale
+{
+	int			n;
+	Snapshot	snap;
+	struct
+	{
+		Relation	heap,
+					index;
+		SiftConnStamp now;
+		bool		vouches;
+		double		rows;
+	}			c[SIFT_CONN_MAX_CONNECTIONS];
+};
+
+SiftConnStale *
+sift_conn_stale_begin(Relation index, MemoryContext mcxt)
+{
+	const SiftColRel *r;
+	SiftConnStale *s;
+	SiftConnSpecs *specs;
+	Relation	heap;
+
+	if (!sift_col_is_index(index) || (r = sift_col_rel(index))->nconn == 0)
+		return NULL;
+	specs = sift_conn_specs(index);
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	s = MemoryContextAllocZero(mcxt, sizeof(SiftConnStale));
+	s->n = r->nconn;
+	s->snap = IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	for (int i = 0; i < s->n; i++)
+	{
+		s->c[i].index = index_open(sift_conn_parent_index(heap, index, specs->c[i], &s->c[i].heap), AccessShareLock);
+		s->c[i].vouches = sift_conn_take(s->c[i].heap, s->c[i].index, s->snap, &s->c[i].now, NULL) == SIFT_CONN_OK;
+		s->c[i].rows = Max(s->c[i].index->rd_rel->reltuples, 1);
+	}
+	table_close(heap, NoLock);
+	return s;
+}
+
+bool
+sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
+{
+	for (int i = 0; i < s->n; i++)
+	{
+		SiftConnStamp st = i < seg->nconn ? seg->conn[i] : (SiftConnStamp) {0};
+		double		limit = s->c[i].rows * sift_col_connect_refresh_pct / 100;
+		SiftConnKeys keys;
+
+		if (!s->c[i].vouches)
+			continue;
+		if (st.lineage == 0 ? st.reserved != SIFT_CONN_STAMP_REFUSED : st.lineage != s->c[i].now.lineage)
+			return true;
+		if (st.lineage == 0)
+			continue;
+		if (sift_conn_changed(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
+			return true;
+		if (keys.n >= limit)
+		{
+			sift_conn_keys_free(&keys);
+			return true;
+		}
+		sift_conn_keys_free(&keys);
+	}
+	return false;
+}
+
+void
+sift_conn_stale_end(SiftConnStale *s)
+{
+	for (int i = 0; i < s->n; i++)
+	{
+		index_close(s->c[i].index, NoLock);
+		table_close(s->c[i].heap, NoLock);
+	}
 }

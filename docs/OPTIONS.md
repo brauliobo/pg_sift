@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 100 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
@@ -1470,6 +1470,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Turn it off for a session or a database where an index must not depend on the index of another table; connect = 'off' on one index, or connect = 'auto' when the setting is off and one index should connect.
 - **Sources:** benchmark `test:col_conn_auto`; [COL-CONNECT](COL-CONNECT.md#automatic-connections)
 
+#### sift.col_connect_refresh_pct
+
+`sift_col` · default · since 4.3 · default 10
+
+- **What it does:** percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected index from which the automatic rewrite fills the segment again
+- **Gain:** **not measured**
+- **Impact:** index size: **not measured**; build, merge and writes: 550,000 rows with 4 carried columns (one text): the merge that fills takes 608 ms against 347 ms without, the index is 13.1 MB against 10.6 MB; other: a rewrite of the segments of the connected index (the fill reads the parent table once and costs the rows of the segments, about 75% more than a merge without it at 4 carried columns); the rewrite is within the WAL budget of sift.col_auto_merge
+- **When:** A connected index whose parent table changes keys: updates, deletes or inserts of parent rows.
+- **Default:** 10 — Nothing reads the carried values yet in this release; the rewrite is their whole cost.
+- **Turn off:** connect = 'off' on the index and REINDEX; SET sift.col_auto_merge = off for the automatic rewrite
+- **Upgrade from 4.2:** New in 4.3.
+- **Advice:** Leave at 10: a read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite. Lower it to rewrite sooner, at more WAL; a segment never filled or whose parent index was rebuilt is rewritten whatever the share.
+- **Sources:** benchmark `test:col_conn_refresh`; [COL-CONNECT](COL-CONNECT.md#refresh)
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2613,7 +2627,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.2; new: `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift_col(connect)`.
+No default changed since 4.2; new: `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift.col_connect_refresh_pct`, `sift_col(connect)`.
 
 | Option | 4.2 | 4.3 | Column format | What a 4.2 user gets after the update |
 |---|---|---|---|---|
@@ -2624,6 +2638,7 @@ No default changed since 4.2; new: `sift.agg_dimmap_kb`, `sift.col_auto_connect`
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | new | '' | minor 44, unreadable by 4.2 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift.col_auto_connect` | new | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
+| `sift.col_connect_refresh_pct` | new | 10 |  | New in 4.3. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

@@ -104,6 +104,17 @@ stamp of each connection with its schema, so a value in it is as of that stamp; 
 fills the rows again under one new stamp. A connection whose journal does not vouch at that moment (the first child of a parent, whose journal starts after its scan; a parent too big for the
 table) leaves the stamp empty and the leaves NULL, and the next promotion or merge fills them. `col_verify` does not compare the carried leaves with the heap: they are as of the stamp.
 
+## Refresh
+
+The carried values of a segment are as of its stamp, so they age with the parent. The rewrite of `sift.col_auto_merge` (the maintenance gate: the WAL budget, the held horizon, the maintenance lock,
+`sift.col_maintain`) takes a segment of a connected index when, for a connection whose journal vouches now, the segment was never filled (the first child of a parent, whose journal starts after its
+scan), its stamp is of another journal (the parent index was rebuilt), the journal cannot tell what changed since the stamp (trimmed, too many keys), or the keys changed since the stamp are
+`sift.col_connect_refresh_pct` percent (10) of the rows of the parent index: below that a read patches those keys from the join, which costs less than the rewrite. The reason is `stale connection` in
+`sift.col_maintenance_due`. The rewrite fills the segment again under a new stamp, so the rule ends; a parent that did not fit the memory of the writer leaves a stamp that says so and is not asked for again.
+
+A snapshot older than the journal (a transaction that began before the first child was built and still runs) is never vouched: its reads use the join path for every row, the answer is the same. The
+journal vouches for the snapshots taken after its start, so a long-running snapshot costs time and never changes an answer.
+
 ## Limits of this stage
 
 No query reads the connection yet: it makes the dependency, the journal, the leaves and their values under a stamp.

@@ -110,5 +110,6 @@ typedef struct SiftConnStamp
 {
 	uint64		lineage;		/* the id of the parent's journal: another after a rebuild of the parent index */
 	uint32		xmin;			/* X, the horizon (xmin of the snapshot the value was derived under; a TransactionId) */
-	uint32		reserved;		/* zero */
+	uint32		reserved;		/* zero, or SIFT_CONN_STAMP_REFUSED */
 } SiftConnStamp;
+#define SIFT_CONN_STAMP_REFUSED	1	/* no lineage: the parent did not fit the memory of the writer (a rewrite would refuse it again) */

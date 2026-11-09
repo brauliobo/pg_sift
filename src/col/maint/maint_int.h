@@ -50,6 +50,7 @@ typedef struct RewriteView
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
 	SbSpans		span[SIFT_MAX_SEGMENTS];
 	bool		over[SIFT_MAX_SEGMENTS];
+	bool		stale[SIFT_MAX_SEGMENTS];	/* a segment of a connected index whose carried values a rewrite should fill again (sift_conn_stale) */
 	bool		kover[SIFT_MAX_SEGMENTS];	/* a partition-sized segment of a key-cut index whose key range overlaps another one's: it is no partition of the key */
 	int			nkover;
 	int64		klo[SIFT_MAX_SEGMENTS],		/* the range of the cut leaf over the units of each segment of a key-cut index in partitions (klo > khi: no value) */
@@ -68,6 +69,8 @@ extern void	maint_use_partitions(Relation index, const SiftDirSnapshot *snap);
 extern int	maint_part_kb_for(uint64 bytes, double mem_ratio);
 
 extern bool	maint_is_partition(const SiftSegEntry *e);
+extern SbSpans	maint_seg_spans(SiftColSegment *seg);
+extern bool	maint_share_superblock(const SbSpans *a, const SbSpans *b, int allowed);
 
 /* The overlays of a key-cut index in partitions: what a merge of the small ones into one would rewrite and spare the reads (maint_overlay_set) */
 typedef struct OverlayEv

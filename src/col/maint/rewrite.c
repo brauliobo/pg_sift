@@ -245,6 +245,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	int			nseg,
 				key_overlap;
 	OverlayEv	ev;
+	bool		stale = false;
 
 	maint_overlay_asked = false;
 	maint_redecided = false;
@@ -275,6 +276,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		sbytes[i] = e->bytes;
 		lsn[i] = automatic ? maint_header_lsn(index, e) : InvalidXLogRecPtr;
 		listed += seg->nsb;
+		stale |= v->stale[i];
 		if (e->flags & SIFT_SEG_DIRTY)
 		{
 			d = maint_dirty_units(seg);
@@ -319,6 +321,8 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	}
 	else if (maint_read_asked && dirty > 0)
 		why = "dirty units";
+	else if (stale)
+		why = "stale connection";
 	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
 	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;

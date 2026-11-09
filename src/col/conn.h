@@ -188,6 +188,7 @@ extern void sift_conn_resolve(Relation child_heap, Relation child_index);
  */
 extern void sift_conn_auto(Relation child_heap, Relation child_index);
 extern PGDLLIMPORT bool sift_col_auto_connect;
+extern PGDLLIMPORT int sift_col_connect_refresh_pct;
 /*
  * The journals of the parents of a connected child, made when the build of the child has read its table: the writers of a parent table are held out from here to the end of the
  * statement, not for the whole scan of a large child. A parent that has a connected child already is not locked at all.
@@ -206,5 +207,16 @@ extern void sift_conn_alter(Relation child_index);
  */
 struct SiftColFill;
 extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryContext mcxt);
+
+/*
+ * Refresh: is a segment of a connected index worth a rewrite for what its stamps say? For a connection whose parent journal vouches now, a segment is stale when it was never filled
+ * (lineage 0, and the fill was not refused for the size of the parent), when the parent index was rebuilt since, or when the keys changed since its stamp are sift.col_connect_refresh_pct
+ * percent of the parent's rows (below that the reader patches them: a few keys cost less than the rewrite) or the journal cannot tell. NULL from begin: the index has no connection.
+ */
+typedef struct SiftConnStale SiftConnStale;
+struct SiftColSegment;
+extern SiftConnStale *sift_conn_stale_begin(Relation child_index, MemoryContext mcxt);
+extern bool sift_conn_stale(SiftConnStale *s, const struct SiftColSegment *seg);
+extern void sift_conn_stale_end(SiftConnStale *s);
 
 #endif							/* SIFT_COL_CONN_H */

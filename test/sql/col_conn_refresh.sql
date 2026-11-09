@@ -1,0 +1,71 @@
+-- The rewrite that keeps the carried values of a connected index near their parents (docs/COL-CONNECT.md): a segment is rewritten when it was never filled, when its parent index was
+-- rebuilt, or when the keys changed since its stamp are sift.col_connect_refresh_pct percent of the parent's rows; a few changed keys are left to the reads.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dim_a (id int PRIMARY KEY, label text, price int) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, 'l' || i, i * 10 FROM generate_series(1, 200) i;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, label, price);
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 200, i FROM generate_series(1, 2000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id) carries label, price');
+
+CREATE FUNCTION carried_wrong() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM sift._test_col_read('events_col', 4) l
+		JOIN sift._test_col_read('events_col', 5) p USING (tid)
+		JOIN events e ON e.ctid = l.tid
+		LEFT JOIN dim_a d ON d.id = e.dim_a_id
+		WHERE l.val IS NOT NULL AND (l.val IS DISTINCT FROM d.label OR p.val IS DISTINCT FROM d.price::text)
+$$;
+CREATE FUNCTION carried_filled() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(val) FROM sift._test_col_read('events_col', 3)
+$$;
+
+-- never filled: the journal started after the first scan
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_filled() AS filled;
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_filled() AS filled, carried_wrong() AS wrong;
+SELECT count(*) AS segments, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('events_col');
+
+-- a few changed keys are left to the reads
+UPDATE dim_a SET label = 'changed' WHERE id <= 5;
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_wrong() > 0 AS stale_values;
+
+-- changed keys at the share of the setting
+UPDATE dim_a SET label = 'changed' WHERE id <= 30;
+SELECT sift.col_maintenance_due('events_col', false) AS due;
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_filled() AS filled, carried_wrong() AS wrong;
+SELECT count(*) AS segments, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('events_col');
+
+-- a lower share
+SET sift.col_connect_refresh_pct = 1;
+UPDATE dim_a SET price = price + 1 WHERE id IN (100, 101, 102);
+SELECT sift.col_maintenance_due('events_col', false) AS due;
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_wrong() AS wrong;
+RESET sift.col_connect_refresh_pct;
+
+-- the parent index rebuilt: another journal, so every stamp is old
+REINDEX INDEX dim_a_col;
+SELECT sift.col_maintenance_due('events_col', false) AS due;
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT sift.col_maintenance_due('events_col', false) AS due, carried_wrong() AS wrong;
+
+-- a parent that does not fit maintenance_work_mem is refused once and not asked for again
+CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 100) i;
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id) carries label');
+SET maintenance_work_mem = '1MB';
+SELECT sift.col_maintenance_due('big_events_col', false) AS due;
+SELECT sift.col_maintain('big_events_col') AS rewritten;
+SELECT sift.col_maintenance_due('big_events_col', false) AS due;
+RESET maintenance_work_mem;
+
+DROP TABLE big_events, dim_big, events, dim_a CASCADE;
+DROP FUNCTION carried_wrong(), carried_filled();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
