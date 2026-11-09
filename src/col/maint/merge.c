@@ -109,6 +109,37 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 	return apart;
 }
 
+/* The partitions the live bytes make of part_bytes (a key-cut partition is under three quarters of the size: the VACUUM space step moves a segment whole, within the bytes of a partition) */
+static uint64
+part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
+{
+	uint64		share = key_cut ? part_bytes / 4 * 3 : part_bytes;
+
+	return key_cut ? (live_bytes + share - 1) / share : (live_bytes + part_bytes / 2) / part_bytes;
+}
+
+/*
+ * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions, clean, and no more of them than the
+ * partitions their bytes make are the minimum, and writing them again would give the same ones (an index built by a parallel build, or merged by a force, is there).
+ */
+static bool
+at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, int n)
+{
+	uint64		bytes = 0,
+				rows = 0;
+
+	if (maint_part_kb == 0 || (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index))))
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		if (!maint_is_partition(&sel[i]) || (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS)) || pol->mostly_dead(index, &sel[i]))
+			return false;
+		bytes += sel[i].bytes;
+		rows += sel[i].ndocs;
+	}
+	return (uint64) n <= Max(part_count(bytes, (uint64) maint_part_kb * 1024, false), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS);
+}
+
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry *sel)
 {
@@ -119,7 +150,10 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 
 	maint_use_partitions(index, snap);
 	if (force)
-		return sift_merge_pick(index, &pol, snap, true, sel);
+	{
+		n = sift_merge_pick(index, &pol, snap, true, sel);
+		return n > 0 && at_minimum(index, &pol, sel, n) ? 0 : n;
+	}
 	if (maint_part_kb == 0)
 	{
 		n = sift_merge_pick(index, &pol, snap, false, sel);
@@ -577,12 +611,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	 * the bytes of units written, which are the part of a segment that grows with its rows (the dictionaries and the like grow with them)
 	 */
 	if (part_bytes > 0)
-	{
-		/* a key-cut partition is under three quarters of the size: the VACUUM space step moves a segment whole, within the bytes of a partition */
-		uint64		share = key_cut ? part_bytes / 4 * 3 : part_bytes;
-
-		o.parts = Max(1, Min(Min(key_cut ? (live_bytes + share - 1) / share : (live_bytes + part_bytes / 2) / part_bytes, MAX_PARTS), max_parts));
-	}
+		o.parts = Max(1, Min(Min(part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts));
 	o.live_rows = live_rows;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
