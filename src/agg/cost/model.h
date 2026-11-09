@@ -170,6 +170,9 @@
 #define AGG_SHARE_DENSE	32.0	/* the rows of a dense table (2 bytes a key) that weigh as one row of a hashed one when the leader shares it with workers */
 #define AGG_LOAD_BIG		250000.0	/* the rows of a table whose map stays in the cache: past them a load from the leaves costs the 0.4 power of the rows more (61 ns a row for 1,500,000 rows of 100,000 keys, 74 to 88 ns for 6,000,000 rows of 10,000 to 200,000 keys, 127 ns for 1,500,000 keys: the key dictionary outgrows the cache) */
 #define AGG_LOAD_NUMERIC	32.0	/* ... more for each numeric column of such a load: the value is built and allocated for each row (260 ns a row and column measured on 2,750,000 rows of a fact table, against 15 ns for an integer one) */
+#define AGG_LOAD_KEYS		200.0	/* ... more for each row of a table read as rows with as many distinct keys as AGG_LOAD_KEYS_HALF or more: the directory of the keys is past the cache, a miss a row (0.4 us measured for 1,000,000 to 4,000,000 keys) */
+#define DENSE_KEY_REPEAT	1.5	/* the rows a key may have by the statistics for its table to be taken as one that repeats no key (the estimate of the distinct values of a sample is not exact) */
+#define AGG_LOAD_KEYS_HALF	800000.0	/* the keys at which half of it is paid (the square of the keys against the square of this) */
 #define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */

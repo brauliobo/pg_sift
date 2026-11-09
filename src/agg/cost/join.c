@@ -427,6 +427,17 @@ sift_agg_key_rows(unsigned int relid, int att, const int *tatt, int ntrail, doub
 	return Max(rpk, 1.0);
 }
 
+/* the rows the table has for a key of the join, by the statistics (0: unknown); a unique index says 1 */
+static double
+join_rows_per_key(const JoinCtx *jc, double tuples)
+{
+	const SiftAggJoin *j = &jc->j;
+
+	if (!OidIsValid(j->relid) || j->tkey[0] != NULL)
+		return 0;
+	return j->nkey == 1 && sift_agg_unique_key(j->relid, 1, 0, &j->keyatt[0], NULL) ? 1.0 : sift_agg_rows_per_key(j->relid, j->keyatt[0], tuples);
+}
+
 /*
  * Will the executor keep the table of the join as classes of its keys (map_load_dense)? The join is one it takes (sift_agg_dense_join), an index holds the key
  * and the columns as integer leaves, and the tuples of their values, by the statistics, are at most half the classes it tells apart. jc->classes: how many.
@@ -447,8 +458,9 @@ join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
 			jc->classes = 1.0;
 			for (int col = 0; col < jc->j.ncol; col++)
 				jc->classes *= bound[col] > 0 ? Min(bound[col], joined_distinct(c, jc, col)) : joined_distinct(c, jc, col);
-			if (ok && jc->classes <= DENSE_MAX_CLASSES / 2)
-				jc->dense = 1;
+			/* a key the table repeats is refused by the load (a class is the key's): such a table is read as rows */
+			ok = ok && jc->classes <= DENSE_MAX_CLASSES / 2 && join_rows_per_key(jc, Max(c->root->simple_rel_array[jc->rti]->tuples, 1.0)) <= DENSE_KEY_REPEAT;
+			jc->dense = ok ? 1 : 2;
 		}
 	}
 	return jc->dense == 1;
@@ -475,6 +487,18 @@ key_dense_groups(AggCtx *c, const SiftAggSpec *s, const SiftAggKey *k, Bitmapset
 	return jc->classes;
 }
 
+/*
+ * What the directory of the keys adds to the load of a table of rows: each row finds its key in a table of the table's distinct keys, a cache miss once the keys outgrow the cache (98 ns
+ * a row for 400,000 keys of 4,000,000 rows, 543 ns for 4,000,000 keys; 111 against 473 ns for 100,000 and 1,000,000 keys of 1,000,000 rows). A key without statistics is taken as unique.
+ */
+static double
+load_keys_ops(const JoinCtx *jc, double tuples)
+{
+	double		keys = Max(tuples, 1.0) / Max(join_rows_per_key(jc, tuples), 1.0);
+
+	return Max(tuples, 1.0) * AGG_LOAD_KEYS * keys * keys / (keys * keys + AGG_LOAD_KEYS_HALF * AGG_LOAD_KEYS_HALF);
+}
+
 /* the price, in operators, of the table of a join read whole */
 static double
 join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
@@ -495,7 +519,7 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
 	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
-	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc));
+	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc)) + load_keys_ops(jc, jrel->tuples);
 }
 
 /* does the btree hold, and return, every column a load of the join reads (map_index_covers) */
