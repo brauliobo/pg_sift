@@ -28,7 +28,7 @@ struct ColBuild
 	MemoryContext heldcxt;		/* the batches in held */
 	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
 	SiftColSegWriter *w;
-	SiftColFill *fill;				/* an index with connections: the carried values of every segment are filled from the parent tables (col/conn.h) */
+	SiftColFill *fill;				/* an index with connections: the found flags of every segment are filled from the parent tables (col/conn.h) */
 	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
 	int			nrows;

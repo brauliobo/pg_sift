@@ -37,7 +37,7 @@ typedef enum SiftColStore
 #define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */
 #define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
 #define SIFT_COLD_NET		0x0010	/* with SIFT_COLD_SHAPE: the head of a network (inet, cidr): the node of its block and the host bits inside it, a range has the start and the end */
-#define SIFT_COLD_CARRIED	0x0020	/* a leaf the index takes from the parent table of its connection (col/conn.h), not from a column of its table: a column of the parent, or the flag that the parent row was found; its attno is the attribute that holds the key */
+#define SIFT_COLD_FOUND	0x0020	/* the flag of a connection (col/conn.h, leaf "<fk>#found"): the parent row of the key was found; not a column of the table, its attno is the attribute that holds the key */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
@@ -104,7 +104,7 @@ typedef struct SiftColDef
 static inline bool
 sift_col_def_has_kinds(const SiftColDef *d)
 {
-	return d->store != SIFT_COLS_VAR && d->path != NULL && d->path[0] != 0 && d->lane == 0 && !(d->flags & SIFT_COLD_CARRIED);	/* a lane after the head of a wide leaf has a path of its own (name#k) */
+	return d->store != SIFT_COLS_VAR && d->path != NULL && d->path[0] != 0 && d->lane == 0 && !(d->flags & SIFT_COLD_FOUND);	/* a lane after the head of a wide leaf has a path of its own (name#k) */
 }
 
 static inline bool

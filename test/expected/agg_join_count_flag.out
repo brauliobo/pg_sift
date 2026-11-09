@@ -16,7 +16,7 @@ DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parent_col');
 CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, tag);
 NOTICE:  sift_col index "child_col" connected to parent(id) through foreign key "child_parent_id_fkey"
-HINT:  To carry columns write them in connect = '.. carries a, b'; connect = 'off' turns it off.
+HINT:  connect = 'off' on the index turns it off.
 NOTICE:  sift_col index "child_col": 4 automatic choices
 DETAIL:  key_columns = parent_id; key_cut = parent_id; order_array_columns = v; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');

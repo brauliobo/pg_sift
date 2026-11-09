@@ -108,8 +108,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		}
 		n += k;
 	}
-	r->carry_first = n;
-	n = sift_conn_leaves(index, defs, n, r->conn, &r->nconn);
+	r->conn_first = n;
+	n = sift_conn_leaves(index, defs, n, r->conn_found, &r->nconn);
 	r->ret = palloc0((natts + 1) * sizeof(bool));
 	{
 		const char *err = am_return_walk(sift_col_options_return_columns(index), r, desc);

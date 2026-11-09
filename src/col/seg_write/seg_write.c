@@ -32,8 +32,8 @@ sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact)
 		minor = Max(minor, SIFT_COL_FORMAT_WIDE);	/* a wide schema has no older form */
 	if (schema->contain)
 		minor = Max(minor, SIFT_COL_FORMAT_CONTAIN);
-	if (schema->carried)
-		minor = Max(minor, SIFT_COL_FORMAT_CARRIED);
+	if (schema->connected)
+		minor = Max(minor, SIFT_COL_FORMAT_CONN);
 	return minor;
 }
 
@@ -51,7 +51,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
-	w->carried = sift_ccarried_create(mcxt, schema);
+	w->found = sift_cfound_create(mcxt, schema);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
 	w->inl = palloc0(schema->ncols * sizeof(bool));
@@ -278,7 +278,7 @@ segw_gorder_plain(const SiftColSegWriter *w, int c)
 void
 sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill)
 {
-	SIFT_INVARIANT(fill == NULL || w->carried != NULL, "sift_col: a fill for a segment without carried leaves");
+	SIFT_INVARIANT(fill == NULL || w->found != NULL, "sift_col: a fill for a segment without connection flags");
 	w->fill = fill;
 }
 
@@ -292,10 +292,10 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		colw_add(w, b);
 		return;
 	}
-	b = sift_ccarried_view(w->carried, b);
+	b = sift_cfound_view(w->found, b);
 	w->fill->batch(w->fill, (SiftColBatch *) b);
 	colw_add(w, b);
-	sift_ccarried_done(w->carried);
+	sift_cfound_done(w->found);
 }
 
 static void
@@ -498,8 +498,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_TABFIRST : SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONTAIN);
-	if (w->schema->carried)
-		w->format = Max(w->format, SIFT_COL_FORMAT_CARRIED);
+	if (w->schema->connected)
+		w->format = Max(w->format, SIFT_COL_FORMAT_CONN);
 	if (w->anymeaslen)
 		w->format = Max(w->format, SIFT_COL_FORMAT_MEASLEN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
@@ -555,7 +555,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
-	if (w->schema->carried)
+	if (w->schema->connected)
 	{
 		/* the stamps of the connections follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
 		int			nconn = sift_cschema_nconn(w->schema);

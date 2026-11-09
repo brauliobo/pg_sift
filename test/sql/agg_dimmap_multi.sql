@@ -15,7 +15,7 @@ INSERT INTO dim_b SELECT i, i % 5, i % 11 FROM generate_series(0, 2999) i;
 CREATE INDEX dim_b_col ON dim_b USING sift_col (k, x, y);
 CREATE TABLE ev (id int PRIMARY KEY, ka int, kb int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 5100, i % 3100, i % 13 FROM generate_series(1, 40000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, ka, kb, v) WITH (connect = 'ka -> dim_a(k) carries a, b; kb -> dim_b(k) carries x, y');
+CREATE INDEX ev_col ON ev USING sift_col (id, ka, kb, v) WITH (connect = 'ka -> dim_a(k); kb -> dim_b(k)');
 VACUUM (FREEZE, ANALYZE) ev, dim_a, dim_b;
 
 CREATE TABLE shapes (n int, sql text);
@@ -57,7 +57,7 @@ SELECT * FROM report('dimension b written');
 SELECT * FROM report('dimension b shared again');
 
 -- the second connection switched off: the journal of dimension b stays
-ALTER INDEX ev_col SET (connect = 'ka -> dim_a(k) carries a, b');
+ALTER INDEX ev_col SET (connect = 'ka -> dim_a(k)');
 REINDEX INDEX ev_col;
 UPDATE dim_b SET x = 4 WHERE k = 7;
 SELECT * FROM report('connection b off, written');

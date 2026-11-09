@@ -17,9 +17,8 @@ found_conn(const SiftColSchema *schema, int leaf)
 	for (int i = 0; i <= leaf; i++)
 	{
 		const SiftColDef *d = &schema->cols[i];
-		size_t		len = d->path ? strlen(d->path) : 0;
 
-		if (!(d->flags & SIFT_COLD_CARRIED) || len < 6 || strcmp(d->path + len - 6, "#found") != 0 || strchr(d->path, '.') != NULL)
+		if (!(d->flags & SIFT_COLD_FOUND))
 			continue;
 		if (i == leaf)
 			return conn;

@@ -15,7 +15,7 @@ DETAIL:  rollup_columns = b, flag; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_col');
 CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k) carries a, b, flag');
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k)');
 NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');

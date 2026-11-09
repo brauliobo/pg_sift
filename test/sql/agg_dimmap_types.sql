@@ -77,7 +77,7 @@ RESET max_parallel_workers_per_gather;
 SET max_parallel_workers_per_gather = 0;
 
 -- the child connected to the parent's journal (via map: nothing is carried): a write to the parent is a new map without a vacuum
-ALTER INDEX ch_col SET (connect = 'k -> pd(k) carries c4 via map');
+ALTER INDEX ch_col SET (connect = 'k -> pd(k)');
 REINDEX INDEX ch_col;
 SELECT * FROM report('connected');
 SELECT * FROM report('connected, shared');

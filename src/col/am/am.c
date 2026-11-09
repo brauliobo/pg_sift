@@ -35,7 +35,7 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 			   *name = r->name;
 	SiftColShredAdapter *shred = r->shred;
 	int			natts = r->natts,
-				carry_first = r->carry_first,
+				conn_first = r->conn_first,
 				ncols = schema->ncols;
 
 	row->tid = *tid;
@@ -56,7 +56,7 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 	}
 	if (shred)
 		sift_col_shred_row_rc(shred, values, isnull, row, first, mcxt, rc);
-	for (int k = carry_first; k < ncols; k++)	/* a row carries nothing of its parent until a segment resolves it (col/conn.h) */
+	for (int k = conn_first; k < ncols; k++)	/* a row has no flag of its connections until a segment resolves them (col/conn.h) */
 		row->val[k].isnull = true;
 	MemoryContextSwitchTo(old);
 }

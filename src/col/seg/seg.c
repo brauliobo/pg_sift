@@ -76,17 +76,17 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 		corrupt(seg, "The schema section is not a schema of %llu leaves.", ULL(h->nterms));
 	if (hd->schema->wide && seg->entry.format < SIFT_COL_FORMAT_WIDE)
 		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", seg->entry.format);
-	if (hd->schema->carried && seg->entry.format < SIFT_COL_FORMAT_CARRIED)
-		corrupt(seg, "The schema has carried leaves, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->connected && seg->entry.format < SIFT_COL_FORMAT_CONN)
+		corrupt(seg, "The schema has connection flags, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
-	if (hd->schema->carried)
+	if (hd->schema->connected)
 	{
 		uint32		tail[2];
 		int			nconn = sift_cschema_nconn(hd->schema);
 
 		if (h->dictroot_off < sizeof(tail))
-			corrupt(seg, "The schema section of a segment with carried leaves has no stamps.");
+			corrupt(seg, "The schema section of a segment with connection flags has no stamps.");
 		memcpy(tail, schema + h->dictroot_off - sizeof(tail), sizeof(tail));
 		if (tail[1] != SEG_STAMPS_MAGIC || tail[0] != (uint32) nconn || h->dictroot_off < sizeof(tail) + nconn * sizeof(SiftConnStamp))
 			corrupt(seg, "The stamps of the %d connections of the schema are not there.", nconn);

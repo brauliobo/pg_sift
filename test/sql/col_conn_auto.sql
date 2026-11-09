@@ -12,14 +12,14 @@ CREATE INDEX dim_b_col ON dim_b USING sift_col (id, zone);
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a, dim_b_id int NOT NULL REFERENCES dim_b, v int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + i % 500, 1 + i % 50, i FROM generate_series(1, 3000) i;
 \set VERBOSITY default
--- one index, two foreign keys: two connections that carry nothing
+-- one index, two foreign keys: two connections
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, dim_b_id, v);
 SELECT ordinal, fk, parent, declaration, automatic FROM sift.col_connections WHERE child = 'facts_col'::regclass ORDER BY ordinal;
 SELECT regexp_replace(c, '^connect=', '') AS option FROM pg_class, unnest(reloptions) c WHERE relname = 'facts_col' AND c LIKE 'connect=%';
 SELECT DISTINCT format FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
 -- the option wins: off, a named connection, and the setting
 CREATE INDEX facts_off ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'off');
-CREATE INDEX facts_named ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id) carries label');
+CREATE INDEX facts_named ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id)');
 SET sift.col_auto_connect = off;
 CREATE INDEX facts_guc ON facts USING sift_col (id, dim_a_id, v);
 CREATE INDEX facts_asked ON facts USING sift_col (id, dim_b_id, v) WITH (connect = 'auto');

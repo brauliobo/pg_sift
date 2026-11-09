@@ -82,7 +82,7 @@ INSERT INTO cfact SELECT g, 1 + g % 500, 1 + g % 50, g FROM generate_series(1, 2
 CREATE INDEX cdim_c ON cdim USING sift_col (id, cat, label);
 CREATE INDEX cdim2_c ON cdim2 USING sift_col (id, zone);
 CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, dim2_id, v)
-  WITH (connect = 'dim_id -> cdim(id) carries cat, label; dim2_id -> cdim2(id) carries zone');
+  WITH (connect = 'dim_id -> cdim(id); dim2_id -> cdim2(id)');
 UPDATE cdim SET cat = cat + 1 WHERE id % 50 = 0;"
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
@@ -196,7 +196,7 @@ node_start new || bail "the upgraded cluster does not start"
 if [[ -z $OLD_REF ]]; then
 	check "the extension and the library are the ones of before" test "$(q new postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSIONS"
 else
-	# the catalog still says the release (pg_upgrade carries the extension as it was), the library is this tree's: the update is the user's next step
+	# the catalog still says the release (pg_upgrade's: the update is the user's next step
 	check "the extension is the release's" test "$(q new postgres "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$(cut -d' ' -f1 <<<"$VERSIONS")"
 	check "the library is this tree's" test "$(q new postgres "SELECT sift.version()")" != "$(cut -d' ' -f2 <<<"$VERSIONS")"
 	check "the answers are the same before the extension is updated" test "$(fingerprint new)" == "$BEFORE"

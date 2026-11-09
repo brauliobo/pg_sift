@@ -1,5 +1,5 @@
 /*
- * col/conn_fill.c - the carried values of a connected index (col/conn.h, docs/COL-CONNECT.md): the lookup of the parent tables under a stamp, and the filling of the carried leaves of a batch
+ * col/conn_fill.c - the found flags of a connected index (col/conn.h, docs/COL-CONNECT.md): the lookup of the parent tables under a stamp, and the filling of the flags of a batch
  */
 #include "postgres.h"
 
@@ -20,13 +20,12 @@
 typedef struct FillEnt
 {
 	int64		key;
-	SiftColValue *vals;			/* the values of the leaves after the flag, NULL when the key is twice in the table */
+	bool		repeated;		/* the key is in two visible rows of the table: neither is used */
 } FillEnt;
 
 typedef struct FillConn
 {
-	int			found;			/* the leaf of the flag; the carried leaves follow up to end */
-	int			end;
+	int			found;			/* the leaf of the flag */
 	int			fk_leaf;		/* the leaf of the child that holds the key */
 	SiftConnStamp stamp;
 	HTAB	   *tab;			/* NULL: no stamp, the leaves are cleared */
@@ -60,62 +59,18 @@ key_of(Oid typid, Datum d, int64 *out)
 	}
 }
 
-/* The values of the carried columns of one parent row, in the leaves the child has for them; the bytes of the strings copied */
-static Size
-row_values(FillConn *fc, MemoryContext cx, const SiftColSchema *schema, TupleTableSlot *slot, const AttrNumber *att, int ncarry, SiftColValue *vals)
-{
-	int			leaf = fc->found + 1;
-	Size		copied = 0;
-
-	for (int i = 0; i < ncarry; i++)
-	{
-		const SiftColDef *def = &schema->cols[leaf];
-		int			lanes = Max(def->lanes, 1);
-		bool		isnull;
-		Datum		d = slot_getattr(slot, att[i], &isnull);
-		Form_pg_attribute pa = TupleDescAttr(slot->tts_tupleDescriptor, att[i] - 1);
-		SiftColValue *v = &vals[leaf - fc->found - 1];
-
-		if (isnull)
-			for (int k = 0; k < lanes; k++)
-				v[k] = (SiftColValue) {.isnull = true, .tag = SIFT_COLTAG_UNKNOWN};
-		else
-		{
-			Pointer		raw = DatumGetPointer(d);
-
-			if (pa->attlen == -1)
-				d = PointerGetDatum(PG_DETOAST_DATUM_PACKED(d));
-			sift_col_datum_values(def, d, pa->atttypid == NAMEOID, v);
-			for (int k = 0; k < lanes; k++)
-				if (!v[k].isnull && v[k].len > 0)
-				{
-					char	   *copy = MemoryContextAlloc(cx, v[k].len + 1);
-
-					memcpy(copy, v[k].v.s, v[k].len);
-					v[k].v.s = copy;
-					copied += v[k].len + 1;
-				}
-			if (DatumGetPointer(d) != raw)
-				pfree(DatumGetPointer(d));
-		}
-		leaf += lanes;
-	}
-	return copied;
-}
-
 /* The table of the parent keys under snap, or NULL when it holds more than the memory of a maintenance operation allows */
 static void fill_batch(SiftColFill *hook, SiftColBatch *view);
 static SiftConnStamp fill_stamp(const SiftColFill *hook, int i);
 
 static HTAB *
-table_of(FillConn *fc, MemoryContext cx, const SiftColSchema *schema, Relation parent, AttrNumber key, const AttrNumber *carry, int ncarry, Snapshot snap)
+table_of(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap)
 {
 	HASHCTL		ctl = {.keysize = sizeof(int64),.entrysize = sizeof(FillEnt),.hcxt = cx};
 	HTAB	   *tab = hash_create("sift connection fill", 1024, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	TableScanDesc scan = sift_table_beginscan(parent, snap, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(parent, NULL);
 	Oid			keytype = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
-	int			nvals = fc->end - fc->found - 1;
 	Size		used = 0,
 				limit = (Size) maintenance_work_mem * 1024 / 2;
 	bool		fits = true;
@@ -131,16 +86,11 @@ table_of(FillConn *fc, MemoryContext cx, const SiftColSchema *schema, Relation p
 		if (isnull || !key_of(keytype, d, &k))
 			continue;
 		e = hash_search(tab, &k, HASH_ENTER, &found);
-		if (found)
+		e->repeated = found;
+		if (!found)
 		{
-			e->vals = NULL;		/* two visible rows of one key: neither is used */
-			continue;
-		}
-		used += sizeof(FillEnt) + nvals * sizeof(SiftColValue) + 32;
-		if ((fits = used <= limit))
-		{
-			e->vals = MemoryContextAlloc(cx, nvals * sizeof(SiftColValue));	/* check-memory: allow bounded by limit */
-			used += row_values(fc, cx, schema, slot, carry, ncarry, e->vals);
+			used += sizeof(FillEnt) + 32;
+			fits = used <= limit;
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -181,12 +131,9 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 		const SiftConnSpec *s = specs->c[i];
 		Relation	parent,
 					pindex;
-		AttrNumber	carry[SIFT_CONN_MAX_CARRY],
-					key;
 		int			a = 0;
 
-		fc->found = r->conn[i].found;
-		fc->end = r->conn[i].end;
+		fc->found = r->conn_found[i];
 		for (int j = 0; j < index->rd_index->indnkeyatts; j++)
 			if (index->rd_index->indkey.values[j] == get_attnum(RelationGetRelid(heap), s->fk))
 				a = j + 1;
@@ -195,12 +142,9 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 #ifdef SIFT_TESTING
 		sift_col_test_inval(index);
 #endif
-		key = get_attnum(RelationGetRelid(parent), s->parent_key);
-		for (int j = 0; j < s->ncarry; j++)
-			carry[j] = get_attnum(RelationGetRelid(parent), s->carry[j]);
 		if (sift_conn_take(parent, pindex, snap, &fc->stamp, NULL) == SIFT_CONN_OK)
 		{
-			fc->tab = table_of(fc, mcxt, r->schema, parent, key, carry, s->ncarry, snap);
+			fc->tab = table_of(mcxt, parent, get_attnum(RelationGetRelid(parent), s->parent_key), snap);
 			if (fc->tab == NULL)
 				fc->stamp = (SiftConnStamp) {.reserved = SIFT_CONN_STAMP_REFUSED};
 		}
@@ -213,7 +157,7 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 	return &f->hook;
 }
 
-/* Each row gets the flag and the values of the row of its parent, or NULLs */
+/* Each row gets the flag that the one row of its parent was found, or NULL */
 static void
 fill_batch(SiftColFill *hook, SiftColBatch *view)
 {
@@ -227,24 +171,15 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 			FillEnt    *e = NULL;
 			int64		k = kv->key[row];
 
+			SiftColValue v;
+
 			if (fc->tab != NULL && !sift_col_bit_test(kv->nulls, row))
 			{
 				e = hash_search(fc->tab, &k, HASH_FIND, NULL);
-				fc->orphans |= e == NULL || e->vals == NULL;
+				fc->orphans |= e == NULL || e->repeated;
 			}
-			for (int leaf = fc->found; leaf < fc->end; leaf++)
-			{
-				SiftColValue v = {.isnull = e == NULL || e->vals == NULL,.tag = SIFT_COLTAG_UNKNOWN};
-
-				if (!v.isnull)
-				{
-					if (leaf == fc->found)
-						v.v.i = 1;
-					else
-						v = e->vals[leaf - fc->found - 1];
-				}
-				sift_ccarried_put(view, leaf, &v);
-			}
+			v = (SiftColValue) {.isnull = e == NULL || e->repeated,.tag = SIFT_COLTAG_UNKNOWN,.v.i = 1};
+			sift_cfound_put(view, fc->found, &v);
 		}
 }
 

@@ -1,5 +1,5 @@
--- The reloption connect of a child sift_col index: 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]'. CREATE INDEX, REINDEX and ALTER INDEX resolve it: the child index
--- depends on the sift_col index of the parent table that tracks the key and holds the carried columns, and that index keeps the key journal. The text is the record (pg_dump writes it).
+-- The reloption connect of a child sift_col index: 'fk -> [schema.]parent(key)'. CREATE INDEX, REINDEX and ALTER INDEX resolve it: the child index
+-- depends on the sift_col index of the parent table that tracks the key, and that index keeps the key journal. The text is the record (pg_dump writes it).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -13,37 +13,32 @@ $$ SELECT coalesce(string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::r
 CREATE FUNCTION journal_of(idx regclass) RETURNS boolean LANGUAGE sql AS $$ SELECT lineage <> 0 FROM sift._test_conn_gen(idx) $$;
 
 -- what is wrong with the text, and with the names
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id dim_a(id) carries category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id, x) carries category_id');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id dim_a(id)');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id, x)');
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries category_id via nowhere');
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries category_id');
 -- the parent table has no sift_col index yet
-CREATE INDEX dim_a_col ON dim_a USING sift_col (id, label);
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries category_id');
-DROP INDEX dim_a_col;
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id)');
 CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id, label);
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'value_num -> dim_a(id) carries category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'label -> dim_a(id) carries category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> nowhere(id) carries category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(nokey) carries category_id');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries nocolumn');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries pad');
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> events(id) carries label');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'value_num -> dim_a(id)');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'label -> dim_a(id)');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> nowhere(id)');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(nokey)');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> events(id)');
 SELECT edges('dim_a_col') AS parent_edges, journal_of('dim_a_col') AS journal;
 
 -- a parent in another schema is named with its schema; an unqualified name is in the schema of the child table
 CREATE SCHEMA other;
 CREATE TABLE other.dim_o (id int PRIMARY KEY, category_id int NOT NULL);
 CREATE INDEX dim_o_col ON other.dim_o USING sift_col (id, category_id);
-CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_o(id) carries category_id');
-CREATE INDEX events_o ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> other.dim_o(id) carries category_id');
+CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_o(id)');
+CREATE INDEX events_o ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> other.dim_o(id)');
 SELECT edges('events_o') AS other_edges;
 DROP INDEX events_o;
 DROP SCHEMA other CASCADE;
 
 -- the connection: a dependency, the journal, the text in the options
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num) WITH (connect = 'dim_a_id -> public.dim_a(id) carries category_id, label via carried');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num) WITH (connect = 'dim_a_id -> public.dim_a(id)');
 SELECT edges('events_col') AS child_edges, journal_of('dim_a_col') AS journal;
 SELECT o AS option FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'events_col' AND o LIKE 'connect=%';
 SELECT regexp_replace(pg_get_indexdef('events_col'::regclass), '^.*WITH', 'WITH') AS definition;
@@ -58,12 +53,12 @@ SELECT count(*) AS edges FROM pg_depend WHERE classid = 'pg_class'::regclass AND
 -- off removes the connection, the text brings it back, RESET removes it again
 ALTER INDEX events_col SET (connect = 'off');
 SELECT edges('events_col') AS after_off;
-ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id) carries label');
+ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id)');
 SELECT edges('events_col') AS after_set;
-ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id) carries nocolumn');
+ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(nokey)');
 ALTER INDEX events_col RESET (connect);
 SELECT edges('events_col') AS after_reset;
-ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id) carries category_id');
+ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(id)');
 
 -- the parent index and table cannot go under the child index; CASCADE takes the child index with them
 DROP INDEX dim_a_col;

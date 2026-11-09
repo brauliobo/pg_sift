@@ -10,7 +10,7 @@ setup
 	CREATE INDEX iso_dm_dim_col ON iso_dm_dim USING sift_col (k, a, b);
 	CREATE TABLE iso_dm (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_dm SELECT i, i % 450, i % 7 FROM generate_series(1, 5000) i;
-	CREATE INDEX iso_dm_col ON iso_dm USING sift_col (id, k, v) WITH (connect = 'k -> iso_dm_dim(k) carries a, b');
+	CREATE INDEX iso_dm_col ON iso_dm USING sift_col (id, k, v) WITH (connect = 'k -> iso_dm_dim(k)');
 }
 
 setup		{ VACUUM (FREEZE, ANALYZE) iso_dm; }

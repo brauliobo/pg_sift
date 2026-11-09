@@ -62,32 +62,32 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 }
 
 /*
- * The carried leaves of a connected index (SIFT_COLD_CARRIED, the leaves from first on) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
+ * The found flags of a connected index (SIFT_COLD_FOUND, the leaves from first on) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
  * that come to it: a view of a batch has storage of its own for them, empty, and shares the rest, so that the batch a caller keeps (the write buffer's) is not changed.
  */
 static void put_value(SiftColBatch *b, int id, const SiftColValue *v);
 
-struct SiftColCarried
+struct SiftColFoundView
 {
 	int			first;
-	SiftColBatch *own;			/* the storage of the carried leaves */
+	SiftColBatch *own;			/* the storage of the flags */
 	SiftColBatch view;
 	SiftCVals  *vcol;
 	SiftCDict **vdict;
 };
 
-SiftColCarried *
-sift_ccarried_create(MemoryContext mcxt, const SiftColSchema *schema)
+SiftColFoundView *
+sift_cfound_create(MemoryContext mcxt, const SiftColSchema *schema)
 {
-	SiftColCarried *c;
+	SiftColFoundView *c;
 	int			first = schema->ncols;
 
 	for (int i = 0; i < schema->ncols && first == schema->ncols; i++)
-		if (schema->cols[i].flags & SIFT_COLD_CARRIED)
+		if (schema->cols[i].flags & SIFT_COLD_FOUND)
 			first = i;
 	if (first == schema->ncols)
 		return NULL;
-	c = MemoryContextAllocZero(mcxt, sizeof(SiftColCarried));
+	c = MemoryContextAllocZero(mcxt, sizeof(SiftColFoundView));
 	c->first = first;
 	c->own = sift_cbatch_create(mcxt, schema);
 	c->vcol = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCVals));
@@ -96,7 +96,7 @@ sift_ccarried_create(MemoryContext mcxt, const SiftColSchema *schema)
 }
 
 SiftColBatch *
-sift_ccarried_view(SiftColCarried *c, const SiftColBatch *src)
+sift_cfound_view(SiftColFoundView *c, const SiftColBatch *src)
 {
 	int			ncols = src->schema->ncols;
 
@@ -130,22 +130,16 @@ sift_ccarried_view(SiftColCarried *c, const SiftColBatch *src)
 }
 
 void
-sift_ccarried_put(SiftColBatch *view, int leaf, const SiftColValue *v)
+sift_cfound_put(SiftColBatch *view, int leaf, const SiftColValue *v)
 {
 	put_value(view, leaf, v);
 }
 
 void
-sift_ccarried_done(SiftColCarried *c)
+sift_cfound_done(SiftColFoundView *c)
 {
 	for (int i = c->first; i < c->view.schema->ncols; i++)
 		c->own->col[i] = c->vcol[i];
-}
-
-int
-sift_ccarried_first(const SiftColCarried *c)
-{
-	return c->first;
 }
 
 /* A batch that is complete, at the rows it holds: the arrays grew by doubling, and a batch of 43,008 rows holds 65,536 slots of each (a third of its memory) */

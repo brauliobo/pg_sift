@@ -157,7 +157,7 @@ row_key_syntax(const char *value)
 
 SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
 
-/* 'fk -> parent(key) carries a, b [via ...]', or empty or off: the names are resolved where the connection is made (col/conn_decl.c) */
+/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/conn_decl.c) */
 static const char *
 connect_syntax(const char *value)
 {
@@ -244,12 +244,12 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.col_auto_connect",
 							 "CREATE INDEX and REINDEX of a sift_col index connect it to the sift_col indexes of the tables its validated foreign keys reference.",
 							 "On: an index without the option connect that holds the column of a validated single column foreign key to an int2, int4 or int8 key of a heap table that has a sift_col index tracking that key "
-							 "is connected to it without carrying any column of it (the choice is written into the option as 'auto: ..', and a NOTICE names it and says how to carry columns). "
+							 "is connected to it (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
 							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
 							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_connect_refresh_pct",
 							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which the automatic rewrite fills the segment again.",
-							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the carried values it holds are as of its stamp). "
+							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the found flags it holds are as of its stamp). "
 							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
 							"within the rules of sift.col_auto_merge (the WAL budget included).",
 							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
@@ -524,7 +524,7 @@ sift_col_init(void)
 						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
 						 "auto", sift_col_validate_track_changes, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "connect",
-						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column, and the parent columns that queries read through the join. The parent index (the one that tracks the key and holds the columns) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
+						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key)' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column; the parent columns that queries read come from the parent's own index. The parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
 						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",

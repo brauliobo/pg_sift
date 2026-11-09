@@ -116,7 +116,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->wide |= sift_col_def_needs_wide(&defs[i]);
 		s->contain |= sift_col_def_shape(&defs[i]) != 0;
 		s->kinds |= sift_col_def_has_kinds(&defs[i]);
-		s->carried |= (defs[i].flags & SIFT_COLD_CARRIED) != 0;
+		s->connected |= (defs[i].flags & SIFT_COLD_FOUND) != 0;
 	}
 	s->hash = schema_hash(defs, n);
 	return s;
@@ -142,9 +142,7 @@ sift_cschema_nconn(const SiftColSchema *s)
 
 	for (int i = 0; i < s->ncols; i++)
 	{
-		size_t		len = strlen(s->cols[i].path);
-
-		n += (s->cols[i].flags & SIFT_COLD_CARRIED) && len > 6 && strcmp(s->cols[i].path + len - 6, "#found") == 0;
+		n += (s->cols[i].flags & SIFT_COLD_FOUND) != 0;
 	}
 	return n;
 }

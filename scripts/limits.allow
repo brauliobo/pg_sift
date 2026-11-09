@@ -57,8 +57,6 @@ LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_G
 DP_MAX_LEVELS	size of the array of the pages of one descent: a btree is never as deep, the probe falls back to the index scan when it is
 DP_MAX_PEND	keys of a chunk the direct probe holds before it flushes them: a memory bound of the batch with no visible effect
 JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the table's rows, is left to the join: a speed threshold, the rows are the same either way
-SIFT_CONN_MAX_CARRY	carried columns one connect option names, all connections together: a syntax bound of the option text, rejected with an error
 SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound of the option text, rejected with an error
-SIFT_CONN_MAX_CARRY_BYTES	bytes of the carried values of a row of a connected index: refused with a hint when the option would take more
 FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same
 FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from the found flag probes in its btree (agg/found.c): past it the join loads the parent, the rows are the same

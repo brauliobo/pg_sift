@@ -476,7 +476,7 @@ typedef struct SegHead
 	SiftColSchema *schema;
 	SiftColSBRef *sbdir;		/* [hdr->dictroot_n] */
 	int			nconn;
-	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with carried leaves */
+	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with connection flags */
 } SegHead;
 
 /* The backend keeps them in the cache below: the head made under header h from the cache (pinned for mcxt), else NULL; keep takes the one made in cx, a child of mcxt */

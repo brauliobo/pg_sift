@@ -47,9 +47,9 @@ typedef struct SiftColRel
 	SiftColSchema *schema;
 	SiftColIndexMeta meta;		/* cols point into schema->cols; stats zero */
 	int			natts;
-	int			carry_first;	/* the leaves from this id on are taken from the parent tables of the connections (SIFT_COLD_CARRIED); none when it is ncols */
+	int			conn_first;	/* the leaves from this id on are the found flags of the connections (SIFT_COLD_FOUND); none when it is ncols */
 	int			nconn;			/* connections of the index (col/conn.h) and the leaves of each */
-	SiftConnLayout conn[SIFT_CONN_MAX_CONNECTIONS];
+	int			conn_found[SIFT_CONN_MAX_CONNECTIONS];	/* the leaf of the found flag of each connection */
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */

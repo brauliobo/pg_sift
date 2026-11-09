@@ -60,10 +60,10 @@ extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
-/* A segment of a connected index: the carried leaves of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
+/* A segment of a connected index: the found flags of the units added from now on are filled by fill (a host fill, col/conn.h) and its stamps are written with the segment; without it the leaves are what the batches hold and the stamps are empty */
 typedef struct SiftColFill
 {
-	void		(*batch) (struct SiftColFill *f, SiftColBatch *view);			/* fills the carried leaves of the rows of the view */
+	void		(*batch) (struct SiftColFill *f, SiftColBatch *view);			/* fills the found flags of the rows of the view */
 	SiftConnStamp (*stamp) (const struct SiftColFill *f, int i);			/* the stamp connection i was filled under (lineage 0: none) */
 } SiftColFill;
 extern void sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill);

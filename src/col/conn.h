@@ -1,6 +1,6 @@
 /*
  * col/conn.h - connected indexes: the connection of an index on a child table to the sift_col index on the parent table it joins, and the protocol that lets a
- * value derived from the parent (a carried column of the child's segments, a shared map of the parent's attributes) be read as exact.
+ * value derived from the parent (the found flag of the child's segments, a shared map of the parent's attributes) be read as exact.
  *
  * The rule (docs/COL-CONNECT.md). A derived value for a parent key k is computed under a snapshot R of the parent index. X = R.xmin: every transaction below X
  * was finished when R was taken, so it is decided the same way for R and for every snapshot S with S.xmin >= X. The parent's KEY JOURNAL lists the keys whose
@@ -128,21 +128,11 @@ extern bool sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, 
 extern SiftConnWhy sift_conn_vouches(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap);
 
 /*
- * ---- the declaration: WITH (connect = 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]; fk2 -> parent2(key) carries c') ----
+ * ---- the declaration: WITH (connect = 'fk -> [schema.]parent(key); fk2 -> parent2(key)') ----
  *
- * One connection for each column of the index that holds a parent key (the same parent twice through two columns is two connections); each has its own parent index, stamp and via, and
+ * One connection for each column of the index that holds a parent key (the same parent twice through two columns is two connections); each has its own parent index and stamp, and
  * the journal of one parent that does not vouch leaves the others as they are.
  */
-
-typedef enum SiftConnVia
-{
-	SIFT_CONN_VIA_AUTO = 0,		/* the planner picks by cost (carried column or shared map) */
-	SIFT_CONN_VIA_CARRIED,		/* carried columns in the child's segments */
-	SIFT_CONN_VIA_MAP			/* the shared dimension map only: nothing is stored in the child */
-} SiftConnVia;
-
-#define SIFT_CONN_MAX_CARRY			32		/* carried columns of one index, all connections together */
-#define SIFT_CONN_MAX_CARRY_BYTES	512		/* bytes of the carried values of a row, all connections together (the width of each leaf; a string counts its 4 byte code) */
 
 typedef struct SiftConnSpec
 {
@@ -150,9 +140,6 @@ typedef struct SiftConnSpec
 	char	   *parent_schema;	/* NULL: the schema of the child's table */
 	char	   *parent_table;
 	char	   *parent_key;
-	int			ncarry;
-	char	   *carry[SIFT_CONN_MAX_CARRY];
-	SiftConnVia via;
 } SiftConnSpec;
 
 typedef struct SiftConnSpecs
@@ -162,23 +149,16 @@ typedef struct SiftConnSpecs
 	SiftConnSpec *c[SIFT_CONN_MAX_CONNECTIONS];
 } SiftConnSpecs;
 
-/* The leaves of one connection: the flag that the parent row was found is leaf found, its carried leaves follow up to end (exclusive) */
-typedef struct SiftConnLayout
-{
-	int			found;
-	int			end;
-} SiftConnLayout;
-
 /* Parses the option text without the catalog (after an 'auto:'); NULL with *err set to what is wrong */
 extern SiftConnSpecs *sift_conn_parse(const char *text, const char **err);
 /* The connections a child index declares (ERROR for text that does not parse), NULL when it declares none */
 extern SiftConnSpecs *sift_conn_specs(Relation child_index);
 
 /*
- * The leaves a connected index takes from its parents (SIFT_COLD_CARRIED): for each connection, in the order of the option, the flag that the parent row was found
- * ("<fk>#found") and the leaves of each carried column ("<fk>.<column>"). Appended to defs from n; returns the new count, and lay[] the leaves of each of the *nconn connections.
+ * The leaves a connected index takes from its parents (SIFT_COLD_FOUND): for each connection, in the order of the option, the flag that the parent row was found
+ * ("<fk>#found"). Appended to defs from n; returns the new count, and found[] the leaf of the flag of each of the *nconn connections.
  */
-extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn);
+extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, int *found, int *nconn);
 /* The parent index that serves a connection (ERROR with a hint when there is none); the parent table is left open in *parent, locked AccessShare */
 extern Oid	sift_conn_parent_index(Relation child_heap, Relation child_index, const SiftConnSpec *s, Relation *parent);
 /* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent indexes the option names, or removes the connections */
@@ -207,12 +187,12 @@ struct SiftColSource;
 extern const char *sift_col_source_proof(struct SiftColSource *src, int found_leaf, SiftConnStamp *oldest, bool *clean);
 
 /*
- * ---- the carried values of a segment ----
+ * ---- the found flags of a segment ----
  *
- * The writer of a segment of a connected index (a build, a promotion, a merge) fills the carried leaves of every unit it writes from the parent tables: for each connection it takes a
+ * The writer of a segment of a connected index (a build, a promotion, a merge) fills the found flag of every unit it writes from the parent tables: for each connection it takes a
  * stamp of the parent's journal (sift_conn_take) and reads the parent table under the snapshot the stamp was taken for, once, when the fill is begun; a row whose key is found there gets
- * the found flag and the carried values, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
- * yet, a log that is not complete, a table of more rows than maintenance_work_mem holds) clears its leaves and leaves the stamp empty (lineage 0): the segment says nothing for it.
+ * the found flag, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
+ * yet, a log that is not complete, a table of more rows than maintenance_work_mem holds) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
  * The stamps are written with the segment (the SCHEMA section, column format 45) and are what a reader compares with its snapshot (the rule above).
  */
 struct SiftColFill;

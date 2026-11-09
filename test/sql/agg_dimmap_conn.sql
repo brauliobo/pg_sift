@@ -13,7 +13,7 @@ INSERT INTO dim SELECT i, i % 7, i % 3, i % 5 = 0 FROM generate_series(0, 4999) 
 CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
 CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k) carries a, b, flag');
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k)');
 VACUUM (FREEZE, ANALYZE) ev, dim;
 
 CREATE TABLE shapes (n int, sql text);

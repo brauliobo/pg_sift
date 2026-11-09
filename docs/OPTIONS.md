@@ -1460,11 +1460,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 4.3 · default on
 
-- **What it does:** connects a new sift_col index to the sift_col indexes of the parent tables of its validated foreign keys as a key mapping that carries no parent column, so that no declaration is needed
+- **What it does:** connects a new sift_col index to the sift_col indexes of the parent tables of its validated foreign keys as a key mapping, so that no declaration is needed
 - **Gain:** **not measured**
 - **Impact:** index size: **not measured**; build, merge and writes: 20,000 single-row UPDATEs of a parent with 100,000 rows and a sift_col index: 98.7 k instructions an update with and without a connected child (+0.1%, three runs of each), WAL 335 to 368 bytes an update (+10.0%) for the 32-byte journal record; other: the parent index keeps a journal (one 32-byte record for each entry that an UPDATE, DELETE or key change ends); the first child of a parent holds the writers of the parent table out from the end of its scan to the end of the statement; the segments of the child are column format minor 45, which 4.2 and older refuse; one boolean leaf for each connection says whether the parent row was found
 - **When:** A table that holds an integer foreign key to a table with a sift_col index that tracks the key.
-- **Default:** on — Nothing reads the connection yet in this release; the journal and the leaves are its whole cost, and the foreign key says the join exists.
+- **Default:** on — The journal and the found flag are its whole cost, and the foreign key says the join exists; EXISTS, NOT EXISTS, IN and counts of distinct keys against the parent read the flag.
 - **Turn off:** SET sift.col_auto_connect = off; connect = 'off' on an index; ALTER INDEX .. SET (connect = 'off') and REINDEX
 - **Upgrade from 4.2:** An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says.
 - **Advice:** Leave on. Turn it off for a session or a database where an index must not depend on the index of another table; connect = 'off' on one index, or connect = 'auto' when the setting is off and one index should connect.
@@ -1476,9 +1476,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected index from which the automatic rewrite fills the segment again
 - **Gain:** **not measured**
-- **Impact:** index size: **not measured**; build, merge and writes: 550,000 rows with 4 carried columns (one text): the merge that fills takes 608 ms against 347 ms without, the index is 13.1 MB against 10.6 MB; other: a rewrite of the segments of the connected index (the fill reads the parent table once and costs the rows of the segments, about 75% more than a merge without it at 4 carried columns); the rewrite is within the WAL budget of sift.col_auto_merge
+- **Impact:** index size: **not measured**; build, merge and writes: n/a: not measured yet; other: a rewrite of the segments of the connected index (the fill reads the keys of the parent table once); the rewrite is within the WAL budget of sift.col_auto_merge
 - **When:** A connected index whose parent table changes keys: updates, deletes or inserts of parent rows.
-- **Default:** 10 — Nothing reads the carried values yet in this release; the rewrite is their whole cost.
+- **Default:** 10 — The flags age with the parent; the rewrite is their whole cost.
 - **Turn off:** connect = 'off' on the index and REINDEX; SET sift.col_auto_merge = off for the automatic rewrite
 - **Upgrade from 4.2:** New in 4.3.
 - **Advice:** Leave at 10: a read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite. Lower it to rewrite sooner, at more WAL; a segment never filled or whose parent index was rebuilt is rewritten whatever the share.
@@ -1765,8 +1765,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 4.3 · default ''
 
-- **What it does:** connects this index to the sift_col index of the table it joins, so that a value of the parent that a query reads can be read from this index with the answer of the join. This release makes the connection: the parent index (the one that tracks the key and holds the carried columns) keeps a journal of the keys its updates and deletes ended, which says exactly which parent keys changed after any point in time, and this index depends on it
-- **Gain:** n/a: this release adds the connection and its journal; the reads that use them come with the carried columns
+- **What it does:** connects this index to the sift_col index of the table it joins, so that a value of the parent that a query reads can be read from this index with the answer of the join. This release makes the connection: the parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes ended, which says exactly which parent keys changed after any point in time, and this index depends on it
+- **Gain:** n/a: this release adds the connection and its journal; the reads that use them are the found flag and the parent's own leaves
 - **Impact:** index size: n/a: no structure of this index is added by the connection itself; build, merge and writes: n/a: not measured yet; other: format minor 44; one 32-byte journal record for each entry of the parent that an UPDATE, DELETE or key change ends, only while a child index is connected; a parent without a child writes none
 - **When:** A table that joins a parent table with a primary key of one integer column that has a sift_col index tracking it (track_changes, the default for a primary key). Not a parent that is a partition, has inheritance children or is a subscription target; not a key of another type.
 - **Default:** '' — Not on by default: a connection names a table, so only the user can say it.

@@ -23,7 +23,7 @@ CREATE TABLE ec (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = fa
 INSERT INTO ec SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 2100 END, i % 11 FROM generate_series(1, 12000) i;
 CREATE TABLE el (LIKE ec INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO el SELECT * FROM ec;
-CREATE INDEX ec_col ON ec USING sift_col (id, k, v) WITH (connect = 'k -> dc(k) carries a, b, flag');
+CREATE INDEX ec_col ON ec USING sift_col (id, k, v) WITH (connect = 'k -> dc(k)');
 NOTICE:  sift_col index "ec_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ec_col');

@@ -1,10 +1,10 @@
 /*
  * col/conn_decl.c - the option connect of a child sift_col index (col/conn.h, docs/COL-CONNECT.md):
  *
- *     connect = 'fk -> [schema.]parent(key) carries a, b [via carried|map|auto]'
+ *     connect = 'fk -> [schema.]parent(key)'
  *
  * The text is the record of the connection: it is in pg_class.reloptions, so pg_dump writes it and a restore or REINDEX resolves it again. Resolving finds the sift_col index of
- * the parent table that tracks the key and holds the carried columns, makes the child index depend on it and the parent index keep its key journal.
+ * the parent table that tracks the key, makes the child index depend on it and the parent index keep its key journal.
  */
 #include "postgres.h"
 
@@ -20,7 +20,6 @@
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_type_d.h"
-#include "core/limits.h"
 #include "funcapi.h"
 #include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
@@ -80,17 +79,6 @@ read_name(const char *p, char **out, const char **err)
 	return p;
 }
 
-static bool
-read_word(const char **p, const char *word)
-{
-	size_t		n = strlen(word);
-
-	if (pg_strncasecmp(*p, word, n) != 0 || isalnum((unsigned char) (*p)[n]) || (*p)[n] == '_')
-		return false;
-	*p += n;
-	return true;
-}
-
 /* One connection, from *pp to its end (a ';' or the end of the text); NULL with *err set when it does not parse */
 static SiftConnSpec *
 parse_one(const char **pp, const char **err)
@@ -132,39 +120,7 @@ parse_one(const char **pp, const char **err)
 		*err = "expected ')' after the key column: the key is one column";
 		return NULL;
 	}
-	p = skip_ws(p + 1);
-	while (s->ncarry == 0 && read_word(&p, "carries"))
-		for (;;)
-		{
-			if (s->ncarry == SIFT_CONN_MAX_CARRY)
-			{
-				*err = psprintf("too many carried columns (%d at most in an index)", SIFT_CONN_MAX_CARRY);
-				return NULL;
-			}
-			if ((p = read_name(skip_ws(p), &s->carry[s->ncarry], err)) == NULL)
-				return NULL;
-			s->ncarry++;
-			p = skip_ws(p);
-			if (*p != ',')
-				break;
-			p++;
-		}
-	s->via = SIFT_CONN_VIA_AUTO;
-	if (read_word(&p, "via"))
-	{
-		p = skip_ws(p);
-		if (read_word(&p, "carried"))
-			s->via = SIFT_CONN_VIA_CARRIED;
-		else if (read_word(&p, "map"))
-			s->via = SIFT_CONN_VIA_MAP;
-		else if (!read_word(&p, "auto"))
-		{
-			*err = "via is carried, map or auto";
-			return NULL;
-		}
-		p = skip_ws(p);
-	}
-	*pp = p;
+	*pp = skip_ws(p + 1);
 	return s;
 }
 
@@ -173,7 +129,6 @@ sift_conn_parse(const char *text, const char **err)
 {
 	SiftConnSpecs *all = palloc0(sizeof(SiftConnSpecs));
 	const char *p = text;
-	int			ncarry = 0;
 
 	if (strncmp(p, "auto:", 5) == 0)
 	{
@@ -197,7 +152,6 @@ sift_conn_parse(const char *text, const char **err)
 				*err = psprintf("column \"%s\" is connected twice: one connection for each column that holds a parent key", s->fk);
 				return NULL;
 			}
-		ncarry += s->ncarry;
 		all->c[all->n++] = s;
 		p = skip_ws(p);
 		if (*p == ';')
@@ -211,11 +165,6 @@ sift_conn_parse(const char *text, const char **err)
 			return NULL;
 		}
 		break;
-	}
-	if (ncarry > SIFT_CONN_MAX_CARRY)
-	{
-		*err = psprintf("too many carried columns (%d at most in an index)", SIFT_CONN_MAX_CARRY);
-		return NULL;
 	}
 	return all;
 }
@@ -251,9 +200,9 @@ integer_type(Oid typid)
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
 }
 
-/* The sift_col index of the parent table that tracks the key and holds every carried column as a plain column; the lowest oid when several do */
+/* The sift_col index of the parent table that tracks the key; the lowest oid when several do */
 static Oid
-parent_index_for(Relation parent, AttrNumber key, const AttrNumber *carry, int ncarry)
+parent_index_for(Relation parent, AttrNumber key)
 {
 	List	   *oids = RelationGetIndexList(parent);
 	Oid			found = InvalidOid;
@@ -261,16 +210,12 @@ parent_index_for(Relation parent, AttrNumber key, const AttrNumber *carry, int n
 	foreach_oid(ioid, oids)
 	{
 		Relation	idx;
-		bool		fits;
 
 		if (OidIsValid(found))
 			break;
 		idx = index_open(ioid, AccessShareLock);
-		fits = sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_is_index(idx) && sift_col_row_key_on(idx) &&
-			idx->rd_index->indkey.values[sift_col_rel(idx)->rowkey_attno - 1] == key;
-		for (int i = 0; fits && i < ncarry; i++)
-			fits = index_column(idx, carry[i]) != InvalidAttrNumber;
-		if (fits)
+		if (sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_is_index(idx) && sift_col_row_key_on(idx) &&
+			idx->rd_index->indkey.values[sift_col_rel(idx)->rowkey_attno - 1] == key)
 			found = ioid;
 		index_close(idx, AccessShareLock);
 	}
@@ -316,7 +261,7 @@ parent_table_oid(Oid child_table, const SiftConnSpec *s, LOCKMODE lock, bool mis
 }
 
 /*
- * The checks of one connection and the sift_col index of its parent table that serves it (the one that tracks the key; the lowest oid when several hold the carried columns). The
+ * The checks of one connection and the sift_col index of its parent table that serves it (the one that tracks the key; the lowest oid when several do). The
  * parent table is left open in *parent, locked AccessShare. ERROR with a hint for what is wrong with the connection.
  */
 Oid
@@ -325,8 +270,7 @@ sift_conn_parent_index(Relation heap, Relation index, const SiftConnSpec *s, Rel
 	Oid			poid,
 				pidx;
 	AttrNumber	fk,
-				key,
-				carry[SIFT_CONN_MAX_CARRY] = {0};
+				key;
 	Form_pg_attribute att;
 
 	fk = get_attnum(RelationGetRelid(heap), s->fk);
@@ -348,13 +292,10 @@ sift_conn_parent_index(Relation heap, Relation index, const SiftConnSpec *s, Rel
 	key = get_attnum(poid, s->parent_key);
 	if (key == InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: table \"%s\" has no column \"%s\"", s->parent_table, s->parent_key)));
-	for (int i = 0; i < s->ncarry; i++)
-		if ((carry[i] = get_attnum(poid, s->carry[i])) == InvalidAttrNumber)
-			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: table \"%s\" has no column \"%s\"", s->parent_table, s->carry[i])));
-	pidx = parent_index_for(*parent, key, carry, s->ncarry);
+	pidx = parent_index_for(*parent, key);
 	if (!OidIsValid(pidx))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("connect: table \"%s\" has no sift_col index that tracks \"%s\" and holds the carried columns", s->parent_table, s->parent_key),
-						errhint("CREATE INDEX .. ON %s USING sift_col (%s, ...) with the carried columns in the list, and track_changes naming %s (the default for a primary key).", s->parent_table, s->parent_key, s->parent_key)));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("connect: table \"%s\" has no sift_col index that tracks \"%s\"", s->parent_table, s->parent_key),
+						errhint("CREATE INDEX .. ON %s USING sift_col (%s, ...) with track_changes naming %s (the default for a primary key).", s->parent_table, s->parent_key, s->parent_key)));
 	return pidx;
 }
 
@@ -425,65 +366,10 @@ sift_conn_alter(Relation index)
 	table_close(heap, NoLock);
 }
 
-/* Bytes a value of a leaf takes in a unit before it is compressed: the width of the type, a dictionary code for a string */
-static int
-leaf_width(const SiftColDef *d)
-{
-	switch (d->store)
-	{
-		case SIFT_COLS_F4:
-		case SIFT_COLS_STR:
-			return 4;
-		case SIFT_COLS_INT:
-			return d->type == SIFT_COLT_BOOL ? 1 : d->type == SIFT_COLT_INT2 ? 2 : d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_ENUM ? 4 : 8;
-		default:
-			return 8;
-	}
-}
-
-/* The leaves a column of the parent gives under the qualified name "<fk column>.<parent column>" (two columns of one table that hold the same parent never share a name); 0 for a type that cannot be carried */
-static int
-carried_lanes(Form_pg_attribute pa, const char *fk, AttrNumber fk_att, SiftColDef *out)
-{
-	FormData_pg_attribute named = *pa;
-	int			k;
-
-	if (pa->atttypid == JSONBOID || sift_col_is_array_type(pa->atttypid))
-		return 0;
-	namestrcpy(&named.attname, psprintf("%s.%s", fk, NameStr(pa->attname)));
-	k = sift_col_att_leaves(&named, out, 0);
-	out[0].path = pstrdup(NameStr(named.attname));
-	for (int i = 0; i < k; i++)
-	{
-		if (out[i].store == SIFT_COLS_VAR || (out[i].flags & SIFT_COLD_SHAPE))
-			return 0;
-		out[i].flags |= SIFT_COLD_CARRIED;
-		out[i].attno = fk_att;
-	}
-	return k;
-}
-
-static int
-carried_column(Oid parent, const char *table, const SiftConnSpec *s, const char *column, AttrNumber fk_att, SiftColDef *out)
-{
-	HeapTuple	tup = SearchSysCacheAttName(parent, column);
-	int			k;
-
-	if (!HeapTupleIsValid(tup))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: table \"%s\" has no column \"%s\"", table, column)));
-	k = carried_lanes((Form_pg_attribute) GETSTRUCT(tup), s->fk, fk_att, out);
-	if (k == 0)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: column \"%s\" of \"%s\" cannot be carried", column, table),
-						errhint("Carry columns of a scalar type: numbers, booleans, dates, times and text.")));
-	ReleaseSysCache(tup);
-	return k;
-}
-
 int
-sift_conn_leaves(Relation index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn)
+sift_conn_leaves(Relation index, SiftColDef *defs, int n, int *found, int *nconn)
 {
 	SiftConnSpecs *specs = sift_conn_specs(index);
-	int			bytes = 0;
 
 	*nconn = 0;
 	if (specs == NULL)
@@ -492,40 +378,14 @@ sift_conn_leaves(Relation index, SiftColDef *defs, int n, SiftConnLayout *lay, i
 	{
 		const SiftConnSpec *s = specs->c[c];
 		AttrNumber	fk = index_column(index, get_attnum(index->rd_index->indrelid, s->fk));
-		Oid			poid;
 
 		if (fk == InvalidAttrNumber)
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: \"%s\" is not a column of this index", s->fk),
 							errhint("Name the column of the index that holds the key of the parent table.")));
-		poid = parent_table_oid(index->rd_index->indrelid, s, NoLock, false);
-		lay[c].found = n;
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_INT,.flags = SIFT_COLD_CARRIED,.attno = fk,
+		found[c] = n;
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_INT,.flags = SIFT_COLD_FOUND,.attno = fk,
 			.type = SIFT_COLT_BOOL,.path = psprintf("%s#found", s->fk)};
-		bytes += leaf_width(&defs[n]);
 		n++;
-		for (int i = 0; i < s->ncarry; i++)
-		{
-			SiftColDef	lanes[SIFT_COL_MAX_LANES];
-			int			k = carried_column(poid, s->parent_table, s, s->carry[i], fk, lanes);
-
-			for (int j = 0; j < k; j++)
-				bytes += leaf_width(&lanes[j]);
-			if (bytes > SIFT_CONN_MAX_CARRY_BYTES)
-				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the values a connected index carries take more than %d bytes a row", SIFT_CONN_MAX_CARRY_BYTES),
-								errdetail("The carried column \"%s\" brings them to %d bytes (a string counts 4, its code in the dictionary of the segment).", s->carry[i], bytes),
-								errhint("Carry fewer columns: the other columns of the parent are read by the join.")));
-			if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
-				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
-								errdetail("The carried column \"%s\" brings the index to %d columns and paths.", s->carry[i], n + k),
-								errhint("Carry fewer columns, or leave out columns of the index that the queries do not read.")));
-			for (int j = 0; j < k; j++)
-			{
-				defs[n + j] = lanes[j];
-				defs[n + j].id = n + j;
-			}
-			n += k;
-		}
-		lay[c].end = n;
 		(*nconn)++;
 	}
 	return n;
@@ -547,7 +407,7 @@ sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, A
 			parent_table_oid(RelationGetRelid(heap), s, NoLock, false) != parent_relid || get_attnum(parent_relid, s->parent_key) != parent_key)
 			continue;
 		for (int i = 0; i < meta->ncols; i++)
-			if ((meta->cols[i].flags & SIFT_COLD_CARRIED) && strcmp(meta->cols[i].path, flag) == 0)
+			if ((meta->cols[i].flags & SIFT_COLD_FOUND) && strcmp(meta->cols[i].path, flag) == 0)
 				*found = i;
 		*parent_index = sift_conn_parent_index(heap, index, s, &parent);
 		table_close(parent, NoLock);
@@ -595,17 +455,13 @@ connection_text(const SiftConnSpec *s)
 	appendStringInfo(&t, "%s -> ", quote_identifier(s->fk));
 	if (s->parent_schema)
 		appendStringInfo(&t, "%s.", quote_identifier(s->parent_schema));
-	appendStringInfo(&t, "%s(%s)%s", quote_identifier(s->parent_table), quote_identifier(s->parent_key), s->ncarry ? " carries " : "");
-	for (int i = 0; i < s->ncarry; i++)
-		appendStringInfo(&t, "%s%s", i ? ", " : "", quote_identifier(s->carry[i]));
-	if (s->via != SIFT_CONN_VIA_AUTO)
-		appendStringInfo(&t, " via %s", s->via == SIFT_CONN_VIA_MAP ? "map" : "carried");
+	appendStringInfo(&t, "%s(%s)", quote_identifier(s->parent_table), quote_identifier(s->parent_key));
 	return t.data;
 }
 
 /*
  * sift.col_connection_list(child index): one row for each connection of the option: its place in the option, the column that holds the key, the text, the parent index that serves it
- * (NULL when the names do not resolve now: a listing of every index must not stop at one), and how it is read (via). Reads the catalogs, not the segments.
+ * (NULL when the names do not resolve now: a listing of every index must not stop at one) and whether it was chosen from the foreign keys. Reads the catalogs, not the segments.
  */
 Datum
 sift_col_connection_list(PG_FUNCTION_ARGS)
@@ -619,22 +475,18 @@ sift_col_connection_list(PG_FUNCTION_ARGS)
 	for (int c = 0; specs != NULL && c < specs->n; c++)
 	{
 		const SiftConnSpec *s = specs->c[c];
-		Datum		v[6];
-		bool		nulls[6] = {false};
+		Datum		v[5];
+		bool		nulls[5] = {false};
 		Oid			poid = parent_table_oid(index->rd_index->indrelid, s, NoLock, true);
 		Oid			pidx = InvalidOid;
 
 		if (OidIsValid(poid))
 		{
 			Relation	parent = table_open(poid, AccessShareLock);
-			AttrNumber	key = get_attnum(poid, s->parent_key),
-						carry[SIFT_CONN_MAX_CARRY];
-			bool		ok = key != InvalidAttrNumber;
+			AttrNumber	key = get_attnum(poid, s->parent_key);
 
-			for (int i = 0; ok && i < s->ncarry; i++)
-				ok = (carry[i] = get_attnum(poid, s->carry[i])) != InvalidAttrNumber;
-			if (ok)
-				pidx = parent_index_for(parent, key, carry, s->ncarry);
+			if (key != InvalidAttrNumber)
+				pidx = parent_index_for(parent, key);
 			table_close(parent, NoLock);
 		}
 		v[0] = Int32GetDatum(c + 1);
@@ -642,8 +494,7 @@ sift_col_connection_list(PG_FUNCTION_ARGS)
 		v[2] = CStringGetTextDatum(connection_text(s));
 		v[3] = ObjectIdGetDatum(pidx);
 		nulls[3] = !OidIsValid(pidx);
-		v[4] = CStringGetTextDatum(s->via == SIFT_CONN_VIA_AUTO ? "auto" : s->via == SIFT_CONN_VIA_MAP ? "map" : "carried");
-		v[5] = BoolGetDatum(specs->automatic);
+		v[4] = BoolGetDatum(specs->automatic);
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	index_close(index, NoLock);
@@ -672,8 +523,8 @@ has_sift_index(Relation table)
 
 /*
  * The connection a foreign key gives, or NULL with *why set to the reason there is none, and *say when the reason is one a user would expect to be told (the parent has a sift_col
- * index, and the foreign key is for this index): one validated column of this index that holds an integer, the key of a heap table that has a sift_col index tracking it. It carries
- * nothing: the columns of the parent are read from its own index by the join, and a `carries` list is the user's to write.
+ * index, and the foreign key is for this index): one validated column of this index that holds an integer, the key of a heap table that has a sift_col index tracking it. The
+ * columns of the parent are read from its own index by the join.
  */
 static SiftConnSpec *
 auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **conname, const char **why, bool *say)
@@ -726,7 +577,7 @@ auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **co
 		*why = "its column is not an int2, int4 or int8";
 	else if (!integer_type(TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid))
 		*why = "the referenced column is not an int2, int4 or int8";
-	else if (!OidIsValid(parent_index_for(parent, key, NULL, 0)))
+	else if (!OidIsValid(parent_index_for(parent, key)))
 		*why = "no sift_col index of the referenced table is ready and tracks the referenced column";
 	if (*why)
 	{
@@ -738,7 +589,6 @@ auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **co
 	s->parent_schema = parent->rd_rel->relnamespace == heap->rd_rel->relnamespace ? NULL : get_namespace_name(parent->rd_rel->relnamespace);
 	s->parent_table = pstrdup(RelationGetRelationName(parent));
 	s->parent_key = get_attname(RelationGetRelid(parent), key, false);
-	s->via = SIFT_CONN_VIA_AUTO;
 	table_close(parent, NoLock);
 	return s;
 }
@@ -776,7 +626,7 @@ sift_conn_auto(Relation heap, Relation index)
 		appendStringInfo(&text, "%s%s", n++ ? "; " : "", connection_text(s));
 		ereport(NOTICE, (errmsg("sift_col index \"%s\" connected to %s(%s) through foreign key \"%s\"", sift_col_final_name(index),
 								quote_identifier(s->parent_table), quote_identifier(s->parent_key), conname),
-						 errhint("To carry columns write them in connect = '.. carries a, b'; connect = 'off' turns it off.")));
+						 errhint("connect = 'off' on the index turns it off.")));
 	}
 	if (n > 0)
 		sift_col_set_option(index, "connect", psprintf("auto: %s", text.data));

@@ -18,7 +18,7 @@ typedef struct SiftColSchema
 	bool		contain;		/* some leaf is the head of a range or network with the lanes of its containment operators: column format minor 26 (SIFT_COL_FORMAT_CONTAIN) */
 	bool		wide;			/* some leaf is a lane, money or interval (sift_col_def_needs_wide): a segment of this schema is column format minor 5 */
 	bool		kinds;			/* some leaf is filled from a jsonb path (sift_col_def_has_kinds): a segment of this schema whose kinds are complete is column format minor 6 */
-	bool		carried;		/* some leaf is taken from the parent table of a connection (SIFT_COLD_CARRIED): a segment of this schema is column format minor 45 (SIFT_COL_FORMAT_CARRIED) */
+	bool		connected;		/* some leaf is the found flag of a connection (SIFT_COLD_FOUND): a segment of this schema is column format minor 45 (SIFT_COL_FORMAT_CONN) */
 	SiftColDef *cols;			/* [ncols], paths copied */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
@@ -266,13 +266,12 @@ extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema 
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
 extern void sift_cbatch_trim(SiftColBatch *b);
 
-/* The carried leaves of a connected index in a view of a batch (col/batch.c): the view shares the batch but for those leaves, which are empty and the view's own; put appends a value to a leaf (rows in order); done after the view was used */
-typedef struct SiftColCarried SiftColCarried;
-extern SiftColCarried *sift_ccarried_create(MemoryContext mcxt, const SiftColSchema *schema);
-extern SiftColBatch *sift_ccarried_view(SiftColCarried *c, const SiftColBatch *src);
-extern void sift_ccarried_put(SiftColBatch *view, int leaf, const SiftColValue *v);
-extern void sift_ccarried_done(SiftColCarried *c);
-extern int	sift_ccarried_first(const SiftColCarried *c);
+/* The found flags of a connected index in a view of a batch (col/batch.c): the view shares the batch but for those leaves, which are empty and the view's own; put appends a value to a leaf (rows in order); done after the view was used */
+typedef struct SiftColFoundView SiftColFoundView;
+extern SiftColFoundView *sift_cfound_create(MemoryContext mcxt, const SiftColSchema *schema);
+extern SiftColBatch *sift_cfound_view(SiftColFoundView *c, const SiftColBatch *src);
+extern void sift_cfound_put(SiftColBatch *view, int leaf, const SiftColValue *v);
+extern void sift_cfound_done(SiftColFoundView *c);
 /* Sets the version of row r (< nrows or the row being added), makes the batch versioned on the first nonzero xmin */
 extern void sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin);
 /* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */

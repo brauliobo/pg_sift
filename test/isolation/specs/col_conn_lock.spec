@@ -21,8 +21,8 @@ teardown
 session s1
 step s1begin	{ BEGIN; }
 step s1build	{ SET sift.test_phase_gate = 1000;
-		  CREATE INDEX iso_cl_fact_c ON iso_cl_fact USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> iso_cl_dim(id) carries category_id'); }
-step s1build2	{ CREATE INDEX iso_cl_fact_c2 ON iso_cl_fact USING sift_col (id, dim_id) WITH (connect = 'dim_id -> iso_cl_dim(id) carries category_id'); }
+		  CREATE INDEX iso_cl_fact_c ON iso_cl_fact USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> iso_cl_dim(id)'); }
+step s1build2	{ CREATE INDEX iso_cl_fact_c2 ON iso_cl_fact USING sift_col (id, dim_id) WITH (connect = 'dim_id -> iso_cl_dim(id)'); }
 step s1commit	{ COMMIT; }
 
 session s2

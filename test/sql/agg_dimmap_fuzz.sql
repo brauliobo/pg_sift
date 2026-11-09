@@ -18,7 +18,7 @@ CREATE TABLE ec (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = fa
 INSERT INTO ec SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 2100 END, i % 11 FROM generate_series(1, 12000) i;
 CREATE TABLE el (LIKE ec INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO el SELECT * FROM ec;
-CREATE INDEX ec_col ON ec USING sift_col (id, k, v) WITH (connect = 'k -> dc(k) carries a, b, flag');
+CREATE INDEX ec_col ON ec USING sift_col (id, k, v) WITH (connect = 'k -> dc(k)');
 CREATE INDEX el_col ON el USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) ec, el, dc, dl;
 

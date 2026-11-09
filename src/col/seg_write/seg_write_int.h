@@ -71,8 +71,8 @@ typedef struct SetAcc
 struct SiftColSegWriter
 {
 	SiftWriteTarget *wt;
-	SiftColFill *fill;	/* the carried leaves of every unit are filled from the parent tables, and the stamps are written (sift_colw_set_fill) */
-	SiftColCarried *carried;	/* the view of a batch with leaves of its own for them, NULL for a schema without carried leaves */
+	SiftColFill *fill;	/* the found flags of every unit are filled from the parent tables, and the stamps are written (sift_colw_set_fill) */
+	SiftColFoundView *found;	/* the view of a batch with leaves of its own for the flags, NULL for a schema without connections */
 	uint64		index_rows;		/* the rows of the index (sift_colw_set_index_rows) */
 	uint64		gen;
 	const SiftColSchema *schema;

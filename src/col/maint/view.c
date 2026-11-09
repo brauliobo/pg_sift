@@ -1,6 +1,6 @@
 /*
  * col/maint/view.c - the immutable segments of a directory, open, for the rule of the rewrite and the choice of what it takes
- * the superblocks and key ranges they hold, which of them are overlays, and which hold carried values a rewrite would fill again
+ * the superblocks and key ranges they hold, which of them are overlays, and which hold found flags a rewrite would fill again
  */
 #include "postgres.h"
 #include "col/maint/maint_int.h"
