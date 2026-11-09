@@ -136,8 +136,8 @@ It holds for every row only when the flag is the whole story, so the statement u
 
 Only a semi, anti or inner join by one `int2`, `int4` or `int8` column that is the foreign key of the connection, with no condition of the parent's own, no top-N and no partitioned table. `sift.agg_connect_found`
 turns it off. EXPLAIN ANALYZE counts `Found Proofs` (joins answered so), `Found Keys Outside The Proof` (the keys the journal named), and for a connected index `Parent Leaf Reads` and `Parent Heap Fetches` (what the joins
-that did read the parent loaded from the leaves of its index and from its heap). A parent column of an `int2`, `int4`, `int8`, `date`, `timestamp`, `timestamptz`, `boolean`, `text`, `varchar`, `numeric(p <= 18)` or
-expression leaf is read from the leaves of the parent's index when all the columns the join reads are in one `sift_col` index; `float4`, `float8`, `uuid`, `time`, `interval` and `numeric` of more than 18 digits are read
+that did read the parent loaded from the leaves of its index and from its heap). A parent column of an `int2`, `int4`, `int8`, `date`, `time`, `timestamp`, `timestamptz`, `boolean`, `text`, `varchar`, `float4`, `float8`, `numeric(p <= 18)` or
+expression leaf is read from the leaves of the parent's index when all the columns the join reads are in one `sift_col` index; `uuid`, `interval` and `numeric` of more than 18 digits are read
 from the heap (`test/sql/col_conn_found.sql` fails if that changes).
 
 ## Limits of this stage
