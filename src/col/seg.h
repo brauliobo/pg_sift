@@ -65,6 +65,7 @@ typedef struct SiftColFill
 {
 	void		(*batch) (struct SiftColFill *f, SiftColBatch *view);			/* fills the found flags of the rows of the view */
 	SiftConnStamp (*stamp) (const struct SiftColFill *f, int i);			/* the stamp connection i was filled under (lineage 0: none) */
+	void		(*end) (struct SiftColFill *f);									/* the owner is done with it (sift_conn_fill_end) */
 } SiftColFill;
 extern void sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);

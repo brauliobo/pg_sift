@@ -221,6 +221,7 @@ extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
+extern int	sift_test_conn_fill;			/* sift.test_conn_fill: 1 = the fill of the found flags reads the parent, 2 = it probes the btree (0 = by price) */
 extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16) */
 #endif
 

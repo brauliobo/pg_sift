@@ -67,7 +67,7 @@ SET sift.enable_agg = off;
 SELECT count(*), count(d.label), sum(d.price) FROM events e LEFT JOIN dim_a d ON d.id = e.dim_a_id;
 RESET sift.enable_agg;
 
--- a parent table that does not fit maintenance_work_mem is not looked up: the stamp stays empty and the flag NULL
+-- a parent table whose keys do not fit maintenance_work_mem is looked up by its btree: the segments are stamped and the flags filled
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');

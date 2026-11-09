@@ -55,8 +55,6 @@ sift_col_source_proof(SiftColSource *src, int found_leaf, SiftConnStamp *oldest,
 	{
 		const SiftConnStamp *st = &src->seg[i].seg->conn[conn];
 
-		if (st->reserved == SIFT_CONN_STAMP_REFUSED)
-			return "parent too large to resolve";
 		if (st->lineage == 0)
 			return "segment without stamp";
 		*clean &= (st->reserved & SIFT_CONN_STAMP_CLEAN) != 0;

@@ -60,7 +60,7 @@ A parent index with a connected child keeps its journal through `REINDEX` and `R
 concurrently built copy is complete (the next VACUUM does it) nothing is vouched.
 
 `sift.col_connections` lists the connections of the indexes (ordinal, column, parent index, declaration, whether it was chosen from a foreign key, the state of the parent's journal, and `fill`: `filled`,
-`partly filled`, `unfilled` (the next promotion or merge fills it) or `refused` when the keys of the parent did not fit `maintenance_work_mem`, which a NOTICE names as well: the keys, the memory they need and the setting).
+`partly filled`, `unfilled` (the next promotion or merge fills it)).
 
 ## Automatic connections
 
@@ -126,39 +126,53 @@ the smaller gain (-5..-15%) and the largest cost (a journal of a big table). The
 anyway (4.5%), nothing on child writes and appends, a lock of milliseconds once; the typified lane's rule for writes ("lose when wall time and WAL both rise >= 15%") is not met by any class measured.
 The off switch stays `connect = 'off'`.
 
-## The key set of the fill, and what bounds it
+## How the fill knows the parent's keys: the key set, the probe, and the price between them
 
-The `stamp` column of `sift.col_connections` is the state of the parent's journal, not of the segments; `fill` is the state of the segments' stamps, and is the one that says whether the flags exist.
-The fill used to hold the parent keys in a hash table (16 bytes an entry; +46..80 MB private for 2M keys measured, against the 96 MB its estimate gave) and refused a parent whose table passed half of `maintenance_work_mem` as it
-estimated it (48 bytes a key: about 700,000 keys at the default 64 MB). It refused by every route, silently: 1M dense parent keys at 64 MB, on 4.3 c3072373e, `CREATE INDEX` of the child
-then `sift.col_maintain` (8 of 8 segments refused), `REINDEX` (3 of 3), and `connect = 'off'` + `ALTER INDEX .. SET (connect = ..)` + `REINDEX` (3 of 3) all ended `stamp ok`, `fill refused`; only the first
-`CREATE INDEX` of the first child (the journal does not vouch yet) is `unfilled` by design. The refusal is in the fill, which the build, the promotion, the merge and the rewrite all call; the refresh does not
-ask again for a refused segment. The key set is now one structure, `col/conn_keys.c`: two passes over the parent under the stamp's snapshot, the first counts the keys and finds the smallest and the largest, and
-when the range is under 64 slots a key the second sets one bit a slot (a serial key is 0.125 byte a key), otherwise it sorts the keys (9 bytes a key with the mark of a repeated one) and looks them up by bisection.
-The limit is the same half of `maintenance_work_mem`, but of what the set takes:
+The `stamp` column of `sift.col_connections` is the state of the parent's journal, not of the segments; `fill` is the state of the segments' stamps (`filled`, `partly filled`, `unfilled`), and is the one that says whether the flags exist.
+The fill has two ways to know whether a key has one visible row in the parent under the stamp's snapshot, and takes the cheaper one each time a writer (build, promotion, merge output partition, rewrite) begins one:
 
-| parent keys | before: hash table | after: key set | limit at 64 MB |
-|---|---|---|---|
-| 2M, 1 to 2M (serial) | +46..80 MB private, refused at 64 MB | 0.25 MB (bitmap), no growth of the backend | the range: 268M slots |
-| 2M, spaced by 1000 | +46..80 MB private, refused at 64 MB | 18 MB (sorted array) | 3.7M keys; 15M at 256 MB |
+- **The key set** (`col/conn_keys.c`): two passes over the parent, the first counts the keys and finds the smallest and the largest, and when the range is under 64 slots a key the second sets one bit a slot (a serial key is
+  0.125 byte a key), otherwise it sorts the keys (9 bytes a key with the mark of a repeated one) and looks them up by bisection. It costs the parent: about 130 ns and 520 instructions a parent row, whatever the batch. It is
+  used only when it fits half of `maintenance_work_mem`.
+- **The probe** (`col/conn_probe.c`): for each distinct key of a batch, one lookup in the parent's unique btree (the journal vouches only for a parent that has one) under the same snapshot, remembering the answers of up to 262,144 keys. It costs
+  the batch: 2 to 4 us and about 9,200 instructions a key (a merge's partition over millions of parent keys is at the 4 us end: the keys come in the child's order, so the btree pages are visited at random), and no memory to speak of. The parent
+  relation, its index and the snapshot stay open until the writer calls `sift_conn_fill_end` (the build, the promotion and the merge's partition do).
 
-Measured, 2M child rows against 2M parent keys (release build, same host, the unconnected build 3.7-4.4 s in each run): the fill added 2.3 s for a serial parent and 2.7 s for one spaced by 1000
-with the hash table, and 0.0-0.2 s with the key set for both, inside the run-to-run noise of the build (a bisection of the sorted array was 0.8 s of it: the lookup interpolates on every other step, the keys of
-a table being mostly evenly spread, and bisects on the others). At 1M keys and 64 MB the three routes above end `fill filled`, `col_maintain` takes 0.61 s instead of 1.08 s (it wrote the refusal), and the
-private memory peak of the REINDEX is 132 MB instead of 140 MB.
+The price is `rows * 3.5 us` against `parent rows * 130 ns`, with the rows the writer is to write (a promotion's buffer, a merge's share of its partition, a build's share of the table) and the parent's estimated rows: the probe is taken below about 4% of
+the parent's rows, and always when the key set does not fit. There is no setting for it (`sift.test_conn_fill` is for the tests: 1 reads, 2 probes). Both give the same flags: `col_conn_probe` runs every case in the three modes
+and compares the number of flags and the rows of the join and the anti join with the normal plan, for an `int4` and an `int8` parent with deleted, re-keyed and NULL keys, a refill under a new stamp, and a parent whose keys do not fit.
 
-The fill reads the whole parent once for each promotion, merge and rewrite of the child, whatever the size of the batch it fills: a promotion of 12,000 rows of a 500k-row child takes 45-60 ms unconnected and
-the same with 20k parent keys, +40-60 ms with 500k parent keys and +230-310 ms with 2M (355, 286, 372 ms against 44-82 ms; about 130 ns a parent key, two passes). Small promotions of a large parent are
-dominated by the parent scan. A fill that reads only what the batch asks for would cost the batch's distinct keys, not the parent's keys: the btree probe below at 1.8 us a key beats the scan when the batch
-has fewer distinct keys than about 7% of the parent's keys (12,000 of 2M: 22 ms against 300 ms), so the probe is a cost fix for the write path as well as the answer for a parent that does not fit.
+Measured, 500,000 child rows, a write buffer of 12,000 random rows promoted into them (a test-flavour build, one host, `perf stat` of the backend, blocks from `pg_stat_database`).
+Warm is the second and third promotion; cold the first after a restart of the server (shared buffers empty, the file cache warm):
 
-What stays bounded, and the design to remove it. A sorted parent of more than 3.7M keys at 64 MB (a snowflake or a hashed bigint key) is still refused, with the NOTICE (a LOG line in a worker). To make the fill
-work at any parent size with bounded memory the lookup has to leave memory, and there are two ways, neither small: (a) probe the btree index of the key (the parent has one: the foreign key needs a unique index) for
-each distinct key of a batch, in key order, under the stamp's snapshot, keeping nothing: 1.8 us a child row measured for a nested loop of probes over 2M rows against 0.65 us for a hash join, so about 1.5 us a
-row more than the key set, +7 s for 5M rows; it needs the fill to keep the parent relation, its index and the snapshot open until the segment is written, and `SiftColFill` has no end call (three writers, build,
-promotion and merge, would each have to call it, and a relation left open at commit is a leak warning); (b) an external sort of the parent keys and of the child keys of the segment and a merge, which needs the
-child keys of the whole segment before the first flag is written, and the writer writes the flags unit by unit. The key set keeps every parent that fits in memory, which is any serial key and 15M sparse keys at 256 MB,
-at 0.0-0.2 s for 2M keys; the probe is the design for the rest and it is not built: no parent measured has more than 3.7M sparse keys.
+| parent keys | mode | promotion, warm | promotion, cold | blocks of a warm promotion |
+|---|---|---|---|---|
+| 20,000 | scan | 33-34 ms, 126 M instr | 58 ms, 130 M | 935 hit |
+| 20,000 | probe | 36-43 ms, 143 M | 42 ms, 148 M | 27,500 hit |
+| 20,000 | auto | 24-29 ms, 94 M (the scan) | 28 ms, 98 M | 900 hit |
+| 500,000 | scan | 93-101 ms, 359 M | 185 ms, 398 M | 10,790 hit (read sequentially) |
+| 500,000 | probe | 64-69 ms, 181 M | 144 ms, 211 M | 47,900 hit |
+| 500,000 | auto | 72-77 ms, 181 M (the probe) | 111 ms, 213 M | 47,900 hit |
+| 2,000,000 | scan | 175-271 ms, 1,186 M | 194 ms, 1,292 M | 41,700 hit (cold: 41,300 read) |
+| 2,000,000 | probe | 98-113 ms, 186 M | 346 ms, 251 M | 48,300 hit (cold: 14,500 read) |
+| 2,000,000 | auto | 57-65 ms, 186 M (the probe) | 210 ms, 259 M | 48,300 hit (cold: 14,800 read) |
+
+Instructions are stable to a few percent and the milliseconds are not (other work ran on the host: the ranges are the runs), so read the instructions for the choice and the milliseconds for the size. Before this change a promotion
+of 12,000 rows paid the scan column whatever it filled: 6x the instructions of the same promotion with the probe at 2M parent keys, 2x at 500,000, and nothing to gain below about 20,000 (there the scan is cheaper and `auto` takes it).
+The same costs for the rest of a connected child's life, 500,000 rows, the same parents: `CREATE INDEX` of a second child (the first build of a child under a journal that already vouches) is 12.3 / 12.8 / 13.7 G instr with the scan at 20k / 500k / 2M parent keys and
+13.8 / 17.7 / 18.9 G with the probe (2.4 / 2.8 / 8.1 s at 2M for the probe against 3.5 s): a whole child asks for as many keys as the parent has, so the scan is the price there and `auto` takes it (15.5 G, 3.2 s at 2M). A rewrite under a new stamp
+(`sift.col_maintain` after 2% of the parent changed) is the same: scan 2.7 / 3.0 / 4.7 G instr, probe 3.2 / 4.6 / 4.9 G, auto 1.4-5.5 G (the rewrite itself is most of it; the three arms ran one after the other on a changing index, so their
+rows are not a like-for-like pair, and the choice per partition is the one above).
+
+The fill used to hold the parent keys in a hash table (16 bytes an entry; +46..80 MB private for 2M keys measured) and refused a parent whose table passed half of `maintenance_work_mem` as it estimated it (48 bytes a key: about 700,000 keys at the default
+64 MB), by every route (`CREATE INDEX` then `sift.col_maintain`, `REINDEX`, `ALTER INDEX .. SET (connect = ..)` + `REINDEX`), silently. The key set took the memory to 0.25 MB for a serial parent of 2M keys and 18 MB for one spaced by 1000 (the
+fill added 2.3-2.7 s to a 2M-row build with the hash table and 0.0-0.2 s with the key set), and the probe removed the refusal: **there is no size at which the fill gives up**. A parent whose keys need more than half of `maintenance_work_mem`
+(a sorted one of more than 3.7M keys at 64 MB, 15M at 256 MB, a hashed bigint key or a snowflake) is filled by the probe, whichever the price says, at the cost of the probe (2-4 us a key of the batch, about 1.5 us a row more than a key set would cost).
+What remains of the limit: the key set itself is still bounded by half of `maintenance_work_mem` and is not used beyond it; the answers the probe remembers are bounded at 262,144 keys (about 10 MB); and a parent the journal
+does not vouch for (no unique btree on the key, an incomplete log, no journal yet) is not looked up at all, whatever its size. The refused stamp, the NOTICE and the `refused` state of `sift.col_connections` are gone with the refusal.
+
+Stamps and the operations that move a segment: a relocation or the write of a net sidecar writes the header again with the schema bytes it had, and the stamps are in the schema, so they are kept and nothing is filled again;
+an operation that writes rows again (a merge, a promotion, a rewrite) goes through the writer and its fill, which gives every segment it writes one new stamp, the one of the snapshot it took.
 
 ## The found leaf
 
@@ -169,11 +183,10 @@ by the join. A release before 4.3 refuses a segment of this format; `sift.col_le
 ## Filling and the stamp
 
 The writer of a segment (build, promotion of a write buffer, merge) fills the found flag: for each connection it takes the stamp of the parent index (`sift_conn_take`, before the parent
-is read), reads the keys of the parent rows visible to a snapshot of that moment into a key set (at most half of `maintenance_work_mem`; a bigger one is refused, see below), and gives each row the flag
+is read), knows the keys of the parent rows visible to a snapshot of that moment (a key set read from the parent, or a probe of its unique btree for the keys of the batch: whichever is cheaper, see below), and gives each row the flag
 of its parent row. A row with a NULL key, a key the parent lacks or a key two visible parent rows share gets NULL, which a reader takes as not resolved. The segment stores the
 stamp of each connection with its schema, so a flag in it is as of that stamp; what changed in the parent since is in the journal (`changed(S, X)`), and a merge of segments with different stamps
-fills the rows again under one new stamp. A connection whose journal does not vouch at that moment (the first child of a parent, whose journal starts after its scan; a parent too big for the
-table) leaves the stamp empty and the flag NULL, and the next promotion or merge fills it. `col_verify` does not compare the flag with the heap: it is as of the stamp.
+fills the rows again under one new stamp. A connection whose journal does not vouch at that moment (the first child of a parent, whose journal starts after its scan) leaves the stamp empty and the flag NULL, and the next promotion or merge fills it. `col_verify` does not compare the flag with the heap: it is as of the stamp.
 
 ## Refresh
 
@@ -181,7 +194,7 @@ The flags of a segment are as of its stamp, so they age with the parent. The rew
 `sift.col_maintain`) takes a segment of a connected index when, for a connection whose journal vouches now, the segment was never filled (the first child of a parent, whose journal starts after its
 scan), its stamp is of another journal (the parent index was rebuilt), the journal cannot tell what changed since the stamp (trimmed, too many keys), or the keys changed since the stamp are
 `sift.col_connect_refresh_pct` percent (10) of the rows of the parent index: below that a read patches those keys from the join, which costs less than the rewrite. The reason is `stale connection` in
-`sift.col_maintenance_due`. The rewrite fills the segment again under a new stamp, so the rule ends; a parent that did not fit the memory of the writer leaves a stamp that says so and is not asked for again.
+`sift.col_maintenance_due`. The rewrite fills the segment again under a new stamp, so the rule ends.
 
 A snapshot older than the journal (a transaction that began before the first child was built and still runs) is never vouched: its reads use the join path for every row, the answer is the same. The
 journal vouches for the snapshots taken after its start, so a long-running snapshot costs time and never changes an answer.
@@ -200,7 +213,6 @@ It holds for every row only when the flag is the whole story, so the statement u
 |---|---|
 | `write buffer` | a write buffer of the index holds rows (the reader's own too): their flag is not filled until the promotion |
 | `segment without stamp` | a segment was never filled (the first child of a parent, whose journal starts after its scan): the rewrite of the refresh fills it |
-| `parent too large to resolve` | the writer's parent lookup did not fit `maintenance_work_mem` |
 | `stamps of two journals` | the segments were stamped under different journals of the parent index |
 | `parent rows inserted since the stamp` | only for a segment that had a row with a key the parent lacked when it was filled (no foreign key keeps the child clean of them, `SIFT_CONN_STAMP_CLEAN`): a flag NULL is "not found then", the journal lists the keys that ended, not those that appeared, and a row inserted into the parent since (an update is an insert) may be the parent of such a row |
 | the verdict of the journal (`other lineage`, `trimmed`, `snapshot older than the stamp`, `too many changed keys` ..) | the journal cannot vouch for the stamp or names more than 16,384 keys |

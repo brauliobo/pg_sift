@@ -129,7 +129,7 @@ SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wr
      |     0
 (1 row)
 
--- a parent that does not fit maintenance_work_mem is refused once and not asked for again
+-- a parent whose keys do not fit maintenance_work_mem is looked up by its btree: filled by the first rewrite, nothing due after it
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
@@ -150,12 +150,6 @@ SELECT sift.col_maintenance_due('big_events_col', false) AS due;
 (1 row)
 
 SELECT sift.col_maintain('big_events_col') AS rewritten;
-NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
-DETAIL:  60000 keys need about 0.51 MB, and the lookup may use half of maintenance_work_mem (0.50 MB): the connection keeps no found flag for them.
-HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
-NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
-DETAIL:  60000 keys need about 0.51 MB, and the lookup may use half of maintenance_work_mem (0.50 MB): the connection keeps no found flag for them.
-HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
  rewritten 
 -----------
  t

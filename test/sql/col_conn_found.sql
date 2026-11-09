@@ -1,6 +1,6 @@
 -- A join to the parent of a connected index that reads no column of the parent (EXISTS, NOT EXISTS, a join that counts) is answered from the flag the segments keep that the
 -- parent row was found (docs/COL-CONNECT.md, "Found"), less the keys that changed in the parent since the oldest stamp. Whatever happens to either table the rows are those
--- of the normal plan: every state the flag cannot answer for (a write buffer, a segment without a stamp, a parent too large to resolve, a parent row inserted since)
+-- of the normal plan: every state the flag cannot answer for (a write buffer, a segment without a stamp, a parent row inserted since)
 -- is read by the ordinary join, and EXPLAIN says why.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -111,7 +111,7 @@ SET sift.agg_connect_found = off;
 SELECT * FROM phase() WHERE n = 1;
 RESET sift.agg_connect_found;
 
--- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
+-- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is looked up by its btree: filled, and the flags answer the join
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');

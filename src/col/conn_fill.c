@@ -16,12 +16,28 @@
 #include "col/am.h"
 #include "col/conn.h"
 
+/*
+ * What the two ways to know the keys of a parent cost (docs/COL-CONNECT.md): the key set reads every row of the parent twice, 130 ns a parent row; the probe asks a btree for each key
+ * the writer fills, 2 us a key when the batch is small and the pages are warm and up to 4 us for a merge's partition over a parent of millions of keys (520 and 9,200 instructions).
+ * The fill takes the cheaper for the rows it is to fill: the probe below about 4% of the parent's rows.
+ */
+#define FILL_SCAN_NS_PER_PARENT_ROW	130
+#define FILL_PROBE_NS_PER_KEY		3500
+
+
+#ifdef SIFT_TESTING
+int			sift_test_conn_fill = 0;
+#endif
+
 typedef struct FillConn
 {
 	int			found;			/* the leaf of the flag */
 	int			fk_leaf;		/* the leaf of the child that holds the key */
 	SiftConnStamp stamp;
-	SiftConnKeySet *keys;		/* NULL: no stamp, the leaves are cleared */
+	SiftConnKeySet *keys;		/* the keys of the parent (NULL: no stamp, or the probe) */
+	SiftConnProbe *probe;		/* the btree probe of the keys of each batch (NULL: no stamp, or the key set) */
+	bool	   *one;			/* the probe's answer for each row of the batch in hand */
+	uint32		one_cap;
 	bool		orphans;		/* a row had a key the parent has no (single) row for: the segment is not clean */
 } FillConn;
 
@@ -30,33 +46,46 @@ typedef struct SiftConnFill
 	SiftColFill hook;			/* first: the writer holds this */
 	MemoryContext cx;
 	int			nconn;
+	Snapshot	snap;			/* kept for the probes until the end call (NULL: none to release) */
 	FillConn	c[SIFT_CONN_MAX_CONNECTIONS];
 } SiftConnFill;
 
 static void fill_batch(SiftColFill *hook, SiftColBatch *view);
 static SiftConnStamp fill_stamp(const SiftColFill *hook, int i);
+static void fill_end(SiftColFill *hook);
 
-/* A parent whose keys do not fit is refused, and the segments written say so in their stamps: the user is told too, in the log when no client is there (a maintenance worker) */
-static void
-say_refused(Relation index, Relation parent, const SiftConnSpec *s, uint64 keys, uint64 bytes)
+/* The estimated rows of a table */
+static double
+rows_of(Relation rel)
 {
-	int			refuse_level = MyBackendType == B_BG_WORKER ? LOG : NOTICE;
+	BlockNumber pages;
+	double		tuples,
+				allvisfrac;
 
-	ereport(refuse_level,
-			(errmsg("sift_col index \"%s\": the keys of %s(%s) do not fit maintenance_work_mem", sift_col_final_name(index), RelationGetRelationName(parent), s->parent_key),
-			 errdetail("%lu keys need about %.2f MB, and the lookup may use half of maintenance_work_mem (%.2f MB): the connection keeps no found flag for them.",
-					   (unsigned long) keys, (double) bytes / (1024 * 1024), maintenance_work_mem / 2048.0),
-			 errhint("Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.")));
+	table_relation_estimate_size(rel, NULL, &pages, &tuples, &allvisfrac);
+	return tuples;
+}
+
+/* Is asking the btree for `rows` keys cheaper than reading a parent of `parent_rows` rows? */
+static bool
+probe_cheaper(uint64 rows, double parent_rows)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_conn_fill != 0)
+		return sift_test_conn_fill == 2;
+#endif
+	return (double) rows * FILL_PROBE_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
 }
 
 SiftColFill *
-sift_conn_fill_begin(Relation index, MemoryContext mcxt)
+sift_conn_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 {
 	const SiftColRel *r;
 	SiftConnFill *f;
 	SiftConnSpecs *specs;
 	Relation	heap;
 	Snapshot	snap;
+	bool		probing = false;
 
 	if (!sift_col_is_index(index) || sift_col_rel(index)->nconn == 0)
 		return NULL;
@@ -65,7 +94,7 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 	specs = sift_conn_specs(index);
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	f = MemoryContextAllocZero(mcxt, sizeof(SiftConnFill));
-	f->hook = (SiftColFill) {.batch = fill_batch,.stamp = fill_stamp};
+	f->hook = (SiftColFill) {.batch = fill_batch,.stamp = fill_stamp,.end = fill_end};
 	f->cx = mcxt;
 	f->nconn = r->nconn;
 	/* in parallel mode no snapshot can be taken: the statement's own (it may be older than the journal, which then does not vouch) */
@@ -89,24 +118,45 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 #endif
 		if (sift_conn_take(parent, pindex, snap, &fc->stamp, NULL) == SIFT_CONN_OK)
 		{
-			uint64		rows,
-						bytes;
+			AttrNumber	key = get_attnum(RelationGetRelid(parent), s->parent_key);
 
-			fc->keys = sift_conn_keyset_load(mcxt, parent, get_attnum(RelationGetRelid(parent), s->parent_key), snap,
-											 (Size) maintenance_work_mem * 1024 / 2, &rows, &bytes);
+			if (!probe_cheaper(rows, rows_of(parent)))
+				fc->keys = sift_conn_keyset_load(mcxt, parent, key, snap, (Size) maintenance_work_mem * 1024 / 2);
 			if (fc->keys == NULL)
 			{
-				fc->stamp = (SiftConnStamp) {.reserved = SIFT_CONN_STAMP_REFUSED};
-				say_refused(index, parent, s, rows, bytes);
+				fc->probe = sift_conn_probe_begin(mcxt, parent, key, snap);
+				probing = true;
 			}
 		}
 		index_close(pindex, NoLock);
 		table_close(parent, NoLock);
 	}
-	if (!IsInParallelMode())
+	if (IsInParallelMode())
+		f->snap = NULL;
+	else if (probing)
+		f->snap = snap;
+	else
 		UnregisterSnapshot(snap);
 	table_close(heap, NoLock);
 	return &f->hook;
+}
+
+/* The writer is done: a probing fill gives back the snapshot it kept (in parallel mode it is the statement's own) */
+static void
+fill_end(SiftColFill *hook)
+{
+	SiftConnFill *f = (SiftConnFill *) hook;
+
+	if (f->snap != NULL)
+		UnregisterSnapshot(f->snap);
+	f->snap = NULL;
+}
+
+void
+sift_conn_fill_end(SiftColFill *fill)
+{
+	if (fill != NULL && fill->end != NULL)
+		fill->end(fill);
 }
 
 /* Each row gets the flag that the one row of its parent was found, or NULL */
@@ -115,6 +165,20 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 {
 	SiftConnFill *f = (SiftConnFill *) hook;
 
+	for (int i = 0; i < f->nconn; i++)
+	{
+		FillConn   *fc = &f->c[i];
+		const SiftCVals *kv = &view->col[fc->fk_leaf];
+
+		if (fc->probe == NULL)
+			continue;
+		if (view->nrows > fc->one_cap)
+		{
+			fc->one = fc->one == NULL ? MemoryContextAlloc(f->cx, view->nrows) : repalloc(fc->one, view->nrows);
+			fc->one_cap = view->nrows;
+		}
+		sift_conn_probe_batch(fc->probe, kv->key, kv->nulls, view->nrows, fc->one);
+	}
 	for (uint32 row = 0; row < view->nrows; row++)
 		for (int i = 0; i < f->nconn; i++)
 		{
@@ -123,10 +187,13 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 			bool		one = false;
 			SiftColValue v;
 
-			if (fc->keys != NULL && !sift_col_bit_test(kv->nulls, row))
+			if (fc->keys != NULL || fc->probe != NULL)
 			{
-				one = sift_conn_keyset_has_one(fc->keys, kv->key[row]);
-				fc->orphans |= !one;
+				if (!sift_col_bit_test(kv->nulls, row))
+				{
+					one = fc->keys != NULL ? sift_conn_keyset_has_one(fc->keys, kv->key[row]) : fc->one[row];
+					fc->orphans |= !one;
+				}
 			}
 			v = (SiftColValue) {.isnull = !one,.tag = SIFT_COLTAG_UNKNOWN,.v.i = 1};
 			sift_cfound_put(view, fc->found, &v);
@@ -200,10 +267,8 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 
 		if (!s->c[i].vouches)
 			continue;
-		if (st.lineage == 0 ? st.reserved != SIFT_CONN_STAMP_REFUSED : st.lineage != s->c[i].now.lineage)
+		if (st.lineage != s->c[i].now.lineage)
 			return true;
-		if (st.lineage == 0)
-			continue;
 		if (sift_conn_changed(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
 		if (keys.n >= limit)

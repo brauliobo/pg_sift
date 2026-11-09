@@ -165,7 +165,7 @@ SELECT count(*), count(d.label), sum(d.price) FROM events e LEFT JOIN dim_a d ON
 (1 row)
 
 RESET sift.enable_agg;
--- a parent table that does not fit maintenance_work_mem is not looked up: the stamp stays empty and the flag NULL
+-- a parent table whose keys do not fit maintenance_work_mem is looked up by its btree: the segments are stamped and the flags filled
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
@@ -181,9 +181,6 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 SET maintenance_work_mem = '1MB';
 INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(101, 200) i;
 SELECT sift.col_promote('big_events_col') >= 0 AS promoted;
-NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
-DETAIL:  60000 keys need about 0.51 MB, and the lookup may use half of maintenance_work_mem (0.50 MB): the connection keeps no found flag for them.
-HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
  promoted 
 ----------
  t
@@ -192,13 +189,13 @@ HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' 
 SELECT count(*) AS stamps, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('big_events_col');
  stamps | stamped 
 --------+---------
-      2 |       0
+      2 |       1
 (1 row)
 
 SELECT count(val) AS filled FROM sift._test_col_read('big_events_col', 2);
  filled 
 --------
-      0
+    100
 (1 row)
 
 RESET maintenance_work_mem;
@@ -212,13 +209,13 @@ SELECT sift.col_promote('big_events_col') >= 0 AS promoted;
 SELECT count(*) AS stamps, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('big_events_col');
  stamps | stamped 
 --------+---------
-      3 |       1
+      3 |       2
 (1 row)
 
 SELECT count(val) AS filled FROM sift._test_col_read('big_events_col', 2);
  filled 
 --------
-    100
+    200
 (1 row)
 
 SELECT sift.col_verify('big_events_col', true);

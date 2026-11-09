@@ -343,6 +343,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_gorder_rows",
 							"Testing: 1024 writes the global order with the chunks of column format minor 21 (1,024 entries), 0 the current ones (512).",
 							NULL, &sift_test_col_gorder_rows, 0, 0, 1024, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_conn_fill",
+							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
+							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

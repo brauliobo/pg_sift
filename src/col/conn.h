@@ -190,22 +190,30 @@ extern const char *sift_col_source_proof(struct SiftColSource *src, int found_le
  * ---- the found flags of a segment ----
  *
  * The writer of a segment of a connected index (a build, a promotion, a merge) fills the found flag of every unit it writes from the parent tables: for each connection it takes a
- * stamp of the parent's journal (sift_conn_take) and reads the parent table under the snapshot the stamp was taken for, once, when the fill is begun; a row whose key is found there gets
+ * stamp of the parent's journal (sift_conn_take) and knows the keys of the parent table under the snapshot the stamp was taken for, by reading the parent once when the fill is begun or by probing its unique btree for the keys of each batch, whichever is cheaper; a row whose key is found there gets
  * the found flag, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
- * yet, a log that is not complete, a table whose keys need more than half of maintenance_work_mem) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
+ * yet, a log that is not complete) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
  * The stamps are written with the segment (the SCHEMA section, column format 45) and are what a reader compares with its snapshot (the rule above).
  */
 struct SiftColFill;
-extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryContext mcxt);
+/* rows: the most rows the fill will be asked about (what the writer is to write: a promotion's buffer, a merge's input, a build's table); it prices the parent scan against the probes */
+extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryContext mcxt, uint64 rows);
+/* The writer is done with the fill (every segment it writes is finished): releases the snapshot a probing fill keeps. NULL is fine. */
+extern void sift_conn_fill_end(struct SiftColFill *fill);
 
 /* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
 typedef struct SiftConnKeySet SiftConnKeySet;
-extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit, uint64 *rows, uint64 *bytes);
+extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit);
 extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
+
+/* The btree probe of the keys of a batch (col/conn_probe.c): the other way to know whether the parent has one visible row for a key */
+typedef struct SiftConnProbe SiftConnProbe;
+extern SiftConnProbe *sift_conn_probe_begin(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap);
+extern void sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, uint32 nrows, bool *one);
 
 /*
  * Refresh: is a segment of a connected index worth a rewrite for what its stamps say? For a connection whose parent journal vouches now, a segment is stale when it was never filled
- * (lineage 0, and the fill was not refused for the size of the parent), when the parent index was rebuilt since, or when the keys changed since its stamp are sift.col_connect_refresh_pct
+ * (lineage 0), when the parent index was rebuilt since, or when the keys changed since its stamp are sift.col_connect_refresh_pct
  * percent of the parent's rows (below that the reader patches them: a few keys cost less than the rewrite) or the journal cannot tell. NULL from begin: the index has no connection.
  */
 typedef struct SiftConnStale SiftConnStale;

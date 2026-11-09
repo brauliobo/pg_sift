@@ -52,7 +52,7 @@ SELECT sift.col_maintenance_due('events_col', false) AS due;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wrong;
 
--- a parent that does not fit maintenance_work_mem is refused once and not asked for again
+-- a parent whose keys do not fit maintenance_work_mem is looked up by its btree: filled by the first rewrite, nothing due after it
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');

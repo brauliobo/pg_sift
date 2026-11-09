@@ -391,6 +391,7 @@ typedef struct MergeOut
 	int			maxout;			/* the most segments the merge may write: the directory holds the ones it replaces and the room besides */
 	Size		budget;			/* the memory a segment writer may hold (sift_colw_full); grows when the segments left would not hold the rows left */
 	uint64		live_rows;
+	struct SiftColFill *fill;	/* of the partition in hand */
 	uint64		rows_done;		/* the rows of the segments written */
 	bool		keyed;
 	SiftWriteTarget *wt;
@@ -440,7 +441,8 @@ out_begin(MergeOut *o)
 	maint_throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
 	sift_colw_set_index_rows(o->w, o->index_rows);
-	sift_colw_set_fill(o->w, sift_conn_fill_begin(o->index, o->pcx));
+	o->fill = sift_conn_fill_begin(o->index, o->pcx, (o->live_rows - o->rows_done) / Max(o->parts - o->nneu, 1));
+	sift_colw_set_fill(o->w, o->fill);
 	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
 	{
@@ -454,6 +456,7 @@ static void
 out_finish(MergeOut *o)
 {
 	sift_colw_finish(o->w, &o->neu[o->nneu]);
+	sift_conn_fill_end(o->fill);
 	if (o->roots)
 		o->neu[o->nneu].flags |= SIFT_SEG_ROOTS;
 	sift_seg_set_xstamp(&o->neu[o->nneu++], o->xstamp);

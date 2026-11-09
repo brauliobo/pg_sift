@@ -1,6 +1,6 @@
 -- The fill of the found flags holds the keys of the parent in the least memory exact membership takes (a bitmap of a dense range, a sorted array of a sparse one), not 48 bytes a key:
 -- with maintenance_work_mem = 1MB (the fill may use half) a dense parent of 100,000 keys and a sparse one of 30,000 are resolved, which a table of 48 bytes a key refused at
--- about 10,900 keys. The rows are those of the normal plan, and a parent whose sparse keys need more is still refused.
+-- about 10,900 keys. The rows are those of the normal plan, and a parent whose sparse keys need more is looked up by its btree (col_conn_probe).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -52,7 +52,7 @@ SELECT p.name, r.same
 FROM parents p, LATERAL found_run(format($q$SELECT count(*) FROM ev_%1$s e WHERE NOT EXISTS (SELECT 1 FROM dim_%1$s d WHERE d.id = e.dim_id)$q$, p.name)) r ORDER BY p.n;
 SELECT p.name, r.same
 FROM parents p, LATERAL found_run(format($q$SELECT count(*) FROM ev_%1$s e JOIN dim_%1$s d ON d.id = e.dim_id$q$, p.name)) r ORDER BY p.n;
--- the parent that fits is answered from the flags (a plan that counts the keys it has), the refused one by the ordinary join
+-- the parent that fits is answered from the flags (a plan that counts the keys it has), the one beyond the set is filled by the probe too (whether the plan reads the flags is its cost's choice)
 SELECT r.same, r.proofs > 0 AS flags_used FROM found_run($q$SELECT count(*) FROM ev_sparse e JOIN dim_sparse d ON d.id = e.dim_id$q$) r;
 SELECT r.same, r.proofs > 0 AS flags_used FROM found_run($q$SELECT count(*) FROM ev_over e JOIN dim_over d ON d.id = e.dim_id$q$) r;
 

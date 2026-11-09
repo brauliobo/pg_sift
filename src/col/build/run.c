@@ -402,7 +402,6 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	/* the index's own state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: the build keeps a copy */
 	b->r = sift_col_rel_private(index, cxt);
 	b->cxt = cxt;
-	b->fill = sift_conn_fill_begin(index, cxt);
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
@@ -437,6 +436,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
+	b->fill = sift_conn_fill_begin(index, cxt, b->share);
 	if (!sift_col_key_cut(b->r) && b->share > (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the heap has about " UINT64_FORMAT " rows for each process of the build: its %d segments hold " UINT64_FORMAT,
 							   b->share, maxsegs, (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS),
@@ -490,6 +490,7 @@ sift_colb_end(ColBuild *b)
 	else if (b->held != NIL)
 		colb_write_run(b, true);
 	end_segment(b);
+	sift_conn_fill_end(b->fill);
 	report_rows(b);
 	return b->nsegs;
 }

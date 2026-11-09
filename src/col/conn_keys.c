@@ -128,31 +128,28 @@ cmp_key(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/*
- * The keys of the parent under snap, or NULL when they need more than `limit` bytes. *rows: the rows with a key (counted whichever the answer, for the message of a refusal),
- * *bytes: what the set needs (a bit a slot of the range, or 9 bytes a key).
- */
+/* The keys of the parent under snap, or NULL when they need more than `limit` bytes (a bit a slot of the range, or 9 bytes a key) */
 SiftConnKeySet *
-sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit, uint64 *rows, uint64 *bytes)
+sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit)
 {
 	KeyStats	st = {0};
+	uint64		bytes;
 	SiftConnKeySet *set;
 	uint64		range;
 	MemoryContext old = MemoryContextSwitchTo(cx);
 
 	scan_keys(parent, key, snap, count_key, &st);
-	*rows = st.rows;
 	range = st.rows == 0 ? 0 : (uint64) st.hi - (uint64) st.lo;
 	set = palloc0(sizeof(SiftConnKeySet));
 	set->lo = st.lo;
 	if (st.rows > 0 && range < (uint64) KEYS_DENSE_SLOTS * st.rows)
 	{
 		set->slots = range + 1;
-		*bytes = (set->slots + 63) / 64 * sizeof(uint64);
+		bytes = (set->slots + 63) / 64 * sizeof(uint64);
 	}
 	else
-		*bytes = st.rows * (sizeof(int64) + sizeof(bool));
-	if (*bytes > limit)
+		bytes = st.rows * (sizeof(int64) + sizeof(bool));
+	if (bytes > limit)
 	{
 		MemoryContextSwitchTo(old);
 		pfree(set);

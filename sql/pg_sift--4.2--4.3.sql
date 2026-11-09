@@ -67,15 +67,14 @@ CREATE FUNCTION sift.col_connection_list(child regclass, OUT ordinal int4, OUT f
 
 COMMENT ON FUNCTION sift.col_connection_list(regclass) IS 'The connections a sift_col index declares with its option connect: their place in the option, the column that holds the parent key, the text, the parent index that serves each (NULL when the names do not resolve now) and whether CREATE INDEX or REINDEX chose the connection from the foreign keys';
 
-CREATE FUNCTION sift.col_connection_fill(child regclass, OUT ordinal int4, OUT segments int8, OUT filled int8, OUT refused int8) RETURNS SETOF record
+CREATE FUNCTION sift.col_connection_fill(child regclass, OUT ordinal int4, OUT segments int8, OUT filled int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_col_connection_fill' LANGUAGE C STRICT STABLE;
 
-COMMENT ON FUNCTION sift.col_connection_fill(regclass) IS 'For each connection of a sift_col index: its segments, those that hold the found flags under a stamp, and those the fill refused because the keys of the parent did not fit maintenance_work_mem';
+COMMENT ON FUNCTION sift.col_connection_fill(regclass) IS 'For each connection of a sift_col index: its segments, and those that hold the found flags under a stamp';
 
 CREATE VIEW sift.col_connections AS
 	SELECT c.oid::regclass AS child, l.ordinal, l.fk, l.parent_index AS parent, l.declaration, l.automatic, s.lineage, s.records, s.stamp,
-		CASE WHEN f.refused > 0 THEN 'refused: the keys of the parent do not fit maintenance_work_mem (' || f.refused || ' of ' || f.segments || ' segments)'
-			WHEN f.filled = f.segments THEN 'filled'
+		CASE WHEN f.filled = f.segments THEN 'filled'
 			WHEN f.filled = 0 THEN 'unfilled'
 			ELSE 'partly filled (' || f.filled || ' of ' || f.segments || ' segments)' END AS fill
 	FROM pg_class c
@@ -86,4 +85,4 @@ CREATE VIEW sift.col_connections AS
 	LEFT JOIN LATERAL sift.col_connection_fill(c.oid) f ON f.ordinal = l.ordinal
 	WHERE c.relkind = 'i' AND has_table_privilege(i.indrelid, 'SELECT');
 
-COMMENT ON VIEW sift.col_connections IS 'The connections of the sift_col indexes with the option connect: the child index, the parent index that serves each, the text, the state of the key journal of the parent, and whether the found flags of its segments are filled (fill; refused when the keys of the parent did not fit maintenance_work_mem)';
+COMMENT ON VIEW sift.col_connections IS 'The connections of the sift_col indexes with the option connect: the child index, the parent index that serves each, the text, the state of the key journal of the parent, and whether the found flags of its segments are filled (fill)';

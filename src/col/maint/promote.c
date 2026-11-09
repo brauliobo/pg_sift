@@ -86,6 +86,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	{
 		int			format = sift_col_format_minor;
 		uint32		unit = maint_floor_rows(index);
+		SiftColFill *fill;
 		uint64		nbrows = 0,
 					largest = 0;
 
@@ -98,7 +99,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
-		sift_colw_set_fill(w, sift_conn_fill_begin(index, cx));
+		fill = sift_conn_fill_begin(index, cx, nbrows);
+		sift_colw_set_fill(w, fill);
 		{
 			uint64		idx_rows = nbrows;
 
@@ -131,6 +133,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
+		sift_conn_fill_end(fill);
 		neu.flags |= sealed->flags & SIFT_SEG_ROOTS;
 		if (r->track)
 			sift_seg_set_xstamp(&neu, xstamp);
