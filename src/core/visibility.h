@@ -80,14 +80,14 @@ extern void sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, ui
 /* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */
 extern PGDLLIMPORT int sift_test_vis_pause;
 extern PGDLLIMPORT int sift_test_vis_jitter_us;
-/* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables; sift.test_merge_gate: a merge of the maintenance worker waits for lock (0x51F7, 4), its segments claimed; sift.test_release_gate: a directory change that releases extents waits for lock (0x51F7, 6) once its xid is taken, before it locks the directory; sift.test_export_gate: the leader of a parallel SiftScan waits for lock (0x51F7, 5) once it exported the directory its participants bind on, before the workers start; sift.test_build_gate: a bulk build waits for lock (0x51F7, 8) before it writes its metapage, the last page */
+/* sift.test_count_gate: a count waits for lock (0x51F7, 1) once its plan is made; sift.test_cleanup_gate: a VACUUM waits for lock (0x51F7, 2) before its cleanup refreshes the dead-posting tables; sift.test_merge_gate: a merge of the maintenance worker waits for lock (0x51F7, 4), its segments claimed; sift.test_release_gate: a directory change that releases extents waits for lock (0x51F7, 6) once its xid is taken, before it locks the directory; sift.test_drop_gate: the transaction that deletes a tracked index waits for lock (0x51F7, 9) just before it removes the index's triggers; sift.test_build_gate: a bulk build waits for lock (0x51F7, 8) before it writes its metapage, the last page */
 extern PGDLLIMPORT bool sift_test_count_gate;
 extern PGDLLIMPORT bool sift_test_cleanup_gate;
 extern PGDLLIMPORT bool sift_test_shrink_gate;
 extern PGDLLIMPORT bool sift_test_merge_gate;
 extern PGDLLIMPORT bool sift_test_worker_gate;
 extern PGDLLIMPORT bool sift_test_release_gate;
-extern PGDLLIMPORT bool sift_test_export_gate;
+extern PGDLLIMPORT bool sift_test_drop_gate;
 extern PGDLLIMPORT bool sift_test_build_gate;
 extern void sift_test_wait(int key);
 extern void sift_test_wait_inval(int key);

@@ -40,6 +40,8 @@ while ((SECONDS < end)); do
 	sql n "CREATE INDEX CONCURRENTLY h_y ON h USING sift_col (id, g, v)" >/dev/null 2>&1 && sql n "DROP INDEX CONCURRENTLY h_y" >/dev/null 2>&1 && rounds=$((rounds + 1))
 done
 wait "$PGBENCH_PID"
+# a drop that finds the table in use leaves the removal of the triggers to a worker (it takes the table lock a moment at a time, and nothing queues behind it)
+wait_for '[[ $(orphans) == 0 && $(ntrig) == 2 ]]' 120
 check "CREATE and DROP INDEX CONCURRENTLY under 8 writers: at least 5 rounds ($rounds done), no failed transaction" test "$rounds" -ge 5 -a "$(failed)" == 0
 check "... no deadlock was detected" test "$(($(deadlocks) - d0))" -eq 0
 check "... the table keeps the two triggers of h_x, no trigger is left without an index, no copy is left" \
@@ -52,6 +54,7 @@ pgbench_bg n 8 "$((SECS / 2 + 3))" -f "$D/w.sql"
 sleep 1
 sql n "DROP INDEX CONCURRENTLY h_x" >/dev/null 2>"$D/drop.err" || diag "$(cat "$D/drop.err")"
 wait "$PGBENCH_PID"
+wait_for '[[ $(ntrig) == 0 ]]' 120
 check "DROP INDEX CONCURRENTLY of the tracked index under 8 writers: no trigger left, none without an index, no failed transaction, no deadlock" \
 	test "$(ntrig)|$(orphans)|$(failed)|$(($(deadlocks) - d0))" == "0|0|0|0"
 
