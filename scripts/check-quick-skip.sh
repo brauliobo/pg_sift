@@ -28,7 +28,7 @@ if [[ ${1:-} == --selftest ]]; then
 	out=$(check "$t")
 	[[ $out == *"test/t/a.sh: reads SIFT_QUICK"* ]] || { echo "selftest: a test that reads SIFT_QUICK and is not listed passed: $out"; exit 1; }
 	[[ $out == *"gone.sh does not read"* ]] || { echo "selftest: a stale entry passed: $out"; exit 1; }
-	[[ $(wc -l <<<"$out") == 2 ]] || { echo "selftest: a listed test or the library was refused: $out"; exit 1; }
+	(( $(wc -l <<<"$out") == 2 )) || { echo "selftest: a listed test or the library was refused: $out"; exit 1; }
 	echo "check-quick-skip selftest ok"
 	exit 0
 fi
