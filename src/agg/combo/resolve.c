@@ -76,6 +76,23 @@ resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const 
 }
 
 #define CBASE_MANY	UINT32_MAX
+#define DENSE_AHEAD	16
+
+/* the output row (+1) of class c, made on its first key k; CBASE_MANY when the class has no single row */
+static pg_noinline uint32
+dense_base(AggExec *ex, int ci, int32 k, uint32 c)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	uint32		b = cs->cbase != NULL ? cs->cbase[c] : 0;
+
+	if (b == 0)
+	{
+		uint32		e = dense_ent(ex, ci, (uint64) (uint32) k + 1, c);
+
+		b = cs->cbase[c] = cs->ent[e].nout == 1 ? cs->ent[e].base + 1 : CBASE_MANY;
+	}
+	return b;
+}
 
 /*
  * The output row of each tuple's key against a dense table whose every class has one row, in one pass: the class of a key and the row of a class are two
@@ -93,6 +110,8 @@ combo_dense_outs(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 	const SiftSrcVec *v;
 	const int32 *key;
 	const uint32 *idx;
+	const uint16 *cls;
+	uint32	   *cbase;
 	uint32		dn;
 
 	if (m == NULL || m->dcls == NULL || cs->dmany || cb->nleaves != 1 || cb->leaf[0] < 0 || cs->by_id || combo_null_input(ex))
@@ -106,22 +125,26 @@ combo_dense_outs(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 	idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
 	key = (const int32 *) v->data;
 	dn = m->dn;
+	cls = m->dcls;
+	cbase = cs->cbase;
 	for (int i = 0; i < n; i++)
 	{
 		int32		k = key[idx[i]];
-		uint32		c = (uint32) k < dn ? m->dcls[k] : 0;
-		uint32		b = cs->cbase != NULL ? cs->cbase[c] : 0;
+		uint32		c = (uint32) k < dn ? cls[k] : 0;
+		uint32		b = cbase != NULL ? cbase[c] : 0;
 
-		if (b == 0)
+		/* the classes of a table of many keys do not fit the first cache level: ask for the line a few keys ahead */
+		if (i + DENSE_AHEAD < n)
+			__builtin_prefetch(cls + key[idx[i + DENSE_AHEAD]]);
+		if (unlikely(b == 0 || b == CBASE_MANY))
 		{
-			uint32		e = dense_ent(ex, ci, (uint64) (uint32) k + 1, c);
-
-			b = cs->cbase[c] = cs->ent[e].nout == 1 ? cs->ent[e].base + 1 : CBASE_MANY;
-		}
-		if (b == CBASE_MANY)
-		{
-			cs->dmany = true;
-			return false;
+			b = dense_base(ex, ci, k, c);
+			if (b == CBASE_MANY)
+			{
+				cs->dmany = true;
+				return false;
+			}
+			cbase = cs->cbase;
 		}
 		cout[i] = b - 1;
 	}
