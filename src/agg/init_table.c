@@ -678,9 +678,6 @@ table_reset(AggExec *ex)
 		cs->nent = cs->nout = 0;
 		if (cs->cent)
 			memset(cs->cent, 0, ((Size) cs->map->nrow + 1) * sizeof(uint32));
-		if (cs->cbase)
-			memset(cs->cbase, 0, ((Size) cs->map->nrow + 1) * sizeof(uint32));
-		cs->dmany = false;
 		memset(cs->ht, 0, cs->nht * sizeof(uint32));
 		combo_forget_priors(ex, ci);
 	}

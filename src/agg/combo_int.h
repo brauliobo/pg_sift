@@ -121,8 +121,6 @@ typedef struct ComboSt
 	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
 	uint32	   *dir;
 	uint32	   *cent;			/* a dense table (MapTab.dcls): the entry + 1 of each class of its keys, 0 not made yet; slot 0 is the class of the keys it has no row for */
-	uint32	   *cbase;			/* cent's classes: the output row + 1 of a class that has one row, 0 not made yet, CBASE_MANY another count (combo_dense_outs) */
-	bool		dmany;			/* a class had no row or several: combo_dense_outs gives way to the general resolve */
 	uint32	   *byrow;			/* a combo of one earlier lookup's output row (and of that lookup's own leaf): entry + 1 by that row, 0 not seen (combo_resolve) */
 	uint32		nbyrow;
 	int8		prow;			/* the earlier lookup that byrow is by, plus one; -1: none, 0: not asked yet (combo_row_parent) */
@@ -153,7 +151,6 @@ void combo_reset(AggExec *ex, int ci);
 void combo_forget_priors(AggExec *ex, int ci);
 void combo_trim(AggExec *ex);
 uint64 combo_prior_vid(AggExec *ex, int ci, int p, uint32 out);
-bool combo_dense_outs(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *cout);
 void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);
 void combo_rows(AggExec *ex, int ci, const uint64 *alive, uint32 *o);
 const uint32 *combo_outs(AggExec *ex, int ci);
