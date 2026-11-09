@@ -94,4 +94,10 @@ typedef struct config_enum_entry SiftEnumEntry;
 #define SIFT_REGROW_IN(cx, p, n)		((p) = (p) ? repalloc((p), (n)) : MemoryContextAlloc((cx), (n)))
 #define SIFT_REGROW_HUGE_IN(cx, p, n)	((p) = (p) ? repalloc_huge((p), (n)) : MemoryContextAllocHuge((cx), (n)))
 
+/*
+ * The arrays a segment writer builds are freed with the segment, and the host should give that memory back to the system when they are: the writer asks (once for each
+ * segment) before its first one. PostgreSQL on glibc: handler.c. The other hosts do nothing.
+ */
+extern void sift_host_pin_heap(void);
+
 #endif							/* SIFT_HOST_H */

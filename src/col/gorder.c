@@ -118,7 +118,7 @@ sift_cgord_pad8(StringInfo out)
 		appendStringInfoChar(out, '\0');
 }
 
-/* the runs of equal group in ent[from, from + n): the groups, with the first entry and the number of the run, appended to out in the order of the entries */
+/* the runs of equal group in ent[from, from + n): the groups, with the first entry and the number of the run, appended to out in the order of the entries (out NULL: only counted) */
 static uint32
 group_runs(const OrdEnt *ent, uint32 from, uint32 n, SiftCGOrdGrp *out, bool nulls)
 {
@@ -130,16 +130,19 @@ group_runs(const OrdEnt *ent, uint32 from, uint32 n, SiftCGOrdGrp *out, bool nul
 
 		while (j < n && ent[from + j].group == ent[from + i].group)
 			j++;
-		out[m].group = ent[from + i].group;
-		if (nulls)
+		if (out != NULL)
 		{
-			out[m].nstart = from + i;
-			out[m].ncount = j - i;
-		}
-		else
-		{
-			out[m].vstart = from + i;
-			out[m].vcount = j - i;
+			out[m].group = ent[from + i].group;
+			if (nulls)
+			{
+				out[m].nstart = from + i;
+				out[m].ncount = j - i;
+			}
+			else
+			{
+				out[m].vstart = from + i;
+				out[m].vcount = j - i;
+			}
 		}
 		m++;
 		i = j;
@@ -465,12 +468,12 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		uint32		i = 0,
 					j = 0;
 
-		gv = sift_rows_alloc(((Size) nvals + 1) * sizeof(SiftCGOrdGrp));
-		gn = sift_rows_alloc(((Size) nnull + 1) * sizeof(SiftCGOrdGrp));
-		gs = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(SiftCGOrdGrp));
-		memset(gs, 0, ((Size) nvals + nnull + 1) * sizeof(SiftCGOrdGrp));
-		memset(gv, 0, (nvals + 1) * sizeof(SiftCGOrdGrp));
-		memset(gn, 0, (nnull + 1) * sizeof(SiftCGOrdGrp));
+		/* a table of the runs, not of the entries: the groups are few */
+		ngv = group_runs(ent, 0, nvals, NULL, false);
+		ngn = group_runs(ent, nvals, nnull, NULL, true);
+		gv = palloc0((ngv + 1) * sizeof(SiftCGOrdGrp));
+		gn = palloc0((ngn + 1) * sizeof(SiftCGOrdGrp));
+		gs = palloc0(((Size) ngv + ngn + 1) * sizeof(SiftCGOrdGrp));
 		ngv = group_runs(ent, 0, nvals, gv, false);
 		ngn = group_runs(ent, nvals, nnull, gn, true);
 		/* the runs of the two regions merged by group */
@@ -714,15 +717,20 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 	pfree(ent);
 }
 
+/* The entries of the rows with a group (ok[i]): n values and nn NULL rows of which nvals and nnull have one */
 void
-sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, bool dense, int layout, StringInfo out)
+sift_cgord_build_grouped(const int64 *key, const uint64 *tid, const int64 *group, const uint8 *ok, uint32 n, uint32 nvals, const uint64 *ntid, const int64 *ngroup,
+						 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, StringInfo out)
 {
 	OrdEnt	   *ent = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(OrdEnt));
+	uint32		k = 0;
 
-	for (uint32 i = 0; i < nvals; i++)
-		ent[i] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
-	for (uint32 i = 0; i < nnull; i++)
-		ent[nvals + i] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
+	for (uint32 i = 0; i < n; i++)
+		if (ok[i])
+			ent[k++] = (OrdEnt) {group[i], key[i], sift_cpoint_tid_code(tid[i])};
+	for (uint32 i = 0; i < nn; i++)
+		if (nok[i])
+			ent[k++] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
 	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, dense && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
 	pfree(ent);
 }

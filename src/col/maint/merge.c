@@ -592,10 +592,10 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	}
 	o.maxout = slice ? 1 : Min(MAX_PARTS, Max(max_parts, n));
 	o.parts = Max(o.parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) o.maxout));
-	/* the writer of a merge may hold maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and what the partitions the directory allows need besides */
-	o.budget = (Size) maintenance_work_mem * 1024;
+	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and in what the partitions the directory allows need besides */
+	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024);
 	if (part_bytes > 0)
-		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols) * 5 / 4));
+		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 	o.cut = live_units / o.parts;
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
 	if (!exact)

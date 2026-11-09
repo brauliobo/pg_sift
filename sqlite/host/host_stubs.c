@@ -10,6 +10,13 @@
 #include "bm25/segment.h"
 #include "col/seg_int.h"
 
+/* ---------- the heap (core/host.h): the embedded hosts leave it to the system ---------- */
+
+void
+sift_host_pin_heap(void)
+{
+}
+
 /* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
 
 SiftTsStem *

@@ -43,6 +43,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSegWriter *w = palloc0(sizeof(SiftColSegWriter));
 
+	sift_host_pin_heap();
+
 	w->wt = wt;
 	w->gen = gen;
 	w->schema = schema;
@@ -403,10 +405,10 @@ rows_memory(const SiftColSegWriter *w)
 	{
 		const PointAcc *a = &w->pt[c];
 
-		m += (Size) a->cap * (sizeof(int64) + sizeof(uint32)) + (a->tid ? (Size) a->cap * sizeof(uint64) : 0) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
+		m += (Size) a->cap * (sizeof(int64) + (a->row ? sizeof(uint32) : 0) + (a->tid ? sizeof(uint64) : 0)) + (Size) a->gcap * (sizeof(int64) + sizeof(uint8)) +
 			(Size) a->ncap * (sizeof(uint64) + (a->ngk ? sizeof(int64) + sizeof(uint8) : 0));
-		/* the end of the segment builds one leaf at a time: the largest of them is what it adds */
-		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * (sizeof(int64) * 3 + sizeof(int64) * 3) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
+		/* the end of the segment builds one leaf at a time: the largest of them is what it adds (the entries of the order, group + key + address; the entries and the copy of the directory) */
+		build = Max(build, (a->ord ? ((Size) a->n + a->nn) * 3 * sizeof(int64) : 0) + (a->want ? (Size) a->n * 2 * 2 * sizeof(int64) : 0));
 	}
 	m += build + w->vblob.len;
 	for (int c = 0; c < w->schema->ncols; c++)
@@ -434,15 +436,30 @@ sift_colw_full(const SiftColSegWriter *w, Size budget)
 	return sift_colw_memory(w) > budget || w->rows >= SIFT_CPOINT_BUILD_ROWS;
 }
 
+/*
+ * The memory a participant that writes segments within `mem` bytes may let its writer estimate (sift_colw_memory): it resides at 1.4 times that (the batches, the blobs of
+ * the end of the segment, the allocator's) and takes 30 MB besides, and never less than half of `mem`, or a small one would cut a segment at every batch (a fit of the peaks of 5,000,000 rows at 64 and 256 MB: 1.4 times and 29 MB).
+ */
+Size
+sift_colw_budget(Size mem)
+{
+	return Max(mem > SIFT_COLW_BASE ? (mem - SIFT_COLW_BASE) * 10 / 14 : 0, mem / 2);
+}
+
+/* The resident bytes of a row of a segment: what sift_colw_memory counts for it, at its peak, and what the writer takes beyond what it counts */
 Size
 sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 {
-	int			leaves = 0;
+	int			leaves = 0,
+				ords = 0;
 
 	for (int c = 0; c < ncols; c++)
+	{
 		leaves += spec->point[c] || spec->point_tid[c] || spec->gorder[c];
-	/* a leaf: its accumulators at their largest (twice the entries, with the group of each one), and once the arrays the end of the segment builds for the largest leaf */
-	return leaves ? (Size) leaves * (2 * (sizeof(int64) + sizeof(uint32) + sizeof(uint64)) + 2 * (sizeof(int64) + sizeof(uint8))) + 144 : 0;
+		ords += spec->gorder[c] != 0;
+	}
+	/* a leaf keeps a key and a row or address (16 bytes), a grouped order the group and its flag (9) besides; the end builds one leaf at a time: 24 bytes an entry of an order, 32 of a directory */
+	return leaves ? ((Size) leaves * 16 + (spec->gorder_group > 0 ? (Size) ords * 9 : 0) + 24 + 32) * 14 / 10 : 0;
 }
 
 Size

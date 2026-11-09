@@ -41,9 +41,10 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		{
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
-			a->cap = Max(Max(a->cap * 2, 4096), a->n + v->n);
+			a->cap = (uint32) Max(Max(a->cap + a->cap / 4, 4096), a->n + v->n);
 			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->key, (Size) a->cap * sizeof(int64));
-			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->row, (Size) a->cap * sizeof(uint32));
+			if ((a->want && !a->tids) || segw_elem_point(w, c))
+				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->row, (Size) a->cap * sizeof(uint32));
 			if (wt)
 				SIFT_REGROW_HUGE_IN(CurrentMemoryContext, a->tid, (Size) a->cap * sizeof(uint64));
 			MemoryContextSwitchTo(old);
@@ -117,7 +118,9 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 			a->key[a->n] = v->key[i];
 			if (wt)
 				a->tid[a->n] = rowkeys[i];
-			a->row[a->n++] = (uint32) w->rows + i;
+			if (a->row)
+				a->row[a->n] = (uint32) w->rows + i;
+			a->n++;
 		}
 	}
 }

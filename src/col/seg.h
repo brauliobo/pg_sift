@@ -56,6 +56,7 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
 extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
 /* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
 extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
+/* The rows the segment will hold, from the table's estimate or the partition the merge cuts: the arrays of the entries of the point directories and orders are allocated at that size, not grown by doubling */
 /* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
 extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
@@ -77,6 +78,8 @@ extern Size sift_colw_memory(const SiftColSegWriter *w);
 extern bool sift_colw_full(const SiftColSegWriter *w, Size budget);
 /* An upper bound of the bytes of memory a writer with this spec holds for each row of a segment: its accumulators for the point directories and order arrays and the arrays the end of the segment builds from them (what sift_colw_memory counts) */
 extern Size sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols);
+extern Size sift_colw_budget(Size mem);
+#define SIFT_COLW_BASE ((Size) 30 * 1024 * 1024)
 /* The budget the segments still to come need: the rows left over the segments left, at the rows per budget the last segment reached; never less than budget */
 extern Size sift_colw_fit_budget(Size budget, uint64 seg_rows, uint64 rows_left, int segs_left);
 /* Writes DICTS, ZONES, SBDIR, SCHEMA, the all-live LIVE pages and the header; fills the directory entry (kind IMMUTABLE, format, header_blk, sb_lo/hi, ndocs = rows, bytes) */

@@ -59,6 +59,13 @@ sift_colb_budget(int nslots)
 	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
 }
 
+/* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem (below the least a segment is worth, 16 MB, the participants overshoot it) */
+Size
+colb_writer_budget(int nslots)
+{
+	return Max(sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots), SIFT_COL_BUILD_MIN_BUDGET);
+}
+
 /* The most memory the rows of a run may take: the references the sort makes of them are a third of their bytes, the writer and the rest are what a participant keeps besides */
 static Size
 run_cap(int nslots)
@@ -265,7 +272,7 @@ colb_flush_batch(ColBuild *b)
 		if (b->fill != NULL)
 			sift_colw_set_fill(b->w, b->fill);
 		sift_colw_set_index_rows(b->w, b->total_rows);
-		sift_colw_set_preagg(b->w, &b->r->pagg);
+			sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
 	if (sift_colw_full(b->w, b->budget) && b->nsegs + 1 < b->maxsegs)
@@ -405,7 +412,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
-	b->budget = budget;
+	b->budget = sift_col_key_cut(b->r) ? budget : colb_writer_budget(nslots);
 	b->run_cap = Max(budget, run_cap(nslots));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0)

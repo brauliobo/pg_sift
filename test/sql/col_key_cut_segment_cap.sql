@@ -40,11 +40,11 @@ SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = 65536;
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.1 * sum(rows) / count(*) AS slices_even
+SELECT count(*) < 128 AS directory_not_full, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.25 * sum(rows) / count(*) AS slices_even
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
 
--- a third of the rows are one value of the key (the key_cut of the user's): the segments are those of an even key, in the same arrays, and the rows are the heap's
+-- a third of the rows are one value of the key (the key_cut of the user's): the segments are those of an even key, in the same arrays, and the rows are the heap's (a segment is cut at the memory of its writer, so the last one holds what is left: up to 25% over the mean)
 DROP TABLE cap;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false);

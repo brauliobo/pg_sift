@@ -125,16 +125,15 @@ pk_maxrun(const PointEnt *e, uint32 n, uint32 rbits)
 
 /*
  * The packed table of the entries e (sorted by key and code; e[].val is the payload code, at most maxcode). Dense when the keys lie in a range that gives a
- * remainder of fewer bits than the hash does, else by the hash of the key (the entries are then sorted again by k). The entries' key is rewritten to k.
+ * remainder of fewer bits than the hash does, else by the hash of the key (the entries are then sorted again by k). The entries' key is rewritten to k: e is the caller's to drop.
  */
 static bool
-pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmul, uint64 limit, SiftCPackPar *par, StringInfo out, uint32 *nkeys)
+pk_build(PointEnt *e, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmul, uint64 limit, SiftCPackPar *par, StringInfo out, uint32 *nkeys)
 {
 	uint32		pbits = log2_floor(maxcode | 1) + 1,
 				lg = 0;
-	uint64		span = (uint64) src[n - 1].key - (uint64) src[0].key,
+	uint64		span = (uint64) e[n - 1].key - (uint64) e[0].key,
 				range = span + 1;
-	PointEnt   *e;
 	uint8	   *buf;
 	uint32	   *dir;
 	uint64		bytes,
@@ -147,8 +146,6 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	*par = (SiftCPackPar) {.pbase = pbase,.pmul = pmul,.pbits = pbits};
 	if (pbits > 48)
 		return false;
-	e = sift_rows_alloc((Size) n * sizeof(PointEnt));
-	memcpy(e, src, n * sizeof(PointEnt));
 	if (span < (UINT64CONST(1) << 56))
 	{
 		uint32		r = log2_floor(Max(1, range * SIFT_CPOINT_PK_BUCKET / n));
@@ -167,7 +164,8 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 				par->nbuckets = (uint32) (((range - 1) >> r) + 1);
 			}
 			else
-				memcpy(e, src, n * sizeof(PointEnt));
+				for (uint32 i = 0; i < n; i++)
+					e[i].key = (int64) ((uint64) e[i].key + (uint64) kmin);
 		}
 	}
 	if (!par->dense)
@@ -205,7 +203,6 @@ pk_build(const PointEnt *src, uint32 n, uint64 maxcode, uint64 pbase, uint32 pmu
 	*nkeys = keys;
 	ok = true;
 done:
-	pfree(e);
 	if (!ok)
 		*par = (SiftCPackPar) {0};
 	return ok;

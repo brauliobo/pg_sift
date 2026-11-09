@@ -23,7 +23,7 @@
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
 
-/* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants, at least this much (the serial build 64 MB) */
+/* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants (the segments of a key_cut build), at least this much (the serial build 64 MB) */
 #define SIFT_COL_BUILD_MIN_BUDGET	((Size) 16 * 1024 * 1024)
 #define SIFT_COL_BUILD_SERIAL_BUDGET ((Size) 64 * 1024 * 1024)
 

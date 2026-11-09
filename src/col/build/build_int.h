@@ -55,6 +55,7 @@ struct ColBuild
 
 extern uint64	colb_next_gen(ColBuild *b);
 extern Size colb_run_budget(ColBuild *b, Size held);
+extern Size colb_writer_budget(int nslots);
 extern void colb_flush_batch(ColBuild *b);
 extern void colb_add_row(ColBuild *b, const SiftColRow *row);
 extern void colb_write_run(ColBuild *b, bool last);

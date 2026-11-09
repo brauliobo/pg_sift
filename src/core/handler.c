@@ -4,6 +4,10 @@
  */
 #include "postgres.h"
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
@@ -247,6 +251,19 @@ static void
 catalog_invalidate(Datum arg, int cacheid, uint32 hashvalue)
 {
 	catalog_valid = false;
+}
+
+/*
+ * glibc raises the size from which it maps a block to that of the largest it freed, and serves the next arrays of a writer (the accumulators of a segment and the
+ * arrays its end builds) from the heap, where what is freed in the middle stays the process's: a build held twice the memory its segments took. Pinning the size keeps
+ * those arrays mapped, and unmapped when freed, so that maintenance_work_mem bounds the resident memory (5,000,000 rows at 64 MB: 133 MB peak, 82 MB pinned).
+ */
+void
+sift_host_pin_heap(void)
+{
+#ifdef __GLIBC__
+	mallopt(M_MMAP_THRESHOLD, 1024 * 1024);
+#endif
 }
 
 void

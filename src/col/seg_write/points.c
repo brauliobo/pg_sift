@@ -92,43 +92,23 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 	MemoryContextSwitchTo(old);
 	if (grouped)
 	{
-		/* the arrays of the entries are the point directory's too, so the others are copied */
 		uint32		nv = 0,
 					nl = 0;
-		int64	   *key = sift_rows_alloc(((Size) a->n + 1) * sizeof(int64)),
-				   *grp = sift_rows_alloc(((Size) a->n + 1) * sizeof(int64)),
-				   *ngrp = sift_rows_alloc(((Size) a->nn + 1) * sizeof(int64));
-		uint64	   *tid = sift_rows_alloc(((Size) a->n + 1) * sizeof(uint64)),
-				   *ntid = sift_rows_alloc(((Size) a->nn + 1) * sizeof(uint64));
 
 		for (uint32 i = 0; i < a->n; i++)
-			if (a->gok[i])
-			{
-				key[nv] = a->key[i];
-				tid[nv] = a->tid[i];
-				grp[nv++] = a->gk[i];
-			}
+			nv += a->gok[i] != 0;
 		for (uint32 i = 0; i < a->nn; i++)
-			if (a->ngok[i])
-			{
-				ntid[nl] = a->ntid[i];
-				ngrp[nl++] = a->ngk[i];
-			}
+			nl += a->ngok[i] != 0;
 		ob->nent = nv + nl;
 		ob->nvals = nv;
 		if (ob->nent > 0)
 			{
 				SiftCGOrdHdr h;
 
-				sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, dense,
+				sift_cgord_build_grouped(a->key, a->tid, a->gk, a->gok, a->n, nv, a->ntid, a->ngk, a->ngok, a->nn, nl, w->pagg.gorder_group - 1, dense,
 										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv), &ob->tab);
 				w->anycompact = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.quant != 0) || w->anycompact;
 			}
-		pfree(key);
-		pfree(grp);
-		pfree(ngrp);
-		pfree(tid);
-		pfree(ntid);
 	}
 	else
 	{
@@ -283,7 +263,8 @@ segw_build_points(SiftColSegWriter *w)
 		if (a->key)
 		{
 			pfree(a->key);
-			pfree(a->row);
+			if (a->row)
+				pfree(a->row);
 			if (a->tid)
 				pfree(a->tid);
 			a->key = NULL;
