@@ -70,7 +70,7 @@ wbuf_advance_page(SiftCWbufReader *r)
 	return true;
 }
 
-/* The records of a page that start in bytes from to upto and are flagged dead */
+/* The records of a page that start in bytes from to upto and are flagged dead; from is the start of a record (0, or the used bytes of an earlier read of the page) */
 uint32
 wbuf_page_dead(Relation index, Page page, Size from, Size upto)
 {
@@ -78,12 +78,13 @@ wbuf_page_dead(Relation index, Page page, Size from, Size upto)
 	uint32		n = 0;
 
 	wbuf_cursor_set(&c, page);
+	c.pos = from;
 	while (c.pos < c.used && c.pos < upto)
 	{
 		Size		size;
 		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
 
-		n += c.pos >= from && (h->flags & SIFT_COLR_DELETED) != 0;
+		n += (h->flags & SIFT_COLR_DELETED) != 0;
 		c.pos += size;
 	}
 	return n;
