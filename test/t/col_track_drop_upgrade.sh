@@ -9,6 +9,7 @@ if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on Po
 ref=v4.2.0
 git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }
 newroot=$ROOT
+ext=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 plan 12
 
 build_old "$ref"; oldroot=$OLDROOT
@@ -37,7 +38,7 @@ check "... the triggers of the old index are found, and a REINDEX of it keeps on
 	test "$(sql us "SELECT triggers FROM sift.col_tracking('h_c')" | tail -n 1)|$(sql us "REINDEX INDEX h_c" >/dev/null 2>&1; sql us "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'")" == "t|4"
 
 sql us "ALTER EXTENSION pg_sift UPDATE" >/dev/null 2>"$TAPDIR/upd.err"
-check "ALTER EXTENSION UPDATE from $ref (to $(sql us "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"))" test "$(sql us "SELECT count(*) FROM pg_extension WHERE extname = 'pg_sift' AND extversion = '4.2.1'")" == 1
+check "ALTER EXTENSION UPDATE from $ref (to $(sql us "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"))" test "$(sql us "SELECT count(*) FROM pg_extension WHERE extname = 'pg_sift' AND extversion = '$ext'")" == 1
 check "the index depends on the triggers now, and no trigger depends on an index" test "$(fwd)|$(rev)|$(orphans)" == "0|4|0"
 check "sift.col_track_convert() has nothing left to convert" test "$(sql us "SELECT sift.col_track_convert()")" == 0
 check "writes work after the update, and the reads answer as the heap" test "$(writes; echo $?)|$(ans on)" == "0|$(ans off)"
