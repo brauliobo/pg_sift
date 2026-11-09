@@ -18,6 +18,7 @@
 
 #include "agg/agg.h"
 #include "agg/lookclass_int.h"
+#include "col/am.h"
 #include "col/dictshm.h"
 
 #define KEY_CHDR	UINT64CONST(0x53494654A101)
@@ -282,6 +283,8 @@ dense_gang(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Den
 		return false;
 	nw = Min(max_parallel_workers_per_gather, GANG_MAX);
 	cx = AllocSetContextCreate(CurrentMemoryContext, "lookup class gang", ALLOCSET_DEFAULT_SIZES);
+	/* the workers read the index of the table, and the rows this transaction holds back for it are in no page for them */
+	sift_col_flush_held();
 	src = sift_colsrc_open(rel, ix, ex->snap, cx, NULL);
 	vlen = sift_colsrc_view_size(src);
 	dictshm = sift_dictshm_prepare();
