@@ -36,119 +36,44 @@ dense_ent(AggExec *ex, int ci, uint64 x, uint32 c)
 	const MapTab *m = cs->map;
 	uint64		v = c == 0 ? x : (uint64) (uint32) map_kint(m, c - 1, 0) + 1;
 
-	if (cs->cent == NULL)
-	{
-		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
-		cs->cbase = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
-	}
 	cs->cent[c] = combo_ent(ex, ci, &v) + 1;
 	return cs->cent[c] - 1;
 }
 
 /*
- * The entries of the keys of a leaf without NULLs against a dense table: the class of a key is one array read and the entry of a class another, so the work of a
- * row is two loads and a store, where the general loop below tests each row for the NULL, the repeat of the value before it and the kind of the leaf.
+ * The entries of the keys of an int4 leaf against a dense table, the common case of a join to a dimension: the class of a key is one array read and the entry of a class another, with no test
+ * of the repeat of the value before it. The entry of a class met for the first time and a NULL key are made in the order of the tuples, as the general loop does: the ids are the same.
  */
 static void
-resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const SiftSrcVec *v)
+resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const uint64 *alive, const SiftSrcVec *v)
 {
 	ComboSt    *cs = &ex->cs[ci];
 	const MapTab *m = cs->map;
 	const int32 *key = (const int32 *) v->data;
 	const uint16 *cls = m->dcls;
 	uint32		dn = m->dn;
-	const uint32 *cent = cs->cent;
 
+	if (cs->cent == NULL)
+		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
 	for (int i = 0; i < n; i++)
 	{
 		int32		k = key[idx[i]];
 		uint32		c = (uint32) k < dn ? cls[k] : 0;
-		uint32		e = cent != NULL ? cent[c] : 0;
+		uint32		e = cs->cent[c];
+		uint64		x = (uint64) (uint32) k + 1;
 
-		if (e == 0)
+		if (alive && !sift_colsrc_bit(alive, i))
+			eid[i] = COMBO_NONE;
+		else if (v->isnull && v->isnull[idx[i]])
 		{
-			/* the entry of a class not seen yet is made, which may make the table of the entries */
-			e = dense_ent(ex, ci, (uint64) (uint32) k + 1, c) + 1;
-			cent = cs->cent;
+			x = 0;
+			eid[i] = cs->dircap > 0 && cs->dir[0] != 0 ? cs->dir[0] - 1 : combo_ent(ex, ci, &x);
 		}
-		eid[i] = e - 1;
+		else if (e == 0)
+			eid[i] = dense_ent(ex, ci, x, c);
+		else
+			eid[i] = e - 1;
 	}
-}
-
-#define CBASE_MANY	UINT32_MAX
-#define DENSE_AHEAD	16
-
-/* the output row (+1) of class c, made on its first key k; CBASE_MANY when the class has no single row */
-static pg_noinline uint32
-dense_base(AggExec *ex, int ci, int32 k, uint32 c)
-{
-	ComboSt    *cs = &ex->cs[ci];
-	uint32		b = cs->cbase != NULL ? cs->cbase[c] : 0;
-
-	if (b == 0)
-	{
-		uint32		e = dense_ent(ex, ci, (uint64) (uint32) k + 1, c);
-
-		b = cs->cbase[c] = cs->ent[e].nout == 1 ? cs->ent[e].base + 1 : CBASE_MANY;
-	}
-	return b;
-}
-
-/*
- * The output row of each tuple's key against a dense table whose every class has one row, in one pass: the class of a key and the row of a class are two
- * array reads, with no entry of the tuple made in between. False, with nothing written that matters, when the join is not that kind (a leaf that is not an
- * int4 without NULLs) or a class has no row (an orphan key of an INNER join) or several: the caller resolves the entries as for any join, and this
- * one is not tried again.
- */
-bool
-combo_dense_outs(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *cout)
-{
-	ComboSt    *cs = &ex->cs[ci];
-	const SiftAggCombo *cb = &ex->spec->combo[ci];
-	const MapTab *m = cs->map;
-	const SiftSrcLeaf *lf;
-	const SiftSrcVec *v;
-	const int32 *key;
-	const uint32 *idx;
-	const uint16 *cls;
-	uint32	   *cbase;
-	uint32		dn;
-
-	if (m == NULL || m->dcls == NULL || cs->dmany || cb->nleaves != 1 || cb->leaf[0] < 0 || cs->by_id || combo_null_input(ex))
-		return false;
-	lf = &ex->lay->leaf[cb->leaf[0]];
-	v = get_vec(ex, cb->leaf[0]);
-	if (leaf_wide(lf) || lf->vtype != SCV_I32 || v->isnull != NULL)
-		return false;
-	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
-		combo_reset(ex, ci);
-	idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
-	key = (const int32 *) v->data;
-	dn = m->dn;
-	cls = m->dcls;
-	cbase = cs->cbase;
-	for (int i = 0; i < n; i++)
-	{
-		int32		k = key[idx[i]];
-		uint32		c = (uint32) k < dn ? cls[k] : 0;
-		uint32		b = cbase != NULL ? cbase[c] : 0;
-
-		/* the classes of a table of many keys do not fit the first cache level: ask for the line a few keys ahead */
-		if (i + DENSE_AHEAD < n)
-			__builtin_prefetch(cls + key[idx[i + DENSE_AHEAD]]);
-		if (unlikely(b == 0 || b == CBASE_MANY))
-		{
-			b = dense_base(ex, ci, k, c);
-			if (b == CBASE_MANY)
-			{
-				cs->dmany = true;
-				return false;
-			}
-			cbase = cs->cbase;
-		}
-		cout[i] = b - 1;
-	}
-	return true;
 }
 
 /*
@@ -164,11 +89,10 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 	uint32	   *map = kind == SCV_CODE ? dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, 0) : NULL;
 	uint32		last = UINT32_MAX;
 	uint64		x = 0;
-	bool		dense = kind == SCV_I32 && cs->map != NULL && cs->map->dcls != NULL;
 
-	if (dense && alive == NULL && v->isnull == NULL)
+	if (kind == SCV_I32 && cs->map != NULL && cs->map->dcls != NULL)
 	{
-		resolve_dense(ex, ci, n, idx, eid, v);
+		resolve_dense(ex, ci, n, idx, eid, alive, v);
 		return;
 	}
 	for (int i = 0; i < n; i++)
@@ -192,14 +116,7 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 			else
 				x = (uint64) (uint32) ((const int32 *) v->data)[last] + 1;
 		}
-		if (dense && x != 0)
-		{
-			uint32		c = map_dense_class(cs->map, (int64) (int32) (x - 1));
-
-			eid[i] = cs->cent != NULL && cs->cent[c] != 0 ? cs->cent[c] - 1 : dense_ent(ex, ci, x, c);
-		}
-		else
-			eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
+		eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
 	}
 }
 
@@ -351,63 +268,12 @@ combo_row_parent(AggExec *ex, int ci)
 	return par;
 }
 
-/*
- * The tuples miss of a chunk are those whose parent row has no entry of this combo yet: resolved on their own (the chunk of a table with thousands of rows meets the
- * rare ones for many chunks, and resolves the rest of the chunk from the cache), and their entries are remembered by row.
- */
-static void
-resolve_missed(AggExec *ex, int ci, int qlevel, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const Tup *tuples, const uint32 *miss, int nmiss)
-{
-	ComboSt    *cs = &ex->cs[ci];
-	const uint32 *row = tuples->cout[cs->prow - 1];
-	uint32	   *mem = palloc(4 * (Size) nmiss * sizeof(uint32)),
-			   *mt = mem,
-			   *mr = mem + nmiss,
-			   *mrow = mem + 2 * (Size) nmiss,
-			   *me = mem + 3 * (Size) nmiss;
-	uint32	  **cout = memcpy(palloc(ex->spec->ncombo * sizeof(uint32 *)), tuples->cout, ex->spec->ncombo * sizeof(uint32 *));
-	Tup			sub = *tuples;
-
-	for (int j = 0; j < nmiss; j++)
-	{
-		mt[j] = tidx[miss[j]];
-		mr[j] = ridx[miss[j]];
-		mrow[j] = row[miss[j]];
-	}
-	cout[cs->prow - 1] = mrow;
-	sub.cout = cout;
-	sub.n = nmiss;
-	combo_resolve_gen(ex, ci, qlevel, nmiss, mt, mr, me, NULL, &sub);
-	for (int j = 0; j < nmiss; j++)
-	{
-		uint32		i = miss[j];
-
-		eid[i] = me[j];
-		if (me[j] == COMBO_NONE || row[i] == COMBO_NONE)
-			continue;
-		if (row[i] >= cs->nbyrow)
-		{
-			uint32		cap = Max(cs->nbyrow, 1024);
-
-			while (cap <= row[i])
-				cap *= 2;
-			SIFT_REGROW_IN(cs->cxt, cs->byrow, (Size) cap * sizeof(uint32));
-			memset(cs->byrow + cs->nbyrow, 0, (Size) (cap - cs->nbyrow) * sizeof(uint32));
-			cs->nbyrow = cap;
-		}
-		cs->byrow[row[i]] = me[j] + 1;
-	}
-	pfree(cout);
-	pfree(mem);
-}
-
 static void
 combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
 {
 	ComboSt    *cs = &ex->cs[ci];
 	const uint32 *row;
-	uint32	   *miss;
-	int			nmiss = 0;
+	bool		fill = true;
 
 	if (cs->prow == 0)
 	{
@@ -421,17 +287,32 @@ combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 		return;
 	}
 	row = tuples->cout[cs->prow - 1];
-	miss = palloc(n * sizeof(uint32));
-	for (int i = 0; i < n; i++)
+	for (int i = 0; i < n && fill; i++)
 		if (alive && !sift_colsrc_bit(alive, i))
 			eid[i] = COMBO_NONE;
 		else if (row[i] < cs->nbyrow && cs->byrow[row[i]])
 			eid[i] = cs->byrow[row[i]] - 1;
 		else
-			miss[nmiss++] = i;
-	if (nmiss > 0)
-		resolve_missed(ex, ci, qlevel, tidx, ridx, eid, tuples, miss, nmiss);
-	pfree(miss);
+			fill = false;
+	if (fill)
+		return;
+	combo_resolve_gen(ex, ci, qlevel, n, tidx, ridx, eid, alive, tuples);
+	for (int i = 0; i < n; i++)
+	{
+		if (eid[i] == COMBO_NONE || row[i] == COMBO_NONE)
+			continue;
+		if (row[i] >= cs->nbyrow)
+		{
+			uint32		cap = Max(cs->nbyrow, 1024);
+
+			while (cap <= row[i])
+				cap *= 2;
+			SIFT_REGROW_IN(cs->cxt, cs->byrow, (Size) cap * sizeof(uint32));
+			memset(cs->byrow + cs->nbyrow, 0, (Size) (cap - cs->nbyrow) * sizeof(uint32));
+			cs->nbyrow = cap;
+		}
+		cs->byrow[row[i]] = eid[i] + 1;
+	}
 }
 
 /* a combo whose join runs a correlated child makes the entries a chunk adds together, so that their children are probed as one batch (combo/probe.c) */
