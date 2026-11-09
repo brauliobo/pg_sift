@@ -360,8 +360,10 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	TypeCacheEntry *tc = lookup_type_cache(typ, TYPECACHE_EQ_OPR);
 	RegProcedure lhs,
 				rhs;
+	Node	   *arg2 = arg;
 	bool		joined = false,
-				direct;
+				direct,
+				flag;
 	int			kind,
 				ci,
 				si;
@@ -389,9 +391,20 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 		return false;
 	else if (direct)
 		kind = kind == SAA_M_MIN ? SAA_X_MIN : SAA_X_MAX;
-	if (!combo_slot(c, normalize_expr(c, arg), !direct, &ci, &si))
+	/* count(x) needs whether x is NULL, not the id of its value: a flag, with no table of the values */
+	flag = kind == SAA_M_COUNT;
+	if (flag)
+	{
+		NullTest   *nt = makeNode(NullTest);
+
+		nt->arg = (Expr *) arg;
+		nt->nulltesttype = IS_NOT_NULL;
+		nt->location = -1;
+		arg2 = (Node *) nt;
+	}
+	if (!combo_slot(c, normalize_expr(c, arg2), !direct && !flag, &ci, &si))
 		return false;
-	slot_req(c, ci, si)->agg = direct ? -1 : ai;
+	slot_req(c, ci, si)->agg = direct || flag ? -1 : ai;
 	slot_req(c, ci, si)->direct = direct;
 	out->kind = kind;
 	out->aggfn = fid;

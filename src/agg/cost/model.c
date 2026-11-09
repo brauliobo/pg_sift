@@ -145,13 +145,14 @@ fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc
 	{
 		const SiftAggSlot *slot = &cb->slot[sl];
 		int			col = IsA(slot->expr, Param) ? ((Param *) slot->expr)->paramid - cb->nleaves : -1;
+		bool		wide = col >= 0 && col < jc->j.ncol && joined_distinct(c, jc, col) * AGG_FAN_WIDE_SHARE > rows;
 
 		if (!slot->is_key)
 			ops += AGG_FAN_FLAG;
 		else if (slot->agg >= 0)
-			ops += AGG_FAN_ARG;
+			ops += wide ? AGG_FAN_ARG_WIDE : AGG_FAN_ARG;
 		else
-			ops += col >= 0 && col < jc->j.ncol && joined_distinct(c, jc, col) * AGG_FAN_WIDE_SHARE > rows ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
+			ops += wide ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
 	}
 	return ops;
 }
