@@ -589,7 +589,7 @@ SELECT sift._test_poke('t2_idx', :empty_page, 28, 0, 2);
  
 (1 row)
 
-SELECT sift._test_poke('t2_idx', :rec_page, 38, 8, 2);
+SELECT sift._test_poke('t2_idx', :rec_page, 38, 16, 2);
  _test_poke 
 ------------
  

@@ -9,6 +9,9 @@
 #include "col/wbuf/wbuf_int.h"
 
 StaticAssertDecl(sizeof(SiftColRecHead) == 12, "the record head is 12 bytes");
+
+bool		sift_col_wbuf_ref = false;
+
 #ifdef SIFT_TESTING
 int			sift_cwbuf_fail_grow = 0;
 #endif
@@ -134,6 +137,24 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 			}
 	}
 	buf->data[buf->len] = '\0';
+	return ovf;
+}
+
+/* The payload of a row's record: the xid of its inserter when it has one, then the values, or nothing more for a REF record (the leaves of the row are still counted for the overflow flags) */
+uint32
+wbuf_encode_rec(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, uint32 *jnull)
+{
+	uint32		ovf;
+
+	Assert(TransactionIdIsValid(xmin) || !ref);
+	if (TransactionIdIsValid(xmin))
+		appendBinaryStringInfo(buf, (const char *) &xmin, sizeof(xmin));
+	ovf = wbuf_encode_row(buf, schema, row, jnull);
+	if (ref)
+	{
+		buf->len = sizeof(xmin);
+		buf->data[buf->len] = '\0';
+	}
 	return ovf;
 }
 
@@ -314,7 +335,7 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 }
 
 bool
-sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin)
+sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref)
 {
 	StringInfoData buf;
 	Buffer		tailbuf;
@@ -325,9 +346,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 				jnull;
 
 	initStringInfo(&buf);
-	if (TransactionIdIsValid(xmin))
-		appendBinaryStringInfo(&buf, (const char *) &xmin, sizeof(xmin));
-	ovf = wbuf_encode_row(&buf, schema, row, &jnull);
+	ovf = wbuf_encode_rec(&buf, schema, row, xmin, ref, &jnull);
 	for (;;)
 	{
 		if (h->gen == 0)
@@ -337,7 +356,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 			break;
 		h->gen = 0;
 	}
-	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0, buf.data, buf.len, &tail);
+	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, wbuf_rec_flags(xmin, ref), buf.data, buf.len, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

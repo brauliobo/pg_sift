@@ -43,7 +43,13 @@ extern uint32 sift_cwbuf_jnull(const SiftDirSnapshot *dir);
  * A row whose record exceeds a page is split in pieces (SIFT_COLR_CONT). xmin: the transaction that inserted the heap tuple of the row, kept in the record
  * (InvalidTransactionId: none, as for the rows of an index without track_changes and of a speculative insertion).
  */
-extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin);
+extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref);
+
+/*
+ * ref (sift.col_wbuf_ref, needs an xmin): the record keeps the xmin alone, 16 bytes with its head, and the reader fetches the values from the heap tuple at the TID
+ * (col/wbuf/ref.c: a tuple that is gone or is another one's is skipped). The heap is durable by its own WAL, which precedes the record of the index.
+ */
+extern PGDLLIMPORT bool sift_col_wbuf_ref;
 
 /*
  * A row of a transaction that already wrote one is buffered in the backend (false: the index has no slot, append it) and reaches the lane with
@@ -51,7 +57,7 @@ extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftCol
  * append), sift_cwbuf_pending names the index that has the file of a slot that holds some (a swap of files moves rows to the other index), sift_cwbuf_discard drops those of an index (all when InvalidOid): the transaction
  * aborted, or the index was rebuilt from the heap that holds them. Every reader of this file flushes first.
  */
-extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed);
+extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, bool *crossed);
 extern bool sift_cwbuf_flush(Relation index);
 extern bool sift_cwbuf_pending(Oid *index);
 extern void sift_cwbuf_discard(Oid index);

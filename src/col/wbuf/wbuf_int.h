@@ -27,6 +27,14 @@
 
 #define SIFT_COLR_XMIN		0x0004	/* the payload starts with the xid (4 bytes) of the transaction that inserted the row, ahead of the values; first piece only. A row of an index without track_changes, one a speculative insertion wrote and one of a buffer written before this flag have none: nothing is claimed of their inserter */
 
+#define SIFT_COLR_REF		0x0008	/* with SIFT_COLR_XMIN: the payload is the xid alone, the values are in the heap tuple at the TID (col/wbuf/ref.c fetches them when the record is read) */
+
+static inline uint16
+wbuf_rec_flags(TransactionId xmin, bool ref)
+{
+	return (TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0) | (ref ? SIFT_COLR_REF : 0);
+}
+
 #define COLV_NULL			0x01
 
 #define COLV_OVERFLOW		0x02
@@ -55,6 +63,17 @@ typedef struct PageCursor
 	Size		used;
 } PageCursor;
 
+/* A REF record of the page copy and what the heap gave for it: the encoded values at off in the reader's refpay, none when the tuple is gone or is another one's */
+typedef struct RefRow
+{
+	Size		pos;
+	ItemPointerData tid;
+	TransactionId xmin;
+	Size		off;
+	Size		len;
+	bool		live;
+} RefRow;
+
 /* Element count of a group leaf's value in a row (absent array: none) */
 static inline uint64
 elem_count(const SiftColValue *v)
@@ -74,6 +93,13 @@ struct SiftCWbufReader
 	PageCursor	cur;
 	uint16		pflags;
 	bool		torn;			/* next_rec skipped a row whose last piece is missing */
+	/* the REF records of the page copy from the one that asked, in page order (col/wbuf/ref.c) */
+	RefRow	   *ref;
+	int			nref;
+	int			refcap;
+	int			refnext;
+	bool		refready;
+	StringInfoData refpay;
 	/* payload of a row assembled from pieces */
 	uint8	   *joined;
 	Size		joinedlen;
@@ -106,6 +132,10 @@ extern void	wbuf_cursor_set(PageCursor *c, Page page);
 extern const SiftColRecHead *	wbuf_rec_at(PageCursor *c, Size *size);
 
 extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, uint32 *jnull);
+
+extern uint32	wbuf_encode_rec(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, uint32 *jnull);
+
+extern bool	wbuf_ref_values(SiftCWbufReader *r, Size pos, RawRec *rec);
 
 extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
 

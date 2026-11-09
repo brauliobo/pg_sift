@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 39 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
@@ -1671,6 +1671,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave off. Set per role (superuser) only when a role under row-level security needs ranked scans; scores then use whole-index statistics, hidden rows included, so they depend on unseen rows.
 - **Sources:** benchmark `test:rank_rls`; [USAGE](USAGE.md#row-level-security)
 
+#### sift.col_wbuf_ref
+
+`sift_col` · opt-in · since 4.3 · default off
+
+- **What it does:** a row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, and the reader of the buffer fetches the values from the heap by address
+- **Gain:** n/a: prototype, not measured yet
+- **Impact:** index size: n/a: prototype, not measured yet; build, merge and writes: n/a: prototype, not measured yet; other: a scan, a promotion or a lookup of the buffer reads the heap tuple of every row it decodes (in block order, a page of records at a time), and skips a tuple that is gone or is another one's
+- **When:** An index that tracks changes (the primary key of a heap table, the default) of a heap table. Not an index without track_changes, a speculative insertion or a table that is not a heap.
+- **Default:** off — Not on by default: the reader of the buffer pays a heap fetch for every row until the buffer is promoted.
+- **Why not the default:** the history does not say
+- **Turn off:** SET sift.col_wbuf_ref = off (the default): rows are written with their values.
+- **Upgrade from 4.2:** A new setting: nothing changes while it is off.
+- **Advice:** Leave off: a prototype that a measurement decides on. Records written while it was on stay references after it is turned off.
+- **Sources:** benchmark `test:col_wbuf_ref_prune`; [USAGE](USAGE.md#maintenance-and-operations)
+
 #### sift.col_auto_merge_partition_kb
 
 `sift_col` · opt-in · since 3.3 · default 0
@@ -2669,12 +2684,13 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_child_first`, `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift.col_connect_refresh_pct`, `sift_col(connect)`, `sift.tomb_log_limit`.
+No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_child_first`, `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift.col_connect_refresh_pct`, `sift.col_wbuf_ref`, `sift_col(connect)`, `sift.tomb_log_limit`.
 
 | Option | 4.2 | 4.3 | Column format | What a 4.2 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | '' | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | '' | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
+| `sift.col_wbuf_ref` | new | off |  | A new setting: nothing changes while it is off. |
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.agg_dimmap_kb` | new | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.agg_connect_found` | new | on |  | New in 4.3. |

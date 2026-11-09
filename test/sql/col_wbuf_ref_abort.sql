@@ -1,0 +1,64 @@
+-- sift.col_wbuf_ref: the record of a tuple that an aborted transaction or an aborted savepoint inserted is read while the dead tuple is still in the heap (its values are fetched, the
+-- row is dropped as every row of an aborted inserter is), and after the prune made its line pointer dead (nothing to fetch). The answers are the heap's, before and after the promotion.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET check_function_bodies = off;
+
+CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS $$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*) || ',' || sum(v) FROM a),
+    (SELECT count(*) || ',' || sum(v) FROM a WHERE g = 3),
+    (SELECT string_agg(id::text, ',' ORDER BY v DESC, id) FROM (SELECT id, v FROM a ORDER BY v DESC, id LIMIT 30) x),
+    (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT g, count(*), sum(v) FROM a GROUP BY g) x))) $$;
+
+CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE native text; sift text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  native := answers();
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  sift := answers();
+  RETURN native = sift;
+END $$;
+
+CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
+CREATE INDEX a_ix ON a USING sift_col (id, g, v);
+SET sift.col_wbuf_ref = on;
+INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, 1000) i;
+
+-- a transaction that rolls back, after its first row and after several statements of many rows
+BEGIN;
+INSERT INTO a VALUES (5001, 1, 1, 'r');
+INSERT INTO a SELECT 5100 + i, i % 10, 50000 + i, 'r' FROM generate_series(1, 400) i;
+INSERT INTO a SELECT 5600 + i, i % 10, 60000 + i, 'r' FROM generate_series(1, 400) i;
+ROLLBACK;
+SELECT same_as_heap() AS same_aborted;
+SELECT sift.col_verify('a_ix', true);
+
+-- a savepoint that rolls back inside a transaction that commits
+BEGIN;
+INSERT INTO a SELECT 2000 + i, i % 10, i, 'c' FROM generate_series(1, 100) i;
+SAVEPOINT s;
+INSERT INTO a SELECT 3000 + i, i % 10, 70000 + i, 's' FROM generate_series(1, 300) i;
+ROLLBACK TO s;
+INSERT INTO a SELECT 4000 + i, i % 10, 80000 + i, 'c' FROM generate_series(1, 100) i;
+COMMIT;
+SELECT same_as_heap() AS same_savepoint;
+SELECT sift.col_verify('a_ix', true);
+
+-- the dead tuples pruned, the index not vacuumed: no tuple behind the records of the aborted inserts
+VACUUM (INDEX_CLEANUP off) a;
+SELECT same_as_heap() AS same_pruned;
+SELECT sift.col_verify('a_ix', true);
+SELECT sift.col_promote('a_ix') >= 0 AS promoted;
+SELECT sum(rows) AS promoted_rows FROM sift.col_segments('a_ix') WHERE kind = 'immutable';
+SELECT same_as_heap() AS same_promoted;
+SELECT sift.col_verify('a_ix', true);
+
+DROP FUNCTION same_as_heap();
+DROP FUNCTION answers();
+DROP TABLE a;
+DROP EXTENSION pg_sift CASCADE;

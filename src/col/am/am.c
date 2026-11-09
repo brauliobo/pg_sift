@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/relation.h"
+#include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
 
@@ -265,13 +266,15 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	 * CONCURRENTLY adds after the build is of an older transaction, which the id of the one that adds it follows.
 	 */
 	TransactionId xmin = r->track && batch_stmts == 0 ? GetCurrentTransactionId() : InvalidTransactionId;
+	/* the heap tuple is the record's values only where its xmin is the kept one: not for the tuples a concurrent build validates (an index not valid yet), nor a table that is not a heap */
+	bool		ref = sift_col_wbuf_ref && TransactionIdIsValid(xmin) && index->rd_index->indisvalid && heap->rd_rel->relam == HEAP_TABLE_AM_OID;
 
 	batch_inserting = true;
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
 	sift_col_batch_hook();
 	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
-	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, &crossed)))
-		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin);
+	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, xmin, ref, &crossed)))
+		crossed = sift_cwbuf_append(index, &hint, r->schema, &row, xmin, ref);
 	batch_seen = true;
 	MemoryContextReset(rowcxt);
 	/* the append reads the catalog, which can reload the relcache entry and free r: keep the hint in the entry as it is now */

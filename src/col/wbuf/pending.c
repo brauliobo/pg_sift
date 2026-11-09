@@ -26,8 +26,18 @@
 
 #define PEND_HEAD		(sizeof(ItemPointerData) + sizeof(uint32))
 
-/* the top bit of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
+/* the top bits of the stored length: the payload starts with the inserter's xid (SIFT_COLR_XMIN), and is that alone (SIFT_COLR_REF). The head keeps its size, so a buffer flushes at the same rows with or without track_changes */
 #define PEND_XMIN		0x80000000u
+
+#define PEND_REF		0x40000000u
+
+#define PEND_FLAGS		(PEND_XMIN | PEND_REF)
+
+static inline uint16
+pend_flags(uint32 stored)
+{
+	return ((stored & PEND_XMIN) ? SIFT_COLR_XMIN : 0) | ((stored & PEND_REF) ? SIFT_COLR_REF : 0);
+}
 
 typedef struct PendIndex
 {
@@ -36,7 +46,7 @@ typedef struct PendIndex
 	RelFileLocator loc;
 	uint32		ovf;
 	uint32		jnull;
-	StringInfoData buf;			/* per row: tid, payload length (with PEND_XMIN), payload */
+	StringInfoData buf;			/* per row: tid, payload length (with PEND_FLAGS), payload */
 } PendIndex;
 
 static PendIndex pend[PEND_SLOTS];
@@ -140,7 +150,7 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 
 		memcpy(&tid, cur, sizeof(tid));
 		memcpy(&len, cur + sizeof(tid), sizeof(len));
-		len &= ~PEND_XMIN;
+		len &= ~PEND_FLAGS;
 		if (!BufferIsValid(buf) || BufferGetBlockNumber(buf) != ItemPointerGetBlockNumber(&tid))
 		{
 			if (BufferIsValid(buf))
@@ -193,8 +203,8 @@ pend_flush(Relation index, PendIndex *p)
 		}
 		memcpy(&tid, cur, sizeof(tid));
 		memcpy(&len, cur + sizeof(tid), sizeof(len));
-		flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
-		len &= ~PEND_XMIN;
+		flags = pend_flags(len);
+		len &= ~PEND_FLAGS;
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
 		if (RECSIZE(len) > room)
 		{
@@ -219,8 +229,8 @@ pend_flush(Relation index, PendIndex *p)
 					break;
 				memcpy(&tid, cur, sizeof(tid));
 				memcpy(&len, cur + sizeof(tid), sizeof(len));
-				flags = (len & PEND_XMIN) ? SIFT_COLR_XMIN : 0;
-				len &= ~PEND_XMIN;
+				flags = pend_flags(len);
+				len &= ~PEND_FLAGS;
 			} while (RECSIZE(len) <= room);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
@@ -253,13 +263,13 @@ wbuf_flush_for_read(Relation index)
  * (a page of rows is buffered) crossed write_buffer_limit; the hint is the caller's, as for sift_cwbuf_append.
  */
 bool
-sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool *crossed)
+sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, bool *crossed)
 {
 	PendIndex  *p;
 	uint32		ovf,
 				jnull,
 				len;
-	uint16		flags = TransactionIdIsValid(xmin) ? SIFT_COLR_XMIN : 0;
+	uint16		flags = wbuf_rec_flags(xmin, ref);
 	uint32		stored;
 
 	*crossed = false;
@@ -274,9 +284,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		MemoryContextSwitchTo(old);
 	}
 	resetStringInfo(&pend_enc);
-	if (flags)
-		appendBinaryStringInfo(&pend_enc, (const char *) &xmin, sizeof(xmin));
-	ovf = wbuf_encode_row(&pend_enc, schema, row, &jnull);
+	ovf = wbuf_encode_rec(&pend_enc, schema, row, xmin, ref, &jnull);
 	len = pend_enc.len;
 	/* a row of several pages goes in as pieces, at once; its scratch space does not stay allocated */
 	if (RECSIZE(len) > EMPTY_ROOM)
@@ -304,7 +312,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	wbuf_flag_overflow(index, h, ovf, jnull);
 	enlargeStringInfo(&p->buf, PEND_HEAD + len);
 	memcpy(p->buf.data + p->buf.len, &row->tid, sizeof(ItemPointerData));
-	stored = len | (flags ? PEND_XMIN : 0);
+	stored = len | ((flags & SIFT_COLR_XMIN) ? PEND_XMIN : 0) | ((flags & SIFT_COLR_REF) ? PEND_REF : 0);
 	memcpy(p->buf.data + p->buf.len + sizeof(ItemPointerData), &stored, sizeof(stored));
 	memcpy(p->buf.data + p->buf.len + PEND_HEAD, pend_enc.data, len);
 	p->buf.len += PEND_HEAD + len;

@@ -311,6 +311,11 @@ sift_col_init(void)
 							"16 superblocks or more with under half this many rows each is written as units of this many rows in TID order, and a merge that stays that sparse does the same. "
 							"A merge that reaches this many rows per superblock cuts by superblock again. Needs a table of 16 superblocks (4,096 pages) or more.",
 							&sift_col_unit_floor, 2048, 0, 32768, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_wbuf_ref",
+							 "A row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, not as its values.",
+							 "The reader of the buffer (a scan, a promotion, a lookup) fetches the values from the heap by TID, in block order a page of records at a time, and skips a tuple that is gone or is another one's. "
+							 "Records written while it was on stay references after it is turned off. An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
+							 &sift_col_wbuf_ref, false, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",

@@ -168,7 +168,7 @@ SELECT min(blk) AS rec_page FROM pages WHERE type = 7 AND lower > 32 \gset
 SELECT sift._test_poke('t2_idx', :empty_page, 28, 5, 2);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
 SELECT sift._test_poke('t2_idx', :empty_page, 28, 0, 2);
-SELECT sift._test_poke('t2_idx', :rec_page, 38, 8, 2);
+SELECT sift._test_poke('t2_idx', :rec_page, 38, 16, 2);
 SELECT expect($$ SELECT * FROM sift._test_col_wbuf_segments('t2_idx') $$);
 SELECT sift._test_poke('t2_idx', :rec_page, 38, 0, 2);
 SELECT sift._test_poke('t2_idx', :rec_page, 40, 100000, 4);
