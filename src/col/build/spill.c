@@ -237,7 +237,7 @@ sample_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool ali
 /*
  * The runs of a build by ranges are cut at quantiles of the key of the whole table, not of its first rows (a table is often written in the order of
  * its key, and the first run holds the lowest keys): before the scan, the rows of superblocks spread over the table are read for their keys. Not for a table
- * that fits a run or two.
+ * that fits a run.
  */
 void
 colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
@@ -250,7 +250,7 @@ colb_spill_sample(ColBuild *b, Relation heap, IndexInfo *info)
 
 	if (!sift_col_build_key_ranges)
 		return;
-	if (leaf < 0 || b->total_rows == 0 || (uint64) nblocks * BLCKSZ < 3 * (uint64) b->budget)
+	if (leaf < 0 || b->total_rows == 0 || (uint64) nblocks * BLCKSZ < (uint64) b->budget / 2)
 		return;
 	take = Min(nsb, SAMPLE_SBS);
 	sm.b = b;
@@ -344,7 +344,7 @@ spill_run_rows(const ColBuild *b, Size held_bytes)
 
 /*
  * The rows held when the first run is full give the ranges: as many as runs the estimate of the rows of the table makes, cut at the quantiles of the key
- * of those rows. False (the rows stay to be written as a run) for a table that fits about two runs, a key that is not a number, a parallel participant
+ * of those rows. False (the rows stay to be written as a run) for a key that is not a number, a parallel participant
  * or a key of a few values.
  */
 bool
