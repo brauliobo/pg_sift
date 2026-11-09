@@ -21,23 +21,26 @@ sql pe "CREATE EXTENSION pg_sift" \
 	"CREATE INDEX ko_idx ON ko USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust')" >/dev/null || bail "setup failed"
 
 segments() { sql pe "SELECT count(*) FROM sift.col_segments('$1') WHERE kind = 'immutable'"; }
-# a scan of each index asks (the first of a backend, then once per naptime); the rewrite is done when the index has one segment
-scan_until_one() {
+due() { sql pe "SELECT coalesce(sift.col_maintenance_due('$1', true), '-')"; }
+# a scan of each index asks (the first of a backend, then once per naptime); the rewrite is done when the index is not due: its output is partitions of the size that
+# maintenance_work_mem allows a writer (a 1M-row index of four narrow columns is several), so not one segment
+scan_until_done() {
 	local i
 	for i in $(seq 120); do
 		sql pe "SELECT sum(amt) FROM nk" "SELECT sum(amt) FROM ko" >/dev/null
-		[[ $(segments "$1") == 1 ]] && return 0
+		[[ $(due "$1") == - ]] && return 0
 		sleep 0.5
 	done
 	return 1
 }
 
 check "the build left peers" test "$(segments nk_idx)" -gt 1 -a "$(segments ko_idx)" -gt 1
-check "the server's own rule finds the rewrite due, with the budget on" test "$(sql pe "SELECT coalesce(sift.col_maintenance_due('nk_idx', true), '-')")" == "fragmented units"
-check "scans alone, no VACUUM, no change, get the rewrite done" scan_until_one nk_idx
+# the reason is "key ranges overlap" when two or more peers are as large as a partition (the memory of a writer), "fragmented units" when the shares of the workers leave fewer
+check "the server's own rule finds the rewrite due, with the budget on" test "$(due nk_idx)" != -
+check "scans alone, no VACUUM, no change, get the rewrite done" scan_until_done nk_idx
 check "the index verifies" test "$(sql pe "SELECT sift.col_verify('nk_idx', true)" 2>&1 | grep -c ERROR)" == 0
 check "and answers as the heap does" test "$(sql pe "SET sift.enable_agg = on" "SELECT sum(amt) FROM nk" | tail -1)" == "$(sql pe "SET sift.enable_agg = off" "SELECT sum(amt) FROM nk" | tail -1)"
-check "it is not due again" test "$(sql pe "SELECT coalesce(sift.col_maintenance_due('nk_idx', true), '-')")" == "-"
+check "it is not due again" test "$(due nk_idx)" == "-"
 check "the table that opted out of autovacuum keeps its peers" test "$(segments ko_idx)" -gt 1
 
 finish
