@@ -40,7 +40,9 @@ SELECT e AS estimate, k.* FROM unnest(ARRAY[60000, 257000000, 1000000000, 430000
 	LATERAL kscale('ds', 'id, tenant_id, ref_id, d, tags, v', e) k ORDER BY e;
 SELECT e AS estimate, k.paths FROM unnest(ARRAY[6000, 257000000, 1000000000]::float4[]) e, LATERAL kscale('dj', 'id, doc', e) k ORDER BY e;
 
--- a heap of an estimate no run count holds is refused without key_cut, whether or not the estimate fits 64 bits
+-- a heap of an estimate no run count holds is refused without key_cut, whether or not the estimate fits 64 bits (PostgreSQL 17 stores the rows a CREATE INDEX saw in
+-- reltuples, so the estimate is set again after the builds of kscale)
+UPDATE pg_class SET reltuples = 3.4e38 WHERE relname = 'ds';
 CREATE INDEX ds_big ON ds USING sift_col (id, tenant_id) WITH (key_cut = 'off');
 UPDATE pg_class SET reltuples = 60000 WHERE relname = 'ds';
 
