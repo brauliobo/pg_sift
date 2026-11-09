@@ -15,6 +15,8 @@ NOTICE:  sift_col index "parent_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('parent_col');
 CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, tag);
+NOTICE:  sift_col index "child_col" connected to parent(id) through foreign key "child_parent_id_fkey"
+HINT:  To carry columns write them in connect = '.. carries a, b'; connect = 'off' turns it off.
 NOTICE:  sift_col index "child_col": 4 automatic choices
 DETAIL:  key_columns = parent_id; key_cut = parent_id; order_array_columns = v; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');
@@ -44,6 +46,8 @@ END $$;
 CREATE FUNCTION scan_cost(agg text) RETURNS float8 LANGUAGE sql AS $$
 	SELECT scan_cost FROM sift.explain_why(format($q$SELECT p.id, %s FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10$q$, agg))
 $$;
+-- the lookup join is what is priced: the child grouped by its key first (sift.agg_child_first) is another plan of these statements
+SET sift.agg_child_first = off;
 SELECT n, sql, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
  n  |                                                                       sql                                                                       |  plan   | same_answers 
 ----+-------------------------------------------------------------------------------------------------------------------------------------------------+---------+--------------

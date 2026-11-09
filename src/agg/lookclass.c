@@ -413,6 +413,7 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 				ncomp,
 				key = 0;
 	Relation	ix = lookcol_load_index(rel, j, false, need, &nneed, comp, &ncomp);
+	SiftSrcStats st;
 
 	if (ix == NULL)
 		return NULL;
@@ -423,11 +424,15 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 		index_close(ix, AccessShareLock);
 		return NULL;
 	}
+	sift_colsrc_stats(ix, &st);
+	/* the classes are an array over the keys: a table whose keys span more than the lookup budget (a sparse key) is read as rows */
+	if (st.min[need[key].lf->id] < 0 || st.max[need[key].lf->id] >= (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16))
+	{
+		index_close(ix, AccessShareLock);
+		return NULL;
+	}
 	if (bound != NULL)
 	{
-		SiftSrcStats st;
-
-		sift_colsrc_stats(ix, &st);
 		for (int c = 0; c < j->ncol; c++)
 			for (int p = 0; p < nneed; p++)
 				if (j->colexpr[c] ? need[p].xcol == c : need[p].expr == NULL && need[p].att == j->colatt[c])
