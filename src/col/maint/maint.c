@@ -65,8 +65,9 @@ maint_use_partitions(Relation index, const SiftDirSnapshot *snap)
 			bytes += snap->segs[i].bytes;
 			rows += snap->segs[i].ndocs;
 		}
-	/* a narrow row costs more memory in the writer for each byte of segment than the usual one does */
-	if (rows > 0 && sift_col_is_index(index))
+	/* a narrow row costs more memory in the writer for each byte of segment than the usual one does. The build's own merge of its runs keeps the byte rule: the
+	 * writer is cut at its memory anyway, and a run is no partition of the key (each holds rows of every key) */
+	if (rows > 0 && !maint_after_build && sift_col_is_index(index))
 		ratio = Max(ratio, (double) sift_colw_row_memory(&sift_col_rel(index)->pagg, sift_col_rel(index)->schema->ncols) * rows / Max(bytes, 1));
 	maint_part_kb = maint_part_kb_for(bytes, ratio);
 }
