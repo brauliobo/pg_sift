@@ -40,6 +40,10 @@ dense_ent(AggExec *ex, int ci, uint64 x, uint32 c)
 	return cs->cent[c] - 1;
 }
 
+/* the keys of a dense table from which its classes (2 bytes a key) outgrow a second-level cache, and how far ahead the line of a key is asked for */
+#define DENSE_FAR	(1u << 19)
+#define DENSE_AHEAD	64
+
 /*
  * The entries of the keys of an int4 leaf against a dense table, the common case of a join to a dimension: the class of a key is one array read and the entry of a class another, with no test
  * of the repeat of the value before it. The entry of a class met for the first time and a NULL key are made in the order of the tuples, as the general loop does: the ids are the same.
@@ -53,11 +57,17 @@ resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const 
 	const uint16 *cls = m->dcls;
 	uint32		dn = m->dn;
 
+	int			ahead = dn > DENSE_FAR ? DENSE_AHEAD : n;	/* n: none */
+
 	if (cs->cent == NULL)
 		cs->cent = MemoryContextAllocZero(cs->cxt, ((Size) m->nrow + 1) * sizeof(uint32));
 	for (int i = 0; i < n; i++)
 	{
-		int32		k = key[idx[i]];
+		int32		k;
+
+		if (i + ahead < n)
+			__builtin_prefetch(cls + key[idx[i + ahead]]);
+		k = key[idx[i]];
 		uint32		c = (uint32) k < dn ? cls[k] : 0;
 		uint32		e = cs->cent[c];
 		uint64		x = (uint64) (uint32) k + 1;
