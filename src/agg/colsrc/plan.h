@@ -38,7 +38,7 @@ extern void sift_colsrc_unpin(SiftSrcSource *src);
 extern const SiftSrcLayout *sift_colsrc_source_layout(const SiftSrcSource *src);
 
 /* The flag of a connection as a statement may read it (SiftSrcProvider.conn_proof): NULL, with the stamp of the oldest of the rows, or why not */
-extern const char *sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *lineage, uint32 *xmin);
+extern const char *sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
 
 /* Superblocks of the heap now: the morsels of a parallel scan are ranges of [0, nsb) */
 extern uint32 sift_colsrc_nsb(SiftSrcSource *src);

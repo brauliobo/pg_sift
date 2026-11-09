@@ -62,6 +62,7 @@ typedef struct SiftConnGen
 typedef struct SiftConnKeys
 {
 	int64	   *keys;
+	bool	   *kept;			/* [n] every record of the key is of an update that wrote a new version of the same key (no delete, no key change): a row holds the key for every snapshot */
 	uint32		n;
 	uint32		cap;
 } SiftConnKeys;
@@ -119,9 +120,9 @@ extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index
 /* Short words for EXPLAIN and the tests */
 extern const char *sift_conn_why_name(SiftConnWhy why);
 
-/* Writers: does the index keep a journal, and the KEYCHG record (for the current transaction and statement) for a key of the column type keytype; false when it keeps none */
+/* Writers: does the index keep a journal, and the KEYCHG record (for the current transaction and statement) for a key of the column type keytype; kept: an update that wrote a new version with the same key; false when it keeps no journal */
 extern bool sift_conn_journal_on(Relation index);
-extern bool sift_conn_record(Relation index, Oid keytype, Datum key, SiftTomb *rec);
+extern bool sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *rec);
 
 /* The same checks without the keys: may a derivation stamped so be read by snap at all (the first four conditions above) */
 extern SiftConnWhy sift_conn_vouches(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap);
@@ -201,9 +202,9 @@ extern void sift_conn_alter(Relation child_index);
  * found and the sift_col index of the parent that serves it. -1 when the index has no such connection.
  */
 extern int	sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, AttrNumber parent_key, int *found, Oid *parent_index);
-/* The flag of the connection as a statement may read it for every row of the source (col/scan/proof.c): NULL, with the oldest stamp of its segments, or why not */
+/* The flag of the connection as a statement may read it for every row of the source (col/scan/proof.c): NULL, with the oldest stamp of its segments and whether every segment is clean (SIFT_CONN_STAMP_CLEAN), or why not */
 struct SiftColSource;
-extern const char *sift_col_source_proof(struct SiftColSource *src, int found_leaf, SiftConnStamp *oldest);
+extern const char *sift_col_source_proof(struct SiftColSource *src, int found_leaf, SiftConnStamp *oldest, bool *clean);
 
 /*
  * ---- the carried values of a segment ----

@@ -31,15 +31,16 @@ found_conn(const SiftColSchema *schema, int leaf)
 /*
  * NULL when the flag of the connection is the whole story of the rows the source reads: they are all in stored segments, each filled under a stamp of one
  * lineage, and the write buffers hold no row. Then *oldest is the oldest of the stamps (the keys that changed since it are the keys any row may be wrong
- * for). Else the reason, as a word for EXPLAIN.
+ * for) and *clean says no row of any segment had a key the parent lacked (a parent row inserted since then changes no flag). Else the reason, as a word for EXPLAIN.
  */
 const char *
-sift_col_source_proof(SiftColSource *src, int found_leaf, SiftConnStamp *oldest)
+sift_col_source_proof(SiftColSource *src, int found_leaf, SiftConnStamp *oldest, bool *clean)
 {
 	int			conn = found_conn(src->schema, found_leaf);
 
 	SIFT_INVARIANT(conn >= 0, "sift: leaf %d is not the flag of a connection", found_leaf);
 	*oldest = (SiftConnStamp) {0};
+	*clean = true;
 	for (int i = 0; i < src->dir.nsegs; i++)
 	{
 		uint64		rows,
@@ -59,6 +60,7 @@ sift_col_source_proof(SiftColSource *src, int found_leaf, SiftConnStamp *oldest)
 			return "parent too large to resolve";
 		if (st->lineage == 0)
 			return "segment without stamp";
+		*clean &= (st->reserved & SIFT_CONN_STAMP_CLEAN) != 0;
 		if (oldest->lineage == 0)
 			*oldest = *st;
 		else if (oldest->lineage != st->lineage)

@@ -351,7 +351,7 @@ journal_old_rows(Relation index, Relation heap, AttrNumber hatt, SiftTombLog *lo
 		bool		isnull;
 		Datum		key = slot_getattr(old, hatt, &isnull);
 
-		if (!isnull && sift_conn_record(index, typid, key, &recs[n]) && ++n == DEAD_KEYS_CHUNK)
+		if (!isnull && sift_conn_record(index, typid, key, false, &recs[n]) && ++n == DEAD_KEYS_CHUNK)
 		{
 			sift_tomb_append_many(index, log, recs, n);
 			n = 0;

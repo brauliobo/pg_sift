@@ -4,8 +4,9 @@
  * A semi, anti or inner join of the scanned table to the parent of a connection that returns no column of the parent asks one thing of each row: is there a parent
  * row with its key. The flag the child's segments hold ("<fk>#found") says it as of the stamp of the segment, so the parent is not read: the scan keeps the rows
  * whose flag is set, less the rows of the keys that changed in the parent since the oldest stamp (the journal of the parent index names them), plus the rows of
- * those keys that the parent holds now. That holds for every row only if the rows are all in stamped segments (no write buffer), the journal vouches for the
- * stamp, and no parent row was inserted since (a flag NULL is "not found then"): else the join reads the parent as ever.
+ * those keys that the parent holds now. That holds for every row only if the rows are all in stamped segments (no write buffer) and the journal vouches for the
+ * stamp. A flag NULL is "not found then", which a parent row inserted since can change: so unless every segment is clean (no row had a key the parent lacked,
+ * SIFT_CONN_STAMP_CLEAN: a foreign key keeps it so) no parent row may have been inserted since. Else the join reads the parent as ever.
  */
 /* check-memory: allow-allocs every array here is bounded by FOUND_MAX_KEYS */
 #include "postgres.h"
@@ -28,7 +29,9 @@
 #include "col/conn.h"
 
 /* the keys that changed in the parent since a stamp are bounded: more, and the join reads the parent (probing each one costs a descent of a btree) */
-#define FOUND_MAX_KEYS	1024
+#define FOUND_MAX_KEYS	16384
+/* a probe of the btree costs about 7,000 instructions, a join that loads the parent a few hundred for each of its rows: past this many keys that were deleted or changed the join is cheaper */
+#define FOUND_MAX_PROBES	2048
 
 bool		sift_agg_connect_found = true;
 
@@ -87,19 +90,31 @@ int_key_datum(Oid typid, int64 k)
 	return typid == INT2OID ? Int16GetDatum((int16) k) : typid == INT4OID ? Int32GetDatum((int32) k) : Int64GetDatum(k);
 }
 
-/* the keys of changed that a row of the parent visible to the scan holds, probed in the unique btree: false when the parent has none */
+/*
+ * The keys of changed that a row of the parent visible to the scan holds. A key only updates ended is held for every snapshot (the update wrote a new version of the
+ * key, and no one deleted it or changed it: the journal says so); the others are probed in the unique btree under the scan's snapshot. False: there is no btree to probe.
+ */
 static bool
 parent_present(AggExec *ex, Relation parent, AttrNumber key, const SiftConnKeys *changed, int64 *out, uint32 *nout)
 {
-	Oid			uoid = parent_unique(parent, key);
+	Oid			uoid = InvalidOid;
 	Relation	uidx;
 	Oid			typid = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
 	TupleTableSlot *slot;
 	IndexScanDesc scan;
 	ScanKeyData skey;
+	bool		probe = false;
 
 	*nout = 0;
-	if (!OidIsValid(uoid))
+	for (uint32 i = 0; i < changed->n; i++)
+	{
+		probe |= !changed->kept[i];
+		if (changed->kept[i])
+			out[(*nout)++] = changed->keys[i];
+	}
+	if (!probe)
+		return true;
+	if (!OidIsValid(uoid = parent_unique(parent, key)))
 		return false;
 	uidx = index_open(uoid, AccessShareLock);
 	slot = table_slot_create(parent, NULL);
@@ -108,6 +123,8 @@ parent_present(AggExec *ex, Relation parent, AttrNumber key, const SiftConnKeys 
 	{
 		Oid			intype = uidx->rd_opcintype[0];
 
+		if (changed->kept[i])
+			continue;
 		ScanKeyEntryInitialize(&skey, 0, 1, BTEqualStrategyNumber, InvalidOid, uidx->rd_indcollation[0],
 							   get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber)), int_key_datum(typid, changed->keys[i]));
 		index_rescan(scan, &skey, 1, NULL, 0);
@@ -205,9 +222,11 @@ join_found(AggExec *ex, int ci, int *total, List **add)
 	Oid			pidxoid;
 	int			found,
 				fk;
+	bool		clean;
 	const char *why;
 	int64	   *present;
-	uint32		npresent = 0;
+	uint32		npresent = 0,
+				nprobe = 0;
 	SiftAggPred *p;
 	ComboSt    *cs = &ex->cs[ci];
 
@@ -216,7 +235,7 @@ join_found(AggExec *ex, int ci, int *total, List **add)
 	fk = cb->leaf[0];
 	parent = table_open(j->relid, AccessShareLock);
 	pidx = index_open(pidxoid, AccessShareLock);
-	why = sift_colsrc_conn_proof(ex->src, found, &stamp.lineage, &stamp.xmin);
+	why = sift_colsrc_conn_proof(ex->src, found, &stamp.lineage, &stamp.xmin, &clean);
 	stamp.reserved = 0;
 	if (why == NULL)
 	{
@@ -224,12 +243,15 @@ join_found(AggExec *ex, int ci, int *total, List **add)
 
 		if (verdict != SIFT_CONN_OK)
 			why = sift_conn_why_name(verdict);
-		else if (sift_conn_inserted_since(parent, pidx, &stamp))
+		else if (!clean && sift_conn_inserted_since(parent, pidx, &stamp))
 			why = "parent rows inserted since the stamp";
 		else if ((verdict = sift_conn_changed(parent, pidx, &stamp, ex->snap, FOUND_MAX_KEYS, &changed)) != SIFT_CONN_OK)
 			why = sift_conn_why_name(verdict);
 	}
 	present = palloc(Max(changed.n, 1) * sizeof(int64));
+	for (uint32 i = 0; why == NULL && i < changed.n; i++)
+		if (!changed.kept[i] && ++nprobe > FOUND_MAX_PROBES)
+			why = "too many keys deleted or changed";
 	if (why == NULL && !parent_present(ex, parent, j->keyatt[0], &changed, present, &npresent))
 		why = "no unique index on the parent key";
 	index_close(pidx, NoLock);

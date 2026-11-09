@@ -119,13 +119,13 @@ key64(Oid typid, Datum d, int64 *out)
 }
 
 bool
-sift_conn_record(Relation index, Oid keytype, Datum key, SiftTomb *rec)
+sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *rec)
 {
 	int64		k;
 
 	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !key64(keytype, key, &k))
 		return false;
-	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = SIFT_TOMB_KEYCHG};
+	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = SIFT_TOMB_KEYCHG,.flags = kept ? SIFT_TOMB_KEPT : 0};
 	return true;
 }
 
@@ -348,11 +348,17 @@ sift_conn_vouches(Relation heap, Relation index, const SiftConnStamp *stamp, Sna
 	return SIFT_CONN_OK;
 }
 
-static int
-cmp_key(const void *a, const void *b)
+typedef struct KeyRec
 {
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
+	int64		key;
+	bool		kept;
+} KeyRec;
+
+static int
+cmp_keyrec(const void *a, const void *b)
+{
+	int64		x = ((const KeyRec *) a)->key,
+				y = ((const KeyRec *) b)->key;
 
 	return x < y ? -1 : x > y;
 }
@@ -389,7 +395,9 @@ sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Sna
 	SiftConnWhy why = sift_conn_vouches(heap, index, stamp, snap);
 	const SiftTomb *rec;
 	int			n;
+	KeyRec	   *recs;
 	int64	   *keys;
+	bool	   *kept;
 	uint32		nk = 0;
 	TransactionId last = InvalidTransactionId;
 	bool		last_void = false;
@@ -399,7 +407,7 @@ sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Sna
 		return why;
 	log = sift_col_log(index);
 	rec = sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n);
-	keys = n > 0 ? sift_rows_alloc(n * sizeof(int64)) : NULL;
+	recs = n > 0 ? sift_rows_alloc(n * sizeof(KeyRec)) : NULL;
 	for (int i = 0; i < n; i++)
 	{
 		if (rec[i].kind != SIFT_TOMB_KEYCHG || TransactionIdPrecedes(rec[i].xid, stamp->xmin))
@@ -410,25 +418,36 @@ sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Sna
 			last_void = sift_xid_state(last) == SIFT_XID_ABORTED;
 		}
 		if (!last_void)
-			keys[nk++] = (int64) rec[i].succ;
+			recs[nk++] = (KeyRec) {(int64) rec[i].succ, (rec[i].flags & SIFT_TOMB_KEPT) != 0};
 	}
 	if (nk > 1)
 	{
 		uint32		w = 1;
 
-		qsort(keys, nk, sizeof(int64), cmp_key);
+		qsort(recs, nk, sizeof(KeyRec), cmp_keyrec);
 		for (uint32 i = 1; i < nk; i++)
-			if (keys[i] != keys[w - 1])
-				keys[w++] = keys[i];
+			if (recs[i].key != recs[w - 1].key)
+				recs[w++] = recs[i];
+			else
+				recs[w - 1].kept &= recs[i].kept;
 		nk = w;
 	}
 	if (nk > cap)
 	{
-		if (keys)
-			pfree(keys);
+		if (recs)
+			pfree(recs);
 		return SIFT_CONN_OVERFLOW;
 	}
-	*out = (SiftConnKeys) {.keys = keys,.n = nk,.cap = nk};
+	keys = nk > 0 ? palloc(nk * sizeof(int64)) : NULL;
+	kept = nk > 0 ? palloc(nk * sizeof(bool)) : NULL;
+	for (uint32 i = 0; i < nk; i++)
+	{
+		keys[i] = recs[i].key;
+		kept[i] = recs[i].kept;
+	}
+	if (recs)
+		pfree(recs);
+	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.n = nk,.cap = nk};
 	return SIFT_CONN_OK;
 }
 
@@ -455,6 +474,8 @@ sift_conn_keys_free(SiftConnKeys *k)
 {
 	if (k->keys)
 		pfree(k->keys);
+	if (k->kept)
+		pfree(k->kept);
 	*k = (SiftConnKeys) {0};
 }
 

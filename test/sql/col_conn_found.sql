@@ -123,6 +123,62 @@ SELECT sift.col_maintain('big_events_col') AS rewritten;
 SELECT * FROM found_run($q$SELECT count(*) FROM big_events e JOIN dim_big d ON d.id = e.dim_big_id$q$);
 RESET maintenance_work_mem;
 
+-- a parent that is written all the time, and children with a parent row for every key (a foreign key keeps them so): a parent row inserted or written again after the stamp changes no flag,
+-- only the keys that ended are outside the proof
+CREATE TABLE dim_c (id int PRIMARY KEY, label text, region int, note int) WITH (autovacuum_enabled = false, fillfactor = 50);
+INSERT INTO dim_c SELECT i, 'l' || i, i % 7, 0 FROM generate_series(1, 300) i;
+CREATE INDEX dim_c_col ON dim_c USING sift_col (id, label, region);
+CREATE TABLE facts (id int PRIMARY KEY, dim_c_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE 1 + i % 300 END, i % 10 FROM generate_series(1, 3000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_c_id, v) WITH (connect = 'dim_c_id -> dim_c(id)');
+CREATE TABLE shapes2 (n int, sql text);
+INSERT INTO shapes2 SELECT n, replace(replace(replace(sql, 'events', 'facts'), 'dim_a_id', 'dim_c_id'), 'dim_a', 'dim_c') FROM shapes;
+-- probes: the keys the scan looked up in the btree of the parent (a key that only updates ended is held without one)
+CREATE FUNCTION phase2() RETURNS TABLE (n int, same boolean, proofs int, keys int, probes int, why text) LANGUAGE sql AS $$
+	SELECT s.n, r.same, r.proofs, r.keys, r.heap_fetches, r.why FROM shapes2 s, LATERAL found_run(s.sql) r ORDER BY s.n
+$$;
+SELECT sift.col_maintain('facts_col') AS rewritten;
+SELECT * FROM phase2();
+-- an update that keeps the key: a new version of the row, its key is outside the proof and the parent holds it
+UPDATE dim_c SET label = 'changed' WHERE id <= 5;
+SELECT * FROM phase2();
+-- the same, a heap-only update (no indexed column changes)
+UPDATE dim_c SET note = note + 1 WHERE id BETWEEN 6 AND 10;
+SELECT * FROM phase2();
+-- an update that assigns the key column the same value is not known to keep it: its keys are probed
+UPDATE dim_c SET id = id WHERE id BETWEEN 50 AND 52;
+SELECT * FROM phase2() WHERE n = 1;
+-- a new key, a deleted key, a key deleted and inserted again, a key changed
+INSERT INTO dim_c VALUES (1000, 'new', 1), (1001, 'new', 2);
+DELETE FROM dim_c WHERE id = 20;
+DELETE FROM dim_c WHERE id = 21;
+INSERT INTO dim_c VALUES (21, 'again', 3);
+UPDATE dim_c SET id = 1002 WHERE id = 22;
+SELECT * FROM phase2();
+-- the writes of a transaction that has not committed are the reader's own
+BEGIN;
+UPDATE dim_c SET label = 'mine' WHERE id BETWEEN 30 AND 40;
+DELETE FROM dim_c WHERE id = 41;
+INSERT INTO dim_c VALUES (1003, 'mine', 1);
+SELECT * FROM phase2();
+ROLLBACK;
+SELECT * FROM phase2();
+VACUUM dim_c;
+SELECT * FROM phase2();
+
+-- more keys deleted than are worth a probe each: the join reads the parent
+CREATE TABLE dim_p (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_p SELECT i, 'l' || i FROM generate_series(1, 6000) i;
+CREATE INDEX dim_p_col ON dim_p USING sift_col (id, label);
+CREATE TABLE facts_p (id int PRIMARY KEY, dim_p_id int) WITH (autovacuum_enabled = false);
+INSERT INTO facts_p SELECT i, 1 + i % 6000 FROM generate_series(1, 6000) i;
+CREATE INDEX facts_p_col ON facts_p USING sift_col (id, dim_p_id) WITH (connect = 'dim_p_id -> dim_p(id)');
+SELECT sift.col_maintain('facts_p_col') AS rewritten;
+DELETE FROM dim_p WHERE id <= 2000;
+SELECT same, proofs, keys, why FROM found_run($q$SELECT count(*) FROM facts_p f WHERE EXISTS (SELECT 1 FROM dim_p d WHERE d.id = f.dim_p_id)$q$);
+DELETE FROM dim_p WHERE id BETWEEN 2001 AND 2100;
+SELECT same, proofs, keys, why FROM found_run($q$SELECT count(*) FROM facts_p f WHERE EXISTS (SELECT 1 FROM dim_p d WHERE d.id = f.dim_p_id)$q$);
+
 -- the key types of a connection
 DO $$
 DECLARE
@@ -160,6 +216,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM tphase();
 SELECT * FROM phase();
+SELECT * FROM phase2();
 SELECT bool_or(workers > 0) AS parallel FROM shapes s, LATERAL found_run(s.sql) r;
 RESET max_parallel_workers_per_gather;
 
@@ -184,8 +241,8 @@ INSERT INTO cols VALUES (1, 'p.c_int2'), (2, 'p.c_int4'), (3, 'p.c_int8'), (4, '
 SELECT c.n, replace(c.expr, 'p.', '') AS read, r.same, r.leaf_reads, r.heap_fetches
 	FROM cols c, LATERAL found_run(format('SELECT %s AS x, count(*) FROM tc JOIN tp p ON p.id = tc.tp_id GROUP BY 1 ORDER BY 1', c.expr)) r ORDER BY c.n;
 
-DROP TABLE tc, tp, big_events, dim_big, events, dim_a, shapes, tshapes, cols CASCADE;
+DROP TABLE facts_p, dim_p, tc, tp, big_events, dim_big, events, dim_a, facts, dim_c, shapes, shapes2, tshapes, cols CASCADE;
 DROP TABLE c_int2, c_int4, c_int8, p_int2, p_int4, p_int8 CASCADE;
-DROP FUNCTION found_run(text), phase(), tphase();
+DROP FUNCTION found_run(text), phase(), phase2(), tphase();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

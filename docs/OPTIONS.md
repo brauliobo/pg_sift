@@ -2133,11 +2133,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · diagnostic · since 4.3 · default on
 
-- **What it does:** a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent is answered from the flag the index keeps that the parent row was found, less the keys the journal of the parent names (at most 1,024) and plus those of them the parent holds now
+- **What it does:** a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent is answered from the flag the index keeps that the parent row was found, less the keys the journal of the parent names (at most 16,384) and plus those of them the parent holds now
 - **Gain:** 1,000,000 rows, 100,000 parents: join count 4.3 ms against 7.2 ms for the join that loads the parent and 228 ms for the normal plan; NOT EXISTS 2.8 ms against 6.1 and 244 ms
 - **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this option; the flag is written with every connected index (176 bytes of leaf at 1,000,000 rows); a probe of the parent btree for each key the journal names
 - **When:** Semi, anti and inner joins by the connection key that read no parent column; any write buffer row, an unstamped segment or a parent insert since the stamp uses the ordinary join (EXPLAIN: Found Fallback).
-- **Default:** on — On: 1,000,000 child rows over 100,000 parents, min of 5: join count 32.3 M instructions 4.3 ms against 45.5 M 7.2 ms with the setting off and 1,386 M 228 ms on the normal plan; NOT EXISTS 13.8 M 2.8 ms against 49.2 M 6.1 ms.
+- **Default:** on — On: 1,000,000 child rows over 100,000 parents, min of 5: join count 32.3 M instructions 4.3 ms against 45.5 M 7.2 ms with the setting off and 1,386 M 228 ms on the normal plan; NOT EXISTS 13.8 M 2.8 ms against 49.2 M 6.1 ms. With 1% of the parent rows updated in place afterwards 49.4 M against 80.2 M, with 10% 56.6 M against 80.9 M (bench cases found_path_exists, found_path_under_parent_updates_1pct and _10pct, 1,000,000 rows).
 - **Turn off:** SET sift.agg_connect_found = off (session, role, database or postgresql.conf): the join loads the parent as in 4.2.1. No REINDEX.
 - **Upgrade from 4.2:** New in 4.3.
 - **Advice:** Leave on. Off runs the join that loads the parent (the ordinary 4.3 path), which costs more than the flag when the parent is large and has not changed; it applies to semi, anti and inner joins by the foreign key of the connection with no parent column read.

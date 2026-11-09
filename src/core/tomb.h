@@ -93,6 +93,8 @@ typedef enum SiftTombKind
 
 /* UPDATE entries: the new version is a member of the chain of this one, no index has an entry for it */
 #define SIFT_TOMB_HOT		0x0001
+/* KEYCHG entries: the update that ended the entry wrote a new version with the same key, so the key is held by a row either way (col/conn.h) */
+#define SIFT_TOMB_KEPT		0x0002
 
 typedef struct SiftTomb
 {

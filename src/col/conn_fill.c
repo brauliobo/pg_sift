@@ -30,6 +30,7 @@ typedef struct FillConn
 	int			fk_leaf;		/* the leaf of the child that holds the key */
 	SiftConnStamp stamp;
 	HTAB	   *tab;			/* NULL: no stamp, the leaves are cleared */
+	bool		orphans;		/* a row had a key the parent has no (single) row for: the segment is not clean */
 } FillConn;
 
 typedef struct SiftConnFill
@@ -222,7 +223,10 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 			int64		k = kv->key[row];
 
 			if (fc->tab != NULL && !sift_col_bit_test(kv->nulls, row))
+			{
 				e = hash_search(fc->tab, &k, HASH_FIND, NULL);
+				fc->orphans |= e == NULL || e->vals == NULL;
+			}
 			for (int leaf = fc->found; leaf < fc->end; leaf++)
 			{
 				SiftColValue v = {.isnull = e == NULL || e->vals == NULL,.tag = SIFT_COLTAG_UNKNOWN};
@@ -242,7 +246,12 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 static SiftConnStamp
 fill_stamp(const SiftColFill *hook, int i)
 {
-	return ((const SiftConnFill *) hook)->c[i].stamp;
+	const FillConn *fc = &((const SiftConnFill *) hook)->c[i];
+	SiftConnStamp st = fc->stamp;
+
+	if (st.lineage != 0 && !fc->orphans)
+		st.reserved |= SIFT_CONN_STAMP_CLEAN;
+	return st;
 }
 
 int			sift_col_connect_refresh_pct = 10;

@@ -117,8 +117,8 @@ journal vouches for the snapshots taken after its start, so a long-running snaps
 
 A semi, anti or inner join of the scanned table to the parent of a connection that reads no column of the parent (`EXISTS`, `NOT EXISTS`, `IN`, a join that counts, `count(DISTINCT parent.key)`) asks one
 thing of each row: is there a parent row with its key. The flag `<fk>#found` of the segments says it as of the stamp, so the parent is not read at all. The scan keeps the rows whose flag is set and whose key
-is not among the keys `changed(S, X)` names for the oldest stamp of the segments (at most 1,024), plus the rows of those keys that a row of the parent holds now (a probe of the parent's unique btree under the
-scan's snapshot for each); an anti join keeps the complement. It is one conjunct of the scan, so the zones, the source filters and the parallel workers apply it as to any other, and the join itself passes
+is not among the keys `changed(S, X)` names for the oldest stamp of the segments (at most 16,384), plus the rows of those keys that a row of the parent holds now (a key that only updates ended, which wrote a new version of it (`SIFT_TOMB_KEPT` on the record), is held for every snapshot; a key a delete,
+a key change or an update that assigns the key column ended is probed in the parent's unique btree under the scan's snapshot); an anti join keeps the complement. It is one conjunct of the scan, so the zones, the source filters and the parallel workers apply it as to any other, and the join itself passes
 every tuple.
 
 It holds for every row only when the flag is the whole story, so the statement uses the ordinary join, with the same answer, when any of these is so (EXPLAIN says it as `Found Fallback`):
@@ -129,8 +129,9 @@ It holds for every row only when the flag is the whole story, so the statement u
 | `segment without stamp` | a segment was never filled (the first child of a parent, whose journal starts after its scan): the rewrite of the refresh fills it |
 | `parent too large to resolve` | the writer's parent lookup did not fit `maintenance_work_mem` |
 | `stamps of two journals` | the segments were stamped under different journals of the parent index |
-| `parent rows inserted since the stamp` | a row was inserted into the parent index since the oldest stamp (an update is an insert): a flag NULL is "not found then", and the journal lists the keys that ended, not those that appeared |
-| the verdict of the journal (`lineage`, `trimmed`, `older`, `overflow` ..) | the journal cannot vouch for the stamp or names more than 1,024 keys |
+| `parent rows inserted since the stamp` | only for a segment that had a row with a key the parent lacked when it was filled (no foreign key keeps the child clean of them, `SIFT_CONN_STAMP_CLEAN`): a flag NULL is "not found then", the journal lists the keys that ended, not those that appeared, and a row inserted into the parent since (an update is an insert) may be the parent of such a row |
+| the verdict of the journal (`other lineage`, `trimmed`, `snapshot older than the stamp`, `too many changed keys` ..) | the journal cannot vouch for the stamp or names more than 16,384 keys |
+| `too many keys deleted or changed` | more than 2,048 keys were deleted, changed or written by a statement that assigns the key column (an update that leaves the key column alone costs no probe) |
 | `no unique index on the parent key` | the keys that changed are probed in a unique btree of the parent |
 
 Only a semi, anti or inner join by one `int2`, `int4` or `int8` column that is the foreign key of the connection, with no condition of the parent's own, no top-N and no partitioned table. `sift.agg_connect_found`
@@ -141,5 +142,5 @@ from the heap (`test/sql/col_conn_found.sql` fails if that changes).
 
 ## Limits of this stage
 
-The found flag is read by the joins above. The carried columns and the join of the parent to its children are not read yet. A write to the parent (an update is an insert) sends the joins to the ordinary path until the
-segments are filled again under a later stamp (`sift.col_connect_refresh_pct`); a delete does not (its key is in the journal).
+The found flag is read by the joins above. The carried columns and the join of the parent to its children are not read yet. A write to the parent changes nothing for the flag of a clean child (every row has a parent row or a NULL key, as a foreign key keeps it): an update that keeps the key, a delete, a new key or a key change
+only put keys among those the journal names, which the scan probes; a child with rows whose key the parent lacked (no foreign key) goes to the ordinary path while a row was inserted since the stamp.

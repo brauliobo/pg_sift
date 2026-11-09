@@ -11,10 +11,10 @@
 #include "agg/col_int.h"
 
 const char *
-sift_col_conn_proof(void *impl, int leaf, uint64 *lineage, uint32 *xmin)
+sift_col_conn_proof(void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean)
 {
 	SiftConnStamp st;
-	const char *why = sift_col_source_proof(((ColSource *) impl)->cs, leaf, &st);
+	const char *why = sift_col_source_proof(((ColSource *) impl)->cs, leaf, &st, clean);
 
 	*lineage = st.lineage;
 	*xmin = st.xmin;

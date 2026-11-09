@@ -140,13 +140,13 @@ tomb_hold(Relation index, const SiftTomb *ent)
 		flush_slot(h);
 }
 
-/* The key journal of a connected parent (col/conn.h): the key whose entry the statement ended, held with the tombstones */
+/* The key journal of a connected parent (col/conn.h): the key whose entry an update ended by writing a new version of the same key, held with the tombstones */
 static void
 journal_hold(Relation index, Oid keytype, Datum key)
 {
 	SiftTomb	rec;
 
-	if (sift_conn_record(index, keytype, key, &rec))
+	if (sift_conn_record(index, keytype, key, true, &rec))
 		tomb_hold(index, &rec);
 }
 
