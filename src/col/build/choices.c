@@ -36,6 +36,7 @@ typedef struct Derive
 	bool		build;			/* the statement that built the index: its key_cut verdict is at hand, and nothing is decided again */
 	List	   *out;
 	const SiftColLeafStats *ls;
+	SiftColIndexMeta defs;		/* a copy: the cached one is freed when a lock reloads the index entry */
 	int			minor;			/* the column format minor the choices need, 0: none that an older library refuses */
 } Derive;
 
@@ -80,7 +81,12 @@ static const SiftColLeafStats *
 stats(Derive *d)
 {
 	if (d->ls == NULL)
+	{
+#ifdef SIFT_TESTING
+		sift_col_test_inval(d->index);	/* reading the leaf statistics can take a lock that reloads the entry */
+#endif
 		d->ls = sift_col_leaf_stats(d->index);
+	}
 	return d->ls;
 }
 
@@ -255,7 +261,7 @@ d_point_tid(Derive *d)
 		add(d, "point-tid-key-cut", shown, NULL);
 		return;
 	}
-	for (int c = 0; c < sift_col_index_defs(d->index)->ncols; c++)
+	for (int c = 0; c < d->defs.ncols; c++)
 		if (stats(d)[c].point_tid_units > 0)
 		{
 			need_minor(d, SIFT_COL_FORMAT_EXACTSLOT);
@@ -281,12 +287,12 @@ order_minor(const SiftColLeafStats *ls, int ncols)
 static void
 d_order_arrays(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const char *opt = sift_col_options_order_array_columns(d->index);
 	const SiftColLeafStats *ls;
 	bool		autolist,
 				gauto;
-	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(d->index), &gauto);
+	const char *glist = pstrdup(sift_cpagg_auto_list(sift_col_options_order_array_group(d->index), &gauto));
 	StringInfoData names;
 	double		rows = 0,
 				bytes = 0;
@@ -331,7 +337,7 @@ d_order_arrays(Derive *d)
 static void
 d_order_layout(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const char *opt = sift_col_options_order_array_columns(d->index);
 	const SiftColLeafStats *ls;
 	StringInfoData out,
@@ -367,7 +373,7 @@ d_order_layout(Derive *d)
 static void
 d_track(Derive *d)
 {
-	const char *rk = sift_col_options_row_key(d->index);
+	const char *rk = pstrdup(sift_col_options_row_key(d->index));
 	AttrNumber	pk;
 	const char *why;
 
@@ -408,7 +414,7 @@ d_key_cut_hot(Derive *d)
 static void
 d_key_overflow(Derive *d)
 {
-	const SiftColIndexMeta *defs = sift_col_index_defs(d->index);
+	const SiftColIndexMeta *defs = &d->defs;
 	const SiftColLeafStats *ls = NULL;
 	StringInfoData names;
 
@@ -577,7 +583,7 @@ static const struct
 static List *
 derive(Relation heap, Relation index, int kinds, bool build, int *minor)
 {
-	Derive		d = {.heap = heap, .index = index, .kinds = kinds, .build = build};
+	Derive		d = {.heap = heap, .index = index, .kinds = kinds, .build = build, .defs = *sift_col_index_defs(index)};
 
 	for (int i = 0; i < lengthof(derive_fn); i++)
 	{
