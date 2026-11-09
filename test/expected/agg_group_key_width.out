@@ -6,8 +6,10 @@ INSERT INTO events SELECT i,i%3,i%2,i%3,i%2,i%3,i%2,i%3,
  CASE WHEN i%11=0 THEN NULL ELSE i%2 END,repeat('payload',50) FROM generate_series(1,100000)i;
 CREATE INDEX events_col ON events USING sift_col(id,a,b,c,d,e,f,g,h);
 NOTICE:  sift_col index "events_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, d; point_tid_columns = id
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = b, d; order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM(FREEZE,ANALYZE)events;
 CREATE FUNCTION check_query(q text)RETURNS TABLE(pushed bool,differences bigint)LANGUAGE plpgsql AS $$
 DECLARE line text;

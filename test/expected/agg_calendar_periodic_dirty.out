@@ -6,9 +6,11 @@ SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 CREATE TABLE pd AS SELECT g AS id, timestamp '2024-01-01' + g * interval '13 minutes' AS ts FROM generate_series(1, 150000) g;
 CREATE INDEX pd_col ON pd USING sift_col (id, ts);
-NOTICE:  sift_col index "pd_col": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id
+NOTICE:  sift_col index "pd_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_col');
+NOTICE:  sift_col index "pd_col" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) pd;
 INSERT INTO pd SELECT 100000 + g, timestamp '2024-03-01' + g * interval '1 hour' FROM generate_series(1, 2000) g;
 INSERT INTO pd VALUES (200000, NULL);
