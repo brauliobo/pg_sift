@@ -35,5 +35,46 @@ SELECT count(*), sum(v) FROM own;
 ROLLBACK;
 SELECT count(*), sum(v) FROM own;
 
+-- the plan of a child that a worker starts per combination reads an index of its own table, and the rows the transaction holds back for it are not in a page either
+CREATE TABLE zones (id int, name text) WITH (autovacuum_enabled = false);
+INSERT INTO zones SELECT i, 'z' || i % 7 FROM generate_series(0, 59) i;
+CREATE INDEX zones_c ON zones USING sift_col (id, name);
+CREATE TABLE zev (id int PRIMARY KEY, zone_id int) WITH (autovacuum_enabled = false);
+INSERT INTO zev SELECT i, i % 65 FROM generate_series(1, 12000) i;
+CREATE INDEX zev_c ON zev USING sift_col (id, zone_id);
+VACUUM (FREEZE, ANALYZE) zones, zev;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1;
+BEGIN;
+INSERT INTO zones VALUES (60, 'new');
+INSERT INTO zones SELECT i, 'new' FROM generate_series(61, 64) i;
+SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
+ROLLBACK;
+BEGIN;
+INSERT INTO zones VALUES (60, 'new');
+INSERT INTO zones SELECT i, 'new' FROM generate_series(61, 64) i;
+SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
+ROLLBACK;
+DROP TABLE zones, zev;
+
+-- the rows held back for the index of a partition
+SET sift.agg_preagg = off;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE pt (id int, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES FROM (0) TO (10000) WITH (fillfactor = 10, autovacuum_enabled = false);
+CREATE TABLE pt2 PARTITION OF pt FOR VALUES FROM (10000) TO (20000) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO pt SELECT i, i % 5, i FROM generate_series(1, 19999) i;
+CREATE INDEX pt_c ON pt USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) pt;
+EXPLAIN (COSTS OFF) SELECT g, count(*), sum(v) FROM pt GROUP BY g;
+BEGIN;
+INSERT INTO pt VALUES (9000, 1, 9000);
+INSERT INTO pt SELECT 10000 + i, 1, i FROM generate_series(1, 100) i;
+INSERT INTO pt SELECT 100 + i, 1, i FROM generate_series(1, 100) i;
+SELECT g, count(*), sum(v) FROM pt GROUP BY g ORDER BY g;
+ROLLBACK;
+DROP TABLE pt;
+
 DROP TABLE own;
 DROP EXTENSION pg_sift;

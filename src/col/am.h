@@ -347,6 +347,8 @@ extern void sift_col_amrestrpos(IndexScanDesc scan);
 /* After ExecutorStart: the index-only scans of sift_col indexes in the plan form their tuples from the columns the plan reads */
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
 extern void sift_col_stmt_start(QueryDesc *queryDesc);
+/* The rows and tombstones the transaction holds back (they reach the pages when it reads the index): before a worker, which has none of its own, reads them */
+extern void sift_col_flush_held(void);
 extern bool sift_col_amcanreturn(Relation index, int attno);
 extern void sift_col_amendscan(IndexScanDesc scan);
 extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
