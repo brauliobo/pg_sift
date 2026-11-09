@@ -4,6 +4,7 @@
  * and the hash a plan is keyed by
  */
 #include "postgres.h"
+#include "utils/memutils.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
 #include "col/point.h"
@@ -349,7 +350,12 @@ sift_col_rel(Relation index)
 SiftColRel *
 sift_col_rel_private(Relation index, MemoryContext mcxt)
 {
-	return build_rel(index, mcxt);
+	SiftColRel *r = build_rel(index, mcxt);
+
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);	/* building the state looks up the catalogs: what the caller took from the options before it is then freed */
+#endif
+	return r;
 }
 #ifdef SIFT_TESTING
 void
@@ -357,8 +363,17 @@ sift_col_test_inval(Relation index)
 {
 	if (!sift_test_col_rel_inval)
 		return;
-	/* the reload of the entry that a lock taken during the scan may cause frees the cached state: first overwrite what it holds */
+	/* the reload of the entry that a lock taken during the scan may cause frees the cached state and the options: first overwrite what they hold */
 	memset(sift_col_rel(index), 0x7f, sizeof(SiftColRel));
+	if (index->rd_options)
+	{
+		Size		sz = VARSIZE(index->rd_options);
+
+		pfree(index->rd_options);
+		index->rd_options = NULL;
+		/* takes the chunk just freed, so the options the reload parses cannot reuse it under the string a caller kept */
+		memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);
+	}
 	RelationCacheInvalidateEntry(RelationGetRelid(index));
 }
 #endif

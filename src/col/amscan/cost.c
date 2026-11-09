@@ -480,10 +480,13 @@ point_lookup_only(PlannerInfo *root, IndexOptInfo *ii)
 	if (!ok)
 		return false;
 	idx = index_open(ii->indexoid, NoLock);
-	tid_cols = sift_col_options_point_tid_columns(idx);
+	/* copies: the catalog lookups below can reload the index entry, which frees its options */
+	tid_cols = pstrdup(sift_col_options_point_tid_columns(idx));
 	ord_cols = sift_col_options_order_array_columns(idx);
-	if (ord_cols == NULL)
-		ord_cols = "";
+	ord_cols = pstrdup(ord_cols ? ord_cols : "");
+#ifdef SIFT_TESTING
+	sift_col_test_inval(idx);	/* the catalog lookups below can take a lock that reloads the entry */
+#endif
 	quals = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
 	if (IsA(q->jointree->quals, BoolExpr) && ((BoolExpr *) q->jointree->quals)->boolop == AND_EXPR)
 		quals = ((BoolExpr *) q->jointree->quals)->args;
