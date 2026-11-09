@@ -506,7 +506,8 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
 	Relation	rel;
 	int			nnum = 0;
-	bool		cols;
+	bool		cols,
+				keys_only;
 
 	if (join_dense(c, s, jc))
 	{
@@ -519,7 +520,9 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 	rel = relation_open(c->root->simple_rte_array[jc->rti]->relid, NoLock);
 	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
-	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && join_keys_only(c, s, jc)) + load_keys_ops(jc, jrel->tuples);
+	keys_only = join_keys_only(c, s, jc);
+	/* a table loaded as keys alone has no directory of its keys */
+	return sift_agg_whole_ops(Max(jrel->tuples, 1.0), jrel->pages, cols, nnum, !cols && keys_only) + (keys_only ? 0 : load_keys_ops(jc, jrel->tuples));
 }
 
 /* does the btree hold, and return, every column a load of the join reads (map_index_covers) */
