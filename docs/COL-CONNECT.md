@@ -80,8 +80,51 @@ The choice is written into the option, `connect = 'auto: a_id -> dim_a(id); ..'`
 looked up again; `REINDEX` keeps it, and `sift.col_connections` has `automatic` true for it. `connect = 'off'` on the index, `ALTER INDEX .. SET (connect = 'off')` and a `REINDEX`, or
 `SET sift.col_auto_connect = off` (then `connect = 'auto'` on one index still connects it) turn it off. An explicit `connect` always wins.
 
-The price the user is told about: the journal of the parent index (one 32-byte record for each entry an UPDATE, DELETE or key change of the parent ends), the writers of the parent table held
-out from the end of the scan of the first child to the end of the statement, and column format minor 45 for the child.
+The price the user is told about is in the next section: the journal of the parent index (one 32-byte record for each entry an UPDATE, DELETE or key change of the parent ends), the writers of the parent
+table held out while the first child is made, and column format minor 45 for the child.
+
+## What a connection costs, and why the automatic one stays unconditional
+
+One measure for every write number below: WAL **record bytes per changed parent row**, connected minus `connect = 'off'` on the same data and statements, in the steady regime (one CHECKPOINT before the
+sequence, then the statements back to back, the pages imaged once as in a server between checkpoints), statements in which no sift worker logged a pass. Images (full-page, 8 KB) are listed apart because they
+depend on which pages a checkpoint last cleaned, not on the connection. Lab: 100k child rows, 10k parents, 24 statements per kind, release build, two runs (`write-reduction-43/conn_wal.py`).
+
+| write | statement size | connected - plain, record B/row | images B/row | typified lane (1000-row batch, steady) |
+|---|---|---|---|---|
+| child INSERT / UPDATE / DELETE | 2,000 / 200 / 66 rows | 0 index pages; WAL +-60 B/row of 1.7-13.8 KB (noise) | - | +0.4 (append), -0.2 (delete) |
+| parent INSERT | 20 rows | 0 (no record) | - | - |
+| parent UPDATE (not the key) | 100 rows | +30..+34 | +1 | +25..+34 |
+| parent key change | 10 / 60 rows | +43 / +36 | 0 / +205 | +21..+23 |
+| parent DELETE | 10 / 60 rows | +41 / +36 | 0 / 0 | +8 |
+
+Why the two labs differ: a record is 32 bytes of journal plus the WAL record header, whatever the regime; what moves a figure from +30 to +200 is the regime. With a CHECKPOINT before every statement every first touch
+of a page writes an 8 KB image (about 4.2 KB/row of images for a 100-row parent UPDATE, with or without the connection: -25..+1 B/row difference), and a lab that cuts a whole phase (statements, worker passes,
+checkpoint) into one LSN window also takes in the WAL of the worker passes the journal calls for. The first version of the write lab (`conn_writes.py`, a CHECKPOINT after each phase of 100 or 10 rows) read +167..+212 B/row
+for the UPDATE and +625..+667 for the key change that way; the statement by statement measure of the same operations reads record +21..+42 and image differences from -1,603 to +780 B/row that change sign between
+runs, so the images of a phase are not attributed to the connection. The typified lane's key change (+22) and DELETE (+8) are lower than the +36..+43 measured here for 10 and 60 rows per statement, and a larger
+statement does not lower them (60 rows: +36); the residual of up to 33 B/row for these two is not explained. The attribute UPDATE agrees (+30 against +25..+34). Use the steady record column.
+
+Other costs, measured once:
+
+| cost | measure |
+|---|---|
+| writers of the parent table while the first child is made | `ShareLock` on the parent from the end of the child's build to the end of the statement: 2 ms (1M child rows, with a parent 10x or 1x smaller than the child), 20 ms (5M rows); one parent UPDATE every 10 ms during the build never waited 100 ms (max 8-26 ms connected, 14-43 ms without the connection at 1M; 95 against 54 ms at 5M, at moments far from the lock window) |
+| build of the child index (first child) | +8..+10% at 1M rows (5.8 against 5.3 s, 4.6 against 4.2 s with a parent as large as the child; the connected build ran second), +27% at 5M (26.4 against 20.7 s) |
+| size of the child index | +2.5% (5M tags), +7% (5M exists shapes), typified lane |
+| journal | 32 bytes for each parent row changed; 2,876 records after 24 batches of 100 UPDATEs, 10 key changes and 10 DELETEs |
+
+| read | with the connection |
+|---|---|
+| parent-read-*, many-to-many tags | neutral, within 1.5% of the instruction sum |
+| child rows tested against the parent without reading a parent column (anti, semi, count joins) | -36..-47% instructions (63.1 -> 33.5 M, 76.9 -> 49.4 M), -33..-52% buffer hits (924 -> 441), 33 -> 7.6 ms |
+| parent as large as the child | -5..-15% on 4 grouped queries, hits 1,800 -> 740 |
+
+Decision (2026-11-09): the automatic connection stays unconditional (every validated one-column integer foreign key whose parent has a tracking `sift_col` index). A rule that connects only when a gain class applies cannot
+be written at `CREATE INDEX`: the gain depends on the queries (anti, semi, count joins on the child), which the index does not know, and the one thing the schema shows, a parent comparable in size to the child, is
+the smaller gain (-5..-15%) and the largest cost (a journal of a big table). The cost it would save is at most the +30..+43 B a parent row change writes on top of the 700 B or so a parent UPDATE writes
+anyway (4.5%), nothing on child writes and appends, a lock of milliseconds once; the typified lane's rule for writes ("lose when wall time and WAL both rise >= 15%") is not met by any class measured.
+The off switch stays `connect = 'off'`. One limit is not covered by the rule and is worth a message: a parent with more keys than half of `maintenance_work_mem` holds at 48 bytes a key (about 700,000 keys at the
+default 64 MB) is refused by the fill once, and the connection then keeps its journal and fills no flag.
 
 ## The found leaf
 
