@@ -161,7 +161,7 @@ VAFTER=$(sql standby "$VERS")
 touch "$P/kept.go"
 wait "$KEPT"
 check "the VACUUM of the primary moved the version of the directory of each index on the standby" \
-	test "$(paste -d' ' <(tr ' ' '\n' <<<"$VBEFORE") <(tr ' ' '\n' <<<"$VAFTER") | awk '$1 >= $2' | wc -l)" == 0
+	test "$(paste -d' ' <(tr ' ' '\n' <<<"$VBEFORE") <(tr ' ' '\n' <<<"$VAFTER") | awk '$1 >= $2 {n++} END {print n + 0}')" == 0
 check "... and the standby has the version of each index as the primary has it" test "$VAFTER" == "$(sql primary "$VERS")"
 check "a session of the standby that read the write buffer reads the heap as it is after the VACUUM" test "$(tr '\n' ' ' <"$P/kept.log")" == "t t "
 
