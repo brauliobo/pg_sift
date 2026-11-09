@@ -8,6 +8,8 @@ SET sift.agg_force = on;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
+-- some events with no key: a NULL key is no class
+UPDATE ev SET k = NULL WHERE id % 997 = 0;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
 -- 10,000 keys, 7,000 tuples of (a, b, c); the events of keys 10000 to 10499 have no row
 CREATE TABLE dd (k int PRIMARY KEY, a int, b int, c int, t text) WITH (autovacuum_enabled = false);
