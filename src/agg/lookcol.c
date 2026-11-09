@@ -826,7 +826,7 @@ map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 	{
 		sift_colsrc_stats(ix, &st);
 		/* the classes are an array over the keys: a table whose keys span more than the lookup budget (a sparse key) is read as rows */
-		ok = st.min[need[key].lf->id] >= 0 && st.max[need[key].lf->id] < (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16);
+		ok = st.min[need[key].lf->id] >= 0 && dense_span_ok(st.max[need[key].lf->id] + 1, st.nrows, (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16));
 	}
 	if (ok && bound != NULL)
 	{
@@ -887,7 +887,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	d.tnull = palloc(DENSE_MAX_CLASSES * sizeof(uint32));
 	d.ckey = palloc(DENSE_MAX_CLASSES * sizeof(int32));
 	d.ctab = palloc0(DENSE_SLOTS * sizeof(uint16));
-	ok = read_units(ex, rel, ix, need, nneed, dense_unit, &d) && !d.bad && d.rows > 0 && d.n <= 8 * d.rows + 65536;
+	ok = read_units(ex, rel, ix, need, nneed, dense_unit, &d) && !d.bad && d.rows > 0 && dense_span_ok(d.n, d.rows, d.limit);
 	index_close(ix, AccessShareLock);
 	if (ncomp > 0)
 	{
