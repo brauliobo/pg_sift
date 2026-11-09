@@ -39,7 +39,6 @@ sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *d
 				 errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
 				 errhint("Use REINDEX to apply the new options.")));
 	st->analyzer = sift_analyzer_create(&cfg, mcxt);
-	st->opts = sift_index_options(index);
 	st->priv = palloc0(Max(st->dir.nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);
 	return st;

@@ -206,13 +206,13 @@ build_begin(Relation index, Size budget)
 	old = MemoryContextSwitchTo(bs->cxt);
 	bs->tmpcxt = AllocSetContextCreate(bs->cxt, "sift build tuple", ALLOCSET_DEFAULT_SIZES);
 	bs->an = sift_analyzer_create(&cfg, bs->cxt);
-	bs->positions = opts->positions && !cfg.keyword;
+	bs->positions = sift_index_options(index)->positions && !cfg.keyword;	/* not opts: the analyzer can look up a text search configuration, which reloads the entry */
 	sift_analyzer_set_positions(bs->an, bs->positions);
 	bs->budget = budget;
 	bs->inv = sift_inv_create(bs->budget, bs->cxt, bs->positions);
 	bs->small_doc = sift_inv_small_doc(bs->inv);
 	bs->page_text = page_text_max(bs);
-	bs->ref = (SiftScoreRef) {(float4) opts->k1, (float4) opts->b, 0};
+	bs->ref = (SiftScoreRef) {(float4) sift_index_options(index)->k1, (float4) sift_index_options(index)->b, 0};
 	bs->page = InvalidBlockNumber;
 	bs->maxdocs = 64;
 	bs->docs = palloc(bs->maxdocs * sizeof(PageDoc));
@@ -397,7 +397,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
 	if (ldr == NULL)
-		init_bounds(bs, heap, opts->build_segments);
+		init_bounds(bs, heap, sift_index_options(index)->build_segments);
 	else
 	{
 		/* the leader's runs are files of the fileset too: the participants read them to write the terms */
@@ -426,7 +426,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_par_wait(ldr);
 		sift_par_end(ldr);
 	}
-	sift_store_init_meta(bs->wt, opts, bs->analyzer_hash, bs->analyzer_config);
+	sift_store_init_meta(bs->wt, sift_index_options(index), bs->analyzer_hash, bs->analyzer_config);
 	sift_wt_finish(bs->wt);
 	if (bs->nsegs > 0)
 		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.extra = InvalidBuffer});

@@ -28,7 +28,6 @@ typedef struct SiftIndexState
 	Relation	index;
 	SiftDirSnapshot dir;
 	SiftAnalyzer *analyzer;
-	const SiftOptions *opts;
 	MemoryContext mcxt;
 	void	   *priv;			/* eval-private: opened segments */
 } SiftIndexState;
