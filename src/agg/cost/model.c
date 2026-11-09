@@ -119,6 +119,17 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
+/* does PostgreSQL evaluate an expression of the lookup's columns for the slot: a key that is no column, or the NULL test of one (count(x + y)) */
+static bool
+slot_expr_evaluated(const SiftAggSlot *slot)
+{
+	Node	   *e = (Node *) slot->expr;
+
+	if (!slot->is_key)
+		return IsA(e, NullTest) && !IsA(((NullTest *) e)->arg, Param);
+	return !IsA(e, Param);
+}
+
 /*
  * What a joined tuple beyond the rows the scan reads costs, before the share of a cache the lookup table's rows leave (cost_work): the match is gathered and
  * the combo's slots written for it, and the aggregates add what each reads of it. A slot costs by what it holds: the id of a group key's value (more when
@@ -136,9 +147,7 @@ fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc
 	for (int ci = 0; ci < s->ncombo; ci++)
 		for (int sl = 0; sl < s->combo[ci].nslots; sl++)
 		{
-			Node	   *e = (Node *) s->combo[ci].slot[sl].expr;
-
-			if (s->combo[ci].slot[sl].is_key && !IsA(e, Param))
+			if (slot_expr_evaluated(&s->combo[ci].slot[sl]))
 				return AGG_FAN_ROW_EXPR + cb->nslots * AGG_FAN_SLOT;
 		}
 	for (int sl = 0; sl < cb->nslots; sl++)
