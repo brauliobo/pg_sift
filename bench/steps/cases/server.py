@@ -71,7 +71,7 @@ def settle_visibility(schema):
 
 def drop_added(schema):
     """drop the tables and indexes a case added to the dataset SCHEMA (its copies of a table and their indexes: a text case at 300,000 documents holds 400 MB of each) and keep those of the generator"""
-    psql("SELECT format('DROP %%s IF EXISTS %%s', CASE relkind WHEN 'i' THEN 'INDEX' WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END, oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relname NOT IN (%s) "
+    psql("SELECT format('DROP %%s IF EXISTS %%s CASCADE', CASE relkind WHEN 'i' THEN 'INDEX' WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END, oid::regclass) FROM pg_class WHERE relnamespace = '%s'::regnamespace AND relname NOT IN (%s) "
          "AND relkind IN ('r', 'p', 'm', 'i') AND NOT relispartition ORDER BY relkind = 'i' \\gexec" % (schema, KEPT[schema]))
 
 
