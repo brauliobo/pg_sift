@@ -88,7 +88,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		uint32		unit = maint_floor_rows(index);
 		SiftColFill *fill;
 		uint64		nbrows = 0,
-					largest = 0;
+					largest = 0,
+					idx_rows;
 
 		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6, 7 or 8 */
 		for (int i = 0; i < nb; i++)
@@ -101,21 +102,19 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
 		fill = sift_conn_fill_begin(index, cx, nbrows);
 		sift_colw_set_fill(w, fill);
+		idx_rows = nbrows;
+		for (int i = 0; i < nin; i++)
 		{
-			uint64		idx_rows = nbrows;
-
-			for (int i = 0; i < nin; i++)
-			{
-				idx_rows += in[i].ndocs;
-				largest = Max(largest, in[i].ndocs);
-			}
-			sift_colw_set_index_rows(w, idx_rows);
+			idx_rows += in[i].ndocs;
+			largest = Max(largest, in[i].ndocs);
 		}
+		sift_colw_set_index_rows(w, idx_rows);
 		/* the lists the segments hold, as a merge writes them: a promotion that wrote the option's would leave the new segment without */
 		if (sift_col_is_index(index))
 			sift_col_pagg_rewrite(index, in, nin, &rewrite);
 		/* the arrays of a point directory span the rows of the whole index, so that those of an overlay cost more than its rows */
 		rewrite.lean = sift_col_is_index(index) && maint_is_overlay(nbrows, largest);
+		maint_set_unordered(&rewrite, schema, nbrows + maint_overlay_rows(in, nin, NULL, 0), idx_rows);
 		sift_colw_set_preagg(w, &rewrite);
 		if (sift_col_key_cut(r))
 		{

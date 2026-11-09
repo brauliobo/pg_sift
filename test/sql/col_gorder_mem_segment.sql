@@ -1,0 +1,185 @@
+-- A segment written without the order array of a leaf (a lean overlay of an index whose arrays are the choice of the build) is read by the walk of the global order as a source sorted in
+-- memory, like the rows of the write buffer: the plan keeps reading the arrays (Global Order, no unit of the large segment), the rows are the heap's, a dead row is not returned and a live one is.
+-- The planner prices the rows it sorts and prices no walk past the cap of the scan: then both run the units and the rows are the same.
+CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
+
+CREATE TABLE gm (id int, g int, k int, ts timestamp, sc text COLLATE "C", sl text, sf text COLLATE "en-x-icu", amount int) WITH (autovacuum_enabled = off);
+INSERT INTO gm SELECT i, i % 50, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute',
+	CASE WHEN i % 37 = 0 THEN NULL ELSE 's' || lpad((i::bigint * 7919 % 10007)::text, 6, '0') END, 'l' || lpad((i::bigint * 104729 % 20011)::text, 6, '0'), 'f' || lpad((i::bigint * 7919 % 9973)::text, 5, '0'), i % 100
+FROM generate_series(1, 30000) i;
+CREATE INDEX gm_ix ON gm USING sift_col (id, g, k, ts, sc, sl, sf, amount) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: k, ts, sc, sl, sf');
+VACUUM (FREEZE, ANALYZE) gm;
+SELECT count(*) AS ts_entries FROM sift._test_col_gorder('gm_ix', 3) \gset
+
+-- the same rows from the heap (the engine off) and from the scan
+CREATE FUNCTION gm_same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'SELECT md5(string_agg(x::text, E''\n'')) FROM (' || q || ') x' INTO a;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'SELECT md5(string_agg(x::text, E''\n'')) FROM (' || q || ') x' INTO b;
+	RETURN a IS NOT DISTINCT FROM b;
+END $$;
+CREATE TABLE gq (n int, q text, base boolean);
+INSERT INTO gq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id, ts FROM gm ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, ts FROM gm ORDER BY ts, id LIMIT 30 OFFSET 100',
+ 'SELECT id, ts FROM gm WHERE ts BETWEEN TIMESTAMP ''2026-01-10'' AND TIMESTAMP ''2026-01-12'' ORDER BY ts, id LIMIT 20',
+ 'SELECT id, ts FROM gm WHERE ts >= TIMESTAMP ''2026-02-15'' ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, k FROM gm ORDER BY k DESC NULLS LAST, id LIMIT 30',
+ 'SELECT id, k FROM gm ORDER BY k NULLS FIRST, id LIMIT 40',
+ 'SELECT id, k FROM gm WHERE k IN (3, 77, 1500, 9000, 10006) ORDER BY k, id LIMIT 20',
+ 'SELECT id, k FROM gm ORDER BY k, id LIMIT 20 OFFSET 5000',
+ 'SELECT id, sc FROM gm ORDER BY sc, id LIMIT 20',
+ 'SELECT id, sc FROM gm ORDER BY sc DESC NULLS FIRST, id LIMIT 20 OFFSET 50',
+ 'SELECT id, sc FROM gm WHERE sc >= ''s005000'' ORDER BY sc, id LIMIT 20',
+ 'SELECT id, sl FROM gm ORDER BY sl, id LIMIT 20',
+ 'SELECT id, sl FROM gm ORDER BY sl DESC, id LIMIT 30',
+ 'SELECT id, sl FROM gm WHERE sl BETWEEN ''l004000'' AND ''l004100'' ORDER BY sl, id LIMIT 50',
+ 'SELECT id, ts FROM gm WHERE g = 7 ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, sf FROM gm ORDER BY sf, id LIMIT 20',
+ 'SELECT id, sf FROM gm ORDER BY sf DESC, id LIMIT 20 OFFSET 30',
+ 'SELECT id, sf FROM gm WHERE sf >= ''f05000'' ORDER BY sf, id LIMIT 30']) q;
+-- what the walk reads with the large segment alone: each later state keeps it
+UPDATE gq SET base = sift_helpers.plan_reads_global_order(q);
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE base) AS walks, string_agg(n::text, ',' ORDER BY n) FILTER (WHERE NOT base) AS units FROM gq;
+SELECT bool_and(gm_same(q)) AS same_rows_base FROM gq;
+CREATE FUNCTION gm_state() RETURNS TABLE (lost_the_walk text, same_rows boolean) LANGUAGE sql AS
+$$ SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q) IS DISTINCT FROM base), bool_and(gm_same(q)) FROM gq $$;
+
+-- 1,500 rows: an overlay under a tenth of the index, whose segment has no array of any leaf; its keys fall among those of the large segment, before them and after them
+INSERT INTO gm SELECT 30000 + i, i % 50, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 6007 % 12011 - 1000 END, TIMESTAMP '2025-12-15' + (i::bigint * 7919 % 60029) * INTERVAL '1 minute',
+	CASE WHEN i % 41 = 0 THEN NULL ELSE 's' || lpad((i::bigint * 6007 % 12011)::text, 6, '0') END, 'l' || lpad((i::bigint * 7919 % 24001)::text, 6, '0'), 'f' || lpad((i::bigint * 6007 % 12011)::text, 5, '0'), i % 100
+FROM generate_series(1, 1500) i;
+SELECT sift.col_promote('gm_ix') >= 0 AS promoted;
+SELECT count(*) AS overlays FROM sift.col_segments('gm_ix') WHERE kind = 'immutable' AND rows < 5000;
+SELECT count(*) = :ts_entries AS overlay_has_no_array FROM sift._test_col_gorder('gm_ix', 3);
+SELECT * FROM gm_state();
+
+-- dead rows of the overlay and of the large segment, before and after VACUUM
+DELETE FROM gm WHERE id % 7 = 0 AND id > 29000;
+SELECT * FROM gm_state();
+VACUUM gm;
+SELECT * FROM gm_state();
+DELETE FROM gm WHERE id % 11 = 3;
+UPDATE gm SET ts = ts + INTERVAL '3 days', k = k + 5, sc = sc || 'x' WHERE id % 13 = 4;
+VACUUM gm;
+SELECT * FROM gm_state();
+
+-- a second overlay and the write buffer next to the first
+INSERT INTO gm SELECT 40000 + i, i % 50, i * 13 % 10007, TIMESTAMP '2026-04-01' + i * INTERVAL '1 minute', 's' || lpad((i * 13 % 10007)::text, 6, '0'), 'l' || lpad((i * 17 % 20011)::text, 6, '0'), 'f' || lpad((i * 17 % 9973)::text, 5, '0'), i % 100
+FROM generate_series(1, 500) i;
+SELECT sift.col_promote('gm_ix') >= 0 AS promoted_second;
+INSERT INTO gm SELECT 41000 + i, i % 50, i * 29 % 10007, TIMESTAMP '2026-05-01' + i * INTERVAL '1 minute', 's' || lpad((i * 29 % 10007)::text, 6, '0'), 'l' || lpad((i * 31 % 20011)::text, 6, '0'), 'f' || lpad((i * 31 % 9973)::text, 5, '0'), i % 100
+FROM generate_series(1, 100) i;
+SELECT * FROM gm_state();
+
+-- a snapshot that holds the rows of a write it rolls back, and the write it keeps
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) > 0 AS snapshot_taken FROM gm;
+SAVEPOINT s;
+DELETE FROM gm WHERE id % 5 = 0 AND id > 29000;
+SELECT * FROM gm_state();
+ROLLBACK TO s;
+SELECT * FROM gm_state();
+COMMIT;
+
+-- more rows than the scan sorts in memory: the plan reads the units (a lower cap, as a table of millions of rows reaches) and is priced as units, the rows are the same
+CREATE FUNCTION gm_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON, COSTS ON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+SELECT gm_cost(q) AS walk_cost FROM gq WHERE n = 1 \gset
+SET sift.test_limits = 'gord_free_rows=1000';
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q)) AS walks_over_cap, bool_and(gm_same(q)) AS same_rows_over_cap FROM gq;
+SELECT gm_cost(q) <> :walk_cost AS priced_as_units FROM gq WHERE n = 1;
+SET sift.test_limits = 'gord_free_rows=40000';
+SELECT * FROM gm_state();
+RESET sift.test_limits;
+
+-- an overlay of 52,000 rows beside 520,000: its rows are sorted in memory by each scan, and a cap below them reads the units
+CREATE TABLE gl (id int, ts timestamp) WITH (autovacuum_enabled = off);
+INSERT INTO gl SELECT i, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 1000003) * INTERVAL '1 minute' FROM generate_series(1, 520000) i;
+CREATE INDEX gl_ix ON gl USING sift_col (id, ts) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts');
+VACUUM (FREEZE, ANALYZE) gl;
+SELECT count(*) AS gl_entries FROM sift._test_col_gorder('gl_ix', 1) \gset
+INSERT INTO gl SELECT 520000 + i, TIMESTAMP '2025-12-01' + (i::bigint * 6007 % 700001) * INTERVAL '1 minute' FROM generate_series(1, 52000) i;
+SELECT sift.col_promote('gl_ix') >= 0 AS promoted_big;
+SELECT count(*) = :gl_entries AS big_overlay_has_no_array FROM sift._test_col_gorder('gl_ix', 1);
+CREATE TABLE glq (n int, q text, base boolean);
+INSERT INTO glq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id, ts FROM gl ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, ts FROM gl ORDER BY ts, id LIMIT 20 OFFSET 100',
+ 'SELECT id, ts FROM gl WHERE ts BETWEEN TIMESTAMP ''2026-01-10'' AND TIMESTAMP ''2026-01-12'' ORDER BY ts, id LIMIT 20']) q;
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q)) AS big_overlay_walks, bool_and(gm_same(q)) AS same_rows_big FROM glq;
+SELECT gm_cost(q) AS walk_cost FROM glq WHERE n = 1 \gset
+SET sift.test_limits = 'gord_free_rows=51999';
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q)) AS walks_one_row_over, bool_and(gm_same(q)) AS same_rows_one_row_over FROM glq;
+SELECT gm_cost(q) <> :walk_cost AS priced_as_units FROM glq WHERE n = 1;
+SET sift.test_limits = 'gord_free_rows=52000';
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q)) AS walks_at_the_cap FROM glq;
+RESET sift.test_limits;
+
+-- the merge writes the array of every row again
+SELECT sift.col_merge('gm_ix', true) > 0 AS merged;
+SELECT count(*) AS segments FROM sift.col_segments('gm_ix') WHERE kind = 'immutable';
+SELECT * FROM gm_state();
+SELECT sift.col_verify('gm_ix', true);
+
+-- a partitioned table: each partition has its own overlay, and a query that prunes to one partition walks its arrays (a scan of several merges their units)
+CREATE TABLE gp (id int, g int, ts timestamp, sl text) PARTITION BY RANGE (g);
+CREATE TABLE gp_a PARTITION OF gp FOR VALUES FROM (0) TO (25) WITH (autovacuum_enabled = off);
+CREATE TABLE gp_b PARTITION OF gp FOR VALUES FROM (25) TO (50) WITH (autovacuum_enabled = off);
+INSERT INTO gp SELECT i, i % 50, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute', 'l' || lpad((i::bigint * 104729 % 20011)::text, 6, '0') FROM generate_series(1, 30000) i;
+CREATE INDEX gp_ix ON gp USING sift_col (id, g, ts, sl) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts, sl');
+VACUUM (FREEZE, ANALYZE) gp;
+CREATE TABLE gpq (n int, q text, base boolean);
+INSERT INTO gpq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id, ts FROM gp WHERE g < 25 ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, ts FROM gp WHERE g >= 25 ORDER BY ts, id LIMIT 30 OFFSET 100',
+ 'SELECT id, sl FROM gp WHERE g < 25 ORDER BY sl DESC, id LIMIT 20',
+ 'SELECT id, sl FROM gp WHERE g >= 25 AND sl BETWEEN ''l004000'' AND ''l004400'' ORDER BY sl, id LIMIT 50',
+ 'SELECT id, ts FROM gp ORDER BY ts DESC, id LIMIT 20']) q;
+UPDATE gpq SET base = sift_helpers.plan_reads_global_order(q);
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE base) AS partition_walks FROM gpq;
+INSERT INTO gp SELECT 30000 + i, i % 50, TIMESTAMP '2025-12-15' + (i::bigint * 7919 % 60029) * INTERVAL '1 minute', 'l' || lpad((i::bigint * 7919 % 24001)::text, 6, '0') FROM generate_series(1, 1500) i;
+SELECT bool_and(sift.col_promote(h.inhrelid::regclass) >= 0) AS promoted_partitions FROM pg_inherits h WHERE h.inhparent = 'gp_ix'::regclass;
+DELETE FROM gp WHERE id % 9 = 0 AND id > 29000;
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q) IS DISTINCT FROM base) AS partition_lost_the_walk, bool_and(gm_same(q)) AS same_rows_partitioned FROM gpq;
+
+-- arrays grouped by a column (order_array_group): an IN list of group values reads the rows of the overlay once for the scan and splits them by value; NULL groups and keys, dead rows
+CREATE TABLE gi (id int, g int, ts timestamp, amount int) WITH (autovacuum_enabled = off);
+INSERT INTO gi SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE i % 100 END, CASE WHEN i % 47 = 0 THEN NULL ELSE TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute' END, i % 100
+FROM generate_series(1, 30000) i;
+CREATE INDEX gi_ix ON gi USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts', order_array_group = 'g');
+VACUUM (FREEZE, ANALYZE) gi;
+CREATE TABLE giq (n int, q text, base boolean);
+INSERT INTO giq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
+ 'SELECT id, ts FROM gi WHERE g = 7 ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, ts FROM gi WHERE g IN (3, 7) ORDER BY ts DESC, id LIMIT 20',
+ 'SELECT id, ts FROM gi WHERE g IN (3, 7, 11, 19, 23, 42, 57, 64) ORDER BY ts, id LIMIT 30 OFFSET 50',
+ 'SELECT id, ts FROM gi WHERE g IN (3, 7, 11, 19, 23, 42, 57, 64, 71, 77, 80, 88, 90, 93, 95, 99) ORDER BY ts DESC, id LIMIT 40',
+ 'SELECT id, ts FROM gi WHERE g IN (1, 2) AND ts BETWEEN TIMESTAMP ''2026-01-10'' AND TIMESTAMP ''2026-01-14'' ORDER BY ts, id LIMIT 20']) q;
+UPDATE giq SET base = sift_helpers.plan_reads_global_order(q);
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE base) AS group_walks FROM giq;
+INSERT INTO gi SELECT 30000 + i, CASE WHEN i % 59 = 0 THEN NULL ELSE i % 100 END, CASE WHEN i % 43 = 0 THEN NULL ELSE TIMESTAMP '2025-12-15' + (i::bigint * 6007 % 60029) * INTERVAL '1 minute' END, i % 100
+FROM generate_series(1, 1800) i;
+SELECT sift.col_promote('gi_ix') >= 0 AS promoted_groups;
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q) IS DISTINCT FROM base) AS group_lost_the_walk, bool_and(gm_same(q)) AS same_rows_groups FROM giq;
+DELETE FROM gi WHERE id % 7 = 0 AND id > 29000;
+UPDATE gi SET g = (g + 1) % 100, ts = ts + INTERVAL '2 days' WHERE id % 13 = 4 AND id > 28000;
+VACUUM gi;
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q) IS DISTINCT FROM base) AS group_lost_the_walk_dead, bool_and(gm_same(q)) AS same_rows_groups_dead FROM giq;
+
+DROP TABLE gp, gq, gpq, gm, gl, glq, gi, giq;
+DROP FUNCTION gm_same(text), gm_state(), gm_cost(text);
+DROP EXTENSION pg_sift_helpers, pg_sift_test, pg_sift CASCADE;

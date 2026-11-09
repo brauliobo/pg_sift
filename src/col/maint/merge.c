@@ -530,6 +530,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				by_tid = false;
 	uint64		live_rows = 0,
 				largest = 0,
+				overlay_rows = 0,
 				heap_sbs;
 	uint32		unit;
 	SiftCPaggSpec rewrite;
@@ -551,6 +552,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				o.index_rows += dir->segs[i].ndocs;
 				largest = Max(largest, dir->segs[i].ndocs);
 			}
+		overlay_rows = maint_overlay_rows(dir->segs, dir->nsegs, in, n);
 		pfree(dir);
 	}
 	for (int i = 0; i < n; i++)
@@ -584,7 +586,10 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	o.live_rows = live_rows;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
+	{
 		rewrite.lean = maint_is_overlay(live_rows, largest);
+		maint_set_unordered(&rewrite, schema, live_rows + overlay_rows, o.index_rows);
+	}
 	o.maxout = slice ? 1 : Min(MAX_PARTS, Max(max_parts, n));
 	o.parts = Max(o.parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) o.maxout));
 	/* the writer of a merge may hold maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and what the partitions the directory allows need besides */

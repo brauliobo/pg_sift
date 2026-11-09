@@ -10,6 +10,7 @@
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "utils/timestamp.h"
+#include "col/gorder.h"
 #include "col/maint/maint_int.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
@@ -91,6 +92,38 @@ maint_throttle(SiftWriteTarget *wt)
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
 		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
 	}
+}
+
+uint64
+maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip)
+{
+	uint64		largest = 0,
+				rows = 0;
+
+	for (int i = 0; i < n; i++)
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, seg[i].ndocs);
+	for (int i = 0; i < n; i++)
+	{
+		bool		replaced = false;
+
+		for (int k = 0; k < nskip; k++)
+			replaced |= skip[k].gen == seg[i].gen;
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE && !replaced && maint_is_overlay(seg[i].ndocs, largest))
+			rows += seg[i].ndocs;
+	}
+	return rows;
+}
+
+void
+maint_set_unordered(SiftCPaggSpec *spec, const SiftColSchema *schema, uint64 overlay_rows, uint64 index_rows)
+{
+	uint64		cap = PG_UINT64_MAX;
+
+	for (int c = 0; c < schema->ncols; c++)
+		if (spec->gorder[c])
+			cap = Min(cap, SIFT_CGORD_FREE_CAP(schema->cols[c].store != SIFT_COLS_INT));
+	spec->unordered = spec->lean && spec->gorderauto && overlay_rows * 10 <= index_rows && overlay_rows <= cap;
 }
 
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */

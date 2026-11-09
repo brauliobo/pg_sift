@@ -217,8 +217,9 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 		for (int c = 0; c < w->schema->ncols; c++)
 		{
 			bool		want = !spec->lean && (spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c));
+			bool		ord = spec->gorder[c] && !spec->unordered;
 
-			if (want || spec->gorder[c])
+			if (want || ord)
 			{
 				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
@@ -226,7 +227,7 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
 				w->pt[c].want = want;
-				w->pt[c].ord = spec->gorder[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
+				w->pt[c].ord = ord && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
 				w->pt[c].tids = want && spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
 		}
