@@ -6,6 +6,7 @@ SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_lookup_shared_kb = 0;
 SET sift.agg_lookup_cache_kb = 32768;
+SET sift.agg_child_first = off;
 CREATE TABLE nk_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO nk_fact SELECT i, i % 200000, i % 11 FROM generate_series(1, 20000) i;
 CREATE INDEX nk_fact_col ON nk_fact USING sift_col (id, k, v);

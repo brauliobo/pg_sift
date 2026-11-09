@@ -1,7 +1,7 @@
 -- The library of a release that moved the triggers of track_changes (the index depends on them) on an extension that ALTER EXTENSION UPDATE has not brought there yet: sift.col_track_convert()
 -- does not exist, and an index of an earlier release has its triggers depend on it. Every statement of a migration may run in that window: an index made now is dropped with its triggers, the
 -- triggers of an earlier release's index are found (REINDEX and ALTER INDEX keep them, not make a second pair), and the update converts them without leaving two pairs.
-CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift VERSION '4.2.1';
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET allow_system_table_mods = on;
