@@ -1,0 +1,127 @@
+-- sift.col_wbuf_ref and a connected index, twin tables with the setting on and off (docs/COL-CONNECT.md): the foreign key of the child is a column of its index, so a buffered row that is a reference carries the same key as one with
+-- its values, and the fill of a promotion reads it from the same rows. The parent's journal of changed keys (the tombstone log, written by the track hook) is not a buffer row and stays
+-- as it is: a twin pair of tables takes the same statements, the child with the setting on and the child with it off, and at every step the answers of the join shapes are the normal
+-- plan's, the journal of the parent has the same records in both pairs, and the buffers hold the same rows.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+SET check_function_bodies = off;
+
+-- the answer under the agg scan and under the normal plan, and the proofs the scan used
+CREATE FUNCTION found_run(q text, OUT same boolean, OUT proofs int) LANGUAGE plpgsql AS $$
+DECLARE p jsonb; a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	proofs := coalesce(jsonb_path_query_first(p, '$.**."Found Proofs"')::text::int, 0);
+END $$;
+
+-- the same statements on the pair of tables named by s: 'a' with the setting on, 'b' with it off
+CREATE FUNCTION apply(step int, s text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
+	IF step = 1 THEN
+		EXECUTE format('CREATE TABLE dim_%1$s (id int PRIMARY KEY, label text, region int) WITH (autovacuum_enabled = false)', s);
+		EXECUTE format('INSERT INTO dim_%1$s SELECT i, ''l'' || i, i %% 7 FROM generate_series(1, 200) i', s);
+		EXECUTE format('CREATE INDEX dim_%1$s_col ON dim_%1$s USING sift_col (id, label, region)', s);
+		EXECUTE format('CREATE TABLE ev_%1$s (id int PRIMARY KEY, dim_id int, v int) WITH (autovacuum_enabled = false)', s);
+		EXECUTE format('INSERT INTO ev_%1$s SELECT i, CASE WHEN i %% 97 = 0 THEN NULL WHEN i %% 89 = 0 THEN 999 ELSE 1 + i %% 200 END, i %% 10 FROM generate_series(1, 3000) i', s);
+		EXECUTE format('CREATE INDEX ev_%1$s_col ON ev_%1$s USING sift_col (id, dim_id, v) WITH (connect = ''dim_id -> dim_%1$s(id)'')', s);
+	ELSIF step = 2 THEN
+		EXECUTE format('SELECT sift.col_maintain(''ev_%1$s_col'')', s);
+	ELSIF step = 3 THEN
+		-- parent rows deleted, rewritten, a key changed; child rows inserted, with a key the parent has no row for and with a NULL key
+		EXECUTE format('DELETE FROM dim_%1$s WHERE id IN (7, 8)', s);
+		EXECUTE format('UPDATE dim_%1$s SET label = ''changed'' WHERE id = 9', s);
+		EXECUTE format('UPDATE dim_%1$s SET id = 500 WHERE id = 10', s);
+		EXECUTE format('INSERT INTO ev_%1$s SELECT 4000 + i, CASE WHEN i %% 50 = 0 THEN NULL WHEN i %% 33 = 0 THEN 999 ELSE 1 + i %% 200 END, i %% 10 FROM generate_series(1, 1000) i', s);
+		EXECUTE format('UPDATE ev_%1$s SET dim_id = 7 WHERE id = 20', s);
+		EXECUTE format('DELETE FROM ev_%1$s WHERE id = 30', s);
+	ELSIF step = 4 THEN
+		-- rows inserted and deleted again, pruned by a VACUUM that leaves the index alone (below), and a savepoint that rolls back (apply_tx)
+		EXECUTE format('INSERT INTO ev_%1$s SELECT 6000 + i, 1 + i %% 200, 7 FROM generate_series(1, 300) i', s);
+		EXECUTE format('DELETE FROM ev_%1$s WHERE id BETWEEN 6000 AND 6100', s);
+	END IF;
+END $$;
+CREATE FUNCTION apply_tx(s text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
+	BEGIN
+		EXECUTE format('INSERT INTO ev_%1$s SELECT 9000 + i, 1 + i %% 200, 1 FROM generate_series(1, 200) i', s);
+		RAISE EXCEPTION 'undo';
+	EXCEPTION WHEN raise_exception THEN NULL;
+	END;
+END $$;
+
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT count(*) FROM ev_@ e JOIN dim_@ d ON d.id = e.dim_id$q$),
+ (2, $q$SELECT count(*) FROM ev_@ e WHERE EXISTS (SELECT 1 FROM dim_@ d WHERE d.id = e.dim_id)$q$),
+ (3, $q$SELECT count(*) FROM ev_@ e WHERE NOT EXISTS (SELECT 1 FROM dim_@ d WHERE d.id = e.dim_id)$q$),
+ (4, $q$SELECT d.region, count(*), sum(e.v) FROM ev_@ e JOIN dim_@ d ON d.id = e.dim_id GROUP BY 1 ORDER BY 1$q$),
+ (5, $q$SELECT e.v, count(*) FROM ev_@ e WHERE e.id > 500 AND EXISTS (SELECT 1 FROM dim_@ d WHERE d.id = e.dim_id) GROUP BY 1 ORDER BY 1$q$);
+-- every shape of both pairs: is it the normal plan's answer, and do the two pairs give the same answer (the proofs they used are not compared: the setting must not change them)
+CREATE FUNCTION phase() RETURNS TABLE (same_a boolean, same_b boolean, answers_equal boolean, proofs_equal boolean, journal_equal boolean, buffer_equal boolean) LANGUAGE plpgsql AS $$
+DECLARE ra record; rb record; ea text; eb text; sa boolean := true; sb boolean := true; eq boolean := true; pe boolean := true; ja int8; jb int8; ba int8; bb int8; sh record;
+BEGIN
+	FOR sh IN SELECT * FROM shapes ORDER BY n LOOP
+		SELECT * INTO ra FROM found_run(replace(sh.sql, '@', 'a'));
+		SELECT * INTO rb FROM found_run(replace(sh.sql, '@', 'b'));
+		sa := sa AND ra.same; sb := sb AND rb.same; pe := pe AND ra.proofs = rb.proofs;
+		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || replace(sh.sql, '@', 'a') || ') t' INTO ea;
+		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || replace(sh.sql, '@', 'b') || ') t' INTO eb;
+		eq := eq AND ea = eb;
+	END LOOP;
+	SELECT coalesce(sum(rows), 0) INTO ja FROM sift.col_segments('dim_a_col') WHERE kind = 'tombstones';
+	SELECT coalesce(sum(rows), 0) INTO jb FROM sift.col_segments('dim_b_col') WHERE kind = 'tombstones';
+	SELECT coalesce(sum(rows), 0) INTO ba FROM sift.col_segments('ev_a_col') WHERE kind = 'buffer';
+	SELECT coalesce(sum(rows), 0) INTO bb FROM sift.col_segments('ev_b_col') WHERE kind = 'buffer';
+	RETURN QUERY SELECT sa, sb, eq, pe, ja = jb, ba = bb;
+END $$;
+
+SELECT apply(1, 'a');
+SELECT apply(1, 'b');
+SELECT * FROM phase();
+SELECT apply(2, 'a');
+SELECT apply(2, 'b');
+SELECT * FROM phase();
+SELECT apply(3, 'a');
+SELECT apply(3, 'b');
+SELECT * FROM phase();
+SELECT apply_tx('a');
+SELECT apply_tx('b');
+SELECT apply(4, 'a');
+SELECT apply(4, 'b');
+VACUUM (INDEX_CLEANUP off) ev_a;
+VACUUM (INDEX_CLEANUP off) ev_b;
+SELECT * FROM phase();
+SELECT sift.col_verify('ev_a_col', true);
+-- the promotion fills the found flag from the rows of the buffer
+SELECT sift.col_promote('ev_a_col') >= 0 AS promoted_a;
+SELECT sift.col_promote('ev_b_col') >= 0 AS promoted_b;
+SELECT * FROM phase();
+SELECT sift.col_verify('ev_a_col', true);
+-- rewritten under a stamp after the changes
+SET sift.col_connect_refresh_pct = 1;
+SELECT apply(2, 'a');
+SELECT apply(2, 'b');
+SELECT * FROM phase();
+RESET sift.col_connect_refresh_pct;
+
+DROP FUNCTION phase();
+DROP FUNCTION apply(int, text);
+DROP FUNCTION apply_tx(text);
+DROP FUNCTION found_run(text);
+DROP TABLE shapes, ev_a, ev_b, dim_a, dim_b;
+DROP EXTENSION pg_sift;

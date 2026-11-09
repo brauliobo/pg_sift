@@ -5,8 +5,9 @@
  * the buffer takes them from here and never from the heap. The heap is read for a record only to build an entry again (col/wbuf/ref.c): after a restart or a crash (the table is empty), on a
  * standby (replay makes the records, no one made the entries), after a promotion of a standby. One reader at a time does it for a buffer (rebuild_enter): the others wait and then find the entries.
  *
- * The table is ARENA_SLOTS slots in the DSM registry (nothing is allocated at postmaster start, an untouched page is not backed): a slot is the buffer of one generation, a bump area of the
- * encoded rows and an open addressing directory of their offsets. It is the buffer's from its first row to its promotion (sift_cwbuf_arena_drop), and is never taken from a buffer that is in use:
+ * The table is a header and ARENA_SLOTS slots, each one a segment of the DSM registry that is made when the first buffer takes the slot (nothing is allocated at postmaster start, and the
+ * server backs the slots that were in use at once, 6.5 MB each, not all of them): a slot is the buffer of one generation, a bump area of the encoded rows and an open addressing directory of
+ * their offsets. It is the buffer's from its first row to its promotion (sift_cwbuf_arena_drop), and is never taken from a buffer that is in use:
  * a row that finds no slot, or a slot that is full, is written as a record that holds its values, as a buffer without the setting does. A slot of an index that was dropped or rebuilt is given
  * back, and when none is free the buffer written longest ago is asked back, by sealing it, which promotes it as any other (sift_cwbuf_arena_gc). A slot is full when it holds write_buffer_limit bytes:
  * the seal of the buffer follows (sift_cwbuf_seal), so the limit counts the rows a buffer holds, not the pages of its records.
@@ -34,11 +35,12 @@
 #define ARENA_DATA		((Size) 6 << 20)	/* bytes of rows of a slot */
 #define ARENA_HEADROOM	((Size) 256 << 10)	/* a slot is full this far below its capacity: the rows written after the seal was asked for still find room */
 #define ARENA_SLOT_SIZE	(ARENA_DIR * sizeof(uint32) + ARENA_DATA)
-#define ARENA_NAME		"sift_col_wbuf_arena_2"
+#define ARENA_NAME		"sift_col_wbuf_arena_3"
 
 typedef struct ArenaSlot
 {
 	bool		used;
+	bool		fresh;			/* taken, its directory not cleared yet */
 	bool		seal_wanted;	/* asked back by a buffer that found no slot: the buffer is sealed at its next check */
 	Oid			db;
 	Oid			indexoid;
@@ -62,7 +64,6 @@ typedef struct Arena
 	uint64		rows_not_stored;
 	uint64		rows_rebuilt;
 	ArenaSlot	slot[ARENA_SLOTS];
-	char		mem[FLEXIBLE_ARRAY_MEMBER];
 } Arena;
 
 typedef struct ArenaRow
@@ -74,6 +75,7 @@ typedef struct ArenaRow
 } ArenaRow;
 
 static Arena *arena;
+static char *slotmem[ARENA_SLOTS];	/* this backend's mapping of the segment of each slot */
 static int	rebuilding = -1;	/* the slot this backend holds the rebuild of */
 
 static void
@@ -81,7 +83,7 @@ arena_init(SIFT_DSM_INIT_ARGS)
 {
 	Arena	   *a = ptr;
 
-	memset(a, 0, offsetof(Arena, mem));
+	memset(a, 0, sizeof(Arena));
 	SpinLockInit(&a->mutex);
 	a->slots_max = ARENA_SLOTS;
 	for (int i = 0; i < ARENA_SLOTS; i++)
@@ -93,20 +95,39 @@ static Arena *
 arena_get(void)
 {
 	if (arena == NULL)
-		arena = sift_dsm_join(ARENA_NAME, offsetof(Arena, mem) + ARENA_SLOTS * ARENA_SLOT_SIZE, arena_init);
+		arena = sift_dsm_join(ARENA_NAME, sizeof(Arena), arena_init);
 	return arena;
+}
+
+static void
+slot_init(SIFT_DSM_INIT_ARGS)
+{
+}
+
+/* The segment of slot i, made by the first backend that needs it. Called with no spinlock held */
+static char *
+slot_map(int i)
+{
+	if (slotmem[i] == NULL)
+	{
+		char		name[48];
+
+		snprintf(name, sizeof(name), "%s_slot%d", ARENA_NAME, i);
+		slotmem[i] = sift_dsm_join(name, ARENA_SLOT_SIZE, slot_init);
+	}
+	return slotmem[i];
 }
 
 static inline uint32 *
 slot_dir(Arena *a, const ArenaSlot *s)
 {
-	return (uint32 *) (a->mem + (s - a->slot) * ARENA_SLOT_SIZE);
+	return (uint32 *) slotmem[s - a->slot];
 }
 
 static inline char *
 slot_data(Arena *a, const ArenaSlot *s)
 {
-	return a->mem + (s - a->slot) * ARENA_SLOT_SIZE + ARENA_DIR * sizeof(uint32);
+	return slotmem[s - a->slot] + ARENA_DIR * sizeof(uint32);
 }
 
 static inline uint32
@@ -153,10 +174,42 @@ slot_find(Arena *a, Relation index, uint64 gen, bool create)
 		a->gc_wanted = true;
 		return NULL;
 	}
-	*free = (ArenaSlot) {.used = true,.db = index->rd_locator.dbOid,.indexoid = RelationGetRelid(index),.rel = index->rd_locator.relNumber,.gen = gen,
+	*free = (ArenaSlot) {.used = true,.fresh = true,.db = index->rd_locator.dbOid,.indexoid = RelationGetRelid(index),.rel = index->rd_locator.relNumber,.gen = gen,
 		.epoch = ++a->epoch,.rebuilder = -1};
-	memset(slot_dir(a, free), 0, ARENA_DIR * sizeof(uint32));
 	return free;
+}
+
+/*
+ * The slot of the buffer, its segment mapped and its directory clear, with the spinlock held; with create, a free one is taken. NULL, with the spinlock released, when there is none. The
+ * segment of a slot is mapped without the spinlock, so the slot is looked for again after.
+ */
+static ArenaSlot *
+slot_enter(Arena *a, Relation index, uint64 gen, bool create)
+{
+	for (;;)
+	{
+		ArenaSlot  *s;
+		int			i;
+
+		SpinLockAcquire(&a->mutex);
+		if ((s = slot_find(a, index, gen, create)) == NULL)
+		{
+			SpinLockRelease(&a->mutex);
+			return NULL;
+		}
+		i = s - a->slot;
+		if (slotmem[i] != NULL)
+		{
+			if (s->fresh)
+			{
+				memset(slot_dir(a, s), 0, ARENA_DIR * sizeof(uint32));
+				s->fresh = false;
+			}
+			return s;
+		}
+		SpinLockRelease(&a->mutex);
+		(void) slot_map(i);
+	}
 }
 
 static const ArenaRow *
@@ -191,9 +244,9 @@ wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, Transacti
 	uint32	   *at;
 	ArenaPut	res;
 
-	SpinLockAcquire(&a->mutex);
-	if ((s = slot_find(a, index, gen, true)) == NULL)
+	if ((s = slot_enter(a, index, gen, true)) == NULL)
 	{
+		SpinLockAcquire(&a->mutex);
 		a->rows_not_stored++;
 		SpinLockRelease(&a->mutex);
 		return ARENA_NOT_STORED;
@@ -265,12 +318,8 @@ wbuf_arena_read(Relation index, uint64 gen, RefRow *rows, int n, StringInfo pay)
 	bool		got = false;
 	Size		start = pay->len;
 
-	SpinLockAcquire(&a->mutex);
-	if (n == 0 || (s = slot_find(a, index, gen, false)) == NULL)
-	{
-		SpinLockRelease(&a->mutex);
+	if (n == 0 || (s = slot_enter(a, index, gen, false)) == NULL)
 		return;
-	}
 	s->tick = ++a->tick;
 	epoch = s->epoch;
 	data = slot_data(a, s);

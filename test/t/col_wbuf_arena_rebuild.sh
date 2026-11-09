@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_ARENA_ROWS 6000 2000)
-plan 16
+plan 19
 node_init primary 5 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
@@ -30,6 +30,17 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
 		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); s := answers(); RETURN n = s; END \$\$" >/dev/null || bail "setup failed"
 
+# a connected child (the foreign key is a column of its index) whose parent changes: the found flag and the join are the normal plan's, with its rows in the buffer as references
+sql primary "CREATE TABLE dim (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = off)" \
+	"INSERT INTO dim SELECT i, 'l' || i FROM generate_series(1, 200) i" "CREATE INDEX dim_ix ON dim USING sift_col (id, label)" \
+	"CREATE TABLE ev (id int PRIMARY KEY, dim_id int, v int) WITH (autovacuum_enabled = off)" \
+	"INSERT INTO ev SELECT i, 1 + i % 210, i % 10 FROM generate_series(1, 3000) i" \
+	"CREATE INDEX ev_ix ON ev USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> dim(id)')" "SELECT sift.col_maintain('ev_ix')" \
+	"CREATE FUNCTION same_conn() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; q text := 'SELECT md5(string_agg(x::text, ''|'' ORDER BY x::text)) FROM (SELECT e.v, count(*) FROM ev e WHERE EXISTS (SELECT 1 FROM dim d WHERE d.id = e.dim_id) GROUP BY 1) x'; BEGIN
+		PERFORM set_config('sift.agg_force', 'on', true); PERFORM set_config('sift.enable_agg', 'off', true); EXECUTE q INTO n; PERFORM set_config('sift.enable_agg', 'on', true); EXECUTE q INTO s; RETURN n = s; END \$\$" \
+	"DELETE FROM dim WHERE id IN (5, 6)" "UPDATE dim SET label = 'x' WHERE id = 7" "UPDATE dim SET id = 900 WHERE id = 8" \
+	"INSERT INTO ev SELECT 5000 + i, 1 + i % 205, i % 10 FROM generate_series(1, 1500) i" "UPDATE ev SET dim_id = 5 WHERE id % 50 = 0" "DELETE FROM ev WHERE id % 60 = 0" >/dev/null || bail "connected setup failed"
+
 # the rows: nothing of them is promoted, they stay in the buffer
 sql primary "INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, $ROWS) i" \
 	"BEGIN" "INSERT INTO a SELECT 100000 + i, i % 10, 50000 + i, 'r' FROM generate_series(1, 500) i" "ROLLBACK" \
@@ -45,6 +56,8 @@ same() { [[ $(sql "$1" "SELECT same_as_heap()") == t ]]; }
 check "the primary: the buffer holds $BUFFERED rows and the engine gives the heap's answers" same primary
 check "the primary: no row was built from the heap" test "$(stats primary)" == 0
 
+check "the primary: the connected child gives the normal plan's rows" test "$(sql primary 'SELECT same_conn()')" == t
+
 # kill -9 of everything: the arena is empty after recovery
 crash primary
 node_start primary || bail "restart after the crash failed"
@@ -53,6 +66,7 @@ R1=$(stats primary)
 check "after the crash: the first reader built the entries from the heap ($R1 rows of the $BUFFERED records)" test "$R1" -gt 0 -a "$R1" -le "$((BUFFERED + 1000))"
 same primary; same primary
 check "after the crash: the readers after the first built nothing" test "$(stats primary)" == "$R1"
+check "after the crash: the connected child gives the normal plan's rows" test "$(sql primary 'SELECT same_conn()')" == t
 check "after the crash: sift_cwbuf_verify and the store check pass" test "$(sql primary "SELECT sift.col_verify('a_ix', true) IS NOT NULL")" == t
 
 # four readers that start together on an empty arena: one builds the entries, the others wait for it and read them
@@ -75,6 +89,7 @@ node_clone primary standby 6 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
 node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
+check "the standby: the connected child gives the normal plan's rows" test "$(sql standby 'SELECT same_conn()')" == t
 check "the standby: the first read gives the heap's answers" same standby
 S1=$(stats standby)
 check "the standby: the first reader built the entries from the heap ($S1 rows)" test "$S1" -gt 0
@@ -91,4 +106,5 @@ sql standby "INSERT INTO a SELECT 700000 + i, i % 10, i, 'p' FROM generate_serie
 check "the promoted standby: the answers are the heap's" same standby
 sql standby "SELECT sift.col_promote('a_ix') >= 0" >/dev/null
 check "the promoted standby: promotion of the buffer keeps them" same standby
+diag "buffered $BUFFERED; rows built from the heap: first reader after a crash $R1, four readers together after another $R2, first reader on the standby $S1"
 finish
