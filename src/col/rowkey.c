@@ -173,7 +173,7 @@ sift_col_row_key_check(Relation index)
 	if (!sift_col_row_key_on(index))
 		return;
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	check_column(heap, index, sift_col_options_row_key(index), false);
+	check_column(heap, index, pstrdup(sift_col_options_row_key(index)), false);
 	table_close(heap, NoLock);
 }
 
@@ -215,7 +215,7 @@ sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk)
 void
 sift_col_row_key_prepare(Relation heap, Relation index)
 {
-	const char *rk = sift_col_options_row_key(index);
+	const char *rk = pstrdup(sift_col_options_row_key(index));
 	const char *tid;
 	StringInfoData v;
 	bool		autokey = strcmp(rk, "auto") == 0;
