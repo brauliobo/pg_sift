@@ -33,12 +33,15 @@ groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
 	return false;
 }
 
+#define FLIP_SCAN	(-1)		/* the scan of the table on the nullable side of a LEFT JOIN, the preserved one its lookup (FromScan.flip) */
+
 /*
  * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
  * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
  */
 static void
-group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others)
+group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others,
+				 bool *flippable)
 {
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
@@ -51,10 +54,17 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 			   *firsts = NIL;
 	bool		lead = true;
 
-	if (skip == 0)
+	if (skip == FLIP_SCAN)
+	{
+		fs.flip = true;
+		if (!agg_base(c, root, input_rel, &fs))
+			return;
+	}
+	else if (skip == 0)
 	{
 		if (!agg_base_either(c, root, input_rel, &fs))
 			return;
+		*flippable = fs.flippable && !fs.flip;
 		/* the tables of an inner join may each be the scanned one, the others its lookups: the first in the FROM list is not the only way (group_paths) */
 		*others = fs.skip == 0 && !fs.flippable && fs.lefts == NIL && !c->joinless && !fs.flip &&
 			input_rel->cheapest_total_path->total_cost >= AGG_ORDER_MIN_COST ? fs.ntables - 1 : 0;
@@ -182,13 +192,22 @@ static void
 group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
 {
 	int			others = 0;
+	bool		flippable = false;
 
-	group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, 0, &others);
+	group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, 0, &others, &flippable);
 	for (int skip = 1; skip <= others; skip++)
 	{
 		bool		quiet = agg_quiet_reports(true);
 
-		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, skip, &others);
+		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, skip, &others, &flippable);
+		agg_quiet_reports(quiet);
+	}
+	/* a LEFT JOIN of two tables that both have an index: the child scanned with the preserved parent as its lookup is also a way, and the price chooses */
+	if (flippable)
+	{
+		bool		quiet = agg_quiet_reports(true);
+
+		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, FLIP_SCAN, &others, &flippable);
 		agg_quiet_reports(quiet);
 	}
 }

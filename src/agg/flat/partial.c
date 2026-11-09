@@ -21,6 +21,8 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/typcache.h"
 
+#define FLAT_PARTIAL_MARGIN 1.0	/* the grouped child plan wins when it costs less: the scan of the other table (agg/plan/paths.c) is priced as well */
+
 #include "agg/agg.h"
 #include "agg/flat/int.h"
 
@@ -343,5 +345,6 @@ sift_agg_partial_left(Query *q, bool apply)
 	p.q->havingQual = outer_mutator(p.q->havingQual, &p);
 	*q = *p.q;
 	sift_agg_by_cost = sift_agg_flat_any = true;
+	sift_agg_flat_margin = FLAT_PARTIAL_MARGIN;
 	return true;
 }

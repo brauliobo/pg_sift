@@ -58,7 +58,7 @@ SELECT * FROM check_query('the NOT NULL column of the nullable side of a left jo
  SELECT d.id, count(e.id) AS n FROM dim_a d LEFT JOIN events e ON e.dim_a_id = d.id AND e.kind = 'a' GROUP BY 1 $q$);
                           label                          | in_scan | same | rows 
 ---------------------------------------------------------+---------+------+------
- the NOT NULL column of the nullable side of a left join | f       | t    |   60
+ the NOT NULL column of the nullable side of a left join | t       | t    |   60
 (1 row)
 
 SELECT * FROM check_query('count DISTINCT of the primary key', $q$ SELECT dim_a_id, count(DISTINCT id) AS n FROM events GROUP BY 1 $q$);

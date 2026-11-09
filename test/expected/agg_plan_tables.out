@@ -259,9 +259,9 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kin
 (1 row)
 
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.tenant_id = s.id GROUP BY s.id$$) AS fact_nullable;
-          fact_nullable           
-----------------------------------
- SiftAgg s (subquery) (preserved)
+ fact_nullable 
+---------------
+ SiftAgg
 (1 row)
 
 SET sift.agg_lookup_max_rows = 10;
