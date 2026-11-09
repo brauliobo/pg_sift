@@ -503,8 +503,6 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 
 Three pieces share the column engine; none needs `shared_preload_libraries`, and `CREATE EXTENSION pg_sift` (3.0) installs all of them.
 
-Which columns to put in a `sift_col` index, what a wider one costs on reads, size and writes, and which btrees to keep: [INDEX-RECIPES.md](INDEX-RECIPES.md).
-
 **`sift_col` index** over a heap table: `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those columns once more, column by column, with zone maps. Filters and aggregates read it instead of the heap rows; the heap stays authoritative (MVCC is the table's). On a `sift_table` it is refused: that table is already in column format and `SiftAgg` reads it as it is.
 
 - Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` of any precision, unconstrained `numeric`, `money`, `interval`, `time`, `timetz`, enums, `uuid`, `bytea`, `inet`, `cidr`, `macaddr`, `macaddr8`, `bit`, `varbit`, arrays, ranges and multiranges, `char(n)`, `name`, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline).
