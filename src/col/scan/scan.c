@@ -126,14 +126,13 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColSource *src = col_source(heap, index, sift_col_rel(index)->schema, mcxt, flags);
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
 	if (!(flags & SIFT_COLO_NOCHECKS))
 		check_access(heap, flags);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
-	scan_dir_load(src, view);
+	scan_view_load(src, heap, view);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
 	col_hf_open(src);
@@ -151,9 +150,8 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);
 	SIFT_COL_JITTER();
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis, vis_stream};
-	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
-	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
-	for (int i = 0; i < src->nseg; i++)
+	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one (a view has them) */
+	for (int i = 0; i < src->nseg && view == NULL; i++)
 		if (sift_cseg_keyed(&src->seg[i].seg->entry))
 			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].id + 1);
 	src->cnt.segments = src->nseg;

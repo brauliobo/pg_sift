@@ -431,7 +431,7 @@ typedef struct PruneRange
 
 extern void	scan_load_wbuf(SiftColSource *src);
 extern bool	segments_current(SiftColSource *src);
-extern void scan_dir_load(SiftColSource *src, const void *view);
+extern void scan_view_load(SiftColSource *src, Relation heap, const void *view);
 extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
 extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
