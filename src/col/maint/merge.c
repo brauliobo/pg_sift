@@ -385,7 +385,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 			over = i;
 			dirty_over |= d > 0;
 		}
-		else if ((uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * v->seg[i]->nsb)
+		else if (maint_read_asked ? d > 0 : (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * v->seg[i]->nsb)
 		{
 			dirty_part[i] = true;
 			if ((uint64) d * 1000 / v->seg[i]->nsb > worst_share)
