@@ -114,6 +114,7 @@ typedef struct MapTab
 	bool		xfed;
 	uint16	   *dcls;			/* a dense table (map_load_dense): the class of each key in [0, dn), 0 none; the rows are one for each class, the row of class c is c - 1 */
 	uint32		dn;
+	bool		proof;			/* no table: the flag of a connected index answers the join (agg/found.c), nothing reads the rows */
 } MapTab;
 
 /* the class of a key of a dense table, 0: no row has it */

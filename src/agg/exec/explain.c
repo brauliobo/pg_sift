@@ -219,6 +219,13 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Text Filters", NULL, "text key filters", c->njstr, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Found Proofs", NULL, "found proofs", c->nfound, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Found Keys Outside The Proof", NULL, "keys outside the proof", c->found_keys, SIFT_XI_OPT);
+	if (sift_agg_connected(c))
+	{
+		sift_explain_int(&ln, "Parent Leaf Reads", NULL, "parent leaf reads", c->lookup_cols, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Parent Heap Fetches", NULL, "parent heap fetches", c->lookup_heap + c->lookup_hscan, SIFT_XI_OPT);
+	}
 	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Cached Lookup Tables", NULL, "cached tables", c->ncached, SIFT_XI_OPT);
 	sift_explain_int(&ln, "Dimension Maps Shared", NULL, "maps shared", c->ndim_shared, SIFT_XI_OPT);
@@ -237,6 +244,8 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 	if (c->lookup_pages > 0)
 		sift_explain_int(&ln, "Lookup Pages All Visible", "%", "of the lookup tables' pages all-visible", c->lookup_allvis * 100 / c->lookup_pages, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
+	if (c->found_why != NULL)
+		ExplainPropertyText("Found Fallback", c->found_why, es);
 	if (c->lookup_pages >= LOOKUP_HINT_PAGES && c->lookup_allvis * 2 < c->lookup_pages)
 		ExplainPropertyText("Lookup Hint", "VACUUM the lookup tables: under half of their pages are all-visible, so the lookups fetch heap pages", es);
 }

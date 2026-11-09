@@ -197,6 +197,15 @@ extern void sift_conn_start(Relation child_heap, Relation child_index);
 extern void sift_conn_alter(Relation child_index);
 
 /*
+ * The connection of the child index from its column fk (an attribute of the index) to the key of a parent table: its number, the leaf of its flag that the parent row was
+ * found and the sift_col index of the parent that serves it. -1 when the index has no such connection.
+ */
+extern int	sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, AttrNumber parent_key, int *found, Oid *parent_index);
+/* The flag of the connection as a statement may read it for every row of the source (col/scan/proof.c): NULL, with the oldest stamp of its segments, or why not */
+struct SiftColSource;
+extern const char *sift_col_source_proof(struct SiftColSource *src, int found_leaf, SiftConnStamp *oldest);
+
+/*
  * ---- the carried values of a segment ----
  *
  * The writer of a segment of a connected index (a build, a promotion, a merge) fills the carried leaves of every unit it writes from the parent tables: for each connection it takes a

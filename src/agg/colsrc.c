@@ -129,6 +129,12 @@ sift_colsrc_view_export(SiftSrcSource *src, void *buf)
 	src->prov->view_export(src->impl, buf);
 }
 
+const char *
+sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *lineage, uint32 *xmin)
+{
+	return src->prov->conn_proof ? src->prov->conn_proof(src->impl, leaf, lineage, xmin) : "source without connections";
+}
+
 void
 sift_colsrc_close(SiftSrcSource *src)
 {

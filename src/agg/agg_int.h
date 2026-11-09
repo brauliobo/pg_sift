@@ -254,6 +254,10 @@ typedef struct AggExec
 	JstrTrial  *jtrial;			/* what each of them kept of the rows it saw, until it is dropped (unit_conjuncts) */
 	int			njstr;
 	int			njpass;			/* the joins that pass the tuples the key filter let through (semi_pass) */
+	int			nfound;			/* the joins answered from the flag of a connected index (join_found) */
+	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */
+	const char *found_why;		/* why a join of a connected index was not (the first of them) */
+	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
 	int			ndim_shared;	/* the dimension maps another statement had kept in shared memory (lookdim_load), and those this one read and kept */
@@ -405,6 +409,8 @@ typedef struct AggExec
 
 extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
+extern bool		sift_agg_connect_found;
+extern bool sift_agg_connected(const AggExec *ex);
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_lookup_columns;

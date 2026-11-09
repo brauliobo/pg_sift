@@ -413,6 +413,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			SiftAggPred *p;
 			bool	   *live;
 
+			if (k == 0 && ex->cs[ci].map == NULL && join_found(ex, ci, &total, &add))
+				continue;
 			if (join_filter_text(ex, ci, k, &leaf))
 			{
 				if (!s->topn)
@@ -498,7 +500,7 @@ join_none(AggExec *ex)
 		const SiftAggCombo *cb = &s->combo[ci];
 		const SiftAggJoin *j;
 
-		if (cb->join < 0 || cb->level != 0 || ex->cs[ci].map == NULL)
+		if (cb->join < 0 || cb->level != 0 || ex->cs[ci].map == NULL || ex->cs[ci].map->proof)
 			continue;
 		j = &s->join[cb->join];
 		if ((j->kind == SJ_INNER || j->kind == SJ_SEMI) && j->params == NIL && ex->cs[ci].map->nrow == 0)

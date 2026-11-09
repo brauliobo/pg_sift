@@ -445,6 +445,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Zone pruning of units by the filters of the statement | works | works | range, equality, `IN`, `IS NULL`, `OR` of those |
 | Skip map for parallel morsels | works | missing | a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map |
 | Parallel scan workers | works | works | partitions of a partitioned table too |
+| Joins to the parent of a connected index answered from its found flag | works | n/a | a sift_col index keeps the flag that the parent row was found with each segment's stamp (docs/COL-CONNECT.md); a table has no connections |
 | One directory for all the participants of a parallel scan | works | works | the workers open their sources on the directory and the end of the heap the leader read: the units of a key-cut segment are numbered by key range and the batches of the write buffer by superblock, so a promotion between two opens moves rows between items; a table numbers every unit by its superblock, and its workers also read the write buffers and the tombstone log of the leader's directory |
 | Partitioned table pushdown | works | works | the partitions of one kind (all `sift_table`, or all with a `sift_col` index) are one source; partitions with their columns in another order keep the normal plan |
 | Partition facts kept across statements, pages released between partitions | works | missing | the facts of a `sift_table` partition are read at each plan, and its source has no release between partitions |

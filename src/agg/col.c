@@ -891,6 +891,7 @@ static const SiftSrcProvider col_provider = {
 	.open_part = col_open_part,
 	.view_size = col_view_size,
 	.view_export = col_view_export,
+	.conn_proof = sift_col_conn_proof,
 	.close = col_close,
 	.unpin = col_unpin,
 	.source_layout = col_source_layout,

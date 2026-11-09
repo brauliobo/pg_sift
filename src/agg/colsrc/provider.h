@@ -28,6 +28,11 @@ typedef struct SiftSrcProvider
 	bool		(*rescan) (void *impl);
 	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
 	void		(*unpin) (void *impl);
+	/*
+	 * Optional (NULL: no connected index): the flag `leaf` of a connection of the index (col/conn.h) tells, for every row the source reads, whether the parent row was found when the
+	 * row was stored: NULL with the lineage and the xid of the oldest stamp of the rows, else the reason it does not (a word for EXPLAIN).
+	 */
+	const char *(*conn_proof) (void *impl, int leaf, uint64 *lineage, uint32 *xmin);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);

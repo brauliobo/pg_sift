@@ -26,7 +26,8 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	int			ci = ex->jcombo[s];
 	ComboSt    *cs = &ex->cs[ci];
 	SiftAggCombo *cb = &ex->spec->combo[ci];
-	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI;
+	/* the conjunct of a join answered from a flag (join_found) kept the rows of an anti join already */
+	const bool	want = ex->spec->join[cb->join].kind != SJ_ANTI || cs->map->proof;
 	const bool	pass = cs->spass;
 	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;

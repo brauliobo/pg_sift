@@ -662,7 +662,7 @@ scan_buffers(AggExec *ex)
 				ex->cs[ci].fmap = map_first_peek(ex, ci);
 				ex->cs[ci].fthresh = Max(s->join[s->combo[ci].join].first.rows / 8, 1024);
 			}
-			if (s->join[s->combo[ci].join].params == NIL)
+			if (s->join[s->combo[ci].join].params == NIL && !ex->cs[ci].map->proof)
 				semi_lut_build(ex, ci);
 		}
 	}

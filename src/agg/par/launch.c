@@ -141,6 +141,8 @@ par_launch(AggExec *ex)
 		}
 		if (m == NULL)
 			return;
+		if (m->proof)
+			continue;
 		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
 		nmaps++;
 	}
@@ -157,7 +159,7 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, vlen);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
-		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL)
+		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL && !ex->cs[ci].map->proof)
 			shm_toc_estimate_chunk(&pcxt->estimator, ml[ci].size);
 		else if (ex->spec->combo[ci].join >= 0 && ex->fjoin && ex->fjoin[ex->spec->combo[ci].join] && ex->cs[ci].fmap)
 			shm_toc_estimate_chunk(&pcxt->estimator, mlf[ci].size);
@@ -233,7 +235,7 @@ par_launch(AggExec *ex)
 			ex->lookup_shared += mlf[ci].nrow;
 			continue;
 		}
-		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL)
+		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL || ex->cs[ci].map->proof)
 			continue;
 		mp = shm_toc_allocate(pcxt->toc, ml[ci].size);
 		map_share_write(ex->cs[ci].map, &ex->spec->join[cb->join], &ml[ci], mp);

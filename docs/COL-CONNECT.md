@@ -113,6 +113,33 @@ scan), its stamp is of another journal (the parent index was rebuilt), the journ
 A snapshot older than the journal (a transaction that began before the first child was built and still runs) is never vouched: its reads use the join path for every row, the answer is the same. The
 journal vouches for the snapshots taken after its start, so a long-running snapshot costs time and never changes an answer.
 
+## Found
+
+A semi, anti or inner join of the scanned table to the parent of a connection that reads no column of the parent (`EXISTS`, `NOT EXISTS`, `IN`, a join that counts, `count(DISTINCT parent.key)`) asks one
+thing of each row: is there a parent row with its key. The flag `<fk>#found` of the segments says it as of the stamp, so the parent is not read at all. The scan keeps the rows whose flag is set and whose key
+is not among the keys `changed(S, X)` names for the oldest stamp of the segments (at most 1,024), plus the rows of those keys that a row of the parent holds now (a probe of the parent's unique btree under the
+scan's snapshot for each); an anti join keeps the complement. It is one conjunct of the scan, so the zones, the source filters and the parallel workers apply it as to any other, and the join itself passes
+every tuple.
+
+It holds for every row only when the flag is the whole story, so the statement uses the ordinary join, with the same answer, when any of these is so (EXPLAIN says it as `Found Fallback`):
+
+| reason | when |
+|---|---|
+| `write buffer` | a write buffer of the index holds rows (the reader's own too): their flag is not filled until the promotion |
+| `segment without stamp` | a segment was never filled (the first child of a parent, whose journal starts after its scan): the rewrite of the refresh fills it |
+| `parent too large to resolve` | the writer's parent lookup did not fit `maintenance_work_mem` |
+| `stamps of two journals` | the segments were stamped under different journals of the parent index |
+| `parent rows inserted since the stamp` | a row was inserted into the parent index since the oldest stamp (an update is an insert): a flag NULL is "not found then", and the journal lists the keys that ended, not those that appeared |
+| the verdict of the journal (`lineage`, `trimmed`, `older`, `overflow` ..) | the journal cannot vouch for the stamp or names more than 1,024 keys |
+| `no unique index on the parent key` | the keys that changed are probed in a unique btree of the parent |
+
+Only a semi, anti or inner join by one `int2`, `int4` or `int8` column that is the foreign key of the connection, with no condition of the parent's own, no top-N and no partitioned table. `sift.agg_connect_found`
+turns it off. EXPLAIN ANALYZE counts `Found Proofs` (joins answered so), `Found Keys Outside The Proof` (the keys the journal named), and for a connected index `Parent Leaf Reads` and `Parent Heap Fetches` (what the joins
+that did read the parent loaded from the leaves of its index and from its heap). A parent column of an `int2`, `int4`, `int8`, `date`, `timestamp`, `timestamptz`, `boolean`, `text`, `varchar`, `numeric(p <= 18)` or
+expression leaf is read from the leaves of the parent's index when all the columns the join reads are in one `sift_col` index; `float4`, `float8`, `uuid`, `time`, `interval` and `numeric` of more than 18 digits are read
+from the heap (`test/sql/col_conn_found.sql` fails if that changes).
+
 ## Limits of this stage
 
-No query reads the connection yet: it makes the dependency, the journal, the leaves and their values under a stamp.
+The found flag is read by the joins above. The carried columns and the join of the parent to its children are not read yet. A write to the parent (an update is an insert) sends the joins to the ordinary path until the
+segments are filled again under a later stamp (`sift.col_connect_refresh_pct`); a delete does not (its key is in the journal).

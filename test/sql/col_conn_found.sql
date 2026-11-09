@@ -1,0 +1,191 @@
+-- A join to the parent of a connected index that reads no column of the parent (EXISTS, NOT EXISTS, a join that counts) is answered from the flag the segments keep that the
+-- parent row was found (docs/COL-CONNECT.md, "Found"), less the keys that changed in the parent since the oldest stamp. Whatever happens to either table the rows are those
+-- of the normal plan: every state the flag cannot answer for (a write buffer, a segment without a stamp, a parent too large to resolve, a parent row inserted since)
+-- is read by the ordinary join, and EXPLAIN says why.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+
+-- the answer under the agg scan and under the normal plan, and what the scan did: proofs used, keys outside the proof, why not, parent leaf reads and heap fetches
+CREATE FUNCTION found_run(q text, OUT same boolean, OUT proofs int, OUT keys int, OUT why text, OUT leaf_reads int, OUT heap_fetches int, OUT workers int)
+LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	proofs := coalesce(jsonb_path_query_first(p, '$.**."Found Proofs"')::text::int, 0);
+	keys := coalesce(jsonb_path_query_first(p, '$.**."Found Keys Outside The Proof"')::text::int, 0);
+	why := jsonb_path_query_first(p, '$.**."Found Fallback"') #>> '{}';
+	leaf_reads := coalesce(jsonb_path_query_first(p, '$.**."Parent Leaf Reads"')::text::int, 0);
+	heap_fetches := coalesce(jsonb_path_query_first(p, '$.**."Parent Heap Fetches"')::text::int, 0);
+	workers := coalesce(jsonb_path_query_first(p, '$.**."Workers Launched"')::text::int, 0);
+END $$;
+
+CREATE TABLE dim_a (id int PRIMARY KEY, label text, region int) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, 'l' || i, i % 7 FROM generate_series(1, 200) i;
+CREATE INDEX dim_a_col ON dim_a USING sift_col (id, label, region);
+-- no foreign key: rows with a key the parent has no row for (999) and with a NULL key
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + i % 200 END, i % 10 FROM generate_series(1, 3000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id)');
+
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT count(*) FROM events e JOIN dim_a d ON d.id = e.dim_a_id$q$),
+ (2, $q$SELECT count(*) FROM events e WHERE EXISTS (SELECT 1 FROM dim_a d WHERE d.id = e.dim_a_id)$q$),
+ (3, $q$SELECT count(*) FROM events e WHERE NOT EXISTS (SELECT 1 FROM dim_a d WHERE d.id = e.dim_a_id)$q$),
+ (4, $q$SELECT count(DISTINCT d.id) FROM events e JOIN dim_a d ON d.id = e.dim_a_id$q$),
+ (5, $q$SELECT e.v, count(*) FROM events e WHERE e.id > 500 AND EXISTS (SELECT 1 FROM dim_a d WHERE d.id = e.dim_a_id) GROUP BY 1 ORDER BY 1$q$);
+CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean, proofs int, keys int, why text) LANGUAGE sql AS $$
+	SELECT s.n, r.same, r.proofs, r.keys, r.why FROM shapes s, LATERAL found_run(s.sql) r ORDER BY s.n
+$$;
+
+-- the journal of the parent starts after the first build: the segments have no stamp
+SELECT * FROM phase();
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT * FROM phase();
+
+-- parent rows deleted: their keys are outside the proof, the events of them are orphans now
+DELETE FROM dim_a WHERE id IN (7, 8);
+SELECT * FROM phase();
+
+-- a parent row written (a new version is an insert): the flag does not tell whether another key appeared
+UPDATE dim_a SET label = 'changed' WHERE id = 9;
+SELECT * FROM phase();
+-- changed keys at the share of the setting: the segments are written again under a stamp after the changes
+SET sift.col_connect_refresh_pct = 1;
+SELECT sift.col_maintain('events_col') AS rewritten;
+SELECT * FROM phase();
+RESET sift.col_connect_refresh_pct;
+
+-- events written after the stamp are in the write buffer: a row of a parent that is there, one that is not, a NULL key, a key whose row is deleted, a row whose key changed
+INSERT INTO events VALUES (4001, 5, 1), (4002, 999, 2), (4003, NULL, 3), (4004, 7, 4), (4005, 150, 5);
+UPDATE events SET dim_a_id = 7 WHERE id = 10;
+UPDATE events SET dim_a_id = 11 WHERE id = 20;
+DELETE FROM events WHERE id = 30;
+SELECT * FROM phase();
+SELECT sift.col_promote('events_col') >= 0 AS promoted;
+SELECT * FROM phase();
+
+-- a parent row inserted after the stamp, for a key the events have rows of
+INSERT INTO dim_a VALUES (999, 'late', 3);
+SELECT * FROM phase();
+DELETE FROM dim_a WHERE id = 999;
+INSERT INTO dim_a VALUES (8, 'back', 1);
+SELECT * FROM phase();
+SET sift.col_connect_refresh_pct = 1;
+SELECT sift.col_maintain('events_col') AS rewritten;
+RESET sift.col_connect_refresh_pct;
+SELECT * FROM phase();
+
+-- segments merged: the stamps are those of the merge
+SELECT sift.col_merge('events_col', true) >= 0 AS merged;
+SELECT * FROM phase();
+VACUUM dim_a, events;
+SELECT * FROM phase();
+
+-- the rows of a transaction that has not committed: the reader's own writes are in the write buffer
+BEGIN;
+INSERT INTO events VALUES (4101, 12, 1), (4102, 4242, 2);
+DELETE FROM dim_a WHERE id = 12;
+SELECT * FROM phase();
+ROLLBACK;
+SELECT * FROM phase() WHERE n = 1;
+SELECT sift.col_promote('events_col') >= 0 AS promoted;
+SELECT * FROM phase();
+
+-- the setting is the switch
+SET sift.agg_connect_found = off;
+SELECT * FROM phase() WHERE n = 1;
+RESET sift.agg_connect_found;
+
+-- a parent too large for maintenance_work_mem is not resolved: the stamp says so, the join reads the parent
+CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 2000) i;
+SET maintenance_work_mem = '1MB';
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+SELECT sift.col_maintain('big_events_col') AS rewritten;
+SELECT * FROM found_run($q$SELECT count(*) FROM big_events e JOIN dim_big d ON d.id = e.dim_big_id$q$);
+RESET maintenance_work_mem;
+
+-- the key types of a connection
+DO $$
+DECLARE
+	t text;
+BEGIN
+	FOREACH t IN ARRAY ARRAY['int2', 'int4', 'int8'] LOOP
+		EXECUTE format('CREATE TABLE p_%1$s (id %1$s PRIMARY KEY, x int) WITH (autovacuum_enabled = false)', t);
+		EXECUTE format('INSERT INTO p_%s SELECT i, i FROM generate_series(1, 300) i', t);
+		EXECUTE format('CREATE INDEX p_%1$s_col ON p_%1$s USING sift_col (id, x)', t);
+		EXECUTE format('CREATE TABLE c_%1$s (id int PRIMARY KEY, k %1$s) WITH (autovacuum_enabled = false)', t);
+		EXECUTE format('INSERT INTO c_%s SELECT i, CASE WHEN i %% 50 = 0 THEN NULL ELSE 1 + i %% 320 END FROM generate_series(1, 4000) i', t);
+		EXECUTE format('CREATE INDEX c_%1$s_col ON c_%1$s USING sift_col (id, k) WITH (connect = ''k -> p_%1$s(id)'')', t);
+	END LOOP;
+END $$;
+SELECT sift.col_maintain(c) FROM unnest(ARRAY['c_int2_col', 'c_int4_col', 'c_int8_col']) c;
+CREATE TABLE tshapes (t text, n int, sql text);
+INSERT INTO tshapes SELECT t, n, format(q, t, t) FROM unnest(ARRAY['int2', 'int4', 'int8']) t, (VALUES
+ (1, 'SELECT count(*) FROM c_%s e JOIN p_%s d ON d.id = e.k'),
+ (2, 'SELECT count(*) FROM c_%s e WHERE EXISTS (SELECT 1 FROM p_%s d WHERE d.id = e.k)'),
+ (3, 'SELECT count(*) FROM c_%s e WHERE NOT EXISTS (SELECT 1 FROM p_%s d WHERE d.id = e.k)')) s(n, q);
+CREATE FUNCTION tphase() RETURNS TABLE (t text, n int, same boolean, proofs int, keys int, why text) LANGUAGE sql AS $$
+	SELECT s.t, s.n, r.same, r.proofs, r.keys, r.why FROM tshapes s, LATERAL found_run(s.sql) r ORDER BY s.t, s.n
+$$;
+SELECT * FROM tphase();
+DELETE FROM p_int2 WHERE id = 3;
+DELETE FROM p_int4 WHERE id = 3;
+DELETE FROM p_int8 WHERE id = 3;
+SELECT * FROM tphase();
+
+-- the same shapes in parallel scans: each participant makes the proof on the directory of the leader
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM tphase();
+SELECT * FROM phase();
+SELECT bool_or(workers > 0) AS parallel FROM shapes s, LATERAL found_run(s.sql) r;
+RESET max_parallel_workers_per_gather;
+
+-- the parent columns a join reads (not carried) come from the leaves of the parent's index, not its heap
+CREATE TABLE tp (id int PRIMARY KEY, c_int2 int2, c_int4 int4, c_int8 int8, c_date date, c_ts timestamp, c_tstz timestamptz, c_bool boolean, c_text text,
+				 c_varchar varchar(20), c_f8 float8, c_f4 float4, c_uuid uuid, c_time time, c_interval interval, c_num numeric(12, 2), c_bignum numeric(30, 2))
+	WITH (autovacuum_enabled = false);
+INSERT INTO tp SELECT i, i % 100, i % 1000, i * 10000000000, date '2026-01-01' + i % 60, timestamp '2026-01-01' + i * interval '1 hour',
+				timestamptz '2026-01-01' + i * interval '1 hour', i % 2 = 0, 't' || i % 30, 'v' || i % 40, i / 4.0, i / 8.0,
+				('00000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, time '00:00' + i * interval '1 minute', i * interval '1 minute', i / 3.0, i * 1000000000000000000000.5
+	FROM generate_series(1, 120) i;
+CREATE INDEX tp_col ON tp USING sift_col (id, c_int2, c_int4, c_int8, c_date, c_ts, c_tstz, c_bool, c_text, c_varchar, c_f8, c_f4, c_uuid, c_time, c_interval, c_num,
+										   c_bignum, (c_int4 * 2), (c_text IS NOT NULL));
+CREATE TABLE tc (id int PRIMARY KEY, tp_id int) WITH (autovacuum_enabled = false);
+INSERT INTO tc SELECT i, 1 + i % 120 FROM generate_series(1, 5000) i;
+CREATE INDEX tc_col ON tc USING sift_col (id, tp_id) WITH (connect = 'tp_id -> tp(id)');
+VACUUM (FREEZE, ANALYZE) tp, tc;
+CREATE TABLE cols (n int, expr text);
+INSERT INTO cols VALUES (1, 'p.c_int2'), (2, 'p.c_int4'), (3, 'p.c_int8'), (4, 'p.c_date'), (5, 'p.c_ts'), (6, 'p.c_tstz'), (7, 'p.c_bool'), (8, 'p.c_text'),
+ (9, 'p.c_varchar'), (10, 'p.c_f8'), (11, 'p.c_f4'), (12, 'p.c_uuid'), (13, 'p.c_time'), (14, 'p.c_interval'), (15, 'p.c_num'), (16, 'p.c_bignum'),
+ (17, 'p.c_int4 * 2'), (18, '(p.c_text IS NOT NULL)');
+SELECT c.n, replace(c.expr, 'p.', '') AS read, r.same, r.leaf_reads, r.heap_fetches
+	FROM cols c, LATERAL found_run(format('SELECT %s AS x, count(*) FROM tc JOIN tp p ON p.id = tc.tp_id GROUP BY 1 ORDER BY 1', c.expr)) r ORDER BY c.n;
+
+DROP TABLE tc, tp, big_events, dim_big, events, dim_a, shapes, tshapes, cols CASCADE;
+DROP TABLE c_int2, c_int4, c_int8, p_int2, p_int4, p_int8 CASCADE;
+DROP FUNCTION found_run(text), phase(), tphase();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -72,6 +72,10 @@ sift_agg_init(void)
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_connect_found",
+							 "Answers a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent from the flag the index keeps that the parent row was found, less the keys that changed in the parent since.",
+							 NULL, &sift_agg_connect_found, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_two_level",
 							 "Aggregates an aggregate over per-row aggregates (UNION ALL arms grouped by a row id) in one scan of the index: the cells of a row are kept in the scan.",
 							 NULL, &sift_agg_two_level_on, true,

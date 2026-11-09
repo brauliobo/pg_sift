@@ -482,8 +482,11 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		if (entries)
 			map_scan_entries(ex, m, rel, idx, iscan, slot, &lj, cb, own);
 		else
+		{
 			while (index_getnext_slot(iscan, ForwardScanDirection, slot))
 				map_row(ex, m, slot, &lj, cb, own);
+			ex->lookup_hscan += m->nrow;
+		}
 		index_endscan(iscan);
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
@@ -531,6 +534,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			}
 		}
 		table_endscan(scan);
+		ex->lookup_hscan += m->nrow;
 	}
 	if (ord.cx)
 	{

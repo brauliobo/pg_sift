@@ -60,3 +60,4 @@ JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the 
 SIFT_CONN_MAX_CARRY	carried columns one connect option names, all connections together: a syntax bound of the option text, rejected with an error
 SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound of the option text, rejected with an error
 SIFT_CONN_MAX_CARRY_BYTES	bytes of the carried values of a row of a connected index: refused with a hint when the option would take more
+FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same

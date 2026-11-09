@@ -531,6 +531,31 @@ sift_conn_leaves(Relation index, SiftColDef *defs, int n, SiftConnLayout *lay, i
 	return n;
 }
 
+int
+sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, AttrNumber parent_key, int *found, Oid *parent_index)
+{
+	SiftConnSpecs *specs = sift_conn_specs(index);
+	const SiftColIndexMeta *meta = sift_col_index_defs(index);
+
+	for (int c = 0; specs != NULL && c < specs->n; c++)
+	{
+		const SiftConnSpec *s = specs->c[c];
+		Relation	parent;
+		char	   *flag = psprintf("%s#found", s->fk);
+
+		if (index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
+			parent_table_oid(RelationGetRelid(heap), s, NoLock, false) != parent_relid || get_attnum(parent_relid, s->parent_key) != parent_key)
+			continue;
+		for (int i = 0; i < meta->ncols; i++)
+			if ((meta->cols[i].flags & SIFT_COLD_CARRIED) && strcmp(meta->cols[i].path, flag) == 0)
+				*found = i;
+		*parent_index = sift_conn_parent_index(heap, index, s, &parent);
+		table_close(parent, NoLock);
+		return c;
+	}
+	return -1;
+}
+
 PG_FUNCTION_INFO_V1(sift_col_connection_state);
 
 /* sift.col_connection_state(parent index): the lineage of its key journal, the records appended so far, and what a stamp taken now says ('ok' or why not); NULL lineage and records without a journal */
