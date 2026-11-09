@@ -359,12 +359,6 @@ eval_ncmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
-static inline int64
-vec_int(const void *data, SiftSrcVecType t, int64 i)
-{
-	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
-}
-
 /* PostgreSQL's order of float8: NaN equals NaN and is greater than every number, -0 equals 0 */
 static inline int
 float_order(double a, double b)
@@ -416,8 +410,8 @@ eval_elem_row(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 			c = float_order(((const double *) ev->data)[start + i], ((const double *) rv->data)[par[i]]);
 		else
 		{
-			int64		a = vec_int(ev->data, el->vtype, start + i),
-						b = vec_int(rv->data, rl->vtype, par[i]);
+			int64		a = sift_src_int(ev->data, el->vtype, start + i),
+						b = sift_src_int(rv->data, rl->vtype, par[i]);
 
 			c = (a > b) - (a < b);
 		}

@@ -129,7 +129,7 @@ cell_datum(ColNeed *nd, int64 i, bool *isnull)
 		return nd->dval[c];
 	}
 	{
-		int64		iv = lf->vtype == SCV_I32 ? ((const int32 *) v->data)[i] : ((const int64 *) v->data)[i];
+		int64		iv = sift_src_int(v->data, lf->vtype, i);
 
 		if (lf->typid == NUMERICOID)
 			return iv == PG_INT64_MAX ? DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)) :
@@ -297,7 +297,6 @@ apply_test(const ColTest *t, const ColNeed *nd, int nrow, uint64 *rows)
 {
 	const SiftSrcVec *v = &nd->vec;
 	int			nw = (nrow + 63) / 64;
-	bool		wide = nd->lf->vtype == SCV_I64;
 	uint32		code = PG_UINT32_MAX;
 
 	if (t->text)
@@ -328,7 +327,7 @@ apply_test(const ColTest *t, const ColNeed *nd, int nrow, uint64 *rows)
 			if (t->text)
 				ok = (((const uint32 *) v->data)[i] == code) == (t->op == TST_EQ);
 			else
-				ok = cmp_int(wide ? ((const int64 *) v->data)[i] : ((const int32 *) v->data)[i], t->op, t->iv);
+				ok = cmp_int(sift_src_int(v->data, nd->lf->vtype, i), t->op, t->iv);
 			keep |= (uint64) ok << b;
 		}
 		rows[w] &= keep;
@@ -623,7 +622,7 @@ typedef struct DenseLoad
 static inline int64
 dense_value(const ColNeed *nd, int64 i)
 {
-	return nd->lf->vtype == SCV_I32 ? ((const int32 *) nd->vec.data)[i] : ((const int64 *) nd->vec.data)[i];
+	return sift_src_int(nd->vec.data, nd->lf->vtype, i);
 }
 
 /* the class of the tuple of row i, 0 when there are too many */
