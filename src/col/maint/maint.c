@@ -215,7 +215,7 @@ void
 sift_col_maint_after_seal(Relation index)
 {
 	sift_mops_after_seal(&maint_col_ops, index);
-	if (!sift_async_maintenance && sift_cwbuf_arena_asked_back(index))
+	if (sift_cwbuf_arena_asked_back(index))
 		sift_mops_promote(&maint_col_ops, index, false);
 }
 
