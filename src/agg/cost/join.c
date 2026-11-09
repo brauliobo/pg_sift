@@ -803,9 +803,12 @@ child_probe_ops(const JoinCtx *jc)
 	IndexPath  *ip;
 	RelOptInfo *rel;
 	bool		first = false;
+	int			nfilter;
+	Oid			relid;
 	double		entries = 1.0,
 				run = AGG_PROBE_RUN,
-				rpk;
+				rpk,
+				corr;
 
 	for (;;)
 	{
@@ -832,11 +835,13 @@ child_probe_ops(const JoinCtx *jc)
 	rel = ip->path.parent;
 	if (ip->indexinfo->relam != BTREE_AM_OID || ip->indexorderbys != NIL || ip->indexscandir != ForwardScanDirection || jc->subroot == NULL)
 		return 0;
-	rpk = sift_agg_rows_per_key(planner_rt_fetch(rel->relid, jc->subroot)->relid, ip->indexinfo->indexkeys[0], rel->tuples);
+	relid = planner_rt_fetch(rel->relid, jc->subroot)->relid;
+	rpk = sift_agg_rows_per_key(relid, ip->indexinfo->indexkeys[0], rel->tuples);
+	nfilter = Max(list_length(rel->baserestrictinfo) + (ip->path.param_info ? list_length(ip->path.param_info->ppi_clauses) : 0) - list_length(ip->indexclauses), 0);
 	if (first)
 	{
 		/* the first match: as many entries as the key has where a condition the index does not take decides it */
-		if (list_length(rel->baserestrictinfo) + (ip->path.param_info ? list_length(ip->path.param_info->ppi_clauses) : 0) > list_length(ip->indexclauses))
+		if (nfilter > 0)
 			entries = Max(rpk > 0 ? rpk : ip->path.rows, 1.0);
 	}
 	else
@@ -862,9 +867,12 @@ child_probe_ops(const JoinCtx *jc)
 		}
 	}
 	/* a table of another access method has no visibility map: every entry is a row through the access method, an Index Only Scan too */
-	if (get_rel_relam(planner_rt_fetch(rel->relid, jc->subroot)->relid) != HEAP_TABLE_AM_OID)
+	if (get_rel_relam(relid) != HEAP_TABLE_AM_OID)
 		return run + entries * AGG_PROBE_ENTRY_AM;
-	return run + entries * (ip->path.pathtype == T_IndexOnlyScan ? AGG_PROBE_SCAN : AGG_PROBE_FETCH);
+	if (ip->path.pathtype == T_IndexOnlyScan)
+		return run + entries * AGG_PROBE_SCAN;
+	corr = column_correlation(relid, ip->indexinfo->indexkeys[0]);
+	return run + entries * (AGG_PROBE_FETCH + nfilter * AGG_PROBE_QUAL + (1.0 - corr * corr) * AGG_PROBE_VISIT * heap_visit_ops(rel->pages));
 }
 
 /* is the child a lateral probe that the planner hook made of a sublink (agg/flat/probe.c)? */
