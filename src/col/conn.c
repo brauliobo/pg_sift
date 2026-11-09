@@ -370,7 +370,7 @@ sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *sta
 	const SiftColSchema *schema;
 	bool		since = false;
 
-	sift_col_batch_flush();
+	sift_col_flush_held();
 	schema = sift_col_rel(index)->schema;
 	sift_dir_read(index, dir);
 	for (int i = 0; !since && i < dir->nsegs; i++)

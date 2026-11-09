@@ -79,8 +79,6 @@ extern struct SiftTombLog *sift_col_log_appender(Relation index);
 extern void sift_col_batch_hook(void);
 extern void sift_col_tomb_hold_tid(Relation index, ItemPointer tid);
 extern void sift_col_tombs_flush(void);
-/* Writes the rows this transaction holds back for the write buffers (and its tombstones), as before a savepoint */
-extern void sift_col_batch_flush(void);
 extern void sift_col_tombs_discard(void);
 /* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */
 extern bool sift_col_row_key_on(Relation index);
