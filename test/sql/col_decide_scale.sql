@@ -13,6 +13,11 @@ INSERT INTO ds SELECT i, i % 101, (i * 7919) % 60013, date '2020-01-01' + (rando
 FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) ds;
 UPDATE pg_statistic SET stadistinct = -1 WHERE starelid = 'ds'::regclass AND staattnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'ds'::regclass AND attname = 'ref_id');
+-- The 101 values of tenant_id have one share each, so which of them ANALYZE lists as most common is sampling noise; one listed at about 1.1% is, of 3.4e38 rows, a value no
+-- segment holds, and the key is left for another column (the hot value rule). The statistics here list none, so that the decision at every scale reads the sample, which is fixed.
+UPDATE pg_statistic SET stakind1 = CASE WHEN stakind1 = 1 THEN 0 ELSE stakind1 END, stakind2 = CASE WHEN stakind2 = 1 THEN 0 ELSE stakind2 END,
+	stakind3 = CASE WHEN stakind3 = 1 THEN 0 ELSE stakind3 END, stakind4 = CASE WHEN stakind4 = 1 THEN 0 ELSE stakind4 END, stakind5 = CASE WHEN stakind5 = 1 THEN 0 ELSE stakind5 END
+	WHERE starelid = 'ds'::regclass AND staattnum = (SELECT attnum FROM pg_attribute WHERE attrelid = 'ds'::regclass AND attname = 'tenant_id');
 
 -- dj: the documents are maps of 100 keys out of 5,000: a sample of them names thousands of keys
 CREATE TABLE dj (id int PRIMARY KEY, doc jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
