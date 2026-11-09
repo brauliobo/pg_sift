@@ -24,6 +24,11 @@ typedef struct SiftTblFetch
 	IndexFetchTableData base;
 	SiftTblRel *st;
 	bool		fresh;			/* the tombstones were synced by the begin and no fetch followed yet */
+	/* the page filter's own state (sift_tbl_filter_page): a copy of the cache entry's write buffers and versions, followed up when a page lies past it */
+	MemoryContext parent;		/* where the begin ran: the state's context is made under it */
+	MemoryContext cxt;
+	SiftTblScanState ss;
+	uint64		vend;			/* the next virtual block of the directory the state was copied from */
 } SiftTblFetch;
 
 IndexFetchTableData *
@@ -32,6 +37,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 	SiftTblFetch *f = palloc0(sizeof(SiftTblFetch));
 
 	f->base.rel = rel;
+	f->parent = CurrentMemoryContext;
 	f->st = sift_tbl_rel(rel);
 	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
@@ -48,7 +54,11 @@ sift_tbl_index_fetch_reset(IndexFetchTableData *data)
 void
 sift_tbl_index_fetch_end(IndexFetchTableData *data)
 {
-	pfree(data);
+	SiftTblFetch *f = (SiftTblFetch *) data;
+
+	if (f->cxt)
+		MemoryContextDelete(f->cxt);
+	pfree(f);
 }
 
 /*
@@ -258,33 +268,38 @@ sift_tbl_filter_page_vers(Relation rel, const SiftTblScanState *ss, BlockNumber 
 	return sift_vis_filter_mask(vblock, offmask, vblock_tid_visible, &t);
 }
 
+/* The scan's own copy of the cache entry's write buffers and of the versions of its directory, taken after the entry follows the table */
+static void
+fetch_state_copy(SiftTblFetch *f, Relation rel)
+{
+	SiftTblRel *st = f->st;
+
+	sift_tbl_refresh(rel, st);
+	if (f->cxt)
+		MemoryContextReset(f->cxt);
+	else
+		f->cxt = AllocSetContextCreate(f->parent, "sift_table fetch state", ALLOCSET_SMALL_SIZES);
+	f->ss = (SiftTblScanState) {.st = st,.nwbuf = st->nwbuf,.vers = sift_tbl_vers_build(rel, st, &st->dir, f->cxt)};
+	f->ss.wbuf = MemoryContextAlloc(f->cxt, Max(st->nwbuf, 1) * sizeof(SiftTblSeg));
+	memcpy(f->ss.wbuf, st->wbuf, st->nwbuf * sizeof(SiftTblSeg));
+	f->vend = st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) : 0;
+}
+
 /*
  * The same for a reader that goes by the directory its fetch scan began with (the heap check of the BM25 and column indexes): the tombstones of that
  * scan, not those of the cache entry the backend holds when it asks, which an invalidation (a VACUUM of the table) may have replaced by an entry that
- * has read none
+ * has read none; and the write buffers and versions of the scan's own copy, which no other scan of the backend moves. The scan follows the table when
+ * it is asked for a page past the directory it holds: a row inserted since (visible to a dirty or own snapshot)
  */
 int
 sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask)
 {
 	SiftTblFetch *f = (SiftTblFetch *) fetch;
-	SiftTblRel *st = f->st;
-	Relation	rel = fetch->rel;
-	SiftTblScanState ss;
 
-	/* the fetch scan follows the table: a TID past the directory it holds is a row inserted since (visible to a dirty or own snapshot) */
-	if (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) || !st->initialized)
-		sift_tbl_refresh(rel, st);
-	if (st->curvers == NULL || st->curvers_version != st->dir.version || st->curvers_rel != rel)
-	{
-		if (st->curvers_cxt)
-			MemoryContextDelete(st->curvers_cxt);
-		st->curvers_cxt = AllocSetContextCreate(st->cxt, "sift_table versions of the directory", ALLOCSET_SMALL_SIZES);
-		st->curvers = sift_tbl_vers_build(rel, st, &st->dir, st->curvers_cxt);
-		st->curvers_version = st->dir.version;
-		st->curvers_rel = rel;
-	}
-	ss = (SiftTblScanState) {.st = st,.wbuf = st->wbuf,.nwbuf = st->nwbuf,.vers = st->curvers,.snapshot = snapshot};
-	return sift_tbl_filter_page_vers(rel, &ss, vblock, offmask, true);
+	if (f->cxt == NULL || vblock >= f->vend)
+		fetch_state_copy(f, fetch->rel);
+	f->ss.snapshot = snapshot;
+	return sift_tbl_filter_page_vers(fetch->rel, &f->ss, vblock, offmask, true);
 }
 
 bool

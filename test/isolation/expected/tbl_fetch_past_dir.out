@@ -1,0 +1,98 @@
+Parsed test spec with 2 sessions
+
+starting permutation: ropen wmod wmaint rown rcount rrest rend
+step ropen: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_fp_open(); SELECT * FROM iso_fp_fetch(1000);
+iso_fp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_fp SELECT g, 'common new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_fp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_fp');
+busy
+----
+f   
+(1 row)
+
+step rown: INSERT INTO iso_fp SELECT g, 'common own ' || g FROM generate_series(7001, 7500) g;
+step rcount: SELECT count(*) AS count_scan FROM iso_fp WHERE body @@> 'common';
+count_scan
+----------
+      3200
+(1 row)
+
+step rrest: SELECT * FROM iso_fp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen wmod wmaint wvac rown rcount rrest rend
+step ropen: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_fp_open(); SELECT * FROM iso_fp_fetch(1000);
+iso_fp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_fp SELECT g, 'common new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_fp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_fp');
+busy
+----
+f   
+(1 row)
+
+step wvac: VACUUM iso_fp;
+step rown: INSERT INTO iso_fp SELECT g, 'common own ' || g FROM generate_series(7001, 7500) g;
+step rcount: SELECT count(*) AS count_scan FROM iso_fp WHERE body @@> 'common';
+count_scan
+----------
+      3200
+(1 row)
+
+step rrest: SELECT * FROM iso_fp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen rown wmod wmaint rrest rend
+step ropen: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_fp_open(); SELECT * FROM iso_fp_fetch(1000);
+iso_fp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step rown: INSERT INTO iso_fp SELECT g, 'common own ' || g FROM generate_series(7001, 7500) g;
+step wmod: INSERT INTO iso_fp SELECT g, 'common new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_fp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_fp');
+busy
+----
+f   
+(1 row)
+
+step rrest: SELECT * FROM iso_fp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;

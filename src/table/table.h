@@ -146,10 +146,6 @@ typedef struct SiftTblRel
 	/* column groups (table/seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
-	struct SiftTblVers *curvers;	/* the unfrozen groups of dir, for readers that go by the directory the cache holds (sift_tbl_filter_page) */
-	uint32		curvers_version;
-	Relation	curvers_rel;
-	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
