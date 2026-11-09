@@ -97,6 +97,15 @@ DO $$ DECLARE n text; BEGIN SELECT tgname INTO n FROM pg_trigger WHERE tgrelid =
 	RAISE EXCEPTION 'the trigger was dropped';
 EXCEPTION WHEN dependent_objects_still_exist THEN NULL; END $$;
 
+-- the writes of the transaction that drops the index: its triggers stay until the commit, with no index behind them, and fire without a word
+BEGIN;
+DROP INDEX t_c;
+SELECT * FROM state();
+SELECT writes();
+COMMIT;
+SELECT * FROM state();
+SELECT writes();
+
 -- DROP TABLE, and DROP EXTENSION .. CASCADE, take the index and its triggers
 DROP TABLE t;
 SELECT count(*) AS triggers_left FROM pg_trigger WHERE tgname LIKE 'sift_track_%';

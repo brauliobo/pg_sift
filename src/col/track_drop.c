@@ -91,16 +91,17 @@ legacy_index(Oid trigger)
 	return index;
 }
 
-/* The index a trigger serves: the one that depends on it, or the one an earlier release made it the dependent of (until ALTER EXTENSION UPDATE converts it) */
+/*
+ * The index a trigger serves: the one that depends on it, or the one an earlier release made it the dependent of (until ALTER EXTENSION UPDATE converts it). InvalidOid for a trigger
+ * whose index is deleted: the transaction that deletes an index removes its triggers just before it commits, so its own later statements and the ones that run beside it fire a trigger with
+ * no index behind it, and have nothing to do.
+ */
 Oid
 sift_col_track_trigger_index(Oid trigger)
 {
 	Oid			index = depends_index(trigger);
 
-	if (!OidIsValid(index))
-		index = legacy_index(trigger);
-	SIFT_INVARIANT(OidIsValid(index), "the trigger %u of track_changes has no index that depends on it", trigger);
-	return index;
+	return OidIsValid(index) ? index : legacy_index(trigger);
 }
 
 /* The oids of the triggers of track_changes in the database */
