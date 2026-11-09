@@ -40,6 +40,10 @@ SELECT e AS estimate, k.* FROM unnest(ARRAY[60000, 257000000, 1000000000, 430000
 	LATERAL kscale('ds', 'id, tenant_id, ref_id, d, tags, v', e) k ORDER BY e;
 SELECT e AS estimate, k.paths FROM unnest(ARRAY[6000, 257000000, 1000000000]::float4[]) e, LATERAL kscale('dj', 'id, doc', e) k ORDER BY e;
 
+-- a heap of an estimate no run count holds is refused without key_cut, whether or not the estimate fits 64 bits
+CREATE INDEX ds_big ON ds USING sift_col (id, tenant_id) WITH (key_cut = 'off');
+UPDATE pg_class SET reltuples = 60000 WHERE relname = 'ds';
+
 -- sift.key_cut_decision reads the estimate too: the sample is the same, the verdict is
 CREATE INDEX ds_ix ON ds USING sift_col (id, tenant_id, ref_id, d, tags, v) WITH (key_cut = 'off');
 CREATE FUNCTION kdecide(estimate float4) RETURNS TABLE (leaf text, sampled float8, scattered boolean, decision text) LANGUAGE plpgsql AS $$
