@@ -202,8 +202,8 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, skip, &others, &flippable);
 		agg_quiet_reports(quiet);
 	}
-	/* a LEFT JOIN of two tables that both have an index: the child scanned with the preserved parent as its lookup is also a way, and the price chooses */
-	if (flippable)
+	/* a LEFT JOIN of two tables that both have an index: the child scanned with the preserved parent as its lookup is also a way, and the price chooses (sift.agg_child_first) */
+	if (flippable && sift_agg_child_first)
 	{
 		bool		quiet = agg_quiet_reports(true);
 
