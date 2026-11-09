@@ -1,0 +1,162 @@
+Parsed test spec with 2 sessions
+
+starting permutation: ropen_seq wmod wmaint wvac rscan rrest rend
+step ropen_seq: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_sp_open('seq'); SELECT * FROM iso_sp_fetch(1000);
+iso_sp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_sp SELECT g, 'new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_sp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_sp');
+busy
+----
+f   
+(1 row)
+
+step wvac: VACUUM iso_sp;
+step rscan: SELECT count(*) AS second_scan FROM iso_sp;
+second_scan
+-----------
+       2700
+(1 row)
+
+step rrest: SELECT * FROM iso_sp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen_bmp wmod wmaint wvac rscan rrest rend
+step ropen_bmp: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_sp_open('bmp'); SELECT * FROM iso_sp_fetch(1000);
+iso_sp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_sp SELECT g, 'new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_sp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_sp');
+busy
+----
+f   
+(1 row)
+
+step wvac: VACUUM iso_sp;
+step rscan: SELECT count(*) AS second_scan FROM iso_sp;
+second_scan
+-----------
+       2700
+(1 row)
+
+step rrest: SELECT * FROM iso_sp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen_seq wmod wmaint rscan rrest rend
+step ropen_seq: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_sp_open('seq'); SELECT * FROM iso_sp_fetch(1000);
+iso_sp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_sp SELECT g, 'new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_sp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_sp');
+busy
+----
+f   
+(1 row)
+
+step rscan: SELECT count(*) AS second_scan FROM iso_sp;
+second_scan
+-----------
+       2700
+(1 row)
+
+step rrest: SELECT * FROM iso_sp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen_bmp wmod wmaint rscan rrest rend
+step ropen_bmp: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_sp_open('bmp'); SELECT * FROM iso_sp_fetch(1000);
+iso_sp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_sp SELECT g, 'new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_sp WHERE id % 7 = 0;
+step wmaint: SELECT busy FROM sift.table_maintain('iso_sp');
+busy
+----
+f   
+(1 row)
+
+step rscan: SELECT count(*) AS second_scan FROM iso_sp;
+second_scan
+-----------
+       2700
+(1 row)
+
+step rrest: SELECT * FROM iso_sp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
+
+starting permutation: ropen_bmp wmod rscan rrest rend
+step ropen_bmp: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT iso_sp_open('bmp'); SELECT * FROM iso_sp_fetch(1000);
+iso_sp_open
+-----------
+           
+(1 row)
+
+fetched| idsum
+-------+------
+   1000|555556
+(1 row)
+
+step wmod: INSERT INTO iso_sp SELECT g, 'new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_sp WHERE id % 7 = 0;
+step rscan: SELECT count(*) AS second_scan FROM iso_sp;
+second_scan
+-----------
+       2700
+(1 row)
+
+step rrest: SELECT * FROM iso_sp_fetch(100000);
+fetched|  idsum
+-------+-------
+   1700|3494444
+(1 row)
+
+step rend: COMMIT;
