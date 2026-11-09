@@ -109,7 +109,7 @@ SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), :'wal0') < 3 * :overlay_bytes AS wa
 SELECT ov_segments() AS segments;
  segments 
 ----------
-        3
+        4
 (1 row)
 
 SELECT coalesce(sift.col_maintenance_due('ov_idx', true), 'not due') AS due_merged;

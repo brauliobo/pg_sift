@@ -18,6 +18,14 @@ span_cmp(const void *a, const void *b)
 	return x->lo < y->lo ? -1 : x->lo > y->lo;
 }
 
+/*
+ * A merge of overlays is a size-tiered step: the merged one is at least twice the largest it takes, so that a row is rewritten once for each doubling and not at every promotion.
+ * The reads of a key open a unit in each overlay: when more than OVERLAYS_ALIVE_MAX of them are alive (a read index only: overlay_worth) the smallest are merged whatever their
+ * sizes, as far as a pass allows.
+ */
+#define OVERLAY_GROWTH_PCT	200
+#define OVERLAYS_ALIVE_MAX	4
+
 bool		maint_overlay_asked = false;
 int			maint_overlay_steps = 0;	/* the steps of the rewrite in hand left for the overlays: the automatic one takes a pass and the rule asks again for the next, an explicit col_maintain goes on until they are one */
 
@@ -36,6 +44,7 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 	int			idx[SIFT_MAX_SEGMENTS],
 				ncand = 0,
 				ntake = 0,
+				least = 2,
 				cut;
 	uint64		bytes = 0,
 				large = 0,
@@ -77,10 +86,12 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 		bytes += v->imm[idx[a]].bytes;
 		ntake++;
 	}
-	/* the merged segment at least one and a half times the largest it takes */
-	while (ntake >= 2 && bytes * 2 < 3 * v->imm[idx[ntake - 1]].bytes)
+	ev->forced = ncand > OVERLAYS_ALIVE_MAX;
+	if (ev->forced)
+		least = Min(ntake, ncand - OVERLAYS_ALIVE_MAX + 1);
+	while (ntake > least && bytes * 100 < OVERLAY_GROWTH_PCT * v->imm[idx[ntake - 1]].bytes)
 		bytes -= v->imm[idx[--ntake]].bytes;
-	if (ntake < 2)
+	if (ntake < 2 || (!ev->forced && bytes * 100 < OVERLAY_GROWTH_PCT * v->imm[idx[ntake - 1]].bytes))
 		return false;
 	sp = palloc(Max(total_units, 1) * sizeof(KeySpan));
 	for (int a = 0; a < ntake; a++)

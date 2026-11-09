@@ -76,6 +76,7 @@ extern bool	maint_share_superblock(const SbSpans *a, const SbSpans *b, int allow
 typedef struct OverlayEv
 {
 	int			n;				/* the overlays taken */
+	bool		forced;			/* more overlays alive than the reads are to open: taken whatever their sizes */
 	uint64		rows;			/* their rows: what the merge rewrites */
 	uint64		units;			/* their units: the rows of one is what a read of a key in it scans */
 	double		sum;			/* the width of the key ranges of their units, each overlay's added: the units a read of a random key opens in them */
@@ -83,6 +84,8 @@ typedef struct OverlayEv
 } OverlayEv;
 
 extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
+/* A segment is an overlay when it holds under half of the rows of the largest of the index (the size rule of maint_overlay_set): it is written lean, and gets no net sidecar */
+#define maint_is_overlay(rows, largest_rows)	((uint64) (rows) * 2 < (uint64) (largest_rows))
 /* set by a rule that found the overlays due: the rewrite then takes them alone */
 extern bool	maint_overlay_asked;
 extern int	maint_overlay_steps;

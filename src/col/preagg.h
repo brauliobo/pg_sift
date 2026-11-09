@@ -103,6 +103,7 @@ typedef struct SiftCPaggRollup
 /* The reloption `preagg`, resolved against a schema */
 typedef struct SiftCPaggSpec
 {
+	bool		lean;					/* an overlay: written without point directories, whose arrays span the rows of the whole index and cost more than its rows */
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */

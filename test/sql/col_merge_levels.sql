@@ -1,5 +1,5 @@
 -- The small segments (overlays) that promotions leave over the keys of an index that is not cut into partitions are merged by the same rule as in a partitioned one: the
--- segments under half the largest, the smallest that come to one and a half times the largest of them (a size-tiered step: a row is not rewritten at every promotion),
+-- segments under half the largest, the smallest that come to twice the largest of them (a size-tiered step: a row is not rewritten at every promotion),
 -- when the units and segments a request for a key would no longer open, times the requests the index has had, come to half of the rewrite of their rows. The largest
 -- segment is not rewritten, an index nobody reads is not merged, and a promotion of a write buffer made of many small ones ends in few segments.
 CREATE EXTENSION pg_sift;
@@ -57,9 +57,9 @@ SELECT ml_segments() AS segments;
 SELECT ml_requests(1500);
 SELECT pg_stat_force_next_flush();
 SELECT coalesce(sift.col_maintenance_due('ml_idx', true), 'not due') AS due_small_next_to_large;
--- the next promotion of the size of the first overlays makes the step worth it: the three come to one and a half times the merged one
+-- the next promotion of the size of the first overlays makes the step worth it: the three come to twice the merged one
 SET sift.col_auto_merge = off;
-SELECT ml_rows(3000);
+SELECT ml_rows(6000);
 SELECT sift.col_promote('ml_idx') AS promoted;
 RESET sift.col_auto_merge;
 SET sift.enable_agg = off;

@@ -58,6 +58,8 @@ overlay_worth(Relation index, const OverlayEv *ev)
 	double		spared = (ev->sum - ev->cover) / Max(ev->cover, 1.0),
 				unit = UNIT_PRICE + UNIT_ROW_PRICE * (double) ev->rows / Max(ev->units, 1);
 
+	if (ev->forced)
+		return index_scans(index) > 0;
 	return spared > 0 && index_scans(index) * (spared * unit + (ev->n - 1) * SEG_PRICE) >= MAINT_HALF * ROW_PRICE * (double) ev->rows;
 }
 

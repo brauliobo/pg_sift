@@ -99,6 +99,7 @@ void
 maint_net_refresh(Relation index)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint64		largest = 0;
 
 	if (RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
@@ -108,12 +109,18 @@ maint_net_refresh(Relation index)
 #endif
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, snap->segs[i].ndocs);
+	for (int i = 0; i < snap->nsegs; i++)
 	{
 		NetStep		st = {.entry = &snap->segs[i]};
 		SiftColSegment *seg;
 		bool		due;
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_DIRTY))
+			continue;
+		/* an overlay is merged into a larger segment before its dead rows are worth a sidecar of its own: it would be written again by each VACUUM that kills one more row */
+		if (maint_is_overlay(snap->segs[i].ndocs, largest))
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 		due = sift_cseg_net_due(seg);

@@ -215,17 +215,21 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (spec->point[c] || spec->point_tid[c] || spec->gorder[c] || segw_elem_point(w, c))
+		{
+			bool		want = !spec->lean && (spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c));
+
+			if (want || spec->gorder[c])
 			{
 				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 				if (w->pt == NULL)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
-				w->pt[c].want = spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c);
+				w->pt[c].want = want;
 				w->pt[c].ord = spec->gorder[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
-				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
+				w->pt[c].tids = want && spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
+		}
 }
 
 /*
