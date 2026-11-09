@@ -143,6 +143,7 @@ find_triggers(Oid heapoid, Relation index, HearTrig t[2], bool row)
 	if (!OidIsValid(funcoid))
 		return;
 	drel = table_open(DependRelationId, AccessShareLock);
+	/* this release: the index depends on its triggers */
 	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
 	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
 	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
@@ -152,6 +153,18 @@ find_triggers(Oid heapoid, Relation index, HearTrig t[2], bool row)
 
 		if (d->refclassid == TriggerRelationId && d->deptype == DEPENDENCY_NORMAL && d->refobjsubid == 0)
 			read_trigger(heapoid, funcoid, d->refobjid, t, row);
+	}
+	systable_endscan(scan);
+	/* an earlier release (until ALTER EXTENSION UPDATE converts them): the triggers depend on the index */
+	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(index)));
+	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->classid == TriggerRelationId && d->deptype == DEPENDENCY_AUTO && d->refobjsubid == 0)
+			read_trigger(heapoid, funcoid, d->objid, t, row);
 	}
 	systable_endscan(scan);
 	table_close(drel, AccessShareLock);

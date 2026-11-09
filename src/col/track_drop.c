@@ -2,7 +2,8 @@
  * col/track_drop.c - the dependency between a sift_col index and its two track_changes triggers, and what removes them with the index (the lifecycle of the triggers is in track.c).
  *
  * The index depends on its triggers, and they do not depend on it: DROP INDEX CONCURRENTLY refuses to start once a transaction id is assigned, and deletes what depends on the index
- * first. An index nothing depends on drops, and the transaction that deletes it removes the triggers (gone_xact). REINDEX CONCURRENTLY swaps the dependencies of the old and the
+ * first. An index nothing depends on drops, and the transaction that deletes it removes the triggers (gone_xact). The triggers of an index of an earlier release depend on the index (until
+ * ALTER EXTENSION UPDATE runs sift.col_track_convert()), and are found in that form too: the library does not wait for the update to know its own triggers. REINDEX CONCURRENTLY swaps the dependencies of the old and the
  * new index, so the triggers follow the index that stays.
  */
 #include "postgres.h"
@@ -27,8 +28,6 @@
 #include "col/am.h"
 
 PG_FUNCTION_INFO_V1(sift_col_track_convert);
-
-#define CONVERT_FUNCTION "col_track_convert"
 
 void
 sift_col_track_delete_trigger(Oid trigger)
@@ -145,11 +144,11 @@ gone_inval(Datum arg, Oid relid)
 }
 
 static void
-remove_orphans(void)
+remove_orphans(Oid funcoid)
 {
 	List	   *orphans = NIL;
 
-	foreach_oid(t, our_triggers(sift_col_track_function(false)))
+	foreach_oid(t, our_triggers(funcoid))
 		if (!OidIsValid(depends_index(t)) && !OidIsValid(legacy_index(t)))
 			orphans = lappend_oid(orphans, t);
 	foreach_oid(t, orphans)
@@ -160,6 +159,7 @@ static void
 gone_xact(XactEvent event, void *arg)
 {
 	bool		deleted = false;
+	Oid			funcoid;
 
 	if (event == XACT_EVENT_ABORT)
 		ngone = 0;
@@ -168,9 +168,10 @@ gone_xact(XactEvent event, void *arg)
 	for (int i = 0; i < ngone && !deleted; i++)
 		deleted = !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i]));
 	ngone = 0;
-	if (!deleted || RecoveryInProgress() || !OidIsValid(sift_col_track_lookup(CONVERT_FUNCTION, true)))
+	/* no function, no trigger of ours (an extension that is not at the release that has it yet) */
+	if (!deleted || RecoveryInProgress() || !OidIsValid(funcoid = sift_col_track_function(true)))
 		return;
-	remove_orphans();
+	remove_orphans(funcoid);
 	CommandCounterIncrement();
 	ngone = 0;
 }

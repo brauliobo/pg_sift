@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The update that lets DROP INDEX CONCURRENTLY drop a tracked sift_col index (4.2.1): a database that an earlier release wrote has its two track_changes triggers depending on the index, which
-# that command cannot drop. After the library is replaced the triggers of such an index are not found until ALTER EXTENSION UPDATE (the reads check the heap, right and slower); the update
+# that command cannot drop. After the library is replaced the triggers of such an index are found in their old form (a REINDEX keeps one pair of them); the update
 # makes the index depend on its triggers (sift.col_track_convert), and then the drops work, with writes on the table before and after, and no trigger is left that no index depends on.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -8,7 +8,7 @@ if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on Po
 ref=$(git -C "$REPO" tag -l 'v4.[12].*' --sort=-v:refname | head -n 1)
 [[ -n $ref ]] || { echo '1..0 # SKIP no release tag v4.1.* or v4.2.*'; exit 0; }
 newroot=$ROOT
-plan 11
+plan 12
 
 build_old "$ref"; oldroot=$OLDROOT
 node_init us 42 'autovacuum = off'
@@ -31,6 +31,9 @@ use_root us "$newroot"
 node_start us || bail "cannot start this tree on $ref data"
 check "this library on the old extension: writes work, the reads answer as the heap" test "$(writes; echo $?)|$(ans on)" == "0|$(ans off)"
 check "... and DROP INDEX CONCURRENTLY of the old index still has its old refusal until the update" test "$(sql us "DROP INDEX CONCURRENTLY h_d" 2>&1 | grep -c 'must be first action')" == 1
+
+check "... the triggers of the old index are found, and a REINDEX of it keeps one pair of them" \
+	test "$(sql us "SELECT triggers FROM sift.col_tracking('h_c')" | tail -n 1)|$(sql us "REINDEX INDEX h_c" >/dev/null 2>&1; sql us "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'")" == "t|4"
 
 sql us "ALTER EXTENSION pg_sift UPDATE" >/dev/null 2>"$TAPDIR/upd.err"
 check "ALTER EXTENSION UPDATE from $ref (to $(sql us "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"))" test "$(sql us "SELECT count(*) FROM pg_extension WHERE extname = 'pg_sift' AND extversion = '4.2.1'")" == 1
