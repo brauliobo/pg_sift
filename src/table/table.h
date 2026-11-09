@@ -146,10 +146,6 @@ typedef struct SiftTblRel
 	/* column groups (table/seg.c) */
 	struct SiftTblLayout *layout;
 	struct SiftTblGroupCache *gcache;
-	struct SiftTblVers *curvers;	/* the unfrozen groups of dir, for readers that go by the directory the cache holds (sift_tbl_filter_page) */
-	uint32		curvers_version;
-	Relation	curvers_rel;
-	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
 	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
@@ -161,11 +157,26 @@ typedef struct SiftTblRel
 	struct SiftTblOpts *opts;	/* the options set on this table (sift.table_set_option), read with the cache entry */
 } SiftTblRel;
 
+/*
+ * What a scan judges the pages of its directory with: its own copies, taken when it opened, so that another scan of the backend that refreshes the cache entry
+ * (SiftTblRel) or an invalidation that replaces it changes nothing under it. st gives the tombstone log, which only grows while a scan may read it
+ * (SiftTombLog.keep).
+ */
+typedef struct SiftTblScanState
+{
+	SiftTblRel *st;
+	SiftTblSeg *wbuf;			/* [nwbuf] the write buffers of the scan's directory */
+	int			nwbuf;
+	struct SiftTblVers *vers;	/* the groups with unfrozen rows of the same directory */
+	Snapshot	snapshot;
+} SiftTblScanState;
+
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
 extern SiftTblRel *sift_tbl_rel(Relation rel);
 /* Re-reads the directory unless its version is the cached one (_full: always); write buffer page tables are extended lazily by sift_tbl_wbuf_page */
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
 extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
+extern SiftTblSeg *sift_tbl_wbuf_copy(const SiftTblSeg *wbuf, int n, MemoryContext cxt);
 extern bool sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
@@ -240,7 +251,6 @@ extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 
 extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
 extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
 extern bool sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber vblock, Page copy, uint64 *gen, bool *held);
-extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
 /* The version header of a write buffer record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
@@ -252,7 +262,7 @@ typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
 extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);
 extern int	sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 /* The same for a reader that has its own copy of the directory: vers are the unfrozen groups of that copy */
-extern int	sift_tbl_filter_page_vers(Relation rel, SiftTblRel *st, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain);
+extern int	sift_tbl_filter_page_vers(Relation rel, const SiftTblScanState *ss, BlockNumber vblock, uint64 *offmask, bool chain);
 extern void sift_tbl_store(TupleTableSlot *slot, HeapTuple tup);
 extern bool sift_tbl_fetch_row(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv);
 /* As sift_tbl_fetch_row, but a row of a column group comes without its tuple (rv->tuple NULL) and costs no decoding: for callers that

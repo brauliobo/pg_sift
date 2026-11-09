@@ -8,11 +8,10 @@ SET max_parallel_maintenance_workers = 0;
 CREATE TABLE ev (id int, grp int NOT NULL, rep int NOT NULL, uniq int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 4, (i % 400000) * 1009, i * 251 FROM generate_series(1, 1500000) i;
 CREATE INDEX ev_col ON ev USING sift_col (grp, rep, uniq);
-NOTICE:  sift_col index "ev_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = uniq;
-order_array_columns = rep
+NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = rep, uniq
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
-NOTICE:  sift_col index "ev_col" is column format minor 40, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ev_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) ev;
 SET work_mem = '1GB';
