@@ -48,13 +48,16 @@ sql primary "INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, $ROW
 	"INSERT INTO a SELECT 300000 + i, i % 10, 70000 + i, 's' FROM generate_series(1, 300) i" "ROLLBACK TO s" "COMMIT" \
 	"UPDATE a SET pad = 'hot' WHERE id % 5 = 0" "UPDATE a SET v = v + 1 WHERE id % 7 = 0" "DELETE FROM a WHERE id % 11 = 0" \
 	"VACUUM (INDEX_CLEANUP off) a" "VACUUM (FREEZE, INDEX_CLEANUP off) a" \
-	"INSERT INTO a SELECT 400000 + i, i % 10, i, 'y' FROM generate_series(1, 500) i" >/dev/null || bail "workload failed"
+	"INSERT INTO a SELECT 400000 + i, i % 10, i, 'y' FROM generate_series(1, 500) i" \
+	"SELECT sift._test_arena_slots(0)" "INSERT INTO a SELECT 800000 + i, i % 10, i, 'n' FROM generate_series(1, 500) i" "SELECT sift._test_arena_slots(16)" \
+	"INSERT INTO a SELECT 900000 + i, i % 10, i, 'm' FROM generate_series(1, 500) i" >/dev/null || bail "workload failed"
 BUFFERED=$(sql primary "SELECT rows FROM sift.col_segments('a_ix') WHERE kind = 'buffer'")
-stats() { sql "$1" "SELECT rebuilt FROM sift._test_arena_stats()"; }
+stats() { sql "$1" "SELECT rows_rebuilt FROM sift.col_arena_status()"; }
 same() { [[ $(sql "$1" "SELECT same_as_heap()") == t ]]; }
 
 check "the primary: the buffer holds $BUFFERED rows and the engine gives the heap's answers" same primary
-check "the primary: no row was built from the heap" test "$(stats primary)" == 0
+check "the primary: no row was built from the heap; 500 rows were written with their values (no slot), the buffer holds both kinds of record" \
+	test "$(stats primary)" == 0 -a "$(sql primary 'SELECT put_fallbacks >= 500 FROM sift.col_arena_status()')" == t
 
 check "the primary: the connected child gives the normal plan's rows" test "$(sql primary 'SELECT same_conn()')" == t
 

@@ -26,10 +26,10 @@ BEGIN
 END $$;
 
 -- what the arena did since the last call of arena_delta('mark')
-CREATE TABLE mark AS SELECT * FROM sift._test_arena_stats();
-CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8, OUT rebuilt int8) LANGUAGE sql AS $$
-  SELECT s.slots, s.stored - m.stored, s.not_stored - m.not_stored, s.rebuilt - m.rebuilt FROM sift._test_arena_stats() s, mark m $$;
-CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift._test_arena_stats() $$;
+CREATE TABLE mark AS SELECT * FROM sift.col_arena_status();
+CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8, OUT rebuilt int8, OUT forced int8) LANGUAGE sql AS $$
+  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks, s.rows_rebuilt - m.rows_rebuilt, s.seals_forced - m.seals_forced FROM sift.col_arena_status() s, mark m $$;
+CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift.col_arena_status() $$;
 
 CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 CREATE INDEX a_ix ON a USING sift_col (id, g, v);

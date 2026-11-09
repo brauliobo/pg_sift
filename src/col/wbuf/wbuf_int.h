@@ -170,7 +170,6 @@ extern void	wbuf_arena_rebuild_exit(uint64 nrows);
 #ifdef SIFT_TESTING
 extern void	wbuf_arena_test_slots(int n);
 
-extern void	wbuf_arena_test_stats(int *used, uint64 *stored, uint64 *not_stored, uint64 *rebuilt);
 #endif
 
 extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);

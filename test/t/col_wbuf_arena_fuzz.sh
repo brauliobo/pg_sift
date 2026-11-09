@@ -29,7 +29,7 @@ sql fz "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
 		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); s := answers(); RETURN n = s; END \$\$" \
 	>/dev/null || bail "setup failed"
-rebuilt() { sql fz "SELECT rebuilt FROM sift._test_arena_stats()"; }
+rebuilt() { sql fz "SELECT rows_rebuilt FROM sift.col_arena_status()"; }
 
 # one step of a seed; $1 the kind, $2 a number it uses; the id ranges of the inserts are disjoint (the step number)
 step() {

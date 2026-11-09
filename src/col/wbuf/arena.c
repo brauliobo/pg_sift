@@ -15,7 +15,10 @@
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "access/relation.h"
+#include "fmgr.h"
+#include "funcapi.h"
 #include "utils/timestamp.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
@@ -63,6 +66,7 @@ typedef struct Arena
 	uint64		rows_stored;
 	uint64		rows_not_stored;
 	uint64		rows_rebuilt;
+	uint64		seals_forced;
 	ArenaSlot	slot[ARENA_SLOTS];
 } Arena;
 
@@ -244,7 +248,7 @@ wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, Transacti
 	uint32	   *at;
 	ArenaPut	res;
 
-	if ((s = slot_enter(a, index, gen, true)) == NULL)
+	if (a->slots_max == 0 || (s = slot_enter(a, index, gen, true)) == NULL)
 	{
 		SpinLockAcquire(&a->mutex);
 		a->rows_not_stored++;
@@ -504,7 +508,10 @@ sift_cwbuf_arena_gc(void)
 		return;
 	SpinLockAcquire(&a->mutex);
 	if (a->slot[victim].used && a->slot[victim].indexoid == victim_oid)
+	{
 		a->slot[victim].seal_wanted = true;
+		a->seals_forced++;
+	}
 	SpinLockRelease(&a->mutex);
 	if ((index = try_relation_open(victim_oid, RowExclusiveLock)) != NULL)
 	{
@@ -513,8 +520,40 @@ sift_cwbuf_arena_gc(void)
 	}
 }
 
+/* sift.col_arena_status(): what the arena of the server holds and did since it was made (it is made again by a restart) */
+PG_FUNCTION_INFO_V1(sift_col_arena_status);
+
+Datum
+sift_col_arena_status(PG_FUNCTION_ARGS)
+{
+	Arena	   *a = arena_get();
+	TupleDesc	tupdesc;
+	Datum		values[7];
+	bool		nulls[7] = {false};
+	int			used = 0;
+	uint64		bytes = 0;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	SpinLockAcquire(&a->mutex);
+	for (int i = 0; i < ARENA_SLOTS; i++)
+	{
+		used += a->slot[i].used;
+		bytes += a->slot[i].bytes;
+	}
+	values[0] = Int32GetDatum(used);
+	values[1] = Int32GetDatum(ARENA_SLOTS);
+	values[2] = Int64GetDatum(bytes);
+	values[3] = Int64GetDatum(a->rows_stored);
+	values[4] = Int64GetDatum(a->rows_not_stored);
+	values[5] = Int64GetDatum(a->seals_forced);
+	values[6] = Int64GetDatum(a->rows_rebuilt);
+	SpinLockRelease(&a->mutex);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
 #ifdef SIFT_TESTING
-/* sift._test_arena_slots(n): the slots that can be taken */
+/* sift._test_arena_slots(n): the slots that can be in use at once; 0: the arena keeps no row at all */
 void
 wbuf_arena_test_slots(int n)
 {
@@ -522,22 +561,6 @@ wbuf_arena_test_slots(int n)
 
 	SpinLockAcquire(&a->mutex);
 	a->slots_max = n;
-	SpinLockRelease(&a->mutex);
-}
-
-/* The counters of the table: slots in use, rows stored, rows written with their values, rows built from the heap */
-void
-wbuf_arena_test_stats(int *used, uint64 *stored, uint64 *not_stored, uint64 *rebuilt)
-{
-	Arena	   *a = arena_get();
-
-	SpinLockAcquire(&a->mutex);
-	*used = 0;
-	for (int i = 0; i < ARENA_SLOTS; i++)
-		*used += a->slot[i].used;
-	*stored = a->rows_stored;
-	*not_stored = a->rows_not_stored;
-	*rebuilt = a->rows_rebuilt;
 	SpinLockRelease(&a->mutex);
 }
 #endif

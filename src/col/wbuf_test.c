@@ -50,7 +50,6 @@ PG_FUNCTION_INFO_V1(sift_test_col_hold_maint);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
 PG_FUNCTION_INFO_V1(sift_test_arena_slots);
-PG_FUNCTION_INFO_V1(sift_test_arena_stats);
 PG_FUNCTION_INFO_V1(sift_test_arena_gc);
 
 #define NCOLS		10
@@ -749,28 +748,6 @@ sift_test_arena_gc(PG_FUNCTION_ARGS)
 {
 	sift_cwbuf_arena_gc();
 	PG_RETURN_VOID();
-}
-
-/* () -> (slots, stored, not_stored, rebuilt): the arena slots in use, rows kept in the arena, rows written with their values for want of room, rows built from the heap */
-Datum
-sift_test_arena_stats(PG_FUNCTION_ARGS)
-{
-	TupleDesc	tupdesc;
-	Datum		values[4];
-	bool		nulls[4] = {false};
-	int			used;
-	uint64		stored,
-				not_stored,
-				rebuilt;
-
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
-	wbuf_arena_test_stats(&used, &stored, &not_stored, &rebuilt);
-	values[0] = Int32GetDatum(used);
-	values[1] = Int64GetDatum(stored);
-	values[2] = Int64GetDatum(not_stored);
-	values[3] = Int64GetDatum(rebuilt);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
 #endif							/* SIFT_TESTING */
