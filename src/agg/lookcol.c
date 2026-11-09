@@ -31,12 +31,15 @@
 #include "agg/leaf_int.h"
 #include "agg/lookcol_int.h"
 #include "agg/plan_int.h"
+#include "agg/wide.h"
 #include "core/hash.h"
 
 
 static bool
 leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
 {
+	if (lf->wide)
+		return lf->typid == typid && sift_aggwide_type(typid);
 	if (lf->vtype == SCV_CODE)
 		return sift_str_type(typid) && sift_str_type(lf->typid);
 	if (lf->typid != typid)
@@ -71,7 +74,7 @@ column_leaf_any(const SiftSrcLayout *lay, int att, Node *expr)
 		const SiftSrcLeaf *lf = &lay->leaf[i];
 		Node	   *e;
 
-		if (lf->parent >= 0 || lf->kind != SCL_SCALAR || lf->path != NIL || lf->lossy || lf->wide || lf->astext)
+		if (lf->parent >= 0 || lf->kind != SCL_SCALAR || lf->path != NIL || lf->lossy || lf->astext)
 			continue;
 		e = list_nth(lay->attexprs, lf->attno - 1);
 		if (e != NULL && (expr ? equal(e, expr) : IsA(e, Var) && ((Var *) e)->varattno == att))
@@ -144,7 +147,8 @@ lookcol_cell_datum(ColNeed *nd, int64 i, bool *isnull)
 			uint32		len;
 			const char *str = sift_srcdict_str(v->dict, c, &len, buf);
 
-			nd->dval[c] = PointerGetDatum(cstring_to_text_with_len(str, len));
+			nd->dval[c] = lf->wide ? sift_aggwide_datum(lf->typid, memcpy(palloc(len), str, len), len) :
+				PointerGetDatum(cstring_to_text_with_len(str, len));
 			nd->dmade[c] = true;
 			MemoryContextSwitchTo(old);
 		}
@@ -414,12 +418,22 @@ index_needs(const SiftSrcLayout *lay, TupleDesc desc, const SiftAggJoin *j, ColN
 	return ok;
 }
 
+/* does a column of the load come from a wide leaf (uuid, interval, numeric of many digits)? Its entries are datums copied one by one: worth it for the few values of classes, not for a row each */
+static bool
+needs_wide(const ColNeed *need, int nneed)
+{
+	for (int p = 0; p < nneed; p++)
+		if (need[p].lf->wide)
+			return true;
+	return false;
+}
+
 /*
  * A valid sift_col index of the whole table with a leaf for each column the load reads (map_load_cols), NULL when the heap is read; need and nneed are the columns,
  * comp the expressions to compute from them.
  */
 Relation
-lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
+lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
 {
 	*nneed = *ncomp = 0;
 	if (!sift_agg_lookup_columns || rel->rd_rel->relkind != RELKIND_RELATION || rel->rd_tableam != GetHeapamTableAmRoutine() || (j->nidx > 0 && !own) || j->first.qual != NIL ||
@@ -434,7 +448,7 @@ lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, 
 
 		if (sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
 			heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			index_needs(sift_colsrc_layout(ix), RelationGetDescr(rel), j, need, nneed, comp, ncomp))
+			index_needs(sift_colsrc_layout(ix), RelationGetDescr(rel), j, need, nneed, comp, ncomp) && (wide || !needs_wide(need, *nneed)))
 			return ix;
 		index_close(ix, AccessShareLock);
 	}
@@ -470,9 +484,9 @@ map_cols_why(Relation rel, const SiftAggJoin *j)
 					continue;
 				typ = TupleDescAttr(RelationGetDescr(rel), att - 1)->atttypid;
 				lf = column_leaf_any(lay, att, NULL);
-				if (lf == NULL || !leaf_of_type(lf, typ))
+				if (lf == NULL || lf->wide || !leaf_of_type(lf, typ))
 					why = psprintf("column %s (%s) is %s of index %s", NameStr(TupleDescAttr(RelationGetDescr(rel), att - 1)->attname), format_type_be(typ),
-								   lf == NULL ? "not a plain leaf (a wide type, a lossy leaf or a path)" : "a leaf of a type the load does not decode", RelationGetRelationName(ix));
+								   lf == NULL ? "not a plain leaf (a wide type, a lossy leaf or a path)" : lf->wide ? "a wide leaf (uuid, interval, numeric of many digits), read only as classes of few values" : "a leaf of a type the load does not decode", RelationGetRelationName(ix));
 			}
 		}
 		index_close(ix, AccessShareLock);
@@ -489,7 +503,7 @@ map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 	CompCol		comp[SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				ncomp;
-	Relation	ix = lookcol_load_index(rel, j, j->fslot >= 0, need, &nneed, comp, &ncomp);
+	Relation	ix = lookcol_load_index(rel, j, j->fslot >= 0, false, need, &nneed, comp, &ncomp);
 
 	if (ix == NULL)
 		return false;
@@ -636,7 +650,7 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	ColLoad		cl = {.ex = ex,.m = m,.j = j,.cb = cb,.own = own};
 	bool		ok;
 
-	if ((ix = lookcol_load_index(rel, j, own != NULL, need, &nneed, cl.comp, &cl.ncomp)) == NULL)
+	if ((ix = lookcol_load_index(rel, j, own != NULL, false, need, &nneed, cl.comp, &cl.ncomp)) == NULL)
 		return false;
 	for (int k = 0; k < cl.ncomp; k++)
 		cl.comp[k].st = ExecInitExpr((Expr *) cl.comp[k].expr, NULL);

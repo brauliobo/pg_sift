@@ -20,6 +20,7 @@
 #include "agg/leaf_int.h"
 #include "agg/lookclass_int.h"
 #include "agg/plan_int.h"
+#include "agg/wide.h"
 #include "core/hash.h"
 
 /*
@@ -104,13 +105,16 @@ strids_id(StrIds *s, const char *str, uint32 len)
 	return s->n;
 }
 
+/* the string of an id as text, or, for a wide leaf, as the datum of its type (the entry is the datum) */
 static Datum
-strids_text(const StrIds *s, uint32 id)
+strids_datum(const StrIds *s, uint32 id, const SiftSrcLeaf *lf)
 {
 	const char *b = s->buf + s->off[id - 1];
 	uint32		len;
 
 	memcpy(&len, b, sizeof(len));
+	if (lf->wide)
+		return sift_aggwide_datum(lf->typid, memcpy(palloc(len), b + sizeof(len), len), len);
 	return PointerGetDatum(cstring_to_text_with_len(b + sizeof(len), len));
 }
 
@@ -140,7 +144,7 @@ dense_datum(const DenseLoad *d, const ColNeed *nd, int64 tv)
 {
 	if (nd == NULL)
 		return BoolGetDatum(tv);
-	return nd->lf->vtype == SCV_CODE ? strids_text(&d->strs, (uint32) tv) : lookcol_scalar_datum(nd->lf, tv);
+	return nd->lf->vtype == SCV_CODE ? strids_datum(&d->strs, (uint32) tv, nd->lf) : lookcol_scalar_datum(nd->lf, tv);
 }
 
 /* the class (1..) of the tuple, made on its first sight; 0 when there are too many. pos: where its row lies, kept for a shared load */
@@ -416,7 +420,7 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 	int			nneed,
 				ncomp,
 				key = 0;
-	Relation	ix = lookcol_load_index(rel, j, false, need, &nneed, comp, &ncomp);
+	Relation	ix = lookcol_load_index(rel, j, false, true, need, &nneed, comp, &ncomp);
 	SiftSrcStats st;
 
 	if (ix == NULL)
@@ -476,7 +480,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	TupleTableSlot *slot;
 	bool		ok;
 
-	if ((ix = lookcol_load_index(rel, j, false, need, &nneed, comp, &ncomp)) == NULL)
+	if ((ix = lookcol_load_index(rel, j, false, true, need, &nneed, comp, &ncomp)) == NULL)
 		return false;
 	for (d.key = 0; need[d.key].att != j->keyatt[0]; d.key++)
 		;

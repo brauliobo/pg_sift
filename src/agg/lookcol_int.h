@@ -35,7 +35,7 @@ typedef struct CompCol
 /* what a unit reader hands to its callback: the live and visible rows of the unit (bit i of rows) and the decoded leaves of need[]; ux lives for the unit */
 typedef void (*UnitFn) (void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows);
 
-extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
+extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
 /* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
 typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
 
@@ -48,7 +48,7 @@ typedef struct UnitScope
 	void	   *carg;
 } UnitScope;
 
-extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
+extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
 /* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
 typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
 
