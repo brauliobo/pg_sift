@@ -190,7 +190,7 @@ table	lateral_series	scan	0.00067	0.0027
 table	left_cross_dims	scan	0.024	0.096
 table	left_join_active	scan	0.058	0.23
 table	linkanti_2000_parents	scan	0.23	0.94
-table	linkanti_200_parents	scan	0.063	0.25
+table	linkanti_200_parents	scan	0.17	0.67
 table	linkanti_all_parents	scan	0.24	0.96
 table	linkjoin_2000_parents	scan	0.16	0.63
 table	linkjoin_200_parents	scan	0.14	0.55
@@ -199,7 +199,7 @@ table	linkleft_2000_parents	scan	0.47	1.9
 table	linkleft_200_parents	scan	0.16	0.64
 table	linkleft_all_parents	scan	0.48	1.9
 table	linksemi_2000_parents	scan	0.29	1.2
-table	linksemi_200_parents	scan	0.067	0.27
+table	linksemi_200_parents	scan	0.17	0.70
 table	linksemi_all_parents	scan	0.30	1.2
 table	mean_of_counts	scan	0.028	0.11
 table	mean_of_means	scan	0.029	0.11
@@ -333,8 +333,8 @@ table@250000	linkjoin_all_parents	either	0.16	0.65
 table@250000	linkleft_2000_parents	either	0.045	0.18
 table@250000	linkleft_200_parents	either	0.010	0.042
 table@250000	linkleft_all_parents	either	0.12	0.48
-table@250000	linksemi_2000_parents	either	0.046	0.18
-table@250000	linksemi_200_parents	either	0.013	0.054
+table@250000	linksemi_2000_parents	either	0.18	0.73
+table@250000	linksemi_200_parents	either	0.037	0.15
 table@250000	linksemi_all_parents	either	0.28	1.1
 table@250000	mean_of_counts	either	0.0087	0.035
 table@250000	mean_of_means	either	0.0092	0.037
@@ -457,7 +457,7 @@ tabletuned	lateral_series	scan	0.00065	0.0026
 tabletuned	left_cross_dims	scan	0.0011	0.0042
 tabletuned	left_join_active	scan	0.017	0.068
 tabletuned	linkanti_2000_parents	scan	0.12	0.49
-tabletuned	linkanti_200_parents	scan	0.046	0.18
+tabletuned	linkanti_200_parents	scan	0.12	0.48
 tabletuned	linkanti_all_parents	scan	0.12	0.49
 tabletuned	linkjoin_2000_parents	scan	0.19	0.76
 tabletuned	linkjoin_200_parents	scan	0.099	0.40
@@ -465,9 +465,9 @@ tabletuned	linkjoin_all_parents	scan	0.19	0.76
 tabletuned	linkleft_2000_parents	scan	0.18	0.72
 tabletuned	linkleft_200_parents	scan	0.11	0.45
 tabletuned	linkleft_all_parents	scan	0.18	0.72
-tabletuned	linksemi_2000_parents	scan	0.14	0.54
-tabletuned	linksemi_200_parents	scan	0.046	0.19
-tabletuned	linksemi_all_parents	scan	0.14	0.54
+tabletuned	linksemi_2000_parents	scan	0.37	1.5
+tabletuned	linksemi_200_parents	scan	0.12	0.49
+tabletuned	linksemi_all_parents	scan	0.37	1.5
 tabletuned	mean_of_counts	scan	0.012	0.047
 tabletuned	mean_of_means	scan	0.012	0.049
 tabletuned	min_max	scan	0.00044	0.0018
@@ -560,7 +560,7 @@ tabletuned@250000	distinct_one_parent	either	0.075	0.30
 tabletuned@250000	elements_counted	either	0.019	0.077
 tabletuned@250000	exists_by_parent_month	either	0.0029	0.012
 tabletuned@250000	exists_element	either	0.0017	0.0068
-tabletuned@250000	exists_in_table	either	0.015	0.058
+tabletuned@250000	exists_in_table	either	0.037	0.15
 tabletuned@250000	expression_key	either	0.0052	0.021
 tabletuned@250000	filter_clauses	either	0.0064	0.026
 tabletuned@250000	flat_list	either	0.064	0.26
@@ -578,7 +578,7 @@ tabletuned@250000	in_expr_key	either	0.033	0.13
 tabletuned@250000	join_active_filter	either	0.0076	0.030
 tabletuned@250000	join_filter_on_lookup_column	either	0.0058	0.023
 tabletuned@250000	join_month	either	0.0090	0.036
-tabletuned@250000	join_other_fact_filter	either	0.017	0.069
+tabletuned@250000	join_other_fact_filter	either	0.040	0.16
 tabletuned@250000	join_spans_values	either	0.014	0.055
 tabletuned@250000	join_tier	either	0.0084	0.033
 tabletuned@250000	join_two_lookups	either	0.013	0.052
@@ -600,9 +600,9 @@ tabletuned@250000	linkjoin_all_parents	either	0.23	0.92
 tabletuned@250000	linkleft_2000_parents	either	0.032	0.13
 tabletuned@250000	linkleft_200_parents	either	0.0058	0.023
 tabletuned@250000	linkleft_all_parents	either	0.21	0.85
-tabletuned@250000	linksemi_2000_parents	either	0.028	0.11
-tabletuned@250000	linksemi_200_parents	either	0.011	0.045
-tabletuned@250000	linksemi_all_parents	either	0.13	0.52
+tabletuned@250000	linksemi_2000_parents	either	0.11	0.45
+tabletuned@250000	linksemi_200_parents	either	0.031	0.13
+tabletuned@250000	linksemi_all_parents	either	0.37	1.5
 tabletuned@250000	mean_of_counts	either	0.0065	0.026
 tabletuned@250000	mean_of_means	either	0.0071	0.029
 tabletuned@250000	min_max	either	0.00028	0.0011
