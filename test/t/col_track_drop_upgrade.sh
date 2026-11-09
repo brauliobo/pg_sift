@@ -5,8 +5,9 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
-ref=$(git -C "$REPO" tag -l 'v4.[12].*' --sort=-v:refname | head -n 1)
-[[ -n $ref ]] || { echo '1..0 # SKIP no release tag v4.1.* or v4.2.*'; exit 0; }
+# 4.2.1 converts the triggers, so only a release before it is the "old" one: a later tag must not move this
+ref=v4.2.0
+git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }
 newroot=$ROOT
 plan 12
 
