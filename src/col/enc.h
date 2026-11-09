@@ -35,6 +35,7 @@ extern void (*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *cho
 extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n);
 
 /* The SCHEMA section of a segment: magic 'COLS', ncols, hash, per leaf a fixed part and the path */
+extern int	sift_cschema_nconn(const SiftColSchema *s);
 extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
@@ -264,6 +265,14 @@ extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema 
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
 extern void sift_cbatch_trim(SiftColBatch *b);
+
+/* The carried leaves of a connected index in a view of a batch (col/batch.c): the view shares the batch but for those leaves, which are empty and the view's own; put appends a value to a leaf (rows in order); done after the view was used */
+typedef struct SiftColCarried SiftColCarried;
+extern SiftColCarried *sift_ccarried_create(MemoryContext mcxt, const SiftColSchema *schema);
+extern SiftColBatch *sift_ccarried_view(SiftColCarried *c, const SiftColBatch *src);
+extern void sift_ccarried_put(SiftColBatch *view, int leaf, const SiftColValue *v);
+extern void sift_ccarried_done(SiftColCarried *c);
+extern int	sift_ccarried_first(const SiftColCarried *c);
 /* Sets the version of row r (< nrows or the row being added), makes the batch versioned on the first nonzero xmin */
 extern void sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin);
 /* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */

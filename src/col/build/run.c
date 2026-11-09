@@ -155,6 +155,8 @@ compact(ColBuild *b)
 		nrel += next;
 	}
 	w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, cx);
+	if (b->fill != NULL)
+		sift_colw_set_fill(w, b->fill);
 	sift_colw_set_preagg(w, &b->r->pagg);
 	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim, b->r->ncut > 0 ? b->r->cut[0] : -1);
@@ -193,6 +195,8 @@ colb_write_run(ColBuild *b, bool last)
 		in[i++] = lfirst(lc);
 	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 	b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+	if (b->fill != NULL)
+		sift_colw_set_fill(b->w, b->fill);
 	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = b->spill_aim > 0 ? b->spill_aim : sift_colk_run_rows(b->index, in, n);
@@ -258,6 +262,8 @@ colb_flush_batch(ColBuild *b)
 	{
 		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 		b->w = sift_colw_begin(b->wt, colb_next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+		if (b->fill != NULL)
+			sift_colw_set_fill(b->w, b->fill);
 		sift_colw_set_index_rows(b->w, b->total_rows);
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
@@ -396,6 +402,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	/* the index's own state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: the build keeps a copy */
 	b->r = sift_col_rel_private(index, cxt);
 	b->cxt = cxt;
+	b->fill = sift_conn_fill_begin(index, cxt);
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;

@@ -134,6 +134,21 @@ sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n)
 	return schema_build(mcxt, defs, n);
 }
 
+/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/conn.h) */
+int
+sift_cschema_nconn(const SiftColSchema *s)
+{
+	int			n = 0;
+
+	for (int i = 0; i < s->ncols; i++)
+	{
+		size_t		len = strlen(s->cols[i].path);
+
+		n += (s->cols[i].flags & SIFT_COLD_CARRIED) && len > 6 && strcmp(s->cols[i].path + len - 6, "#found") == 0;
+	}
+	return n;
+}
+
 void
 sift_cschema_serialize(const SiftColSchema *s, StringInfo out)
 {

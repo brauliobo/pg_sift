@@ -62,7 +62,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 {
 	const SiftSegHeaderData *h = seg->hdr;
 	const SiftSectionRef *s = h->sections;
-	SegHead    *hd = MemoryContextAlloc(cx, sizeof(SegHead));
+	SegHead    *hd = MemoryContextAllocZero(cx, sizeof(SegHead));
 	char	   *schema = palloc(h->dictroot_off);
 	SiftColSBRef *dir = MemoryContextAlloc(cx, (Size) h->dictroot_n * sizeof(SiftColSBRef));
 	uint64		rank = 0;
@@ -80,6 +80,19 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 		corrupt(seg, "The schema has carried leaves, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->carried)
+	{
+		uint32		tail[2];
+		int			nconn = sift_cschema_nconn(hd->schema);
+
+		if (h->dictroot_off < sizeof(tail))
+			corrupt(seg, "The schema section of a segment with carried leaves has no stamps.");
+		memcpy(tail, schema + h->dictroot_off - sizeof(tail), sizeof(tail));
+		if (tail[1] != SEG_STAMPS_MAGIC || tail[0] != (uint32) nconn || h->dictroot_off < sizeof(tail) + nconn * sizeof(SiftConnStamp))
+			corrupt(seg, "The stamps of the %d connections of the schema are not there.", nconn);
+		hd->nconn = nconn;
+		memcpy(hd->conn, schema + h->dictroot_off - sizeof(tail) - nconn * sizeof(SiftConnStamp), nconn * sizeof(SiftConnStamp));
+	}
 	pfree(schema);
 	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
 	for (uint32 i = 0; i < h->dictroot_n; i++)
@@ -149,6 +162,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 			sift_cseg_head_keep(index, entry, cx, (SegHead *) head, mcxt);
 	}
 	seg->schema = head->schema;
+	seg->nconn = head->nconn;
+	memcpy(seg->conn, head->conn, sizeof(seg->conn));
 	seg->nsb = h->dictroot_n;
 	seg->sbdir = head->sbdir;
 	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);

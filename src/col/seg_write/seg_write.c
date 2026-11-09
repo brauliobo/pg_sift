@@ -51,6 +51,7 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->format = sift_col_write_minor(schema, format, true);
 	w->setting = format;
 	w->sw = sift_sw_begin(wt, gen);
+	w->carried = sift_ccarried_create(mcxt, schema);
 	w->dict = palloc0(schema->ncols * sizeof(SiftCDict *));
 	w->dictmap = palloc0(schema->ncols * sizeof(uint32 *));
 	w->inl = palloc0(schema->ncols * sizeof(bool));
@@ -271,7 +272,30 @@ segw_gorder_plain(const SiftColSegWriter *w, int c)
 }
 
 void
+sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill)
+{
+	SIFT_INVARIANT(fill == NULL || w->carried != NULL, "sift_col: a fill for a segment without carried leaves");
+	w->fill = fill;
+}
+
+static void colw_add(SiftColSegWriter *w, const SiftColBatch *b);
+
+void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
+{
+	if (w->fill == NULL)
+	{
+		colw_add(w, b);
+		return;
+	}
+	b = sift_ccarried_view(w->carried, b);
+	w->fill->batch(w->fill, (SiftColBatch *) b);
+	colw_add(w, b);
+	sift_ccarried_done(w->carried);
+}
+
+static void
+colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
 	int			ncols = w->schema->ncols;
 	Size		start;
@@ -527,6 +551,20 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
+	if (w->schema->carried)
+	{
+		/* the stamps of the connections follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
+		int			nconn = sift_cschema_nconn(w->schema);
+		uint32		tail[2] = {(uint32) nconn, SEG_STAMPS_MAGIC};
+
+		for (int i = 0; i < nconn; i++)
+		{
+			SiftConnStamp st = w->fill ? w->fill->stamp(w->fill, i) : (SiftConnStamp) {0};
+
+			appendBinaryStringInfo(&schema, (char *) &st, sizeof(st));
+		}
+		appendBinaryStringInfo(&schema, (char *) tail, sizeof(tail));
+	}
 	h.sections[SIFT_SEC_DOCMAP].off = sift_sw_tell(w->sw);
 	h.dictroot_off = schema.len;
 	sift_sw_write(w->sw, schema.data, schema.len);

@@ -558,8 +558,8 @@ out_begin(MergeOut *o)
 	maint_throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
 	sift_colw_set_index_rows(o->w, o->index_rows);
-	if (o->pagg)
-		sift_colw_set_preagg(o->w, o->pagg);
+	sift_colw_set_fill(o->w, sift_conn_fill_begin(o->index, o->pcx));
+	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
 	{
 		const SiftColRel *r = sift_col_rel_private(o->index, CurrentMemoryContext);

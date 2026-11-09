@@ -27,6 +27,7 @@
 #include "utils/snapshot.h"
 
 #include "col/col.h"
+#include "col/enc.h"
 #include "core/tomb.h"
 
 /* Why the parent cannot vouch (SIFT_CONN_OK: it can). EXPLAIN says it as "fallback: <why>" */
@@ -42,17 +43,6 @@ typedef enum SiftConnWhy
 	SIFT_CONN_AGED,				/* the stamp is too old to compare with a current transaction id (wrap-around guard) */
 	SIFT_CONN_OVERFLOW			/* more changed keys than the caller's cap: no keys are returned */
 } SiftConnWhy;
-
-/*
- * What a derived value is as of: stored with the derived structure (a segment, a map), 16 bytes. Taken by sift_conn_take BEFORE the parent's entries are read
- * with the snapshot it was taken for.
- */
-typedef struct SiftConnStamp
-{
-	uint64		lineage;		/* the id of the parent's journal: another after a rebuild of the parent index */
-	TransactionId xmin;			/* X, the horizon (xmin of the snapshot the value was derived under) */
-	uint32		reserved;		/* zero */
-} SiftConnStamp;
 
 /*
  * A cheap, comparable word for "has the parent's journal moved": two equal generations of one stamp give equal changed sets, so a consumer that cached
@@ -150,7 +140,6 @@ typedef enum SiftConnVia
 	SIFT_CONN_VIA_MAP			/* the shared dimension map only: nothing is stored in the child */
 } SiftConnVia;
 
-#define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
 #define SIFT_CONN_MAX_CARRY			32		/* carried columns of one index, all connections together */
 #define SIFT_CONN_MAX_CARRY_BYTES	512		/* bytes of the carried values of a row, all connections together (the width of each leaf; a string counts its 4 byte code) */
 
@@ -189,6 +178,8 @@ extern SiftConnSpecs *sift_conn_specs(Relation child_index);
  * ("<fk>#found") and the leaves of each carried column ("<fk>.<column>"). Appended to defs from n; returns the new count, and lay[] the leaves of each of the *nconn connections.
  */
 extern int	sift_conn_leaves(Relation child_index, SiftColDef *defs, int n, SiftConnLayout *lay, int *nconn);
+/* The parent index that serves a connection (ERROR with a hint when there is none); the parent table is left open in *parent, locked AccessShare */
+extern Oid	sift_conn_parent_index(Relation child_heap, Relation child_index, const SiftConnSpec *s, Relation *parent);
 /* CREATE INDEX, REINDEX and ALTER INDEX of the child: connects to the parent indexes the option names, or removes the connections */
 extern void sift_conn_resolve(Relation child_heap, Relation child_index);
 /*
@@ -203,5 +194,17 @@ extern PGDLLIMPORT bool sift_col_auto_connect;
  */
 extern void sift_conn_start(Relation child_heap, Relation child_index);
 extern void sift_conn_alter(Relation child_index);
+
+/*
+ * ---- the carried values of a segment ----
+ *
+ * The writer of a segment of a connected index (a build, a promotion, a merge) fills the carried leaves of every unit it writes from the parent tables: for each connection it takes a
+ * stamp of the parent's journal (sift_conn_take) and reads the parent table under the snapshot the stamp was taken for, once, when the fill is begun; a row whose key is found there gets
+ * the found flag and the carried values, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
+ * yet, a log that is not complete, a table of more rows than maintenance_work_mem holds) clears its leaves and leaves the stamp empty (lineage 0): the segment says nothing for it.
+ * The stamps are written with the segment (the SCHEMA section, column format 45) and are what a reader compares with its snapshot (the rule above).
+ */
+struct SiftColFill;
+extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryContext mcxt);
 
 #endif							/* SIFT_COL_CONN_H */

@@ -99,3 +99,16 @@ typedef struct SiftColIndexMeta
 	SiftColDef *cols;			/* [ncols] */
 	SiftColIndexStats stats;
 } SiftColIndexMeta;
+
+/*
+ * What a value derived from another table is as of (a connected index, col/conn.h): stored with the derived structure (a segment, a map), 16 bytes. Taken
+ * BEFORE the parent's entries are read, with the snapshot it was taken for.
+ */
+#define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
+
+typedef struct SiftConnStamp
+{
+	uint64		lineage;		/* the id of the parent's journal: another after a rebuild of the parent index */
+	uint32		xmin;			/* X, the horizon (xmin of the snapshot the value was derived under; a TransactionId) */
+	uint32		reserved;		/* zero */
+} SiftConnStamp;

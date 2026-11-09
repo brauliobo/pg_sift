@@ -86,6 +86,8 @@ row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 	{
 		const SiftColDef *def = &sc->cols[c];
 
+		if (def->flags & SIFT_COLD_CARRIED)	/* as of the stamp of the segment, not of the heap row */
+			continue;
 		if (def->parent < 0)
 			value_hashes(&rh, def, &row->val[c]);
 		else

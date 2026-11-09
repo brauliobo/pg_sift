@@ -61,6 +61,93 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 	}
 }
 
+/*
+ * The carried leaves of a connected index (SIFT_COLD_CARRIED, the leaves from first on) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
+ * that come to it: a view of a batch has storage of its own for them, empty, and shares the rest, so that the batch a caller keeps (the write buffer's) is not changed.
+ */
+static void put_value(SiftColBatch *b, int id, const SiftColValue *v);
+
+struct SiftColCarried
+{
+	int			first;
+	SiftColBatch *own;			/* the storage of the carried leaves */
+	SiftColBatch view;
+	SiftCVals  *vcol;
+	SiftCDict **vdict;
+};
+
+SiftColCarried *
+sift_ccarried_create(MemoryContext mcxt, const SiftColSchema *schema)
+{
+	SiftColCarried *c;
+	int			first = schema->ncols;
+
+	for (int i = 0; i < schema->ncols && first == schema->ncols; i++)
+		if (schema->cols[i].flags & SIFT_COLD_CARRIED)
+			first = i;
+	if (first == schema->ncols)
+		return NULL;
+	c = MemoryContextAllocZero(mcxt, sizeof(SiftColCarried));
+	c->first = first;
+	c->own = sift_cbatch_create(mcxt, schema);
+	c->vcol = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCVals));
+	c->vdict = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCDict *));
+	return c;
+}
+
+SiftColBatch *
+sift_ccarried_view(SiftColCarried *c, const SiftColBatch *src)
+{
+	int			ncols = src->schema->ncols;
+
+	c->view = *src;
+	c->view.mcxt = c->own->mcxt;
+	c->view.image = NULL;
+	memcpy(c->vcol, src->col, ncols * sizeof(SiftCVals));
+	memcpy(c->vdict, src->dict, ncols * sizeof(SiftCDict *));
+	c->view.col = c->vcol;
+	c->view.dict = c->vdict;
+	for (int i = c->first; i < ncols; i++)
+	{
+		SiftCVals  *v = &c->own->col[i];
+
+		if (v->nulls)
+			memset(v->nulls, 0, words_of(v->cap) * sizeof(uint64));
+		if (v->ovf)
+			memset(v->ovf, 0, words_of(v->cap) * sizeof(uint64));
+		if (v->otag)
+			memset(v->otag, 0, v->cap);
+		v->n = 0;
+		v->noted = false;
+		if (v->voff)
+			v->voff[0] = 0;
+		if (c->own->dict[i])
+			cdict_reset(c->own->dict[i]);
+		c->vcol[i] = *v;
+		c->vdict[i] = c->own->dict[i];
+	}
+	return &c->view;
+}
+
+void
+sift_ccarried_put(SiftColBatch *view, int leaf, const SiftColValue *v)
+{
+	put_value(view, leaf, v);
+}
+
+void
+sift_ccarried_done(SiftColCarried *c)
+{
+	for (int i = c->first; i < c->view.schema->ncols; i++)
+		c->own->col[i] = c->vcol[i];
+}
+
+int
+sift_ccarried_first(const SiftColCarried *c)
+{
+	return c->first;
+}
+
 /* A batch that is complete, at the rows it holds: the arrays grew by doubling, and a batch of 43,008 rows holds 65,536 slots of each (a third of its memory) */
 void
 sift_cbatch_trim(SiftColBatch *b)

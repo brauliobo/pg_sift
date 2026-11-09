@@ -323,14 +323,14 @@ parent_table_oid(Oid child_table, const SiftConnSpec *s, LOCKMODE lock, bool mis
  * The checks of one connection and the sift_col index of its parent table that serves it (the one that tracks the key; the lowest oid when several hold the carried columns). The
  * parent table is left open in *parent, locked AccessShare. ERROR with a hint for what is wrong with the connection.
  */
-static Oid
-connection_parent(Relation heap, Relation index, const SiftConnSpec *s, Relation *parent)
+Oid
+sift_conn_parent_index(Relation heap, Relation index, const SiftConnSpec *s, Relation *parent)
 {
 	Oid			poid,
 				pidx;
 	AttrNumber	fk,
 				key,
-				carry[SIFT_CONN_MAX_CARRY];
+				carry[SIFT_CONN_MAX_CARRY] = {0};
 	Form_pg_attribute att;
 
 	fk = get_attnum(RelationGetRelid(heap), s->fk);
@@ -374,7 +374,7 @@ connect_each(Relation heap, Relation index, SiftConnSpecs *specs, bool start)
 	for (int i = 0; i < specs->n; i++)
 	{
 		Relation	parent;
-		Oid			pidx = connection_parent(heap, index, specs->c[i], &parent);
+		Oid			pidx = sift_conn_parent_index(heap, index, specs->c[i], &parent);
 
 		if (!list_member_oid(seen, pidx))
 		{

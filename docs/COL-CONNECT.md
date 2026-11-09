@@ -95,6 +95,15 @@ Format minor 45. A connected index holds, after its own leaves and like the leav
 segment was made) and a leaf `<fk>.<column>` for each carried column. They are not columns of the table: the write buffer and a row of a segment made before the connection was resolved have no value,
 which reads as not found, and a not found row is read by the join. A release before 4.3 refuses a segment of this format; `sift.col_leaves` lists the leaves.
 
+## Filling and the stamp
+
+The writer of a segment (build, promotion of a write buffer, merge) fills the carried leaves: for each connection it takes the stamp of the parent index (`sift_conn_take`, before the parent
+is read), reads the parent rows visible to a snapshot of that moment into a lookup table by key (at most half of `maintenance_work_mem`; a bigger parent is not looked up), and gives each row the flag
+and the values of its parent row. A row with a NULL key, a key the parent lacks or a key two visible parent rows share gets NULLs, which a reader takes as not resolved. The segment stores the
+stamp of each connection with its schema, so a value in it is as of that stamp; what changed in the parent since is in the journal (`changed(S, X)`), and a merge of segments with different stamps
+fills the rows again under one new stamp. A connection whose journal does not vouch at that moment (the first child of a parent, whose journal starts after its scan; a parent too big for the
+table) leaves the stamp empty and the leaves NULL, and the next promotion or merge fills them. `col_verify` does not compare the carried leaves with the heap: they are as of the stamp.
+
 ## Limits of this stage
 
-No query reads the connection yet: it makes the dependency, the journal and the leaves.
+No query reads the connection yet: it makes the dependency, the journal, the leaves and their values under a stamp.

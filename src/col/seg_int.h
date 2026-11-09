@@ -467,12 +467,16 @@ extern const VersUnit *vers_units(SiftColSegment *seg);
 #define SEG_HDRLEN(h)	(offsetof(SiftSegHeaderData, extents) + (h)->nextents * sizeof(SiftExtent))
 
 /* What sift_cseg_open checks and parses from the header page (the schema and the unit directory), with the header it was made under */
+#define SEG_STAMPS_MAGIC	0x50545343	/* "CSTP" */
+
 typedef struct SegHead
 {
 	SiftSegHeaderData *hdr;
 	Size		hdrlen;
 	SiftColSchema *schema;
 	SiftColSBRef *sbdir;		/* [hdr->dictroot_n] */
+	int			nconn;
+	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with carried leaves */
 } SegHead;
 
 /* The backend keeps them in the cache below: the head made under header h from the cache (pinned for mcxt), else NULL; keep takes the one made in cx, a child of mcxt */

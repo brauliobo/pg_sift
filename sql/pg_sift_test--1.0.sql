@@ -508,6 +508,8 @@ CREATE FUNCTION sift._test_conn_changed(index regclass, lineage int8, horizon xi
 	AS 'MODULE_PATHNAME', 'sift_test_conn_changed' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_inserted_since(index regclass, lineage int8, horizon xid) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_conn_inserted_since' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_conn_stamps(index regclass, OUT gen int8, OUT ordinal int4, OUT lineage int8, OUT horizon xid) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_conn_stamps' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT records int8, OUT trim_below xid) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_conn_gen' LANGUAGE C STRICT;
 

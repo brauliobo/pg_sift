@@ -6,6 +6,7 @@
 #define SIFT_COL_MAINT_INT_H
 
 #include "col/build.h"
+#include "col/conn.h"
 #include "bm25/maint.h"
 
 /*

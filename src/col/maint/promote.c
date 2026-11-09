@@ -97,6 +97,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
+		sift_colw_set_fill(w, sift_conn_fill_begin(index, cx));
 		{
 			uint64		idx_rows = nbrows;
 

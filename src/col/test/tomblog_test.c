@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_conn_take);
 PG_FUNCTION_INFO_V1(sift_test_conn_changed);
 PG_FUNCTION_INFO_V1(sift_test_conn_gen);
 PG_FUNCTION_INFO_V1(sift_test_conn_inserted_since);
+PG_FUNCTION_INFO_V1(sift_test_col_conn_stamps);
 
 /* sift._test_col_log_create(index): adds the tombstone log to an index that has none */
 Datum
@@ -373,6 +374,37 @@ sift_test_conn_take(PG_FUNCTION_ARGS)
 	table_close(heap, NoLock);
 	index_close(index, NoLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+/* sift._test_col_conn_stamps(index): for each immutable segment and connection, the stamp the segment was filled under (lineage 0: not filled) */
+Datum
+sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (int c = 0; c < seg->nconn; c++)
+		{
+			Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(c), Int64GetDatum((int64) seg->conn[c].lineage),
+							TransactionIdGetDatum(seg->conn[c].xmin)};
+			bool		nulls[4] = {false};
+
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 /* sift._test_conn_changed(index, lineage, xmin, cap): why not (one row, key NULL) or 'ok' with the changed keys */
