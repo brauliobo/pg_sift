@@ -282,7 +282,8 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 bool
 sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
 {
-	WbufHint    *h = get_hint(index);
+	WbufHint	hint = *get_hint(index),
+			   *h = &hint;	/* a copy: a lock taken below (the maintenance opens the heap) reloads the entry and frees the cached one */
 	SiftAnalyzerConfig cfg;
 	Buffer		buf;
 	int			lane;
@@ -302,6 +303,7 @@ sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int
 	}
 	crossed = write_doc(index, h, lane, buf, tid, terms, nterms, dl, &tail);
 	h->tail[lane] = tail;
+	*get_hint(index) = hint;
 	return crossed;
 }
 
