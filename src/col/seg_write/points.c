@@ -182,6 +182,11 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 			}
 		}
 	}
+	{
+		SiftCGOrdHdr h;
+
+		w->anyseek = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && sift_cgord_has_seek((const uint8 *) ob->tab.data, &h)) || w->anyseek;
+	}
 	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
 	w->anyord = ob->nch > 0 || w->anyord;
 	w->anydense = (dense && ob->nch > 0) || w->anydense;

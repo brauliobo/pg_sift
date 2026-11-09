@@ -18,7 +18,7 @@ FROM generate_series(1, 120000) i;
 ANALYZE ak;
 CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak_i": 4 automatic choices, 1 advice
-NOTICE:  sift_col index "ak_i" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
                                                                                          reloptions                                                                                         
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -91,7 +91,7 @@ INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generat
 ANALYZE ak1;
 CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak1_i": 2 automatic choices, 1 advice
-NOTICE:  sift_col index "ak1_i" is column format minor 42, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak1_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
                                            reloptions                                            
 -------------------------------------------------------------------------------------------------
@@ -115,7 +115,7 @@ INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * 
 ANALYZE ak3;
 CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak3_i": 4 automatic choices, 1 advice
-NOTICE:  sift_col index "ak3_i" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak3_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
                                                                                    reloptions                                                                                    
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -133,7 +133,7 @@ INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i *
 ANALYZE ak4;
 CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ak4_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "ak4_i" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak4_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
                                                                                reloptions                                                                               
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -166,7 +166,7 @@ INSERT INTO ak6 SELECT i, i % 40, abs(hashint4(i)) % 3000, timestamp '2024-01-01
 ANALYZE ak6;
 CREATE INDEX ak6_i ON ak6 USING sift_col (id, tenant_id, ent_id, created, pad) WITH (key_cut = 'tenant_id');
 NOTICE:  sift_col index "ak6_i": 4 automatic choices, 1 advice
-NOTICE:  sift_col index "ak6_i" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak6_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
                                                                         reloptions                                                                         
 -----------------------------------------------------------------------------------------------------------------------------------------------------------

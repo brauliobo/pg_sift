@@ -5,6 +5,8 @@
 -- The pad column has strings over 64 bytes: a text column of shorter strings is chosen too (col_gorder_text), and the array holds the strings again, so these tests keep it out.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
+-- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
+SET sift.test_limits = 'gord_seek_pct=0';
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ga (id int, r int, g int, ts timestamp, pad text);

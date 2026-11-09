@@ -590,7 +590,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 				uint64		a;
 				int			st;
 
-				if (p - c->buf->at - c->buf->afrom >= c->buf->an)
+				if (!cur_addr_ok(c->buf, p))
 					sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
 				a = c->buf->addr[p - c->buf->at];
 				st = sift_colsrc_gorder_state(g->src, c->src, a);

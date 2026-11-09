@@ -6,6 +6,7 @@
 #include "col/codec.h"
 #include "col/gquant.h"
 #include "col/gorder.h"
+#include "core/cmp.h"
 
 #define GORD_ALIGN8(x)	(((uint64) (x) + 7) & ~(uint64) 7)
 
@@ -149,8 +150,160 @@ sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 	if (c >= h->chunks)
 		return false;
 	memcpy(d, ent, sizeof(*d));
-	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | SIFT_CGORD_TIES | 0xF00u | (h->gcol >= 0 ? 0xFF0000u : 0))) == 0 && (!SIFT_CGORD_ANCHORS(d->pad) || (d->pad & SIFT_CGORD_COMPACT)) && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (!(d->pad & SIFT_CGORD_TIES) || (d->pad & SIFT_CGORD_COMPACT)) && (d->pad >> 8 & 0xF) >= 1 && (d->pad >> 8 & 0xF) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(d->pad)) <= len &&
+	return (d->pad == 0 || ((d->pad & ~(SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | SIFT_CGORD_TIES | SIFT_CGORD_SEEK | 0xF00u | (h->gcol >= 0 ? 0xFF0000u : 0))) == 0 && (!SIFT_CGORD_ANCHORS(d->pad) || (d->pad & SIFT_CGORD_COMPACT)) && !((d->pad & SIFT_CGORD_COMPACT) && ((d->pad & SIFT_CGORD_GAPS) || h->quant == 0)) && (!(d->pad & SIFT_CGORD_TIES) || (d->pad & SIFT_CGORD_COMPACT)) && (!(d->pad & SIFT_CGORD_SEEK) || (!(d->pad & (SIFT_CGORD_GAPS | SIFT_CGORD_COMPACT | SIFT_CGORD_TIES)) && h->crows == SIFT_CGORD_ROWS_FINE)) && (d->pad >> 8 & 0xF) >= 1 && (d->pad >> 8 & 0xF) <= 9)) && d->off % 8 == 0 && (uint64) d->off + (((uint64) d->klen + 7) & ~(uint64) 7) + (((uint64) d->alen + 7) & ~(uint64) 7) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(d->pad)) <= len &&
 		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
+}
+
+bool
+sift_cgord_has_seek(const uint8 *blk, const SiftCGOrdHdr *h)
+{
+	for (uint32 c = 0; c < h->chunks; c++)
+	{
+		uint32		pad;
+
+		memcpy(&pad, blk + SIFT_CGORD_HDR + (uint64) c * SIFT_CGORD_DIRENT + offsetof(SiftCGOrdDir, pad), sizeof(pad));
+		if (pad & SIFT_CGORD_SEEK)
+			return true;
+	}
+	return false;
+}
+
+/* bits [bit, bit + w) of the little endian bit string at p (w <= 64; 8 readable bytes after the string) */
+static inline uint64
+bits_get(const uint8 *p, uint64 bit, uint32 w)
+{
+	uint64		v;
+
+	if (w == 0)
+		return 0;
+	if (w > 56)
+		return bits_get(p, bit, 32) | bits_get(p, bit + 32, w - 32) << 32;
+	memcpy(&v, p + (bit >> 3), sizeof(v));
+	return (v >> (bit & 7)) & ((UINT64CONST(1) << w) - 1);
+}
+
+static inline int64
+unzigzag(uint64 v)
+{
+	return (int64) (v >> 1) ^ -(int64) (v & 1);
+}
+
+bool
+sift_cgord_seek_open(SiftCGOrdSeek *s, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first)
+{
+	uint32		nb = (m + SIFT_CGORD_SUB - 1) / SIFT_CGORD_SUB,
+				fw,
+				p = 2,
+				at;
+	bool		fzz;
+
+	if (m == 0 || nb > SIFT_CGORD_SUBS || klen < 2 || alen < 9 + 2 * nb)
+		return false;
+	fw = kb[0];
+	fzz = kb[1] >> 1 & 1;
+	s->scale = 1;
+	if (kb[1] & 1)
+	{
+		if (klen < p + sizeof(uint64))
+			return false;
+		memcpy(&s->scale, kb + p, sizeof(uint64));
+		p += sizeof(uint64);
+		if (s->scale < 2)
+			return false;
+	}
+	s->kb = kb;
+	s->ab = ab;
+	s->m = m;
+	s->nb = nb;
+	s->ob = pad >> 8 & 0xF;
+	s->kw = kb + p;
+	p += nb;
+	if (fw > 64 || (uint64) p + ((uint64) (nb - 1) * fw + 7) / 8 > klen)
+		return false;
+	s->fence[0] = first;
+	for (uint32 b = 1; b < nb; b++)
+	{
+		uint64		v = bits_get(kb + p, (uint64) (b - 1) * fw, fw);
+
+		s->fence[b] = (int64) ((uint64) s->fence[b - 1] + (fzz ? (uint64) unzigzag(v) : v * s->scale));
+	}
+	at = p + (uint32) (((uint64) (nb - 1) * fw + 7) / 8);
+	for (uint32 b = 0; b < nb; b++)
+	{
+		uint32		n = Min(SIFT_CGORD_SUB, m - b * SIFT_CGORD_SUB),
+					w = s->kw[b] & 0x7F;
+
+		if (w > 64)
+			return false;
+		s->koff[b] = at;
+		at += (uint32) (((uint64) (n - 1) * w + 7) / 8);
+	}
+	s->koff[nb] = at;
+	if (at > klen)
+		return false;
+	s->wa = ab[0];
+	memcpy(&s->amin, ab + 1, sizeof(uint64));
+	s->am = ab + 9;
+	if (s->wa > 56)
+		return false;
+	at = 9 + 2 * nb;
+	for (uint32 b = 0; b < nb; b++)
+	{
+		if (s->am[2 * b] != 0xFF && s->am[2 * b] > 56)
+			return false;
+		s->aoff[b] = at;
+		at += s->am[2 * b + 1];
+	}
+	s->aoff[nb] = at;
+	return at <= alen;
+}
+
+uint32
+sift_cgord_seek_fence(const SiftCGOrdSeek *s, uint32 lo, uint32 hi, int64 key, bool after)
+{
+	SIFT_BISECT(uint32, mid, lo, hi, after ? s->fence[mid] <= key : s->fence[mid] < key);
+	return lo;
+}
+
+bool
+sift_cgord_seek_decode(const SiftCGOrdSeek *s, uint32 b, int64 *key, uint64 *addr)
+{
+	uint32		base = b * SIFT_CGORD_SUB,
+				n = Min(SIFT_CGORD_SUB, s->m - base),
+				w = s->kw[b] & 0x7F,
+				gw = s->am[2 * b];
+	uint64		k = (uint64) s->fence[b],
+				bit = 0,
+				prev = 0,
+				mask = ((uint64) 1 << s->ob) - 1;
+	bool		zz = s->kw[b] >> 7;
+	const uint8 *p = s->kb + s->koff[b];
+
+	key[base] = s->fence[b];
+	for (uint32 i = 1; i < n; i++, bit += w)
+	{
+		uint64		v = bits_get(p, bit, w);
+
+		k += zz ? (uint64) unzigzag(v) : v * s->scale;
+		key[base + i] = (int64) k;
+	}
+	p = s->ab + s->aoff[b];
+	bit = 0;
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (gw != 0xFF && i > 0 && key[base + i] == key[base + i - 1])
+		{
+			prev += bits_get(p, bit, gw) + 1;
+			bit += gw;
+		}
+		else
+		{
+			prev = s->amin + bits_get(p, bit, s->wa);
+			bit += s->wa;
+		}
+		addr[base + i] = (prev >> s->ob) << 16 | (prev & mask);
+	}
+	return bit <= (uint64) s->am[2 * b + 1] * 8;
 }
 
 void
@@ -245,11 +398,22 @@ sift_cgord_decode_addrs(MemoryContext mcxt, const uint8 *ab, uint32 alen, uint32
 }
 
 bool
-sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr)
+sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *key, uint64 *addr)
 {
 	uint32		a0 = 0;
 
 	w = Min(w, m);
+	if (pad & SIFT_CGORD_SEEK)
+	{
+		SiftCGOrdSeek s;
+
+		if (!sift_cgord_seek_open(&s, kb, klen, ab, alen, pad, m, first))
+			return false;
+		for (uint32 b = 0; b * SIFT_CGORD_SUB < w; b++)
+			if (!sift_cgord_seek_decode(&s, b, key, addr))
+				return false;
+		return true;
+	}
 	sift_cgord_decode_keys(mcxt, kb, klen, m, w, key);
 	return sift_cgord_decode_addrs(mcxt, ab, alen, pad, m, key, &a0, w, addr);
 }

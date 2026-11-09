@@ -10,7 +10,7 @@ CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
 NOTICE:  sift_col index "ev_col": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id; order_array_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
-NOTICE:  sift_col index "ev_col" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "ev_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CREATE TABLE dd (k int PRIMARY KEY, a text, b text) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END FROM generate_series(0, 99999) i;

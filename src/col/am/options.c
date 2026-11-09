@@ -340,6 +340,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_gorder_seek",
+							 "Testing: every chunk of an order array is written seekable (a fence key every 32 entries), whatever its bytes.",
+							 NULL, &sift_test_col_gorder_seek, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_gorder_rows",
 							"Testing: 1024 writes the global order with the chunks of column format minor 21 (1,024 entries), 0 the current ones (512).",
 							NULL, &sift_test_col_gorder_rows, 0, 0, 1024, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -31,6 +31,7 @@ PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_vet_offsets);
+PG_FUNCTION_INFO_V1(sift_test_gorder_decoded);
 
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
 
@@ -280,6 +281,9 @@ SIFT_TEST_COUNTER_FN(sift_test_eq_sel_calls, eq_sel_calls)
 
 /* the row offsets decoded to vet rows against the heap since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_vet_offsets, sift_col_vet_offsets)
+
+/* the entries of order array chunks decoded since the last read; the argument true resets the count */
+SIFT_TEST_COUNTER_FN(sift_test_gorder_decoded, sift_col_gorder_decoded)
 
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)

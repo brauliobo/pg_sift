@@ -34,6 +34,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  float_ops            | SIFT_AGG_MAX_VX                 |               16 | t         | f
  generic_args         | SIFT_AGG_MAX_GARGS              |              100 | t         | f
  generic_leaves       | SIFT_AGG_MAX_GLEAVES            |                4 | t         | f
+ gord_seek_pct        | SIFT_CGORD_SEEK_MAX_PCT         |              115 | t         | t
  group_keys           | SIFT_AGG_MAX_KEYS               |               32 | t         | t
  group_nospill_base   | GROUP_NOSPILL_BASE              |          8388608 | t         | t
  group_nospill_factor | GROUP_NOSPILL_FACTOR            |               32 | t         | t

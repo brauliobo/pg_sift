@@ -475,6 +475,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 						}
 					}
 				}
+				acc->gord_seek_blocks += g->hdr.vtotal == 0 && seg->entry.format >= SIFT_COL_FORMAT_SEEKORD;
 				acc->gord_perm += g->hdr.strperm;
 				if (g->hdr.strbytes != 0)
 					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;

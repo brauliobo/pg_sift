@@ -341,7 +341,7 @@ CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_
 NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
-NOTICE:  sift_col index "dk_idx" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "dk_idx" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM dk;
 SELECT max(format) >= 25 AS format_by_default_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
@@ -401,7 +401,7 @@ REINDEX INDEX dk_idx;
 NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
-NOTICE:  sift_col index "dk_idx" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "dk_idx" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT max(format) >= 25 AS format_with_count_columns_off_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
  format_with_count_columns_off_is_the_hashs_or_later 

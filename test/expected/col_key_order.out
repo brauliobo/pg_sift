@@ -20,7 +20,7 @@ ERROR:  invalid key_order option: column "nope" is not a column of the index
 SET client_min_messages = notice;
 CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts');
 NOTICE:  sift_col index "ko_one": 2 automatic choices, 2 advice
-NOTICE:  sift_col index "ko_one" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "ko_one" is column format minor 47, which a library before 4.3 cannot read
 CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent , ts');
 NOTICE:  sift_col index "ko_two": 2 automatic choices, 1 advice
 NOTICE:  sift_col index "ko_two" is column format minor 38, which a library before 3.7 cannot read

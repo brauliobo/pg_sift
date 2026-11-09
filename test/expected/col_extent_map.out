@@ -11,7 +11,7 @@ CREATE INDEX em_col ON em USING sift_col (grp, amount);
 NOTICE:  sift_col index "em_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the index lacks the primary key column; order_array_columns = amount
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('em_col');
-NOTICE:  sift_col index "em_col" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "em_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT tiles('em_col') AS tiles_after_build;
  tiles_after_build 

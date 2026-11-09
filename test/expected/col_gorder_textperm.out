@@ -5,6 +5,8 @@ NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
+-- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
+SET sift.test_limits = 'gord_seek_pct=0';
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -168,14 +170,14 @@ SELECT sift.col_verify('tm_i');
 CREATE TABLE tz AS SELECT id, a, b, k FROM tp;
 CREATE INDEX tz_i ON tz USING sift_col (id sift.col_int4_ops, a sift.col_text_ops, b sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'a, b', write_buffer_limit = 65536);
 INSERT INTO tz (id, a, b, k) SELECT 20000 + i, tp_str(i * 7), tp_str(i * 11), i % 100 FROM generate_series(1, 3000) i;
-SET sift.test_limits = 'dict_cache_kb=700';
+SET sift.test_limits = 'dict_cache_kb=700,gord_seek_pct=0';
 SELECT sift.col_promote('tz_i') >= 0 AS promoted;
  promoted 
 ----------
  t
 (1 row)
 
-RESET sift.test_limits;
+SET sift.test_limits = 'gord_seek_pct=0';
 SELECT format, count(*) AS segments FROM sift.col_segments('tz_i') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------

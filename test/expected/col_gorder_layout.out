@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
+-- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
+SET sift.test_limits = 'gord_seek_pct=0';
 SET sift.test_col_gorder_ends = 64;
 SET max_parallel_workers_per_gather = 0;
 SELECT setseed(0.42);

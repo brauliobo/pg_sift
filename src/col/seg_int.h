@@ -558,6 +558,17 @@ extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint
 extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
 extern bool		seg_gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
 extern uint32	seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo);
+
+#ifdef SIFT_TESTING
+extern int64 sift_col_gorder_decoded;
+#define GORD_DECODED(n) (sift_col_gorder_decoded += (n))
+#else
+#define GORD_DECODED(n) ((void) 0)
+#endif
+/* the reads of a seekable chunk of an order array (seg/gorder_seek.c): the window of a scan from the entry p on with w entries to go; the first entry of [from, to) of the chunk c not before key; the entries of the first mv of the chunk before v */
+extern void seg_gord_seek_fill(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, uint32 p, uint32 w, SiftCGOrdBuf *buf);
+extern uint32 seg_gord_seek_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, uint32 from, uint32 to, int64 key, bool after, SiftCGOrdBuf *memo);
+extern uint32 seg_gord_seek_before(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32 mv, int64 v, bool desc, SiftCGOrdBuf *memo);
 extern uint32	seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *memo);
 extern void		seg_gord_addrs(SiftColSegment *seg, int col, uint32 a, uint32 b, SiftCGOrdBuf *memo, SiftKey *t, uint32 *n);
 

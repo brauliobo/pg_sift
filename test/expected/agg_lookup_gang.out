@@ -39,7 +39,7 @@ NOTICE:  sift_col index "pd_col": 3 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = k;
 order_layout = k compact in 0% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_col');
-NOTICE:  sift_col index "pd_col" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "pd_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
@@ -47,7 +47,7 @@ CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
 NOTICE:  sift_col index "pe_col": 3 automatic choices
 DETAIL:  point_tid_columns = k; order_array_columns = k; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_col');
-NOTICE:  sift_col index "pe_col" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "pe_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
 CREATE TABLE shapes (n int, sql text);

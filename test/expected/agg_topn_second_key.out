@@ -11,7 +11,7 @@ CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 
 NOTICE:  sift_col index "sk_col": 3 automatic choices, 1 advice
 DETAIL:  advice: key_cut = ent_id, ts; key_order = ent_id, ts; order_array_columns = ts; order_layout = ts exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sk_col');
-NOTICE:  sift_col index "sk_col" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "sk_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM ANALYZE sk;
 CREATE FUNCTION sk_plan(q text) RETURNS text LANGUAGE plpgsql AS $$

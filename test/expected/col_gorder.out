@@ -39,7 +39,7 @@ END $$;
 CREATE INDEX go_i ON go USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
 	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z');
 NOTICE:  sift_col index "go_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "go_i" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "go_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT leaf, go_check('go_i', leaf) FROM generate_series(0, 6) leaf;
  leaf | go_check 
 ------+----------
@@ -156,7 +156,7 @@ SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'order_
 
 REINDEX INDEX go_n;
 NOTICE:  sift_col index "go_n": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "go_n" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "go_n" is column format minor 47, which a library before 4.3 cannot read
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
  commands 
 ----------
@@ -167,7 +167,7 @@ DROP INDEX go_n;
 -- the array extends the sorted run: a subset of order_columns gets it, a column outside order_columns or of another type is refused
 CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, pad sift.col_text_ops) WITH (order_columns = 'id, b', order_array_columns = 'id');
 NOTICE:  sift_col index "go_x": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "go_x" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "go_x" is column format minor 47, which a library before 4.3 cannot read
 SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entries FROM generate_series(0, 2) leaf;
  leaf | entries 
 ------+---------
@@ -226,7 +226,7 @@ SELECT sift.col_verify('go_e_i');
 -- a heap address directory (point_tid_columns) and a global order in one segment: the point frame holds both
 CREATE INDEX go_p ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (point_tid_columns = 'id, b', order_columns = 't', order_array_columns = 't');
 NOTICE:  sift_col index "go_p": 2 automatic choices, 1 advice
-NOTICE:  sift_col index "go_p" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "go_p" is column format minor 47, which a library before 4.3 cannot read
 SELECT sift.col_verify('go_p');
  col_verify 
 ------------

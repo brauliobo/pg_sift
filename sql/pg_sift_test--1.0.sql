@@ -459,6 +459,8 @@ CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel_calls' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vet_offsets(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_vet_offsets' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_gorder_decoded(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_gorder_decoded' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_source_lookups(reset bool) RETURNS int8

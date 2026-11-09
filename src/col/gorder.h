@@ -35,6 +35,14 @@
  * Version 5, a text block of column format minor 42: as version 3, but the section that ends the block holds no strings, only where to find them: {u32 strings, u32 bits, u32 0, u32 0},
  * then the dictionary code of the string of every rank, `bits` wide each, lowest first, padded to 8 bytes. The string of a rank is the one the segment's dictionary of the leaf holds for
  * that code (a dictionary of CDICT_LOOKUP_MIN strings or more is written in blocks to be read in place), so the block does not keep a second copy of the strings.
+ *
+ * Seekable chunk (column format minor SIFT_COL_FORMAT_SEEKORD, SIFT_CGORD_SEEK in the pad word of the directory entry; any version, and a block may mix them with plain chunks): the m <= 512 entries are in
+ * sub-blocks of SIFT_CGORD_SUB (32), and the first key of a sub-block is a fence, so a window of 32 entries is decoded without the 512 of its chunk. The key blob is
+ * {u8 fence width, u8 flags (bit 0: scaled, bit 1: fence deltas zigzag), u64 scale if scaled, u8 per sub-block (bit 7: its deltas zigzag, bits 0..6: their width), the fence deltas (the key of the first entry
+ * of sub-block s less that of s - 1, divided by the scale; one width), then for each sub-block its deltas from entry to entry, each width bits, packed, rounded up to bytes}; the first key of
+ * the chunk is the directory's. The address blob is {u8 width wa, u64 minimum of the codes, per sub-block {u8 gap width gw or 0xFF, u8 bytes}, then for each sub-block its entries, rounded up to bytes}: a code
+ * (block << ob | offset, ob in the pad word) less the minimum, wa bits; where gw is not 0xFF an entry after the first whose key is that of the entry before it is the gap to it less 1 (gw bits), the others are
+ * whole codes. A chunk that mixes NULL rows (key 0) with values has fences that do not ascend (zigzag).
  */
 #ifndef SIFT_COL_GORDER_H
 #define SIFT_COL_GORDER_H
@@ -53,6 +61,10 @@
 #define SIFT_CGORD_COMPACT	2		/* SiftCGOrdDir.pad bit 1: the chunk keeps the bucket of every key (col/gquant.h) */
 #define SIFT_CGORD_TIES	4		/* SiftCGOrdDir.pad bit 2, with SIFT_CGORD_COMPACT: the chunk has a run of SIFT_CGORD_TIE_RUN equal keys or more, which the buckets do not tell apart */
 #define SIFT_CGORD_TIE_RUN	8
+#define SIFT_CGORD_SEEK	8		/* SiftCGOrdDir.pad bit 3 (column format minor SIFT_COL_FORMAT_SEEKORD): the chunk is a seekable one, see "Seekable chunk" above; bits 8..11 are the bits of the offset in the address code */
+#define SIFT_CGORD_SUB	32		/* the entries of a sub-block of a seekable chunk: its first key is a fence */
+#define SIFT_CGORD_SUBS	(SIFT_CGORD_ROWS_FINE / SIFT_CGORD_SUB)
+#define SIFT_CGORD_SEEK_MAX_PCT	115	/* the limit gord_seek_pct: the writer keeps the seekable form of a chunk where it takes at most this many percent of the bytes of the plain one */
 #define SIFT_CGORD_RUNS_SHIFT	16		/* SiftCGOrdDir.pad bits 16..23, in a compact chunk of a grouped block: the groups after the first that start in the chunk */
 #define SIFT_CGORD_ANCHORS(pad)	(((pad) >> SIFT_CGORD_RUNS_SHIFT) & 0xFFu)
 /* what follows the addresses of such a chunk: n positions (u16, padded to 8) and n exact keys, the first key of each of those groups in it */
@@ -90,11 +102,11 @@ typedef struct SiftCGOrdBuf
 {
 	uint32		at;				/* the position of the chunk's first entry */
 	uint32		cm;				/* the keys of the chunk decoded: the first cm */
-	uint32		afrom;			/* the addresses of entries [afrom, afrom + an) of the chunk are in addr[] (a window: a cursor that reads a few entries of a chunk decodes those) */
+	uint32		afrom;			/* the addresses of entries [afrom, afrom + an) of the chunk are in addr[] (a window: a cursor that reads a few entries of a chunk decodes those; of a seekable chunk, the sub-blocks of the window) */
 	uint32		an;
 	bool		desc;			/* the cursor that owns the buffer reads the chunk backwards: its window ends at the entry asked for */
 	uint32		rows;			/* the entries of the chunk */
-	uint32		kfrom;			/* the exact keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (a chunk that is not compact: the first cm) */
+	uint32		kfrom;			/* the exact keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (a chunk that is not compact: the first cm; a window of a seekable one: [afrom, cm)) */
 	uint32		kn;
 	bool		stored;			/* the chunk is of a stored segment: it stays as it is for the next merge over the same segments (a write buffer's is rebuilt by each) */
 	bool		compact;		/* the chunk is compact: kmin[] holds the first key of the bucket of each entry (if kmin_ok), sh the bucket's bits, key[] the keys read from the heap so far (the bits of exact) */
@@ -203,6 +215,8 @@ extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 
 extern bool sift_cgord_perm_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *bits);
 
 #ifdef SIFT_TESTING
+extern int64 sift_col_gorder_decoded;	/* the entries of order array chunks decoded (sift._test_gorder_decoded) */
+extern bool sift_test_col_gorder_seek;	/* sift.test_col_gorder_seek: every chunk of an order array is written seekable, whatever its bytes */
 extern bool sift_test_col_gorder_noskip;	/* sift.test_col_gorder_noskip: an OFFSET walks the entries it throws away (sift_gord_skip takes none) */
 extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
 extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
@@ -284,11 +298,42 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
 	return c + 1 < h->chunks ? h->crows : h->entries - c * h->crows;
 }
 
+/* The writer's helpers shared by col/gorder.c and col/gorder_seek.c: zero bytes to a multiple of 8, the codes of the addresses of a chunk (block << ob | offset into dv, and ob), and the chunk as a seekable one (false, nothing kept, when its addresses do not fit) */
+extern void sift_cgord_pad8(StringInfo out);
+extern uint32 sift_cgord_addr_codes(const int64 *av, uint32 m, int64 *dv);
+extern bool sift_cgord_seek_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m);
+
 /*
  * Decodes the first w entries (all m when w >= m) of a chunk of m from its two blobs (kb, klen) and (ab, alen) into key[0..w) and addr[0..w) (heap addresses); both need
  * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
-extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
+extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *key, uint64 *addr);
+
+/* A seekable chunk parsed: the fences (the first key of each sub-block) and where the sub-blocks are; the keys and addresses of a sub-block decode from here alone */
+typedef struct SiftCGOrdSeek
+{
+	const uint8 *kb;
+	const uint8 *ab;
+	uint32		m;
+	uint32		nb;				/* sub-blocks */
+	uint32		ob;
+	uint32		wa;
+	uint64		scale;
+	uint64		amin;
+	int64		fence[SIFT_CGORD_SUBS];
+	uint32		koff[SIFT_CGORD_SUBS + 1];	/* the bytes of the deltas of each sub-block, in kb */
+	uint32		aoff[SIFT_CGORD_SUBS + 1];	/* ... and of its addresses, in ab */
+	const uint8 *kw;			/* per sub-block: its delta width and zigzag bit */
+	const uint8 *am;			/* per sub-block: the gap width of its addresses and their bytes */
+} SiftCGOrdSeek;
+/* Parses the chunk of m entries whose first key is first (the blobs padded by SIFT_COL_PAD); false when malformed */
+extern bool sift_cgord_seek_open(SiftCGOrdSeek *s, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first);
+/* The first sub-block in [lo, hi) whose fence is not before key (after: is after it), hi when none; the fences of [lo, hi) ascend */
+extern uint32 sift_cgord_seek_fence(const SiftCGOrdSeek *s, uint32 lo, uint32 hi, int64 key, bool after);
+/* The keys and addresses of sub-block b into key[b * SIFT_CGORD_SUB ..] and addr[..]; false when malformed */
+extern bool sift_cgord_seek_decode(const SiftCGOrdSeek *s, uint32 b, int64 *key, uint64 *addr);
+/* Does a block (of len bytes, header parsed in h) have a seekable chunk: the format minor of its segment */
+extern bool sift_cgord_has_seek(const uint8 *blk, const SiftCGOrdHdr *h);
 /* The first w keys (all m when w >= m) of a chunk from its key blob alone; key needs SIFT_CGORD_CAP slots */
 extern void sift_cgord_decode_keys(MemoryContext mcxt, const uint8 *kb, uint32 klen, uint32 m, uint32 w, int64 *key);
 /*
@@ -296,6 +341,7 @@ extern void sift_cgord_decode_keys(MemoryContext mcxt, const uint8 *kb, uint32 k
  * of the run of equal keys it falls in, where the blob is coded from. addr[*a0 .. a1) are filled; addr needs SIFT_CGORD_CAP slots. False when the blob is malformed.
  */
 extern bool sift_cgord_decode_addrs(MemoryContext mcxt, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, const int64 *key, uint32 *a0, uint32 a1, uint64 *addr);
+
 /* A compact chunk of m entries whose first key is first: the first key of the bucket of each entry into kmin (SIFT_CGORD_CAP slots; NULL: not wanted) with its shift, and the addresses of the first w entries into addr (SIFT_CGORD_CAP slots); false when malformed */
 extern bool sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr);
 extern bool sift_cgord_group_bounds(int64 *kmin, int64 *key, uint64 *exact, uint32 m, int64 first, const uint8 *anch, uint32 n);

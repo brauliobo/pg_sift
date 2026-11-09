@@ -104,7 +104,7 @@ after_auto(const char *opt)
 static const char *
 minor_lib(int minor)
 {
-	return minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
+	return minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
 }
 
 static void
@@ -274,6 +274,9 @@ d_point_tid(Derive *d)
 static int
 order_minor(const SiftColLeafStats *ls, int ncols)
 {
+	for (int c = 0; c < ncols; c++)
+		if (ls[c].gord_seek_blocks > 0)
+			return SIFT_COL_FORMAT_SEEKORD;
 	for (int c = 0; c < ncols; c++)
 		if (ls[c].gord_perm > 0)
 			return SIFT_COL_FORMAT_TEXTPERM;

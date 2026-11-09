@@ -73,6 +73,9 @@
 	X(skip_pending, "GORD_PEND_MAX", "agg/gord/int.h", 1048576, "entries", \
 	  "the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked", \
 	  "the entries the skip leaves are read one by one, as without the skip (the rows are the same)", "-", 1) \
+	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/gorder.h", 115, "percent", \
+	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
+	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
 	X(blob_bytes, "BLOB_CHUNK_BYTES", "agg/blob/dump.c", 268435456, "bytes", \
 	  "the partial result a worker of a parallel aggregate sends in one message: the groups of its table go in messages of about this many bytes (a pair of a count(DISTINCT) takes 8); a group that alone takes more than four times this (1 GB at most) ends the scan", \
 	  "more messages (the leader adds them one after the other); ERROR 54000 for a single group that takes more than four times it, naming max_parallel_workers_per_gather", "-", 1) \

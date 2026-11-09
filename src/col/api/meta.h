@@ -54,6 +54,7 @@ typedef struct SiftColLeafStats
 	double		gord_chunks;	/* ... the chunks of their blocks ... */
 	double		gord_compact_chunks;	/* ... of which the compact ones (order_layout) ... */
 	double		gord_tie_chunks;	/* ... and those with a run of equal keys the buckets do not tell apart */
+	double		gord_seek_blocks;	/* the blocks of the segments of column format minor 47 (a chunk may be seekable) */
 	double		gord_perm;		/* the blocks of a text leaf that name their strings by dictionary codes (column format minor 42) */
 	double		gord_ends_bytes;	/* ... and their bytes (gord_bytes is those of the complete blocks) */
 	double		gord_ends_rows;	/* the values of the segments whose block holds the ends of the order only (column format minor 40): gord_rows leaves them out, as a range is not counted from them */

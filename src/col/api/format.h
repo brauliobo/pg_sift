@@ -49,7 +49,8 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_ROWKEY	43	/* 4.0: the index has a tombstone log (directory kind SIFT_SEG_TOMB) and the rows of its write buffer carry the transaction that inserted them (option track_changes) */
 #define SIFT_COL_FORMAT_KEYJOURNAL	44	/* 4.3: the tombstone log of the index holds the key journal of a connected parent (col/conn.h): its header has the journal record and it may hold KEYCHG records; the format of its directory entry, so that an older release refuses the index */
 #define SIFT_COL_FORMAT_CONN	45	/* 4.3: the leaf list of the index has the found flag of a connection (col/conn.h, SIFT_COLD_FOUND), and the segment says the stamp it was resolved under */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_CONN	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_SEEKORD	47	/* 4.3: a chunk of a global order may be seekable (SIFT_CGORD_SEEK): a fence key every 32 entries, so that a seek or a cursor decodes 32 entries and not 512; written under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SEEKORD	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

@@ -299,6 +299,10 @@ sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *val
 	return true;
 }
 
+#ifdef SIFT_TESTING
+int64		sift_col_gorder_decoded;
+#endif
+
 /* The first w entries (the m of the chunk when fewer) of chunk c of leaf col: keys and heap addresses, each SIFT_CGORD_CAP slots; the count decoded */
 uint32
 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr)
@@ -325,8 +329,9 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 	}
 	buf = palloc(ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen) + SIFT_COL_PAD);
 	seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
-	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, d.pad, m, w, key, addr))
+	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, d.pad, m, d.first, w, key, addr))
 		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
+	GORD_DECODED(Min(w, m));
 	pfree(buf);
 	return Min(w, m);
 }
@@ -354,6 +359,11 @@ gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrd
 			compact_load(seg, g, col, c, &d, keys, buf);
 		if (keys && p - buf->at - buf->kfrom >= buf->kn)
 			compact_resolve(seg, g, col, buf, p - buf->at);
+		return;
+	}
+	if (d.pad & SIFT_CGORD_SEEK)
+	{
+		seg_gord_seek_fill(seg, g, col, c, &d, p, w, buf);
 		return;
 	}
 	if (w == UINT32_MAX)
@@ -392,6 +402,7 @@ gord_window(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrd
 	if (!same || buf->cm < e)
 	{
 		sift_cgord_decode_keys(seg->mcxt, raw, d->klen, m, e, buf->key);
+		GORD_DECODED(e);
 		buf->cm = e;
 	}
 	if (!sift_cgord_decode_addrs(seg->mcxt, raw + klen8, d->alen, d->pad, m, buf->key, &a0, e, buf->addr))
@@ -556,7 +567,7 @@ seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo)
 	uint32		at = c * seg_gord_leaf(seg, col)->hdr.crows;
 
 	/* a chunk left with its keys only (a seek) gets its addresses */
-	if (memo->at != at || (!memo->compact && (memo->afrom != 0 || memo->an < memo->cm)))
+	if (memo->at != at || (!memo->compact && (memo->afrom != 0 || memo->an < memo->rows)))
 		gord_fill(seg, col, at, UINT32_MAX, false, memo);
 	return memo->cm;
 }
@@ -568,7 +579,7 @@ gord_keys(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, SiftCGOrdBuf *mem
 	uint32		at = c * g->hdr.crows,
 				m = sift_cgord_chunk_rows(&g->hdr, c);
 
-	if (memo->at != at || memo->compact || memo->cm < m)
+	if (memo->at != at || memo->compact || memo->kfrom != 0 || memo->kn < m)
 	{
 		SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
 		Size		klen8 = ALIGN8((Size) d.klen);
@@ -576,6 +587,7 @@ gord_keys(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, SiftCGOrdBuf *mem
 
 		seg_read(seg, g->at + d.off, klen8, raw);
 		sift_cgord_decode_keys(seg->mcxt, raw, d.klen, m, m, memo->key);
+		GORD_DECODED(m);
 		pfree(raw);
 		memo->at = at;
 		memo->rows = memo->cm = m;
@@ -659,6 +671,7 @@ seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, boo
 				from,
 				to;
 	uint32		crows;
+	SiftCGOrdDir d;
 
 	if (g == NULL)
 		corrupt(seg, "The global order of leaf %d is not there.", col);
@@ -672,8 +685,11 @@ seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, boo
 	seg_gord_dir_read(seg, g);
 	SIFT_BISECT(uint32, mid, lo, hi, after ? seg_gord_dirent(seg, g, col, mid).first <= key : seg_gord_dirent(seg, g, col, mid).first < key);
 	lo--;
-	if (seg_gord_dirent(seg, g, col, lo).pad & SIFT_CGORD_COMPACT)
+	d = seg_gord_dirent(seg, g, col, lo);
+	if (d.pad & SIFT_CGORD_COMPACT)
 		return compact_seek(seg, g, col, lo, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
+	if (d.pad & SIFT_CGORD_SEEK)
+		return seg_gord_seek_seek(seg, g, col, lo, &d, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
 	m = gord_keys(seg, g, col, lo, memo);
 	from = Max(vs, lo * crows);
 	to = Min(ve, lo * crows + m);
@@ -925,8 +941,13 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 			return true;
 		}
 	}
-	gord_chunk_keys(seg, g, col, cs, memo);
 	base = cs * crows;
+	if (seg_gord_dirent(seg, g, col, cs).pad & SIFT_CGORD_SEEK)
+	{
+		pc = pp = base + seg_gord_seek_before(seg, g, col, cs, Min(sift_cgord_chunk_rows(&g->hdr, cs), g->hdr.values - base), v, desc, memo);
+		goto counted;
+	}
+	gord_chunk_keys(seg, g, col, cs, memo);
 	/* the NULL rows that end the last chunk of values are keyed 0 */
 	m = Min(memo->rows, g->hdr.values - base);
 	if (!memo->compact)
@@ -955,6 +976,7 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 		pc = base + i1;
 		pp = base + i0;
 	}
+counted:
 	if (!desc)
 	{
 		*clo = Min(Max(pc, vs), ve) - vs;

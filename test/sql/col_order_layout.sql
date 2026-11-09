@@ -1,6 +1,8 @@
 -- order_layout: the layout of the order array of each column ('whole', 'compact', 'auto', or a list of columns for each), what CREATE INDEX says about it, and that merges and REINDEX keep to it. It never adds an array.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.test_col_gorder_ends = 64;
+-- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
+SET sift.test_limits = 'gord_seek_pct=0';
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE t (id int, ts timestamp, c date, name text);

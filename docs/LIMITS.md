@@ -59,6 +59,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
+| `gord_seek_pct` | the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none | 115 | percent | the chunk is written plain and read by the old walk (the rows are the same) |  | `col/gorder.h` `SIFT_CGORD_SEEK_MAX_PCT` | yes |
 | `merge_disk_peak` | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | 2 | times the live index | the step fails with PostgreSQL's disk-full error before it replaces a segment |  | `col/maint/maint.c` |  |
 | `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected |  | `col/api/format.h` `SIFT_COL_MAX_COLS` | yes |
 | `string_bytes` | one string value of a column leaf | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 at build or merge |  | `col/api/format.h` `SIFT_COL_MAX_VALUE` | yes |

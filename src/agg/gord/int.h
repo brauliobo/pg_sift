@@ -85,11 +85,18 @@ extern bool gord_group_load(SiftGOrd *g, GCur *c);
 extern void gord_group_next(SiftGOrd *g, GCur *c);
 extern uint32 gord_group_skip(SiftGOrd *g, uint32 k);
 
+/* the address of the entry p is in the buffer: the window [afrom, afrom + an) of the chunk */
+static inline bool
+cur_addr_ok(const SiftCGOrdBuf *b, uint32 p)
+{
+	return p - b->at - b->afrom < b->an;
+}
+
 /* the entry p of the cursor's source (a cursor of addresses only, gm, has them for the whole chunk, whichever layout it is) */
 static inline void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	if (c->gm ? p - c->buf->at >= c->buf->cm : p - c->buf->at - c->buf->kfrom >= c->buf->kn || p - c->buf->at - c->buf->afrom >= c->buf->an)
+	if (c->gm ? !cur_addr_ok(c->buf, p) : p - c->buf->at - c->buf->kfrom >= c->buf->kn || !cur_addr_ok(c->buf, p))
 		gord_cur_fill(g, c, p);
 	*key = c->buf->key[p - c->buf->at];
 	*addr = c->buf->addr[p - c->buf->at];
