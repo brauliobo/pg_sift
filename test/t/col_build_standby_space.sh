@@ -8,12 +8,15 @@
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
 plan 19
+# a writer holds about 35 bytes of memory for each byte of segment of these narrow rows: with maintenance_work_mem = 64MB the partitions are 2 MB, a build under writers
+# leaves partitions that each hold every key, and the promotion rewrites them (the file doubles while a standby streams), as it does not for the index of one segment
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off
 max_worker_processes = 16
-max_parallel_workers = 8"
+max_parallel_workers = 8
+maintenance_work_mem = 1GB"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \
