@@ -543,23 +543,27 @@ stub_stats(Relation rel, SiftSrcStats *st)
 {
 	Relation	heap = table_open(rel->rd_index->indrelid, AccessShareLock);
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
-	StubSample *sm = rel->rd_amcache;
 	const SiftSrcLayout *l = &sift_aggstub_layout(rel)->l;
+	StubSample	sm = {0};
 
-	if (!sm || nblocks * 10 > sm->nblocks * 12 || nblocks * 12 < sm->nblocks * 10)
+	/* a copy: the sample's catalog lookups can reload the index entry, which frees the sample it caches */
+	if (rel->rd_amcache)
+		sm = *(StubSample *) rel->rd_amcache;
+	if (!rel->rd_amcache || nblocks * 10 > sm.nblocks * 12 || nblocks * 12 < sm.nblocks * 10)
 	{
-		if (!sm)
-			sm = rel->rd_amcache = MemoryContextAlloc(rel->rd_indexcxt, sizeof(StubSample));
-		sample_stats(heap, rel, nblocks, sm);
+		sample_stats(heap, rel, nblocks, &sm);
+		if (!rel->rd_amcache)
+			rel->rd_amcache = MemoryContextAlloc(rel->rd_indexcxt, sizeof(StubSample));
+		*(StubSample *) rel->rd_amcache = sm;
 	}
-	*st = sm->st;
+	*st = sm.st;
 	st->nunits = (nblocks + SIFT_SB_PAGES - 1) / SIFT_SB_PAGES;
 	if (heap->rd_rel->relpages > 0)
 		st->allvisible_frac = Min(1.0, (double) heap->rd_rel->relallvisible / heap->rd_rel->relpages);
-	st->nrows = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples : sm->rows_per_page * nblocks;
+	st->nrows = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples : sm.rows_per_page * nblocks;
 	for (int leaf = 0; leaf < l->nleaves; leaf++)	/* nearly unique in the sample: grows with the table */
-		if (l->leaf[leaf].kind == SCL_SCALAR && l->leaf[leaf].parent < 0 && st->ndistinct[leaf] > 0.9 * sm->maxrows)
-			st->ndistinct[leaf] = Min(st->nrows, st->ndistinct[leaf] * st->nrows / sm->maxrows);
+		if (l->leaf[leaf].kind == SCL_SCALAR && l->leaf[leaf].parent < 0 && st->ndistinct[leaf] > 0.9 * sm.maxrows)
+			st->ndistinct[leaf] = Min(st->nrows, st->ndistinct[leaf] * st->nrows / sm.maxrows);
 	table_close(heap, AccessShareLock);
 }
 
