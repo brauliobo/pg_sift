@@ -8,7 +8,6 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Added: pg_sift: `sift.table_find_stale_versions(tbl regclass, sample integer DEFAULT 10)` returns the number of primary key values that are on more than one row of a `sift_table` and up to `sample` of them (one sequential scan, `ACCESS SHARE`, no writes). It cannot see deleted rows that came back.
 - Fixed: pg_sift: assert builds stop where the segment switch of a merge of a `sift` index finds none of the segments it replaces in the directory.
 - Fixed: tests: the update test of 4.2.1 starts from 4.2.0, not from the newest release tag, and the landing script fetches the tip of the base without failing when another landing moves it.
-- Added: docs: [INDEX-RECIPES.md](docs/INDEX-RECIPES.md): which `sift_col` columns to create (lean or wide, the 32-column cap, `return_columns`), what an index costs in size and writes, which btrees to keep, and the known limit of a `LEFT JOIN` from a parent to its children when both tables are indexed, with figures measured on the store dataset of the benchmark.
 
 ## 4.2.1 - 2026-11-09
 
