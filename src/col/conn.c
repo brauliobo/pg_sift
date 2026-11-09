@@ -166,7 +166,8 @@ journal_make(Relation heap, Relation index)
 
 		SIFT_INVARIANT(ok, "sift: could not generate a journal id");
 	} while (k.lineage == 0);
-	k.trim = InvalidTransactionId;
+	/* the records start here: a stamp of a snapshot older than the journal cannot be vouched (a change between the snapshot and now is in no record); the writers are out, so no transaction below the next id writes the table */
+	k.trim = ReadNextTransactionId();
 	sift_tomb_set_keys(index, log, &k);
 	sift_tomb_set_format(index, SIFT_COL_FORMAT_KEYJOURNAL);
 	CacheInvalidateRelcache(index);
