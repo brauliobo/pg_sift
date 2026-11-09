@@ -291,7 +291,7 @@ prune_may(StubSource *src, const SiftSrcPrune *p)
 	v = &src_slot(src, p->leaf)->vec;
 	for (int64 i = 0; i < v->n && !some; i++)
 	{
-		int64		x = lf->vtype == SCV_I32 ? ((const int32 *) v->data)[i] : ((const int64 *) v->data)[i];
+		int64		x = sift_src_int(v->data, lf->vtype, i);
 
 		some = !(v->isnull && v->isnull[i]) && x >= p->lo && x <= p->hi && (p->nvals == 0 || bsearch(&x, p->vals, p->nvals, sizeof(int64), sift_cmp_i64) != NULL);
 	}
@@ -453,7 +453,7 @@ vec_summary(SiftSrcVecType vt, const SiftSrcVec *v, double *mn, double *mx, bool
 		if (vt == SCV_F64)
 			f[n++] = ((const double *) v->data)[k];
 		else
-			i[n++] = vt == SCV_I32 ? ((const int32 *) v->data)[k] : ((const int64 *) v->data)[k];
+			i[n++] = sift_src_int(v->data, vt, k);
 	}
 	if (vt == SCV_F64)
 		qsort(f, n, sizeof(double), sift_cmp_f64);

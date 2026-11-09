@@ -32,6 +32,13 @@ typedef enum SiftSrcVecType
 	SCV_CODE					/* uint32 code into the unit's dictionary of the leaf: text, varchar, char(n), name */
 } SiftSrcVecType;
 
+/* the value i of an integer vector (SCV_I32 or SCV_I64) */
+static inline int64
+sift_src_int(const void *data, SiftSrcVecType t, int64 i)
+{
+	return t == SCV_I32 ? ((const int32 *) data)[i] : ((const int64 *) data)[i];
+}
+
 typedef enum SiftSrcLeafKind
 {
 	SCL_SCALAR,					/* a value per row (or per element, for a child leaf) */

@@ -30,12 +30,12 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	const bool	pass = cs->spass;
 	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
-	const bool	wide = !pass && ex->lay->leaf[cb->leaf[0]].vtype == SCV_I64;
+	const SiftSrcVecType vtype = ex->lay->leaf[cb->leaf[0]].vtype;
 	Tup		   *own = stage_tuples(ex, s);
 	int			k = 0;
 	int			i;
 
-#define SEMI_KEY(i) (wide ? ((const int64 *) v->data)[idx[i]] : (int64) ((const int32 *) v->data)[idx[i]])
+#define SEMI_KEY(i) sift_src_int(v->data, vtype, idx[i])
 #define SEMI_HIT(i) (pass || (!(v->isnull && v->isnull[idx[i]]) && semi_set_has(&cs->sset, SEMI_KEY(i))))
 	/* a request that names every key of the table (a wide request) keeps every tuple: they go on as they are, nothing is copied */
 	for (i = 0; i < in->n && SEMI_HIT(i) == want; i++)
