@@ -197,6 +197,8 @@ explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		if (es->timing)
 			sift_explain_ms(&ln, "Lookup Load Time", "to load", c->lookup_us / 1000.0, SIFT_XI_KEEP);
 	}
+	if (es->verbose && c->lookup_why != NULL && c->lookup_why[0] != '\0')
+		ExplainPropertyText("Lookup Heap Reason", c->lookup_why, es);
 	if (es->verbose)
 	{
 		int64		hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - c->dict_shared0[0],

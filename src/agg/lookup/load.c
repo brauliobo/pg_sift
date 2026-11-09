@@ -485,7 +485,17 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
 		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();
+
 		TableScanDesc scan;
+
+		if (ex->lookup_why == NULL && heap && own == NULL)
+		{
+			char	   *why = map_cols_why(rel, j);
+
+			ex->lookup_why = MemoryContextStrdup(ex->cxt, why ? why : "");
+			if (why)
+				elog(DEBUG1, "sift: lookup table \"%s\" is read from the heap: %s", RelationGetRelationName(rel), why);
+		}
 
 		for (int k = 0; heap && sift_agg_lookup_pushdown && k < j->nidx; k++)
 			if (!j->idxany[k])
