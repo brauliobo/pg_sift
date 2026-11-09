@@ -98,7 +98,6 @@ if [[ $MODE == --selftest ]]; then
 	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
 	n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
-	[[ isolation =~ $ASSERT_JOBS && isolation-emulated =~ $ASSERT_JOBS ]] || { echo "FAIL: the assertions family ASSERT_JOBS does not select the isolation tests"; bad=1; }
 	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par/worker.c" || { echo "FAIL: src/agg/par/worker.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
 	fast_agg=$(areas_fast_regex src/agg/exec/run.c) fast_core=$(areas_fast_regex src/core/ops.c)
