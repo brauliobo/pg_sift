@@ -55,6 +55,34 @@ A query that lists ids under a filter of a text column is an `Index Only Scan` o
 
 The lean index adds 1.5 times the time and 1.14 times the WAL to an insert, and 1.1 to 1.2 times the WAL to an update. The update of a column the index does not hold (`title` against the lean index) takes the time of the table alone and writes 13 MB more WAL; the one that changes an indexed column also takes 1.4 times as long. Size and WAL grow with the number of columns, so each column is worth the queries that use it.
 
+## Known limit: a LEFT JOIN from a parent to its children when both tables are indexed
+
+For `parent LEFT JOIN child ... GROUP BY` with an aggregate over the child's columns, the scan starts from the table on the left of the join. With a `sift_col` index on the child alone, the scan reads the child and takes the parent as its lookup table; with an index on **both** tables the planner does not try the child as the scan, and the statement runs as the normal plan or as a scan of the parent that loads the child as rows. Measured on 100,000 parents and 1,000,000 children, one backend without workers, minimum of five:
+
+```sql
+CREATE TABLE parent (id int PRIMARY KEY, grp int, state text, rank int);
+INSERT INTO parent SELECT g, g % 40, (ARRAY['ca','ny','tx','wa','fl'])[1 + g % 5], g % 100 FROM generate_series(1, 100000) g;
+CREATE TABLE child (id int PRIMARY KEY, parent_id int, kind text, at timestamp, amount numeric(8,2));
+INSERT INTO child SELECT g, 1 + (g::bigint * 7919) % 100000, (ARRAY['a','b','c','d'])[1 + g % 4],
+       timestamp '2024-01-01' + (g % 365) * interval '1 day', (g % 1000)::numeric FROM generate_series(1, 1000000) g;
+CREATE INDEX child_parent_idx ON child (parent_id);
+CREATE INDEX child_col ON child USING sift_col (id, parent_id, kind, at, amount);   -- the child alone
+CREATE INDEX parent_col ON parent USING sift_col (id, grp, state, rank);            -- and the parent
+```
+
+| statement (`parent p LEFT JOIN child c ON c.parent_id = p.id` unless said) | normal plan | child indexed alone | both indexed |
+|---|---|---|---|
+| `count(c.id)` per parent, ten largest | 1,030 ms | 75 ms, scan | 491 ms, scan of the parent |
+| `count(c.id)` per `p.grp` | 648 ms | 197 ms, scan | 631 ms, normal plan |
+| `sum(c.amount)` per `p.grp`, with `c.kind = 'a' AND c.at >= ..` in the `ON` | 214 ms | 30 ms, scan | 191 ms, normal plan |
+| `count(DISTINCT c.kind)` per `p.grp` | 893 ms | 87 ms, scan | 591 ms, scan of the parent |
+| `sum(c.amount)` per `p.state` with `WHERE p.rank < 5` | 131 ms | 159 ms, scan | 125 ms, normal plan |
+| `WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.amount > 990)` per `p.grp` | 87 ms | 92 ms | 88 ms |
+
+- **Advice.** Index the child. If the parent's columns are only filters and group keys, they can stay out of a parent index; add one when other statements need it, and check the statements above with `EXPLAIN`.
+- **A filter of the parent** (the fifth row) is the one shape where the scan of the child is slower than the normal plan (159 against 131 ms): check it with `EXPLAIN (ANALYZE)` and `SET sift.enable_agg = off`.
+- **`EXISTS`, `NOT EXISTS` and `IN` from the parent to a child with conditions** keep the normal plan in every set (87 to 92 ms).
+
 ## What an index of this kind does not answer yet
 
 A text group key or filter on the columns of a joined parent (`GROUP BY customers.country`) loads the parent rows one by one, so the join may be faster in the normal plan; `EXPLAIN (VERBOSE)` says why a table is read from the heap (`Lookup Heap Reason`). [AGG.md](AGG.md) lists the joins the scan answers and the ones it leaves to the normal plan.
