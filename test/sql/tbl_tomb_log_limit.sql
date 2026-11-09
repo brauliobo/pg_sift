@@ -1,6 +1,6 @@
 -- Every backend that reads a sift_table keeps the tombstone log of the table in memory, sorted (64 bytes an entry with the scratch of a first look), so the log is
--- bound by what one backend keeps: a read past it fails naming the log and VACUUM, which is not bound and drops the entries of the rows it cleared. sift.test_limits
--- lowers tomb_log_kb (2 GB) to 16 kB, 256 entries.
+-- bound by what one backend keeps (sift.tomb_log_limit, 8 GB): a read past it fails naming the setting and VACUUM, which is not bound and drops the entries of the
+-- rows it cleared, and so does a statement whose own rows pass it. The test lowers the setting to 16 kB, 256 entries.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 
@@ -24,12 +24,31 @@ END $$;
 SELECT tl_count() AS default_limit;
 -- a new backend reads the log from its start
 \c -
-SET sift.test_limits = 'tomb_log_kb=16';
+SET sift.tomb_log_limit = '16kB';
 SELECT tl_count() AS lowered;
 -- VACUUM consumes the log, whatever its length: the table reads again
 VACUUM tl;
 SELECT tl_count() AS after_vacuum;
 
+-- the entries of a statement's own rows count: a DELETE of more rows than the limit holds fails naming the setting, and runs with it raised
+CREATE TABLE tm (id int) USING sift_table;
+INSERT INTO tm SELECT i FROM generate_series(1, 2000) i;
+CREATE FUNCTION tm_delete() RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	DELETE FROM tm;
+	RETURN 'deleted';
+EXCEPTION WHEN program_limit_exceeded THEN
+	RETURN regexp_replace(SQLERRM, '[0-9]+', 'N', 'g');
+END $$;
+\c -
+SET sift.tomb_log_limit = '16kB';
+SELECT tm_delete() AS own_rows_lowered;
+SET sift.tomb_log_limit = '1MB';
+SELECT tm_delete() AS own_rows_raised;
+SELECT count(*) AS left_rows FROM tm;
+
+DROP FUNCTION tm_delete();
+DROP TABLE tm;
 DROP FUNCTION tl_count();
 DROP TABLE tl;
 DROP EXTENSION pg_sift;
