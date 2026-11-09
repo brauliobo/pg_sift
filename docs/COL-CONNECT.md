@@ -59,8 +59,16 @@ until its next `REINDEX`.
 A parent index with a connected child keeps its journal through `REINDEX` and `REINDEX CONCURRENTLY` (and the copy of `pg_repack`): the build makes it for the index it is or replaces. Until the log of a
 concurrently built copy is complete (the next VACUUM does it) nothing is vouched.
 
-`sift.col_connections` lists the connections of the indexes (ordinal, column, parent index, declaration, whether it was chosen from a foreign key, the state of the parent's journal, and `fill`: `filled`,
-`partly filled`, `unfilled` (the next promotion or merge fills it) or `refused` when the keys of the parent did not fit `maintenance_work_mem`, which a NOTICE names as well: the keys, the memory they need and the setting).
+`sift.col_connections` lists the connections of the indexes, one row each. Two columns look alike and are not: `stamp` is about the **parent**, `fill` about the **segments of the child**.
+
+| column | about | says |
+|---|---|---|
+| `child`, `ordinal`, `fk`, `parent`, `declaration`, `automatic` | the option `connect` | the connected index, the place of the connection, the column that holds the key, the parent `sift_col` index, the text, whether a foreign key chose it |
+| `lineage`, `records` | the journal of the parent index | which journal, and how many records it holds |
+| `stamp` | the journal of the parent index, now | `ok` when a stamp could be taken from it this moment, else why not (no journal, the log is not complete, a snapshot that cannot be vouched). It says nothing of the segments: a child whose flags were all refused is `stamp = ok` |
+| `fill` | the segments of the child | `filled` (every segment has its flags under a stamp), `partly filled`, `unfilled` (no stamp yet: the next promotion or merge fills it, and the first build of a first child is unfilled by design) or `refused` when the keys of the parent did not fit `maintenance_work_mem`, which a NOTICE names as well: the keys, the memory they need and the setting |
+
+To know that the flags exist, read `fill`, after the first `sift.col_maintain` or promotion; a test that reads `stamp` passes on a connection that has no flag at all. The same text is in the column comments.
 
 ## Automatic connections
 
