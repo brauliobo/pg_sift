@@ -17,7 +17,7 @@
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "agg/leaf_int.h"
-#include "agg/lookcol_int.h"
+#include "agg/lookclass_int.h"
 #include "agg/plan_int.h"
 #include "core/hash.h"
 
@@ -28,23 +28,6 @@
  * lookup, a cache entry and an evaluation of the expressions were made for each distinct key. Exact: the columns of a key are those of its
  * class, a key twice in the table (a join that repeats rows) is not a class and keeps the table whole.
  */
-/*
- * The strings of the text columns of the classes: the dictionary of a unit gives a code of its own, so a text value is told apart by an id among the strings the
- * load has met (the bytes: two values the collation calls equal but that differ in bytes are two classes, which is exact), and a class holds the id.
- */
-typedef struct StrIds
-{
-	char	   *buf;			/* the strings, each a uint32 length and its bytes */
-	Size		len;
-	Size		cap;
-	uint32	   *off;			/* [id - 1] the offset of the string in buf */
-	uint32		n;
-	uint32		ocap;
-	uint32	   *slot;			/* the id in a hash slot, 0 free */
-	uint32		nslot;
-	MemoryContext cxt;
-} StrIds;
-
 static uint32
 strids_find(StrIds *s, const char *str, uint32 len, uint32 h, uint32 *where)
 {
@@ -64,7 +47,7 @@ strids_find(StrIds *s, const char *str, uint32 len, uint32 h, uint32 *where)
 }
 
 /* the id (1..) of the string, made on its first sight */
-static uint32
+uint32
 strids_id(StrIds *s, const char *str, uint32 len)
 {
 	uint32		h = (uint32) (sift_fib64(hash_bytes((const unsigned char *) str, len)) >> 32),
@@ -130,34 +113,6 @@ strids_text(const StrIds *s, uint32 id)
 	return PointerGetDatum(cstring_to_text_with_len(b + sizeof(len), len));
 }
 
-typedef struct DenseLoad
-{
-	StrIds		strs;			/* the strings of the text columns */
-	int			key;			/* the key's column, in need[] */
-	int			ncol;			/* the columns that tell the classes apart: the columns of the join but the key */
-	int			col[SIFT_AGG_MAX_JCOLS];	/* ... each one in need[], or -1 for an expression computed over the slot (comp[]) */
-	CompCol	   *comp;
-	int			ncomp;
-	TupleTableSlot *slot;		/* the row, for the expressions */
-	ExprContext *ectx;
-	int64		cv[SIFT_AGG_MAX_JCOLS];	/* the value of each computed column of the row, and whether it is NULL */
-	bool		cvnull[SIFT_AGG_MAX_JCOLS];
-	uint16	   *lut;			/* the class (1..) of each key, 0 none */
-	uint32		cap;
-	uint32		n;				/* the keys the table spans: the largest + 1 */
-	uint32		limit;			/* the most keys the table may span */
-	uint64		rows;
-	uint32		ncls;
-	int64	   *tv;				/* [class * ncol + c] the value of column c of the class */
-	uint32	   *tnull;			/* per class: bit c set when column c is NULL */
-	int32	   *ckey;			/* per class: the first key that has it */
-	uint16	   *ctab;			/* the class in a hash slot, 0 free */
-	bool		bad;			/* a duplicate key, a key out of range or too many classes */
-	MemoryContext cxt;
-} DenseLoad;
-
-#define DENSE_SLOTS		(4 * DENSE_MAX_CLASSES)
-
 /* the value of a cell that tells classes apart: the integer, the bits of a float, or the id of a string */
 static inline int64
 dense_value(DenseLoad *d, ColNeed *nd, int64 i)
@@ -187,28 +142,15 @@ dense_datum(const DenseLoad *d, const ColNeed *nd, int64 tv)
 	return nd->lf->vtype == SCV_CODE ? strids_text(&d->strs, (uint32) tv) : lookcol_scalar_datum(nd->lf, tv);
 }
 
-/* the class of the tuple of row i, 0 when there are too many */
-static uint32
-dense_class(DenseLoad *d, ColNeed *need, int64 i, int32 key)
+/* the class (1..) of the tuple, made on its first sight; 0 when there are too many. pos: where its row lies, kept for a shared load */
+uint32
+dense_intern(DenseLoad *d, const int64 *tv, uint32 nulls, int32 key, uint64 pos)
 {
-	int64		tv[SIFT_AGG_MAX_JCOLS];
-	uint32		nulls = 0;
 	uint64		h = SIFT_FIB64;
 	uint32		s;
-	int			k = 0;
 
 	for (int c = 0; c < d->ncol; c++)
 	{
-		ColNeed    *nd = d->col[c] >= 0 ? &need[d->col[c]] : NULL;
-
-		if (nd == NULL ? d->cvnull[k] : nd->vec.isnull != NULL && nd->vec.isnull[i])
-		{
-			nulls |= 1U << c;
-			tv[c] = 0;
-		}
-		else
-			tv[c] = nd == NULL ? d->cv[k] : dense_value(d, nd, i);
-		k += nd == NULL;
 		h = sift_fold64(h, (uint64) tv[c]);
 		h ^= h >> 32;
 	}
@@ -225,8 +167,45 @@ dense_class(DenseLoad *d, ColNeed *need, int64 i, int32 key)
 	memcpy(&d->tv[(size_t) d->ncls * d->ncol], tv, d->ncol * sizeof(int64));
 	d->tnull[d->ncls] = nulls;
 	d->ckey[d->ncls] = key;
+	if (d->cpos != NULL)
+		d->cpos[d->ncls] = pos;
 	d->ctab[s] = ++d->ncls;
 	return d->ncls;
+}
+
+/* the class of the tuple of row i, 0 when there are too many */
+static uint32
+dense_class(DenseLoad *d, ColNeed *need, int64 i, int32 key)
+{
+	int64		tv[SIFT_AGG_MAX_JCOLS];
+	uint32		nulls = 0;
+	int			k = 0;
+
+	for (int c = 0; c < d->ncol; c++)
+	{
+		ColNeed    *nd = d->col[c] >= 0 ? &need[d->col[c]] : NULL;
+
+		if (nd == NULL ? d->cvnull[k] : nd->vec.isnull != NULL && nd->vec.isnull[i])
+		{
+			nulls |= 1U << c;
+			tv[c] = 0;
+		}
+		else
+			tv[c] = nd == NULL ? d->cv[k] : dense_value(d, nd, i);
+		k += nd == NULL;
+	}
+	return dense_intern(d, tv, nulls, key, d->upos | (uint64) i);
+}
+
+/* the tables of the classes: DENSE_MAX_CLASSES of them at most, and the positions of their first rows for a shared load */
+void
+dense_tables(DenseLoad *d, bool positions)
+{
+	d->tv = palloc((Size) DENSE_MAX_CLASSES * Max(d->ncol, 1) * sizeof(int64));
+	d->tnull = palloc(DENSE_MAX_CLASSES * sizeof(uint32));
+	d->ckey = palloc(DENSE_MAX_CLASSES * sizeof(int32));
+	d->ctab = palloc0(DENSE_SLOTS * sizeof(uint16));
+	d->cpos = positions ? palloc(DENSE_MAX_CLASSES * sizeof(uint64)) : NULL;
 }
 
 /* the expression columns of row i: the slot gets the columns they read, and the outcome of each goes to cv */
@@ -242,13 +221,52 @@ dense_comp(DenseLoad *d, ColNeed *need, int nneed, int64 i)
 		d->cv[k] = DatumGetBool(ExecEvalExprSwitchContext(d->comp[k].st, d->ectx, &d->cvnull[k]));
 }
 
-static void
+/* the key gets its class; false when it has one already (a key twice) */
+static bool
+dense_store(DenseLoad *d, uint32 key, uint32 cls)
+{
+	if (d->shared)
+	{
+		uint16		none = 0;
+
+		if (key >= d->cap)
+		{
+			d->over = true;
+			return false;
+		}
+		return __atomic_compare_exchange_n(&d->lut[key], &none, (uint16) (d->idbase + cls), false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+	}
+	if (key >= d->cap)
+	{
+		uint32		cap = Max(d->cap * 2, 1U << 16);
+
+		while (cap <= key)
+			cap *= 2;
+		d->lut = d->lut ? repalloc_huge(d->lut, (Size) cap * sizeof(uint16)) : MemoryContextAllocHuge(d->cxt, (Size) cap * sizeof(uint16));
+		memset(d->lut + d->cap, 0, (Size) (cap - d->cap) * sizeof(uint16));
+		d->cap = cap;
+	}
+	if (d->lut[key] != 0)
+		return false;
+	d->lut[key] = cls;
+	return true;
+}
+
+void
 dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows)
 {
 	DenseLoad  *d = arg;
 	const ColNeed *kn = &need[d->key];
 	int			nw = (unit->nrow + 63) / 64;
 
+	if (unit->sb != d->lastsb)
+	{
+		d->lastsb = unit->sb;
+		d->ord = 0;
+	}
+	else
+		d->ord++;
+	d->upos = (uint64) unit->sb << 40 | (uint64) d->ord << 20;
 	for (int w = 0; w < nw && !d->bad; w++)
 		for (uint64 bits = rows[w]; bits != 0 && !d->bad; bits &= bits - 1)
 		{
@@ -261,24 +279,11 @@ dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 
 			key = ((const int32 *) kn->vec.data)[i];
 			if (d->ncomp > 0 && key >= 0)
 				dense_comp(d, need, nneed, i);
-			if (key < 0 || (uint32) key >= d->limit || (cls = dense_class(d, need, i, key)) == 0)
+			if (key < 0 || (uint32) key >= d->limit || (cls = dense_class(d, need, i, key)) == 0 || !dense_store(d, key, cls))
 			{
 				d->bad = true;
 				break;
 			}
-			if ((uint32) key >= d->cap)
-			{
-				uint32		cap = Max(d->cap * 2, 1U << 16);
-
-				while (cap <= (uint32) key)
-					cap *= 2;
-				d->lut = d->lut ? repalloc_huge(d->lut, (Size) cap * sizeof(uint16)) : MemoryContextAllocHuge(d->cxt, (Size) cap * sizeof(uint16));
-				memset(d->lut + d->cap, 0, (Size) (cap - d->cap) * sizeof(uint16));
-				d->cap = cap;
-			}
-			if (d->lut[key] != 0)
-				d->bad = true;
-			d->lut[key] = cls;
 			d->n = Max(d->n, (uint32) key + 1);
 			d->rows++;
 		}
@@ -353,7 +358,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	int			nneed,
 				ncomp;
 	Relation	ix;
-	DenseLoad	d = {.cxt = m->cxt,.limit = (uint32) Min((int64) sift_agg_lookup_max_kb * 1024 / sizeof(uint16), PG_INT32_MAX)};
+	DenseLoad	d = {.cxt = m->cxt,.lastsb = PG_UINT32_MAX,.limit = (uint32) Min((int64) sift_agg_lookup_max_kb * 1024 / sizeof(uint16), PG_INT32_MAX)};
 	TupleDesc	desc = RelationGetDescr(rel);
 	TupleTableSlot *slot;
 	bool		ok;
@@ -384,11 +389,9 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		memset(d.slot->tts_isnull, true, desc->natts * sizeof(bool));
 		ExecStoreVirtualTuple(d.slot);
 	}
-	d.tv = palloc((Size) DENSE_MAX_CLASSES * Max(d.ncol, 1) * sizeof(int64));
-	d.tnull = palloc(DENSE_MAX_CLASSES * sizeof(uint32));
-	d.ckey = palloc(DENSE_MAX_CLASSES * sizeof(int32));
-	d.ctab = palloc0(DENSE_SLOTS * sizeof(uint16));
-	ok = lookcol_read_units(ex, rel, ix, need, nneed, dense_unit, &d) && !d.bad && d.rows > 0 && d.n <= 8 * d.rows + 65536;
+	dense_tables(&d, false);
+	ok = (dense_gang(ex, rel, ix, need, nneed, &d) || lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, need, nneed, dense_unit, &d)) &&
+		!d.bad && d.rows > 0 && d.n <= 8 * d.rows + 65536;
 	index_close(ix, AccessShareLock);
 	if (ncomp > 0)
 	{

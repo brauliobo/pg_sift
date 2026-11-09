@@ -213,6 +213,7 @@ extern void sift_aggcol_register(void);
 struct dsm_segment;
 struct shm_toc;
 extern PGDLLEXPORT void sift_agg_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
+extern PGDLLEXPORT void sift_class_worker_main(struct dsm_segment *seg, struct shm_toc *toc);
 
 /* agg/agg.c: CreateCustomScanState callback */
 extern Node *sift_agg_create_state(CustomScan *cscan);

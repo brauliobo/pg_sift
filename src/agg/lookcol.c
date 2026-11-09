@@ -490,30 +490,40 @@ map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 }
 
 /*
- * The units of the index a load reads, one at a time, as the scan of the index sees them. false (fn never called) when a unit holds a value a leaf
- * cannot store. fn runs in the context the reader was called in; the leaves are decoded in a context that ends with the unit.
+ * The units of the index a load reads, one at a time, as the scan of the index sees them: the superblocks [lo, hi) that sc->claim hands out one range after
+ * another (NULL: all of them once). false (fn never called for the range) when a unit holds a value a leaf cannot store. fn runs in the context the reader
+ * was called in; the leaves are decoded in a context that ends with the unit.
  */
 bool
-lookcol_read_units(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg)
+lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg)
 {
 	SiftSrcSource *src;
 	SiftSrcUnit unit;
 	MemoryContext ucx,
 				ux,
 				old = CurrentMemoryContext;
-	bool		ok = true;
+	uint32		lo = 0,
+				hi = PG_UINT32_MAX;
+	bool		ok = true,
+				more = true;
 
 	ucx = AllocSetContextCreate(old, "lookup columns", ALLOCSET_DEFAULT_SIZES);
 	ux = AllocSetContextCreate(ucx, "lookup columns of a unit", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(ucx);
-	src = sift_colsrc_open(rel, ix, ex->snap, ucx, NULL);
-	sift_colsrc_begin(src, 0, PG_UINT32_MAX, NULL, 0);
-	while (ok && sift_colsrc_next(src, &unit))
-		for (int p = 0; p < nneed && ok; p++)
-			ok = !sift_colsrc_overflow(src, &unit, need[p].lf->id);
-	if (ok)
+	src = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view);
+	while (ok && more)
 	{
-		sift_colsrc_begin(src, 0, PG_UINT32_MAX, NULL, 0);
+		if (sc->claim == NULL)
+			more = false;
+		else if (!sc->claim(sc->carg, sift_colsrc_nsb(src), &lo, &hi))
+			break;
+		sift_colsrc_begin(src, lo, hi, NULL, 0);
+		while (ok && sift_colsrc_next(src, &unit))
+			for (int p = 0; p < nneed && ok; p++)
+				ok = !sift_colsrc_overflow(src, &unit, need[p].lf->id);
+		if (!ok)
+			break;
+		sift_colsrc_begin(src, lo, hi, NULL, 0);
 		while (sift_colsrc_next(src, &unit))
 		{
 			int			nw = (unit.nrow + 63) / 64;
@@ -626,7 +636,7 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	memset(cl.slot->tts_isnull, true, desc->natts * sizeof(bool));
 	ExecStoreVirtualTuple(cl.slot);
 	m->xfed = true;
-	ok = lookcol_read_units(ex, rel, ix, need, nneed, load_unit, &cl);
+	ok = lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, need, nneed, load_unit, &cl);
 	m->xfed = false;
 	ExecDropSingleTupleTableSlot(cl.slot);
 	if (cl.ectx)

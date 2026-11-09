@@ -1,0 +1,170 @@
+-- The classes of a big table's keys made by workers together (src/agg/lookclassp.c): the answers are those of the normal plan and of the load by one process, whatever the table
+-- holds (floats, numerics, times, strings, NULLs), a table that is not one of classes (a key twice, a negative key, more than 4,096 tuples of values) is told so by the workers as by
+-- one process, and a key beyond the largest the index says (rows written since) is read by the process alone.
+CREATE EXTENSION pg_sift;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_cache_kb = 0;
+SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_dimmap_kb = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET sift.agg_par_min_rows = 0;
+CREATE TABLE pg (k int PRIMARY KEY, f8 float8, tm time, tx text, nm numeric(12, 3), n int) WITH (autovacuum_enabled = false);
+INSERT INTO pg SELECT i,
+	(ARRAY['NaN', 'Infinity', '-0', '0', NULL, '1.5', '0.1']::float8[])[i % 7 + 1],
+	(ARRAY['00:00:00', '23:59:59.999999', NULL, '12:00:00']::time[])[i % 4 + 1],
+	(ARRAY['', 'a', 'A', 'é', NULL, 'x y', repeat('long', 40)])[i % 7 + 1],
+	(ARRAY['0.000', '-1.500', '99999999.999', NULL, '0.001'])[i % 5 + 1]::numeric,
+	i % 50
+FROM generate_series(0, 299999) i;
+CREATE INDEX pg_col ON pg USING sift_col (k, f8, tm, tx, nm, n);
+NOTICE:  sift_col index "pg_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = tx, nm; track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pg_col');
+-- many tuples of values: more than a table of classes keeps
+CREATE TABLE pm (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
+INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 299999) i;
+CREATE INDEX pm_col ON pm USING sift_col (k, a, b);
+NOTICE:  sift_col index "pm_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = k
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_col');
+-- a key twice
+CREATE TABLE pd (k int, a int) WITH (autovacuum_enabled = false);
+INSERT INTO pd SELECT i % 200000, i % 7 FROM generate_series(0, 299999) i;
+CREATE INDEX pd_col ON pd USING sift_col (k, a);
+NOTICE:  sift_col index "pd_col": 3 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = k;
+order_layout = k compact in 0% of chunks
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_col');
+NOTICE:  sift_col index "pd_col" is column format minor 41, which a library before 4.0 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
+CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
+NOTICE:  sift_col index "pe_col": 3 automatic choices
+DETAIL:  point_tid_columns = k; order_array_columns = k; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_col');
+NOTICE:  sift_col index "pe_col" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT p.f8::text, p.tm::text, count(*), sum(pe.v) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (2, $q$SELECT p.tx, p.nm::text, count(*) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (3, $q$SELECT count(*) FILTER (WHERE p.tx = 'a'), count(*) FILTER (WHERE p.f8 > 1), count(DISTINCT p.n), max(p.tx) FROM pe LEFT JOIN pg p ON p.k = pe.k$q$),
+ (4, $q$SELECT p.a, p.b, count(*) FROM pe LEFT JOIN pm p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+-- how the scan got the table, and whether workers made its classes
+CREATE FUNCTION served(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'rows'; END IF;
+		IF l ~ '[1-9]\d* rows classed' AND r = 'rows' THEN r := 'classes'; END IF;
+		IF l ~ '[1-9]\d* class workers' AND r = 'classes' THEN r := 'classes by workers'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+-- every stage by one process (0 workers) and by workers: the table is told the same, what differs is who classed it
+CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape int, same_answers bool, served text) LANGUAGE plpgsql AS $$
+DECLARE w int; BEGIN
+	FOREACH w IN ARRAY ARRAY[0, 3] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		RETURN QUERY SELECT label, w, n, answer(sql, true) = answer(sql, false), served(sql) FROM shapes ORDER BY n;
+	END LOOP;
+END $$;
+SELECT * FROM report('built');
+ stage | workers | shape | same_answers |       served       
+-------+---------+-------+--------------+--------------------
+ built |       0 |     1 | t            | classes
+ built |       0 |     2 | t            | classes
+ built |       0 |     3 | t            | classes
+ built |       0 |     4 | t            | rows
+ built |       0 |     5 | t            | rows
+ built |       3 |     1 | t            | classes by workers
+ built |       3 |     2 | t            | classes by workers
+ built |       3 |     3 | t            | classes by workers
+ built |       3 |     4 | t            | rows
+ built |       3 |     5 | t            | rows
+(10 rows)
+
+-- keys written since the index says its largest: the workers' array is short for them, the process alone reads the table
+INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(300000, 330000) i;
+SELECT * FROM report('keys beyond');
+    stage    | workers | shape | same_answers | served  
+-------------+---------+-------+--------------+---------
+ keys beyond |       0 |     1 | t            | classes
+ keys beyond |       0 |     2 | t            | classes
+ keys beyond |       0 |     3 | t            | classes
+ keys beyond |       0 |     4 | t            | rows
+ keys beyond |       0 |     5 | t            | rows
+ keys beyond |       3 |     1 | t            | classes
+ keys beyond |       3 |     2 | t            | classes
+ keys beyond |       3 |     3 | t            | classes
+ keys beyond |       3 |     4 | t            | rows
+ keys beyond |       3 |     5 | t            | rows
+(10 rows)
+
+VACUUM pg;
+SELECT * FROM report('vacuumed');
+  stage   | workers | shape | same_answers |       served       
+----------+---------+-------+--------------+--------------------
+ vacuumed |       0 |     1 | t            | classes
+ vacuumed |       0 |     2 | t            | classes
+ vacuumed |       0 |     3 | t            | classes
+ vacuumed |       0 |     4 | t            | rows
+ vacuumed |       0 |     5 | t            | rows
+ vacuumed |       3 |     1 | t            | classes by workers
+ vacuumed |       3 |     2 | t            | classes by workers
+ vacuumed |       3 |     3 | t            | classes by workers
+ vacuumed |       3 |     4 | t            | rows
+ vacuumed |       3 |     5 | t            | rows
+(10 rows)
+
+-- a negative key, a key twice: not classes, by workers as by one process
+INSERT INTO pg VALUES (-5, 0, '00:00:00', 'neg', 0, 0);
+SELECT * FROM report('negative key');
+    stage     | workers | shape | same_answers | served 
+--------------+---------+-------+--------------+--------
+ negative key |       0 |     1 | t            | rows
+ negative key |       0 |     2 | t            | rows
+ negative key |       0 |     3 | t            | rows
+ negative key |       0 |     4 | t            | rows
+ negative key |       0 |     5 | t            | rows
+ negative key |       3 |     1 | t            | rows
+ negative key |       3 |     2 | t            | rows
+ negative key |       3 |     3 | t            | rows
+ negative key |       3 |     4 | t            | rows
+ negative key |       3 |     5 | t            | rows
+(10 rows)
+
+DELETE FROM pg WHERE k = -5;
+ALTER TABLE pg DROP CONSTRAINT pg_pkey;
+INSERT INTO pg VALUES (7, 0, '00:00:00', 'again', 0, 0);
+SELECT * FROM report('repeated key');
+    stage     | workers | shape | same_answers | served 
+--------------+---------+-------+--------------+--------
+ repeated key |       0 |     1 | t            | rows
+ repeated key |       0 |     2 | t            | rows
+ repeated key |       0 |     3 | t            | rows
+ repeated key |       0 |     4 | t            | rows
+ repeated key |       0 |     5 | t            | rows
+ repeated key |       3 |     1 | t            | rows
+ repeated key |       3 |     2 | t            | rows
+ repeated key |       3 |     3 | t            | rows
+ repeated key |       3 |     4 | t            | rows
+ repeated key |       3 |     5 | t            | rows
+(10 rows)
+
+DROP FUNCTION report(text), served(text), answer(text, bool);
+DROP TABLE shapes, pe, pd, pm, pg;
+DROP EXTENSION pg_sift;

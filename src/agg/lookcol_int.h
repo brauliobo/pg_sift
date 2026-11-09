@@ -36,7 +36,23 @@ typedef struct CompCol
 typedef void (*UnitFn) (void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows);
 
 extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
-extern bool lookcol_read_units(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg);
+/* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
+typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
+
+/* what a read of the units sees: the snapshot, the directory another participant's source read (view, NULL: the current one) and, for a read shared by several, the ranges it takes */
+typedef struct UnitScope
+{
+	Snapshot	snap;
+	const void *view;
+	UnitClaim	claim;
+	void	   *carg;
+} UnitScope;
+
+extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
+/* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
+typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
+
+extern bool lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg);
 extern Datum lookcol_cell_datum(ColNeed *nd, int64 i, bool *isnull);
 extern int64 lookcol_scalar_value(const ColNeed *nd, int64 i);
 extern Datum lookcol_scalar_datum(const SiftSrcLeaf *lf, int64 v);
