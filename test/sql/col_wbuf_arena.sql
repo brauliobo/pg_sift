@@ -64,6 +64,21 @@ SELECT same_as_heap() AS same_pruned;
 SELECT sift.col_verify('a_ix', true);
 SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
 
+-- workers of a parallel scan read the buffer too: they take the values from the arena as the leader does
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT same_as_heap() AS same_parallel;
+SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+SET max_parallel_workers_per_gather = 0;
+
 -- the buffer is promoted: its slot is free
 CREATE TEMP TABLE before AS SELECT slots_used FROM arena_delta();
 SELECT sift.col_promote('a_ix') >= 0 AS promoted;
