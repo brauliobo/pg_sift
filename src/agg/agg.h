@@ -182,6 +182,8 @@ extern bool sift_agg_partial_candidate(Query *q);
 extern bool sift_agg_pct_array_candidate(Query *q);
 extern bool sift_agg_having_candidate(Query *q);
 extern bool sift_agg_having_to_where(Query *q, bool apply);
+extern bool sift_agg_invert_parents(Query *q, bool apply);
+extern bool sift_agg_child_first;
 extern bool sift_agg_pct_arrays(Query *q, bool apply);
 extern bool sift_agg_partial_left(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */

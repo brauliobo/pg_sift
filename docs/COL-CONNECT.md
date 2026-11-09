@@ -140,7 +140,23 @@ that did read the parent loaded from the leaves of its index and from its heap).
 expression leaf is read from the leaves of the parent's index when all the columns the join reads are in one `sift_col` index; `uuid`, `interval` and `numeric` of more than 18 digits are read
 from the heap (`test/sql/col_conn_found.sql` fails if that changes).
 
+## Parent to child
+
+`SELECT count(*) FROM parent p WHERE [p conditions AND] [NOT] EXISTS (SELECT 1 FROM child c WHERE c.fk = p.key AND <c conditions>)` with `p.key` unique (a unique btree on it alone, `int2`, `int4` or
+`int8`) is planned also as `SELECT count(DISTINCT c.fk) FROM child c WHERE <c conditions> AND EXISTS (SELECT 1 FROM parent p WHERE p.key = c.fk AND <p conditions>)`; NOT EXISTS is
+`count(*)` of the parents the conditions keep less that count (`agg/flat/invert.c`). Each key a child holds is the key of one parent at most, a NULL key matches nothing on either side, so the count is the same. The scan
+of the child answers the parent EXISTS from the flag of the connection (Found, above) when the conditions leave the parent no column to read, and the parent is not scanned; the planner keeps it where it costs less than the
+statement as written (a parent with few rows and a child filter the scan cannot prune reads less the other way). `sift.agg_child_first` turns it off. Shapes with a second aggregate, a grouping, a
+condition of the child that reads the parent, an OR, a parent key that is not unique or has another type than the child's column stay as written (`test/sql/col_conn_invert.sql`).
+
+`SELECT p.attr, count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.fk = p.key GROUP BY p.attr` is planned also with the child grouped by `fk` first (`agg/flat/partial.c`, the rewrite of a left join of
+tables to one table): the groups are added up over the parents, a parent of no child counting 0 and summing NULL. The same switch turns it off. 1,000,000 child rows over 100,000 parents: 60 ms, 353 M instructions and 488 blocks against 540 ms, 1,633 M and 7,053 for the lookup join (bench case `child_first_left_join_groups`).
+
+A record on the parent of the number of children of each key, written with the child's writes, was measured and discarded: the reading it would answer (a group by the foreign key of the leaf) has a ceiling of
+41 ms at 1,000,000 rows, where the joins it replaces cost 599 and 929 ms today, but every child write would become a write to the parent index (a new version of the parent leaf, a journal record) for a number that
+the child scan reads at the same speed once the join is a count of distinct keys.
+
 ## Limits of this stage
 
-The found flag is read by the joins above. The carried columns and the join of the parent to its children are not read yet. A write to the parent changes nothing for the flag of a clean child (every row has a parent row or a NULL key, as a foreign key keeps it): an update that keeps the key, a delete, a new key or a key change
+The found flag is read by the joins above. The carried columns are not read yet. A write to the parent changes nothing for the flag of a clean child (every row has a parent row or a NULL key, as a foreign key keeps it): an update that keeps the key, a delete, a new key or a key change
 only put keys among those the journal names, which the scan probes; a child with rows whose key the parent lacked (no foreign key) goes to the ordinary path while a row was inserted since the stamp.

@@ -36,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 38 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 39 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
 
@@ -2143,6 +2143,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Off runs the join that loads the parent (the ordinary 4.3 path), which costs more than the flag when the parent is large and has not changed; it applies to semi, anti and inner joins by the foreign key of the connection with no parent column read.
 - **Sources:** benchmark `test:col_conn_found`; [COL-CONNECT](COL-CONNECT.md#found)
 
+#### sift.agg_child_first
+
+`sift_col` · diagnostic · since 4.3 · default on
+
+- **What it does:** the count of the rows of a table that have (or have no) row in another by a unique key, and the aggregates of a table left-joined to a table by its key, are planned also from the other table first (its rows counted by their keys, or grouped by them), and kept where that costs less
+- **Gain:** 1,000,000 rows, 100,000 parents: EXISTS of a child of one kind 6.2 ms against 11.4 ms for the parents scanned and 72.5 ms for the normal plan; NOT EXISTS 1.9 ms against 6.6 and 81.2 ms; count and sum by a parent attribute of a LEFT JOIN 60 ms against 540 ms
+- **Impact:** index size: -; build, merge and writes: -; other: nothing stored; one more plan priced for each statement of the shape (about 0.2 ms of planning)
+- **When:** A count(*) alone over one table with one [NOT] EXISTS on a unique int2, int4 or int8 key and conditions of each table alone (the child needs a sift_col or sift_table index); the aggregates of a table left-joined to one table by an equality of its columns that add up from groups (count, sum, min, max).
+- **Default:** on — On: 1,000,000 child rows over 100,000 parents, min of 5: EXISTS 5.4 M instructions 526 blocks against 36.7 M 478 blocks with the setting off and 422.8 M 5,582 blocks on the normal plan; NOT EXISTS 5.6 M 537 blocks against 43.1 M 477 and 543.1 M 5,824 (bench cases invert_exists_child_filter and invert_not_exists_child_filter); LEFT JOIN count and sum by a parent attribute 353 M instructions 488 blocks against 1,633 M 7,053 with the setting off and 1,940 M 5,824 on the normal plan (bench case child_first_left_join_groups).
+- **Turn off:** SET sift.agg_child_first = off (session, role, database or postgresql.conf): the parents are scanned and the children loaded as in 4.2. No REINDEX.
+- **Upgrade from 4.2:** New in 4.3.
+- **Advice:** Leave on. Off scans the parents and loads the children (the 4.2 plan), which costs more unless the parent has few rows and the child filter is not selective; the planner keeps the cheaper plan either way.
+- **Sources:** benchmark `test:col_conn_invert`; [COL-CONNECT](COL-CONNECT.md#parent-to-child)
+
 #### sift.agg_key_skew
 
 `sift_col`, `sift_table` · diagnostic · since 3.2 · default on
@@ -2641,7 +2655,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift.col_connect_refresh_pct`, `sift_col(connect)`.
+No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_child_first`, `sift.agg_dimmap_kb`, `sift.col_auto_connect`, `sift.col_connect_refresh_pct`, `sift_col(connect)`.
 
 | Option | 4.2 | 4.3 | Column format | What a 4.2 user gets after the update |
 |---|---|---|---|---|
@@ -2650,6 +2664,7 @@ No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_dimmap_kb
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.agg_dimmap_kb` | new | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.agg_connect_found` | new | on |  | New in 4.3. |
+| `sift.agg_child_first` | new | on |  | New in 4.3. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | new | '' | minor 44, unreadable by 4.2 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift.col_auto_connect` | new | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |

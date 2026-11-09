@@ -467,3 +467,6 @@ distinct_split	share one set of ids: the scan groups by the outcome of each filt
 found_path_exists	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
 found_path_under_parent_updates_1pct	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
 found_path_under_parent_updates_10pct	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
+invert_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+invert_not_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+child_first_left_join_groups	made for each key of the child first and added up over the parents	events	-	sum\(iv_events\.a1\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-

@@ -53,6 +53,12 @@ extern bool flat_picks_rows(Node *c);
 extern bool flat_addable(Aggref *a);
 extern Node *flat_add_up(Aggref *a, Node *part);
 
+extern bool flat_reads_outside(Node *n);
+extern List *flat_and_list(Node *quals);
+extern Index flat_from_table(Query *q);
+extern Index flat_only_table(Query *q);
+extern bool flat_key_test(Node *n, Index rti, int up, Var **col, Node **expr, OpExpr **eq);
+
 extern bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
 extern void decor_apply(Query *q, DecorJoin *r);
 extern bool decorrelate_sublinks(Query *q, bool apply);

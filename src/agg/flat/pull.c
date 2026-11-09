@@ -256,6 +256,12 @@ flatten_query(Query *q, bool apply)
 	}
 	foreach_ptr(struct DecorJoin, r, decor)
 		decor_apply(q, r);
+	/* the child's scan answers the parents' EXISTS: probing it key by key (below) is the lookups it replaces */
+	if (sift_agg_invert_parents(q, apply))
+	{
+		flat_levels = list_delete_first(flat_levels);
+		return true;
+	}
 	changed |= decorrelate_sublinks(q, apply);
 	flat_fenced |= fence_sublinks(q, apply);
 	/* before the joins are read as probes: the queries they move have their tables joined as written (a table read as a probe is a sub-select the keys are not looked up in) */

@@ -76,6 +76,10 @@ sift_agg_init(void)
 							 "Answers a semi, anti or inner join to the parent of a connected sift_col index that reads no column of the parent from the flag the index keeps that the parent row was found, less the keys that changed in the parent since.",
 							 NULL, &sift_agg_connect_found, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_child_first",
+							 "Plans the count of the rows of a table that have (or have no) row in another by a unique key, and the aggregates of a table left-joined to a table by its key, from the other table first: its rows counted by their keys or grouped by them, and keeps that plan where it costs less.",
+							 NULL, &sift_agg_child_first, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_two_level",
 							 "Aggregates an aggregate over per-row aggregates (UNION ALL arms grouped by a row id) in one scan of the index: the cells of a row are kept in the scan.",
 							 NULL, &sift_agg_two_level_on, true,

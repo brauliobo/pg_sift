@@ -127,6 +127,13 @@ collect_walker(Node *n, Partial *p)
 	return expression_tree_walker(n, collect_walker, p);
 }
 
+/* what the left join keeps whole: a join of tables, or one table (sift.agg_child_first) */
+static bool
+preserved_side(Node *n)
+{
+	return IsA(n, JoinExpr) || (IsA(n, RangeTblRef) && sift_agg_child_first);
+}
+
 /* the query is one this rewrite can move: one left join of a join of tables to a table with a column index, nothing else in the FROM list */
 static bool
 analyze(Partial *p)
@@ -138,7 +145,7 @@ analyze(Partial *p)
 	if (list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), JoinExpr))
 		return false;
 	p->join = linitial_node(JoinExpr, q->jointree->fromlist);
-	if (p->join->jointype != JOIN_LEFT || !IsA(p->join->larg, JoinExpr) || !IsA(p->join->rarg, RangeTblRef) || p->join->quals == NULL)
+	if (p->join->jointype != JOIN_LEFT || !preserved_side(p->join->larg) || !IsA(p->join->rarg, RangeTblRef) || p->join->quals == NULL)
 		return false;
 	p->e = ((RangeTblRef *) p->join->rarg)->rtindex;
 	rte = rt_fetch(p->e, q->rtable);
@@ -185,7 +192,7 @@ sift_agg_partial_candidate(Query *q)
 		q->setOperations != NULL || q->cteList != NIL || q->rowMarks != NIL || q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || !IsA(linitial(q->jointree->fromlist), JoinExpr))
 		return false;
 	j = linitial_node(JoinExpr, q->jointree->fromlist);
-	return j->jointype == JOIN_LEFT && IsA(j->larg, JoinExpr) && IsA(j->rarg, RangeTblRef) &&
+	return j->jointype == JOIN_LEFT && preserved_side(j->larg) && IsA(j->rarg, RangeTblRef) &&
 		rt_fetch(((RangeTblRef *) j->rarg)->rtindex, q->rtable)->rtekind == RTE_RELATION;
 }
 

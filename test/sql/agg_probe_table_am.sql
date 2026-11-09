@@ -1,5 +1,6 @@
 -- A correlated probe of a table of another access method (sift_table) fetches every entry through the access method, an Index Only Scan too: the scan that probes it does the work of
 -- the normal plan's nested loop and no less, so it is not chosen; the same probe of a heap table, whose entries an all-visible page gives from the btree, is. The answers are the same.
+-- A NOT EXISTS (shapes 1 and 3 on the table of the other access method) is counted from a scan of the fact table instead (agg/flat/invert.c), which reads less than the probes.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
