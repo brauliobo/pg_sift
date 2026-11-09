@@ -701,7 +701,8 @@ trigger_index(Trigger *trig)
 
 /*
  * An index in service: DROP INDEX CONCURRENTLY marks it dead (indislive) before it waits for the transactions that could still use it, then deletes it holding its lock until it
- * commits. A writer that gets past that mark skips it (it is not read, and a lock on it would wait for the drop, which waits for the writer's lock on the table).
+ * commits. A writer that gets past that mark skips it (it is not read, and a lock on it would wait for the drop, which waits for the writer's lock on the table). An index that is
+ * deleted (InvalidOid: the trigger's index is gone) is not in service either.
  */
 static bool
 index_live(Oid indexoid)
