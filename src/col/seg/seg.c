@@ -572,7 +572,7 @@ seg_points_read(SiftColSegment *seg)
 		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) end);
 	pv->dict_end = foot[0];
 	if (pv->go)
-		for (int c = 0; c < seg->schema->ncols; c++)
+		for (int c = 0; c < 2 * seg->schema->ncols; c++)
 			pv->gorder_bytes += pv->go[c].bytes;
 	pv->point_bytes = end - first - pv->gorder_bytes;
 	return pv->pt;
