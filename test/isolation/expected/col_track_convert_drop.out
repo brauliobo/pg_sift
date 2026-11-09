@@ -1,0 +1,18 @@
+Parsed test spec with 3 sessions
+
+starting permutation: ddrop cconvert dend cstate
+step ddrop: BEGIN; DROP INDEX iso_cv_a;
+step cconvert: SELECT sift.col_track_convert() AS converted; <waiting ...>
+step dend: COMMIT;
+step cconvert: <... completed>
+converted
+---------
+        2
+(1 row)
+
+step cstate: SELECT * FROM iso_cv_state();
+triggers|depend_on_trigger|dangling
+--------+-----------------+--------
+       2|                2|       0
+(1 row)
+
