@@ -637,7 +637,7 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *en
 		foreach_ptr(JoinCtx, dj, c->joins)
 		{
 			const SiftAggCombo *cc = &s->combo[dj->combo];
-			const SiftAggJoin *d = &dj->j;
+			const SiftAggJoin *d = &s->join[cc->join];
 			int			att = 0,
 						dkey;
 			Oid			typ = InvalidOid;
