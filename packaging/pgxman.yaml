@@ -1,9 +1,9 @@
 apiVersion: v1
 name: pg_sift
-version: "4.2.0"
+version: "4.2.1"
 homepage: https://github.com/brauliobo/pg_sift
 repository: https://github.com/brauliobo/pg_sift
-source: https://github.com/brauliobo/pg_sift/archive/refs/tags/v4.2.0.tar.gz
+source: https://github.com/brauliobo/pg_sift/archive/refs/tags/v4.2.1.tar.gz
 description: Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search
 license: PostgreSQL
 keywords:
