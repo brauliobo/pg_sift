@@ -163,10 +163,12 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 	Relation	heap;
 	Snapshot	snap;
 
-	if (!sift_col_is_index(index) || (r = sift_col_rel(index))->nconn == 0)
+	if (!sift_col_is_index(index) || sift_col_rel(index)->nconn == 0)
 		return NULL;
+	/* a lock taken below (the table, a parent) can reload the relcache entry of the index and free the state it caches: the fill keeps a copy of its own */
+	r = sift_col_rel_private(index, mcxt);
 	specs = sift_conn_specs(index);
-	heap = table_open(index->rd_index->indrelid, NoLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	f = MemoryContextAllocZero(mcxt, sizeof(SiftConnFill));
 	f->hook = (SiftColFill) {.batch = fill_batch,.stamp = fill_stamp};
 	f->cx = mcxt;
@@ -190,6 +192,9 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 				a = j + 1;
 		fc->fk_leaf = r->first[a];
 		pindex = index_open(sift_conn_parent_index(heap, index, s, &parent), AccessShareLock);
+#ifdef SIFT_TESTING
+		sift_col_test_inval(index);
+#endif
 		key = get_attnum(RelationGetRelid(parent), s->parent_key);
 		for (int j = 0; j < s->ncarry; j++)
 			carry[j] = get_attnum(RelationGetRelid(parent), s->carry[j]);
@@ -278,16 +283,20 @@ sift_conn_stale_begin(Relation index, MemoryContext mcxt)
 	SiftConnSpecs *specs;
 	Relation	heap;
 
-	if (!sift_col_is_index(index) || (r = sift_col_rel(index))->nconn == 0)
+	if (!sift_col_is_index(index) || sift_col_rel(index)->nconn == 0)
 		return NULL;
+	r = sift_col_rel_private(index, mcxt);
 	specs = sift_conn_specs(index);
-	heap = table_open(index->rd_index->indrelid, NoLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	s = MemoryContextAllocZero(mcxt, sizeof(SiftConnStale));
 	s->n = r->nconn;
 	s->snap = IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	for (int i = 0; i < s->n; i++)
 	{
 		s->c[i].index = index_open(sift_conn_parent_index(heap, index, specs->c[i], &s->c[i].heap), AccessShareLock);
+#ifdef SIFT_TESTING
+		sift_col_test_inval(index);
+#endif
 		s->c[i].vouches = sift_conn_take(s->c[i].heap, s->c[i].index, s->snap, &s->c[i].now, NULL) == SIFT_CONN_OK;
 		s->c[i].rows = Max(s->c[i].index->rd_rel->reltuples, 1);
 	}

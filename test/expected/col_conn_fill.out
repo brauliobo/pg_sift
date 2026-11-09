@@ -226,6 +226,28 @@ SELECT sift.col_verify('big_events_col', true);
  
 (1 row)
 
+-- a lock the fill takes (the table, the parent) can reload the relcache entry of the index and free the state it caches: the test setting overwrites it and invalidates the entry there
+SET sift.test_col_rel_inval = on;
+INSERT INTO events SELECT i, 1 + i % 100, i FROM generate_series(5001, 5100) i;
+SELECT sift.col_promote('events_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE lineage <> 0) > 0 AS stamped FROM sift._test_col_conn_stamps('events_col');
+ stamped 
+---------
+ t
+(1 row)
+
+SELECT count(val) > 0 AS filled FROM sift._test_col_read('events_col', 3);
+ filled 
+--------
+ t
+(1 row)
+
+RESET sift.test_col_rel_inval;
 DROP TABLE big_events, dim_big, events, dim_a CASCADE;
 DROP FUNCTION carried_wrong(), carried_filled();
 DROP EXTENSION pg_sift_test;
