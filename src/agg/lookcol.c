@@ -382,11 +382,11 @@ need_att(ColNeed *need, int *nneed, int att, bool feeder)
 }
 
 /*
- * The columns the load reads from the leaves of the index with layout lay, each with its leaf: the keys and the columns, and for an expression the leaf that holds it,
- * or, when the index has none, the leaves of the columns it reads and the expression to compute (comp). False when the index lacks one.
+ * The columns the load reads from the leaves of the index with layout lay (the second index, with lay2, holds those the first lacks), each with its leaf: the keys and the columns,
+ * and for an expression the leaf that holds it, or, when the index has none, the leaves of the columns it reads and the expression to compute (comp). False when they lack one.
  */
 static bool
-index_needs(const SiftSrcLayout *lay, TupleDesc desc, const SiftAggJoin *j, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
+index_needs(const SiftSrcLayout *lay, const SiftSrcLayout *lay2, TupleDesc desc, const SiftAggJoin *j, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
 {
 	bool		ok = true;
 
@@ -397,7 +397,7 @@ index_needs(const SiftSrcLayout *lay, TupleDesc desc, const SiftAggJoin *j, ColN
 
 		if (expr == NULL)
 			ok = need_att(need, nneed, i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey], false);
-		else if (column_leaf(lay, 0, expr, exprType(expr)) != NULL)
+		else if (column_leaf(lay, 0, expr, exprType(expr)) != NULL || (lay2 != NULL && column_leaf(lay2, 0, expr, exprType(expr)) != NULL))
 		{
 			if ((ok = *nneed < MAX_NEED))
 			{
@@ -413,8 +413,17 @@ index_needs(const SiftSrcLayout *lay, TupleDesc desc, const SiftAggJoin *j, ColN
 		foreach_ptr(Var, u, pull_var_clause(comp[k].expr, 0))
 			ok = ok && u->varattno > 0 && need_att(need, nneed, u->varattno, true);
 	for (int p = 0; p < *nneed && ok; p++)
-		ok = (need[p].lf = column_leaf(lay, need[p].att, need[p].expr, need[p].expr ? exprType(need[p].expr) :
-									   TupleDescAttr(desc, need[p].att - 1)->atttypid)) != NULL;
+	{
+		Oid			typ = need[p].expr ? exprType(need[p].expr) : TupleDescAttr(desc, need[p].att - 1)->atttypid;
+
+		need[p].ixn = 0;
+		if ((need[p].lf = column_leaf(lay, need[p].att, need[p].expr, typ)) == NULL && lay2 != NULL)
+		{
+			need[p].lf = column_leaf(lay2, need[p].att, need[p].expr, typ);
+			need[p].ixn = 1;
+		}
+		ok = need[p].lf != NULL;
+	}
 	return ok;
 }
 
@@ -428,14 +437,28 @@ needs_wide(const ColNeed *need, int nneed)
 	return false;
 }
 
+/* a sift_col index of the whole table the load may read: valid, ready, not partial */
+static bool
+usable_index(Relation ix)
+{
+	return sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
+		heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL);
+}
+
 /*
  * A valid sift_col index of the whole table with a leaf for each column the load reads (map_load_cols), NULL when the heap is read; need and nneed are the columns,
- * comp the expressions to compute from them.
+ * comp the expressions to compute from them. When no index holds them all and ix2 is not NULL, two of them do between them: the columns that the first lacks are those of the
+ * second (*ix2, open; NULL when the first holds them all). The rows of the two are the same rows when their units are (lookcol_read_units).
  */
 Relation
-lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
+lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Relation *ix2, ColNeed *need, int *nneed, CompCol *comp, int *ncomp)
 {
+	List	   *ixs = NIL;
+	Relation	found = NULL;
+
 	*nneed = *ncomp = 0;
+	if (ix2 != NULL)
+		*ix2 = NULL;
 	if (!sift_agg_lookup_columns || rel->rd_rel->relkind != RELKIND_RELATION || rel->rd_tableam != GetHeapamTableAmRoutine() || (j->nidx > 0 && !own) || j->first.qual != NIL ||
 		j->first.nord > 0)
 		return NULL;
@@ -446,13 +469,36 @@ lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColN
 	{
 		Relation	ix = index_open(ixoid, AccessShareLock);
 
-		if (sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
-			heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			index_needs(sift_colsrc_layout(ix), RelationGetDescr(rel), j, need, nneed, comp, ncomp) && (wide || !needs_wide(need, *nneed)))
-			return ix;
-		index_close(ix, AccessShareLock);
+		if (usable_index(ix))
+			ixs = lappend(ixs, ix);
+		else
+			index_close(ix, AccessShareLock);
 	}
-	return NULL;
+	foreach_ptr(RelationData, a, ixs)
+		if (found == NULL && index_needs(sift_colsrc_layout(a), NULL, RelationGetDescr(rel), j, need, nneed, comp, ncomp) && (wide || !needs_wide(need, *nneed)))
+			found = a;
+	if (found == NULL && ix2 != NULL)
+		foreach_ptr(RelationData, a, ixs)
+			foreach_ptr(RelationData, b, ixs)
+				if (found == NULL && a != b && index_needs(sift_colsrc_layout(a), sift_colsrc_layout(b), RelationGetDescr(rel), j, need, nneed, comp, ncomp) &&
+					(wide || !needs_wide(need, *nneed)))
+				{
+					found = a;
+					*ix2 = b;
+				}
+	foreach_ptr(RelationData, a, ixs)
+		if (a != found && (ix2 == NULL || a != *ix2))
+			index_close(a, AccessShareLock);
+	list_free(ixs);
+	return found;
+}
+
+void
+lookcol_close(Relation ix, Relation ix2)
+{
+	index_close(ix, AccessShareLock);
+	if (ix2 != NULL)
+		index_close(ix2, AccessShareLock);
 }
 
 /* will the load of the table read the leaves of an index (the planner prices it by that)? *nnumeric: how many of the columns it makes a numeric of, one allocation a row each */
@@ -503,27 +549,59 @@ map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 	CompCol		comp[SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				ncomp;
-	Relation	ix = lookcol_load_index(rel, j, j->fslot >= 0, false, need, &nneed, comp, &ncomp);
+	Relation	ix2,
+				ix = lookcol_load_index(rel, j, j->fslot >= 0, false, &ix2, need, &nneed, comp, &ncomp);
 
 	if (ix == NULL)
 		return false;
 	*nnumeric = 0;
 	for (int p = 0; p < nneed; p++)
 		*nnumeric += need[p].lf->typid == NUMERICOID;
-	index_close(ix, AccessShareLock);
+	lookcol_close(ix, ix2);
 	return true;
 }
 
 /*
- * The units of the index a load reads, one at a time, as the scan of the index sees them: the superblocks [lo, hi) that sc->claim hands out one range after
- * another (NULL: all of them once). false (fn never called for the range) when a unit holds a value a leaf cannot store. fn runs in the context the reader
- * was called in; the leaves are decoded in a context that ends with the unit.
+ * Do the units hold the same rows? The second index has the units the first has, row for row, when they are of one superblock, have as many rows and the same TIDs: the leaves of
+ * the second are then read as the first's own, by the ordinal of the row.
+ */
+static bool
+same_rows(SiftSrcSource *src, const SiftSrcUnit *u, SiftSrcSource *src2, const SiftSrcUnit *u2, MemoryContext cx)
+{
+	uint32	   *ord;
+	ItemPointerData *t1,
+			   *t2;
+	bool		same;
+
+	if (u->sb != u2->sb || u->nrow != u2->nrow)
+		return false;
+	/* a unit holds at most SIFT_COL_UNIT_MAX_ROWS rows */
+	ord = MemoryContextAlloc(cx, u->nrow * sizeof(uint32));	/* check-memory: allow a unit's rows */
+	t1 = MemoryContextAlloc(cx, u->nrow * sizeof(ItemPointerData));	/* check-memory: allow a unit's rows */
+	t2 = MemoryContextAlloc(cx, u->nrow * sizeof(ItemPointerData));	/* check-memory: allow a unit's rows */
+	for (int i = 0; i < u->nrow; i++)
+		ord[i] = i;
+	sift_colsrc_tids(src, u, ord, u->nrow, t1);
+	sift_colsrc_tids(src2, u2, ord, u->nrow, t2);
+	same = memcmp(t1, t2, u->nrow * sizeof(ItemPointerData)) == 0;
+	pfree(ord);
+	pfree(t1);
+	pfree(t2);
+	return same;
+}
+
+/*
+ * The units of the index a load reads (with the leaves of a second index, ix2, that has the same units), one at a time, as the scan of the index sees them: the superblocks [lo, hi)
+ * that sc->claim hands out one range after another (NULL: all of them once). false (fn never called for the range) when a unit holds a value a leaf cannot store, or the second index
+ * has other units than the first (rows inserted since one of them was built are in another segment). fn runs in the context the reader was called in; the leaves are decoded in a
+ * context that ends with the unit.
  */
 bool
-lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg)
+lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2, ColNeed *need, int nneed, UnitFn fn, void *arg)
 {
-	SiftSrcSource *src;
-	SiftSrcUnit unit;
+	SiftSrcSource *srcs[2] = {NULL, NULL};
+	SiftSrcUnit unit,
+				unit2;
 	MemoryContext ucx,
 				ux,
 				old = CurrentMemoryContext;
@@ -535,37 +613,58 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need
 	ucx = AllocSetContextCreate(old, "lookup columns", ALLOCSET_DEFAULT_SIZES);
 	ux = AllocSetContextCreate(ucx, "lookup columns of a unit", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(ucx);
-	src = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view);
+	srcs[0] = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view);
+	if (ix2 != NULL)
+		srcs[1] = sift_colsrc_open(rel, ix2, sc->snap, ucx, NULL);
 	while (ok && more)
 	{
 		if (sc->claim == NULL)
 			more = false;
-		else if (!sc->claim(sc->carg, sift_colsrc_nsb(src), &lo, &hi))
+		else if (!sc->claim(sc->carg, sift_colsrc_nsb(srcs[0]), &lo, &hi))
 			break;
-		sift_colsrc_begin(src, lo, hi, NULL, 0);
-		while (ok && sift_colsrc_next(src, &unit))
-			for (int p = 0; p < nneed && ok; p++)
-				ok = !sift_colsrc_overflow(src, &unit, need[p].lf->id);
+		/* the range is checked whole before a row of it is handed out */
+		for (int n = 0; n < 2 && srcs[n] != NULL; n++)
+		{
+			sift_colsrc_begin(srcs[n], lo, hi, NULL, 0);
+			while (ok && sift_colsrc_next(srcs[n], &unit))
+				for (int p = 0; p < nneed && ok; p++)
+					ok = need[p].ixn != n || !sift_colsrc_overflow(srcs[n], &unit, need[p].lf->id);
+		}
+		if (ok && srcs[1] != NULL)
+		{
+			sift_colsrc_begin(srcs[0], lo, hi, NULL, 0);
+			sift_colsrc_begin(srcs[1], lo, hi, NULL, 0);
+			while (ok && sift_colsrc_next(srcs[0], &unit))
+			{
+				MemoryContextReset(ux);
+				ok = sift_colsrc_next(srcs[1], &unit2) && same_rows(srcs[0], &unit, srcs[1], &unit2, ux);
+			}
+			ok = ok && !sift_colsrc_next(srcs[1], &unit2);
+		}
 		if (!ok)
 			break;
-		sift_colsrc_begin(src, lo, hi, NULL, 0);
-		while (sift_colsrc_next(src, &unit))
+		sift_colsrc_begin(srcs[0], lo, hi, NULL, 0);
+		if (srcs[1] != NULL)
+			sift_colsrc_begin(srcs[1], lo, hi, NULL, 0);
+		while (sift_colsrc_next(srcs[0], &unit))
 		{
 			int			nw = (unit.nrow + 63) / 64;
 			uint64	   *rows;
 
+			if (srcs[1] != NULL)
+				sift_colsrc_next(srcs[1], &unit2);
 			MemoryContextReset(ux);
 			rows = MemoryContextAllocZero(ux, (nw + PADW) * sizeof(uint64));
 
-			sift_colsrc_live(src, &unit, rows);
-			if (sift_colsrc_vet_needed(src, &unit))
-				sift_colsrc_vet(src, &unit, rows);
+			sift_colsrc_live(srcs[0], &unit, rows);
+			if (sift_colsrc_vet_needed(srcs[0], &unit))
+				sift_colsrc_vet(srcs[0], &unit, rows);
 			for (int p = 0; p < nneed; p++)
 			{
 				ColNeed    *nd = &need[p];
 
 				nd->cx = ux;
-				sift_colsrc_read(src, &unit, nd->lf->id, &nd->vec);
+				sift_colsrc_read(srcs[nd->ixn], nd->ixn == 0 ? &unit : &unit2, nd->lf->id, &nd->vec);
 				if (nd->lf->vtype == SCV_CODE)
 				{
 					nd->dn = nd->vec.dict->n;
@@ -580,7 +679,8 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
-	sift_colsrc_close(src);
+	for (int n = 0; n < 2 && srcs[n] != NULL; n++)
+		sift_colsrc_close(srcs[n]);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(ucx);
 	return ok;
@@ -645,12 +745,13 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 {
 	ColNeed		need[MAX_NEED];
 	int			nneed;
-	Relation	ix;
+	Relation	ix,
+				ix2;
 	TupleDesc	desc = RelationGetDescr(rel);
 	ColLoad		cl = {.ex = ex,.m = m,.j = j,.cb = cb,.own = own};
 	bool		ok;
 
-	if ((ix = lookcol_load_index(rel, j, own != NULL, false, need, &nneed, cl.comp, &cl.ncomp)) == NULL)
+	if ((ix = lookcol_load_index(rel, j, own != NULL, false, &ix2, need, &nneed, cl.comp, &cl.ncomp)) == NULL)
 		return false;
 	for (int k = 0; k < cl.ncomp; k++)
 		cl.comp[k].st = ExecInitExpr((Expr *) cl.comp[k].expr, NULL);
@@ -661,12 +762,12 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	memset(cl.slot->tts_isnull, true, desc->natts * sizeof(bool));
 	ExecStoreVirtualTuple(cl.slot);
 	m->xfed = true;
-	ok = lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, need, nneed, load_unit, &cl);
+	ok = lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, ix2, need, nneed, load_unit, &cl);
 	m->xfed = false;
 	ExecDropSingleTupleTableSlot(cl.slot);
 	if (cl.ectx)
 		FreeExprContext(cl.ectx, true);
-	index_close(ix, AccessShareLock);
+	lookcol_close(ix, ix2);
 	ex->lookup_cols += ok;
 	return ok;
 }

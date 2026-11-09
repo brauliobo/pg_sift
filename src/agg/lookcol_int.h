@@ -13,6 +13,7 @@ typedef struct ColNeed
 	Node	   *expr;			/* the column of the join that is an expression of the table's columns (SiftAggJoin.colexpr), whose leaf is read */
 	int			xcol;			/* ... and the column of the join it is; -1 for a column of the table */
 	bool		feeder;			/* read only to compute an expression column (CompCol), not a column of the join */
+	int			ixn;			/* the index of the load whose units hold the leaf: 0 the first, 1 the second (lookcol_load_index) */
 	const SiftSrcLeaf *lf;
 	SiftSrcVec	vec;
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
@@ -35,7 +36,7 @@ typedef struct CompCol
 /* what a unit reader hands to its callback: the live and visible rows of the unit (bit i of rows) and the decoded leaves of need[]; ux lives for the unit */
 typedef void (*UnitFn) (void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows);
 
-extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
+extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Relation *ix2, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
 /* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
 typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
 
@@ -48,11 +49,12 @@ typedef struct UnitScope
 	void	   *carg;
 } UnitScope;
 
-extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
+extern Relation lookcol_load_index(Relation rel, const SiftAggJoin *j, bool own, bool wide, Relation *ix2, ColNeed *need, int *nneed, CompCol *comp, int *ncomp);
 /* the next superblocks [lo, hi) of a source of nsb of them to read, false when there are no more */
 typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
 
-extern bool lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, ColNeed *need, int nneed, UnitFn fn, void *arg);
+extern bool lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2, ColNeed *need, int nneed, UnitFn fn, void *arg);
+extern void lookcol_close(Relation ix, Relation ix2);
 extern Datum lookcol_cell_datum(ColNeed *nd, int64 i, bool *isnull);
 extern int64 lookcol_scalar_value(const ColNeed *nd, int64 i);
 extern Datum lookcol_scalar_datum(const SiftSrcLeaf *lf, int64 v);

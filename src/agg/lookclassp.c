@@ -122,7 +122,7 @@ gang_read(ClassShared *sh, uint16 *lut, int slot, const UnitScope *sc, Relation 
 
 	memcpy(d.col, sh->col, sizeof(d.col));
 	dense_tables(&d, true);
-	ok = lookcol_read_units(sc, rel, ix, need, sh->nneed, dense_unit, &d);
+	ok = lookcol_read_units(sc, rel, ix, NULL, need, sh->nneed, dense_unit, &d);
 	out->over = d.over;
 	out->bad = d.bad || !ok;
 	if (out->bad)

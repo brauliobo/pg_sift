@@ -52,7 +52,7 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 	bool		large;
 
 	if (ex->first_peek || lookshm_bytes(LOOK_DIM) == 0 || lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase) || !sift_agg_dense_join(ex->spec, ci, ex->lay) ||
-		(ix = map_dense_index(rel, j, NULL)) == NULL)
+		(ix = map_dense_index(rel, j, NULL, NULL)) == NULL)
 		return NULL;
 	/* the columns of a map are known by their number and type, an expression of the table's columns by its place among them (its text is in the key) */
 	for (int c = 0; c < j->ncol; c++)
@@ -82,7 +82,7 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 	}
 	map_index_rows(m);
 	ex->ndim_built++;
-	if ((ix = map_dense_index(rel, j, NULL)) != NULL)
+	if ((ix = map_dense_index(rel, j, NULL, NULL)) != NULL)
 	{
 		if (lookvalid_holds(rel, ix, keyatt, ex->snap, before))
 			lookshm_keep(LOOK_DIM, key, lookvalid_finger(before), m, &need, &large);

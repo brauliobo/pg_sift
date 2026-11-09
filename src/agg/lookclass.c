@@ -413,31 +413,36 @@ dense_leaves_ok(const ColNeed *need, int key, const CompCol *comp, int ncomp)
  * expression are), 0 when it cannot tell.
  */
 Relation
-map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
+map_dense_index(Relation rel, const SiftAggJoin *j, double *bound, Relation *ix2)
 {
 	ColNeed		need[MAX_NEED];
 	CompCol		comp[SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				ncomp,
 				key = 0;
-	Relation	ix = lookcol_load_index(rel, j, false, true, need, &nneed, comp, &ncomp);
-	SiftSrcStats st;
+	Relation	second,
+				ix = lookcol_load_index(rel, j, false, true, ix2, need, &nneed, comp, &ncomp);
+	SiftSrcStats st,
+				st2;
 
 	if (ix == NULL)
 		return NULL;
+	second = ix2 != NULL ? *ix2 : NULL;
 	while (need[key].att != j->keyatt[0])
 		key++;
 	if (!dense_leaves_ok(need, key, comp, ncomp))
 	{
-		index_close(ix, AccessShareLock);
+		lookcol_close(ix, second);
 		return NULL;
 	}
 	sift_colsrc_stats(ix, &st);
+	if (second != NULL)
+		sift_colsrc_stats(second, &st2);
 	/* the classes are an array over the keys: a table whose keys span more than the lookup budget (a sparse key) is read as rows */
-	if (st.min[need[key].lf->id] < 0 ||
-		!dense_span_ok(st.max[need[key].lf->id] + 1, st.nrows, (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16)))
+	if ((need[key].ixn ? st2 : st).min[need[key].lf->id] < 0 ||
+		!dense_span_ok((need[key].ixn ? st2 : st).max[need[key].lf->id] + 1, st.nrows, (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16)))
 	{
-		index_close(ix, AccessShareLock);
+		lookcol_close(ix, second);
 		return NULL;
 	}
 	if (bound != NULL)
@@ -445,7 +450,7 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 		for (int c = 0; c < j->ncol; c++)
 			for (int p = 0; p < nneed; p++)
 				if (j->colexpr[c] ? need[p].xcol == c : need[p].expr == NULL && need[p].att == j->colatt[c])
-					bound[c] = st.ndistinct[need[p].lf->id] > 0 ? st.ndistinct[need[p].lf->id] + 1 : 0;
+					bound[c] = (need[p].ixn ? st2 : st).ndistinct[need[p].lf->id] > 0 ? (need[p].ixn ? st2 : st).ndistinct[need[p].lf->id] + 1 : 0;
 		for (int k = 0; k < ncomp; k++)
 			bound[comp[k].xcol] = 3;	/* true, false, NULL: a computed column is a test */
 	}
@@ -455,11 +460,12 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 bool
 map_load_dense_possible(Relation rel, const SiftAggJoin *j, double *bound)
 {
-	Relation	ix = map_dense_index(rel, j, bound);
+	Relation	ix2,
+				ix = map_dense_index(rel, j, bound, &ix2);
 
 	if (ix == NULL)
 		return false;
-	index_close(ix, AccessShareLock);
+	lookcol_close(ix, ix2);
 	return true;
 }
 
@@ -474,19 +480,20 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	CompCol		comp[SIFT_AGG_MAX_JCOLS];
 	int			nneed,
 				ncomp;
-	Relation	ix;
+	Relation	ix,
+				ix2;
 	DenseLoad	d = {.cxt = m->cxt,.lastsb = PG_UINT32_MAX,.limit = (uint32) Min((int64) sift_agg_lookup_max_kb * 1024 / sizeof(uint16), PG_INT32_MAX)};
 	TupleDesc	desc = RelationGetDescr(rel);
 	TupleTableSlot *slot;
 	bool		ok;
 
-	if ((ix = lookcol_load_index(rel, j, false, true, need, &nneed, comp, &ncomp)) == NULL)
+	if ((ix = lookcol_load_index(rel, j, false, true, &ix2, need, &nneed, comp, &ncomp)) == NULL)
 		return false;
 	for (d.key = 0; need[d.key].att != j->keyatt[0]; d.key++)
 		;
 	if (!dense_leaves_ok(need, d.key, comp, ncomp))
 	{
-		index_close(ix, AccessShareLock);
+		lookcol_close(ix, ix2);
 		return false;
 	}
 	d.strs.cxt = m->cxt;
@@ -508,9 +515,9 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		ExecStoreVirtualTuple(d.slot);
 	}
 	dense_tables(&d, false);
-	ok = (dense_gang(ex, rel, ix, need, nneed, &d) || lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, need, nneed, dense_unit, &d)) &&
+	ok = ((ix2 == NULL && dense_gang(ex, rel, ix, need, nneed, &d)) || lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, ix2, need, nneed, dense_unit, &d)) &&
 		!d.bad && d.rows > 0 && dense_span_ok(d.n, d.rows, d.limit);
-	index_close(ix, AccessShareLock);
+	lookcol_close(ix, ix2);
 	if (ncomp > 0)
 	{
 		ExecDropSingleTupleTableSlot(d.slot);

@@ -285,7 +285,7 @@ const LookFinger *lookvalid_finger(const LookValid *st);
 bool lookvalid_stamped(const LookValid *st);
 bool lookvalid_journal(Relation index, AttrNumber keyatt);
 bool lookvalid_readable(Relation rel, Relation index, Snapshot snap, const LookFinger *stored);
-Relation map_dense_index(Relation rel, const SiftAggJoin *j, double *bound);
+Relation map_dense_index(Relation rel, const SiftAggJoin *j, double *bound, Relation *ix2);
 MapTab *lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt);
 
 /* lookshm.c: the rows of the joined tables, and the dimension maps (lookdim.c), each with a directory and a budget of its own */
