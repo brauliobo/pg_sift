@@ -55,6 +55,20 @@ A query that lists ids under a filter of a text column is an `Index Only Scan` o
 
 The lean index adds 1.5 times the time and 1.14 times the WAL to an insert, and 1.1 to 1.2 times the WAL to an update. The update of a column the index does not hold (`title` against the lean index) takes the time of the table alone and writes 13 MB more WAL; the one that changes an indexed column also takes 1.4 times as long. Size and WAL grow with the number of columns, so each column is worth the queries that use it.
 
+## Loading in key order, and `key_cut`
+
+When the heap follows a time or key column, the index needs less for that column and a window of it reads far less. Measured on 1,000,000 rows and an index of four columns (an id, a 50-value group, a timestamp, an integer), the same rows loaded in id order (timestamp scattered) and loaded in timestamp order; instructions of one backend, minimum of five, blocks read cold:
+
+| query | timestamp scattered | loaded in timestamp order |
+|---|---|---|
+| aggregate over a 3 % window of the timestamp | 12.4 M, 318 blocks | 0.77 M, 9 blocks |
+| list of two group values, `ORDER BY ts DESC LIMIT 20` | 2.02 M, 480 blocks | 0.78 M, 7 blocks |
+| `ORDER BY ts DESC LIMIT 20` | 0.375 M | 0.391 M |
+
+- **Sort the whole segment, not each batch.** The order array of the column falls 75 % (2.15 to 0.54 MB) and its per-unit runs 98 % only when the heap is sorted across a segment (about 150,000 rows); sorted blocks of 2,000 rows grow the array 13 %, blocks of 150,000 rows shrink it 32 %. Sorting each `INSERT` by the column changes nothing (WAL, pages written, size and reads within 3 %): a row keeps its heap address. `CLUSTER` or a sorted load of the table does it (a `sift_table` is rewritten in the order of the btree `CLUSTER` follows, see [COL-TAM.md](COL-TAM.md)); these figures are from a `sift_col` index of a heap table.
+- **The other columns pay.** A column that followed the old order loses its runs: here the group and the integer followed the id, and the index grew 58 % (8.7 to 13.8 MB); with only the timestamp in `order_columns` it shrank 28 % (7.5 to 5.4 MB). Sort by the column the queries window or order by, and only when the others do not follow the old order.
+- **`key_cut` for key-shaped columns** cuts the units by the key at build, promotion and merge, so each row is written once in its unit: 96,000 inserted rows and 9,600 updates wrote 36 % fewer pages and 24 % less WAL, the file grew 45 % less and the segments fell from 11 to 6, and a window aggregate dropped from 12.4 M to 0.61 M instructions. The trade-off is `ORDER BY .. LIMIT` of another column: the key-cut index has no order array for it, so `ORDER BY ts DESC LIMIT 20` costs 0.70 M instead of 0.375 M on a fresh index and each ordered overlay of an index that took writes adds 0.35 to 0.6 M (an overlay that keeps an order array adds 12 to 15 k). Leave the cut automatic, and set `key_cut = 'off'` on an index whose queries also order or range by another column.
+
 ## Known limit: a LEFT JOIN from a parent to its children when both tables are indexed
 
 For `parent LEFT JOIN child ... GROUP BY` with an aggregate over the child's columns, the scan starts from the table on the left of the join. With a `sift_col` index on the child alone, the scan reads the child and takes the parent as its lookup table; with an index on **both** tables the planner does not try the child as the scan, and the statement runs as the normal plan or as a scan of the parent that loads the child as rows. Measured on 100,000 parents and 1,000,000 children, one backend without workers, minimum of five:
