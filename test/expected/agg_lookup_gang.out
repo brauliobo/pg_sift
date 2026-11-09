@@ -56,7 +56,10 @@ INSERT INTO shapes VALUES
  (2, $q$SELECT p.tx, p.nm::text, count(*) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (3, $q$SELECT count(*) FILTER (WHERE p.tx = 'a'), count(*) FILTER (WHERE p.f8 > 1), count(DISTINCT p.n), max(p.tx) FROM pe LEFT JOIN pg p ON p.k = pe.k$q$),
  (4, $q$SELECT p.a, p.b, count(*) FROM pe LEFT JOIN pm p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$);
+ (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$),
+ -- tests of the columns, computed for the rows of the table by the tuples of values they read (strings, floats, numerics, times, NULLs; several units)
+ (6, $q$SELECT count(*) FILTER (WHERE p.tx = 'a' OR p.tx IS NULL), count(*) FILTER (WHERE p.f8 > 1 AND p.nm < 1), sum(pe.v) FILTER (WHERE p.tm > '12:00') FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0$q$),
+ (7, $q$SELECT p.n > 25, p.tx = 'x y', p.nm IS NULL, count(*) FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3$q$);
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
@@ -90,12 +93,16 @@ SELECT * FROM report('built');
  built |       0 |     3 | t            | classes
  built |       0 |     4 | t            | rows
  built |       0 |     5 | t            | rows
+ built |       0 |     6 | t            | classes
+ built |       0 |     7 | t            | classes
  built |       3 |     1 | t            | classes by workers
  built |       3 |     2 | t            | classes by workers
  built |       3 |     3 | t            | classes by workers
  built |       3 |     4 | t            | rows
  built |       3 |     5 | t            | rows
-(10 rows)
+ built |       3 |     6 | t            | classes
+ built |       3 |     7 | t            | classes
+(14 rows)
 
 -- keys written since the index says its largest: the workers' array is short for them, the process alone reads the table
 INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(300000, 330000) i;
@@ -107,12 +114,16 @@ SELECT * FROM report('keys beyond');
  keys beyond |       0 |     3 | t            | classes
  keys beyond |       0 |     4 | t            | rows
  keys beyond |       0 |     5 | t            | rows
+ keys beyond |       0 |     6 | t            | classes
+ keys beyond |       0 |     7 | t            | classes
  keys beyond |       3 |     1 | t            | classes
  keys beyond |       3 |     2 | t            | classes
  keys beyond |       3 |     3 | t            | classes
  keys beyond |       3 |     4 | t            | rows
  keys beyond |       3 |     5 | t            | rows
-(10 rows)
+ keys beyond |       3 |     6 | t            | classes
+ keys beyond |       3 |     7 | t            | classes
+(14 rows)
 
 VACUUM pg;
 SELECT * FROM report('vacuumed');
@@ -123,12 +134,16 @@ SELECT * FROM report('vacuumed');
  vacuumed |       0 |     3 | t            | classes
  vacuumed |       0 |     4 | t            | rows
  vacuumed |       0 |     5 | t            | rows
+ vacuumed |       0 |     6 | t            | classes
+ vacuumed |       0 |     7 | t            | classes
  vacuumed |       3 |     1 | t            | classes by workers
  vacuumed |       3 |     2 | t            | classes by workers
  vacuumed |       3 |     3 | t            | classes by workers
  vacuumed |       3 |     4 | t            | rows
  vacuumed |       3 |     5 | t            | rows
-(10 rows)
+ vacuumed |       3 |     6 | t            | classes
+ vacuumed |       3 |     7 | t            | classes
+(14 rows)
 
 -- a negative key, a key twice: not classes, by workers as by one process
 INSERT INTO pg VALUES (-5, 0, '00:00:00', 'neg', 0, 0);
@@ -140,12 +155,16 @@ SELECT * FROM report('negative key');
  negative key |       0 |     3 | t            | rows
  negative key |       0 |     4 | t            | rows
  negative key |       0 |     5 | t            | rows
+ negative key |       0 |     6 | t            | rows
+ negative key |       0 |     7 | t            | rows
  negative key |       3 |     1 | t            | rows
  negative key |       3 |     2 | t            | rows
  negative key |       3 |     3 | t            | rows
  negative key |       3 |     4 | t            | rows
  negative key |       3 |     5 | t            | rows
-(10 rows)
+ negative key |       3 |     6 | t            | rows
+ negative key |       3 |     7 | t            | rows
+(14 rows)
 
 DELETE FROM pg WHERE k = -5;
 ALTER TABLE pg DROP CONSTRAINT pg_pkey;
@@ -158,12 +177,16 @@ SELECT * FROM report('repeated key');
  repeated key |       0 |     3 | t            | rows
  repeated key |       0 |     4 | t            | rows
  repeated key |       0 |     5 | t            | rows
+ repeated key |       0 |     6 | t            | rows
+ repeated key |       0 |     7 | t            | rows
  repeated key |       3 |     1 | t            | rows
  repeated key |       3 |     2 | t            | rows
  repeated key |       3 |     3 | t            | rows
  repeated key |       3 |     4 | t            | rows
  repeated key |       3 |     5 | t            | rows
-(10 rows)
+ repeated key |       3 |     6 | t            | rows
+ repeated key |       3 |     7 | t            | rows
+(14 rows)
 
 DROP FUNCTION report(text), served(text), answer(text, bool);
 DROP TABLE shapes, pe, pd, pm, pg;

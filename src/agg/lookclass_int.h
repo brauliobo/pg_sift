@@ -23,6 +23,8 @@ typedef struct StrIds
 	MemoryContext cxt;
 } StrIds;
 
+typedef struct CompMemo CompMemo;
+
 typedef struct DenseLoad
 {
 	StrIds		strs;			/* the strings of the text columns */
@@ -31,6 +33,7 @@ typedef struct DenseLoad
 	int			col[SIFT_AGG_MAX_JCOLS];	/* ... each one in need[], or -1 for an expression computed over the slot (comp[]) */
 	CompCol	   *comp;
 	int			ncomp;
+	CompMemo   *memo;			/* the outcomes of the tests by the values of the columns they read */
 	TupleTableSlot *slot;		/* the row, for the expressions */
 	ExprContext *ectx;
 	int64		cv[SIFT_AGG_MAX_JCOLS];	/* the value of each computed column of the row, and whether it is NULL */

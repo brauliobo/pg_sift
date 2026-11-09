@@ -7,6 +7,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "common/hashfn.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -208,17 +209,114 @@ dense_tables(DenseLoad *d, bool positions)
 	d->cpos = positions ? palloc(DENSE_MAX_CLASSES * sizeof(uint64)) : NULL;
 }
 
-/* the expression columns of row i: the slot gets the columns they read, and the outcome of each goes to cv */
+/*
+ * The computed tests are a function of the columns they read alone (they are immutable, join_test_expr), so the outcomes of a tuple of those columns' values are
+ * found once and kept: a test over a few columns takes a handful of tuples, where the expression was evaluated for each row of a table of millions. A text column is
+ * known by the code of its unit's dictionary, which means another string in the next unit: the outcomes of such a table are kept for one unit.
+ */
+#define MEMO_MAX	(1 << 16)
+
+struct CompMemo
+{
+	int			n;				/* the columns the tests read, in need[] at idx[] */
+	int			idx[MAX_NEED];
+	bool		perunit;
+	uint32		nent;
+	uint32	   *slot;			/* the entry in a hash slot (1..), 0 free */
+	int64	   *val;			/* [entry * n + u] */
+	uint32	   *nulls;			/* per entry: bit u set when column u is NULL */
+	uint32	   *out;			/* per entry: bit k the outcome k of the tests, bit 16 + k when it is NULL */
+};
+
+static CompMemo *
+comp_memo_make(const CompCol *comp, int ncomp, const ColNeed *need, int nneed)
+{
+	CompMemo   *m = palloc0(sizeof(CompMemo));
+
+	for (int k = 0; k < ncomp; k++)
+		foreach_ptr(Var, u, pull_var_clause(comp[k].expr, 0))
+		{
+			int			p = 0,
+						x = 0;
+
+			while (p < nneed && !(need[p].expr == NULL && need[p].att == u->varattno))
+				p++;
+			while (x < m->n && m->idx[x] != p)
+				x++;
+			if (p < nneed && x == m->n)
+			{
+				m->idx[m->n++] = p;
+				m->perunit |= need[p].lf->vtype == SCV_CODE;
+			}
+		}
+	/* check-memory: allow the entries are bounded by MEMO_MAX */
+	m->slot = palloc0(2 * MEMO_MAX * sizeof(uint32));
+	m->val = palloc(MEMO_MAX * Max(m->n, 1) * sizeof(int64));
+	m->nulls = palloc(MEMO_MAX * sizeof(uint32));
+	m->out = palloc(MEMO_MAX * sizeof(uint32));
+	return m;
+}
+
+/* the outcome of each test over row i: from the memo when its columns' values were met, else evaluated over the slot, which gets the columns the tests read */
 static void
 dense_comp(DenseLoad *d, ColNeed *need, int nneed, int64 i)
 {
-	for (int p = 0; p < nneed; p++)
-		if (need[p].expr == NULL)
-			d->slot->tts_values[need[p].att - 1] = lookcol_cell_datum(&need[p], i, &d->slot->tts_isnull[need[p].att - 1]);
+	CompMemo   *m = d->memo;
+	int64		tv[MAX_NEED];
+	uint32		nulls = 0,
+				s;
+	uint64		h = SIFT_FIB64;
+
+	for (int u = 0; u < m->n; u++)
+	{
+		ColNeed    *nd = &need[m->idx[u]];
+
+		if (nd->vec.isnull != NULL && nd->vec.isnull[i])
+		{
+			nulls |= 1U << u;
+			tv[u] = 0;
+		}
+		else
+			tv[u] = nd->lf->vtype == SCV_CODE ? ((const uint32 *) nd->vec.data)[i] : lookcol_scalar_value(nd, i);
+		h = sift_fold64(h, (uint64) tv[u]);
+		h ^= h >> 32;
+	}
+	h = sift_fib64(h ^ nulls);
+	for (s = (uint32) (h >> 32) & (2 * MEMO_MAX - 1); m->slot[s] != 0; s = (s + 1) & (2 * MEMO_MAX - 1))
+	{
+		uint32		e = m->slot[s] - 1;
+
+		if (m->nulls[e] == nulls && memcmp(&m->val[(size_t) e * m->n], tv, m->n * sizeof(int64)) == 0)
+		{
+			for (int k = 0; k < d->ncomp; k++)
+			{
+				d->cv[k] = (m->out[e] >> k) & 1;
+				d->cvnull[k] = (m->out[e] >> (16 + k)) & 1;
+			}
+			return;
+		}
+	}
+	for (int u = 0; u < m->n; u++)
+	{
+		const ColNeed *nd = &need[m->idx[u]];
+
+		d->slot->tts_values[nd->att - 1] = lookcol_cell_datum((ColNeed *) nd, i, &d->slot->tts_isnull[nd->att - 1]);
+	}
 	ResetExprContext(d->ectx);
 	d->ectx->ecxt_scantuple = d->slot;
 	for (int k = 0; k < d->ncomp; k++)
 		d->cv[k] = DatumGetBool(ExecEvalExprSwitchContext(d->comp[k].st, d->ectx, &d->cvnull[k]));
+	if (m->nent < MEMO_MAX)
+	{
+		uint32		out = 0;
+
+		for (int k = 0; k < d->ncomp; k++)
+			out |= (uint32) (d->cv[k] != 0) << k | (uint32) d->cvnull[k] << (16 + k);
+		memcpy(&m->val[(size_t) m->nent * m->n], tv, m->n * sizeof(int64));
+		m->nulls[m->nent] = nulls;
+		m->out[m->nent] = out;
+		m->slot[s] = ++m->nent;
+	}
 }
 
 /* the key gets its class; false when it has one already (a key twice) */
@@ -267,6 +365,11 @@ dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 
 	else
 		d->ord++;
 	d->upos = (uint64) unit->sb << 40 | (uint64) d->ord << 20;
+	if (d->memo != NULL && d->memo->perunit)
+	{
+		memset(d->memo->slot, 0, 2 * MEMO_MAX * sizeof(uint32));
+		d->memo->nent = 0;
+	}
 	for (int w = 0; w < nw && !d->bad; w++)
 		for (uint64 bits = rows[w]; bits != 0 && !d->bad; bits &= bits - 1)
 		{
@@ -384,6 +487,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		comp[k].st = ExecInitExpr((Expr *) comp[k].expr, NULL);
 	if (ncomp > 0)
 	{
+		d.memo = comp_memo_make(comp, ncomp, need, nneed);
 		d.ectx = CreateStandaloneExprContext();
 		d.slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 		memset(d.slot->tts_isnull, true, desc->natts * sizeof(bool));
@@ -397,6 +501,11 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	{
 		ExecDropSingleTupleTableSlot(d.slot);
 		FreeExprContext(d.ectx, true);
+		pfree(d.memo->slot);
+		pfree(d.memo->val);
+		pfree(d.memo->nulls);
+		pfree(d.memo->out);
+		pfree(d.memo);
 	}
 	if (ok)
 	{

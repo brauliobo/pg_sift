@@ -41,7 +41,10 @@ INSERT INTO shapes VALUES
  (2, $q$SELECT p.tx, p.nm::text, count(*) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (3, $q$SELECT count(*) FILTER (WHERE p.tx = 'a'), count(*) FILTER (WHERE p.f8 > 1), count(DISTINCT p.n), max(p.tx) FROM pe LEFT JOIN pg p ON p.k = pe.k$q$),
  (4, $q$SELECT p.a, p.b, count(*) FROM pe LEFT JOIN pm p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
- (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$);
+ (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$),
+ -- tests of the columns, computed for the rows of the table by the tuples of values they read (strings, floats, numerics, times, NULLs; several units)
+ (6, $q$SELECT count(*) FILTER (WHERE p.tx = 'a' OR p.tx IS NULL), count(*) FILTER (WHERE p.f8 > 1 AND p.nm < 1), sum(pe.v) FILTER (WHERE p.tm > '12:00') FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0$q$),
+ (7, $q$SELECT p.n > 25, p.tx = 'x y', p.nm IS NULL, count(*) FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
