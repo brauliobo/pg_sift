@@ -413,6 +413,17 @@ export_bind(SiftScanState *ss)
 	MemoryContextDelete(tmp);
 }
 
+/* Unranked: the directory alone, the heap superblocks the ranges are of are the leader's too, and each participant binds its own query on it */
+static void
+export_dir(SiftScanState *ss)
+{
+	SiftDirSnapshot dir;
+
+	sift_dir_read(ss->index, &dir);
+	sift_par_set_bind(ss->par.sh, ss->par.area, &dir, sizeof(dir));
+	SIFT_TEST_GATE(sift_test_export_gate, 5);
+}
+
 static void
 prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
 {
@@ -422,6 +433,8 @@ prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
 		sift_par_init(ss->par.sh, nworkers, heap_superblocks(ss));
 	if (ss->mode == SIFT_MODE_RANKED)
 		export_bind(ss);
+	else
+		export_dir(ss);
 }
 
 static Size

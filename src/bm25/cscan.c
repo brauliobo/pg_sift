@@ -245,23 +245,15 @@ bind_queries(SiftScanState *ss, SiftIndexState *st, const void *shared)
 	return shared ? sift_plan_bind_shared(st, queries, n, flags, shared) : sift_plan_bind(st, queries, n, flags);
 }
 
-/* Parallel ranked scans score from the one bind the leader made, whoever runs them */
-static const void *
-shared_bind(SiftScanState *ss)
-{
-	Size		len;
-
-	return ss->par.sh && ss->mode == SIFT_MODE_RANKED ? sift_par_get_bind(&ss->par, &len) : NULL;
-}
-
+/* Parallel scans read the directory the leader exported, and ranked ones score from the bind it made, whoever runs them */
 static void
 bind_scan(SiftScanState *ss)
 {
-	const void *shared = shared_bind(ss);
+	Size		len;
+	const void *shared = ss->par.sh ? sift_par_get_bind(&ss->par, &len) : NULL;
 
-	ss->st = shared ? sift_state_open_dir(ss->index, ss->cxt, sift_shared_dir(shared)) :
-		sift_state_open(ss->index, ss->cxt);
-	ss->plan = bind_queries(ss, ss->st, shared);
+	ss->st = sift_state_open_dir(ss->index, ss->cxt, shared ? sift_shared_dir(shared) : NULL);
+	ss->plan = bind_queries(ss, ss->st, ss->mode == SIFT_MODE_RANKED ? shared : NULL);
 	ss->empty = ss->plan == NULL;
 }
 

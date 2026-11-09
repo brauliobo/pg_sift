@@ -140,6 +140,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_release_gate",
 							 "Testing: a directory change that releases extents waits for advisory lock (0x51F7, 6) once its xid is taken, before it locks the directory.",
 							 NULL, &sift_test_release_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_export_gate",
+							 "Testing: the leader of a parallel SiftScan waits for advisory lock (0x51F7, 5) once it exported the directory its participants bind on, before the workers start.",
+							 NULL, &sift_test_export_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_build_gate",
 							 "Testing: a bulk build waits for advisory lock (0x51F7, 8) before it writes its metapage, the last page of the file.",
 							 NULL, &sift_test_build_gate, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

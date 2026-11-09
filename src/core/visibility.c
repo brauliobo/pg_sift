@@ -38,6 +38,7 @@ bool		sift_test_shrink_gate = false;
 bool		sift_test_merge_gate = false;
 bool		sift_test_worker_gate = false;
 bool		sift_test_release_gate = false;
+bool		sift_test_export_gate = false;
 bool		sift_test_build_gate = false;
 static int	test_masks = 0;
 
