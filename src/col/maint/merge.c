@@ -195,45 +195,6 @@ share_superblock(const SbSpans *a, const SbSpans *b, int allowed)
 	return false;
 }
 
-/* The range of the key leaf over the units of a key-cut segment */
-static void
-seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 *hi)
-{
-	*lo = PG_INT64_MAX;
-	*hi = PG_INT64_MIN;
-	for (uint32 u = 0; u < seg->nsb; u++)
-	{
-		SiftCZone	z;
-
-		sift_cseg_zone(seg, leaf, u, &z);
-		if (z.nvals == 0)
-			continue;
-		*lo = Min(*lo, z.min);
-		*hi = Max(*hi, z.max);
-	}
-}
-
-/*
- * The segments of a key-cut index that the partitions of a rewrite are not: a rewrite cuts the key range into partitions that share at most a boundary key, so a key
- * is in one of them; the runs of a build that outgrew the memory of a segment writer are as large as partitions but each holds rows of every key (a lookup of a key
- * reads a unit in each). They are overlays, which the rewrite merges.
- */
-static void
-mark_key_overlap(Relation index, RewriteView *v)
-{
-	int			leaf = sift_col_rel(index)->cut[0];
-
-	for (int i = 0; i < v->n; i++)
-		seg_key_range(v->seg[i], leaf, &v->klo[i], &v->khi[i]);
-	/* the rewrite right after a build is the build's own (its choices stand): the runs are for the next one */
-	for (int i = 0; i < v->n && !maint_after_build; i++)
-		for (int j = i + 1; j < v->n; j++)
-			if (maint_is_partition(&v->imm[i]) && maint_is_partition(&v->imm[j]) && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i])
-				v->kover[i] = v->kover[j] = true;
-	for (int i = 0; i < v->n; i++)
-		v->nkover += v->kover[i];
-}
-
 RewriteView *
 maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 {
@@ -258,7 +219,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			v->over[i] = j != i && !v->span[j].by_tid && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(&v->span[i], &v->span[j], 0);
 		}
 	if (maint_part_kb > 0 && sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
-		mark_key_overlap(index, v);
+		maint_mark_key_overlap(index, v);
 	return v;
 }
 
@@ -304,11 +265,7 @@ pick_key_window(const RewriteView *v, bool *take)
 
 	for (int i = 0; i < v->n; i++)
 	{
-		bool		meets = false;
-
-		for (int j = 0; j < v->n && !meets; j++)
-			meets = j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
-		if (meets)
+		if (maint_key_meets(v, i))
 		{
 			int			k = n++;
 
