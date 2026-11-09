@@ -47,26 +47,6 @@ sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber v
 	return false;
 }
 
-/* The same from the write buffers this backend knows now, refreshed once when vblock is past them */
-bool
-sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen)
-{
-	for (int retry = 0; retry < 2; retry++)
-	{
-		bool		held;
-
-		if (sift_tbl_load_vblock_in(rel, st->wbuf, st->nwbuf, vblock, copy, gen, &held))
-			return true;
-		if (held)
-			return false;
-		if (retry == 0 && (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) || !st->initialized))
-			sift_tbl_refresh(rel, st);
-		else
-			break;
-	}
-	return false;
-}
-
 Buffer
 sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx)
 {

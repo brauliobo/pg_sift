@@ -26,8 +26,8 @@ static void
 vis_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
 {
 	VisArg	   *v = arg;
-	bool		plain = !sift_tomb_any(&v->st->tomb, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
-		sift_tbl_vers_sb(v->rel, v->snapshot, v->vers, sb) == SIFT_TBL_VER_ALL;
+	bool		plain = !sift_tomb_any(&v->ss.st->tomb, sb * SB_KEYS, (sb + 1) * SB_KEYS - 1) &&
+		sift_tbl_vers_sb(v->rel, v->ss.snapshot, v->ss.vers, sb) == SIFT_TBL_VER_ALL;
 
 	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
 }
@@ -37,7 +37,7 @@ vis_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	VisArg	   *v = arg;
 
-	return sift_tbl_filter_page_vers(v->rel, v->st, v->snapshot, v->vers, blk, offmask, false);
+	return sift_tbl_filter_page_vers(v->rel, &v->ss, blk, offmask, false);
 }
 
 SiftTblGroupScan *
@@ -53,7 +53,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	uint32		sbs = SIFT_TBL_NEXT_VBLOCK(&dir->meta) / SIFT_SB_PAGES + 1;
 
 	g->vers = sift_tbl_vers_build(rel, st, dir, cxt);
-	*va = (VisArg) {rel, st, snapshot, g->vers};
+	*va = (VisArg) {rel, {.st = st,.vers = g->vers,.snapshot = snapshot}};
 	g->snapshot = snapshot;
 	g->rel = rel;
 	g->st = st;

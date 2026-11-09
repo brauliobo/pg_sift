@@ -198,17 +198,20 @@ vblock_tid_visible(void *arg, ItemPointer tid)
 }
 
 /*
- * Keeps the offsets of vblock whose row is visible to snapshot (chain: or whose HOT chain has a version that is: the TIDs of an index); the write buffer
- * page is read once; a unit the snapshot sees no insertion of is no row at all. st is the state of the table the scan began with (its write buffers,
- * its tombstones), and vers the versions of the same directory: the table the backend holds now may be another since an invalidation
+ * Keeps the offsets of vblock whose row is visible to the snapshot of ss (chain: or whose HOT chain has a version that is: the TIDs of an index); the
+ * write buffer page is read once; a unit the snapshot sees no insertion of is no row at all. Only ss is read of the table's state: the write buffers and
+ * versions of the directory the scan began with, and the tombstones it read
  */
 int
-sift_tbl_filter_page_vers(Relation rel, SiftTblRel *st, Snapshot snapshot, SiftTblVers *vers, BlockNumber vblock, uint64 *offmask, bool chain)
+sift_tbl_filter_page_vers(Relation rel, const SiftTblScanState *ss, BlockNumber vblock, uint64 *offmask, bool chain)
 {
 	PGAlignedBlock copy;
-	VblockTest	t = {.rel = rel,.st = st,.snapshot = snapshot,.copy = copy.data,.chain = chain};
+	Snapshot	snapshot = ss->snapshot;
+	SiftTblVers *vers = ss->vers;
+	bool		held;
+	VblockTest	t = {.rel = rel,.st = ss->st,.snapshot = snapshot,.copy = copy.data,.chain = chain};
 
-	if (!sift_tbl_load_vblock(rel, t.st, vblock, copy.data, &t.gen))
+	if (!sift_tbl_load_vblock_in(rel, ss->wbuf, ss->nwbuf, vblock, copy.data, &t.gen, &held))
 	{
 		SiftTblVerState state = sift_tbl_vers_sb(rel, snapshot, vers, vblock / SIFT_SB_PAGES);
 
@@ -266,7 +269,11 @@ sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber 
 	SiftTblFetch *f = (SiftTblFetch *) fetch;
 	SiftTblRel *st = f->st;
 	Relation	rel = fetch->rel;
+	SiftTblScanState ss;
 
+	/* the fetch scan follows the table: a TID past the directory it holds is a row inserted since (visible to a dirty or own snapshot) */
+	if (vblock >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) || !st->initialized)
+		sift_tbl_refresh(rel, st);
 	if (st->curvers == NULL || st->curvers_version != st->dir.version || st->curvers_rel != rel)
 	{
 		if (st->curvers_cxt)
@@ -276,7 +283,8 @@ sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber 
 		st->curvers_version = st->dir.version;
 		st->curvers_rel = rel;
 	}
-	return sift_tbl_filter_page_vers(rel, st, snapshot, st->curvers, vblock, offmask, true);
+	ss = (SiftTblScanState) {.st = st,.wbuf = st->wbuf,.nwbuf = st->nwbuf,.vers = st->curvers,.snapshot = snapshot};
+	return sift_tbl_filter_page_vers(rel, &ss, vblock, offmask, true);
 }
 
 bool

@@ -47,9 +47,7 @@ typedef struct UnitRef
 typedef struct VisArg
 {
 	Relation	rel;
-	SiftTblRel *st;
-	Snapshot	snapshot;
-	SiftTblVers *vers;
+	SiftTblScanState ss;		/* a group scan reads groups: no write buffer */
 } VisArg;
 
 struct SiftTblGroupScan

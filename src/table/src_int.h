@@ -47,6 +47,7 @@ typedef struct TblSource
 	SiftTblVers *vers;			/* the groups of dir with unfrozen rows */
 	SiftTblSeg *wbuf;			/* private copies of the write buffers */
 	int			nwbuf;
+	SiftTblScanState ss;		/* what the page filter reads of the table: the copies above */
 	uint32		wbuf_lo;		/* the superblocks that hold write buffer rows: [wbuf_lo, wbuf_hi] */
 	uint32		wbuf_hi;
 	Bitmapset  *batched;		/* the superblocks whose write buffer rows are in the sources already */

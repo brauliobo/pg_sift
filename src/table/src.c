@@ -218,7 +218,7 @@ tbl_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
 {
 	TblSource  *t = arg;
 
-	return sift_tbl_filter_page_vers(t->rel, t->st, t->snapshot, t->vers, blk, offmask, false);
+	return sift_tbl_filter_page_vers(t->rel, &t->ss, blk, offmask, false);
 }
 
 /* The leaf of schema that holds leaf `want` of the layout: of the table's column (a store of another kind is a column the table changed the type of) or of a declared path (its def has to be the same) */
@@ -296,6 +296,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 		t->wbuf_lo = Min(t->wbuf_lo, t->wbuf[i].vbase / SIFT_SB_PAGES);
 		t->wbuf_hi = Max(t->wbuf_hi, (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES);
 	}
+	t->ss = (SiftTblScanState) {.st = st,.wbuf = t->wbuf,.nwbuf = t->nwbuf,.vers = t->vers,.snapshot = t->snapshot};
 	t->lay = tbl_layout(heap);
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
