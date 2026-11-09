@@ -471,3 +471,7 @@ found_path_under_parent_updates_10pct	is answered from the flag the segments kee
 invert_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
 invert_not_exists_child_filter	is planned also as the count of the distinct keys of the child's rows that have a parent	events	-	count\(DISTINCT dim_id\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
 child_first_left_join_groups	made for each key of the child first and added up over the parents	events	-	sum\(iv_events\.a1\)	native	join:sift.agg_child_first = off	ms,minstr	faster33	no	-
+parent_filter_child_sum	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_child_distinct	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_child_id_list	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+parent_lateral_top1	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
