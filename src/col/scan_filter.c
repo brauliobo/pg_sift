@@ -695,7 +695,9 @@ paranoid_report(SiftColSource *src, const ColUnit *cu, BlockNumber blk, OffsetNu
 }
 #endif
 
+#ifdef SIFT_TESTING
 int64		sift_col_vet_offsets;
+#endif
 
 /* The first selected row at or after from; sel->nwords * 64 when there is none */
 static uint32
@@ -830,7 +832,9 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		if (!dense)
 		{
 			sift_cunit_page_offsets(&cu->v, p, offs);
+#ifdef SIFT_TESTING
 			sift_col_vet_offsets += hi - lo;
+#endif
 		}
 		for (uint32 q = sel_next(sel, lo); q < hi; q = sel_next(sel, q + 1))
 		{
