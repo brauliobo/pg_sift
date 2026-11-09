@@ -63,7 +63,7 @@ typedef struct PageCursor
 	Size		used;
 } PageCursor;
 
-/* A REF record of the page copy and what the heap gave for it: the encoded values at off in the reader's refpay, none when the tuple is gone or is another one's */
+/* A REF record of the page copy and what the arena or the heap gave for it: the encoded values at off in the reader's refpay, none when the tuple is gone or is another one's */
 typedef struct RefRow
 {
 	Size		pos;
@@ -133,9 +133,16 @@ extern const SiftColRecHead *	wbuf_rec_at(PageCursor *c, Size *size);
 
 extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, uint32 *jnull);
 
-extern uint32	wbuf_encode_rec(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, uint32 *jnull);
 
 extern bool	wbuf_ref_values(SiftCWbufReader *r, Size pos, RawRec *rec);
+
+extern bool	wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len);
+
+extern bool	wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, TransactionId xmin, const char *vals, Size len, Size limit);
+
+extern bool	wbuf_arena_full(Relation index, uint64 gen, Size limit);
+
+extern void	wbuf_arena_read(Relation index, uint64 gen, RefRow *rows, int n, StringInfo pay);
 
 extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
 

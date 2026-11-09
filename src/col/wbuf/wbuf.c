@@ -140,22 +140,20 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 	return ovf;
 }
 
-/* The payload of a row's record: the xid of its inserter when it has one, then the values, or nothing more for a REF record (the leaves of the row are still counted for the overflow flags) */
-uint32
-wbuf_encode_rec(StringInfo buf, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref, uint32 *jnull)
+/*
+ * The record of a row with its payload (the xid of the inserter, then the values) for the buffer of generation gen: a REF record keeps the xid alone, 16 bytes with its head, and its
+ * values go to the arena of the buffer (col/wbuf/arena.c); *len becomes the payload the record holds. True when the arena reached write_buffer_limit.
+ */
+bool
+wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len)
 {
-	uint32		ovf;
+	TransactionId xmin;
+	bool		full;
 
-	Assert(TransactionIdIsValid(xmin) || !ref);
-	if (TransactionIdIsValid(xmin))
-		appendBinaryStringInfo(buf, (const char *) &xmin, sizeof(xmin));
-	ovf = wbuf_encode_row(buf, schema, row, jnull);
-	if (ref)
-	{
-		buf->len = sizeof(xmin);
-		buf->data[buf->len] = '\0';
-	}
-	return ovf;
+	memcpy(&xmin, payload, sizeof(xmin));
+	full = wbuf_arena_put(index, gen, tid, xmin, payload + sizeof(xmin), *len - sizeof(xmin), (Size) wbuf_limit_pages(index) * BLCKSZ);
+	*len = sizeof(xmin);
+	return full;
 }
 
 void
@@ -341,12 +339,16 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	Buffer		tailbuf;
 	int			lane;
 	BlockNumber tail;
-	bool		crossed;
+	bool		crossed = false;
 	uint32		ovf,
 				jnull;
+	Size		len;
 
 	initStringInfo(&buf);
-	ovf = wbuf_encode_rec(&buf, schema, row, xmin, ref, &jnull);
+	if (TransactionIdIsValid(xmin))
+		appendBinaryStringInfo(&buf, (const char *) &xmin, sizeof(xmin));
+	ovf = wbuf_encode_row(&buf, schema, row, &jnull);
+	len = buf.len;
 	for (;;)
 	{
 		if (h->gen == 0)
@@ -356,7 +358,9 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 			break;
 		h->gen = 0;
 	}
-	crossed = wbuf_write_row(index, h, lane, tailbuf, &row->tid, wbuf_rec_flags(xmin, ref), buf.data, buf.len, &tail);
+	if (ref)
+		crossed = wbuf_ref_to_arena(index, h->gen, &row->tid, buf.data, &len);
+	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, wbuf_rec_flags(xmin, ref), buf.data, len, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

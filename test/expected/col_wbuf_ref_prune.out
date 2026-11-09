@@ -79,7 +79,7 @@ SELECT sift.col_promote('p_ix') >= 0 AS promoted;
 SELECT sum(rows) AS promoted_rows FROM sift.col_segments('p_ix') WHERE kind = 'immutable';
  promoted_rows 
 ---------------
-          2000
+          3000
 (1 row)
 
 SELECT same_as_heap() AS same_promoted;

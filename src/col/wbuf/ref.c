@@ -1,7 +1,9 @@
 /*
- * col/wbuf/ref.c - the values of the REF records of a write buffer: a record keeps the TID and the xid of the inserter (SIFT_COLR_REF), the values are in the heap tuple.
- * They are fetched when wbuf_next_rec reaches the first REF record of a page copy, for all of its records from there, in block order, and handed out as the encoded payload the
- * insert would have written: every reader of the buffer decodes them as it does any other record. The tuple at the TID is read with SnapshotAny, and
+ * col/wbuf/ref.c - the values of the REF records of a write buffer: a record keeps the TID and the xid of the inserter (SIFT_COLR_REF), its values are in the arena of the
+ * buffer (col/wbuf/arena.c), kept by the backend that inserted the row. They are taken from there when wbuf_next_rec reaches the first REF record of a page copy, for all of its
+ * records from there, and handed out as the encoded payload the insert would have written: every reader of the buffer decodes them as it does any other record.
+ * The heap is read only for the records the arena has no entry for (after a restart, on a standby, or when the arena dropped the buffer), in block order, and the values go to the arena.
+ * The tuple at the TID is read with SnapshotAny, and
  *   - has the xmin of the record: its values, whatever became of the tuple since (a visibility check follows later, as for any buffered row);
  *   - is frozen: its values when the xid of the record precedes the removal horizon of the heap (a tuple is frozen once its inserter is older than every snapshot); else it is
  *     another tuple's. A tuple that carries the xid of the record and was frozen since is accepted by this rule, and a TID reused by a later tuple that is frozen too is not told
@@ -72,9 +74,9 @@ ref_is_ours(Relation heap, TupleTableSlot *slot, TransactionId xmin, bool root)
 	return HeapTupleHeaderXminFrozen(th) ? GlobalVisCheckRemovableXid(heap, xmin) : TransactionIdEquals(HeapTupleHeaderGetRawXmin(th), xmin);
 }
 
-/* Fetches the values of the records ord names (ascending TIDs) and appends them, encoded, to refpay */
+/* Fetches the values of the n records ord names (ascending TIDs) and appends them, encoded, to refpay and to the arena of the buffer */
 static void
-ref_fetch(SiftCWbufReader *r, RefRow **ord)
+ref_fetch(SiftCWbufReader *r, RefRow **ord, int n)
 {
 	Relation	index = r->cur.index;
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer refs", ALLOCSET_DEFAULT_SIZES);
@@ -90,7 +92,7 @@ ref_fetch(SiftCWbufReader *r, RefRow **ord)
 	IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 
-	for (int i = 0; i < r->nref; i++)
+	for (int i = 0; i < n; i++)
 	{
 		RefRow	   *x = ord[i];
 		ItemPointerData t = x->tid;
@@ -111,6 +113,7 @@ ref_fetch(SiftCWbufReader *r, RefRow **ord)
 		wbuf_encode_row(&r->refpay, rel->schema, &row, &jnull);
 		x->len = r->refpay.len - x->off;
 		x->live = true;
+		(void) wbuf_arena_put(index, r->entry.gen, &x->tid, x->xmin, r->refpay.data + x->off, x->len, PG_UINT64_MAX);
 		ResetPerTupleExprContext(estate);
 		MemoryContextReset(rowcxt);
 	}
@@ -126,6 +129,7 @@ static void
 ref_page(SiftCWbufReader *r, Size from)
 {
 	RefRow	  **ord;
+	int			n = 0;
 
 	if (r->refpay.data == NULL)
 	{
@@ -136,11 +140,16 @@ ref_page(SiftCWbufReader *r, Size from)
 	}
 	resetStringInfo(&r->refpay);
 	ref_collect(r, from);
+	wbuf_arena_read(r->cur.index, r->entry.gen, r->ref, r->nref, &r->refpay);
 	ord = palloc(r->nref * sizeof(RefRow *));
 	for (int i = 0; i < r->nref; i++)
-		ord[i] = &r->ref[i];
-	qsort(ord, r->nref, sizeof(RefRow *), tid_cmp);
-	ref_fetch(r, ord);
+		if (!r->ref[i].live)
+			ord[n++] = &r->ref[i];
+	if (n > 0)
+	{
+		qsort(ord, n, sizeof(RefRow *), tid_cmp);
+		ref_fetch(r, ord, n);
+	}
 	pfree(ord);
 	r->refready = true;
 }

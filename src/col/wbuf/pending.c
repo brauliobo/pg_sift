@@ -167,6 +167,27 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 }
 #endif
 
+/* The head of the pending row at cur: its TID and flags; returns the stored payload length */
+static Size
+pend_head(const char *cur, ItemPointerData *tid, uint16 *flags)
+{
+	uint32		stored;
+
+	memcpy(tid, cur, sizeof(*tid));
+	memcpy(&stored, cur + sizeof(*tid), sizeof(stored));
+	*flags = pend_flags(stored);
+	return stored & ~PEND_FLAGS;
+}
+
+/* The payload the record of the pending row holds: a REF record keeps the xid alone, its values go to the arena of the buffer the row is written to */
+static Size
+pend_record_len(Relation index, const SiftCWbufHint *h, const char *cur, const ItemPointerData *tid, uint16 flags, Size stored, bool *crossed)
+{
+	if (flags & SIFT_COLR_REF)
+		*crossed |= wbuf_ref_to_arena(index, h->gen, tid, cur + PEND_HEAD, &stored);
+	return stored;
+}
+
 /* Writes the rows of a slot to the lanes of the index and frees the slot; true when a row crossed write_buffer_limit */
 static bool
 pend_flush(Relation index, PendIndex *p)
@@ -189,9 +210,10 @@ pend_flush(Relation index, PendIndex *p)
 		Buffer		tailbuf;
 		int			lane;
 		ItemPointerData tid;
-		uint32		len;
 		uint16		flags;
-		Size		room;
+		Size		stored,
+					len,
+					room;
 
 		for (;;)
 		{
@@ -201,10 +223,8 @@ pend_flush(Relation index, PendIndex *p)
 				break;
 			h.gen = 0;
 		}
-		memcpy(&tid, cur, sizeof(tid));
-		memcpy(&len, cur + sizeof(tid), sizeof(len));
-		flags = pend_flags(len);
-		len &= ~PEND_FLAGS;
+		stored = pend_head(cur, &tid, &flags);
+		len = pend_record_len(index, &h, cur, &tid, flags, stored, &crossed);
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
 		if (RECSIZE(len) > room)
 		{
@@ -213,7 +233,7 @@ pend_flush(Relation index, PendIndex *p)
 			/* a record that does not fit what is left of the tail page: as a row that goes in at once (a new page, pieces) */
 			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &tid, flags, cur + PEND_HEAD, len, &tail);
 			h.tail[lane] = tail;
-			cur += PEND_HEAD + len;
+			cur += PEND_HEAD + stored;
 		}
 		else
 		{
@@ -224,13 +244,11 @@ pend_flush(Relation index, PendIndex *p)
 			{
 				wbuf_put_piece(ed.page, &tid, flags, cur + PEND_HEAD, len);
 				room -= RECSIZE(len);
-				cur += PEND_HEAD + len;
+				cur += PEND_HEAD + stored;
 				if (cur >= rows + total)
 					break;
-				memcpy(&tid, cur, sizeof(tid));
-				memcpy(&len, cur + sizeof(tid), sizeof(len));
-				flags = pend_flags(len);
-				len &= ~PEND_FLAGS;
+				stored = pend_head(cur, &tid, &flags);
+				len = pend_record_len(index, &h, cur, &tid, flags, stored, &crossed);
 			} while (RECSIZE(len) <= room);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
@@ -284,7 +302,9 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		MemoryContextSwitchTo(old);
 	}
 	resetStringInfo(&pend_enc);
-	ovf = wbuf_encode_rec(&pend_enc, schema, row, xmin, ref, &jnull);
+	if (flags & SIFT_COLR_XMIN)
+		appendBinaryStringInfo(&pend_enc, (const char *) &xmin, sizeof(xmin));
+	ovf = wbuf_encode_row(&pend_enc, schema, row, &jnull);
 	len = pend_enc.len;
 	/* a row of several pages goes in as pieces, at once; its scratch space does not stay allocated */
 	if (RECSIZE(len) > EMPTY_ROOM)
@@ -348,11 +368,26 @@ has_rows(Relation index, const SiftSegEntry *entry)
 	return wbuf_count_rows(index, entry, true) > 0;
 }
 
+/* A buffer of REF records is sealed by the bytes of its rows in the arena (its pages hold 16 bytes a row), the limit of one of values by its pages */
+static uint32
+seal_limit(Relation index)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint32		limit = wbuf_limit_pages(index);
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN && wbuf_arena_full(index, snap->segs[i].gen, (Size) limit * BLCKSZ))
+			limit = 0;
+	pfree(snap);
+	return limit;
+}
+
 uint64
 sift_cwbuf_seal(Relation index, bool force)
 {
 	wbuf_flush_for_read(index);
-	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, wbuf_limit_pages(index), has_rows);
+	return sift_lane_seal(index, force, HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, seal_limit(index), has_rows);
 }
 
 uint64
