@@ -98,14 +98,17 @@ CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' ||
 check "standby answers the column source as the primary does" test "$(sql standby "$CHECKS")" == "$(sql primary "$CHECKS")"
 check "the standby computes the groups of the elements from the element cubes as the primary does" \
 	test "$(elem_groups standby on)" == "$(elem_groups primary off)"
-sleep 2   # the standby's feedback (wal_receiver_status_interval) no longer holds the horizon of its finished readers
+# the primary's walsender reports no xmin of the standby once its readers are done (it is sent every wal_receiver_status_interval, which a loaded host stretches)
+wait_for 'test "$(sql primary "SELECT count(*) FROM pg_stat_replication WHERE backend_xmin IS NOT NULL")" == 0' 120 || bail "the standby still holds the horizon"
 sql primary "VACUUM (disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" >/dev/null
 catchup primary standby
 GONE="SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1 ORDER BY 1"
 check "the standby answers the soft-delete filter as the primary and the heap do" \
 	test "$(sql standby "SET seq_page_cost = 10000" "$GONE")" == "$(sql primary "SET sift.enable_agg = off" "$GONE")" -a "$(sql standby "SELECT gone_same()")" == t
-check "the standby answers units of the merged segment from the exceptions" \
-	grep -qE "[1-9][0-9]* net of exceptions" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE")"
+out=$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE"
+	"SELECT string_agg(kind || ':' || rows || ':' || units || ':' || dirty || ':' || dead_rows, ' ') FROM sift.col_segments('o_col')")
+check "the standby answers units of the merged segment from the exceptions" grep -qE "[1-9][0-9]* net of exceptions" <<<"$out"
+out=
 APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_distinct(status) || ' ' || sift.approx_count_distinct(tenant_id) FROM orders"
 check "the standby merges the sketches of its units to the number the primary's heap gives" \
 	test "$(sql standby "SET sift.agg_force = on" "$APPROX")" == "$(sql primary "SET sift.enable_agg = off" "$APPROX")"
