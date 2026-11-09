@@ -439,7 +439,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 					allvisfrac;
 
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
-		b->total_rows = (uint64) tuples;
+		b->total_rows = tuples >= (double) PG_UINT64_MAX ? PG_UINT64_MAX : (uint64) tuples;
 		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
