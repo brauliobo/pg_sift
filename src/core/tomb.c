@@ -250,16 +250,18 @@ tomb_held(const SiftTombLog *t, const SiftTomb *ent)
 	return false;
 }
 
+int			sift_tomb_log_limit_kb = SIFT_TOMB_LOG_KB;
+
 bool
 sift_tomb_over(uint64 entries)
 {
-	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 > (uint64) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB);
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 > (uint64) sift_tomb_log_limit_kb;
 }
 
 bool
 sift_tomb_pressure(uint64 entries)
 {
-	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 >= (uint64) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB) / 4;
+	return entries * SIFT_TOMB_ENTRY_BYTES / 1024 >= (uint64) sift_tomb_log_limit_kb / 4;
 }
 
 /* The entries held and those to read must fit what a backend keeps: all the log of the relation lives in each backend that reads it */
@@ -269,9 +271,9 @@ tomb_budget(Relation rel, const SiftTombLog *t, uint64 n)
 	if (sift_tomb_over(t->nents + t->nrecent + (n - t->synced)))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("the tombstone log of relation \"%s\" holds %llu entries, more than a backend keeps of it (%lld kB)",
-						RelationGetRelationName(rel), (unsigned long long) n, (long long) sift_limit(tomb_log_kb, SIFT_TOMB_LOG_KB)),
-				 errhint("Run VACUUM on the table: it drops the entries of the rows it cleared. A transaction open for long keeps the rest.")));
+				 errmsg("the tombstone log of relation \"%s\" holds %llu entries, more than a backend keeps of it (sift.tomb_log_limit = %d kB)",
+						RelationGetRelationName(rel), (unsigned long long) n, sift_tomb_log_limit_kb),
+				 errhint("Raise sift.tomb_log_limit (64 bytes of memory for each entry), or run VACUUM: it drops the entries of the rows it cleared.")));
 }
 
 static void

@@ -90,11 +90,13 @@ typedef struct SiftTomb
 StaticAssertDecl(sizeof(SiftTomb) == 32, "tombstone entries are 32 bytes");
 
 /*
- * What a backend may keep of the log of a relation, in kB: each entry costs it 64 bytes (the entry, the sort and merge scratch of a first look,
- * and the hash entry of a chain member). A reader that would pass it fails naming the log; VACUUM, which drops the entries of the rows it
- * cleared, is not bound by it, and a worker is asked for when the log reaches a quarter of it.
+ * What a backend may keep of the log of a relation, in kB (sift.tomb_log_limit): each entry costs it 64 bytes (the entry, the sort and merge scratch
+ * of a first look, and the hash entry of a chain member). The entries a statement appends itself are kept as well, a DML over more rows than the limit
+ * holds fails naming the setting. A reader that would pass it fails naming the setting; VACUUM, which drops the entries of the rows it cleared, is
+ * not bound by it, and a worker is asked for when the log reaches a quarter of it.
  */
-#define SIFT_TOMB_LOG_KB		2097152
+#define SIFT_TOMB_LOG_KB		8388608
+extern int	sift_tomb_log_limit_kb;
 #define SIFT_TOMB_ENTRY_BYTES	64
 
 /* What a backend keeps of a relation's log; dir is the directory copy the owner of the relation keeps (the log reads and refreshes it) */
@@ -102,7 +104,7 @@ typedef struct SiftTombLog
 {
 	MemoryContext cxt;
 	SiftDirSnapshot *dir;
-	bool		bounded;		/* sift_tomb_sync fails past SIFT_TOMB_LOG_KB (a sift_table; a column index keeps its log whole) */
+	bool		bounded;		/* sift_tomb_sync fails past sift.tomb_log_limit (a sift_table; a column index keeps its log whole) */
 	/* tombstones, sorted by (key, seq) */
 	uint64		gen;
 	BlockNumber hdr;

@@ -69,6 +69,11 @@ compression_check_hook(char **newval, void **extra, GucSource source)
 void
 sift_tbl_define_gucs(void)
 {
+	DefineCustomIntVariable("sift.tomb_log_limit",
+							"Memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry) before a read or a statement fails.",
+							"The log holds an entry for each row deleted or updated since the last VACUUM, those of the running statement included; VACUUM is not bound by it, and the maintenance worker is asked for when the log reaches a quarter of it.",
+							&sift_tomb_log_limit_kb, SIFT_TOMB_LOG_KB, 16, INT_MAX,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_write_buffer_limit",
 							"Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns.",
 							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",

@@ -37,7 +37,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | [default](#default) | 98 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 37 | to measure, compare or explain a plan; not for a deployed configuration |
-| [safety](#safety) | 19 | a limit or guard on memory, locks, I/O or replicas |
+| [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
 
 ### default
@@ -2452,6 +2452,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Default 256 MB of device memory per backend for the compressed chunks kept between queries (at least 16), plus 32 MB of staging. A cold backend uploads again. Superuser.
 - **Sources:** benchmark as `sift.gpu`; [GPU](GPU.md#settings)
 
+#### sift.tomb_log_limit
+
+`sift_table` · safety · since 4.2 · default 8388608 kB
+
+- **What it does:** bounds the memory a backend keeps of the tombstone log of a sift_table (64 bytes an entry), the entries of its own statement included
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: -; other: a read or a statement that would pass it fails with 54000 naming the setting
+- **When:** Every backend that reads or writes a sift_table keeps the whole log in memory: an entry for each row deleted or updated since the last VACUUM, the ones of its running statement included. Past the limit a read or a statement fails naming the setting; VACUUM is not bound by it and drops the entries of the rows it cleared, and the maintenance worker is asked for when the log reaches a quarter of it.
+- **Default:** 8388608 kB — 8 GB: a safety bound on the memory of one backend (134 million entries); a DELETE or UPDATE of more rows in one statement, or a log that VACUUM cannot shrink, needs a higher one. 4.2.0 had no bound and took the memory the log asked for.
+- **Turn off:** n/a: a limit (16 kB to 2 TB). SET sift.tomb_log_limit = '64GB' (any user) or RESET; postgresql.conf, ALTER SYSTEM, ALTER DATABASE / ROLE .. SET keep it.
+- **Upgrade from 4.1:** A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before.
+- **Advice:** Leave 8 GB (134 million entries). Raise it for a single DELETE or UPDATE of more rows, or for a read while VACUUM cannot drop the log (a transaction open for long); lower it where a backend must not hold more.
+- **Sources:** benchmark `test:tbl_tomb_log_limit`; [SIZING](SIZING.md#settings-that-matter)
+
 #### sift.table_auto_defrag_delay
 
 `sift_table` · safety · since 3.2 · default 10 ms
@@ -2569,13 +2583,14 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`.
+No default changed since 4.1; new: `sift.agg_case_filter`, `sift_col(rollup_columns)`, `sift_col(rollup_leaves)`, `sift.tomb_log_limit`.
 
 | Option | 4.1 | 4.2 | Column format | What a 4.1 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | new | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | new | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
 | `sift.agg_case_filter` | new | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
+| `sift.tomb_log_limit` | new | 8388608 kB |  | A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 <!-- sift-upgrade:end -->
 
