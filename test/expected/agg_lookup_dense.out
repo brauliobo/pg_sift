@@ -1,7 +1,7 @@
 -- A lookup table of one int4 key whose other columns are integer leaves of a sift_col index and take few distinct tuples of values is kept as classes of its keys:
 -- a table over the keys, one row for each class. The answers are those of the normal plan (keys the table has no row for, NULL columns, rows the transaction
 -- changed, a left join, a distinct count by a column of the table, workers), and a table that is not one of those (a key twice, a negative key, too many tuples,
--- a text column, a column of the key itself that a left join reads) is loaded row by row as before. An inner join reads the key as the scanned column it equals (shape 10); shape 11 is
+-- a column of the key itself that a left join reads) is loaded row by row as before; a text column is classes too. An inner join reads the key as the scanned column it equals (shape 10); shape 11 is
 -- a left join, and shape 12 reads the key of one.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -95,7 +95,7 @@ SELECT * FROM report('settled');
  settled |     6 | t            | f       | t
  settled |     7 | t            | f       | t
  settled |     8 | t            | f       | t
- settled |     9 | t            | f       | t
+ settled |     9 | t            | t       | t
  settled |    10 | t            | t       | t
  settled |    11 | t            | f       | t
  settled |    12 | t            | f       | t
@@ -118,7 +118,7 @@ SELECT * FROM report('in the transaction');
  in the transaction |     6 | t            | f       | t
  in the transaction |     7 | t            | f       | t
  in the transaction |     8 | t            | f       | t
- in the transaction |     9 | t            | f       | t
+ in the transaction |     9 | t            | t       | t
  in the transaction |    10 | t            | t       | t
  in the transaction |    11 | t            | f       | t
  in the transaction |    12 | t            | f       | t
@@ -139,7 +139,7 @@ SELECT * FROM report('committed, not vacuumed');
  committed, not vacuumed |     6 | t            | f       | t
  committed, not vacuumed |     7 | t            | f       | t
  committed, not vacuumed |     8 | t            | f       | t
- committed, not vacuumed |     9 | t            | f       | t
+ committed, not vacuumed |     9 | t            | t       | t
  committed, not vacuumed |    10 | t            | t       | t
  committed, not vacuumed |    11 | t            | f       | t
  committed, not vacuumed |    12 | t            | f       | t
@@ -157,7 +157,7 @@ SELECT * FROM report('vacuumed');
  vacuumed |     6 | t            | f       | t
  vacuumed |     7 | t            | f       | t
  vacuumed |     8 | t            | f       | t
- vacuumed |     9 | t            | f       | t
+ vacuumed |     9 | t            | t       | t
  vacuumed |    10 | t            | t       | t
  vacuumed |    11 | t            | f       | t
  vacuumed |    12 | t            | f       | t
@@ -181,7 +181,7 @@ SELECT * FROM report('workers');
  workers |     6 | t            | f       | t
  workers |     7 | t            | f       | t
  workers |     8 | t            | f       | t
- workers |     9 | t            | f       | t
+ workers |     9 | t            | t       | t
  workers |    10 | t            | t       | t
  workers |    11 | t            | f       | t
  workers |    12 | t            | f       | t

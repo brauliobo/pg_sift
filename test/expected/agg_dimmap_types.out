@@ -60,9 +60,9 @@ SELECT * FROM report('first');
  first | date       | t            | new map |            0
  first | timestamp  | t            | new map |            0
  first | boolean    | t            | new map |            0
- first | text       | t            | rows    |            0
- first | numeric    | t            | rows    |            0
- first | expression | t            | classes |            0
+ first | text       | t            | new map |            0
+ first | numeric    | t            | new map |            0
+ first | expression | t            | new map |            0
 (9 rows)
 
 SELECT * FROM report('shared');
@@ -74,9 +74,9 @@ SELECT * FROM report('shared');
  shared | date       | t            | shared map |            0
  shared | timestamp  | t            | shared map |            0
  shared | boolean    | t            | shared map |            0
- shared | text       | t            | rows       |            0
- shared | numeric    | t            | rows       |            0
- shared | expression | t            | classes    |            0
+ shared | text       | t            | shared map |            0
+ shared | numeric    | t            | shared map |            0
+ shared | expression | t            | shared map |            0
 (9 rows)
 
 -- the child written after the maps were made: nothing of the parent changed
@@ -91,9 +91,9 @@ SELECT * FROM report('child written');
  child written | date       | t            | shared map |            0
  child written | timestamp  | t            | shared map |            0
  child written | boolean    | t            | shared map |            0
- child written | text       | t            | rows       |            0
- child written | numeric    | t            | rows       |            0
- child written | expression | t            | classes    |            0
+ child written | text       | t            | shared map |            0
+ child written | numeric    | t            | shared map |            0
+ child written | expression | t            | shared map |            0
 (9 rows)
 
 -- the parent written and not vacuumed, then vacuumed
@@ -108,8 +108,8 @@ SELECT * FROM report('parent written');
  parent written | date       | t            | classes |            0
  parent written | timestamp  | t            | classes |            0
  parent written | boolean    | t            | classes |            0
- parent written | text       | t            | rows    |            0
- parent written | numeric    | t            | rows    |            0
+ parent written | text       | t            | classes |            0
+ parent written | numeric    | t            | classes |            0
  parent written | expression | t            | classes |            0
 (9 rows)
 
@@ -123,9 +123,9 @@ SELECT * FROM report('parent vacuumed');
  parent vacuumed | date       | t            | new map |            0
  parent vacuumed | timestamp  | t            | new map |            0
  parent vacuumed | boolean    | t            | new map |            0
- parent vacuumed | text       | t            | rows    |            0
- parent vacuumed | numeric    | t            | rows    |            0
- parent vacuumed | expression | t            | classes |            0
+ parent vacuumed | text       | t            | new map |            0
+ parent vacuumed | numeric    | t            | new map |            0
+ parent vacuumed | expression | t            | new map |            0
 (9 rows)
 
 SELECT * FROM report('parent vacuumed, shared');
@@ -137,9 +137,9 @@ SELECT * FROM report('parent vacuumed, shared');
  parent vacuumed, shared | date       | t            | shared map |            0
  parent vacuumed, shared | timestamp  | t            | shared map |            0
  parent vacuumed, shared | boolean    | t            | shared map |            0
- parent vacuumed, shared | text       | t            | rows       |            0
- parent vacuumed, shared | numeric    | t            | rows       |            0
- parent vacuumed, shared | expression | t            | classes    |            0
+ parent vacuumed, shared | text       | t            | shared map |            0
+ parent vacuumed, shared | numeric    | t            | shared map |            0
+ parent vacuumed, shared | expression | t            | shared map |            0
 (9 rows)
 
 -- the workers read the maps from the leader's shared memory, and the lookup tables they make themselves
@@ -158,9 +158,9 @@ SELECT * FROM report('workers');
  workers | date       | t            | shared map |            0
  workers | timestamp  | t            | shared map |            0
  workers | boolean    | t            | shared map |            0
- workers | text       | t            | rows       |            0
- workers | numeric    | t            | rows       |            0
- workers | expression | t            | classes    |            0
+ workers | text       | t            | shared map |            0
+ workers | numeric    | t            | shared map |            0
+ workers | expression | t            | shared map |            0
 (9 rows)
 
 RESET max_parallel_workers_per_gather;
@@ -180,9 +180,9 @@ SELECT * FROM report('connected');
  connected | date       | t            | new map |            0
  connected | timestamp  | t            | new map |            0
  connected | boolean    | t            | new map |            0
- connected | text       | t            | rows    |            0
- connected | numeric    | t            | rows    |            0
- connected | expression | t            | classes |            0
+ connected | text       | t            | new map |            0
+ connected | numeric    | t            | new map |            0
+ connected | expression | t            | new map |            0
 (9 rows)
 
 SELECT * FROM report('connected, shared');
@@ -194,9 +194,9 @@ SELECT * FROM report('connected, shared');
  connected, shared | date       | t            | shared map |            0
  connected, shared | timestamp  | t            | shared map |            0
  connected, shared | boolean    | t            | shared map |            0
- connected, shared | text       | t            | rows       |            0
- connected, shared | numeric    | t            | rows       |            0
- connected, shared | expression | t            | classes    |            0
+ connected, shared | text       | t            | shared map |            0
+ connected, shared | numeric    | t            | shared map |            0
+ connected, shared | expression | t            | shared map |            0
 (9 rows)
 
 UPDATE ch SET v = (v + 1) % 101 WHERE id % 11 = 0;
@@ -209,9 +209,9 @@ SELECT * FROM report('connected, child written');
  connected, child written | date       | t            | shared map |            0
  connected, child written | timestamp  | t            | shared map |            0
  connected, child written | boolean    | t            | shared map |            0
- connected, child written | text       | t            | rows       |            0
- connected, child written | numeric    | t            | rows       |            0
- connected, child written | expression | t            | classes    |            0
+ connected, child written | text       | t            | shared map |            0
+ connected, child written | numeric    | t            | shared map |            0
+ connected, child written | expression | t            | shared map |            0
 (9 rows)
 
 UPDATE pd SET c2 = (c2 + 1) % 7, c4 = (c4 + 1) % 11, c8 = c8 + 10000000000, cd = cd + 1, cts = cts + interval '1 hour', cb = NOT cb, ct = 'y' || k % 23, cn = cn + 0.01
@@ -225,9 +225,9 @@ SELECT * FROM report('connected, parent written');
  connected, parent written | date       | t            | new map |            0
  connected, parent written | timestamp  | t            | new map |            0
  connected, parent written | boolean    | t            | new map |            0
- connected, parent written | text       | t            | rows    |            0
- connected, parent written | numeric    | t            | rows    |            0
- connected, parent written | expression | t            | classes |            0
+ connected, parent written | text       | t            | new map |            0
+ connected, parent written | numeric    | t            | new map |            0
+ connected, parent written | expression | t            | new map |            0
 (9 rows)
 
 SELECT * FROM report('connected, parent written, shared');
@@ -239,9 +239,9 @@ SELECT * FROM report('connected, parent written, shared');
  connected, parent written, shared | date       | t            | shared map |            0
  connected, parent written, shared | timestamp  | t            | shared map |            0
  connected, parent written, shared | boolean    | t            | shared map |            0
- connected, parent written, shared | text       | t            | rows       |            0
- connected, parent written, shared | numeric    | t            | rows       |            0
- connected, parent written, shared | expression | t            | classes    |            0
+ connected, parent written, shared | text       | t            | shared map |            0
+ connected, parent written, shared | numeric    | t            | shared map |            0
+ connected, parent written, shared | expression | t            | shared map |            0
 (9 rows)
 
 INSERT INTO pd SELECT i, 1, 1, 1, date '2024-02-01', timestamp '2024-02-01', true, 'z', 1.5 FROM generate_series(5000, 5049) i;
@@ -255,9 +255,9 @@ SELECT * FROM report('connected, parent inserted and deleted');
  connected, parent inserted and deleted | date       | t            | new map |            0
  connected, parent inserted and deleted | timestamp  | t            | new map |            0
  connected, parent inserted and deleted | boolean    | t            | new map |            0
- connected, parent inserted and deleted | text       | t            | rows    |            0
- connected, parent inserted and deleted | numeric    | t            | rows    |            0
- connected, parent inserted and deleted | expression | t            | classes |            0
+ connected, parent inserted and deleted | text       | t            | new map |            0
+ connected, parent inserted and deleted | numeric    | t            | new map |            0
+ connected, parent inserted and deleted | expression | t            | new map |            0
 (9 rows)
 
 SELECT * FROM report('connected, parent inserted and deleted, shared');
@@ -269,9 +269,9 @@ SELECT * FROM report('connected, parent inserted and deleted, shared');
  connected, parent inserted and deleted, shared | date       | t            | shared map |            0
  connected, parent inserted and deleted, shared | timestamp  | t            | shared map |            0
  connected, parent inserted and deleted, shared | boolean    | t            | shared map |            0
- connected, parent inserted and deleted, shared | text       | t            | rows       |            0
- connected, parent inserted and deleted, shared | numeric    | t            | rows       |            0
- connected, parent inserted and deleted, shared | expression | t            | classes    |            0
+ connected, parent inserted and deleted, shared | text       | t            | shared map |            0
+ connected, parent inserted and deleted, shared | numeric    | t            | shared map |            0
+ connected, parent inserted and deleted, shared | expression | t            | shared map |            0
 (9 rows)
 
 -- the reader's own writes are in the answers and the map it makes is nobody else's
@@ -287,9 +287,9 @@ SELECT * FROM report('own transaction');
  own transaction | date       | t            | new map |            0
  own transaction | timestamp  | t            | new map |            0
  own transaction | boolean    | t            | new map |            0
- own transaction | text       | t            | rows    |            0
- own transaction | numeric    | t            | rows    |            0
- own transaction | expression | t            | classes |            0
+ own transaction | text       | t            | new map |            0
+ own transaction | numeric    | t            | new map |            0
+ own transaction | expression | t            | new map |            0
 (9 rows)
 
 ROLLBACK;
@@ -302,9 +302,9 @@ SELECT * FROM report('after the rollback');
  after the rollback | date       | t            | shared map |            0
  after the rollback | timestamp  | t            | shared map |            0
  after the rollback | boolean    | t            | shared map |            0
- after the rollback | text       | t            | rows       |            0
- after the rollback | numeric    | t            | rows       |            0
- after the rollback | expression | t            | classes    |            0
+ after the rollback | text       | t            | shared map |            0
+ after the rollback | numeric    | t            | shared map |            0
+ after the rollback | expression | t            | shared map |            0
 (9 rows)
 
 SET max_parallel_workers_per_gather = 2;
@@ -317,9 +317,9 @@ SELECT * FROM report('connected, workers');
  connected, workers | date       | t            | shared map |            0
  connected, workers | timestamp  | t            | shared map |            0
  connected, workers | boolean    | t            | shared map |            0
- connected, workers | text       | t            | rows       |            0
- connected, workers | numeric    | t            | rows       |            0
- connected, workers | expression | t            | classes    |            0
+ connected, workers | text       | t            | shared map |            0
+ connected, workers | numeric    | t            | shared map |            0
+ connected, workers | expression | t            | shared map |            0
 (9 rows)
 
 DROP FUNCTION report(text), how(text), answer(text, bool), q(text);

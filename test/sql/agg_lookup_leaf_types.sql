@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
+SET sift.agg_dimmap_kb = 0;
 
 CREATE TABLE pf (id int PRIMARY KEY, f4 real, f8 float8, t time, u uuid) WITH (autovacuum_enabled = false);
 INSERT INTO pf SELECT i,

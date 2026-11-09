@@ -2,7 +2,7 @@
  * agg/lookdim.c - the dimension map: the classes of the keys of a joined table, kept in shared memory for every backend.
  *
  * A join whose table is a dimension (one int4 key, a few columns the query reads, a few distinct tuples of them) is answered from a class of
- * each key and one row for each class (map_load_dense, agg/lookcol.c), which is read from the leaves of a sift_col index of the table, not from
+ * each key and one row for each class (map_load_dense, agg/lookclass.c), which is read from the leaves of a sift_col index of the table, not from
  * its heap. The first backend that needs the map reads the leaves and keeps the classes in a dynamic shared memory segment (sift.agg_dimmap_kb,
  * the directory and its eviction are agg/lookshm.c's); every later statement of any backend attaches the segment and reads it in place, so the
  * load of the table, which is a statement's cost in proportion to the rows of the dimension, is paid once for all of them. A map that does not
@@ -55,15 +55,10 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 	if (ex->first_peek || lookshm_bytes(LOOK_DIM) == 0 || lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase) || !sift_agg_dense_join(ex->spec, ci, ex->lay) ||
 		(ix = map_dense_index(rel, j, NULL)) == NULL)
 		return NULL;
+	/* the columns of a map are known by their number and type, an expression of the table's columns by its place among them (its text is in the key) */
 	for (int c = 0; c < j->ncol; c++)
 	{
-		/* the columns of a map are known by their number and type: an expression of the table's columns has no number */
-		if (j->colexpr[c])
-		{
-			index_close(ix, AccessShareLock);
-			return NULL;
-		}
-		need.att[c] = j->colatt[c];
+		need.att[c] = look_col_att(j, c);
 		need.type[c] = j->coltype[c];
 	}
 	key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, true));

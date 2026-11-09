@@ -8,6 +8,7 @@ SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_dimmap_kb = 0;
 
 CREATE FUNCTION presence(a text, b text, c int) RETURNS smallint LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
 $$ SELECT ((nullif(btrim(a), '') IS NOT NULL)::int + ((nullif(btrim(b), '') IS NOT NULL)::int << 1) + ((c IS NOT NULL)::int << 2))::smallint $$;

@@ -3,7 +3,7 @@
 -- state of the table it was made at, so a write (committed, rolled back, or the reader's own) is a table with no map until it is vacuumed again, a budget too small
 -- for a map is a statement that reads the classes itself, and the rows of keys the table has no row for (orphans, NULL keys) are the ones the join gives. A column of
 -- the key itself that the query reads is the scanned column in an inner join (shape 4: it has a map) and no class's in a left join (shape 5: loaded row by row, never a map).
--- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the query computes (agg_lookup_tests): no map, the answers are the same.
+-- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the load computes (agg_lookup_tests): its map has a class for each outcome.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -72,7 +72,7 @@ SELECT * FROM report('first');
  first |     5 | t            | f      | f
  first |     6 | t            | f      | t
  first |     7 | t            | t      | f
- first |     8 | t            | f      | f
+ first |     8 | t            | f      | t
 (8 rows)
 
 SELECT * FROM report('shared');
@@ -85,7 +85,7 @@ SELECT * FROM report('shared');
  shared |     5 | t            | f      | f
  shared |     6 | t            | t      | f
  shared |     7 | t            | t      | f
- shared |     8 | t            | f      | f
+ shared |     8 | t            | t      | f
 (8 rows)
 
 -- a write, in the reader's own transaction: no map is the table's, and the answers see the change
@@ -134,7 +134,7 @@ SELECT * FROM report('vacuumed');
  vacuumed |     5 | t            | f      | f
  vacuumed |     6 | t            | t      | f
  vacuumed |     7 | t            | t      | f
- vacuumed |     8 | t            | f      | f
+ vacuumed |     8 | t            | f      | t
 (8 rows)
 
 SELECT * FROM report('shared again');
@@ -147,7 +147,7 @@ SELECT * FROM report('shared again');
  shared again |     5 | t            | f      | f
  shared again |     6 | t            | t      | f
  shared again |     7 | t            | t      | f
- shared again |     8 | t            | f      | f
+ shared again |     8 | t            | t      | f
 (8 rows)
 
 -- a budget too small for the map of a new state of the table: the statement reads the classes itself, and keeps nothing
@@ -164,7 +164,7 @@ SELECT * FROM report('budget too small');
  budget too small |     5 | t            | f      | f
  budget too small |     6 | t            | t      | f
  budget too small |     7 | t            | t      | f
- budget too small |     8 | t            | f      | f
+ budget too small |     8 | t            | f      | t
 (8 rows)
 
 SET sift.agg_dimmap_kb = 0;
@@ -192,7 +192,7 @@ SELECT * FROM report('map made');
  map made |     5 | t            | f      | f
  map made |     6 | t            | t      | f
  map made |     7 | t            | t      | f
- map made |     8 | t            | f      | f
+ map made |     8 | t            | f      | t
 (8 rows)
 
 SELECT * FROM report('map shared');
@@ -205,7 +205,7 @@ SELECT * FROM report('map shared');
  map shared |     5 | t            | f      | f
  map shared |     6 | t            | t      | f
  map shared |     7 | t            | t      | f
- map shared |     8 | t            | f      | f
+ map shared |     8 | t            | t      | f
 (8 rows)
 
 -- the workers read the classes from the leader's shared memory
@@ -225,7 +225,7 @@ SELECT * FROM report('workers');
  workers |     5 | t            | f      | f
  workers |     6 | t            | t      | f
  workers |     7 | t            | t      | f
- workers |     8 | t            | f      | f
+ workers |     8 | t            | t      | f
 (8 rows)
 
 DROP FUNCTION report(text), maps(text), answer(text, bool);

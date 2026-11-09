@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
+SET sift.agg_dimmap_kb = 0;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
 -- some events with no key: a NULL key is no class
