@@ -23,7 +23,7 @@ typedef struct FirstOrd
 typedef struct KeptTry
 {
 	char	   *key;
-	LookFinger *before;
+	LookValid  *before;
 	MemoryContext cx;
 	LookCols	cols;
 } KeptTry;
@@ -174,14 +174,14 @@ extern void map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o);
 extern void map_keep_agreeing(MapTab *m);
 extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt);
 extern void map_note_table(AggExec *ex, Relation rel);
-extern char * shared_map_key(AggExec *ex, int ci, bool cols);
+extern char * look_key(AggExec *ex, int ci, bool cols, bool user);
 
 extern void map_index_rows(MapTab *m);
 
 extern int	look_col_att(const SiftAggJoin *j, int c);
 extern MapTab * map_view(MapTab *m, const LookCols *have, const SiftAggJoin *j, MemoryContext mcxt);
 extern MapTab * map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, KeptTry *t);
-extern void map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);
+extern void map_kept_keep(AggExec *ex, Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);
 extern int map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ);
 
 extern Relation map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys);

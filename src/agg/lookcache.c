@@ -104,10 +104,11 @@ look_finger(Relation rel, Size budget)
 	return seen ? f : NULL;
 }
 
-LookFinger *
-lookcache_finger(Relation rel)
+/* the bytes of the stores of the rows of joined tables, the backend's and the shared one: the table whose pages the finger would cover must fit the larger */
+Size
+lookcache_budget(void)
 {
-	return look_finger(rel, LOOKCACHE_BUDGET);
+	return LOOKCACHE_BUDGET;
 }
 
 /* did the rows of this table under key not fit the cache the last time they were loaded, and is the table no smaller? */
@@ -282,19 +283,17 @@ lookcache_known(const char *key)
 }
 
 /*
- * Keeps the rows m, loaded into cx between the fingers before and after, for the next query, which owns cx from here. False when they
- * are not kept (the table was written to during the load, or the rows do not fit): cx stays with the caller.
+ * Keeps the rows m, loaded into cx from the table in the state before (which the caller found it still in after the load), for the next query, which owns cx from here.
+ * False when they are not kept (the rows do not fit): cx stays with the caller.
  */
 bool
-lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt)
+lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt)
 {
 	LookEnt    *e;
 	MemoryContext old;
 	Size		size;
 	bool		shared_large;
 
-	if (!look_finger_same(before, after))
-		return false;
 	lookshm_keep(LOOK_ROWS, key, before, m, cols, &shared_large);
 	/* the rows of an older state of the table go; dropping changes the list, so it is searched again */
 	while ((e = look_unpinned(key)) != NULL)

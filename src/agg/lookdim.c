@@ -8,11 +8,10 @@
  * load of the table, which is a statement's cost in proportion to the rows of the dimension, is paid once for all of them. A map that does not
  * fit the budget is not kept: the statement loads the classes itself, as it does without a map.
  *
- * What a map is valid for is decided by agg/dimgen.c: the state of the dimension it was read at, compared with the state now.
+ * What a map is valid for is decided by agg/lookvalid.c: the state of the dimension it was read at, compared with the state now.
  */
 #include "postgres.h"
 
-#include "miscadmin.h"
 
 #include "agg/agg_int.h"
 #include "agg/lookup/int.h"
@@ -22,15 +21,15 @@
  * else the one of the pages the dimension has now (before, when there is one).
  */
 static MapTab *
-dim_find(Relation rel, Relation ix, AttrNumber keyatt, Snapshot snap, const char *key, const DimStamp *before, const LookCols *need, LookCols *have,
+dim_find(Relation rel, Relation ix, AttrNumber keyatt, Snapshot snap, const char *key, const LookValid *before, const LookCols *need, LookCols *have,
 		 MemoryContext cxt)
 {
 	XLogRecPtr	sv[2];
 	LookFinger	stored = {.lsn = sv};
 
-	if (dimgen_journal(ix, keyatt) && lookshm_stored_stamp(LOOK_DIM, key, &stored) && dimgen_readable(rel, ix, snap, &stored))
+	if (lookvalid_journal(ix, keyatt) && lookshm_stored_stamp(LOOK_DIM, key, &stored) && lookvalid_readable(rel, ix, snap, &stored))
 		return lookshm_find(LOOK_DIM, key, &stored, need, have, cxt);
-	return before == NULL || dimgen_stamped(before) ? NULL : lookshm_find(LOOK_DIM, key, dimgen_finger(before), need, have, cxt);
+	return before == NULL || lookvalid_stamped(before) ? NULL : lookshm_find(LOOK_DIM, key, lookvalid_finger(before), need, have, cxt);
 }
 
 /*
@@ -46,7 +45,7 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 	AttrNumber	keyatt = j->keyatt[0];
 	LookCols	need = {.n = j->ncol},
 				have;
-	DimStamp   *before = NULL;
+	LookValid  *before = NULL;
 	Relation	ix;
 	char	   *key;
 	MapTab	   *m = NULL;
@@ -61,8 +60,8 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 		need.att[c] = look_col_att(j, c);
 		need.type[c] = j->coltype[c];
 	}
-	key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, true));
-	if ((before = dimgen_take(rel, ix, keyatt, ex->snap)) == NULL)
+	key = look_key(ex, ci, true, true);
+	if ((before = lookvalid_take(rel, ix, keyatt, ex->snap, lookshm_bytes(LOOK_DIM))) == NULL)
 	{
 		index_close(ix, AccessShareLock);
 		return NULL;
@@ -85,8 +84,8 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 	ex->ndim_built++;
 	if ((ix = map_dense_index(rel, j, NULL)) != NULL)
 	{
-		if (dimgen_holds(rel, ix, keyatt, ex->snap, before))
-			lookshm_keep(LOOK_DIM, key, dimgen_finger(before), m, &need, &large);
+		if (lookvalid_holds(rel, ix, keyatt, ex->snap, before))
+			lookshm_keep(LOOK_DIM, key, lookvalid_finger(before), m, &need, &large);
 		index_close(ix, AccessShareLock);
 	}
 	lookshm_unclaim(LOOK_DIM, key);

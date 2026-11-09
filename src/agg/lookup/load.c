@@ -16,6 +16,7 @@
 #include "access/tableam.h"
 #include "catalog/pg_am.h"
 #include "executor/executor.h"
+#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "portability/instr_time.h"
 #include "storage/predicate.h"
@@ -554,7 +555,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	if (firstcx)
 		FreeExprContext(firstcx, true);
 	MemoryContextSwitchTo(old);
-	map_kept_keep(rel, &kept, m, cxt);
+	map_kept_keep(ex, rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
 	map_loaded(ex, m->nrow, t0);
@@ -620,9 +621,12 @@ lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nba
 		j->first.nord == 0;
 }
 
-/* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
+/*
+ * The name of a table's entry in the caches and in the shared memory, and of a statement's shared copy: what decides the rows of a table (the relation, its key and
+ * (cols) output columns and the conditions that narrow the load), and, for a copy another statement may read, the user, whose rows are the ones the table's policies let through.
+ */
 char *
-shared_map_key(AggExec *ex, int ci, bool cols)
+look_key(AggExec *ex, int ci, bool cols, bool user)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -630,6 +634,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	StringInfoData k;
 
 	initStringInfo(&k);
+	if (user)
+		appendStringInfo(&k, "%u|", GetUserId());
 	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
@@ -673,7 +679,7 @@ map_load_shared(AggExec *ex, int ci)
 
 	if (estate == NULL)
 		return map_load_table(ex, ci, ex->cxt);
-	key = shared_map_key(ex, ci, true);
+	key = look_key(ex, ci, true, false);
 	foreach_ptr(SharedMap, e, shared_maps)
 		if (e->estate == estate && strcmp(e->key, key) == 0)
 		{

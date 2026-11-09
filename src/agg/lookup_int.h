@@ -226,7 +226,7 @@ typedef struct LookFinger
 	RelFileLocator rel;
 	BlockNumber nblocks;
 	XLogRecPtr *lsn;
-	bool		stamp;			/* not pages: the stamp of a derivation the journal of a parent index vouches for (dimgen.c), lsn = {lineage, horizon} */
+	bool		stamp;			/* not pages: the stamp of a derivation the journal of a parent index vouches for (lookvalid.c), lsn = {lineage, horizon} */
 } LookFinger;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
@@ -264,21 +264,21 @@ MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cx
 /* lookcache.c */
 LookFinger *look_finger(Relation rel, Size budget);
 bool look_finger_same(const LookFinger *a, const LookFinger *b);
-LookFinger *lookcache_finger(Relation rel);
+Size lookcache_budget(void);
 bool lookcache_refused(const char *key, Relation rel);
 bool lookcache_known(const char *key);
 MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
-bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
+bool lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 bool cols_cover(const LookCols *have, const LookCols *need);
 
-/* dimgen.c, lookdim.c: the dimension map */
-typedef struct DimStamp DimStamp;
-DimStamp *dimgen_take(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap);
-bool dimgen_holds(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, const DimStamp *st);
-const LookFinger *dimgen_finger(const DimStamp *st);
-bool dimgen_stamped(const DimStamp *st);
-bool dimgen_journal(Relation index, AttrNumber keyatt);
-bool dimgen_readable(Relation rel, Relation index, Snapshot snap, const LookFinger *stored);
+/* lookvalid.c: what a kept copy of a table stands for, and lookdim.c: the dimension map */
+typedef struct LookValid LookValid;
+LookValid *lookvalid_take(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, Size budget);
+bool lookvalid_holds(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, const LookValid *st);
+const LookFinger *lookvalid_finger(const LookValid *st);
+bool lookvalid_stamped(const LookValid *st);
+bool lookvalid_journal(Relation index, AttrNumber keyatt);
+bool lookvalid_readable(Relation rel, Relation index, Snapshot snap, const LookFinger *stored);
 Relation map_dense_index(Relation rel, const SiftAggJoin *j, double *bound);
 MapTab *lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt);
 

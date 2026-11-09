@@ -238,7 +238,7 @@ map_first_peek(AggExec *ex, int ci)
 	ex->first_peek = true;
 	PG_TRY();
 	{
-		ex->cs[ci].fruns = first_count(ex, shared_map_key(ex, ci, true));
+		ex->cs[ci].fruns = first_count(ex, look_key(ex, ci, true, false));
 		m = map_load_table(ex, ci, ex->cxt);
 	}
 	PG_FINALLY();

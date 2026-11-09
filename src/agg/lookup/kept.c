@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 
@@ -101,26 +100,26 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	t->cx = cxt;
 	if (!map_kept_conds(cb, j, own))
 		return NULL;
-	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
+	t->key = look_key(ex, ci, own, true);
 	/* the peek of a first-row lookup asks for a table only a cache holds: without an entry the finger would read every page of the table for nothing */
 	if (ex->first_peek && !lookcache_known(t->key))
 		return NULL;
 	/* a table whose rows did not fit is not read page by page for nothing every time */
-	if (lookcache_refused(t->key, rel) || (t->before = lookcache_finger(rel)) == NULL)
+	if (lookcache_refused(t->key, rel) || (t->before = lookvalid_take(rel, NULL, 0, ex->snap, lookcache_budget())) == NULL)
 		return NULL;
 	for (int c = 0; c < j->ncol; c++)
 	{
 		need.att[c] = look_col_att(j, c);
 		need.type[c] = j->coltype[c];
 	}
-	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if ((m = lookcache_find(t->key, lookvalid_finger(t->before), &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
 	}
 	/* sessions that run the same query at once: one loads the rows, the others wait for them */
-	if (!ex->first_peek && lookshm_claim(LOOK_ROWS, t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if (!ex->first_peek && lookshm_claim(LOOK_ROWS, t->key, cxt) && (m = lookcache_find(t->key, lookvalid_finger(t->before), &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
@@ -148,12 +147,10 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 
 /* keeps the rows just loaded for the next query, when the table was not written to meanwhile */
 void
-map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
+map_kept_keep(AggExec *ex, Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 {
-	LookFinger *after;
-
-	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
-		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
+	if (t->before != NULL && lookvalid_holds(rel, NULL, 0, ex->snap, t->before))
+		lookcache_keep(t->key, lookvalid_finger(t->before), m, &t->cols, t->cx, cxt);
 	if (t->before != NULL)
 		lookshm_unclaim(LOOK_ROWS, t->key);
 }
