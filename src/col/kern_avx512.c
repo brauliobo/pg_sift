@@ -6,7 +6,7 @@
  * tail of every array is a masked load, the padding is not read. The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use
  * gathers, bits_to_idx compresses the bit positions of a word with VPCOMPRESSB, zone_set tests two units per register. unpack cuts 16
  * values per step from four 128-bit windows of the stream. bits_count is the bitmap module's AVX-512 popcount. gather_u32 is a masked
- * VPGATHERDD; the other selection decodes (for_i64_sel) stay scalar: gathers were slower than the loads they replace.
+ * VPGATHERDD; the selection decodes (for_i64_sel) stay scalar, as gathers were slower than the loads they replace, but the 8-byte one (the AVX2 gather of four values).
  */
 
 #define SIFT_VEC_AVX512
@@ -495,7 +495,7 @@ const SiftColKernels sift_col_kernels_avx512 = {
 	.zone_notnull = zone_notnull_avx512,
 	.unpack = unpack_avx512,
 	.for_i64 = {for_i64_u8_avx512, for_i64_u16_avx512, for_i64_u32_avx512, for_i64_u64_avx512},
-	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
+	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_avx2},
 	.gather_u32 = gather_u32_avx512,
 	.int_stats = sift_colk_int_stats_avx2,	/* the AVX2 form, which every AVX-512 CPU runs */
 	.gather_stats = gather_stats_avx512,

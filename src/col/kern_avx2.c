@@ -5,8 +5,8 @@
  * (x - lo) <= span unsigned is !((x - lo') > span') signed. A 64-element word comes out of movemasks (u16 and u32 compare results
  * are packed to bytes first). The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use gathers; unpack cuts 8 values per step
  * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount; bits_to_idx
- * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decode for_i64_sel stays scalar: gathers were slower than the loads they
- * replace. The last partial word of a bit vector is computed from a zero padded copy of the
+ * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decode for_i64_sel is scalar for the narrow widths (gathers were slower than the loads they
+ * replace) and one gather of four values for the 8-byte one. The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */
 
@@ -43,6 +43,19 @@ gather_u32_avx2(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst)
 		st(dst + i, _mm256_i32gather_epi32((const int *) a, ld(idx + i), 4));
 	for (; i < n; i++)
 		dst[i] = a[idx[i]];
+}
+
+/* the 8-byte selection decode: four values by one gather (the scalar loop is a load of the position, a load of the value, an add and a store for each) */
+SIFT_TARGET_AVX2 void
+sift_colk_for_sel_u64_avx2(const void *a, const uint32 *idx, uint32 n, int64 base, int64 *dst)
+{
+	const __m256i b = _mm256_set1_epi64x(base);
+	uint32		i = 0;
+
+	for (; i + 4 <= n; i += 4)
+		st(dst + i, _mm256_add_epi64(_mm256_i32gather_epi64((const long long *) a, _mm_loadu_si128((const __m128i *) (idx + i)), 8), b));
+	for (; i < n; i++)
+		dst[i] = (int64) ((uint64) base + ((const uint64 *) a)[idx[i]]);
 }
 
 SIFT_TARGET_AVX2 void
@@ -604,7 +617,7 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.zone_notnull = zone_notnull_avx2,
 	.unpack = unpack_avx2,
 	.for_i64 = {for_i64_u8_avx2, for_i64_u16_avx2, for_i64_u32_avx2, for_i64_u64_avx2},
-	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_scalar},
+	.for_i64_sel = {sift_colk_for_sel_u8_scalar, sift_colk_for_sel_u16_scalar, sift_colk_for_sel_u32_scalar, sift_colk_for_sel_u64_avx2},
 	.gather_u32 = gather_u32_avx2,
 	.int_stats = sift_colk_int_stats_avx2,
 	.gather_stats = sift_colk_gather_stats_avx2,
