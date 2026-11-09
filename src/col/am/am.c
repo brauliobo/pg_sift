@@ -101,8 +101,8 @@ sift_col_batch_hook(void)
 	}
 }
 
-static void
-batch_flush_all(void)
+void
+sift_col_flush_held(void)
 {
 	Oid			oid;
 
@@ -121,7 +121,7 @@ static void
 batch_xact(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE)
-		batch_flush_all();
+		sift_col_flush_held();
 	else if (event == XACT_EVENT_ABORT)
 	{
 		sift_cwbuf_discard(InvalidOid);
@@ -137,7 +137,7 @@ static void
 batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
 {
 	if (event == SUBXACT_EVENT_START_SUB)
-		batch_flush_all();
+		sift_col_flush_held();
 	else if (event == SUBXACT_EVENT_ABORT_SUB)
 	{
 		sift_cwbuf_discard(InvalidOid);
@@ -189,9 +189,8 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	bool		updating = plan_updates(ps->planTree);
 	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 
-	/* a worker of a Gather scans the pages and has none of the rows and tombstones this backend holds back */
 	if (ps->parallelModeNeeded)
-		batch_flush_all();
+		sift_col_flush_held();
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;

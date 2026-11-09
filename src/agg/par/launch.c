@@ -8,6 +8,7 @@
 #include "storage/proc.h"
 
 #include "agg/agg.h"
+#include "col/am.h"
 #include "col/dictshm.h"
 #include "agg/memo.h"
 #include "agg/init_int.h"
@@ -147,6 +148,8 @@ par_launch(AggExec *ex)
 	if (msize > SHARE_MAX)
 		return;
 	dictshm = sift_dictshm_prepare();
+	/* the plans of the children and sub-plans that a worker starts read indexes of their own */
+	sift_col_flush_held();
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
 	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec, ex->nvorder));
