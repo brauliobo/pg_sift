@@ -19,7 +19,11 @@ scan_dir_load(SiftColSource *src, const void *view)
 	if (view != NULL)
 		memcpy(&src->dir, view, dir_bytes(view));
 	else
+	{
+		/* the rows this transaction holds back (wbuf/pending.c) are in no page yet, and a worker of a parallel scan has none of its own to flush */
+		(void) sift_cwbuf_flush(src->index);
 		sift_dir_read(src->index, &src->dir);
+	}
 }
 
 Size
