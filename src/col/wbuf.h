@@ -68,6 +68,12 @@ extern void sift_cwbuf_discard(Oid index);
  */
 extern bool sift_col_maint_make_room(Relation index);
 
+/* The slots of the write buffer arena (col/wbuf/arena.c): given back when no row finds one; called after a row is written, with no lock held */
+extern bool sift_cwbuf_arena_gc_wanted(void);
+extern void sift_cwbuf_arena_gc(void);
+/* The buffer of generation gen is promoted: its arena slot is free */
+extern void sift_cwbuf_arena_drop(Relation index, uint64 gen);
+
 /* Seals the active segment (only above write_buffer_limit unless force) and opens a fresh one; returns the sealed gen or 0 (sift_wbuf_seal) */
 extern uint64 sift_cwbuf_seal(Relation index, bool force);
 extern uint64 sift_cwbuf_seal_vacuum(Relation index);

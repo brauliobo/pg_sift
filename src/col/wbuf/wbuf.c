@@ -141,19 +141,25 @@ wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const SiftColRow *r
 }
 
 /*
- * The record of a row with its payload (the xid of the inserter, then the values) for the buffer of generation gen: a REF record keeps the xid alone, 16 bytes with its head, and its
- * values go to the arena of the buffer (col/wbuf/arena.c); *len becomes the payload the record holds. True when the arena reached write_buffer_limit.
+ * The record of a row with its payload (the xid of the inserter, then the values) for the buffer of generation gen. A REF record keeps the xid alone, 16 bytes with its head, and its values go
+ * to the arena of the buffer (col/wbuf/arena.c): *len becomes the payload the record holds. A row the arena has no room for keeps its values, as a row without the setting (*flags loses
+ * SIFT_COLR_REF). True when the buffer is to be sealed.
  */
 bool
-wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len)
+wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len, uint16 *flags)
 {
 	TransactionId xmin;
-	bool		full;
+	ArenaPut	put;
 
+	if (!(*flags & SIFT_COLR_REF))
+		return false;
 	memcpy(&xmin, payload, sizeof(xmin));
-	full = wbuf_arena_put(index, gen, tid, xmin, payload + sizeof(xmin), *len - sizeof(xmin), (Size) wbuf_limit_pages(index) * BLCKSZ);
-	*len = sizeof(xmin);
-	return full;
+	put = wbuf_arena_put(index, gen, tid, xmin, payload + sizeof(xmin), *len - sizeof(xmin), (Size) wbuf_limit_pages(index) * BLCKSZ);
+	if (put == ARENA_NOT_STORED)
+		*flags &= ~SIFT_COLR_REF;
+	else
+		*len = sizeof(xmin);
+	return put == ARENA_FULL;
 }
 
 void
@@ -343,6 +349,7 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 	uint32		ovf,
 				jnull;
 	Size		len;
+	uint16		flags = wbuf_rec_flags(xmin, ref);
 
 	initStringInfo(&buf);
 	if (TransactionIdIsValid(xmin))
@@ -358,9 +365,8 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 			break;
 		h->gen = 0;
 	}
-	if (ref)
-		crossed = wbuf_ref_to_arena(index, h->gen, &row->tid, buf.data, &len);
-	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, wbuf_rec_flags(xmin, ref), buf.data, len, &tail);
+	crossed = wbuf_ref_to_arena(index, h->gen, &row->tid, buf.data, &len, &flags);
+	crossed |= wbuf_write_row(index, h, lane, tailbuf, &row->tid, flags, buf.data, len, &tail);
 	h->tail[lane] = tail;
 	pfree(buf.data);
 	return crossed;

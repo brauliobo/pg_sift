@@ -216,6 +216,14 @@ CREATE FUNCTION sift._test_col_wbuf_segments(index regclass, OUT gen int8, OUT k
 CREATE FUNCTION sift._test_col_wbuf_reads(index regclass, OUT decoded int8, OUT nrows int8, OUT due bool) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_wbuf_reads' LANGUAGE C STRICT;
 
+-- the write buffer arena (src/col/wbuf/arena.c): the slots that can be taken, and its counters
+CREATE FUNCTION sift._test_arena_slots(n int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_arena_slots' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_arena_gc() RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_arena_gc' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_arena_stats(OUT slots int4, OUT stored int8, OUT not_stored int8, OUT rebuilt int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_arena_stats' LANGUAGE C;
+
 -- the documents queries walked in the open write buffer of a sift (BM25) index, the documents it holds, and whether their promotion is due (sift_maint_wbuf_read_due)
 CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool, OUT format int4) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_wbuf_reads' LANGUAGE C STRICT;

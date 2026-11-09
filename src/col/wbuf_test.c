@@ -29,6 +29,7 @@
 #include "col/am.h"
 #include "col/maint/maint_int.h"
 #include "col/wbuf.h"
+#include "col/wbuf/wbuf_int.h"
 #include "core/lane.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
@@ -48,6 +49,9 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_seal);
 PG_FUNCTION_INFO_V1(sift_test_col_hold_maint);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
+PG_FUNCTION_INFO_V1(sift_test_arena_slots);
+PG_FUNCTION_INFO_V1(sift_test_arena_stats);
+PG_FUNCTION_INFO_V1(sift_test_arena_gc);
 
 #define NCOLS		10
 #define ID_BITS		24
@@ -728,6 +732,44 @@ sift_test_col_wbuf_reads(PG_FUNCTION_ARGS)
 		}
 	values[2] = BoolGetDatum(maint_wbuf_read_due(index));
 	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/* (n int): the arena slots that can be taken, from the next row on */
+Datum
+sift_test_arena_slots(PG_FUNCTION_ARGS)
+{
+	wbuf_arena_test_slots(PG_GETARG_INT32(0));
+	PG_RETURN_VOID();
+}
+
+/* (): gives back the arena slots of this database whose buffer is gone, as the next row that finds no slot does (and asks the oldest buffer back when there are none) */
+Datum
+sift_test_arena_gc(PG_FUNCTION_ARGS)
+{
+	sift_cwbuf_arena_gc();
+	PG_RETURN_VOID();
+}
+
+/* () -> (slots, stored, not_stored, rebuilt): the arena slots in use, rows kept in the arena, rows written with their values for want of room, rows built from the heap */
+Datum
+sift_test_arena_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[4];
+	bool		nulls[4] = {false};
+	int			used;
+	uint64		stored,
+				not_stored,
+				rebuilt;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	wbuf_arena_test_stats(&used, &stored, &not_stored, &rebuilt);
+	values[0] = Int32GetDatum(used);
+	values[1] = Int64GetDatum(stored);
+	values[2] = Int64GetDatum(not_stored);
+	values[3] = Int64GetDatum(rebuilt);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 

@@ -140,6 +140,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
 	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
+	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }

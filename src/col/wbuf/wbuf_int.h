@@ -72,6 +72,8 @@ typedef struct RefRow
 	Size		off;
 	Size		len;
 	bool		live;
+	bool		gone;			/* decided: the heap has no tuple of this record (the arena or the heap said so), no row */
+	bool		got;			/* the arena has its values, not copied yet */
 } RefRow;
 
 /* Element count of a group leaf's value in a row (absent array: none) */
@@ -136,13 +138,40 @@ extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const
 
 extern bool	wbuf_ref_values(SiftCWbufReader *r, Size pos, RawRec *rec);
 
-extern bool	wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len);
+extern bool	wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len, uint16 *flags);
 
-extern bool	wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, TransactionId xmin, const char *vals, Size len, Size limit);
+/* col/wbuf/arena.c */
+typedef enum ArenaPut
+{
+	ARENA_NOT_STORED,
+	ARENA_STORED,
+	ARENA_FULL
+} ArenaPut;
+
+typedef enum ArenaRebuild
+{
+	ARENA_REBUILD_OWN,
+	ARENA_REBUILD_WAITED,
+	ARENA_REBUILD_NO_SLOT
+} ArenaRebuild;
+
+#define ARENA_GONE		PG_UINT32_MAX	/* the length of the entry of a record whose tuple is gone for good */
+
+extern ArenaPut	wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, TransactionId xmin, const char *vals, Size len, Size limit);
 
 extern bool	wbuf_arena_full(Relation index, uint64 gen, Size limit);
 
 extern void	wbuf_arena_read(Relation index, uint64 gen, RefRow *rows, int n, StringInfo pay);
+
+extern ArenaRebuild	wbuf_arena_rebuild_enter(Relation index, uint64 gen);
+
+extern void	wbuf_arena_rebuild_exit(uint64 nrows);
+
+#ifdef SIFT_TESTING
+extern void	wbuf_arena_test_slots(int n);
+
+extern void	wbuf_arena_test_stats(int *used, uint64 *stored, uint64 *not_stored, uint64 *rebuilt);
+#endif
 
 extern void	wbuf_put_piece(Page page, const ItemPointerData *tid, uint16 flags, const char *payload, Size len);
 

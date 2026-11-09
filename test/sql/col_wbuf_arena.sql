@@ -1,0 +1,95 @@
+-- sift.col_wbuf_ref: the values of a buffered row are kept in shared memory by the backend that inserted it (col/wbuf/arena.c), and every read of the buffer takes them from there: the heap is
+-- not read for them (the arena counts the rows it built from the heap: none here). The slot of a buffer is given back when the buffer is promoted. A row that finds no slot is written with its
+-- values, as a buffer without the setting does, and a buffer of both kinds of record gives the answers of the heap, before and after the promotion.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET check_function_bodies = off;
+
+CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS $$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*) || ',' || sum(v) FROM a),
+    (SELECT count(*) || ',' || sum(v) FROM a WHERE g = 3),
+    (SELECT string_agg(id::text, ',' ORDER BY v DESC, id) FROM (SELECT id, v FROM a ORDER BY v DESC, id LIMIT 30) x),
+    (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT g, count(*), sum(v) FROM a GROUP BY g) x))) $$;
+
+CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE native text; sift text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  native := answers();
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  sift := answers();
+  RETURN native = sift;
+END $$;
+
+-- what the arena did since the last call of arena_delta('mark')
+CREATE TABLE mark AS SELECT * FROM sift._test_arena_stats();
+CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8, OUT rebuilt int8) LANGUAGE sql AS $$
+  SELECT s.slots, s.stored - m.stored, s.not_stored - m.not_stored, s.rebuilt - m.rebuilt FROM sift._test_arena_stats() s, mark m $$;
+CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift._test_arena_stats() $$;
+
+CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
+CREATE INDEX a_ix ON a USING sift_col (id, g, v);
+SET sift.col_wbuf_ref = on;
+CALL arena_mark();
+
+-- the rows go to the arena and are read from it, by the engine and by the promotion
+INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;
+SELECT stored >= 3000 AS kept, not_stored = 0 AS none_left_out, slots_used >= 1 AS has_slot FROM arena_delta();
+SELECT rows AS buffered FROM sift.col_segments('a_ix') WHERE kind = 'buffer';
+SELECT same_as_heap() AS same_buffered;
+SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
+
+-- aborted inserts and savepoints leave arena rows that the reader drops as it drops the rows of any aborted inserter
+BEGIN;
+INSERT INTO a SELECT 5000 + i, i % 10, 50000 + i, 'r' FROM generate_series(1, 500) i;
+ROLLBACK;
+BEGIN;
+INSERT INTO a SELECT 6000 + i, i % 10, i, 'c' FROM generate_series(1, 100) i;
+SAVEPOINT s;
+INSERT INTO a SELECT 7000 + i, i % 10, 70000 + i, 's' FROM generate_series(1, 300) i;
+ROLLBACK TO s;
+COMMIT;
+SELECT same_as_heap() AS same_aborted;
+SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
+
+-- updates, deletes and a VACUUM that prunes without cleaning the index: the arena rows of the old tuples are still the records' values
+UPDATE a SET v = v + 1 WHERE id % 7 = 0;
+DELETE FROM a WHERE id % 11 = 0;
+VACUUM (INDEX_CLEANUP off) a;
+SELECT same_as_heap() AS same_pruned;
+SELECT sift.col_verify('a_ix', true);
+SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
+
+-- the buffer is promoted: its slot is free
+CREATE TEMP TABLE before AS SELECT slots_used FROM arena_delta();
+SELECT sift.col_promote('a_ix') >= 0 AS promoted;
+SELECT (SELECT slots_used FROM arena_delta()) < (SELECT slots_used FROM before) AS slot_given_back;
+SELECT same_as_heap() AS same_promoted;
+
+-- no slot to take: the rows keep their values in the buffer; the reads see both kinds of record
+SELECT sift._test_arena_slots(0);
+CALL arena_mark();
+INSERT INTO a SELECT 10000 + i, i % 10, i, 'n' FROM generate_series(1, 2000) i;
+SELECT stored = 0 AS none_kept, not_stored >= 2000 AS written_with_values FROM arena_delta();
+SELECT same_as_heap() AS same_no_slot;
+SELECT sift._test_arena_slots(16);
+INSERT INTO a SELECT 20000 + i, i % 10, i, 'm' FROM generate_series(1, 2000) i;
+SELECT stored >= 2000 AS kept_again FROM arena_delta();
+SELECT same_as_heap() AS same_mixed;
+SELECT sift.col_verify('a_ix', true);
+SELECT rebuilt = 0 AS heap_not_read FROM arena_delta();
+SELECT sift.col_promote('a_ix') >= 0 AS promoted_mixed;
+SELECT same_as_heap() AS same_promoted_mixed;
+SELECT sift.col_verify('a_ix', true);
+
+DROP FUNCTION same_as_heap();
+DROP FUNCTION answers();
+DROP FUNCTION arena_delta();
+DROP PROCEDURE arena_mark();
+DROP TABLE a, mark;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

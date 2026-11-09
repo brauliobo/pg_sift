@@ -281,6 +281,8 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	sift_col_rel(index)->hint = hint;
 	if (crossed)
 		sift_col_maint_after_seal(index);
+	if (sift_cwbuf_arena_gc_wanted())
+		sift_cwbuf_arena_gc();
 	/* after the append: the scan of the candidates reads the catalog, which can reload the relcache entry and free r */
 	if (supersede)
 		sift_col_supersede(index, heap, values, heap_tid, batch_stmts > 0);

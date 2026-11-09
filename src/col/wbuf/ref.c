@@ -62,16 +62,25 @@ ref_collect(SiftCWbufReader *r, Size from)
 	}
 }
 
+typedef enum RefTuple
+{
+	REF_OURS,
+	REF_GONE,
+	REF_UNDECIDED				/* frozen, and its inserter is not yet known to be older than every snapshot: not kept, asked again */
+} RefTuple;
+
 /* Is the tuple in the slot the one of the record? root: it is at the TID of the record, not the chain member the line pointer redirects to (the member after the pruned root) */
-static bool
-ref_is_ours(Relation heap, TupleTableSlot *slot, TransactionId xmin, bool root)
+static RefTuple
+ref_tuple(Relation heap, TupleTableSlot *slot, TransactionId xmin, bool root)
 {
 	bool		shouldFree;
 	HeapTupleHeader th = ExecFetchSlotHeapTuple(slot, false, &shouldFree)->t_data;
 
 	if (!root)
-		return true;
-	return HeapTupleHeaderXminFrozen(th) ? GlobalVisCheckRemovableXid(heap, xmin) : TransactionIdEquals(HeapTupleHeaderGetRawXmin(th), xmin);
+		return REF_OURS;
+	if (HeapTupleHeaderXminFrozen(th))
+		return GlobalVisCheckRemovableXid(heap, xmin) ? REF_OURS : REF_UNDECIDED;
+	return TransactionIdEquals(HeapTupleHeaderGetRawXmin(th), xmin) ? REF_OURS : REF_GONE;
 }
 
 /* Fetches the values of the n records ord names (ascending TIDs) and appends them, encoded, to refpay and to the arena of the buffer */
@@ -103,9 +112,17 @@ ref_fetch(SiftCWbufReader *r, RefRow **ord, int n)
 		SiftColRow	row;
 		uint32		jnull;
 
-		if (ItemPointerGetBlockNumber(&t) >= nblocks || !table_index_fetch_tuple(fetch, &t, SnapshotAny, slot, &again, &dead) ||
-			!ref_is_ours(heap, slot, x->xmin, ItemPointerGetOffsetNumber(&t) == ItemPointerGetOffsetNumber(&x->tid)))
+		RefTuple	what = REF_GONE;
+
+		if (ItemPointerGetBlockNumber(&t) < nblocks && table_index_fetch_tuple(fetch, &t, SnapshotAny, slot, &again, &dead))
+			what = ref_tuple(heap, slot, x->xmin, ItemPointerGetOffsetNumber(&t) == ItemPointerGetOffsetNumber(&x->tid));
+		if (what != REF_OURS)
+		{
+			x->gone = what == REF_GONE;
+			if (x->gone)
+				(void) wbuf_arena_put(index, r->entry.gen, &x->tid, x->xmin, NULL, ARENA_GONE, PG_UINT64_MAX);
 			continue;
+		}
 		ec->ecxt_scantuple = slot;
 		FormIndexDatum(info, slot, estate, values, isnull);
 		sift_col_make_row(rel, &x->tid, values, isnull, &row, rowcxt);
@@ -125,11 +142,29 @@ ref_fetch(SiftCWbufReader *r, RefRow **ord, int n)
 	MemoryContextDelete(tmp);
 }
 
+/* The records of the page copy the arena had no entry for, as pointers in TID order; their number */
+static int
+ref_missing(SiftCWbufReader *r, RefRow **ord)
+{
+	int			n = 0;
+
+	for (int i = 0; i < r->nref; i++)
+		if (!r->ref[i].live && !r->ref[i].gone)
+			ord[n++] = &r->ref[i];
+	qsort(ord, n, sizeof(RefRow *), tid_cmp);
+	return n;
+}
+
+/*
+ * The values of the records from byte from on, from the arena, and from the heap for the records it has no entry for (a restart, a standby): one reader at a time builds them, the others wait
+ * for it and find them in the arena
+ */
 static void
 ref_page(SiftCWbufReader *r, Size from)
 {
+	Relation	index = r->cur.index;
 	RefRow	  **ord;
-	int			n = 0;
+	int			n;
 
 	if (r->refpay.data == NULL)
 	{
@@ -140,15 +175,29 @@ ref_page(SiftCWbufReader *r, Size from)
 	}
 	resetStringInfo(&r->refpay);
 	ref_collect(r, from);
-	wbuf_arena_read(r->cur.index, r->entry.gen, r->ref, r->nref, &r->refpay);
 	ord = palloc(r->nref * sizeof(RefRow *));
-	for (int i = 0; i < r->nref; i++)
-		if (!r->ref[i].live)
-			ord[n++] = &r->ref[i];
-	if (n > 0)
+	wbuf_arena_read(index, r->entry.gen, r->ref, r->nref, &r->refpay);
+	if ((n = ref_missing(r, ord)) > 0)
 	{
-		qsort(ord, n, sizeof(RefRow *), tid_cmp);
-		ref_fetch(r, ord, n);
+		ArenaRebuild st = wbuf_arena_rebuild_enter(index, r->entry.gen);
+
+		/* the reader that held it may have built them, or the slot has none for them */
+		if (st != ARENA_REBUILD_NO_SLOT)
+		{
+			wbuf_arena_read(index, r->entry.gen, r->ref, r->nref, &r->refpay);
+			n = ref_missing(r, ord);
+		}
+		PG_TRY();
+		{
+			if (n > 0)
+				ref_fetch(r, ord, n);
+		}
+		PG_FINALLY();
+		{
+			if (st != ARENA_REBUILD_NO_SLOT)
+				wbuf_arena_rebuild_exit(n);
+		}
+		PG_END_TRY();
 	}
 	pfree(ord);
 	r->refready = true;

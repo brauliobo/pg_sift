@@ -179,12 +179,11 @@ pend_head(const char *cur, ItemPointerData *tid, uint16 *flags)
 	return stored & ~PEND_FLAGS;
 }
 
-/* The payload the record of the pending row holds: a REF record keeps the xid alone, its values go to the arena of the buffer the row is written to */
+/* The payload the record of the pending row holds: a REF record keeps the xid alone, its values go to the arena of the buffer the row is written to (*flags: a row the arena has no room for loses REF) */
 static Size
-pend_record_len(Relation index, const SiftCWbufHint *h, const char *cur, const ItemPointerData *tid, uint16 flags, Size stored, bool *crossed)
+pend_record_len(Relation index, const SiftCWbufHint *h, const char *cur, const ItemPointerData *tid, uint16 *flags, Size stored, bool *crossed)
 {
-	if (flags & SIFT_COLR_REF)
-		*crossed |= wbuf_ref_to_arena(index, h->gen, tid, cur + PEND_HEAD, &stored);
+	*crossed |= wbuf_ref_to_arena(index, h->gen, tid, cur + PEND_HEAD, &stored, flags);
 	return stored;
 }
 
@@ -224,7 +223,7 @@ pend_flush(Relation index, PendIndex *p)
 			h.gen = 0;
 		}
 		stored = pend_head(cur, &tid, &flags);
-		len = pend_record_len(index, &h, cur, &tid, flags, stored, &crossed);
+		len = pend_record_len(index, &h, cur, &tid, &flags, stored, &crossed);
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
 		if (RECSIZE(len) > room)
 		{
@@ -248,7 +247,7 @@ pend_flush(Relation index, PendIndex *p)
 				if (cur >= rows + total)
 					break;
 				stored = pend_head(cur, &tid, &flags);
-				len = pend_record_len(index, &h, cur, &tid, flags, stored, &crossed);
+				len = pend_record_len(index, &h, cur, &tid, &flags, stored, &crossed);
 			} while (RECSIZE(len) <= room);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
