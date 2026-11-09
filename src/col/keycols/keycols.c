@@ -506,7 +506,7 @@ sift_col_auto_keys_report(Relation index)
 void
 sift_col_auto_paths(Relation heap, Relation index)
 {
-	const char *opt = sift_col_options_paths_raw(index);
+	const char *opt = pstrdup(sift_col_options_paths_raw(index));
 	StringInfoData spec;
 	int			ncols = 0,
 				ngroups = 0;

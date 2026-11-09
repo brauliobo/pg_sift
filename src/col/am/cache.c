@@ -400,7 +400,8 @@ zones_equal(const SiftColZones *a, const SiftColZones *b)
 bool
 sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
 {
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftColIndexMeta meta = *sift_col_index_defs(index);
+	const SiftColIndexMeta *d = &meta;
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	SiftColLeafStats *st[2];
 	SiftColPreStats *pre[2];

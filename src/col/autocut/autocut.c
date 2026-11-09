@@ -163,6 +163,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	const char *leaf = NULL;
 	const char *kgroup = sift_col_options_key_order_group(index);	/* key_order = 'group, key': the group is the only key to cut by */
 
+	if (kgroup != NULL)
+		kgroup = pstrdup(kgroup);
 	*v = (CutVerdict) {.res = SIFT_AUTOCUT_NONE, .units = nsb};
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		v->reason = "sift.col_format_minor is below 15";
@@ -673,7 +675,7 @@ bool
 sift_col_auto_cut_again(Relation heap, Relation index, bool fits)
 {
 	CutVerdict	v;
-	const char *have = sift_col_options_key_cut(index);
+	const char *have = pstrdup(sift_col_options_key_cut(index));
 	char	   *want;
 
 	decide(heap, index, false, &v);

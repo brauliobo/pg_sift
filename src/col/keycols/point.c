@@ -209,9 +209,11 @@ sift_col_auto_point(Relation heap, Relation index)
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the options an earlier default wrote reach the relation here */
-	opt = sift_col_options_point_tid_columns(index);
+	opt = pstrdup(sift_col_options_point_tid_columns(index));
 	plain = sift_col_options_point_columns(index);
-	ordopt = sift_col_options_order_array_columns(index);
+	ordopt = sift_col_options_order_array_columns(index);	/* NULL: not set */
+	if (ordopt != NULL)
+		ordopt = pstrdup(ordopt);
 	(void) sift_cpagg_auto_list(ordopt, &ordauto);
 	ordauto = ordauto && sift_col_key_cut(rel);	/* in an index cut by a key the build may keep the ends of a column's order, which answer no equality: the directory is the equality's */
 	(void) sift_cpagg_auto_list(opt, &autolist);
