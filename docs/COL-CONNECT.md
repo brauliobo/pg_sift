@@ -171,8 +171,14 @@ fill added 2.3-2.7 s to a 2M-row build with the hash table and 0.0-0.2 s with th
 What remains of the limit: the key set itself is still bounded by half of `maintenance_work_mem` and is not used beyond it; the answers the probe remembers are bounded at 262,144 keys (about 10 MB); and a parent the journal
 does not vouch for (no unique btree on the key, an incomplete log, no journal yet) is not looked up at all, whatever its size. The refused stamp, the NOTICE and the `refused` state of `sift.col_connections` are gone with the refusal.
 
-Stamps and the operations that move a segment: a relocation or the write of a net sidecar writes the header again with the schema bytes it had, and the stamps are in the schema, so they are kept and nothing is filled again;
-an operation that writes rows again (a merge, a promotion, a rewrite) goes through the writer and its fill, which gives every segment it writes one new stamp, the one of the snapshot it took.
+Stamps and the operations that move a segment: the stamps are in the schema of each segment, so what writes a segment's header again without writing its rows keeps them: VACUUM writing the net pre-aggregate sidecar of
+the units that hold dead rows, and the space step of VACUUM shifting the runs of a large segment down into the free blocks under it. The segment keeps its generation, its stamp and the `filled` state, and the found-flag plan
+answers with the rows of the normal plan after each (`col_conn_relocate`, which sees the file go from twice the segment to its size). An operation that writes rows again (a merge, a promotion, a rewrite) goes through the writer and
+its fill, which gives every segment it writes one new stamp, the one of the snapshot it took. The tree has no copy-down of segments; one that moved a segment's bytes would keep the stamp by the same rule, and its test would be a step of `col_conn_relocate` that compares `sift._test_col_conn_stamps` before and after, with the buffered-rows differential `col_wbuf_ref_conn`.
+
+Cold, the same 12,000-row promotion at 2M parent keys after a restart of the server (shared buffers empty, the file cache warm): the scan took 194 ms and read 41,300 blocks, the probe 346 ms and read 14,500. The probe reads a third of the blocks
+and is slower anyway when the file cache holds the parent, because its reads are random pages of a btree and the scan's are sequential; on a device where a block read costs more than the file cache's copy the blocks count for more than
+here, and the price in `conn_fill.c` (time on a warm cache) does not know it. A whole child (the first build of a second child, a rewrite of every segment) asks for as many keys as the parent has, so the scan is the price there and `auto` takes it.
 
 ## The found leaf
 
