@@ -65,7 +65,7 @@ bool		sift_test_no_chain_root = false;
  * The two triggers of an index are the rows of pg_trigger that it depends on (NORMAL): [0] AFTER DELETE, [1] AFTER UPDATE (an internal trigger gets its oid appended to its name,
  * so they are found by what the index depends on). The index depends on them, and not they on it, because DROP INDEX CONCURRENTLY refuses to start once a transaction id is
  * assigned and deletes what depends on the index first: an index nothing depends on drops, and sift_col_track_hook removes the triggers in the transaction that deletes the
- * index. REINDEX CONCURRENTLY swaps the dependencies of the old and the new index, so the triggers follow the index that stays. Each is checked to be what the option
+ * index (or a worker a moment later, when the table is in use: track_drop.c). REINDEX CONCURRENTLY swaps the dependencies of the old and the new index, so the triggers follow the index that stays. Each is checked to be what the option
  * created: on the table, calling the function, a statement trigger, always enabled. witness is its identity: the xmin of its catalog row, which any change to the row
  * (disabling and enabling it again, a rename) makes another.
  */
@@ -807,6 +807,8 @@ track_row(TriggerData *td)
 	{
 		rowmemo.index = trigger_index(td->tg_trigger);
 		rowmemo.live = index_live(rowmemo.index);
+		if (!OidIsValid(rowmemo.index))
+			sift_col_track_orphan_fired();
 		rowmemo.trigger = td->tg_trigger->tgoid;
 	}
 	if (!rowmemo.live)
@@ -834,6 +836,8 @@ sift_col_track_old_rows(PG_FUNCTION_ARGS)
 						errmsg("sift.col_track_old_rows is the trigger of an index option: AFTER UPDATE or DELETE, FOR EACH STATEMENT with an old table, or FOR EACH ROW")));
 	heap = td->tg_relation;
 	indexoid = trigger_index(td->tg_trigger);
+	if (!OidIsValid(indexoid))
+		sift_col_track_orphan_fired();
 	if (!index_live(indexoid))
 		return PointerGetDatum(NULL);
 	index = index_open(indexoid, RowExclusiveLock);

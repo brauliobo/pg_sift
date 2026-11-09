@@ -92,6 +92,8 @@ extern void sift_col_track_hook(void);
 extern Oid sift_col_track_lookup(const char *name, bool missing_ok);
 extern Oid sift_col_track_function(bool missing_ok);
 extern Oid sift_col_track_trigger_index(Oid trigger);
+extern void sift_col_track_orphan_fired(void);
+extern PGDLLEXPORT void sift_col_track_orphans_main(Datum main_arg);
 extern void sift_col_track_delete_trigger(Oid trigger);
 extern const char *sift_col_row_key_why(Relation heap, Relation index, AttrNumber *pk);
 extern bool sift_col_track_incomplete(Relation index);

@@ -1,0 +1,37 @@
+Parsed test spec with 5 sessions
+
+starting permutation: glock ddrop rbegin gunlock oread owrite rend cgone
+step glock: SELECT pg_advisory_lock(20983, 9);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step ddrop: DROP INDEX CONCURRENTLY iso_dl_x; <waiting ...>
+step rbegin: BEGIN; SELECT count(*) AS rows FROM iso_dl;
+rows
+----
+ 500
+(1 row)
+
+step gunlock: SELECT pg_advisory_unlock(20983, 9);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step ddrop: <... completed>
+step oread: SELECT count(*) AS rows FROM iso_dl;
+rows
+----
+ 500
+(1 row)
+
+step owrite: UPDATE iso_dl SET v = v + 1 WHERE id = 1; DELETE FROM iso_dl WHERE id = 500;
+step rend: COMMIT;
+step cgone: SELECT * FROM iso_dl_gone();
+triggers
+--------
+       0
+(1 row)
+
