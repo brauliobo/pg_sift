@@ -23,7 +23,8 @@
 typedef struct LogEnt
 {
 	Oid			relid;			/* hash key */
-	bool		stale;			/* a relcache invalidation named the index: has it been dropped? (reap_stale) */
+	uint32		hash;			/* of its pg_class row in the RELOID syscache, which a callback names it by */
+	bool		stale;			/* an invalidation of the index's pg_class row: has it been dropped? (reap_stale) */
 	RelFileNumber relnumber;
 	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
@@ -45,20 +46,14 @@ uint64		sift_test_col_log_hidden_count = 0;
  * since a caller holds the pointer of a log across calls that process invalidations (index_open of another relation), and frees nothing.
  */
 static void
-log_inval(Datum arg, Oid relid)
+log_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	HASH_SEQ_STATUS seq;
 	LogEnt	   *e;
 
-	if (relid != InvalidOid)
-	{
-		if ((e = hash_search(log_tab, &relid, HASH_FIND, NULL)) != NULL)
-			e->stale = true;
-		return;
-	}
 	hash_seq_init(&seq, log_tab);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		e->stale = true;
+		e->stale |= hashvalue == 0 || e->hash == hashvalue;
 }
 
 /* At the start of a use of the cache, where no log pointer of another index is being relied on across an invalidation of it: frees the marked entries whose index is gone */
@@ -100,7 +95,7 @@ log_ent(Relation index)
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(LogEnt),.hcxt = CacheMemoryContext};
 
 		log_tab = hash_create("sift cache tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		CacheRegisterRelcacheCallback(log_inval, (Datum) 0);
+		CacheRegisterSyscacheCallback(RELOID, log_inval, (Datum) 0);
 	}
 	reap_stale(relid);
 	e = hash_search(log_tab, &relid, HASH_ENTER, &found);
@@ -112,6 +107,7 @@ log_ent(Relation index)
 	if (!found)
 	{
 		e->relnumber = index->rd_locator.relNumber;
+		e->hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
 		e->stale = false;
 		e->has_seg = false;
 		e->cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache tombstone log", ALLOCSET_DEFAULT_SIZES);

@@ -157,6 +157,8 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
+	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
+		sift_col_track_dropping(objectId);
 	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
 		return;
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
@@ -201,4 +203,5 @@ sift_ops_init(void)
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	prev_object_access_hook = object_access_hook;
 	object_access_hook = sift_object_access;
+	sift_col_track_init();
 }

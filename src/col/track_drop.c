@@ -159,17 +159,27 @@ orphan_triggers(Oid funcoid)
 /*
  * The triggers of an index that is deleted go with it, in the transaction that deletes it: no index depends on them any more, and this transaction removes them before it commits
  * (DROP INDEX CONCURRENTLY, DROP INDEX, ALTER TABLE .. DROP COLUMN, DROP OWNED; a table or schema that goes takes them with it). The statement that deletes the index cannot do it:
- * DROP INDEX CONCURRENTLY must find no transaction id yet, and deletes what depends on the index first. The relcache invalidation of the deleted index is the notice, and the
- * transaction asks the catalog about each invalidated relation just before it commits, once it has an xid (a transaction that deletes has).
+ * DROP INDEX CONCURRENTLY must find no transaction id yet, and deletes what depends on the index first. The object access hook (sift_object_access) names each sift_col index
+ * that is deleted, and the transaction asks the catalog about them just before it commits, once it has an xid (a transaction that deletes has). The library that a session loads
+ * while it deletes its first index (the access method handler runs inside the drop) was not there for the hook of that index: the transactions of the statement that loaded it look for the orphans (DROP INDEX CONCURRENTLY deletes in the last of four).
+ * No relcache callback does this: a backend has ten slots of them for all its libraries (scripts/check-relcache-slots.sh).
  */
 static Oid *gone;
 static int	ngone;
 static int	gone_cap;
+static TimestampTz loaded_stmt;	/* the statement that loaded the library, 0: none or ended */
 
-static void
-gone_inval(Datum arg, Oid relid)
+void
+sift_col_track_dropping(Oid relid)
 {
-	if (relid == InvalidOid || !TransactionIdIsValid(GetTopTransactionIdIfAny()))
+	HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	bool		ours;
+
+	if (!HeapTupleIsValid(tp))
+		return;
+	ours = ((Form_pg_class) GETSTRUCT(tp))->relkind == RELKIND_INDEX && ((Form_pg_class) GETSTRUCT(tp))->relam == sift_col_am_oid();
+	ReleaseSysCache(tp);
+	if (!ours)
 		return;
 	if (ngone == gone_cap)
 	{
@@ -247,33 +257,40 @@ gone_xact(XactEvent event, void *arg)
 	bool		deleted = false;
 	Oid			funcoid;
 
+	int			kept = 0;
+	bool		loading;
+
 	if (event == XACT_EVENT_ABORT)
 		ngone = 0;
-	if ((event != XACT_EVENT_PRE_COMMIT && event != XACT_EVENT_PRE_PREPARE) || ngone == 0)
+	if (loaded_stmt != 0 && GetCurrentStatementStartTimestamp() != loaded_stmt)
+		loaded_stmt = 0;
+	loading = loaded_stmt != 0 && TransactionIdIsValid(GetTopTransactionIdIfAny());
+	if ((event != XACT_EVENT_PRE_COMMIT && event != XACT_EVENT_PRE_PREPARE) || (ngone == 0 && !loading))
 		return;
-	for (int i = 0; i < ngone && !deleted; i++)
-		deleted = !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i]));
-	ngone = 0;
+	/* DROP INDEX CONCURRENTLY names its index in the first of its transactions and deletes it in the last: the ones still there wait for the next */
+	for (int i = 0; i < ngone; i++)
+		if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i])))
+			gone[kept++] = gone[i];
+		else
+			deleted = true;
+	ngone = kept;
 	/* no function, no trigger of ours (an extension that is not at the release that has it yet) */
-	if (!deleted || RecoveryInProgress() || !OidIsValid(funcoid = sift_col_track_function(true)))
+	if ((!deleted && !loading) || RecoveryInProgress() || !OidIsValid(funcoid = sift_col_track_function(true)))
+		return;
+	/* the hook did not see the deletes of the statement that loaded the library: the triggers with no index tell */
+	if (!deleted && orphan_triggers(funcoid) == NIL)
 		return;
 	SIFT_TEST_GATE(sift_test_drop_gate, 9);
 	remove_orphans(funcoid);
 	CommandCounterIncrement();
-	ngone = 0;
 }
 
-/* Called by the handler of the access method, which every session that opens a sift_col index runs before the index can be deleted */
+/* Called when the library loads: a transaction that loads it may be the one that deletes an index, which the hook did not see */
 void
-sift_col_track_hook(void)
+sift_col_track_init(void)
 {
-	static bool hooked = false;
-
-	if (hooked)
-		return;
-	hooked = true;
 	RegisterXactCallback(gone_xact, NULL);
-	CacheRegisterRelcacheCallback(gone_inval, (Datum) 0);
+	loaded_stmt = IsTransactionState() ? GetCurrentStatementStartTimestamp() : 0;
 }
 
 /* Does the trigger still serve no index (it is looked at again under the lock of its table) */
