@@ -86,6 +86,13 @@ typedef struct OverlayEv
 extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
 /* A segment is an overlay when it holds under half of the rows of the largest of the index (the size rule of maint_overlay_set): it is written lean, and gets no net sidecar */
 #define maint_is_overlay(rows, largest_rows)	((uint64) (rows) * 2 < (uint64) (largest_rows))
+/*
+ * The overlays of an index whose order arrays are the choice of the build (order_array_columns 'auto: ..'; one that names them keeps them everywhere, a group walk reads every segment's) keep none (they span the rows of the whole index, as the point directories do) while all of them together, with the one in hand, hold at most
+ * a tenth of the rows of the index: the arrays of the larger segments cover at least 0.9 of the values, which the order planner asks (agg/order/shape.c). The rows of the overlays
+ * of seg[], the segments of skip (those the step replaces) left out; the rule of maint_is_overlay.
+ */
+#define maint_is_unordered(overlay_rows, index_rows)	((uint64) (overlay_rows) * 10 <= (uint64) (index_rows))
+extern uint64 maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip);
 /* set by a rule that found the overlays due: the rewrite then takes them alone */
 extern bool	maint_overlay_asked;
 extern int	maint_overlay_steps;

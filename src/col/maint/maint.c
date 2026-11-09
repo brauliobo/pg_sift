@@ -93,6 +93,27 @@ maint_throttle(SiftWriteTarget *wt)
 	}
 }
 
+uint64
+maint_overlay_rows(const SiftSegEntry *seg, int n, const SiftSegEntry *skip, int nskip)
+{
+	uint64		largest = 0,
+				rows = 0;
+
+	for (int i = 0; i < n; i++)
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, seg[i].ndocs);
+	for (int i = 0; i < n; i++)
+	{
+		bool		replaced = false;
+
+		for (int k = 0; k < nskip; k++)
+			replaced |= skip[k].gen == seg[i].gen;
+		if (seg[i].kind == SIFT_SEG_IMMUTABLE && !replaced && maint_is_overlay(seg[i].ndocs, largest))
+			rows += seg[i].ndocs;
+	}
+	return rows;
+}
+
 /* The participants of the parallel build that is merging its own segments (col/build_par.c); 0: one process merges, as VACUUM and the maintenance worker do */
 int	maint_merge_workers = 0;
 bool		maint_after_build = false;	/* the rewrite is the one right after the build: the choices of the build stand */
