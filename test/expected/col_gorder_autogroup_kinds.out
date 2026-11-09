@@ -17,12 +17,12 @@ INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint
 FROM generate_series(1, 120000) i;
 ANALYZE ak;
 CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
-NOTICE:  sift_col index "ak_i": 4 automatic choices, 1 advice
+NOTICE:  sift_col index "ak_i": 3 automatic choices, 1 advice
 NOTICE:  sift_col index "ak_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
-                                                                                         reloptions                                                                                         
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; d, score","order_array_columns=auto: d, created, score, amt","point_tid_columns=auto: id"}
+                                                                            reloptions                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; d, score","order_array_columns=auto: id, d, created, score, amt"}
 (1 row)
 
 SELECT sift.col_verify('ak_i');
@@ -90,12 +90,12 @@ CREATE TABLE ak1 (id int, score int, pad text);
 INSERT INTO ak1 SELECT i, abs(hashint4(i + 5)) % 5000, md5(i::text) FROM generate_series(1, 120000) i;
 ANALYZE ak1;
 CREATE INDEX ak1_i ON ak1 USING sift_col (id, score, pad) WITH (key_cut = 'off', key_order = 'off');
-NOTICE:  sift_col index "ak1_i": 2 automatic choices, 1 advice
+NOTICE:  sift_col index "ak1_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "ak1_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak1_i';
-                                           reloptions                                            
--------------------------------------------------------------------------------------------------
- {key_cut=off,key_order=off,"order_array_columns=auto: score, pad","point_tid_columns=auto: id"}
+                               reloptions                               
+------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"order_array_columns=auto: id, score, pad"}
 (1 row)
 
 CREATE TABLE ak2 (ent_id int, d date);
@@ -109,17 +109,17 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
  {key_cut=off,key_order=off,"key_columns=auto: ent_id"}
 (1 row)
 
--- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
+-- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, and score names no entity (no foreign key, no *_id), so there is no group
 CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;
 CREATE INDEX ak3_i ON ak3 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
-NOTICE:  sift_col index "ak3_i": 4 automatic choices, 1 advice
+NOTICE:  sift_col index "ak3_i": 3 automatic choices, 1 advice
 NOTICE:  sift_col index "ak3_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
-                                                                                   reloptions                                                                                    
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; score","order_array_columns=auto: created, score","point_tid_columns=auto: id"}
+                                                                       reloptions                                                                       
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created; score","order_array_columns=auto: id, created, score"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
@@ -132,12 +132,12 @@ CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak4 SELECT i, abs(hashint4(i)) % 60000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak4;
 CREATE INDEX ak4_i ON ak4 USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', key_order = 'off');
-NOTICE:  sift_col index "ak4_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ak4_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "ak4_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak4_i';
-                                                                               reloptions                                                                               
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=off,key_order=off,"order_array_group=auto: score, created; ent_id","order_array_columns=auto: ent_id, created","point_tid_columns=auto: id",key_columns=auto}
+                                         reloptions                                         
+--------------------------------------------------------------------------------------------
+ {key_cut=off,key_order=off,"order_array_columns=auto: id, ent_id, score",key_columns=auto}
 (1 row)
 
 -- a timestamp the units are cut by has no plain array to build, and the second order by the entity is the only one that serves WHERE ent_id = x ORDER BY created
@@ -145,12 +145,12 @@ CREATE TABLE ak5 (id int, ent_id int, created timestamp, pad text);
 INSERT INTO ak5 SELECT i, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak5;
 CREATE INDEX ak5_i ON ak5 USING sift_col (id, ent_id, created, pad) WITH (key_cut = 'created');
-NOTICE:  sift_col index "ak5_i": 4 automatic choices, 1 advice
+NOTICE:  sift_col index "ak5_i": 3 automatic choices, 1 advice
 NOTICE:  sift_col index "ak5_i" is column format minor 41, which a library before 4.0 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
-                                                                        reloptions                                                                        
-----------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=created,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created;","order_array_columns=auto: created","point_tid_columns=auto: id"}
+                                                           reloptions                                                            
+---------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=created,"key_columns=auto: ent_id","order_array_group=auto: ent_id, created;","order_array_columns=auto: id, created"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS cut_latest,
@@ -165,12 +165,12 @@ CREATE TABLE ak6 (id int, tenant_id int, ent_id int, created timestamp, pad text
 INSERT INTO ak6 SELECT i, i % 40, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak6;
 CREATE INDEX ak6_i ON ak6 USING sift_col (id, tenant_id, ent_id, created, pad) WITH (key_cut = 'tenant_id');
-NOTICE:  sift_col index "ak6_i": 4 automatic choices, 1 advice
+NOTICE:  sift_col index "ak6_i": 3 automatic choices, 1 advice
 NOTICE:  sift_col index "ak6_i" is column format minor 47, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
-                                                                        reloptions                                                                         
------------------------------------------------------------------------------------------------------------------------------------------------------------
- {key_cut=tenant_id,"order_array_group=auto: ent_id; created","order_array_columns=auto: created","point_tid_columns=auto: id","key_columns=auto: ent_id"}
+                                                            reloptions                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ {key_cut=tenant_id,"order_array_group=auto: ent_id; created","order_array_columns=auto: id, created","key_columns=auto: ent_id"}
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,

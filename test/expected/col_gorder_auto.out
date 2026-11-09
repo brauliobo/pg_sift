@@ -15,15 +15,15 @@ INSERT INTO ga SELECT i, abs(hashint4(i)) % 5000000, i % 50, timestamp '2024-01-
 -- no statistics yet: the build analyzes the table and chooses
 CREATE INDEX ga_nostats ON ga USING sift_col (id, r, g, ts, pad);
 NOTICE:  sift_col index "ga_nostats": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r;
-order_array_columns = r; order_layout = r compact in 1% of chunks
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = r;
+order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_nostats');
 NOTICE:  sift_col index "ga_nostats" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_nostats';
                            reloptions                            
 -----------------------------------------------------------------
- {"order_array_columns=auto: r","point_tid_columns=auto: id, r"}
+ {"order_array_columns=auto: id, r","point_tid_columns=auto: r"}
 (1 row)
 
 DROP INDEX ga_nostats;
@@ -31,15 +31,15 @@ ANALYZE ga;
 -- r is scattered, g has 50 values, id and ts follow the heap
 CREATE INDEX ga_auto ON ga USING sift_col (id, r, g, ts, pad);
 NOTICE:  sift_col index "ga_auto": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r;
-order_array_columns = r; order_layout = r compact in 1% of chunks
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = r;
+order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_auto');
 NOTICE:  sift_col index "ga_auto" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_auto';
                            reloptions                            
 -----------------------------------------------------------------
- {"order_array_columns=auto: r","point_tid_columns=auto: id, r"}
+ {"order_array_columns=auto: id, r","point_tid_columns=auto: r"}
 (1 row)
 
 SELECT min(format) AS format FROM sift.col_segments('ga_auto') WHERE kind = 'immutable';
@@ -93,15 +93,15 @@ DROP INDEX ga_auto, ga_off, ga_list;
 -- a narrow index of small columns: the arrays would be a third of it
 CREATE INDEX ga_narrow ON ga USING sift_col (id, r, g) WITH (point_tid_columns = 'off');
 NOTICE:  sift_col index "ga_narrow": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = r;
-order_layout = r compact in 1% of chunks
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, r;
+order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_narrow');
 NOTICE:  sift_col index "ga_narrow" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_narrow';
-                      reloptions                       
--------------------------------------------------------
- {point_tid_columns=off,"order_array_columns=auto: r"}
+                        reloptions                         
+-----------------------------------------------------------
+ {point_tid_columns=off,"order_array_columns=auto: id, r"}
 (1 row)
 
 DROP INDEX ga_narrow;
@@ -121,27 +121,29 @@ SELECT reloptions FROM pg_class WHERE relname = 'gs_i';
 -- the choice is made again by REINDEX: after the statistics change the column is dropped
 CREATE INDEX ga_re ON ga USING sift_col (id, r, g, ts, pad);
 NOTICE:  sift_col index "ga_re": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r;
-order_array_columns = r; order_layout = r compact in 1% of chunks
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = r;
+order_array_columns = id, r; order_layout = id exact, r compact in 1% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_re');
 NOTICE:  sift_col index "ga_re" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
                            reloptions                            
 -----------------------------------------------------------------
- {"order_array_columns=auto: r","point_tid_columns=auto: id, r"}
+ {"order_array_columns=auto: id, r","point_tid_columns=auto: r"}
 (1 row)
 
 UPDATE ga SET r = id;
 ANALYZE ga;
 REINDEX INDEX ga_re;
-NOTICE:  sift_col index "ga_re": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r
+NOTICE:  sift_col index "ga_re": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, r
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_re');
+NOTICE:  sift_col index "ga_re" is column format minor 38, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
                          reloptions                         
 ------------------------------------------------------------
- {order_array_columns=auto,"point_tid_columns=auto: id, r"}
+ {"order_array_columns=auto: id, r",point_tid_columns=auto}
 (1 row)
 
 -- a table never analyzed, a timestamp at random in the heap and another column of more values: both are chosen, the timestamp first
@@ -156,15 +158,15 @@ SELECT setseed(0.5);
 INSERT INTO gt SELECT i, (random() * 100000000)::int, timestamptz '2024-01-01' + random() * interval '700 days', md5(i::text) || md5(i::text || 'x') FROM generate_series(1, 120000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id, v, ts, pad);
 NOTICE:  sift_col index "gt_i": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, v;
-order_array_columns = v, ts; order_layout = v compact in 86% of chunks, and 1 more
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = v;
+order_array_columns = id, v, ts; order_layout = id exact, and 2 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gt_i');
 NOTICE:  sift_col index "gt_i" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT reloptions FROM pg_class WHERE relname = 'gt_i';
                              reloptions                              
 ---------------------------------------------------------------------
- {"order_array_columns=auto: v, ts","point_tid_columns=auto: id, v"}
+ {"order_array_columns=auto: id, v, ts","point_tid_columns=auto: v"}
 (1 row)
 
 -- a REINDEX cannot analyze (ANALYZE opens the index it rebuilds): a table without statistics chooses nothing

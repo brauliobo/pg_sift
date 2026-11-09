@@ -554,10 +554,10 @@ SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_
 CREATE TABLE pb (id int, k int);
 INSERT INTO pb SELECT i, i % 7 FROM generate_series(1, 200000) i;
 CREATE INDEX pb_t ON pb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
-NOTICE:  sift_col index "pb_t": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k
+NOTICE:  sift_col index "pb_t": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pb_t');
-NOTICE:  sift_col index "pb_t" is column format minor 33, which a library before 3.7 cannot read
+NOTICE:  sift_col index "pb_t" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT sift.col_verify('pb_t', true);
  col_verify 

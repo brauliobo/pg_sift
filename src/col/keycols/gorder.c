@@ -19,6 +19,7 @@ typedef struct GordCand
 	bool		ties;			/* fewer than GORD_AUTO_DISTINCT values: weighed like a text column, by the OFFSET that ends in a group of equal keys */
 	bool		nofit;			/* a date or timestamp in heap order (correlation over GORD_AUTO_CORR) or one the units are cut by: no array of its own, but one for the group */
 	bool		grouped;		/* an integer, date or timestamp: the second order sorted by the entity column can be written for it (a numeric or text array has none) */
+	bool		point;			/* a nearly unique integer in heap order (a serial id): its array is runs of consecutive addresses, 0.4 bytes a row, and answers the equality that the point directory (3.3) would */
 	double		corr;
 	double		bytes;			/* a text column: the bytes a row of its array, the share of the build it adds, and its collation */
 	double		write;
@@ -119,7 +120,8 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 
 		bool		text = sift_cgord_leaf_text(d);
 		bool		ties,
-					nofit;
+					nofit,
+					point;
 
 		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_numeric(rel->schema, d)))
 			continue;
@@ -128,11 +130,12 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		cut = cut && sift_col_key_cut(rel);
 		if (!keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || (text && width > GORD_TEXT_WIDTH))
 			continue;
-		nofit = cut || cr >= GORD_AUTO_CORR;
+		point = !cut && cr >= GORD_AUTO_CORR && keycols_point_key(heap, index, rel->schema, d, &cr);
+		nofit = (cut || cr >= GORD_AUTO_CORR) && !point;
 		ties = !nofit && ndistinct < GORD_AUTO_DISTINCT;
 		if (((ties || nofit) && (text || !sift_cgord_leaf_time(d) || ndistinct < 2)) || (nofit && !sift_cgord_leaf_ok(rel->schema, d)))
 			continue;
-		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d), cr, 0, 0, 0, 0};
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d) && !point, point, cr, 0, 0, 0, 0};
 		if (ties)
 		{
 			double		rows = keycols_heap_rows(heap),
@@ -338,7 +341,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 			double		bytes = GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
 
 			for (int i = 0; i < ncand; i++)
-				if (fit[i] && !cand[i].text)
+				if (fit[i] && !cand[i].text && !cand[i].point)
 					bytes -= GORD_ENDS_BYTES;
 			if (log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
 				tkey = -1;

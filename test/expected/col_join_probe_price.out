@@ -28,7 +28,7 @@ SELECT tbl, join_path(tbl) AS path FROM unnest(ARRAY['arrival', 'sorted']) tbl;
    tbl   |    path     
 ---------+-------------
  arrival | nested loop
- sorted  | hash join
+ sorted  | nested loop
 (2 rows)
 
 -- the same rows with either

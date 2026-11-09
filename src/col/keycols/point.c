@@ -43,7 +43,6 @@
 #define POINT_AUTO_UNIT_ROWS	47000.0
 #define POINT_AUTO_ORDER_ROW	13.0
 #define POINT_AUTO_MIN_SAVED_ORDERED	500000.0
-#define POINT_AUTO_UNIQUE		0.5			/* the distinct values of the column over the rows of the table: nearly unique */
 
 /*
  * The bytes a row of the packed table of a point directory: the remainder of the key (the bits the range of the keys
@@ -226,22 +225,20 @@ sift_col_auto_point(Relation heap, Relation index)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
 		AttrNumber	hatt = keycols_heap_attno(index, d);
-		double		distinct,
-					corr,
+		double		corr,
 					S,
 					B,
 					C,
 					G,
 					Gc,
 					dir_bytes;
-		int32		width;
 		bool		inord,
 					ordered;
-		Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
 
-		if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID || !sift_cset_leaf_ok(rel->schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
+		if (!keycols_point_key(heap, index, rel->schema, d, &corr))
 			continue;
-		if (!keycols_col_stats(heap, hatt, &distinct, &corr, &width) || distinct < POINT_AUTO_UNIQUE * rows || sift_col_leaf_unique(heap, index, d))
+		/* a key that follows the heap and has the order array the build chose (gorder.c): the array answers the equality in 0.4 bytes a row where the directory takes 3.3, for 1.1 times the instructions and fewer cold blocks */
+		if (corr >= GORD_AUTO_CORR && sift_col_list_has(ordopt, keycols_leaf_name(index, d)))
 			continue;
 		ordered = corr >= 0.9;
 		inord = !ordered && !ordauto && sift_col_list_has(ordopt, keycols_leaf_name(index, d));

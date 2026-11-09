@@ -9,6 +9,7 @@
 #include "lib/stringinfo.h"
 
 #include "col/col.h"
+#include "col/enc.h"
 
 /*
  * Before a build: the columns that get the global order array (order_array_columns, col/gorder.h) when the option is unset or 'auto' (not 'off', not a list). A
@@ -27,6 +28,7 @@
 #define GORD_AUTO_ROWS		100000
 #define GORD_AUTO_DISTINCT	1000
 #define GORD_AUTO_CORR		0.99
+#define POINT_AUTO_UNIQUE	0.5		/* the distinct values of a column over the rows of the table: nearly unique, a key of the point directory or of an order array of its own (keycols_point_key) */
 #define GORD_KEYORDER_ENTITIES	10	/* the fewest entities the key_order layout serves: ORDER BY entity, ts OFFSET 10,000 costs 2.3 to 2.8 times the wall time of the plain choice with 5, 1.96 with 10 */
 #define GORD_AUTO_MAX		2
 #define GORD_TEXT_SPEEDUP	300.0	/* S of ORDER BY txt LIMIT 10 on a table at the 100,000-row floor: 82.8 M to 0.27 M instructions (3,000,000 rows 2,429 M to 0.86 M, so the floor is the least) */
@@ -48,6 +50,7 @@
 extern AttrNumber	keycols_heap_attno(Relation index, const SiftColDef *d);
 extern double	keycols_heap_rows(Relation heap);
 extern double	keycols_col_nullfrac(Relation heap, AttrNumber hatt);
+extern bool	keycols_point_key(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d, double *corr);
 extern bool	keycols_col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32 *width);
 extern bool	keycols_ends_in_id(const char *name);
 extern bool	keycols_is_fk_column(Relation heap, AttrNumber attno);

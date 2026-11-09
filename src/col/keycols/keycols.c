@@ -133,6 +133,24 @@ sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d)
 	return hatt != 0 && is_unique_column(heap, hatt);
 }
 
+/*
+ * A key the point directory could list (col/keycols/point.c): an integer of nearly unique values (POINT_AUTO_UNIQUE of the rows) that no unique b-tree of the table takes for the
+ * equality. Its correlation with the heap order comes back, which tells the directory from the order array (gorder.c).
+ */
+bool
+keycols_point_key(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d, double *corr)
+{
+	AttrNumber	hatt = keycols_heap_attno(index, d);
+	double		distinct;
+	int32		width;
+	Oid			type = hatt == 0 ? InvalidOid : TupleDescAttr(RelationGetDescr(index), d->attno - 1)->atttypid;
+
+	if (hatt == 0 || d->parent >= 0 || d->store != SIFT_COLS_INT || d->lane != 0 || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID ||
+		!sift_cset_leaf_ok(schema, d) || strchr(keycols_leaf_name(index, d), ',') != NULL)
+		return false;
+	return keycols_col_stats(heap, hatt, &distinct, corr, &width) && distinct >= POINT_AUTO_UNIQUE * keycols_heap_rows(heap) && !is_unique_column(heap, hatt);
+}
+
 bool
 sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, const SiftColDef *d)
 {

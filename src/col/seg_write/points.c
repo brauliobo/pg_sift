@@ -30,6 +30,16 @@ gord_dense_ok(const SiftColSegWriter *w)
 	return w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE && segw_rooted_ok(w);
 }
 
+/* The keys never fall while the heap addresses rise (a serial id): the entries of its order are runs of consecutive addresses, 0.4 bytes a row, and a lookup of the key reads 3 blocks of them where the unit holding it reads 15 */
+static bool
+gord_follows_heap(const PointAcc *a)
+{
+	for (uint32 i = 1; i < a->n; i++)
+		if (a->key[i] < a->key[i - 1] || a->tid[i] < a->tid[i - 1])
+			return false;
+	return true;
+}
+
 /*
  * Does the order of leaf c keep the ends of the segment only (column format minor 40): the leaf is of the build's own choice ('auto: a, b'), not text, the segment has more values than the two
  * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units, whatever key they are cut by (a range across the keys
@@ -53,6 +63,8 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 	if (sift_test_col_gorder_choice != 0)
 		return sift_test_col_gorder_choice == 1;
 #endif
+	if (gord_follows_heap(a))
+		return false;
 	mn = palloc((Size) nsb * 2 * sizeof(int64));
 	mx = mn + nsb;
 	nv = palloc((Size) nsb * sizeof(uint32));
