@@ -98,14 +98,27 @@ CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' ||
 check "standby answers the column source as the primary does" test "$(sql standby "$CHECKS")" == "$(sql primary "$CHECKS")"
 check "the standby computes the groups of the elements from the element cubes as the primary does" \
 	test "$(elem_groups standby on)" == "$(elem_groups primary off)"
-sleep 2   # the standby's feedback (wal_receiver_status_interval) no longer holds the horizon of its finished readers
-sql primary "VACUUM (disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" >/dev/null
+# The units of the merged segment are answered net of exceptions only when the pages of the table are all-visible. VACUUM leaves a page that holds dead items out of it, and with
+# few such pages (under 2%) it bypasses the index cleanup of its own accord: index_cleanup on makes it remove them. A snapshot of the primary older than the churn (a session that
+# has not closed, a maintenance worker) keeps the dead tuples and the newest pages out of it as well: the VACUUM repeats until it is past it, and the log names the holder
+held=
+holders() { sql primary "SELECT string_agg(backend_type || ' xmin ' || backend_xmin || ' since ' || coalesce(xact_start::text, '-'), '; ') FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()"; }
+vacuumed() {
+	vac=$(sql primary "SET client_min_messages = info" "VACUUM (disable_page_skipping, index_cleanup on, verbose) orders" 2>&1)
+	[[ $(sql primary "SELECT relallvisible = relpages FROM pg_class WHERE oid = 'orders'::regclass") == t ]] || { held=${held:-$(holders)}; return 1; }
+}
+wait_for vacuumed 120 || bail "the VACUUM of the primary leaves pages that are not all-visible; held by: $held; $(grep -E 'tuples:|index scan|visibility map' <<<"$vac" | tr '\n' ' ')"
+[[ -z $held ]] || diag "the first VACUUM left pages that are not all-visible; held by: $held"
+sql primary "SELECT sift.col_merge('o_col', true)" >/dev/null
 catchup primary standby
 GONE="SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1 ORDER BY 1"
 check "the standby answers the soft-delete filter as the primary and the heap do" \
 	test "$(sql standby "SET seq_page_cost = 10000" "$GONE")" == "$(sql primary "SET sift.enable_agg = off" "$GONE")" -a "$(sql standby "SELECT gone_same()")" == t
-check "the standby answers units of the merged segment from the exceptions" \
-	grep -qE "[1-9][0-9]* net of exceptions" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE")"
+out=$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE" \
+	"SELECT string_agg(kind || ':' || rows || ':' || units || ':' || dirty || ':' || dead_rows, ' ') FROM sift.col_segments('o_col')")
+out="$(grep -E 'tuples:' <<<"$vac")"$'\n'"$out"
+check "the standby answers units of the merged segment from the exceptions" grep -qE "[1-9][0-9]* net of exceptions" <<<"$out"
+out=
 APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_distinct(status) || ' ' || sift.approx_count_distinct(tenant_id) FROM orders"
 check "the standby merges the sketches of its units to the number the primary's heap gives" \
 	test "$(sql standby "SET sift.agg_force = on" "$APPROX")" == "$(sql primary "SET sift.enable_agg = off" "$APPROX")"
