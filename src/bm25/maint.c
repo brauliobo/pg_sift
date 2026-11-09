@@ -128,6 +128,8 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 	{
 		int			k = 1 + sw->nmore;
 
+		Assert(at >= 0);
+
 		if (n + k > SIFT_MAX_SEGMENTS)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
