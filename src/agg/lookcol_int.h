@@ -19,7 +19,7 @@ typedef struct ColNeed
 	bool	   *dmade;
 	uint32	   *dids;			/* ... and the id of its string among the classes' (lookclass.c), 0 not made yet */
 	uint32		dn;
-	MemoryContext cx;			/* the unit's: reset with it */
+	MemoryContext cx;			/* the unit's: reset with it; the dictionary strings and the numerics of the unit live here */
 } ColNeed;
 
 /* a column of the join that is an expression of the table's columns no index holds: computed from the leaves of the columns it reads, for each row */

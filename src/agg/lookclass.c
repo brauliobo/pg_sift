@@ -394,8 +394,12 @@ dense_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 
 
 /* is the leaf of the key an int4? The columns may be of any type the load decodes: the integers, a float's bits, a numeric's scaled integer, a string's id */
 static bool
-dense_leaves_ok(const ColNeed *need, int key)
+dense_leaves_ok(const ColNeed *need, int key, const CompCol *comp, int ncomp)
 {
+	/* a computed column is kept as the outcome of a test (true, false, NULL) */
+	for (int k = 0; k < ncomp; k++)
+		if (exprType(comp[k].expr) != BOOLOID)
+			return false;
 	return need[key].lf->vtype == SCV_I32 && need[key].lf->typid == INT4OID;
 }
 
@@ -419,14 +423,15 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound)
 		return NULL;
 	while (need[key].att != j->keyatt[0])
 		key++;
-	if (!dense_leaves_ok(need, key))
+	if (!dense_leaves_ok(need, key, comp, ncomp))
 	{
 		index_close(ix, AccessShareLock);
 		return NULL;
 	}
 	sift_colsrc_stats(ix, &st);
 	/* the classes are an array over the keys: a table whose keys span more than the lookup budget (a sparse key) is read as rows */
-	if (st.min[need[key].lf->id] < 0 || st.max[need[key].lf->id] >= (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16))
+	if (st.min[need[key].lf->id] < 0 ||
+		!dense_span_ok(st.max[need[key].lf->id] + 1, st.nrows, (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16)))
 	{
 		index_close(ix, AccessShareLock);
 		return NULL;
@@ -475,7 +480,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 		return false;
 	for (d.key = 0; need[d.key].att != j->keyatt[0]; d.key++)
 		;
-	if (!dense_leaves_ok(need, d.key))
+	if (!dense_leaves_ok(need, d.key, comp, ncomp))
 	{
 		index_close(ix, AccessShareLock);
 		return false;
@@ -500,7 +505,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 	}
 	dense_tables(&d, false);
 	ok = (dense_gang(ex, rel, ix, need, nneed, &d) || lookcol_read_units(&(UnitScope) {.snap = ex->snap}, rel, ix, need, nneed, dense_unit, &d)) &&
-		!d.bad && d.rows > 0 && d.n <= 8 * d.rows + 65536;
+		!d.bad && d.rows > 0 && dense_span_ok(d.n, d.rows, d.limit);
 	index_close(ix, AccessShareLock);
 	if (ncomp > 0)
 	{
