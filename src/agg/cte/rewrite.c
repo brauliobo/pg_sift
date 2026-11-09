@@ -14,6 +14,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/inval.h"
+#include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -43,8 +44,9 @@ int64		sift_prepass_nodes;	/* the nodes the rewrite passes visited (sift._test_p
 int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
 #endif
 
+/* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries (scripts/check-relcache-slots.sh) */
 static void
-source_cache_inval(Datum arg, Oid relid)
+source_cache_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	if (source_cache != NULL)
 	{
@@ -79,7 +81,7 @@ has_column_source(Oid relid)
 
 		if (!registered)
 		{
-			CacheRegisterRelcacheCallback(source_cache_inval, (Datum) 0);
+			CacheRegisterSyscacheCallback(RELOID, source_cache_inval, (Datum) 0);
 			registered = true;
 		}
 		source_cx = AllocSetContextCreate(TopMemoryContext, "sift cache column sources", ALLOCSET_SMALL_SIZES);

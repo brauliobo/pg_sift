@@ -94,7 +94,8 @@ extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, struct Tuplestorestate *old_rows);
 /* The option track_changes (col/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
-extern void sift_col_track_hook(void);
+extern void sift_col_track_init(void);
+extern void sift_col_track_dropping(Oid relid);
 extern Oid sift_col_track_lookup(const char *name, bool missing_ok);
 extern Oid sift_col_track_function(bool missing_ok);
 extern Oid sift_col_track_trigger_index(Oid trigger);

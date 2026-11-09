@@ -55,6 +55,7 @@ CHECKS=(
 	'ci-stop	scripts/test-ci-stop.sh'
 	'ci-ready	scripts/test-ci-ready.sh'
 	'scaling-lock	scripts/test-scaling-gate.sh'
+	'relcache-slots	scripts/check-relcache-slots.sh --selftest && scripts/check-relcache-slots.sh'
 	'pg-bare	scripts/check-pg-bare.sh --selftest && scripts/check-pg-bare.sh'
 	'scaling-triggers	scripts/check-scaling-triggers.sh'
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'

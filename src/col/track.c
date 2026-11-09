@@ -724,6 +724,7 @@ static struct
 {
 	Oid			trigger;
 	Oid			index;
+	uint32		index_hash;		/* of its pg_class row in the RELOID syscache */
 	Oid			rel;
 	RelFileNumber relnumber;
 	BlockNumber blk;
@@ -743,9 +744,9 @@ rowmemo_reset(XactEvent event, void *arg)
 
 /* REINDEX CONCURRENTLY swaps what the trigger depends on from the old index to the new one, and invalidates both: the next row asks the catalog again */
 static void
-rowmemo_inval(Datum arg, Oid relid)
+rowmemo_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
-	if (relid == InvalidOid || relid == rowmemo.index)
+	if (hashvalue == 0 || hashvalue == rowmemo.index_hash)
 		rowmemo.trigger = InvalidOid;
 }
 
@@ -800,12 +801,13 @@ track_row(TriggerData *td)
 	if (!rowmemo.hooked)
 	{
 		RegisterXactCallback(rowmemo_reset, NULL);
-		CacheRegisterRelcacheCallback(rowmemo_inval, (Datum) 0);
+		CacheRegisterSyscacheCallback(RELOID, rowmemo_inval, (Datum) 0);
 		rowmemo.hooked = true;
 	}
 	if (rowmemo.trigger != td->tg_trigger->tgoid)
 	{
 		rowmemo.index = trigger_index(td->tg_trigger);
+		rowmemo.index_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(rowmemo.index));
 		rowmemo.live = index_live(rowmemo.index);
 		if (!OidIsValid(rowmemo.index))
 			sift_col_track_orphan_fired();
