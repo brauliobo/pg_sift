@@ -390,6 +390,10 @@ CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
 CREATE FUNCTION sift._test_tbl_hold_maint(tbl regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_hold_maint' LANGUAGE C STRICT;
 
+-- Table module (src/table/funcs_test.c): closes the write buffer of a sift_table and promotes the sealed ones, for a session that holds the maintenance lock
+CREATE FUNCTION sift._test_tbl_promote_held(tbl regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_promote_held' LANGUAGE C STRICT;
+
 -- Table module (src/table/funcs.c): the cube blob of the first units of a sift_table decoded as stored, cut and damaged (as _test_col_cube_damage); with_calendar: blobs with a calendar dim
 CREATE FUNCTION sift._test_tbl_cube_damage(tbl regclass, units int4, OUT blobs int8, OUT intact int8, OUT with_calendar int8, OUT cut int8, OUT cut_accepted int8,
 										   OUT damaged int8, OUT accepted int8, OUT unsound int8) RETURNS record
