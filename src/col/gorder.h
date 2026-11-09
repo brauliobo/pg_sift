@@ -83,11 +83,16 @@
 #define SIFT_CGORD_MEM_MAX	2097152		/* rows of the write buffers past which a scan reads them as units: the memory of their order (about 64 bytes a row), not the time of it (sift_col_gorder_open) */
 #define SIFT_CGORD_CAP		(SIFT_CGORD_ROWS + 8)		/* slots of the arrays sift_cgord_decode fills */
 
-/* A chunk of a global order decoded whole: the seek that ends in a chunk leaves it to the cursor that reads the entries from there (at UINT32_MAX: none) */
+/* A chunk of a global order decoded whole: the seek that ends in a chunk leaves it to the cursor that reads the entries from there (at UINT32_MAX: none).
+ * Whatever fills addr[] must also set afrom and an: a producer that decodes the whole chunk (a write buffer's order, a memory source) sets afrom = 0, an = cm,
+ * or the cursor (cur_at, gord_cur_fill) reads the window as empty and decodes the chunk again. */
 typedef struct SiftCGOrdBuf
 {
 	uint32		at;				/* the position of the chunk's first entry */
-	uint32		cm;				/* the entries of the chunk decoded: the first cm */
+	uint32		cm;				/* the keys of the chunk decoded: the first cm */
+	uint32		afrom;			/* the addresses of entries [afrom, afrom + an) of the chunk are in addr[] (a window: a cursor that reads a few entries of a chunk decodes those) */
+	uint32		an;
+	bool		desc;			/* the cursor that owns the buffer reads the chunk backwards: its window ends at the entry asked for */
 	uint32		rows;			/* the entries of the chunk */
 	uint32		kfrom;			/* the exact keys of entries [kfrom, kfrom + kn) of the chunk are in key[] (a chunk that is not compact: the first cm) */
 	uint32		kn;
@@ -284,6 +289,13 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
  * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
 extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr);
+/* The first w keys (all m when w >= m) of a chunk from its key blob alone; key needs SIFT_CGORD_CAP slots */
+extern void sift_cgord_decode_keys(MemoryContext mcxt, const uint8 *kb, uint32 klen, uint32 m, uint32 w, int64 *key);
+/*
+ * The heap addresses of the entries [*a0, a1) of a chunk of m from its address blob, with the keys key[0 .. a1) of the chunk decoded (the runs of equal keys name the gaps of the blob): *a0 moves back to the start
+ * of the run of equal keys it falls in, where the blob is coded from. addr[*a0 .. a1) are filled; addr needs SIFT_CGORD_CAP slots. False when the blob is malformed.
+ */
+extern bool sift_cgord_decode_addrs(MemoryContext mcxt, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, const int64 *key, uint32 *a0, uint32 a1, uint64 *addr);
 /* A compact chunk of m entries whose first key is first: the first key of the bucket of each entry into kmin (SIFT_CGORD_CAP slots; NULL: not wanted) with its shift, and the addresses of the first w entries into addr (SIFT_CGORD_CAP slots); false when malformed */
 extern bool sift_cgord_decode_compact(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, int64 first, uint32 w, int64 *kmin, uint32 *sh, uint64 *addr);
 extern bool sift_cgord_group_bounds(int64 *kmin, int64 *key, uint64 *exact, uint32 m, int64 first, const uint8 *anch, uint32 n);

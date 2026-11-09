@@ -153,20 +153,41 @@ sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 		d->off >= SIFT_CGORD_HDR + (uint64) h->chunks * SIFT_CGORD_DIRENT;
 }
 
-bool
-sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr)
+void
+sift_cgord_decode_keys(MemoryContext mcxt, const uint8 *kb, uint32 klen, uint32 m, uint32 w, int64 *key)
 {
 	SiftCc	   *k = sift_cc_open_rows(mcxt, kb, klen, false, m);
-	uint32		ob = pad ? pad >> 8 & 0xF : 9;
 
-	w = Min(w, m);
-	sift_cc_decode_head(k, w, key);
+	sift_cc_decode_head(k, Min(w, m), key);
 	sift_cc_close(k);
+}
+
+/* the values idx[0 .. n) = s .. s + n - 1 of a blob, into dst */
+static void
+decode_run(const SiftCc *c, uint32 s, uint32 n, int64 *dst)
+{
+	uint32		idx[SIFT_CGORD_CAP];
+
+	for (uint32 i = 0; i < n; i++)
+		idx[i] = s + i;
+	sift_cc_decode_sel(c, idx, n, dst);
+}
+
+bool
+sift_cgord_decode_addrs(MemoryContext mcxt, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, const int64 *key, uint32 *a0, uint32 a1, uint64 *addr)
+{
+	uint32		ob = pad ? pad >> 8 & 0xF : 9;
+	uint32		s = *a0;
+	uint64		mask = ((uint64) 1 << ob) - 1;
+
+	if (a1 > m || s >= a1)
+		return s >= a1;
 	if (pad & SIFT_CGORD_GAPS)
 	{
 		uint32		hdr[2],
 					flen,
 					nf,
+					before = 0,
 					f = 0,
 					fi = 0,
 					gi = 0;
@@ -183,34 +204,54 @@ sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 
 		nf = hdr[1];
 		if (nf == 0 || nf >= m || (uint64) sizeof(hdr) + GORD_ALIGN8(flen) > alen)
 			return false;
+		/* the blob codes the first address of each run of equal keys and the gaps after it: the window starts at a run's first entry, and the runs before it are counted */
+		while (s > 0 && key[s] == key[s - 1])
+			s--;
+		for (uint32 i = 1; i < s; i++)
+			before += key[i] != key[i - 1];
+		before += s > 0;
+		for (uint32 i = s; i < a1; i++)
+			f += i == 0 || key[i] != key[i - 1];
+		if (before + f > nf || (s - before) + (a1 - s - f) > m - nf)
+			return false;
 		fc = sift_cc_open_rows(mcxt, ab + sizeof(hdr), flen, false, nf);
 		gc = sift_cc_open_rows(mcxt, ab + sizeof(hdr) + GORD_ALIGN8(flen), alen - sizeof(hdr) - GORD_ALIGN8(flen), false, m - nf);
-		for (uint32 i = 0; i < w; i++)
-			f += i == 0 || key[i] != key[i - 1];
-		fv = palloc((Size) (f + 1) * sizeof(int64));
-		gv = palloc((Size) (w - f + 1) * sizeof(int64));
-		sift_cc_decode_head(fc, f, fv);
-		sift_cc_decode_head(gc, w - f, gv);
-		for (uint32 i = 0; i < w; i++)
+		fv = palloc((Size) (f + 1 + SIFT_COL_PAD / 8) * sizeof(int64));
+		gv = palloc((Size) (a1 - s - f + 1 + SIFT_COL_PAD / 8) * sizeof(int64));
+		decode_run(fc, before, f, fv);
+		if (a1 - s > f)
+			decode_run(gc, s - before, a1 - s - f, gv);
+		for (uint32 i = s; i < a1; i++)
 		{
 			prev = i == 0 || key[i] != key[i - 1] ? (uint64) fv[fi++] : prev + (uint64) gv[gi++] + 1;
-			addr[i] = (prev >> ob) << 16 | (prev & (((uint64) 1 << ob) - 1));
+			addr[i] = (prev >> ob) << 16 | (prev & mask);
 		}
 		pfree(fv);
 		pfree(gv);
 		sift_cc_close(fc);
 		sift_cc_close(gc);
+		*a0 = s;
 		return true;
 	}
 	{
 		SiftCc	   *a = sift_cc_open_rows(mcxt, ab, alen, false, m);
 
-		sift_cc_decode_head(a, w, (int64 *) addr);
-		for (uint32 i = 0; i < w; i++)
-			addr[i] = (addr[i] >> ob) << 16 | (addr[i] & (((uint64) 1 << ob) - 1));
+		decode_run(a, s, a1 - s, (int64 *) addr + s);
+		for (uint32 i = s; i < a1; i++)
+			addr[i] = (addr[i] >> ob) << 16 | (addr[i] & mask);
 		sift_cc_close(a);
 	}
 	return true;
+}
+
+bool
+sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 pad, uint32 m, uint32 w, int64 *key, uint64 *addr)
+{
+	uint32		a0 = 0;
+
+	w = Min(w, m);
+	sift_cgord_decode_keys(mcxt, kb, klen, m, w, key);
+	return sift_cgord_decode_addrs(mcxt, ab, alen, pad, m, key, &a0, w, addr);
 }
 
 bool

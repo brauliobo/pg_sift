@@ -221,6 +221,8 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 #define ZONES_UNIT	(UINT32_MAX - 1)
 #define BISECT_UNIT	(UINT32_MAX - 2)
 #define SETS_UNIT	(UINT32_MAX - 3)
+#define PTS_UNIT	(UINT32_MAX - 4)
+#define GORDH_UNIT	(UINT32_MAX - 5)
 
 static void *
 leaf_find(SiftColSegment *seg, int col, uint32 unit)
@@ -261,6 +263,30 @@ sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays 
 {
 	CDICT_STAT(zone_loads);
 	leaf_keep(seg, col, ZONES_UNIT, cx, z);
+}
+
+SegPts *
+sift_cseg_pts_find(SiftColSegment *seg)
+{
+	return leaf_find(seg, HEAD_COL, PTS_UNIT);
+}
+
+void
+sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p)
+{
+	leaf_keep(seg, HEAD_COL, PTS_UNIT, cx, p);
+}
+
+SegGOrdHead *
+sift_cseg_gordh_find(SiftColSegment *seg, int col)
+{
+	return leaf_find(seg, col, GORDH_UNIT);
+}
+
+void
+sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h)
+{
+	leaf_keep(seg, col, GORDH_UNIT, cx, h);
 }
 
 void *

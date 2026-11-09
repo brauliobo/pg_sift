@@ -451,6 +451,7 @@ seg_points_read(SiftColSegment *seg)
 				ipk = 0;
 	char	   *recs;
 	SiftCPackPar *pars = NULL;
+	SegPts	   *cached;
 
 	if (pv->pt_checked)
 		return pv->pt;
@@ -458,6 +459,21 @@ seg_points_read(SiftColSegment *seg)
 	pv->dict_end = s->len;
 	if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX || s->len < sizeof(foot) + sizeof(hdr))
 		return NULL;
+	if (HEAD_CACHED() && (cached = sift_cseg_pts_find(seg)) != NULL)
+	{
+		/* the leaves a scan adds state to are copied: the cache keeps what the records said */
+		pv->dict_end = cached->dict_end;
+		pv->point_bytes = cached->point_bytes;
+		pv->gorder_bytes = cached->gorder_bytes;
+		pv->pt = MemoryContextAlloc(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
+		memcpy(pv->pt, cached->pt, seg->schema->ncols * sizeof(PointLeaf));
+		if (cached->go != NULL)
+		{
+			pv->go = MemoryContextAlloc(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+			memcpy(pv->go, cached->go, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		}
+		return pv->pt;
+	}
 	seg_read(seg, s->off + s->len - sizeof(foot), sizeof(foot), foot);
 	memcpy(tail, &foot[1], sizeof(tail));
 	if (tail[0] != SIFT_CPOINT_MAGIC || !point_version_ok(tail[1]))
@@ -575,6 +591,21 @@ seg_points_read(SiftColSegment *seg)
 		for (int c = 0; c < 2 * seg->schema->ncols; c++)
 			pv->gorder_bytes += pv->go[c].bytes;
 	pv->point_bytes = end - first - pv->gorder_bytes;
+	if (HEAD_CACHED())
+	{
+		MemoryContext cx = AllocSetContextCreate(seg->mcxt, "sift cache segment points", ALLOCSET_SMALL_SIZES);
+		SegPts	   *p = MemoryContextAlloc(cx, sizeof(SegPts));
+
+		p->dict_end = pv->dict_end;
+		p->point_bytes = pv->point_bytes;
+		p->gorder_bytes = pv->gorder_bytes;
+		p->pt = MemoryContextAlloc(cx, seg->schema->ncols * sizeof(PointLeaf));
+		memcpy(p->pt, pv->pt, seg->schema->ncols * sizeof(PointLeaf));
+		p->go = pv->go == NULL ? NULL : MemoryContextAlloc(cx, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		if (p->go != NULL)
+			memcpy(p->go, pv->go, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
+		sift_cseg_pts_keep(seg, cx, p);
+	}
 	return pv->pt;
 }
 

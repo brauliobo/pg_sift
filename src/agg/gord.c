@@ -45,9 +45,10 @@ gbuf_get(void)
 		b = MemoryContextAlloc(gbuf_cx, sizeof(SiftCGOrdBuf));
 	}
 	b->at = UINT32_MAX;
-	b->cm = b->rows = b->kfrom = b->kn = 0;
+	b->cm = b->rows = b->kfrom = b->kn = b->afrom = b->an = 0;
 	b->compact = false;
 	b->stored = false;
+	b->desc = false;
 	return b;
 }
 
@@ -65,7 +66,7 @@ gord_release(void *arg)
 pg_noinline void
 gord_cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 {
-	uint32		w = c->gm ? UINT32_MAX : p - c->buf->at < c->buf->rows ? c->buf->cm * 2 : g->head;
+	uint32		w = c->gm ? UINT32_MAX : p - c->buf->at < c->buf->rows ? Max(c->buf->an * 2, g->head) : g->head;
 
 	sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, w, c->buf);
 }
@@ -255,6 +256,7 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
 		c->buf = gbuf_get();
+		c->buf->desc = desc;
 		if (b == NULL && collid == 0 && sift_colsrc_gorder_groups(src, i, leaf, &c->ngrp))
 		{
 			c->gm = g->gm = true;
@@ -293,10 +295,11 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 				gbuf_put(c->buf);
 				c->buf = prev->cur[j]->buf;
 				prev->cur[j]->buf = NULL;
+				c->buf->desc = desc;
 				if (!c->buf->stored)
 				{
 					c->buf->at = UINT32_MAX;
-					c->buf->cm = c->buf->rows = c->buf->kfrom = c->buf->kn = 0;
+					c->buf->cm = c->buf->rows = c->buf->kfrom = c->buf->kn = c->buf->afrom = c->buf->an = 0;
 					c->buf->compact = false;
 				}
 				break;
@@ -587,7 +590,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 				uint64		a;
 				int			st;
 
-				if (p - c->buf->at >= c->buf->cm)
+				if (p - c->buf->at - c->buf->afrom >= c->buf->an)
 					sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, UINT32_MAX, c->buf);
 				a = c->buf->addr[p - c->buf->at];
 				st = sift_colsrc_gorder_state(g->src, c->src, a);

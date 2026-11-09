@@ -89,7 +89,7 @@ extern uint32 gord_group_skip(SiftGOrd *g, uint32 k);
 static inline void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	if (c->gm ? p - c->buf->at >= c->buf->cm : p - c->buf->at - c->buf->kfrom >= c->buf->kn)
+	if (c->gm ? p - c->buf->at >= c->buf->cm : p - c->buf->at - c->buf->kfrom >= c->buf->kn || p - c->buf->at - c->buf->afrom >= c->buf->an)
 		gord_cur_fill(g, c, p);
 	*key = c->buf->key[p - c->buf->at];
 	*addr = c->buf->addr[p - c->buf->at];

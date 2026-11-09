@@ -660,6 +660,8 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 	buf->compact = false;
 	buf->kfrom = 0;
 	buf->kn = buf->cm;
+	buf->afrom = 0;
+	buf->an = buf->cm;
 	memcpy(buf->key, g->key + buf->at, buf->cm * sizeof(int64));
 	for (uint32 k = 0; k < buf->cm; k++)
 		buf->addr[k] = g->tid[buf->at + k];

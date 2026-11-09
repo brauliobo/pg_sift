@@ -385,6 +385,31 @@ typedef struct GOrdLeaf
 	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
 } GOrdLeaf;
 
+/* What a segment's point directory records say, kept by the backend (col/dictcache.c): the records of seg_points_read, without the state a scan adds to a leaf */
+typedef struct SegPts
+{
+	uint64		dict_end;
+	uint64		point_bytes;
+	uint64		gorder_bytes;
+	PointLeaf  *pt;				/* [ncols] */
+	GOrdLeaf   *go;				/* [2 * ncols], NULL: the segment has no global order */
+} SegPts;
+
+/* The header of a global order block and its chunk directory, parsed once: they are of an immutable segment (the entries are read where the directory fits SIFT_CGORD_DIR_EAGER) */
+typedef struct SegGOrdHead
+{
+	SiftCGOrdHdr hdr;
+	uint64		gat;
+	uint8	   *dir;
+	uint8	   *ents;			/* NULL: the directory is read by the first seek */
+} SegGOrdHead;
+
+/* The backend's cache of both, pinned for the segment's context, else NULL; keep takes the one made in cx, a child of the segment's context */
+extern SegPts *sift_cseg_pts_find(SiftColSegment *seg);
+extern void sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p);
+extern SegGOrdHead *sift_cseg_gordh_find(SiftColSegment *seg, int col);
+extern void sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h);
+
 /* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */
 extern bool (*sift_gprobe_ok) (SiftColSegment *seg, GOrdLeaf *g, int col);
 extern void *(*sift_gprobe_open) (SiftColSegment *seg, GOrdLeaf *g, int col);
