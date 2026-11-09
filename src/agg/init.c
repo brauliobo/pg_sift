@@ -312,7 +312,6 @@ semi_lut_build(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	const bool	wide = ex->lay->leaf[cb->leaf[0]].vtype == SCV_I64;
 	const uint64 limit = (uint64) sift_agg_semi_lut_size * 1024;
 	int64		lo = PG_INT64_MAX,
 				hi = PG_INT64_MIN;
@@ -322,9 +321,12 @@ semi_lut_build(AggExec *ex, int ci)
 	/* the table depends on the rows alone when the load tested the table's own conditions: the same rows give the same table */
 	bool		kept = m->filtered || j->fslot < 0;
 	MemoryContext cx = kept ? m->cxt : ex->cxt;
+	bool		wide;
 
+	/* a combo with no leaf (leaf[0] < 0) has none to read: semi_lut_possible says so first */
 	if (!semi_lut_possible(ex->spec, ci, ex->nbase))
 		return;
+	wide = ex->lay->leaf[cb->leaf[0]].vtype == SCV_I64;
 	if (!semi_lut_leaf(ex->lay, cb->leaf[0]))
 	{
 		semi_pass(ex, ci);
