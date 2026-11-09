@@ -313,8 +313,10 @@ sift_col_init(void)
 							&sift_col_unit_floor, 2048, 0, 32768, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_wbuf_ref",
 							 "A row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, not as its values.",
-							 "The reader of the buffer (a scan, a promotion, a lookup) fetches the values from the heap by TID, in block order a page of records at a time, and skips a tuple that is gone or is another one's. "
-							 "Records written while it was on stay references after it is turned off. An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
+							 "The backend that inserts the row keeps its values in shared memory (1 MB segments made on demand, 128 MB for the server at most, 88 bytes a row of a 13 column table), and the reader of the buffer "
+							 "takes them from there. A server that starts again, a standby and a promoted standby have none: the first reader builds them from the heap, once for the buffer. A row that finds no room "
+							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 46. "
+							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, false, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",

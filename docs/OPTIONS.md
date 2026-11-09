@@ -1675,16 +1675,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 4.3 · default off
 
-- **What it does:** a row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, and the reader of the buffer fetches the values from the heap by address
-- **Gain:** n/a: prototype, not measured yet
-- **Impact:** index size: n/a: prototype, not measured yet; build, merge and writes: n/a: prototype, not measured yet; other: a scan, a promotion or a lookup of the buffer reads the heap tuple of every row it decodes (in block order, a page of records at a time), and skips a tuple that is gone or is another one's
-- **When:** An index that tracks changes (the primary key of a heap table, the default) of a heap table. Not an index without track_changes, a speculative insertion or a table that is not a heap.
-- **Default:** off — Not on by default: the reader of the buffer pays a heap fetch for every row until the buffer is promoted.
-- **Why not the default:** the history does not say
-- **Turn off:** SET sift.col_wbuf_ref = off (the default): rows are written with their values.
-- **Upgrade from 4.2:** A new setting: nothing changes while it is off.
-- **Advice:** Leave off: a prototype that a measurement decides on. Records written while it was on stay references after it is turned off.
-- **Sources:** benchmark `test:col_wbuf_ref_prune`; [USAGE](USAGE.md#maintenance-and-operations)
+- **What it does:** a row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple; its values are kept in shared memory by the backend that inserted it, and the reader of the buffer takes them from there
+- **Gain:** 500,000-row index, batches of 2,000 rows, 48 batches: index pages written 410 to 199 B a row with updates, deletes and VACUUM, 100 to 32 B a row for inserts alone; index WAL 506 to 162 B a row (inserts alone 76 to 15.5), all relations 5,970 to 5,617 B a row; with a snapshot held the index file is 64 MB without and 42 MB with, and a VACUUM 5.1 s against 0.09 s
+- **Impact:** index size: -17% of the index file for inserts alone (37.9 to 31.4 MB), -34% with a snapshot held (64.1 to 42.3 MB); shared memory 88 bytes a buffered row, 4.7 MB for the 47,000 rows of a buffer; build, merge and writes: insert +0.2% instructions (110.4 to 110.6 M a 2,000-row batch), promotion +1.7% (93.4 to 95.1 M), merge -1% to 0; a read of the buffer: warm within 1% (the worst of 13 classes at 0, 1, 4 and 8 overlays and 2,000 to 47,000 buffered rows: +8% of 38 M), first statement of a backend +4% to +5% at 47,000 rows (+12 M); the first read after a restart or on a standby +11,900 instructions a row (12,000 rows: 65 M to 209 M, 8 ms to 24 ms), once for the buffer; other: the values of the buffered rows take shared memory, 88 bytes a row for a table of 13 columns, in 1 MB segments made on demand up to 128 MB for the server (a buffer of 500 rows holds 64 kB); a server that starts again, a standby and a promoted standby build them from the heap, once for each buffer, by the first reader (about 11,900 instructions a row)
+- **When:** An index that tracks changes (the primary key of a heap table, the default) of a heap table, written in small batches: the pages and the WAL of every statement shrink. Not an index without track_changes, a speculative insertion or a table that is not a heap.
+- **Default:** off — Not on by default: the first reader of a buffer after a restart, on a standby or on a promoted standby builds its entries from the heap (+11,900 instructions a row, about 2 times the first read without the setting), and an index that holds a reference is refused by an older release.
+- **Why not the default:** the gain does not pay for the growth and the build
+- **Turn off:** SET sift.col_wbuf_ref = off (the default): rows are written with their values, in the pages of the buffer. Records written while it was on stay references.
+- **Upgrade from 4.2:** A new setting: nothing changes while it is off. A write buffer that holds a reference is column format minor 46: a release before 4.3 refuses the index, so turn it on after every server that reads the index is upgraded. No REINDEX.
+- **Advice:** Leave off until the cost of the first read after a restart or on a standby is accepted: the writes of an index with many small batches write a third to a half of the pages and a fifth of the WAL. Records written while it was on stay references after it is turned off; an index that holds one is column format minor 46 and an older release refuses it. sift.col_arena_status() shows the arena.
+- **Sources:** benchmark `test:col_wbuf_arena`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_partition_kb
 
@@ -2690,7 +2690,7 @@ No default changed since 4.2; new: `sift.agg_connect_found`, `sift.agg_child_fir
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | '' | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | '' | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
-| `sift.col_wbuf_ref` | new | off |  | A new setting: nothing changes while it is off. |
+| `sift.col_wbuf_ref` | new | off |  | A new setting: nothing changes while it is off. A write buffer that holds a reference is column format minor 46: a release before 4.3 refuses the index, so turn it on after every server that reads the index is upgraded. No REINDEX. |
 | `sift.agg_case_filter` | on | on |  | ALTER EXTENSION UPDATE: nothing to run and no REINDEX; the setting is on and a pivot over CASE is planned as filters from the next statement. |
 | `sift.agg_dimmap_kb` | new | 65536 kB |  | ALTER EXTENSION UPDATE is enough; nothing is rebuilt and no REINDEX is needed. |
 | `sift.agg_connect_found` | new | on |  | New in 4.3. |
