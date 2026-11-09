@@ -1460,9 +1460,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 4.3 · default on
 
-- **What it does:** connects a new sift_col index to the sift_col indexes of the parent tables of its validated foreign keys, carrying their small scalar columns, so that no declaration is needed
+- **What it does:** connects a new sift_col index to the sift_col indexes of the parent tables of its validated foreign keys as a key mapping that carries no parent column, so that no declaration is needed
 - **Gain:** **not measured**
-- **Impact:** index size: **not measured**; build, merge and writes: 20,000 single-row UPDATEs of a parent with 100,000 rows and a sift_col index: 98.7 k instructions an update with and without a connected child (+0.1%, three runs of each), WAL 335 to 368 bytes an update (+10.0%) for the 32-byte journal record; other: the parent index keeps a journal (one 32-byte record for each entry that an UPDATE, DELETE or key change ends); the first child of a parent holds the writers of the parent table out from the end of its scan to the end of the statement; the segments of the child are column format minor 45, which 4.2 and older refuse; the carried leaves take up to 64 bytes a row for each connection
+- **Impact:** index size: **not measured**; build, merge and writes: 20,000 single-row UPDATEs of a parent with 100,000 rows and a sift_col index: 98.7 k instructions an update with and without a connected child (+0.1%, three runs of each), WAL 335 to 368 bytes an update (+10.0%) for the 32-byte journal record; other: the parent index keeps a journal (one 32-byte record for each entry that an UPDATE, DELETE or key change ends); the first child of a parent holds the writers of the parent table out from the end of its scan to the end of the statement; the segments of the child are column format minor 45, which 4.2 and older refuse; one boolean leaf for each connection says whether the parent row was found
 - **When:** A table that holds an integer foreign key to a table with a sift_col index that tracks the key.
 - **Default:** on — Nothing reads the connection yet in this release; the journal and the leaves are its whole cost, and the foreign key says the join exists.
 - **Turn off:** SET sift.col_auto_connect = off; connect = 'off' on an index; ALTER INDEX .. SET (connect = 'off') and REINDEX

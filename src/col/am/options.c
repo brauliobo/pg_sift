@@ -244,7 +244,7 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.col_auto_connect",
 							 "CREATE INDEX and REINDEX of a sift_col index connect it to the sift_col indexes of the tables its validated foreign keys reference.",
 							 "On: an index without the option connect that holds the column of a validated single column foreign key to an int2, int4 or int8 key of a heap table that has a sift_col index tracking that key "
-							 "is connected to it, carrying the scalar columns of that index that are not wide (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
+							 "is connected to it without carrying any column of it (the choice is written into the option as 'auto: ..', and a NOTICE names it and says how to carry columns). "
 							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
 							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_connect_refresh_pct",

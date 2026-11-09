@@ -68,9 +68,8 @@ concurrently built copy is complete (the next VACUUM does it) nothing is vouched
 
 `CREATE INDEX` and `REINDEX` of a `sift_col` index that has no `connect` option connect it by themselves (`sift.col_auto_connect`, on by default), and say so:
 
-    NOTICE:  sift_col index "facts_col" connected to dim_a(id) through foreign key "facts_dim_a_id_fkey" carrying category_id, label, price
-    DETAIL:  Left out: notes (wider than 32 bytes on average), tags (a type that is not carried).
-    HINT:  Turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
+    NOTICE:  sift_col index "facts_col" connected to dim_a(id) through foreign key "facts_dim_a_id_fkey"
+    HINT:  Carry parent columns with connect = 'dim_a_id -> dim_a(id) carries <columns>'; turn it off with connect = 'off' on the index, or SET sift.col_auto_connect = off.
 
 A foreign key connects when it is validated, has one column, that column is in the index and is an `int2`, `int4` or `int8`, the referenced table is a plain heap table and the referenced
 column is an integer that a `sift_col` index of that table is ready and tracks (`track_changes`, the default for a primary key). A deferrable key connects as well: the connection never relies
@@ -78,11 +77,10 @@ on the integrity of the data, a child row without a parent is read by the join. 
 in a DEBUG1 message otherwise (a composite key, a key that is not validated, a text key, a parent index that does not track the key). Several foreign keys give several connections (8 at
 most; the first foreign key of a column wins).
 
-The columns carried are the parent index's own plain columns that are not the key, in the order of the index: scalar types only (no jsonb, no arrays), a text column only when its average width
-is 32 bytes or less (a wide text column makes the dictionary of every segment grow with the parent), and at most 64 bytes a row for a connection (a string counts its 4-byte code), within the caps of the
-option; what does not fit is named in the DETAIL. To carry others, name the connection yourself.
+An automatic connection carries no parent column: it is the key mapping (the found flag of each row and the stamp of the segment), and the join reads the parent's columns from the leaves of the parent's
+own `sift_col` index. Carried columns are the user's choice, one measured size and gain at a time: name the connection with `carries`.
 
-The choice is written into the option, `connect = 'auto: a_id -> dim_a(id) carries x, y; ..'`, so `pg_dump` writes it and a restore needs neither the constraints nor the parent's columns to be
+The choice is written into the option, `connect = 'auto: a_id -> dim_a(id); ..'`, so `pg_dump` writes it and a restore needs neither the constraints nor the parent's columns to be
 looked up again; `REINDEX` keeps it, and `sift.col_connections` has `automatic` true for it. `connect = 'off'` on the index, `ALTER INDEX .. SET (connect = 'off')` and a `REINDEX`, or
 `SET sift.col_auto_connect = off` (then `connect = 'auto'` on one index still connects it) turn it off. An explicit `connect` always wins.
 

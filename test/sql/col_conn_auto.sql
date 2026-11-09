@@ -12,7 +12,7 @@ CREATE INDEX dim_b_col ON dim_b USING sift_col (id, zone);
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a, dim_b_id int NOT NULL REFERENCES dim_b, v int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + i % 500, 1 + i % 50, i FROM generate_series(1, 3000) i;
 \set VERBOSITY default
--- one index, two foreign keys: two connections, the wide and the array columns left out and said
+-- one index, two foreign keys: two connections that carry nothing
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, dim_b_id, v);
 SELECT ordinal, fk, parent, declaration, automatic FROM sift.col_connections WHERE child = 'facts_col'::regclass ORDER BY ordinal;
 SELECT regexp_replace(c, '^connect=', '') AS option FROM pg_class, unnest(reloptions) c WHERE relname = 'facts_col' AND c LIKE 'connect=%';
@@ -48,11 +48,6 @@ CREATE TABLE outside (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a
 CREATE INDEX outside_col ON outside USING sift_col (id, v);
 RESET client_min_messages;
 SELECT count(*) AS connected FROM sift.col_connections WHERE child IN ('nofk_col'::regclass, 'notvalid_col'::regclass, 'composite_col'::regclass, 'bytext_col'::regclass, 'noparent_col'::regclass, 'outside_col'::regclass);
--- a parent with more columns than a connection carries by itself: the first ones that fit, the others said
-CREATE TABLE dim_w (id int PRIMARY KEY, b1 int8, b2 int8, b3 int8, b4 int8, b5 int8, b6 int8, b7 int8, b8 int8, b9 int8, b10 int8) WITH (autovacuum_enabled = false);
-CREATE INDEX dim_w_col ON dim_w USING sift_col (id, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10);
-CREATE TABLE wide (id int PRIMARY KEY, w_id int NOT NULL REFERENCES dim_w);
-CREATE INDEX wide_col ON wide USING sift_col (id, w_id);
 -- validating the constraint and a REINDEX connects it; REINDEX keeps what was chosen, and CONCURRENTLY too
 ALTER TABLE notvalid VALIDATE CONSTRAINT notvalid_fk;
 REINDEX INDEX notvalid_col;
@@ -66,5 +61,5 @@ SELECT count(*) AS connections FROM sift.col_connections WHERE child = 'facts_co
 -- an index that was connected by itself behaves as one connected by hand: the parent index is under it
 DROP INDEX dim_a_col;
 DROP INDEX dim_b_col;
-DROP TABLE wide, dim_w, facts, nofk, notvalid, composite, dim_c, bytext, dim_t, noparent, dim_n, outside, dim_a, dim_b CASCADE;
+DROP TABLE facts, nofk, notvalid, composite, dim_c, bytext, dim_t, noparent, dim_n, outside, dim_a, dim_b CASCADE;
 DROP EXTENSION pg_sift;

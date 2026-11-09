@@ -38,12 +38,12 @@ dbq src "CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id, label)
 	"CREATE TABLE events_fk (id int PRIMARY KEY, dim_a_id int NOT NULL REFERENCES dim_a, v int NOT NULL) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO events_fk SELECT i, 1 + i % 2000, i FROM generate_series(1, 3000) i" \
 	"CREATE INDEX b_events_col ON events_fk USING sift_col (id, dim_a_id, v)" >/dev/null 2>&1
-WANT="2 t 1 ok:3 dim_a_id -> dim_a(id) carries category_id, label true "
+WANT="2 t 1 ok:3 dim_a_id -> dim_a(id) true "
 check "the source: one dependency, the journal, a stamp that vouches and the changed key" test "$(state src)" == "$WANT"
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
 check "pg_dump writes the text of the option" test "$(grep -c "connect='dim_a_id -> dim_a(id) carries category_id, label; dim_b_id -> dim_b(id) carries zone'" "$D/src.sql")" == 1
-check "pg_dump writes the connection an index chose by itself, and a restore needs no constraint for it" test "$(grep -c "connect='auto: dim_a_id -> dim_a(id) carries category_id, label'" "$D/src.sql")" == 1
+check "pg_dump writes the connection an index chose by itself, and a restore needs no constraint for it" test "$(grep -c "connect='auto: dim_a_id -> dim_a(id)'" "$D/src.sql")" == 1
 check "the child index is made after both parent indexes" test "$(grep -n 'CREATE INDEX dim_a_col' "$D/src.sql" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'CREATE INDEX a_events_col' "$D/src.sql" | head -n 1 | cut -d: -f1)" -a "$(grep -n 'CREATE INDEX dim_b_col' "$D/src.sql" | head -n 1 | cut -d: -f1)" -lt "$(grep -n 'CREATE INDEX a_events_col' "$D/src.sql" | head -n 1 | cut -d: -f1)"
 
 fresh r1

@@ -17,7 +17,7 @@ ERROR:  invalid connect option "dim_a_id dim_a(id) carries category_id": expecte
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id, x) carries category_id');
 ERROR:  invalid connect option "dim_a_id -> dim_a(id, x) carries category_id": expected ')' after the key column: the key is one column
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) category_id');
-ERROR:  invalid connect option "dim_a_id -> dim_a(id) category_id": expected 'carries' and the parent columns to carry
+ERROR:  invalid connect option "dim_a_id -> dim_a(id) category_id": unexpected text after the connection
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries category_id via nowhere');
 ERROR:  invalid connect option "dim_a_id -> dim_a(id) carries category_id via nowhere": via is carried, map or auto
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (connect = 'dim_a_id -> dim_a(id) carries category_id');
