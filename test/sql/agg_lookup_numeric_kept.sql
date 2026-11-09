@@ -1,0 +1,39 @@
+-- The numeric values a lookup table is loaded from the leaves of its index are made for each row and copied into the table: they end with the unit that was read, so the
+-- table keeps only its rows and fits the cache that its rows fit, however many rows it has.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_lookup_shared_kb = 0;
+SET sift.agg_lookup_cache_kb = 32768;
+
+CREATE TABLE nk_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO nk_fact SELECT i, i % 200000, i % 11 FROM generate_series(1, 20000) i;
+CREATE INDEX nk_fact_col ON nk_fact USING sift_col (id, k, v);
+-- 200000 keys of 100 prices: the dictionary of the prices is small, the numerics of the rows are not
+CREATE TABLE nk_dim (k int PRIMARY KEY, price numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO nk_dim SELECT i, (i % 100) / 4.0 FROM generate_series(0, 199999) i;
+CREATE INDEX nk_dim_col ON nk_dim USING sift_col (k, price);
+VACUUM (FREEZE, ANALYZE) nk_fact, nk_dim;
+
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'loaded'; BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+SELECT got(q) AS first, got(q) AS again, answer(q, true) = answer(q, false) AS same_answers
+FROM (VALUES ($q$SELECT d.price, count(*), sum(d.k) FROM nk_fact f LEFT JOIN nk_dim d ON d.k = f.k GROUP BY 1$q$)) v (q);
+
+DROP FUNCTION answer(text, bool), got(text);
+DROP TABLE nk_fact, nk_dim;
+DROP EXTENSION pg_sift;
