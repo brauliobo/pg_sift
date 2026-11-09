@@ -32,7 +32,13 @@ INSERT INTO shapes VALUES
  (6, $q$SELECT count(*) FILTER (WHERE 100 / (dd.b - 3) > 5) FROM ev JOIN dd ON dd.k = ev.k WHERE dd.b <> 3$q$),
  (7, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k$q$),
  (8, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(*) FILTER (WHERE ev.v = 3) FROM dd RIGHT JOIN ev ON dd.k = ev.k$q$),
- (9, $q$SELECT count(*) FROM ev JOIN dd ON dd.k = ev.k AND dd.b = 5$q$);
+ (9, $q$SELECT count(*) FROM ev JOIN dd ON dd.k = ev.k AND dd.b = 5$q$),
+ -- the key of the join read next to the columns of the table (the rows of a class are not the rows of its keys)
+ (10, $q$SELECT count(*) FILTER (WHERE ev.k > 9000 AND dd.a IS NOT NULL), count(*) FILTER (WHERE ev.k < 9000 OR dd.a IS NULL) FROM ev JOIN dd ON dd.k = ev.k$q$),
+ (11, $q$SELECT ev.k / 3000 AS g, count(*) FILTER (WHERE dd.a = 1), sum(ev.v) FILTER (WHERE dd.b < 5 AND ev.k % 2 = 0) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (12, $q$SELECT sum(CASE WHEN ev.k > 5000 AND dd.a = 1 THEN 1 ELSE 0 END), sum(CASE WHEN ev.k % 3 = 0 THEN dd.c END) FROM ev JOIN dd ON dd.k = ev.k$q$),
+ (13, $q$SELECT dd.a, count(*) FILTER (WHERE ev.k > 9000), count(DISTINCT ev.k) FILTER (WHERE dd.t IS NULL) FROM ev JOIN dd ON dd.k = ev.k GROUP BY dd.a ORDER BY dd.a$q$),
+ (14, $q$SELECT count(*) FILTER (WHERE ev.k = dd.c * 7 OR dd.k = ev.k + 0 AND dd.b = 1) FROM ev JOIN dd ON dd.k = ev.k$q$);
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
@@ -67,7 +73,12 @@ SELECT * FROM report('settled');
  settled |     7 | loaded  | cached | t
  settled |     8 | classed | cached | t
  settled |     9 | loaded  | cached | t
-(9 rows)
+ settled |    10 | classed | cached | t
+ settled |    11 | classed | cached | t
+ settled |    12 | classed | cached | t
+ settled |    13 | classed | cached | t
+ settled |    14 | classed | cached | t
+(14 rows)
 
 SELECT * FROM report('kept');
  stage | shape | first  | again  | same_answers 
@@ -81,7 +92,12 @@ SELECT * FROM report('kept');
  kept  |     7 | cached | cached | t
  kept  |     8 | cached | cached | t
  kept  |     9 | cached | cached | t
-(9 rows)
+ kept  |    10 | cached | cached | t
+ kept  |    11 | cached | cached | t
+ kept  |    12 | cached | cached | t
+ kept  |    13 | cached | cached | t
+ kept  |    14 | cached | cached | t
+(14 rows)
 
 -- committed writes: the kept tables are those of the old rows, the next run makes new ones
 UPDATE dd SET a = 1, b = 3 WHERE k % 11 = 0;
@@ -100,7 +116,12 @@ SELECT * FROM report('written');
  written |     7 | loaded  | cached | t
  written |     8 | classed | cached | t
  written |     9 | loaded  | cached | t
-(9 rows)
+ written |    10 | classed | cached | t
+ written |    11 | classed | cached | t
+ written |    12 | classed | cached | t
+ written |    13 | classed | cached | t
+ written |    14 | classed | cached | t
+(14 rows)
 
 -- the transaction's own rows, not yet in the index's units
 BEGIN;
@@ -118,7 +139,12 @@ SELECT * FROM report('in the transaction');
  in the transaction |     7 | loaded  | loaded  | t
  in the transaction |     8 | classed | classed | t
  in the transaction |     9 | loaded  | loaded  | t
-(9 rows)
+ in the transaction |    10 | classed | classed | t
+ in the transaction |    11 | classed | classed | t
+ in the transaction |    12 | classed | classed | t
+ in the transaction |    13 | classed | classed | t
+ in the transaction |    14 | classed | classed | t
+(14 rows)
 
 ROLLBACK;
 VACUUM dd;
@@ -141,7 +167,12 @@ SELECT * FROM report('workers');
  workers |     7 | loaded  | cached | t
  workers |     8 | classed | cached | t
  workers |     9 | loaded  | cached | t
-(9 rows)
+ workers |    10 | classed | cached | t
+ workers |    11 | classed | cached | t
+ workers |    12 | classed | cached | t
+ workers |    13 | classed | cached | t
+ workers |    14 | classed | cached | t
+(14 rows)
 
 -- the caches off: the classes are made by every statement
 SET sift.agg_lookup_cache_kb = 0;
@@ -158,7 +189,12 @@ SELECT * FROM report('caches off');
  caches off |     7 | loaded  | loaded  | t
  caches off |     8 | classed | classed | t
  caches off |     9 | loaded  | loaded  | t
-(9 rows)
+ caches off |    10 | classed | classed | t
+ caches off |    11 | classed | classed | t
+ caches off |    12 | classed | classed | t
+ caches off |    13 | classed | classed | t
+ caches off |    14 | classed | classed | t
+(14 rows)
 
 DROP FUNCTION report(text), got(text), answer(text, bool);
 DROP TABLE shapes, ev, dd;
