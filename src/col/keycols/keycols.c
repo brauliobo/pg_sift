@@ -25,8 +25,8 @@
 #include "col/ktab.h"
 #include "col/setsum.h"
 
-bool
-keycols_is_fk_column(Relation heap, AttrNumber attno)
+static bool
+is_fk_column(Relation heap, AttrNumber attno)
 {
 	ListCell   *lc;
 
@@ -62,12 +62,19 @@ is_unique_column(Relation heap, AttrNumber attno)
 	return found;
 }
 
-bool
-keycols_ends_in_id(const char *name)
+static bool
+ends_in_id(const char *name)
 {
 	size_t		n = strlen(name);
 
 	return n > 3 && strcmp(name + n - 3, "_id") == 0;
+}
+
+/* The column is an entity the rows belong to, the one a query filters by: a foreign key or a column named *_id */
+bool
+keycols_is_entity(Relation heap, AttrNumber hatt, const char *name)
+{
+	return is_fk_column(heap, hatt) || ends_in_id(name);
 }
 
 /* The option name of index set to value (NULL: reset); visible to the relcache entry at once */
@@ -157,7 +164,7 @@ sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, c
 	const char *name = NameStr(TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attname);
 
 	/* the option is a list split at commas, and its names are not quoted */
-	return sift_cset_pres_leaf_ok(schema, d) && strchr(name, ',') == NULL && (keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(name)) && !is_unique_column(heap, hatt);
+	return sift_cset_pres_leaf_ok(schema, d) && strchr(name, ',') == NULL && keycols_is_entity(heap, hatt, name) && !is_unique_column(heap, hatt);
 }
 
 bool

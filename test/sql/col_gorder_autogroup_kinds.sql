@@ -52,7 +52,7 @@ ANALYZE ak2;
 CREATE INDEX ak2_i ON ak2 USING sift_col (ent_id, d) WITH (key_cut = 'off', key_order = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ak2_i';
 
--- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, the group falls on the next entity (score)
+-- an entity of 20 rows is grouped (the formula counts the real bytes of the group, not a depth); one of 2 rows has nothing to order, and score names no entity (no foreign key, no *_id), so there is no group
 CREATE TABLE ak3 (id int, ent_id int, created timestamp, score int, pad text);
 INSERT INTO ak3 SELECT i, abs(hashint4(i)) % 6000, timestamp '2024-01-01' + i * interval '30 seconds', abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y') FROM generate_series(1, 120000) i;
 ANALYZE ak3;

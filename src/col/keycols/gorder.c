@@ -199,7 +199,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		timepick |= cand[i].grouped && (fit[i] || cand[i].time);
 	}
 	/*
-	 * the arrays of a date, timestamp or integer column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
+	 * the arrays of a date, timestamp or integer column are grouped by the entity column that has the most values (a foreign key or a column named *_id: an integer that names none is a guess at what a query filters by, 3.7 bytes a row of it, and is the user's to name): WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
 	 * order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then. A date or timestamp that
 	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group
 	 */
@@ -213,16 +213,13 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		bool		cut = false;
 		double		depth;
 
-		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d))
+		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d) || !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
 		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
 		depth = keycols_heap_rows(heap) / ndistinct;
-		/* a foreign key or a column named *_id is the entity the rows belong to; among those, or among the rest, the one of most values */
-		if (keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d)))
-			ndistinct += keycols_heap_rows(heap);
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;
@@ -300,7 +297,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 				if (!keycols_col_stats(heap, hatt, &cnd, &ccr, &cwidth))
 					cnd = 0;
 			}
-			if (sift_cgord_leaf_time(d) || !(keycols_is_fk_column(heap, hatt) || keycols_ends_in_id(keycols_leaf_name(index, d))) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
+			if (sift_cgord_leaf_time(d) || !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
 				nd < GORD_KEYORDER_ENTITIES || keycols_heap_rows(heap) / nd < GORD_GROUP_DEPTH)
 				continue;
 			/* the entity is the key the cut chose, else the foreign key or *_id column of most values, in the order of the heap or not */

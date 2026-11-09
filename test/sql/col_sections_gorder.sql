@@ -3,13 +3,13 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
-CREATE TABLE gs (id int, g int, ts timestamp, pad text) WITH (autovacuum_enabled = false);
+CREATE TABLE gs (id int, ent_id int, ts timestamp, pad text) WITH (autovacuum_enabled = false);
 ALTER TABLE gs ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gs SELECT i, abs(hashint4(i)) % 400, timestamp '2024-01-01' + (abs(hashint4(i + 7)) % 20000000) * interval '1 second', md5(i::text) || md5(i::text || 'x')
 FROM generate_series(1, 120000) i;
 ANALYZE gs;
-CREATE INDEX gs_a ON gs USING sift_col (id, g, ts, pad) WITH (order_array_group = 'off', key_cut = 'off');
-CREATE INDEX gs_b ON gs USING sift_col (id, g, ts, pad) WITH (key_cut = 'off');
+CREATE INDEX gs_a ON gs USING sift_col (id, ent_id, ts, pad) WITH (order_array_group = 'off', key_cut = 'off');
+CREATE INDEX gs_b ON gs USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off');
 CREATE FUNCTION gs_bytes(idx regclass, s text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce(sum(bytes), 0) FROM sift.col_sections(idx) WHERE section = s $$;
 
 SELECT gs_bytes('gs_a', 'point_dir') = gs_bytes('gs_b', 'point_dir') AS same_point_dirs;

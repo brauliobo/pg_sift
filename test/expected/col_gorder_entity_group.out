@@ -1,0 +1,88 @@
+-- The second order of the arrays (order_array_group 'auto') is built for an entity the rows belong to: a foreign key or a column named *_id. An integer of 100 or more values
+-- that names no entity (a measure, a code) is a guess at the column a query filters by, and the second order is 3.7 bytes a row of it (a third of the index at 5,000,000 rows) for a shape
+-- the table may never ask: it is the user's to name (order_array_group = 'col').
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+CREATE FUNCTION opt(regclass, text) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE $2 || '=%'), '-') $$;
+-- a measure of 100 values and a column of 50 are no entity, nor is the table's own id; the timestamp is scattered, so it has an array
+CREATE TABLE gm (id int, g int, ts timestamp, amount int, pad text);
+ALTER TABLE gm ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gm SELECT i, i % 50, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', i % 100, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
+FROM generate_series(1, 150000) i;
+VACUUM (FREEZE, ANALYZE) gm;
+CREATE INDEX gm_auto ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off');
+NOTICE:  sift_col index "gm_auto": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "gm_auto" is column format minor 41, which a library before 4.0 cannot read
+-- the user names the measure: the arrays are grouped by it, which is what the build chose before for this table
+CREATE INDEX gm_named ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off', order_array_group = 'amount');
+NOTICE:  sift_col index "gm_named": 2 automatic choices, 1 advice
+SELECT i AS idx, opt(i::regclass, 'order_array_columns') AS order_arrays, opt(i::regclass, 'order_array_group') AS second_order
+FROM unnest(ARRAY['gm_auto', 'gm_named']) i ORDER BY 1;
+   idx    | order_arrays | second_order 
+----------+--------------+--------------
+ gm_auto  | auto: id, ts | -
+ gm_named | -            | amount
+(2 rows)
+
+SELECT sift.col_verify('gm_auto');
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm ORDER BY ts DESC, id LIMIT 20') AS top,
+	   sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE g IN (3, 5) ORDER BY ts DESC, id LIMIT 20') AS in_list,
+	   sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE amount = 7 ORDER BY ts DESC, id LIMIT 20') AS measure;
+     top      | in_list | measure 
+--------------+---------+---------
+ global order | units   | units
+(1 row)
+
+DROP INDEX gm_auto, gm_named;
+-- an entity of the same 100 values (a column named *_id) is grouped, with the same rows
+CREATE TABLE ge (id int, g int, ts timestamp, set_id int, pad text);
+ALTER TABLE ge ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ge SELECT id, g, ts, amount, pad FROM gm;
+VACUUM (FREEZE, ANALYZE) ge;
+CREATE INDEX ge_auto ON ge USING sift_col (id, g, ts, set_id, pad) WITH (key_cut = 'off', key_order = 'off');
+NOTICE:  sift_col index "ge_auto": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ge_auto" is column format minor 41, which a library before 4.0 cannot read
+SELECT opt('ge_auto', 'order_array_columns') AS order_arrays, opt('ge_auto', 'order_array_group') AS second_order;
+ order_arrays |   second_order   
+--------------+------------------
+ auto: id, ts | auto: set_id; ts
+(1 row)
+
+SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM ge WHERE set_id = 7 ORDER BY ts DESC, id LIMIT 20') AS entity;
+    entity    
+--------------
+ global order
+(1 row)
+
+DROP INDEX ge_auto;
+-- a foreign key is an entity whatever its name
+CREATE TABLE key_sets (k int PRIMARY KEY);
+INSERT INTO key_sets SELECT g FROM generate_series(0, 99) g;
+CREATE TABLE gf (id int, g int, ts timestamp, owner int REFERENCES key_sets (k), pad text);
+ALTER TABLE gf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gf SELECT id, g, ts, amount, pad FROM gm;
+VACUUM (FREEZE, ANALYZE) gf;
+CREATE INDEX gf_auto ON gf USING sift_col (id, g, ts, owner, pad) WITH (key_cut = 'off', key_order = 'off');
+NOTICE:  sift_col index "gf_auto": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "gf_auto" is column format minor 41, which a library before 4.0 cannot read
+SELECT opt('gf_auto', 'order_array_columns') AS order_arrays, opt('gf_auto', 'order_array_group') AS second_order;
+ order_arrays |  second_order   
+--------------+-----------------
+ auto: id, ts | auto: owner; ts
+(1 row)
+
+DROP INDEX gf_auto;
+DROP FUNCTION opt(regclass, text);
+DROP TABLE gm, ge, gf, key_sets;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
