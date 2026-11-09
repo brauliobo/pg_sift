@@ -213,6 +213,18 @@ typedef enum SiftAggKind
 static inline bool saa_minmax(SiftAggKind k) { return k == SAA_MIN || k == SAA_MAX; }
 static inline bool saa_sumavg_f64(SiftAggKind k) { return k == SAA_SUM_F64 || k == SAA_AVG_F64; }
 static inline bool saa_joined(SiftAggKind k) { return (k >= SAA_M_COUNT && k <= SAA_M_AVG) || k == SAA_M_PG; }
+/* min and max of a joined column of a type a word holds and compares as a number: the value of each tuple is compared as it comes, with no set of the distinct values of its group */
+static inline bool saa_m_minmax_direct(SiftAggKind k, Oid typ)
+{
+	if (k != SAA_M_MIN && k != SAA_M_MAX)
+		return false;
+	return typ == INT2OID || typ == INT4OID || typ == INT8OID || typ == DATEOID || typ == TIMESTAMPOID || typ == TIMESTAMPTZOID || typ == FLOAT8OID;
+}
+/* sum and avg of a joined float8 column, and the aggregates PostgreSQL's own transition functions run (M_PG): added tuple by tuple, as the normal plan does, with no set of the distinct values of the group */
+static inline bool saa_m_sumavg_direct(SiftAggKind k, Oid restype)
+{
+	return k == SAA_M_PG || ((k == SAA_M_SUM || k == SAA_M_AVG) && restype == FLOAT8OID);
+}
 static inline bool saa_x(SiftAggKind k) { return k >= SAA_X_COUNT && k <= SAA_X_AVG; }
 static inline bool saa_x_sumavg(SiftAggKind k) { return k == SAA_X_SUM || k == SAA_X_AVG; }
 

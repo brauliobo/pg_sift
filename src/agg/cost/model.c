@@ -159,7 +159,12 @@ fan_row_ops(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, JoinCtx *jc
 		if (!slot->is_key)
 			ops += AGG_FAN_FLAG;
 		else if (slot->agg >= 0)
-			ops += wide ? AGG_FAN_ARG_WIDE : AGG_FAN_ARG;
+		{
+			const SiftAggAgg *ag = &s->agg[slot->agg];
+
+			/* the value of each tuple is added as it comes (no set of the distinct values of its group, whose size past every cache is the wide price) */
+			ops += wide && !saa_m_minmax_direct(ag->kind, ag->argtype) && !saa_m_sumavg_direct(ag->kind, ag->restype) ? AGG_FAN_ARG_WIDE : AGG_FAN_ARG;
+		}
 		else
 			ops += wide ? AGG_FAN_KEY_WIDE : AGG_FAN_KEY;
 	}
