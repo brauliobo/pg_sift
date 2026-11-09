@@ -1,5 +1,5 @@
 -- A segment under half of the rows of the largest (an overlay: what a promotion of the write buffer leaves over the keys of the large ones) is written lean: without the point directories,
--- whose arrays span the rows of the whole index and cost more than the rows of the overlay, and it gets no net sidecar. Its order arrays stay (the planner reads ORDER BY .. LIMIT from them) unless they are the build's own choice and the overlays are few (col_overlay_unordered).
+-- whose arrays span the rows of the whole index and cost more than the rows of the overlay, and it gets no net sidecar. Its order arrays stay (the planner reads ORDER BY .. LIMIT from them).
 -- A merge that makes a large segment of it writes the full set again, and the answers are the same all along.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
