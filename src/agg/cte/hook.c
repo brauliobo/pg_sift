@@ -341,6 +341,13 @@ remember_form(CteVerdict *fv, bool shared_cte, bool won, PlannedStmt *stmt)
 	verdict_remember(fv, won, 0, 0, cte_size(stmt), cte_size(stmt));
 }
 
+/* is the query one that is planned as it is and pulled up (plan_flat_pair)? */
+static bool
+flat_pair_wanted(Query *parse)
+{
+	return sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_distinct_split_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse) || sift_agg_invert_parents(parse, false)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse);
+}
+
 /*
  * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat/): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
@@ -363,7 +370,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_distinct_split_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse) || sift_agg_invert_parents(parse, false)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
+	if (flat_pair_wanted(parse))
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		shared_cte = has_shared_cte(parse);
@@ -543,14 +550,15 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	/*
 	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
 	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards). A statement that
-	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
+	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy. A statement
+ * planned as it is and pulled up has a plan that loses, and the tree it was planned in is left with nodes of the context that is deleted.
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
 	swap = reads && sift_json_build_object_calls(parse);
 	casef = reads && sift_agg_case_filter_calls(parse);
-	if (nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse)))
+	if (nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse)) || flat_pair_wanted(parse))
 		parse = copyObject(parse);
 	/* the statement as written is planned when the rewritten one does not run in the scan: its plan is the one PostgreSQL makes of what the user wrote */
 	if (casef)
