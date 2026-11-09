@@ -110,7 +110,7 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
-			ELSIF hi IN (33, 34, 35, 36, 37, 38, 39, 40, 41, 42) THEN
+			ELSIF hi >= 33 THEN
 				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
 			ELSIF hi IN (30, 31, 32) THEN
