@@ -166,6 +166,7 @@ extern SiftTblRel *sift_tbl_rel(Relation rel);
 /* Re-reads the directory unless its version is the cached one (_full: always); write buffer page tables are extended lazily by sift_tbl_wbuf_page */
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
 extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
+extern bool sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
 extern bool sift_tbl_is_table(Relation rel);

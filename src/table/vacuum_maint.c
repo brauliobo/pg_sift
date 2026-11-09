@@ -21,7 +21,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 	sift_tbl_refresh(rel, st);
 	if (!st->initialized)
 		return;
-	if (!sift_maint_lock(rel, false))
+	if (!sift_tbl_maint_lock(rel, st, false))
 	{
 		r->busy = true;
 		return;

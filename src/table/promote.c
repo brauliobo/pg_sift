@@ -192,7 +192,6 @@ promote_sealed(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum)
 	SegClass	class;
 	bool		pressure;
 
-	sift_tbl_refresh(rel, st);
 	pressure = dir_pressure(st);
 	dir = MemoryContextAlloc(CurrentMemoryContext, sizeof(SiftDirSnapshot));
 	*dir = st->dir;
@@ -223,7 +222,7 @@ sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum
 {
 	int			promoted;
 
-	if (!sift_maint_lock(rel, vacuum))
+	if (!sift_tbl_maint_lock(rel, st, vacuum))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, vacuum);
 	sift_maint_unlock(rel);
@@ -244,7 +243,7 @@ sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, i
 {
 	int			promoted;
 
-	if (!sift_maint_lock(rel, wait))
+	if (!sift_tbl_maint_lock(rel, st, wait))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, false);
 	(void) sift_tbl_freeze_groups(rel, st, oldest);
