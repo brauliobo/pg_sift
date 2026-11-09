@@ -105,6 +105,8 @@ extern uint32	maint_dirty_units(SiftColSegment *seg);
 extern void	maint_net_refresh(Relation index);
 
 extern RewriteView *	maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx);
+extern void	maint_mark_key_overlap(Relation index, RewriteView *v);
+extern bool	maint_key_meets(const RewriteView *v, int i);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 

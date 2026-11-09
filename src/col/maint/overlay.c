@@ -138,3 +138,55 @@ maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev)
 	pfree(sp);
 	return true;
 }
+
+/* The range of the key leaf over the units of a key-cut segment */
+static void
+seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 *hi)
+{
+	*lo = PG_INT64_MAX;
+	*hi = PG_INT64_MIN;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCZone	z;
+
+		sift_cseg_zone(seg, leaf, u, &z);
+		if (z.nvals == 0)
+			continue;
+		*lo = Min(*lo, z.min);
+		*hi = Max(*hi, z.max);
+	}
+}
+
+/* Does the key range of segment i overlap another one's */
+bool
+maint_key_meets(const RewriteView *v, int i)
+{
+	for (int j = 0; j < v->n; j++)
+		if (j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i])
+			return true;
+	return false;
+}
+
+/*
+ * The segments of a key-cut index that the partitions of a rewrite are not: a rewrite cuts the key range into partitions that share at most a boundary key, so a key
+ * is in one of them; the runs of a build that outgrew the memory of a segment writer are as large as partitions but each holds rows of every key (a lookup of a key
+ * reads a unit in each). They are overlays, which the rewrite merges.
+ */
+void
+maint_mark_key_overlap(Relation index, RewriteView *v)
+{
+	int			leaf = sift_col_rel(index)->cut[0];
+
+	for (int i = 0; i < v->n; i++)
+		seg_key_range(v->seg[i], leaf, &v->klo[i], &v->khi[i]);
+	/* a segment whose key range no other one meets is a partition of the key whatever its size (the short end of a cut at the memory of a writer): it is no overlay for a rewrite to take */
+	for (int i = 0; i < v->n; i++)
+		v->over[i] &= maint_key_meets(v, i);
+	/* the rewrite right after a build is the build's own (its choices stand): the runs are for the next one */
+	for (int i = 0; i < v->n && !maint_after_build; i++)
+		for (int j = i + 1; j < v->n; j++)
+			if (maint_is_partition(&v->imm[i]) && maint_is_partition(&v->imm[j]) && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i])
+				v->kover[i] = v->kover[j] = true;
+	for (int i = 0; i < v->n; i++)
+		v->nkover += v->kover[i];
+}
