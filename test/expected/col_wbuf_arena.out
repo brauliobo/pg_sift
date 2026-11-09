@@ -122,6 +122,26 @@ SELECT same_as_heap() AS same_promoted;
  t
 (1 row)
 
+-- a buffer of many rows: its directory doubles three times and it takes data pages one by one, and the heap is still not read
+INSERT INTO a SELECT 100000 + i, i % 10, i, 'g' FROM generate_series(1, 20000) i;
+SELECT same_as_heap() AS same_grown;
+ same_grown 
+------------
+ t
+(1 row)
+
+SELECT rebuilt = 0 AS heap_not_read, not_stored = 0 AS none_left_out FROM arena_delta();
+ heap_not_read | none_left_out 
+---------------+---------------
+ t             | t
+(1 row)
+
+SELECT sift.col_promote('a_ix') >= 0 AS promoted_grown;
+ promoted_grown 
+----------------
+ t
+(1 row)
+
 -- no slot to take: the rows keep their values in the buffer; the reads see both kinds of record
 SELECT sift._test_arena_slots(0);
  _test_arena_slots 
@@ -143,7 +163,7 @@ SELECT same_as_heap() AS same_no_slot;
  t
 (1 row)
 
-SELECT sift._test_arena_slots(16);
+SELECT sift._test_arena_slots(256);
  _test_arena_slots 
 -------------------
  

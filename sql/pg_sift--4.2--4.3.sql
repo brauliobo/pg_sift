@@ -117,7 +117,7 @@ COMMENT ON FUNCTION sift.table_find_stale_versions(regclass, integer) IS 'The nu
 -- The arena of the write buffers (sift.col_wbuf_ref): the rows of the buffers that are references, in shared memory. slots_in_use of slots, the bytes and rows it holds, the rows that found no room
 -- (put_fallbacks: written with their values, as without the setting), the buffers asked back for a slot (seals_forced), and the rows built again from the heap since the server started
 -- (rows_rebuilt: after a restart, on a standby).
-CREATE FUNCTION sift.col_arena_status(OUT slots_in_use int4, OUT slots int4, OUT bytes_in_use int8, OUT rows_stored int8, OUT put_fallbacks int8, OUT seals_forced int8, OUT rows_rebuilt int8) RETURNS record
+CREATE FUNCTION sift.col_arena_status(OUT slots_in_use int4, OUT slots int4, OUT bytes_in_use int8, OUT rows_stored int8, OUT put_fallbacks int8, OUT seals_forced int8, OUT rows_rebuilt int8, OUT segments int4, OUT bytes_taken int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_arena_status' LANGUAGE C STRICT STABLE;
 
-COMMENT ON FUNCTION sift.col_arena_status() IS 'The shared arena of the write buffers kept as references (sift.col_wbuf_ref): slots in use, bytes and rows held, rows written with their values for want of room, buffers sealed to give a slot back, rows built again from the heap since the server started';
+COMMENT ON FUNCTION sift.col_arena_status() IS 'The shared arena of the write buffers kept as references (sift.col_wbuf_ref): slots in use, bytes and rows held, rows written with their values for want of room, buffers sealed to give a slot back, rows built again from the heap since the server started, the 1 MB segments of shared memory made so far (they stay until the server stops) and the bytes of them that buffers hold';

@@ -44,7 +44,7 @@ INSERT INTO t3 SELECT i, i % 10, i FROM generate_series(1, 1000) i;
 SELECT not_stored >= 1 AS third_has_no_slot, forced = 1 AS oldest_asked_back FROM arena_delta();
 SELECT same_as_heap('t3') AS same_t3;
 
--- the row that found no slot asked the oldest buffer back: t1 is sealed, with the rows it had
+-- the row that found no slot asked the oldest buffer back: t1 is sealed and (no worker here) promoted by the statement that sealed it, with the rows it had, and its slot is free
 SELECT kinds('t1_ix') AS t1, kinds('t2_ix') AS t2, kinds('t3_ix') AS t3;
 SELECT same_as_heap('t1') AS same_t1, same_as_heap('t2') AS same_t2;
 SELECT sift.col_promote('t1_ix') >= 0 AS promoted_t1;
@@ -65,7 +65,7 @@ DROP INDEX t2_ix;
 SELECT sift._test_arena_gc();
 SELECT (SELECT slots_in_use FROM sift.col_arena_status()) < (SELECT slots_in_use FROM before) AS slot_given_back;
 SELECT same_as_heap('t1') AS same_t1_after_drop;
-SELECT sift._test_arena_slots(16);
+SELECT sift._test_arena_slots(256);
 
 DROP FUNCTION same_as_heap(regclass);
 DROP FUNCTION arena_delta();

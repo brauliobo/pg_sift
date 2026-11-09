@@ -46,7 +46,7 @@ step() {
 	8) sql fz "VACUUM a" ;;
 	9) sql fz "VACUUM (FREEZE, INDEX_CLEANUP off) a" ;;
 	10) sql fz "SELECT sift.col_promote('a_ix')" ;;
-	11) sql fz "SELECT sift._test_arena_slots(0)" "INSERT INTO a SELECT $base + i, i % 10, i, 'n' FROM generate_series(1, 300) i" "SELECT sift._test_arena_slots(16)" ;;
+	11) sql fz "SELECT sift._test_arena_slots(0)" "INSERT INTO a SELECT $base + i, i % 10, i, 'n' FROM generate_series(1, 300) i" "SELECT sift._test_arena_slots(256)" ;;
 	12) node_stop fz; node_start fz ;;
 	13) crash fz; node_start fz ;;
 	esac >/dev/null

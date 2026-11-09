@@ -11,6 +11,7 @@
 #include "storage/lock.h"
 #include "utils/timestamp.h"
 #include "col/gorder.h"
+#include "col/wbuf.h"
 #include "col/maint/maint_int.h"
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
@@ -214,6 +215,8 @@ void
 sift_col_maint_after_seal(Relation index)
 {
 	sift_mops_after_seal(&maint_col_ops, index);
+	if (!sift_async_maintenance && sift_cwbuf_arena_asked_back(index))
+		sift_mops_promote(&maint_col_ops, index, false);
 }
 
 bool

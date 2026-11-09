@@ -70,6 +70,7 @@ extern bool sift_col_maint_make_room(Relation index);
 
 /* The slots of the write buffer arena (col/wbuf/arena.c): given back when no row finds one; called after a row is written, with no lock held */
 extern bool sift_cwbuf_arena_gc_wanted(void);
+extern bool sift_cwbuf_arena_asked_back(Relation index);
 extern void sift_cwbuf_arena_gc(void);
 /* The buffer of generation gen is promoted: its arena slot is free */
 extern void sift_cwbuf_arena_drop(Relation index, uint64 gen);

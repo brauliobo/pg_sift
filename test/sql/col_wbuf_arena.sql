@@ -70,13 +70,19 @@ SELECT sift.col_promote('a_ix') >= 0 AS promoted;
 SELECT (SELECT slots_used FROM arena_delta()) < (SELECT slots_used FROM before) AS slot_given_back;
 SELECT same_as_heap() AS same_promoted;
 
+-- a buffer of many rows: its directory doubles three times and it takes data pages one by one, and the heap is still not read
+INSERT INTO a SELECT 100000 + i, i % 10, i, 'g' FROM generate_series(1, 20000) i;
+SELECT same_as_heap() AS same_grown;
+SELECT rebuilt = 0 AS heap_not_read, not_stored = 0 AS none_left_out FROM arena_delta();
+SELECT sift.col_promote('a_ix') >= 0 AS promoted_grown;
+
 -- no slot to take: the rows keep their values in the buffer; the reads see both kinds of record
 SELECT sift._test_arena_slots(0);
 CALL arena_mark();
 INSERT INTO a SELECT 10000 + i, i % 10, i, 'n' FROM generate_series(1, 2000) i;
 SELECT stored = 0 AS none_kept, not_stored >= 2000 AS written_with_values FROM arena_delta();
 SELECT same_as_heap() AS same_no_slot;
-SELECT sift._test_arena_slots(16);
+SELECT sift._test_arena_slots(256);
 INSERT INTO a SELECT 20000 + i, i % 10, i, 'm' FROM generate_series(1, 2000) i;
 SELECT stored >= 2000 AS kept_again FROM arena_delta();
 SELECT same_as_heap() AS same_mixed;

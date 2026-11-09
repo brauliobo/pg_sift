@@ -65,11 +65,11 @@ SELECT same_as_heap('t3') AS same_t3;
  t
 (1 row)
 
--- the row that found no slot asked the oldest buffer back: t1 is sealed, with the rows it had
+-- the row that found no slot asked the oldest buffer back: t1 is sealed and (no worker here) promoted by the statement that sealed it, with the rows it had, and its slot is free
 SELECT kinds('t1_ix') AS t1, kinds('t2_ix') AS t2, kinds('t3_ix') AS t3;
-              t1              |     t2      |     t3      
-------------------------------+-------------+-------------
- buffer 0, sealed buffer 1000 | buffer 1000 | buffer 1000
+            t1            |     t2      |     t3      
+--------------------------+-------------+-------------
+ buffer 0, immutable 1000 | buffer 1000 | buffer 1000
 (1 row)
 
 SELECT same_as_heap('t1') AS same_t1, same_as_heap('t2') AS same_t2;
@@ -144,7 +144,7 @@ SELECT same_as_heap('t1') AS same_t1_after_drop;
  t
 (1 row)
 
-SELECT sift._test_arena_slots(16);
+SELECT sift._test_arena_slots(256);
  _test_arena_slots 
 -------------------
  
