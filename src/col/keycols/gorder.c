@@ -44,6 +44,21 @@ gord_cand_cmp(const void *a, const void *b)
 	return x->leaf - y->leaf;
 }
 
+/* order_array_group is 'auto: col...' (one the build wrote, or the user's hint): the column it names first stays a candidate for the group, entity or not */
+static bool
+group_named(const char *gopt, const char *name)
+{
+	bool		autolist;
+	const char *p = sift_cpagg_auto_list(gopt, &autolist);
+	size_t		n;
+
+	p += strspn(p, " ");
+	n = strcspn(p, ",;");
+	while (n > 0 && p[n - 1] == ' ')
+		n--;
+	return autolist && n == strlen(name) && strncmp(p, name, n) == 0;
+}
+
 static int
 pick_cmp(const void *a, const void *b)
 {
@@ -213,13 +228,16 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		bool		cut = false;
 		double		depth;
 
-		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d) || !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)))
+		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d) ||
+			!(keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)) || group_named(gopt, keycols_leaf_name(index, d))))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
 		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
 		depth = keycols_heap_rows(heap) / ndistinct;
+		if (group_named(gopt, keycols_leaf_name(index, d)))
+			ndistinct += keycols_heap_rows(heap);	/* the column the option names wins over the entity of more values */
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;
