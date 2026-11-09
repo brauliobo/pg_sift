@@ -270,11 +270,11 @@ SELECT sift_count('news', 'power AND plant');
 <!-- sift-reference:start -->
 ## SQL reference
 
-Schema `sift` has 65 functions, 5 views, 2 tables, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
+Schema `sift` has 69 functions, 6 views, 2 tables, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
 
 - **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_info`, `json_build_object`, `match`, `match_idx`, `max_score`, `parse_query`, `score`, `sections`, `segment_postings`, `segments`, `text_ops`, `tokenize`, `verify`
-- **[Column index](docs/REFERENCE.md#column-index)**: `approx_count_distinct`, `cluster_advice`, `col_*_ops`, `col_clustering`, `col_extents`, `col_index_info`, `col_index_status`, `col_leaves`, `col_maintenance_status`, `col_ops`, `col_sections`, `col_segments`, `col_space`, `col_stamps`, `col_track_convert`, `col_track_old_rows`, `col_tracking`, `col_verify`, `index_advice`, `index_choices`, `key_cut_decision`, `suggest_paths`
-- **[Tables](docs/REFERENCE.md#tables)**: `table_get_option`, `table_option_values`, `table_option_values_trg`, `table_options`, `table_paths`, `table_paths_maintained`, `table_reset_option`, `table_segments`, `table_set_option`, `table_set_paths`, `table_space`
+- **[Column index](docs/REFERENCE.md#column-index)**: `approx_count_distinct`, `cluster_advice`, `col_*_ops`, `col_clustering`, `col_connection_fill`, `col_connection_list`, `col_connection_state`, `col_connections`, `col_extents`, `col_index_info`, `col_index_status`, `col_leaves`, `col_maintenance_status`, `col_ops`, `col_sections`, `col_segments`, `col_space`, `col_stamps`, `col_track_convert`, `col_track_old_rows`, `col_tracking`, `col_verify`, `index_advice`, `index_choices`, `key_cut_decision`, `suggest_paths`
+- **[Tables](docs/REFERENCE.md#tables)**: `table_find_stale_versions`, `table_get_option`, `table_option_values`, `table_option_values_trg`, `table_options`, `table_paths`, `table_paths_maintained`, `table_reset_option`, `table_segments`, `table_set_option`, `table_set_paths`, `table_space`
 - **[Maintenance and workers](docs/REFERENCE.md#maintenance-and-workers)**: `col_maintain`, `col_maintenance_due`, `col_merge`, `col_promote`, `col_refresh`, `col_rollup_counters`, `col_rollup_queue`, `col_rollup_refresh`, `col_rollup_requests`, `col_rollup_state`, `merge`, `promote`, `table_maintain`, `worker_state`, `workers`
 - **[Diagnostics and upgrade](docs/REFERENCE.md#diagnostics-and-upgrade)**: `col_rollup_misses`, `explain_why`, `help`, `refusal_actions`, `refusal_slugs`, `stats`, `stats_reset`, `upgrade_commands`, `version`
 
