@@ -338,6 +338,31 @@ wbuf_flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 	pfree(snap);
 }
 
+static void
+set_ref_format(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == *(uint64 *) arg)
+			dir->segs[i].format = Max(dir->segs[i].format, SIFT_COL_FORMAT_REFBUF);
+}
+
+/* Marks the entry of the write buffer as one that holds references, before the first one goes in: a release that does not know the records refuses the index (the format of the entry) */
+void
+wbuf_flag_ref(Relation index, SiftCWbufHint *h)
+{
+	SiftDirSnapshot *snap;
+
+	if (h->ref_gen == h->gen)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == h->gen && snap->segs[i].format < SIFT_COL_FORMAT_REFBUF)
+			sift_dir_update(index, &(SiftDirChange) {.fn = set_ref_format,.arg = &h->gen,.extra = InvalidBuffer});
+	h->ref_gen = h->gen;
+	pfree(snap);
+}
+
 bool
 sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, const SiftColRow *row, TransactionId xmin, bool ref)
 {
@@ -361,6 +386,8 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 		if (h->gen == 0)
 			sift_lane_refresh(index, schema->hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h->gen, &h->hdr, h->tail);
 		wbuf_flag_overflow(index, h, ovf, jnull);
+		if (flags & SIFT_COLR_REF)
+			wbuf_flag_ref(index, h);
 		if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
 			break;
 		h->gen = 0;

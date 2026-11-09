@@ -221,6 +221,8 @@ CREATE FUNCTION sift._test_arena_slots(n int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_arena_slots' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_arena_gc() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_arena_gc' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_wbuf_format(index regclass) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_wbuf_format' LANGUAGE C STRICT;
 
 -- the documents queries walked in the open write buffer of a sift (BM25) index, the documents it holds, and whether their promotion is due (sift_maint_wbuf_read_due)
 CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool, OUT format int4) RETURNS record

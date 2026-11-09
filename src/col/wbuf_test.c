@@ -51,6 +51,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_segments);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_reads);
 PG_FUNCTION_INFO_V1(sift_test_arena_slots);
 PG_FUNCTION_INFO_V1(sift_test_arena_gc);
+PG_FUNCTION_INFO_V1(sift_test_wbuf_format);
 
 #define NCOLS		10
 #define ID_BITS		24
@@ -748,6 +749,21 @@ sift_test_arena_gc(PG_FUNCTION_ARGS)
 {
 	sift_cwbuf_arena_gc();
 	PG_RETURN_VOID();
+}
+
+/* (index regclass): the format of the directory entry of the open write buffer, 0 when there is none */
+Datum
+sift_test_wbuf_format(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = read_dir(index);
+	int			format = 0;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_WBUF_OPEN)
+			format = snap->segs[i].format;
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT32(format);
 }
 
 #endif							/* SIFT_TESTING */

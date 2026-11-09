@@ -138,6 +138,7 @@ extern uint32	wbuf_encode_row(StringInfo buf, const SiftColSchema *schema, const
 
 extern bool	wbuf_ref_values(SiftCWbufReader *r, Size pos, RawRec *rec);
 
+extern void	wbuf_flag_ref(Relation index, SiftCWbufHint *h);
 extern bool	wbuf_ref_to_arena(Relation index, uint64 gen, const ItemPointerData *tid, const char *payload, Size *len, uint16 *flags);
 
 /* col/wbuf/arena.c */

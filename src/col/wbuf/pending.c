@@ -46,6 +46,7 @@ typedef struct PendIndex
 	RelFileLocator loc;
 	uint32		ovf;
 	uint32		jnull;
+	bool		ref;			/* some row is a REF record: the buffer it goes to is marked before it is written */
 	StringInfoData buf;			/* per row: tid, payload length (with PEND_FLAGS), payload */
 } PendIndex;
 
@@ -60,6 +61,7 @@ pend_clear(PendIndex *p)
 {
 	p->index = InvalidOid;
 	p->ovf = p->jnull = 0;
+	p->ref = false;
 	resetStringInfo(&p->buf);
 	pend_used--;
 }
@@ -197,6 +199,7 @@ pend_flush(Relation index, PendIndex *p)
 	char	   *rows = palloc(total);
 	const char *cur = rows;
 	bool		crossed = false;
+	bool		ref = p->ref;
 
 	memcpy(rows, p->buf.data, total);
 #ifdef USE_ASSERT_CHECKING
@@ -218,6 +221,8 @@ pend_flush(Relation index, PendIndex *p)
 		{
 			if (h.gen == 0)
 				sift_lane_refresh(index, hash, "column definitions", HDRSIZE, SIFT_COL_FORMAT_KINDS, SIFT_SEG_ROOTS_NOW, sift_col_maint_make_room, &h.gen, &h.hdr, h.tail);
+			if (ref)
+				wbuf_flag_ref(index, &h);
 			if (BufferIsValid(tailbuf = sift_lane_lock_tail(index, h.gen, h.tail, SIFT_LANES, &lane)))
 				break;
 			h.gen = 0;
@@ -338,6 +343,7 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 	p->buf.data[p->buf.len] = '\0';
 	p->ovf |= ovf;
 	p->jnull |= jnull;
+	p->ref |= (flags & SIFT_COLR_REF) != 0;
 	if (p->buf.len >= EMPTY_ROOM)
 	{
 		sift_col_rel(index)->hint = *h;

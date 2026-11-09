@@ -1,4 +1,4 @@
--- sift.col_wbuf_ref and a connected index (docs/COL-CONNECT.md): the foreign key of the child is a column of its index, so a buffered row that is a reference carries the same key as one with
+-- sift.col_wbuf_ref and a connected index, twin tables with the setting on and off (docs/COL-CONNECT.md): the foreign key of the child is a column of its index, so a buffered row that is a reference carries the same key as one with
 -- its values, and the fill of a promotion reads it from the same rows. The parent's journal of changed keys (the tombstone log, written by the track hook) is not a buffer row and stays
 -- as it is: a twin pair of tables takes the same statements, the child with the setting on and the child with it off, and at every step the answers of the join shapes are the normal
 -- plan's, the journal of the parent has the same records in both pairs, and the buffers hold the same rows.

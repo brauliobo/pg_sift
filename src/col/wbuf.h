@@ -20,6 +20,7 @@ typedef struct SiftCWbufHint
 	uint64		ovf_gen;		/* the write buffer whose overflow leaves ovf_known describes */
 	uint32		ovf_known;
 	uint32		jnull_known;	/* the same for the leaves with a JSON null */
+	uint64		ref_gen;		/* the write buffer whose directory entry is marked as one that holds references (SIFT_COL_FORMAT_REFBUF) */
 } SiftCWbufHint;
 
 /*
