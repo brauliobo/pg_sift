@@ -13,6 +13,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
+#include "bm25/maint.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -243,6 +244,16 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 	if (st->initialized && st->wbuf != NULL && sift_dir_version(rel) == st->wbuf_version)
 		return;
 	sift_tbl_refresh_full(rel, st);
+}
+
+/* The maintenance lock, and the directory as it is once the lock is held: whoever held it before may have promoted or merged the segments the cache lists */
+bool
+sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait)
+{
+	if (!sift_maint_lock(rel, wait))
+		return false;
+	sift_tbl_refresh(rel, st);
+	return true;
 }
 
 uint64

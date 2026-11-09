@@ -539,8 +539,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	v.newest_kept = cutoffs.OldestXmin;
 	v.bstrategy = bstrategy;
 	batch_begin(&v);
-	sift_tbl_refresh(rel, st);
-	sift_maint_lock(rel, true);
+	sift_tbl_maint_lock(rel, st, true);
 	maintaining = true;
 	PG_TRY();
 	{
