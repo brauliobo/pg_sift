@@ -317,7 +317,7 @@ sift_col_init(void)
 							 "takes them from there. A server that starts again, a standby and a promoted standby have none: the first reader builds them from the heap, once for the buffer. A row that finds no room "
 							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 46. "
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
-							 &sift_col_wbuf_ref, false, PGC_SUSET, 0, NULL, NULL, NULL);
+							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
