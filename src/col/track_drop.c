@@ -386,7 +386,11 @@ sift_col_track_convert(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("must be superuser to convert the triggers of track_changes")));
 	foreach_ptr(TrackTrigger, t, our_triggers(sift_col_track_function(false)))
 	{
-		Oid			index = legacy_index(t->oid);
+		Oid			index;
+
+		/* the lock of the DDL that deletes or rebuilds an index (DROP INDEX with or without CONCURRENTLY, REINDEX): it has finished or is waited for, and what it deleted is not read below */
+		LockRelationOid(t->relid, ShareUpdateExclusiveLock);
+		index = legacy_index(t->oid);
 
 		if (OidIsValid(index))
 		{
