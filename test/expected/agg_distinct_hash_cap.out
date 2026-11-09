@@ -8,7 +8,7 @@ INSERT INTO ev SELECT i, i % 4, (i % 400000) * 1009, i * 251 FROM generate_serie
 CREATE INDEX ev_col ON ev USING sift_col (grp, rep, uniq);
 NOTICE:  sift_col index "ev_col": 3 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = uniq;
-order_array_columns = rep; order_layout = rep compact in 1% of chunks
+order_array_columns = rep; order_layout = rep compact in 0% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 NOTICE:  sift_col index "ev_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
