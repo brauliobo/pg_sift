@@ -192,11 +192,16 @@ extern const char *sift_col_source_proof(struct SiftColSource *src, int found_le
  * The writer of a segment of a connected index (a build, a promotion, a merge) fills the found flag of every unit it writes from the parent tables: for each connection it takes a
  * stamp of the parent's journal (sift_conn_take) and reads the parent table under the snapshot the stamp was taken for, once, when the fill is begun; a row whose key is found there gets
  * the found flag, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
- * yet, a log that is not complete, a table of more rows than maintenance_work_mem holds) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
+ * yet, a log that is not complete, a table whose keys need more than half of maintenance_work_mem) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
  * The stamps are written with the segment (the SCHEMA section, column format 45) and are what a reader compares with its snapshot (the rule above).
  */
 struct SiftColFill;
 extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryContext mcxt);
+
+/* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
+typedef struct SiftConnKeySet SiftConnKeySet;
+extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit, uint64 *rows, uint64 *bytes);
+extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
 
 /*
  * Refresh: is a segment of a connected index worth a rewrite for what its stamps say? For a connection whose parent journal vouches now, a segment is stale when it was never filled

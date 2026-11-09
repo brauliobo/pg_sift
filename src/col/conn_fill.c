@@ -10,25 +10,18 @@
 #include "catalog/pg_type_d.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
-#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "col/conn.h"
 
-typedef struct FillEnt
-{
-	int64		key;
-	bool		repeated;		/* the key is in two visible rows of the table: neither is used */
-} FillEnt;
-
 typedef struct FillConn
 {
 	int			found;			/* the leaf of the flag */
 	int			fk_leaf;		/* the leaf of the child that holds the key */
 	SiftConnStamp stamp;
-	HTAB	   *tab;			/* NULL: no stamp, the leaves are cleared */
+	SiftConnKeySet *keys;		/* NULL: no stamp, the leaves are cleared */
 	bool		orphans;		/* a row had a key the parent has no (single) row for: the segment is not clean */
 } FillConn;
 
@@ -40,88 +33,19 @@ typedef struct SiftConnFill
 	FillConn	c[SIFT_CONN_MAX_CONNECTIONS];
 } SiftConnFill;
 
-static bool
-key_of(Oid typid, Datum d, int64 *out)
-{
-	switch (typid)
-	{
-		case INT2OID:
-			*out = DatumGetInt16(d);
-			return true;
-		case INT4OID:
-			*out = DatumGetInt32(d);
-			return true;
-		case INT8OID:
-			*out = DatumGetInt64(d);
-			return true;
-		default:
-			return false;
-	}
-}
-
-/* what a key costs in the table: the entry and the overhead of the hash */
-#define FILL_KEY_BYTES	(sizeof(FillEnt) + 32)
-
 static void fill_batch(SiftColFill *hook, SiftColBatch *view);
 static SiftConnStamp fill_stamp(const SiftColFill *hook, int i);
 
-/* The table of the parent keys under snap, or NULL when it holds more than the memory of a maintenance operation allows (*keys: the rows of the parent with a key, counted to the end so that the refusal can say how many) */
-static HTAB *
-table_of(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, uint64 *keys)
-{
-	HASHCTL		ctl = {.keysize = sizeof(int64),.entrysize = sizeof(FillEnt),.hcxt = cx};
-	HTAB	   *tab = hash_create("sift connection fill", 1024, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	TableScanDesc scan = sift_table_beginscan(parent, snap, 0, NULL);
-	TupleTableSlot *slot = table_slot_create(parent, NULL);
-	Oid			keytype = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
-	Size		used = 0,
-				limit = (Size) maintenance_work_mem * 1024 / 2;
-	bool		fits = true;
-
-	*keys = 0;
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-	{
-		bool		isnull,
-					found;
-		Datum		d = slot_getattr(slot, key, &isnull);
-		int64		k;
-		FillEnt    *e;
-
-		if (isnull || !key_of(keytype, d, &k))
-			continue;
-		*keys += 1;
-		if (fits)
-		{
-			e = hash_search(tab, &k, HASH_ENTER, &found);
-			e->repeated = found;
-			if (!found)
-			{
-				used += FILL_KEY_BYTES;
-				fits = used <= limit;
-			}
-		}
-		CHECK_FOR_INTERRUPTS();
-	}
-	ExecDropSingleTupleTableSlot(slot);
-	table_endscan(scan);
-	if (!fits)
-	{
-		hash_destroy(tab);
-		return NULL;
-	}
-	return tab;
-}
-
 /* A parent whose keys do not fit is refused, and the segments written say so in their stamps: the user is told too, in the log when no client is there (a maintenance worker) */
 static void
-say_refused(Relation index, Relation parent, const SiftConnSpec *s, uint64 keys)
+say_refused(Relation index, Relation parent, const SiftConnSpec *s, uint64 keys, uint64 bytes)
 {
 	int			refuse_level = MyBackendType == B_BG_WORKER ? LOG : NOTICE;
 
 	ereport(refuse_level,
 			(errmsg("sift_col index \"%s\": the keys of %s(%s) do not fit maintenance_work_mem", sift_col_final_name(index), RelationGetRelationName(parent), s->parent_key),
-			 errdetail("%lu keys need about %.1f MB at %d bytes a key, and the lookup may use half of maintenance_work_mem (%.1f MB): the connection keeps no found flag for them.",
-					   (unsigned long) keys, (double) keys * FILL_KEY_BYTES / (1024 * 1024), (int) FILL_KEY_BYTES, maintenance_work_mem / 2048.0),
+			 errdetail("%lu keys need about %.2f MB, and the lookup may use half of maintenance_work_mem (%.2f MB): the connection keeps no found flag for them.",
+					   (unsigned long) keys, (double) bytes / (1024 * 1024), maintenance_work_mem / 2048.0),
 			 errhint("Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.")));
 }
 
@@ -165,13 +89,15 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt)
 #endif
 		if (sift_conn_take(parent, pindex, snap, &fc->stamp, NULL) == SIFT_CONN_OK)
 		{
-			uint64		keys;
+			uint64		rows,
+						bytes;
 
-			fc->tab = table_of(mcxt, parent, get_attnum(RelationGetRelid(parent), s->parent_key), snap, &keys);
-			if (fc->tab == NULL)
+			fc->keys = sift_conn_keyset_load(mcxt, parent, get_attnum(RelationGetRelid(parent), s->parent_key), snap,
+											 (Size) maintenance_work_mem * 1024 / 2, &rows, &bytes);
+			if (fc->keys == NULL)
 			{
 				fc->stamp = (SiftConnStamp) {.reserved = SIFT_CONN_STAMP_REFUSED};
-				say_refused(index, parent, s, keys);
+				say_refused(index, parent, s, rows, bytes);
 			}
 		}
 		index_close(pindex, NoLock);
@@ -194,17 +120,15 @@ fill_batch(SiftColFill *hook, SiftColBatch *view)
 		{
 			FillConn   *fc = &f->c[i];
 			const SiftCVals *kv = &view->col[fc->fk_leaf];
-			FillEnt    *e = NULL;
-			int64		k = kv->key[row];
-
+			bool		one = false;
 			SiftColValue v;
 
-			if (fc->tab != NULL && !sift_col_bit_test(kv->nulls, row))
+			if (fc->keys != NULL && !sift_col_bit_test(kv->nulls, row))
 			{
-				e = hash_search(fc->tab, &k, HASH_FIND, NULL);
-				fc->orphans |= e == NULL || e->repeated;
+				one = sift_conn_keyset_has_one(fc->keys, kv->key[row]);
+				fc->orphans |= !one;
 			}
-			v = (SiftColValue) {.isnull = e == NULL || e->repeated,.tag = SIFT_COLTAG_UNKNOWN,.v.i = 1};
+			v = (SiftColValue) {.isnull = !one,.tag = SIFT_COLTAG_UNKNOWN,.v.i = 1};
 			sift_cfound_put(view, fc->found, &v);
 		}
 }

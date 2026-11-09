@@ -69,18 +69,18 @@ RESET sift.enable_agg;
 
 -- a parent table that does not fit maintenance_work_mem is not looked up: the stamp stays empty and the flag NULL
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
-INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
-CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
 CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 100) i;
-CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(1, 100) i;
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)', key_cut = 'off', order_array_columns = 'off');
 SET maintenance_work_mem = '1MB';
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(101, 200) i;
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(101, 200) i;
 SELECT sift.col_promote('big_events_col') >= 0 AS promoted;
 SELECT count(*) AS stamps, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('big_events_col');
 SELECT count(val) AS filled FROM sift._test_col_read('big_events_col', 2);
 RESET maintenance_work_mem;
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(201, 300) i;
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(201, 300) i;
 SELECT sift.col_promote('big_events_col') >= 0 AS promoted;
 SELECT count(*) AS stamps, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('big_events_col');
 SELECT count(val) AS filled FROM sift._test_col_read('big_events_col', 2);

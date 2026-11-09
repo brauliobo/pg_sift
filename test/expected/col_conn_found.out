@@ -271,17 +271,17 @@ SELECT * FROM phase() WHERE n = 1;
 (1 row)
 
 RESET sift.agg_connect_found;
--- a parent too large for maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
+-- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
-INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
-CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
 NOTICE:  sift_col index "dim_big_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dim_big_col');
 CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 2000) i;
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(1, 150000) i;
 SET maintenance_work_mem = '1MB';
-CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)', key_cut = 'off', order_array_columns = 'off');
 NOTICE:  sift_col index "big_events_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('big_events_col');
@@ -293,7 +293,10 @@ SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 
 SELECT sift.col_maintain('big_events_col') AS rewritten;
 NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
-DETAIL:  40000 keys need about 1.8 MB at 48 bytes a key, and the lookup may use half of maintenance_work_mem (0.5 MB): the connection keeps no found flag for them.
+DETAIL:  60000 keys need about 0.51 MB, and the lookup may use half of maintenance_work_mem (0.50 MB): the connection keeps no found flag for them.
+HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
+NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
+DETAIL:  60000 keys need about 0.51 MB, and the lookup may use half of maintenance_work_mem (0.50 MB): the connection keeps no found flag for them.
 HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
  rewritten 
 -----------
@@ -303,7 +306,7 @@ HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' 
 SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
                                        fill                                        
 -----------------------------------------------------------------------------------
- refused: the keys of the parent do not fit maintenance_work_mem (1 of 1 segments)
+ refused: the keys of the parent do not fit maintenance_work_mem (2 of 2 segments)
 (1 row)
 
 SELECT * FROM found_run($q$SELECT count(*) FROM big_events e JOIN dim_big d ON d.id = e.dim_big_id$q$);

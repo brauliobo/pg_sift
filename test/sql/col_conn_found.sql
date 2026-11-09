@@ -111,14 +111,14 @@ SET sift.agg_connect_found = off;
 SELECT * FROM phase() WHERE n = 1;
 RESET sift.agg_connect_found;
 
--- a parent too large for maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
+-- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
-INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
-CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
 CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 2000) i;
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(1, 150000) i;
 SET maintenance_work_mem = '1MB';
-CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)', key_cut = 'off', order_array_columns = 'off');
 SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 SELECT sift.col_maintain('big_events_col') AS rewritten;
 SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;

@@ -54,11 +54,11 @@ SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wr
 
 -- a parent that does not fit maintenance_work_mem is refused once and not asked for again
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
-INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
-CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
+INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
+CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array_columns = 'off');
 CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 100) i;
-CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(1, 150000) i;
+CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)', key_cut = 'off', order_array_columns = 'off');
 SET maintenance_work_mem = '1MB';
 SELECT sift.col_maintenance_due('big_events_col', false) AS due;
 SELECT sift.col_maintain('big_events_col') AS rewritten;
