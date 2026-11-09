@@ -3,6 +3,8 @@
 -- The counts are the plain plan's for both.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- the superblocks a parallel build gives each segment depend on which participant reads which blocks, so the share of order chunks that come out compact (the advice) varies from run to run
+SET max_parallel_maintenance_workers = 0;
 CREATE TABLE ev (id int, grp int NOT NULL, rep int NOT NULL, uniq int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 4, (i % 400000) * 1009, i * 251 FROM generate_series(1, 1500000) i;
 CREATE INDEX ev_col ON ev USING sift_col (grp, rep, uniq);
