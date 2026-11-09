@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_dimmap_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
@@ -28,7 +27,12 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k$q$),
  (8, $q$SELECT count(*) FILTER (WHERE dd.a IS NULL), count(*) FILTER (WHERE ev.v = 3) FROM dd RIGHT JOIN ev ON dd.k = ev.k$q$),
  (9, $q$SELECT count(*) FROM ev JOIN dd ON dd.k = ev.k AND dd.b = 5$q$),
- (10, $q$SELECT count(*) FILTER (WHERE ev.k > 9000 AND dd.a IS NOT NULL), count(*) FILTER (WHERE ev.k < 9000 OR dd.a IS NULL) FROM ev JOIN dd ON dd.k = ev.k$q$);
+ -- the key of the join read next to the columns of the table (the rows of a class are not the rows of its keys)
+ (10, $q$SELECT count(*) FILTER (WHERE ev.k > 9000 AND dd.a IS NOT NULL), count(*) FILTER (WHERE ev.k < 9000 OR dd.a IS NULL) FROM ev JOIN dd ON dd.k = ev.k$q$),
+ (11, $q$SELECT ev.k / 3000 AS g, count(*) FILTER (WHERE dd.a = 1), sum(ev.v) FILTER (WHERE dd.b < 5 AND ev.k % 2 = 0) FROM ev JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
+ (12, $q$SELECT sum(CASE WHEN ev.k > 5000 AND dd.a = 1 THEN 1 ELSE 0 END), sum(CASE WHEN ev.k % 3 = 0 THEN dd.c END) FROM ev JOIN dd ON dd.k = ev.k$q$),
+ (13, $q$SELECT dd.a, count(*) FILTER (WHERE ev.k > 9000), count(DISTINCT ev.k) FILTER (WHERE dd.t IS NULL) FROM ev JOIN dd ON dd.k = ev.k GROUP BY dd.a ORDER BY dd.a$q$),
+ (14, $q$SELECT count(*) FILTER (WHERE ev.k = dd.c * 7 OR dd.k = ev.k + 0 AND dd.b = 1) FROM ev JOIN dd ON dd.k = ev.k$q$);
 
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
