@@ -463,7 +463,7 @@ lookup_bool_filters	are columns of the lookup table read from its index	events	-
 lookup_dense_kept	is read from the cache of an earlier statement as classes of its keys	events	-	Lookup: .*cached tables	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
 lookup_scoped_keys	is read for the keys of the list alone	events	-	Lookup: [0-9]+ rows read	native	rows:sift.agg_lookup_pushdown = off	ms	faster33	no	-
 lookup_dense_tests	are columns of the lookup table computed once for each of its rows	events	-	Lookup: .*(rows classed|cached tables)	native	rows:sift.agg_lookup_columns = off	ms	faster33	no	-
-join_count_per_parent	`count(x)` of a column of a joined table keeps a flag for each joined tuple	events	-	Lookup Joins: jc_child	native	-	ms	faster33	no	-
+join_count_per_parent	`count(x)` of a column of a joined table keeps a flag for each joined tuple	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 distinct_split	share one set of ids: the scan groups by the outcome of each filter	events	-	Group Keys: .*lookup_id: \(NULLIF	native	-	ms	faster33	no	-
 found_path_exists	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
 found_path_under_parent_updates_1pct	is answered from the flag the segments keep that the parent row was found	events	-	[1-9][0-9]* found proofs	native	join:sift.agg_connect_found = off	ms,minstr	faster33	no	-
