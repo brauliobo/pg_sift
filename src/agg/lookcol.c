@@ -453,11 +453,13 @@ map_cols_why(Relation rel, const SiftAggJoin *j)
 			for (int i = 0; i < j->nkey + j->ncol && why == NULL; i++)
 			{
 				int			att = i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
-				Oid			typ = TupleDescAttr(RelationGetDescr(rel), att - 1)->atttypid;
+				Oid			typ;
 				const SiftSrcLeaf *lf;
 
-				if (i >= j->nkey && j->colexpr[i - j->nkey] != NULL)
+				/* an expression of the table (a key `ts::date = f.d`, a computed column) is no column */
+				if (i < j->nkey ? j->tkey[i] != NULL : j->colexpr[i - j->nkey] != NULL)
 					continue;
+				typ = TupleDescAttr(RelationGetDescr(rel), att - 1)->atttypid;
 				lf = column_leaf_any(lay, att, NULL);
 				if (lf == NULL || !leaf_of_type(lf, typ))
 					why = psprintf("column %s (%s) is %s of index %s", NameStr(TupleDescAttr(RelationGetDescr(rel), att - 1)->attname), format_type_be(typ),

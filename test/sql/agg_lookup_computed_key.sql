@@ -1,0 +1,39 @@
+-- A join on an expression of the lookup table's column (`d.ts::date = f.d`) has no column for its key: the table is read from the heap, and the reason EXPLAIN VERBOSE gives for it
+-- (Lookup Heap Reason) must not read a column that is not there. The answers are those of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+
+CREATE TABLE ck_dim (id int, ts timestamp, a int) WITH (autovacuum_enabled = false);
+INSERT INTO ck_dim SELECT g, timestamp '2026-01-01' + (g % 300) * interval '1 day' + interval '5 hours', g % 7 FROM generate_series(1, 3000) g;
+CREATE TABLE ck_fact (id int, d date, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ck_fact SELECT g, date '2026-01-01' + g % 300, g % 100 FROM generate_series(1, 60000) g;
+CREATE INDEX ck_dim_col ON ck_dim USING sift_col (id, ts, a);
+CREATE INDEX ck_fact_col ON ck_fact USING sift_col (id, d, v);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) ck_dim, ck_fact;
+
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.agg_force', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION why(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ 'Lookup Heap Reason' THEN RETURN regexp_replace(l, '^ +', ''); END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+
+SELECT answer(q, true) = answer(q, false) AS same_answers
+FROM (VALUES ($q$SELECT d.a, count(*), sum(f.v) FROM ck_fact f JOIN ck_dim d ON d.ts::date = f.d GROUP BY 1$q$)) v (q);
+-- no reason names a column when the key is an expression and every other column is a leaf
+SELECT why($q$SELECT d.a, count(*), sum(f.v) FROM ck_fact f JOIN ck_dim d ON d.ts::date = f.d GROUP BY 1$q$) IS NULL AS no_column_named;
+
+DROP FUNCTION answer(text, bool), why(text);
+DROP TABLE ck_fact, ck_dim;
+DROP EXTENSION pg_sift;
