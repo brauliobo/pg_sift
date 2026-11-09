@@ -1,0 +1,26 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1hold s2vacuum s3fill s1maint s1end s2check
+step s1hold: BEGIN; SELECT sift._test_tbl_hold_maint('iso_tv');
+_test_tbl_hold_maint
+--------------------
+                    
+(1 row)
+
+step s2vacuum: VACUUM iso_tv; <waiting ...>
+step s3fill: INSERT INTO iso_tv SELECT 10000 + i, 2, repeat('x', 300) FROM generate_series(1, 30000) i;
+step s1maint: SELECT sift._test_tbl_promote_held('iso_tv');
+_test_tbl_promote_held
+----------------------
+                      
+(1 row)
+
+step s1end: COMMIT;
+step s2vacuum: <... completed>
+step s2check: SELECT v, count(*) AS versions, count(DISTINCT id) AS ids, min(id), max(id) FROM iso_tv GROUP BY v ORDER BY v;
+v|versions|  ids|  min|  max
+-+--------+-----+-----+-----
+1|    3000| 3000|    1| 3000
+2|   30000|30000|10001|40000
+(2 rows)
+

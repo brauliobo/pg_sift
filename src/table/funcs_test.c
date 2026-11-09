@@ -6,6 +6,7 @@
 #ifdef SIFT_TESTING
 
 #include "access/table.h"
+#include "storage/procarray.h"
 #include "bm25/maint.h"
 #include "core/sql.h"
 #include "table/seg_int.h"
@@ -52,6 +53,22 @@ sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
 	sift_tbl_require(rel);
 	(void) sift_maint_lock(rel, true);
 	table_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(sift_test_tbl_promote_held);
+
+/* What a writer or a worker does while it holds the maintenance lock: closes the write buffer and promotes the sealed ones; the lock is kept */
+Datum
+sift_test_tbl_promote_held(PG_FUNCTION_ARGS)
+{
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+
+	sift_tbl_require(rel);
+	sift_tbl_close_wbuf(rel, st, 1);
+	(void) sift_tbl_promote(rel, st, GetOldestNonRemovableTransactionId(rel), true);
+	table_close(rel, AccessShareLock);
 	PG_RETURN_VOID();
 }
 
