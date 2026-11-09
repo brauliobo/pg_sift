@@ -1,6 +1,6 @@
 -- count(x) of a column of a joined table needs whether x is NULL, not the id of its value: the scan keeps a flag for each joined tuple, with no table of the values
 -- (a column with a value in every row made a table of the size of the lookup table's rows). The aggregates that do need the ids (min, sum, count(DISTINCT)) of such a
--- column cost more than those of a column of a few values. The answers are those of the normal plan, the rows of the parents with no child and the NULLs included.
+-- column cost more than those of a column of a few values. The answers are those of the normal plan, the rows of the parents with no child and the NULLs included. count(x + y) has PostgreSQL evaluate the sum for each joined tuple, which costs more than count(x).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -70,10 +70,11 @@ SELECT n, sql, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers
 
 -- the scan's price: a count needs no ids, and the ids of 300,000 values cost more than those of 1,000
 SELECT scan_cost('min(c.id)') > 2 * scan_cost('min(c.v)') AS wide_arg_costs_more, scan_cost('count(c.id)') < scan_cost('min(c.id)') / 2 AS count_costs_less,
-       scan_cost('sum(c.id)') > 2 * scan_cost('sum(c.v)') AS wide_sum_costs_more;
- wide_arg_costs_more | count_costs_less | wide_sum_costs_more 
----------------------+------------------+---------------------
- t                   | t                | t
+       scan_cost('sum(c.id)') > 2 * scan_cost('sum(c.v)') AS wide_sum_costs_more,
+       scan_cost('count(c.v + c.id)') > 1.5 * scan_cost('count(c.v)') AS expr_count_costs_more;
+ wide_arg_costs_more | count_costs_less | wide_sum_costs_more | expr_count_costs_more 
+---------------------+------------------+---------------------+-----------------------
+ t                   | t                | t                   | t
 (1 row)
 
 DROP FUNCTION plan(text), answer(text, bool), scan_cost(text);
