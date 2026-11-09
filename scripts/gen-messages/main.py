@@ -38,7 +38,7 @@ def git_files(prefix):
     return subprocess.run(['git', 'ls-files', '-co', '--exclude-standard', '--', prefix], capture_output=True, text=True, check=True).stdout.split('\n')[:-1]
 
 
-VARIABLE_LEVELS = {'elevel': 'INFO', 'GPU_LEVEL': 'WARNING'}    # a level that is a name: the level its row has
+VARIABLE_LEVELS = {'elevel': 'INFO', 'refuse_level': 'NOTICE', 'GPU_LEVEL': 'WARNING'}    # a level that is a name: the level its row has
 path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emitters.py')
 with open(path, encoding='utf-8') as f:
     exec(compile(f.read(), path, 'exec'), globals())

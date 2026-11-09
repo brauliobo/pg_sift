@@ -181,6 +181,9 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 SET maintenance_work_mem = '1MB';
 INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(101, 200) i;
 SELECT sift.col_promote('big_events_col') >= 0 AS promoted;
+NOTICE:  sift_col index "big_events_col": the keys of dim_big(id) do not fit maintenance_work_mem
+DETAIL:  40000 keys need about 1.8 MB at 48 bytes a key, and the lookup may use half of maintenance_work_mem (0.5 MB): the connection keeps no found flag for them.
+HINT:  Raise maintenance_work_mem and REINDEX the index, or set connect = 'off' on it.
  promoted 
 ----------
  t

@@ -59,7 +59,8 @@ until its next `REINDEX`.
 A parent index with a connected child keeps its journal through `REINDEX` and `REINDEX CONCURRENTLY` (and the copy of `pg_repack`): the build makes it for the index it is or replaces. Until the log of a
 concurrently built copy is complete (the next VACUUM does it) nothing is vouched.
 
-`sift.col_connections` lists the connections of the indexes (ordinal, column, parent index, declaration, whether it was chosen from a foreign key, and the state of the parent's journal).
+`sift.col_connections` lists the connections of the indexes (ordinal, column, parent index, declaration, whether it was chosen from a foreign key, the state of the parent's journal, and `fill`: `filled`,
+`partly filled`, `unfilled` (the next promotion or merge fills it) or `refused` when the keys of the parent did not fit `maintenance_work_mem`, which a NOTICE names as well: the keys, the memory they need and the setting).
 
 ## Automatic connections
 

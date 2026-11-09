@@ -443,6 +443,56 @@ sift_col_connection_state(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
+PG_FUNCTION_INFO_V1(sift_col_connection_fill);
+
+/*
+ * sift.col_connection_fill(child index): for each connection, the segments of the index, those that hold the found flags under a stamp, and those the fill refused because the keys of the
+ * parent did not fit maintenance_work_mem (a stamp of no lineage that says so). Reads the stamps of the segments, which are in their schemas.
+ */
+Datum
+sift_col_connection_fill(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SiftConnSpecs *specs;
+	int64		segments = 0,
+				filled[SIFT_CONN_MAX_CONNECTIONS] = {0},
+				refused[SIFT_CONN_MAX_CONNECTIONS] = {0};
+
+	InitMaterializedSRF(fcinfo, 0);
+	specs = sift_col_is_index(index) ? sift_conn_specs(index) : NULL;
+	if (specs != NULL && specs->n > 0)
+	{
+		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+		sift_dir_read(index, snap);
+		for (int i = 0; i < snap->nsegs; i++)
+		{
+			SiftColSegment *seg;
+
+			if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || (snap->segs[i].flags & SIFT_SEG_UNIT))
+				continue;
+			seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+			segments++;
+			for (int c = 0; c < specs->n && c < seg->nconn; c++)
+			{
+				filled[c] += seg->conn[c].lineage != 0;
+				refused[c] += seg->conn[c].lineage == 0 && seg->conn[c].reserved == SIFT_CONN_STAMP_REFUSED;
+			}
+			sift_cseg_close(seg);
+		}
+	}
+	for (int c = 0; specs != NULL && c < specs->n; c++)
+	{
+		Datum		v[4] = {Int32GetDatum(c + 1), Int64GetDatum(segments), Int64GetDatum(filled[c]), Int64GetDatum(refused[c])};
+		bool		nulls[4] = {false};
+
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, NoLock);
+	return (Datum) 0;
+}
+
 PG_FUNCTION_INFO_V1(sift_col_connection_list);
 
 /* The text of one connection, as the option writes it */

@@ -111,7 +111,7 @@ SET sift.agg_connect_found = off;
 SELECT * FROM phase() WHERE n = 1;
 RESET sift.agg_connect_found;
 
--- a parent too large for maintenance_work_mem is not resolved: the stamp says so, the join reads the parent
+-- a parent too large for maintenance_work_mem is not resolved: the stamp says so, a NOTICE names the keys, the memory and the setting, sift.col_connections says refused, the join reads the parent
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i, repeat('x', 40) || i FROM generate_series(1, 40000) i;
 CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label);
@@ -119,7 +119,9 @@ CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (auto
 INSERT INTO big_events SELECT i, 1 + i % 40000 FROM generate_series(1, 2000) i;
 SET maintenance_work_mem = '1MB';
 CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)');
+SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 SELECT sift.col_maintain('big_events_col') AS rewritten;
+SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 SELECT * FROM found_run($q$SELECT count(*) FROM big_events e JOIN dim_big d ON d.id = e.dim_big_id$q$);
 RESET maintenance_work_mem;
 
