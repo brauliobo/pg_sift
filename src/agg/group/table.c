@@ -7,6 +7,7 @@
 
 #include "agg/acc_layout.h"
 #include "agg/group/int.h"
+#include "agg/plan_int.h"
 
 AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
@@ -60,14 +61,21 @@ acc_free(AggAcc *a, int naggs)
 	pfree(a);
 }
 
-/* a table that cannot spill grows with its groups: past what the planner leaves it, it ends the scan and names what to raise */
+/*
+ * A table that cannot spill grows with its groups: past what the planner leaves it, it ends the scan and names what to raise. The memory of the context also holds the
+ * sets and values the aggregates keep beside the table, which the bound does not name: the table is held at the bytes the planner prices its groups, and no more than the context.
+ */
 void
 table_nospill_check(const AggExec *ex)
 {
-	double		held,
-				limit = sift_agg_nospill_bytes(NULL, NULL);
+	double		state,
+				limit = sift_agg_nospill_bytes(NULL, NULL),
+				held;
 
-	if (sift_aggspec_spillable(ex->spec) || (held = (double) MemoryContextMemAllocated(ex->tcxt, true)) <= limit)
+	if (sift_aggspec_spillable(ex->spec))
+		return;
+	held = Min((double) MemoryContextMemAllocated(ex->tcxt, true), ex->gcap * group_table_bytes(ex->spec, 1.0, &state));
+	if (held <= limit)
 		return;
 	ereport(ERROR,
 			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
