@@ -147,6 +147,11 @@ with the hash table, and 0.0-0.2 s with the key set for both, inside the run-to-
 a table being mostly evenly spread, and bisects on the others). At 1M keys and 64 MB the three routes above end `fill filled`, `col_maintain` takes 0.61 s instead of 1.08 s (it wrote the refusal), and the
 private memory peak of the REINDEX is 132 MB instead of 140 MB.
 
+The fill reads the whole parent once for each promotion, merge and rewrite of the child, whatever the size of the batch it fills: a promotion of 12,000 rows of a 500k-row child takes 45-60 ms unconnected and
+the same with 20k parent keys, +40-60 ms with 500k parent keys and +230-310 ms with 2M (355, 286, 372 ms against 44-82 ms; about 130 ns a parent key, two passes). Small promotions of a large parent are
+dominated by the parent scan. A fill that reads only what the batch asks for would cost the batch's distinct keys, not the parent's keys: the btree probe below at 1.8 us a key beats the scan when the batch
+has fewer distinct keys than about 7% of the parent's keys (12,000 of 2M: 22 ms against 300 ms), so the probe is a cost fix for the write path as well as the answer for a parent that does not fit.
+
 What stays bounded, and the design to remove it. A sorted parent of more than 3.7M keys at 64 MB (a snowflake or a hashed bigint key) is still refused, with the NOTICE (a LOG line in a worker). To make the fill
 work at any parent size with bounded memory the lookup has to leave memory, and there are two ways, neither small: (a) probe the btree index of the key (the parent has one: the foreign key needs a unique index) for
 each distinct key of a batch, in key order, under the stamp's snapshot, keeping nothing: 1.8 us a child row measured for a nested loop of probes over 2M rows against 0.65 us for a hash join, so about 1.5 us a
