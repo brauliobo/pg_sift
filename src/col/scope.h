@@ -13,7 +13,7 @@
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
-#include "col/api/meta.h"
+#include "col/col.h"
 #include "col/conn.h"
 
 #define SIFT_SCOPE_MAX		4		/* scopes of one index */
