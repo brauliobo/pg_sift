@@ -41,6 +41,8 @@ DECLARE
 	k        bigint;
 BEGIN
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
+	-- a transaction does not see the uncommitted rows of the other table's: the writers of the facts share a lock that the writers of the pairs take alone
+	PERFORM pg_advisory_xact_lock_shared(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
 		-- an updated row whose carried columns did not change keeps its copies
 		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE %s AND %s)',
@@ -70,6 +72,7 @@ DECLARE
 	k        bigint;
 BEGIN
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
+	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
 		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE n.%1$I = o.%1$I AND n.%2$I = o.%2$I)', c.member, c.scope_key) ELSE '' END;
 		EXECUTE format('DELETE FROM %s d USING old_rows o WHERE d.%I = o.%I AND d.%I = o.%I%s', c.copy, c.fk, c.member, c.scope_key, c.scope_key, same);

@@ -1,0 +1,90 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s1_insert s2_add s1_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_insert: INSERT INTO iso_sc_facts VALUES (101, 4, 1, 10), (102, 2, 1, 20);
+step s2_add: INSERT INTO iso_sc_pairs VALUES (4, 2); <waiting ...>
+step s1_commit: COMMIT;
+step s2_add: <... completed>
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_sc_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
+
+starting permutation: s2_begin s2_add s1_begin s1_insert s2_commit s1_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s2_begin: BEGIN;
+step s2_add: INSERT INTO iso_sc_pairs VALUES (4, 2);
+step s1_begin: BEGIN;
+step s1_insert: INSERT INTO iso_sc_facts VALUES (101, 4, 1, 10), (102, 2, 1, 20); <waiting ...>
+step s2_commit: COMMIT;
+step s1_insert: <... completed>
+step s1_commit: COMMIT;
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_sc_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
+
+starting permutation: s1_begin s1_delete s2_add s1_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_delete: DELETE FROM iso_sc_facts WHERE id = 3;
+step s2_add: INSERT INTO iso_sc_pairs VALUES (4, 2); <waiting ...>
+step s1_commit: COMMIT;
+step s2_add: <... completed>
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_sc_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
+
+starting permutation: s1_begin s1_insert s2_remove s1_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_insert: INSERT INTO iso_sc_facts VALUES (101, 4, 1, 10), (102, 2, 1, 20);
+step s2_remove: DELETE FROM iso_sc_pairs WHERE dim_a_id = 2; <waiting ...>
+step s1_commit: COMMIT;
+step s2_remove: <... completed>
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_sc_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
+
+starting permutation: s2_begin s2_remove s1_begin s1_insert s2_commit s1_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s2_begin: BEGIN;
+step s2_remove: DELETE FROM iso_sc_pairs WHERE dim_a_id = 2;
+step s1_begin: BEGIN;
+step s1_insert: INSERT INTO iso_sc_facts VALUES (101, 4, 1, 10), (102, 2, 1, 20); <waiting ...>
+step s2_commit: COMMIT;
+step s1_insert: <... completed>
+step s1_commit: COMMIT;
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_sc_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
