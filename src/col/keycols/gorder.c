@@ -107,6 +107,21 @@ pick_cmp(const void *a, const void *b)
 	return *(const int *) a - *(const int *) b;
 }
 
+/* The build chooses the order arrays and their group: neither option is a list of the user's (unset, 'auto', 'off' for the group) and the column format has the second order. The choice reads the statistics of the table */
+bool
+keycols_arrays_open(Relation index)
+{
+	const char *opt = sift_col_options_order_array_columns(index);
+	const char *gopt = sift_col_options_order_array_group(index);
+	bool		autolist;
+
+	(void) sift_cpagg_auto_list(opt, &autolist);
+	if (opt != NULL && !autolist)
+		return false;
+	(void) sift_cpagg_auto_list(gopt, &autolist);
+	return sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE && (gopt[0] == '\0' || autolist || strcmp(gopt, "off") == 0);
+}
+
 /*
  * layout: a build (CREATE INDEX, REINDEX) decides key_order too, with the arrays; a merge that chooses again (sift_col_auto_redecide) leaves it as the build chose, its
  * segments hold the rows in the order they were written in, which a merge does not sort by a key the build did not use.
@@ -117,8 +132,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	const char *opt = sift_col_options_order_array_columns(index);
 	const char *gopt = sift_col_options_order_array_group(index);
 	const SiftColRel *rel;
-	bool		autolist,
-				gauto,
+	bool		gauto,
 				keyorder,
 				timepick = false;
 	int			grp = -1,
@@ -152,12 +166,9 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	/* a key_cut of the user's shapes the units, as the user chose: only a build's own choice or 'off' takes the layout along */
 	keyorder = layout && sift_col_options_key_order(index)[0] == '\0' && !sift_col_options_order_columns_set(index) && strcmp(gopt, "off") != 0 &&
 		(sift_col_options_key_cut_auto(index) || strcmp(sift_col_options_key_cut(index), "off") == 0);
-	(void) sift_cpagg_auto_list(opt, &autolist);
-	if (opt != NULL && !autolist)
+	if (!keycols_arrays_open(index))
 		return;
 	(void) sift_cpagg_auto_list(gopt, &gauto);
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || (gopt[0] != '\0' && !gauto && strcmp(gopt, "off") != 0))
-		return;
 	keycols_analyze_if_unknown(heap, index);
 	if (keycols_heap_rows(heap) < GORD_AUTO_ROWS)
 		return;
@@ -339,9 +350,11 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 					eclus = false,
 					timecut;
 		double		cnd = 0;
+		const char *scope;
 
 		oldgrp = grp;
 		egrp = -1;
+		scope = sift_col_scope_key(heap, index, false);
 		for (int c = 0; c < rel->schema->ncols; c++)
 		{
 			const SiftColDef *d = &rel->schema->cols[c];
@@ -365,11 +378,13 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 				if (!keycols_col_stats(heap, hatt, &cnd, &ccr, &cwidth))
 					cnd = 0;
 			}
-			if (sift_cgord_leaf_time(d) || !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
+			bool		scoped = scope != NULL && strcmp(scope, keycols_leaf_name(index, d)) == 0;
+
+			if (sift_cgord_leaf_time(d) || !(scoped || keycols_is_entity(heap, hatt, keycols_leaf_name(index, d))) || !keycols_col_stats(heap, hatt, &nd, &cr, &width) ||
 				nd < GORD_KEYORDER_ENTITIES || keycols_heap_rows(heap) / nd < GORD_GROUP_DEPTH)
 				continue;
-			/* the entity is the key the cut chose, else the foreign key or *_id column of most values, in the order of the heap or not */
-			score = nd + (cut ? 1e12 : 0.0);
+			/* the entity is the key the cut chose or the scope key of a table shaped like a copy, else the foreign key or *_id column of most values, in the order of the heap or not */
+			score = nd + (cut || scoped ? 1e12 : 0.0);
 			if (score > best)
 			{
 				best = score;

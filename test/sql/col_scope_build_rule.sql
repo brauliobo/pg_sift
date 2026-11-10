@@ -1,0 +1,107 @@
+-- The build rule for tables shaped like a scope copy (sift.scope_create, or CREATE TABLE AS of a join with (member, key) pairs): the first column of the index is a key of few
+-- values with many rows each, neither a foreign key nor unique, and another key-shaped column has several times its values (the foreign key the rows were copied by). CREATE INDEX
+-- takes the first column for key_order and key_cut, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
+-- the floor of the layout choice (GORD_AUTO_ROWS): the table here is 110,000 rows and the reason is the only one for its size.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+SET lc_messages = 'C';
+\set VERBOSITY terse
+
+CREATE TABLE tenants (id int PRIMARY KEY);
+INSERT INTO tenants SELECT g FROM generate_series(1, 60) g;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + (hashint4(i) & 2147483647) % 3000, timestamptz '2026-01-01' + i * interval '5 minutes', i % 7, i % 97 FROM generate_series(1, 100000) i;
+CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs SELECT d, 1 + (hashint4(d) & 2147483647) % 60 FROM generate_series(1, 3000) d;
+INSERT INTO pairs SELECT d, 1 + (hashint4(d + 7) & 2147483647) % 60 FROM generate_series(1, 3000) d WHERE d % 5 = 0 ON CONFLICT DO NOTHING;
+
+-- the copy in arrival order and sorted by the key and the time, as the join writes it and as sift.scope_create does; the rows are wide, so that the table has the units a cut by the key is for
+CREATE TABLE copy_arrival WITH (autovacuum_enabled = false) AS
+	SELECT p.tenant_id, f.id, f.dim_a_id, f.created_at, f.kind, f.amount, repeat('x', 100) AS pad FROM facts f JOIN pairs p USING (dim_a_id) ORDER BY f.id, p.tenant_id;
+CREATE TABLE copy_sorted WITH (autovacuum_enabled = false) AS SELECT * FROM copy_arrival ORDER BY tenant_id, created_at;
+VACUUM (FREEZE, ANALYZE) facts, pairs, copy_arrival, copy_sorted;
+SELECT count(*) > 100000 AS copy_over_the_floor FROM copy_arrival;
+
+CREATE FUNCTION chosen(idx regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce(string_agg(choice || ' = ' || value, '; ' ORDER BY choice), 'none') FROM sift.index_choices(idx) WHERE choice IN ('key_order', 'key_cut') $$;
+-- the scan of one key and the rows of the copy for three keys against the join of the facts with the pairs
+CREATE FUNCTION answers(copy regclass, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE c text; j text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM %s WHERE tenant_id = %s GROUP BY kind) t', copy, k) INTO c;
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE tenant_id = %s) GROUP BY kind) t', k) INTO j;
+	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+CREATE FUNCTION latest(copy regclass, k int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE c text; j text;
+BEGIN
+	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY created_at DESC, id) FROM (SELECT id, created_at FROM %s WHERE tenant_id = %s ORDER BY created_at DESC, id LIMIT 20) t', copy, k) INTO c;
+	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY created_at DESC, id) FROM (SELECT id, created_at FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE tenant_id = %s) ORDER BY created_at DESC, id LIMIT 20) t', k) INTO j;
+	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+-- whether the units of the other keys are pruned by the scan of one key, from the plan of the statement as it runs
+CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; res text := 'no Sift scan';
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		IF pl ~ 'Units:' THEN res := CASE WHEN pl ~ 'pruned' THEN 'units pruned' ELSE 'every unit read' END; END IF;
+	END LOOP;
+	RETURN res;
+END $$;
+
+-- the shape of a copy, arrival order and sorted: the key is the first column
+CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
+CREATE INDEX copy_sorted_col ON copy_sorted USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
+SELECT 'arrival' AS copy, chosen('copy_arrival_col') UNION ALL SELECT 'sorted', chosen('copy_sorted_col');
+SELECT why FROM sift.index_choices('copy_arrival_col') WHERE choice = 'key_order';
+SELECT k AS tenant, answers('copy_arrival', k) AS sums_arrival, answers('copy_sorted', k) AS sums_sorted, latest('copy_arrival', k) AS latest_arrival, latest('copy_sorted', k) AS latest_sorted
+	FROM (VALUES (1), (7), (60)) v(k);
+SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_arrival,
+	   units_of('SELECT dim_a_id, sum(amount) FROM copy_sorted WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_sorted;
+-- REINDEX decides again and chooses the same
+REINDEX INDEX copy_arrival_col;
+SELECT chosen('copy_arrival_col');
+DROP INDEX copy_arrival_col, copy_sorted_col;
+
+-- what the user wrote stays: a key_order of their own, 'off'
+CREATE INDEX copy_user_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'dim_a_id, created_at');
+SELECT 'user' AS option, chosen('copy_user_col');
+DROP INDEX copy_user_col;
+CREATE INDEX copy_off_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'off');
+SELECT 'off' AS option, chosen('copy_off_col');
+DROP INDEX copy_off_col;
+
+-- a copy indexed right after CREATE TABLE AS has no statistics yet: the build analyzes it first
+CREATE TABLE copy_fresh WITH (autovacuum_enabled = false) AS SELECT * FROM copy_arrival;
+CREATE INDEX copy_fresh_col ON copy_fresh USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
+SELECT 'no statistics' AS copy, chosen('copy_fresh_col');
+DROP INDEX copy_fresh_col;
+
+-- where the rule does not fire
+-- a foreign key to a parent of unique keys: a tenant of a table of facts, not a scope of a copy
+CREATE TABLE fk_tenant WITH (autovacuum_enabled = false) AS SELECT tenant_id, id, dim_a_id, created_at, kind, amount FROM copy_arrival;
+ALTER TABLE fk_tenant ADD FOREIGN KEY (tenant_id) REFERENCES tenants (id);
+VACUUM (FREEZE, ANALYZE) fk_tenant;
+CREATE INDEX fk_tenant_col ON fk_tenant USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
+SELECT 'foreign key' AS table, chosen('fk_tenant_col');
+-- the first column of the index is an id of high cardinality
+CREATE INDEX id_lead_col ON copy_arrival USING sift_col (id, tenant_id, dim_a_id, created_at, kind, amount);
+SELECT 'id first' AS table, chosen('id_lead_col');
+DROP INDEX id_lead_col;
+-- several unrelated small keys and a foreign key with no more than eight times the values of the first
+CREATE TABLE small_keys WITH (autovacuum_enabled = false) AS
+	SELECT id, 1 + (hashint4(id) & 2147483647) % 20 AS a_id, 1 + (hashint4(id + 1) & 2147483647) % 60 AS b_id, 1 + (hashint4(id + 2) & 2147483647) % 90 AS c_id, created_at, amount FROM facts;
+VACUUM (FREEZE, ANALYZE) small_keys;
+CREATE INDEX small_keys_col ON small_keys USING sift_col (a_id, id, b_id, c_id, created_at, amount);
+SELECT 'small keys' AS table, chosen('small_keys_col');
+-- the heap is in the order of the foreign key: that order serves its lookups already
+CREATE TABLE dim_sorted WITH (autovacuum_enabled = false) AS SELECT tenant_id, id, dim_a_id, created_at, kind, amount FROM copy_arrival ORDER BY dim_a_id, created_at;
+VACUUM (FREEZE, ANALYZE) dim_sorted;
+CREATE INDEX dim_sorted_col ON dim_sorted USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
+SELECT 'sorted by the foreign key' AS table, chosen('dim_sorted_col');
+DROP TABLE fk_tenant, small_keys, dim_sorted, copy_fresh, copy_arrival, copy_sorted, facts, pairs, tenants;
+DROP FUNCTION chosen(regclass), answers(regclass, int), latest(regclass, int), units_of(text);
+DROP EXTENSION pg_sift;

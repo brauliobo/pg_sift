@@ -224,6 +224,8 @@ extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSche
 /* ... of the heap column hatt itself (the keys of a sift_table's columns: the leaf's attno) */
 extern bool sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, const SiftColDef *d);
 extern bool sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d);
+/* The first column of an index on a table shaped like a scope copy (a tenant or group key before the entity it was copied by): the key the build cuts and orders by, or NULL (col/keycols/keycols.c) */
+extern const char *sift_col_scope_key(Relation heap, Relation index, bool build);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;

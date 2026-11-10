@@ -133,7 +133,13 @@ d_key_order(Derive *d)
 	const char *ko = sift_col_options_key_order(d->index);
 
 	if (after_auto(ko))
-		add(d, "key-order-auto", pstrdup(after_auto(ko)), NULL);
+	{
+		const char *scope = d->heap == NULL ? NULL : sift_col_scope_key(d->heap, d->index, false);
+		size_t		n = scope == NULL ? 0 : strlen(scope);
+
+		/* the group of 'group, key' is the scope key of a table shaped like a copy */
+		add(d, n > 0 && strncmp(after_auto(ko), scope, n) == 0 && after_auto(ko)[n] == ',' ? "key-order-scope" : "key-order-auto", pstrdup(after_auto(ko)), NULL);
+	}
 	else if (ko[0] != '\0' && strcmp(ko, "off") != 0)
 		add(d, "key-order", pstrdup(ko), NULL);
 }
@@ -589,6 +595,7 @@ static const struct
 } derive_fn[] = {
 	{"key-order", d_key_order},
 	{"key-order-auto", d_key_order},
+	{"key-order-scope", d_key_order},
 	{"array-lengths", d_array_lengths},
 	{"jsonb-paths", d_paths},
 	{"array-elements", d_paths},

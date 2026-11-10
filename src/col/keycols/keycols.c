@@ -216,6 +216,55 @@ sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, 
 }
 
 /*
+ * The scope key of a table shaped like a scope copy (sift.scope_create, or CREATE TABLE AS of a join with a table of (member, key) pairs sorted by the key): the first column of the
+ * index is an integer of few values (GORD_KEYORDER_ENTITIES to SCOPE_KEY_DISTINCT) with many rows each (SCOPE_KEY_DEPTH), neither a foreign key nor unique, and another key-shaped column
+ * has SCOPE_KEY_RATIO times its values or more (unrelated small keys do not make a scope): the column the rows were copied by, which the build would take for the group of key_order and the key of key_cut. The lookups of such a table are by its first
+ * column. NULL where the shape does not hold, where key_order or order_columns is the user's, or where the heap is in the order of the other column (it serves that key already).
+ * build: the table is analyzed first where the choice of the arrays would analyze it (a CREATE TABLE AS copy is indexed before autovacuum has seen it).
+ */
+const char *
+sift_col_scope_key(Relation heap, Relation index, bool build)
+{
+	const SiftColRel *rel;
+	const SiftColDef *lead = NULL;
+	AttrNumber	hatt;
+	double		nd,
+				corr,
+				rows;
+	int32		width;
+	bool		other = false;
+
+	if ((sift_col_options_key_order(index)[0] != '\0' && !sift_col_options_key_order_auto(index)) || sift_col_options_order_columns_set(index))
+		return NULL;
+	if (build && keycols_arrays_open(index))
+		keycols_analyze_if_unknown(heap, index);
+	rel = sift_col_rel_private(index, CurrentMemoryContext);
+	for (int c = 0; c < rel->schema->ncols && lead == NULL; c++)
+		if (rel->schema->cols[c].attno == 1)
+			lead = &rel->schema->cols[c];
+	hatt = lead == NULL ? 0 : keycols_heap_attno(index, lead);
+	rows = keycols_heap_rows(heap);
+	if (hatt == 0 || lead->parent >= 0 || lead->lane != 0 || lead->store != SIFT_COLS_INT || sift_cgord_leaf_time(lead) || !sift_cset_pres_leaf_ok(rel->schema, lead) ||
+		is_fk_column(heap, hatt) || is_unique_column(heap, hatt) || !keycols_col_stats(heap, hatt, &nd, &corr, &width) ||
+		nd < GORD_KEYORDER_ENTITIES || nd > SCOPE_KEY_DISTINCT || rows / nd < SCOPE_KEY_DEPTH)
+		return NULL;
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	att = keycols_heap_attno(index, d);
+		double		nd2,
+					corr2;
+
+		if (d == lead || att == 0 || d->parent >= 0 || !sift_col_key_attr(heap, att, rel->schema, d) || !keycols_col_stats(heap, att, &nd2, &corr2, &width) || nd2 < SCOPE_KEY_RATIO * nd)
+			continue;
+		if (corr2 >= GORD_AUTO_CORR && corr < GORD_AUTO_CORR)
+			return NULL;
+		other = true;
+	}
+	return other ? pstrdup(keycols_leaf_name(index, lead)) : NULL;
+}
+
+/*
  * A column that is unique alone (the id) is not a candidate for the count(DISTINCT) that the other key lists serve, but an equality on it is the lookup a b-tree
  * answers: a list of its keys in a unit skips the units whose zone holds the key, and it fits the share of the unit only as runs of consecutive keys (the
  * ids that a batch inserted). It is worth a list where the zones cannot skip the units: the units are cut by a key, or the column does not follow the order

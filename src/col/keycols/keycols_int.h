@@ -45,6 +45,9 @@
 #define GORD_GROUP_BYTES	5.6		/* the bytes a row of the second order of a date, timestamp or integer array, without the directory of its groups */
 #define GORD_GROUP_SPEEDUP	3.5		/* S of the latest row of each entity (a LATERAL .. ORDER BY ts DESC LIMIT 1), the least of the shapes the second order serves: 300,000 rows 48.5 M to 12.9 M instructions (3.8x), 48.8 M to 16.9 M on a narrow index (2.9x) */
 #define GORD_ENDS_BYTES		2.4		/* the bytes a row of the array of an integer, date or timestamp column (the ends of its order and the addresses) */
+#define SCOPE_KEY_DISTINCT	4096	/* the most values of the scope key of a table shaped like a copy (sift_col_scope_key): a tenant or a group, not an entity */
+#define SCOPE_KEY_DEPTH		100		/* ... and the fewest rows each has: a copy of the rows of a group holds hundreds to thousands of them */
+#define SCOPE_KEY_RATIO		8		/* ... and the entities it has at the least for each of its values */
 #define GORD_GROUP_WRITE	6.0		/* W: CREATE INDEX +3.6% instructions (300,000 rows, 7 columns), +5.7% (500,000 rows, 9 columns) */
 
 extern AttrNumber	keycols_heap_attno(Relation index, const SiftColDef *d);
@@ -57,6 +60,7 @@ extern Oid	keycols_group_btree(Relation heap, Relation index, AttrNumber hatt);
 extern const char *	keycols_leaf_name(Relation index, const SiftColDef *d);
 extern double	keycols_est_index_bytes(Relation heap, Relation index);
 extern void	keycols_analyze_if_unknown(Relation heap, Relation index);
+extern bool	keycols_arrays_open(Relation index);
 extern void	keycols_append_name(StringInfo s, const char *name);
 
 extern void	keycols_auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo only, StringInfo both);
