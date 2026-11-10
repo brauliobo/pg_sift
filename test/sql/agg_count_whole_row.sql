@@ -46,11 +46,15 @@ INSERT INTO cases (label, q) VALUES
   ('join: a FULL JOIN', $q$SELECT l.id, e.grp, count(e) AS c, count(*) AS s FROM cw e FULL JOIN lk l ON l.id = e.grp GROUP BY 1, 2$q$),
   ('join: the lookup row, not the scanned table', $q$SELECT e.grp, count(l) AS c FROM cw e LEFT JOIN lk l ON l.id = e.grp GROUP BY 1$q$),
   ('system column: max(ctid) keeps the normal plan', $q$SELECT grp, max(ctid) AS m FROM cw e GROUP BY 1$q$);
+-- This spec pins the count(e) of the normal plan. With the table scans off, the child-first plan of a LEFT JOIN (sift.agg_child_first, covered in agg_child_first_gate)
+-- wins on PostgreSQL 17, whose estimates carry the disabled scans as a cost, and not on 18, where they are a count: the spec does not depend on the major.
+SET sift.agg_child_first = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SET enable_indexonlyscan = off;
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM cases ORDER BY n;
+RESET sift.agg_child_first;
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;

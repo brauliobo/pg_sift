@@ -1,5 +1,5 @@
 -- sift.agg_child_first gates the plans that scan the child of a LEFT JOIN with the preserved parent as its lookup (and the two rewrites around it, docs/COL-CONNECT.md):
--- on, the statement counts the children of each parent from a scan of the child; off, it is the lookup join, a scan of the parent that loads the child. The answers are the same.
+-- on, the statement counts the children of each parent from a scan of the child; off, it is the lookup join, a scan of the parent that loads the child. The answers are the same, also for count(c) of the whole row of the child when most parents have no child (the nullable side: 0 for count(c), 1 for count(*)).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -33,7 +33,8 @@ SELECT q.name, joins(q.sql, true) AS child_first_on, joins(q.sql, false) AS chil
        answer(q.sql, true, false) = answer(q.sql, false, true) AS off_equals_native
 FROM (VALUES
 	('count per parent', 'SELECT p.id, count(c.id) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.id ORDER BY 2 DESC, 1 LIMIT 10'),
-	('sum per region', 'SELECT p.region, count(c.id), sum(c.v) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.region ORDER BY 1')
+	('sum per region', 'SELECT p.region, count(c.id), sum(c.v) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.region ORDER BY 1'),
+	('whole row of the child', 'SELECT p.region, count(c) AS c, count(*) AS s FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id AND c.v = 3 GROUP BY p.region ORDER BY 1')
 ) q (name, sql) ORDER BY q.name;
 
 DROP FUNCTION joins(text, bool), answer(text, bool, bool);
