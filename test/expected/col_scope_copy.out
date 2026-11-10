@@ -40,7 +40,7 @@ INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_serie
 SELECT sift.scope_create('wide_copy', 'facts', 'dim_a_id', 'wide_pairs', 'scope_id');
 ERROR:  scope_create: a row of "public.facts" would have 7.00 copies on average, above max_copies 1.8
 DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 17 MB, +701% over the table and its indexes.
-HINT:  A copy suits a multiplicity close to 1: above it the join answers, or use the scope option of the sift_col index (a derived-key scope index, COL-SCOPE.md) or the count and sum cube recipe of INDEX-RECIPES.md, key the copy by a scope relation whose members belong to fewer keys, or pass max_copies => 7 to build it anyway.
+HINT:  A copy suits a multiplicity close to 1 (it stops paying at 1.84): above it the join answers the scope reads (entity path), the scope option of the sift_col index takes up to 3 entries a row (COL-SCOPE.md), counts and sums by key are cheaper from a table of them (INDEX-RECIPES.md), or pass max_copies => 7 to build it anyway.
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 92 at RAISE
 -- the refusal is a default: max_copies raises it, and the NOTICE gives the same figures
 CREATE TABLE triple_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
@@ -48,7 +48,7 @@ INSERT INTO triple_pairs SELECT e, k FROM generate_series(1, 60) e, generate_ser
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id');
 ERROR:  scope_create: a row of "public.facts" would have 3.00 copies on average, above max_copies 1.8
 DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 7 MB, +300% over the table and its indexes.
-HINT:  A copy suits a multiplicity close to 1: above it the join answers, or use the scope option of the sift_col index (a derived-key scope index, COL-SCOPE.md) or the count and sum cube recipe of INDEX-RECIPES.md, key the copy by a scope relation whose members belong to fewer keys, or pass max_copies => 3 to build it anyway.
+HINT:  A copy suits a multiplicity close to 1 (it stops paying at 1.84): above it the join answers the scope reads (entity path), the scope option of the sift_col index takes up to 3 entries a row (COL-SCOPE.md), counts and sums by key are cheaper from a table of them (INDEX-RECIPES.md), or pass max_copies => 3 to build it anyway.
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 92 at RAISE
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 3.1) AS copy_rows;
 NOTICE:  sift_col index "triple_copy_col": 5 automatic choices, 1 advice

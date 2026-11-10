@@ -300,7 +300,7 @@ BEGIN
 		RAISE EXCEPTION 'scope_create: a row of "%" would have % copies on average, above max_copies %', src, round(mult::numeric, 2), max_copies
 			USING DETAIL = format('The copy would hold that many times the rows of the table that reach a scope key: about %s MB, +%s%% over the table and its indexes.',
 								  round((est / 1048576)::numeric), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r))),
-				  HINT = format('A copy suits a multiplicity close to 1: above it the join answers, or use the scope option of the sift_col index (a derived-key scope index, COL-SCOPE.md) or the count and sum cube recipe of INDEX-RECIPES.md, key the copy by a scope relation whose members belong to fewer keys, or pass max_copies => %s to build it anyway.', ceil(mult * 10) / 10), ERRCODE = 'feature_not_supported';
+				  HINT = format('A copy suits a multiplicity close to 1 (it stops paying at 1.84): above it the join answers the scope reads (entity path), the scope option of the sift_col index takes up to 3 entries a row (COL-SCOPE.md), counts and sums by key are cheaper from a table of them (INDEX-RECIPES.md), or pass max_copies => %s to build it anyway.', ceil(mult * 10) / 10), ERRCODE = 'feature_not_supported';
 	END IF;
 
 	-- the copy
