@@ -37,6 +37,7 @@ col/seg/gorder_group.c
 col/seg/gorder_head.c
 col/seg/prune.c
 col/seg/verify.c
+col/seg/mirror.c
 col/seg/vers.c
 col/seg/dict.c
 col/seg/dictkeep.c
@@ -50,6 +51,7 @@ col/seg_write/seg_write.c
 col/seg_write/add.c
 col/seg_write/dict.c
 col/seg_write/points.c
+col/seg_write/mirror.c
 col/seg_write/summary.c
 col/seg_maint.c
 col/ver.c

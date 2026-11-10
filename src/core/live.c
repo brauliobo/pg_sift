@@ -8,7 +8,7 @@
 #define corrupt(l, ...) SIFT_SEG_CORRUPT((l)->index, (l)->gen, __VA_ARGS__)
 
 SiftSegHeaderData *
-sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *usedp)
 {
 	Buffer		buf = ReadBuffer(index, entry->header_blk);
 	Page		page;
@@ -30,7 +30,16 @@ sift_seg_read_header(Relation index, const SiftSegEntry *entry)
 	copy = palloc(used);
 	memcpy(copy, h, used);
 	UnlockReleaseBuffer(buf);
+	*usedp = used;
 	return copy;
+}
+
+SiftSegHeaderData *
+sift_seg_read_header(Relation index, const SiftSegEntry *entry)
+{
+	uint32		used;
+
+	return sift_seg_read_header_used(index, entry, &used);
 }
 
 static void

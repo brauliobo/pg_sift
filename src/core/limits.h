@@ -164,6 +164,9 @@
 	X(lst_min_units, "LST_MIN_UNITS", "col/seg_write/seg_write_int.h", 64, "units", \
 	  "units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf", \
 	  "no statistics block: the plan reads the zone arrays of the segment (a few pages)", "-", 1) \
+	X(mirror_bytes, "SEG_MIRROR_BYTES", "col/seg_write/seg_write_int.h", 6144, "bytes", \
+	  "bytes of the header page of a segment that keep a copy of the small structures a plan and a first read of the segment open (the schema and the unit directory, the point directories, the order headers, the headers of the pre-aggregates), so that they cost no pages of their own", \
+	  "no copy: each of them is read from its own page of the segment", "-", 1) \
 	X(lst_share_div, "LST_SHARE_DIV", "col/seg_write/seg_write.c", 33, "1/n of a segment", \
 	  "the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none", \
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \

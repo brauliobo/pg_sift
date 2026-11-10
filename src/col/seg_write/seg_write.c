@@ -487,6 +487,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	SiftExtent *ext;
 	int			n;
 	uint64		blocks;
+	uint32		mirror_len;
+	void	   *mirror;
 
 	SIFT_INVARIANT(w->nsb != 0, "sift_col: a segment needs at least one unit");
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
@@ -600,8 +602,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	}
 	h.sections[SIFT_SEC_DOCMAP].off = sift_sw_tell(w->sw);
 	h.dictroot_off = schema.len;
-	sift_sw_write(w->sw, schema.data, schema.len);
-	segw_put8(w, w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef));
+	segw_write_mirrored(w, MIR_HEAD, schema.data, schema.len);
+	segw_mirror(w, MIR_HEAD, segw_put8(w, w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef)), w->sbdir, (Size) w->nsb * sizeof(SiftColSBRef));
 	segw_sw_pad8(w->sw);
 	if (w->anyver)
 		segw_write_vers(w);
@@ -630,7 +632,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	entry->gen = w->gen;
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = w->format;
-	entry->header_blk = sift_wt_write_seghdr(w->wt, &h, ext, n);
+	mirror = segw_mirror_block(w, n, &mirror_len);
+	entry->header_blk = sift_wt_write_seghdr(w->wt, &h, ext, n, mirror, mirror_len);
 	entry->sb_lo = w->sb_lo;
 	entry->sb_hi = w->sb_hi;
 	if (w->anyver)

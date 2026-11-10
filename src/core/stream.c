@@ -14,9 +14,9 @@ sift_page_init(Page page, SiftPageType type, uint64 gen)
 	SiftPageGetOpaque(page)->gen = gen;
 }
 
-/* The header page of a segment: the fixed part of h and its n extents; the block it went to */
+/* The header page of a segment: the fixed part of h, its n extents and the extra bytes after them; the block it went to */
 BlockNumber
-sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n)
+sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n, const void *extra, uint32 extralen)
 {
 	PGIOAlignedBlock page;
 	SiftSegHeaderData *hdr = (SiftSegHeaderData *) SiftPageGetData(page.data);
@@ -25,7 +25,10 @@ sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const Sift
 	memcpy(hdr, h, offsetof(SiftSegHeaderData, extents));
 	hdr->nextents = n;
 	memcpy(hdr->extents, ext, n * sizeof(SiftExtent));
-	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent));
+	SIFT_INVARIANT(offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent) + extralen <= SIFT_PAGE_PAYLOAD, "sift: the header page of a segment is over its page");
+	if (extralen > 0)
+		memcpy((char *) hdr->extents + n * sizeof(SiftExtent), extra, extralen);
+	SiftPageSetUsed(page.data, offsetof(SiftSegHeaderData, extents) + n * sizeof(SiftExtent) + extralen);
 	return sift_wt_write_page(wt, page.data);
 }
 

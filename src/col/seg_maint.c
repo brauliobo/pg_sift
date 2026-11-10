@@ -791,6 +791,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	kt = sift_ktab_begin(seg->schema, haskt, CurrentMemoryContext);
 	uint32	   *crows[SIFT_COL_MAX_COLS] = {NULL};
 
+	sift_cseg_verify_mirror(seg);	/* first: the reads that follow take its ranges, which are then the stream's */
 	verify_vers(seg);
 	verify_dicts(seg);
 	for (int c = 0; c < seg->schema->ncols; c++)

@@ -118,6 +118,12 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
   sums of each leaf over the live rows) and the blobs, the bytes `sift_cpagg_cube` writes for the live rows with the dims, rollups and measures of the unit's own blobs (`src/col/seg/net.c`). VACUUM writes it
   (`src/col/maint/net.c`): the segment keeps its generation and its header page is written again, as a relocation does, with the extents of the stream and those of the new sidecar; the old header page and the old sidecar
   are released together with the directory switch. A reader uses the unit's net blobs when the unit has exactly the number of dead rows they were made for (liveness bits are only cleared), else it reads the unit as before.
+- The mirror (4.3) needs no column format minor and no flag: the header page of a segment holds, after its extents, a copy of the small ranges of the stream that a plan and the first read of the segment open (the schema, the unit
+  directory, the point directories, the first bytes of each order block, the zone directory, the headers of the pre-aggregates and of the sets), so that they cost no pages of their own. The block is
+  `{magic 0x3152524d, nranges, len, sum}`, `nranges` of `{stream offset, length, offset in the block}` and the bytes, at most `SEG_MIRROR_BYTES` (6144) of the page. It is a function of the stream bytes alone: the writer takes the
+  ranges as it writes them, and `sift.col_verify` compares the sum and every range with the stream. A reader that does not know it never looks past the extents and reads the stream; a header page without the magic (a segment
+  written before, a block that did not fit, a trailer a relocation moved) is read from the stream as before, and a rewrite or merge by a build that does not know it writes a segment without it. A reader refuses a block whose
+  sum, length or ranges are damaged when the segment is opened or first read from it (corruption error), and a stream that differs from its mirror at `sift.col_verify`.
 - A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
 
 Zone flags: `SIFT_COLZ_NOSUM` 0x1, `SIFT_COLZ_NAN` 0x2,

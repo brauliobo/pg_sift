@@ -236,6 +236,10 @@ extern bool sift_cseg_kinds_exact(SiftColSegment *seg);
 extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
 /* The leaf statistics block of the segment, when it has one, is what the zones of its units add up to (corruption error otherwise) */
 extern void sift_cseg_verify_lst(SiftColSegment *seg);
+/* The mirror of the header page, when the segment has one, is what the stream holds (corruption error otherwise) */
+extern void sift_cseg_verify_mirror(SiftColSegment *seg);
+/* The mirror a header page that lists nextents extents keeps for the segment (the stream does not change when its header page is written again), NULL with *len 0: none */
+extern const void *sift_cseg_mirror_for(const SiftColSegment *seg, uint32 nextents, uint32 *len);
 /* The zones of the segment's units (INT scalar leaves) into the sample, thinned to keep SIFT_COL_ZONE_SAMPLE units over the segments added; the caller allocates the arrays of the leaves that are sampled (lo[col] not NULL) */
 extern void sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs);
 

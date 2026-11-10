@@ -364,25 +364,28 @@ segw_write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 			appendBinaryStringInfo(&pars, (char *) &w->pt[c].par, SIFT_CPOINT_PK_PAR);
 	if (!rooted)
 	{
-		sift_sw_write(w->sw, hdr, sizeof(hdr));
-		sift_sw_write(w->sw, recs.data, recs.len);
-		sift_sw_write(w->sw, pars.data, pars.len);
+		segw_write_mirrored(w, MIR_POINTS, hdr, sizeof(hdr));
+		segw_write_mirrored(w, MIR_POINTS, recs.data, recs.len);
+		segw_write_mirrored(w, MIR_POINTS, pars.data, pars.len);
 	}
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
 	for (int k = 0; k < 2 * ncols; k++)
 		if (w->pt[k % ncols].ob[k / ncols].nch > 0)
+		{
+			segw_mirror(w, MIR_ORDER, sift_sw_tell(w->sw), w->pt[k % ncols].ob[k / ncols].tab.data, SIFT_CGORD_HDR);
 			sift_sw_write(w->sw, w->pt[k % ncols].ob[k / ncols].tab.data, w->pt[k % ncols].ob[k / ncols].tab.len);
+		}
 	if (rooted)
 	{
-		sift_sw_write(w->sw, pars.data, pars.len);
-		sift_sw_write(w->sw, recs.data, recs.len);
-		sift_sw_write(w->sw, hdr, sizeof(hdr));
+		segw_write_mirrored(w, MIR_POINTS, pars.data, pars.len);
+		segw_write_mirrored(w, MIR_POINTS, recs.data, recs.len);
+		segw_write_mirrored(w, MIR_POINTS, hdr, sizeof(hdr));
 	}
 	pfree(recs.data);
 	pfree(pars.data);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
-	sift_sw_write(w->sw, foot, sizeof(foot));
+	segw_write_mirrored(w, MIR_POINTS, foot, sizeof(foot));
 }

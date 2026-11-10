@@ -448,6 +448,9 @@ typedef struct SegPriv
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
 	struct SegNet *net;		/* the net pre-aggregates of the dirty units (col/seg/net.c), NULL: the segment has none */
 	bool		net_read;
+	const uint8 *mirror;		/* the mirror of the header page (MirrorHeader first, in the copy of the header), NULL: the segment has none */
+	bool		mirror_sound;	/* its checksum was checked, when a read first took from it (or by the backend, for the same header: SegHead.mirror_sound) */
+	struct SegHead *head;		/* the segment's head, which keeps that check for the backend */
 	const uint8 *lst;			/* the leaf statistics block (LstHeader first), NULL: the segment has none */
 	bool		lst_read;
 	uint64	   *cubedir;		/* nsb + 1 */
@@ -508,6 +511,36 @@ extern const VersUnit *vers_units(SiftColSegment *seg);
 /* The bytes of a header page that mean something: up to its last extent */
 #define SEG_HDRLEN(h)	(offsetof(SiftSegHeaderData, extents) + (h)->nextents * sizeof(SiftExtent))
 
+/*
+ * The mirror: after its extents the header page of a segment keeps a copy of some small ranges of the stream (the schema and the unit directory, the point
+ * directories, the headers of the global orders, the zone directory, the headers of the pre-aggregates and of the summaries), the ones a plan and the first read of a
+ * segment open. seg_read takes a range that lies whole in one of them from the page the header is read from anyway, where each would be a page of its own. The bytes are
+ * those the stream has (sift.col_verify compares them): the stream of a segment does not change, and a reader that does not know the mirror reads the stream. The block:
+ * MirrorHeader, nranges MirrorRange by offset, then the bytes of the ranges at their `at`
+ */
+#define MIRROR_MAGIC	0x3152524D		/* "MRR1" */
+
+typedef struct MirrorHeader
+{
+	uint32		magic;
+	uint32		nranges;
+	uint64		len;			/* the block, in bytes */
+	uint64		sum;			/* of the bytes after this header */
+} MirrorHeader;
+
+typedef struct MirrorRange
+{
+	uint64		off;			/* in the stream */
+	uint32		len;
+	uint32		at;				/* of the copy, from the start of the block */
+} MirrorRange;
+
+StaticAssertDecl(sizeof(MirrorHeader) == 24 && sizeof(MirrorRange) == 16, "the mirror is part of the header page, a file format");
+extern uint64 seg_mirror_sum(const void *data, Size len);
+extern void seg_mirror_attach(SiftColSegment *seg, Size used);
+extern bool seg_mirror_copy(const SiftColSegment *seg, uint64 off, Size len, void *dst);
+extern void seg_read_stream(SiftColSegment *seg, uint64 off, Size len, void *dst);
+
 /* What sift_cseg_open checks and parses from the header page (the schema and the unit directory), with the header it was made under */
 #define SEG_STAMPS_MAGIC	0x50545343	/* "CSTP" */
 
@@ -519,6 +552,7 @@ typedef struct SegHead
 	SiftColSBRef *sbdir;		/* [hdr->dictroot_n] */
 	int			nconn;
 	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with connection flags */
+	bool		mirror_sound;	/* the checksum of the mirror of the header it was made under was checked: the backend does not again for each statement */
 } SegHead;
 
 /* The backend keeps them in the cache below: the head made under header h from the cache (pinned for mcxt), else NULL; keep takes the one made in cx, a child of mcxt */

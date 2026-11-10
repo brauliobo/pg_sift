@@ -22,7 +22,7 @@ uint8		sift_test_seg_flip_mask;
 #endif
 
 void
-seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
+seg_read_stream(SiftColSegment *seg, uint64 off, Size len, void *dst)
 {
 	char	   *p = dst;
 #ifdef SIFT_TESTING
@@ -48,6 +48,15 @@ seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
 	if (sift_test_seg_flip_at != UINT64_MAX && sift_test_seg_flip_at >= off0 && sift_test_seg_flip_at - off0 < len0)
 		((uint8 *) dst)[sift_test_seg_flip_at - off0] ^= sift_test_seg_flip_mask;
 #endif
+}
+
+/* The bytes of the stream: from the mirror of the header page when the range lies in it (not in a build that flips a byte of what it reads), else from the pages */
+void
+seg_read(SiftColSegment *seg, uint64 off, Size len, void *dst)
+{
+	if (HEAD_CACHED() && seg_mirror_copy(seg, off, len, dst))
+		return;
+	seg_read_stream(seg, off, len, dst);
 }
 
 const SiftSectionRef *
@@ -119,6 +128,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	SiftColSegment *seg = palloc0(sizeof(SiftColSegment));
 	SegPriv    *pv = palloc0(sizeof(SegPriv));
 	SiftSegHeaderData *h;
+	uint32		used;
 	uint64		size;
 	const SegHead *head;
 	const SiftSectionRef *s;
@@ -135,7 +145,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 				 errmsg("index \"%s\" has a segment of column format 1.%d, this build reads 1.%d to 1.%d",
 						RelationGetRelationName(index), entry->format, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MAX_READ),
 				 errhint(entry->format > SIFT_COL_FORMAT_MAX_READ ? "Use a newer pg_sift, or REINDEX." : "REINDEX; segments of a pre-release column format are not read.")));
-	seg->hdr = sift_seg_read_header(index, entry);
+	seg->hdr = sift_seg_read_header_used(index, entry, &used);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->ndocs == 0 || h->sb_lo != entry->sb_lo ||
 		h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi || h->live_npages == 0 || h->dictroot_n == 0 ||
@@ -151,6 +161,7 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		s[SIFT_SEC_DOCMAP].off + s[SIFT_SEC_DOCMAP].len > size ||
 		h->dictroot_off + (uint64) h->dictroot_n * sizeof(SiftColSBRef) > s[SIFT_SEC_DOCMAP].len)
 		corrupt(seg, "Sections do not tile the %llu-byte stream.", ULL(size));
+	seg_mirror_attach(seg, used);
 	head = HEAD_CACHED() ? sift_cseg_head_find(index, entry, h, mcxt) : NULL;
 	if (head == NULL)
 	{
@@ -158,9 +169,12 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 		MemoryContext cx = AllocSetContextCreate(mcxt, "sift cache segment head", ALLOCSET_SMALL_SIZES);
 
 		head = head_read(seg, cx);
+		((SegHead *) head)->mirror_sound = pv->mirror_sound;
 		if (HEAD_CACHED())
 			sift_cseg_head_keep(index, entry, cx, (SegHead *) head, mcxt);
 	}
+	pv->head = (SegHead *) head;
+	pv->mirror_sound |= head->mirror_sound;
 	seg->schema = head->schema;
 	seg->nconn = head->nconn;
 	memcpy(seg->conn, head->conn, sizeof(seg->conn));

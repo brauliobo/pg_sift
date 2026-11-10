@@ -202,7 +202,7 @@ write_pagg(SiftColSegWriter *w)
 		PAGG_KTAB(h) = ALIGN8(at);
 		PAGG_KTAB_BYTES(h) = w->ktab.len;
 	}
-	sift_sw_write(w->sw, h, hsz);
+	segw_write_mirrored(w, MIR_PAGG, h, hsz);
 	for (int c = 0; c < ncols; c++)
 	{
 		uint64	   *blk;
@@ -309,7 +309,7 @@ segw_write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 	}
 	segw_sw_pad8(w->sw);
 	sec->off = sift_sw_tell(w->sw);
-	sift_sw_write(w->sw, dir, ALIGN8(dirsz));
+	segw_write_mirrored(w, MIR_ZONES, dir, ALIGN8(dirsz));
 	for (int c = 0; c < ncols; c++)
 	{
 		const SiftColDef *def = &w->schema->cols[c];

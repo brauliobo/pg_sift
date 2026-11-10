@@ -266,6 +266,8 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 	uint64		moved = 0;
 	int			nlist = 0;
 	uint64		gen = entry->gen;
+	uint32		tail_len;
+	char		tail[SIFT_PAGE_PAYLOAD];
 
 	for (int i = 0; i < nparts; i++)
 		for (uint32 j = 0; j < part[i].src.nblocks; j++)
@@ -302,9 +304,17 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 	for (int i = 0; i < nparts; i++)
 		if (part[i].ext < 0)
 			h->live_first = part[i].dst;
+	/* what follows the extents of the header page (the mirror of a column segment: the stream is the same, so is it) moves after the new ones, or goes when they leave it no room */
+	tail_len = SiftPageGetUsed(hdrcopy->data) - (offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent));
+	if (offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent) + tail_len > SIFT_PAGE_PAYLOAD)
+		tail_len = 0;
+	if (tail_len > 0)
+		memcpy(tail, (char *) h->extents + h->nextents * sizeof(SiftExtent), tail_len);
 	h->nextents = nlist;
 	memcpy(h->extents, list, nlist * sizeof(SiftExtent));
-	SiftPageSetUsed(hdrcopy->data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent));
+	if (tail_len > 0)
+		memcpy((char *) h->extents + nlist * sizeof(SiftExtent), tail, tail_len);
+	SiftPageSetUsed(hdrcopy->data, offsetof(SiftSegHeaderData, extents) + nlist * sizeof(SiftExtent) + tail_len);
 	sift_wt_put_page(wt, newhdr, hdrcopy->data);
 	sift_wt_finish(wt);
 

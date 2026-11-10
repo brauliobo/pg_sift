@@ -495,7 +495,8 @@ extern SiftExtent *sift_sw_finish(SiftStreamWriter *sw, int *nextents);
  * them must then be written with sift_wt_put_page.
  */
 extern BlockNumber sift_wt_write_page(SiftWriteTarget *wt, Page page);
-extern BlockNumber sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n);
+/* extra, extralen: bytes the header page keeps after its extents (the mirror of a column segment); NULL, 0 for none. They must fit the page with the extents */
+extern BlockNumber sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n, const void *extra, uint32 extralen);
 extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
 /* The lowest reusable run below limit (up to want blocks, at least min), InvalidBlockNumber when none: a SHARED target only, the file is never extended */
 extern BlockNumber sift_wt_reserve_below(SiftWriteTarget *wt, uint32 want, uint32 min, BlockNumber limit, uint32 *got);

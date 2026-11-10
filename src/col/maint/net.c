@@ -38,7 +38,9 @@ sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry 
 				nrelease = 0;
 	SiftSegEntry fresh = *entry;
 	SiftMaintSwitch sw_dir = {.old = &entry->gen,.nold = 1,.neu = &fresh};
-	uint32		left = keep_pages;
+	uint32		left = keep_pages,
+				mirror_len;
+	const void *mirror;
 	uint64		blocks = 0;
 
 	sift_cseg_net_finish(net, at);
@@ -68,7 +70,8 @@ sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry 
 		*nextents = nlist;
 		return 0;
 	}
-	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist);
+	mirror = sift_cseg_mirror_for(seg, nlist, &mirror_len);
+	fresh.header_blk = sift_wt_write_seghdr(wt, old, list, nlist, mirror, mirror_len);
 	release[nrelease++] = (SiftExtent) {entry->header_blk, 1};
 	fresh.flags |= SIFT_SEG_NET;
 	fresh.bytes = entry->bytes + (blocks - (seg->sr.npages - keep_pages)) * BLCKSZ;

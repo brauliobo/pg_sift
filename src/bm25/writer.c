@@ -582,7 +582,7 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	entry->kind = SIFT_SEG_IMMUTABLE;
 	entry->format = w->fmt;
 	entry->flags = w->positions ? SIFT_SEG_POSITIONS : 0;
-	entry->header_blk = sift_wt_write_seghdr(w->wt, &w->hdr, ext, n);
+	entry->header_blk = sift_wt_write_seghdr(w->wt, &w->hdr, ext, n, NULL, 0);
 	entry->sb_lo = w->hdr.sb_lo;
 	entry->sb_hi = w->hdr.sb_hi;
 	entry->ndocs = w->ndocs;

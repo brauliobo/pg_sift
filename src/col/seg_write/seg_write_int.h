@@ -59,6 +59,28 @@ typedef struct CountAcc
 #define CDICT_LOOKUP_MIN	1024
 
 #define LST_MIN_UNITS		64		/* a segment of fewer units keeps no leaf statistics: its zone arrays are a few pages */
+#ifndef SEG_MIRROR_BYTES
+#define SEG_MIRROR_BYTES	6144	/* what the mirror of the header page may take of it (col/seg_write/mirror.c) */
+#endif
+
+/* The ranges of the stream the header page mirrors, in the order they are dropped when they do not all fit: the last go first */
+typedef enum MirrorPrio
+{
+	MIR_ORDER = 1,				/* the headers of the global order blocks */
+	MIR_POINTS,					/* the footer, header, records and parameters of the point directories */
+	MIR_ZONES,					/* the directory of the zones */
+	MIR_PAGG,					/* the header of the pre-aggregates */
+	MIR_SETS,					/* the headers of the small-set summaries, the sorted runs and the sketches */
+	MIR_HEAD					/* the schema and the unit directory */
+} MirrorPrio;
+
+typedef struct MirrorPiece
+{
+	uint64		off;
+	uint32		len;
+	uint32		at;				/* of its bytes in bytes */
+	MirrorPrio	prio;
+} MirrorPiece;
 
 typedef struct SetAcc
 {
@@ -83,6 +105,10 @@ struct SiftColSegWriter
 	uint32	  **dictmap;		/* [ncols] scratch: batch code -> segment code */
 	bool	   *inl;			/* [ncols] scratch: the STR leaf is stored inline in the unit being added */
 	SiftCZone  *zones;			/* [unit * ncols + col] */
+	MirrorPiece *mirror;		/* what segw_mirror took of the stream so far */
+	int			nmirror;
+	int			capmirror;
+	StringInfoData mirror_bytes;
 	uint8	   *lst;			/* the leaf statistics block (seg_int.h LstHeader), made with the zones; NULL for a segment of fewer than LST_MIN_UNITS units */
 	Size		lstlen;
 	SiftCPaggSpec pagg;			/* the pre-aggregates to write (docs/COL-PREAGG.md) */
@@ -160,6 +186,11 @@ extern void	segw_add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size uni
 extern void	segw_add_vers(SiftColSegWriter *w, const SiftColBatch *b);
 
 extern uint64	segw_put8(SiftColSegWriter *w, const void *data, Size len);
+/* Writes the bytes to the stream and keeps a copy for the mirror of the header page (prio: how long it stays when they do not all fit); segw_mirror alone keeps the copy of bytes written at off */
+extern void	segw_mirror(SiftColSegWriter *w, MirrorPrio prio, uint64 off, const void *data, Size len);
+extern void	segw_write_mirrored(SiftColSegWriter *w, MirrorPrio prio, const void *data, Size len);
+/* The mirror for a header page that lists nextents extents (palloc'd), NULL with *len 0: nothing to mirror */
+extern void *segw_mirror_block(SiftColSegWriter *w, uint32 nextents, uint32 *len);
 
 extern bool	segw_rooted_ok(const SiftColSegWriter *w);
 

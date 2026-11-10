@@ -23,6 +23,8 @@ typedef struct SiftLive
 
 /* A palloc'd copy of the SEGHEADER page of a segment, its size checked against the extents it lists */
 extern SiftSegHeaderData *sift_seg_read_header(Relation index, const SiftSegEntry *entry);
+/* ... and the bytes of the page it copied: those after the extents are the mirror of a column segment (col/seg_int.h) */
+extern SiftSegHeaderData *sift_seg_read_header_used(Relation index, const SiftSegEntry *entry, uint32 *used);
 
 /* Sets the directory's dirty flag of the segment, and that of the entry, unless set: rows may be cleared from then on */
 extern void sift_seg_mark_dirty(Relation index, SiftSegEntry *entry);
