@@ -3,6 +3,7 @@
 -- The answers are those of the normal plan; a test that may raise an error, a table a preserving join leaves unmatched rows of, and the ON clause of the table stay as they were.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_dimmap_kb = 0;
@@ -11,9 +12,8 @@ INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
 -- some events with no key: a NULL key is no class
 UPDATE ev SET k = NULL WHERE id % 997 = 0;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
-NOTICE:  sift_col index "ev_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k;
-order_layout = id compact in 1% of chunks, k exact
+NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id (ends only), k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 NOTICE:  sift_col index "ev_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

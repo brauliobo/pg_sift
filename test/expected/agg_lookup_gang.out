@@ -3,6 +3,7 @@
 -- one process, and a key beyond the largest the index says (rows written since) is read by the process alone.
 CREATE EXTENSION pg_sift;
 SET jit = off;
+SET max_parallel_maintenance_workers = 0;
 SET sift.agg_force = on;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
@@ -35,11 +36,10 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE TABLE pd (k int, a int) WITH (autovacuum_enabled = false);
 INSERT INTO pd SELECT i % 200000, i % 7 FROM generate_series(0, 299999) i;
 CREATE INDEX pd_col ON pd USING sift_col (k, a);
-NOTICE:  sift_col index "pd_col": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = k;
-order_layout = k compact in 0% of chunks
+NOTICE:  sift_col index "pd_col": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = k; order_array_columns = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_col');
-NOTICE:  sift_col index "pd_col" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pd_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;

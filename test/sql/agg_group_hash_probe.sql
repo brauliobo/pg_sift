@@ -4,6 +4,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 SET work_mem = '256MB';
 
 CREATE TABLE h (id int, k1 int, k2 int, k3 int, k4 int, k5 int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);

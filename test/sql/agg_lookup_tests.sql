@@ -3,6 +3,7 @@
 -- The answers are those of the normal plan; a test that may raise an error, a table a preserving join leaves unmatched rows of, and the ON clause of the table stay as they were.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_dimmap_kb = 0;

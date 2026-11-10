@@ -3,16 +3,16 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 SET work_mem = '256MB';
 CREATE TABLE h (id int, k1 int, k2 int, k3 int, k4 int, k5 int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO h SELECT i, i % 1000, i % 997, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 991 END, i % 983, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 977 END, (i * 7) % 1000
 FROM generate_series(1, 200000) i;
 CREATE INDEX h_col ON h USING sift_col (id, k1, k2, k3, k4, k5, v);
-NOTICE:  sift_col index "h_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k1, v;
-order_layout = id compact in 3% of chunks, k1 exact, v exact
+NOTICE:  sift_col index "h_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k1, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('h_col');
-NOTICE:  sift_col index "h_col" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "h_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM ANALYZE h;
 CREATE FUNCTION h_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
