@@ -358,6 +358,19 @@ typedef struct PointLeaf
 	SiftCPackPar pk;
 } PointLeaf;
 
+/* The plain chunk a grouped block's positions were last read from, and the entries of it decoded: a sub-block of a seekable chunk, all of any other */
+typedef struct GOrdPlainCache
+{
+	uint32		c;
+	uint8	   *raw;
+	SiftCGOrdSeek s;
+	bool		seek;
+	uint32		from;
+	uint32		n;
+	int64		key[SIFT_CGORD_CAP];
+	uint64		addr[SIFT_CGORD_CAP];
+} GOrdPlainCache;
+
 /* The global order block of a leaf (col/gorder.h): stream offset and bytes, the directory read on first use */
 typedef struct GOrdLeaf
 {
@@ -384,6 +397,7 @@ typedef struct GOrdLeaf
 	uint32		gprobes;
 	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
 	struct SegGOrdHead *head;	/* the backend's copy of the header, which also keeps where the chunks end once it is known */
+	GOrdPlainCache *pcache;		/* a plain block: the chunk the positional chunks of the block grouped beside it read last (NULL: none yet) */
 } GOrdLeaf;
 
 /* What a segment's point directory records say, kept by the backend (col/dictcache.c): the records of seg_points_read, without the state a scan adds to a leaf */
@@ -570,6 +584,7 @@ extern int64 sift_col_gorder_decoded;
 #define GORD_DECODED(n) ((void) 0)
 #endif
 /* the reads of a seekable chunk of an order array (seg/gorder_seek.c): the window of a scan from the entry p on with w entries to go; the first entry of [from, to) of the chunk c not before key; the entries of the first mv of the chunk before v */
+extern uint32 seg_gord_pos_head(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, uint32 w, int64 *key, uint64 *addr);
 extern void seg_gord_seek_fill(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, uint32 p, uint32 w, SiftCGOrdBuf *buf);
 extern bool seg_gord_plain_addrs(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdBuf *buf, uint32 from, uint32 to);
 extern uint32 seg_gord_seek_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, uint32 from, uint32 to, int64 key, bool after, SiftCGOrdBuf *memo);

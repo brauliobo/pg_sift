@@ -1,0 +1,236 @@
+-- A chunk of the order array of a group (order_array_group 'auto: ent_id', beside the complete plain order of the column) may hold the positions of its entries in the plain order, not their keys
+-- and addresses (SIFT_CGORD_POS, column format minor 47): a position costs the gap to the one before it in the group, a key and an address the bits of the whole order. The limit gord_pos_pct (75) says how
+-- many percent of the bytes of the other form a positional chunk may take; 0 writes none. The answers are the heap's in both, whatever the group, the direction, the NULL keys, the ties, the dead rows,
+-- the write buffers, a merge and a REINDEX.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+-- ent_id: 400 groups of 300 rows, some NULL; ts: minutes, so keys repeat, with NULL rows and a run of equal keys
+CREATE TABLE gp (id int, ent_id int, ts timestamp, pad text);
+ALTER TABLE gp ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gp SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE abs(hashint4(i)) % 400 END,
+	   CASE WHEN i % 89 = 0 THEN NULL WHEN i % 61 = 0 THEN timestamp '2024-03-01' ELSE timestamp '2024-01-01' + (abs(hashint4(i + 7)) % 200000) * interval '1 minute' END, md5(i::text) || md5(i::text || 'x')
+FROM generate_series(1, 120000) i;
+-- a group of one row
+INSERT INTO gp VALUES (200000, 100000, timestamp '2024-02-02', 'one');
+CREATE TABLE gq (LIKE gp);
+INSERT INTO gq SELECT * FROM gp;
+ALTER TABLE gq ALTER COLUMN pad SET STORAGE PLAIN;
+ANALYZE gp;
+ANALYZE gq;
+-- the plain order of ts keeps every row (the build's own choice of the ends is off), the group is the build's: gp_off writes no positional chunk, gp_on does
+SET sift.test_col_gorder_choice = 2;
+SET sift.test_limits = 'gord_pos_pct=0';
+CREATE INDEX gp_off ON gp USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+SET sift.test_limits = 'gord_pos_pct=75';
+CREATE INDEX gq_on ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+RESET sift.test_limits;
+RESET sift.test_col_gorder_choice;
+SELECT sift.col_verify('gp_off'), sift.col_verify('gq_on');
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SELECT min(format) AS format_on FROM sift.col_segments('gq_on') WHERE kind = 'immutable';
+ format_on 
+-----------
+        47
+(1 row)
+
+-- the positions take less than the keys and addresses (the plain orders of the two indexes are the same bytes)
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gq_on') WHERE section = 'order_arrays') < 0.8 * (SELECT sum(bytes) FROM sift.col_sections('gp_off') WHERE section = 'order_arrays') AS smaller;
+ smaller 
+---------
+ t
+(1 row)
+
+-- a group whose rows are far apart in the plain order (30,000 entities of 4 rows) keeps its keys and addresses, so that a scan does not read a chunk of the plain order for each entry: the bytes are
+-- those of a build that writes none (but for a chunk or two of tied keys, whose positions are next to one another)
+CREATE TABLE gl (id int, ent_id int, ts timestamp, pad text);
+INSERT INTO gl SELECT id, abs(hashint4(id + 5)) % 30000, ts, pad FROM gp;
+CREATE TABLE gm (LIKE gl);
+INSERT INTO gm SELECT * FROM gl;
+ANALYZE gl;
+ANALYZE gm;
+SET sift.test_col_gorder_choice = 2;
+SET sift.test_limits = 'gord_pos_pct=0';
+CREATE INDEX gl_off ON gl USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+SET sift.test_limits = 'gord_pos_pct=75';
+CREATE INDEX gm_on ON gm USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+RESET sift.test_limits;
+RESET sift.test_col_gorder_choice;
+SELECT (SELECT sum(bytes) FROM sift.col_sections('gm_on') WHERE section = 'order_arrays') > 0.99 * (SELECT sum(bytes) FROM sift.col_sections('gl_off') WHERE section = 'order_arrays') AS sparse_keeps_keys;
+ sparse_keeps_keys 
+-------------------
+ t
+(1 row)
+
+DROP TABLE gl, gm;
+-- the entries of both (the plain order and the groups) are the same rows in the same order
+SELECT leaf, (SELECT count(*) FROM (SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gp_off', leaf) EXCEPT SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gq_on', leaf)) d) AS missing,
+	   (SELECT count(*) FROM (SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gq_on', leaf) EXCEPT SELECT pos, key, tid, null_row FROM sift._test_col_gorder('gp_off', leaf)) d) AS extra
+FROM unnest(ARRAY[2, 6]) leaf ORDER BY leaf;
+ leaf | missing | extra 
+------+---------+-------
+    2 |       0 |     0
+    6 |       0 |     0
+(2 rows)
+
+-- an answer is right when the rows are the heap's, in order
+CREATE FUNCTION gq_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows(replace(q, '@', 'gq')) $$;
+SELECT w, result, count(*) FROM (
+	SELECT w, gq_chk(format('SELECT id, ts FROM @ WHERE %s ORDER BY ts %s %s, id LIMIT %s', w, d, nl, l)) AS result
+	FROM unnest(ARRAY['ent_id = 7', 'ent_id = 7 AND ts >= timestamp ''2024-06-01''', 'ent_id = 0 AND ts < timestamp ''2024-03-01''', 'ent_id = 399', 'ent_id = 100000', 'ent_id = 100001',
+					  'ent_id = 7 AND ts BETWEEN timestamp ''2024-02-01'' AND timestamp ''2024-02-03''', 'ent_id IN (3, 5)', 'true']) w,
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l) r
+GROUP BY 1, 2 ORDER BY 1, 2;
+                                      w                                      |    result    | count 
+-----------------------------------------------------------------------------+--------------+-------
+ ent_id = 0 AND ts < timestamp '2024-03-01'                                  | global order |    12
+ ent_id = 100000                                                             | global order |    12
+ ent_id = 100001                                                             | global order |    12
+ ent_id = 399                                                                | global order |    12
+ ent_id = 7                                                                  | global order |    12
+ ent_id = 7 AND ts >= timestamp '2024-06-01'                                 | global order |    12
+ ent_id = 7 AND ts BETWEEN timestamp '2024-02-01' AND timestamp '2024-02-03' | global order |    12
+ ent_id IN (3, 5)                                                            | global order |    12
+ true                                                                        | global order |    12
+(9 rows)
+
+-- the pages after a key, through every group
+SELECT gq_chk(format('SELECT id, ts FROM @ WHERE ent_id = %s ORDER BY ts, id LIMIT 5 OFFSET %s', g, o)) AS result, count(*)
+FROM generate_series(0, 399, 13) g, unnest(ARRAY[0, 37, 250, 299]) o GROUP BY 1;
+    result    | count 
+--------------+-------
+ global order |   124
+(1 row)
+
+-- the counts, ranges and extremes of a group read its entries whole (the table without an index is the oracle)
+CREATE TABLE gz (LIKE gp);
+INSERT INTO gz SELECT * FROM gp;
+ANALYZE gz;
+CREATE FUNCTION gz_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gq') || ') t' INTO ra;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gz') || ') t' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q ELSE 'same' END;
+END $$;
+CREATE FUNCTION gz_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gz_chk(format(q, g)), 1::bigint
+   FROM unnest(ARRAY['SELECT count(*), min(ts), max(ts) FROM @ WHERE ent_id = %s',
+					 'SELECT count(*) FROM @ WHERE ent_id = %s AND ts BETWEEN timestamp ''2024-01-20'' AND timestamp ''2024-02-10''',
+					 'SELECT id, ts FROM @ WHERE ent_id = %s AND ts >= timestamp ''2024-02-01'' ORDER BY ts, id',
+					 'SELECT id, ts FROM @ WHERE ent_id = %s ORDER BY ts DESC, id DESC']) q, unnest(ARRAY[0, 7, 123, 399, 100000, 100001]) g $$;
+SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
+ result | count 
+--------+-------
+ same   |    24
+(1 row)
+
+-- rows written after the build are in the write buffers and in the answers; dead rows leave their entries; a promotion, a merge and a REINDEX keep the answers
+INSERT INTO gq SELECT 300000 + i, i % 400, timestamp '2024-01-01' + (i * 7919 % 200000) * interval '1 minute', 'w' FROM generate_series(1, 3000) i;
+INSERT INTO gz SELECT 300000 + i, i % 400, timestamp '2024-01-01' + (i * 7919 % 200000) * interval '1 minute', 'w' FROM generate_series(1, 3000) i;
+UPDATE gq SET ts = timestamp '2023-12-31' WHERE id IN (5, 6, 7) AND ent_id IS NOT NULL;
+UPDATE gz SET ts = timestamp '2023-12-31' WHERE id IN (5, 6, 7) AND ent_id IS NOT NULL;
+UPDATE gq SET ent_id = 7 WHERE id IN (8, 9);
+UPDATE gz SET ent_id = 7 WHERE id IN (8, 9);
+DELETE FROM gq WHERE id % 211 = 0;
+DELETE FROM gz WHERE id % 211 = 0;
+SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
+ result | count 
+--------+-------
+ same   |    24
+(1 row)
+
+SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS buffers_pinned, gq_chk('SELECT id, ts FROM @ ORDER BY ts DESC, id LIMIT 20') AS buffers_plain;
+ buffers_pinned | buffers_plain 
+----------------+---------------
+ global order   | global order
+(1 row)
+
+SELECT sift.col_promote('gq_on'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS promoted_pinned;
+ promoted_pinned 
+-----------------
+ global order
+(1 row)
+
+SELECT sift.col_merge('gq_on'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts DESC, id LIMIT 20') AS merged_pinned;
+ merged_pinned 
+---------------
+ global order
+(1 row)
+
+SELECT sift.col_verify('gq_on');
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
+ result | count 
+--------+-------
+ same   |    24
+(1 row)
+
+REINDEX INDEX gq_on;
+SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS reindexed_pinned;
+ reindexed_pinned 
+------------------
+ global order
+(1 row)
+
+SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
+ result | count 
+--------+-------
+ same   |    24
+(1 row)
+
+SELECT sift.col_verify('gq_on');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a plain order of the ends only has no positions to name: the group keeps its keys and addresses
+DROP INDEX gq_on;
+SET sift.test_col_gorder_choice = 1;
+CREATE INDEX gq_ends ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+RESET sift.test_col_gorder_choice;
+SELECT sift.col_verify('gq_ends');
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts DESC, id LIMIT 20') AS ends_pinned;
+ ends_pinned  
+--------------
+ global order
+(1 row)
+
+DROP TABLE gp, gq, gz;
+DROP FUNCTION gq_chk(text);
+DROP FUNCTION gz_all();
+DROP FUNCTION gz_chk(text);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

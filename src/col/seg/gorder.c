@@ -228,6 +228,8 @@ sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *k
 		pfree(all);
 		return w;
 	}
+	if (d.pad & SIFT_CGORD_POS)
+		return seg_gord_pos_head(seg, g, col, c, &d, w, key, addr);
 	buf = palloc(ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen) + SIFT_COL_PAD);
 	seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
 	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, d.pad, m, d.first, w, key, addr))
@@ -262,7 +264,7 @@ gord_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, bool keys, SiftCGOrd
 			compact_resolve(seg, g, col, buf, p - buf->at);
 		return;
 	}
-	if (d.pad & SIFT_CGORD_SEEK)
+	if (d.pad & (SIFT_CGORD_SEEK | SIFT_CGORD_POS))
 	{
 		seg_gord_seek_fill(seg, g, col, c, &d, p, w, buf);
 		return;
@@ -589,7 +591,7 @@ seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, boo
 	d = seg_gord_dirent(seg, g, col, lo);
 	if (d.pad & SIFT_CGORD_COMPACT)
 		return compact_seek(seg, g, col, lo, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
-	if (d.pad & SIFT_CGORD_SEEK)
+	if (d.pad & (SIFT_CGORD_SEEK | SIFT_CGORD_POS))
 		return seg_gord_seek_seek(seg, g, col, lo, &d, Max(vs, lo * crows), Min(ve, (lo + 1) * crows), key, after, memo);
 	m = gord_keys(seg, g, col, lo, memo);
 	from = Max(vs, lo * crows);

@@ -81,6 +81,15 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 	return !pay.complete;
 }
 
+/* Whether the plain block built for a leaf holds every row and has no compact chunk: the entries of a grouped block may then be positions in it (SIFT_CGORD_POS) */
+static bool
+gord_plain_whole(const OrdBlock *ob)
+{
+	SiftCGOrdHdr h;
+
+	return ob->nch > 0 && sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.vtotal == 0 && h.quant == 0 && h.gcol < 0 && h.strbytes == 0;
+}
+
 /* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
 static void
 build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, int c)
@@ -104,9 +113,11 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, 
 		if (ob->nent > 0)
 			{
 				SiftCGOrdHdr h;
+				SiftCGOrdPlain pl = {a->key, a->tid, a->n, a->ntid, a->nn};
 
 				sift_cgord_build_grouped(a->key, a->tid, a->gk, a->gok, a->n, nv, a->ntid, a->ngk, a->ngok, a->nn, nl, w->pagg.gorder_group - 1, dense,
-										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv), &ob->tab);
+										 w->schema->cols[c].type == SIFT_COLT_NUMERIC ? SIFT_CGORD_L_WHOLE : sift_cgord_layout_pick(w->pagg.glayout[c], nv),
+										 segw_gorder_plain(w, c) && gord_plain_whole(&a->ob[0]) ? &pl : NULL, &ob->tab);
 				w->anycompact = (sift_cgord_head((const uint8 *) ob->tab.data, ob->tab.len, &h) && h.quant != 0) || w->anycompact;
 			}
 	}

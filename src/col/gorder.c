@@ -427,8 +427,83 @@ compact_smaller(StringInfo body, SiftCGOrdDir *d, const OrdEnt *e, const int64 *
 	return smaller;
 }
 
+/* The rows of the plain block by address, each with its position in the block as its group */
+static OrdEnt *
+plain_by_code(const SiftCGOrdPlain *p)
+{
+	uint32		n = p->nvals + p->nnull;
+	OrdEnt	   *e = sift_rows_alloc(((Size) n + 1) * sizeof(OrdEnt));
+
+	for (uint32 i = 0; i < p->nvals; i++)
+		e[i] = (OrdEnt) {0, p->key[i], sift_cpoint_tid_code(p->tid[i])};
+	for (uint32 i = 0; i < p->nnull; i++)
+		e[p->nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(p->ntid[i])};
+	ord_sort(e, p->nvals);
+	ord_sort(e + p->nvals, p->nnull);
+	for (uint32 i = 0; i < n; i++)
+		e[i].group = i;
+	ord_by_code(e, n);
+	return e;
+}
+
+/* The positions in the plain block of the n entries ent (palloc'd) */
+static int64 *
+entry_positions(const SiftCGOrdPlain *plain, const OrdEnt *ent, uint64 n)
+{
+	OrdEnt	   *pe = plain_by_code(plain);
+	int64	   *pv = palloc(Max(n, 1) * sizeof(int64));
+
+	for (uint64 i = 0; i < n; i++)
+	{
+		uint32		lo = 0,
+					hi = plain->nvals + plain->nnull;
+
+		SIFT_BISECT(uint32, mid, lo, hi, pe[mid].code < ent[i].code);
+		Assert(lo < plain->nvals + plain->nnull && pe[lo].code == ent[i].code);
+		pv[i] = pe[lo].group;
+	}
+	pfree(pe);
+	return pv;
+}
+
+/*
+ * The chunk of the entries e of a grouped block (their positions pv in the plain block) as a positional one, in place of the one written to body from k0 on, when the positions of a
+ * group are no farther apart than SIFT_CGORD_POS_MAX_GAP on the mean (past that each entry a scan reads is in a chunk of the plain order of its own) and it takes at most
+ * SIFT_CGORD_POS_MAX_PCT percent of the bytes; true when it does (d is its entry, with the first key and the offset it had).
+ */
+static bool
+pos_smaller(StringInfo body, uint32 k0, SiftCGOrdDir *d, const OrdEnt *e, const int64 *pv, uint32 m)
+{
+	StringInfoData pb;
+	SiftCGOrdDir pd = *d;
+	uint64		sum = 0,
+				n = 0;
+	bool		smaller;
+
+	for (uint32 i = 1; i < m; i++)
+		if (e[i].group == e[i - 1].group)
+		{
+			sum += (uint64) (pv[i] - pv[i - 1]);
+			n++;
+		}
+	if (n == 0 || sum > n * (uint64) sift_limit(gord_pos_gap, SIFT_CGORD_POS_MAX_GAP))
+		return false;
+	initStringInfo(&pb);
+	sift_cgord_pos_chunk(&pb, &pd, pv, m);
+	smaller = (uint64) pb.len * 100 <= (uint64) (body->len - k0) * (uint64) sift_limit(gord_pos_pct, SIFT_CGORD_POS_MAX_PCT);
+	if (smaller)
+	{
+		body->len = k0;
+		appendBinaryStringInfo(body, pb.data, pb.len);
+		*d = (SiftCGOrdDir) {d->first, d->off, pd.klen, pd.alen, pd.pad};
+	}
+	pfree(pb.data);
+	return smaller;
+}
+
 static void
-build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 strver, uint32 head, uint32 vtotal, int layout)
+build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, bool dense, StringInfo out, uint32 collid, const StringInfoData *strs, uint32 strver, uint32 head, uint32 vtotal, int layout,
+			const SiftCGOrdPlain *plain)
 {
 	bool		compact = !grouped && layout != SIFT_CGORD_L_WHOLE,
 				gcompact = grouped && layout != SIFT_CGORD_L_WHOLE,
@@ -437,7 +512,8 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	uint32		crows = sift_cgord_rows();
 	uint32		nchunks = (uint32) ((n + crows - 1) / crows);
 	int64	   *kv = palloc(SIFT_CGORD_CAP * sizeof(int64)),
-			   *av = palloc(SIFT_CGORD_CAP * sizeof(int64));
+			   *av = palloc(SIFT_CGORD_CAP * sizeof(int64)),
+			   *pv = NULL;
 	StringInfoData body;
 	SiftCGOrdDir *dir = palloc0((nchunks + 1) * sizeof(SiftCGOrdDir));
 	SiftCGOrdGrp *gv = NULL,
@@ -508,13 +584,18 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		hdr[1] = SIFT_CGORD_VERSION_GROUP;
 		hdr[6] = ng;
 		hdr[7] = (uint32) gcol + 1;
+		/* the positions of a group are about as many entries apart as the segment has groups: with many more than the writer keeps them for no chunk will be positional */
+		if (plain != NULL && ng <= 4 * (uint64) sift_limit(gord_pos_gap, SIFT_CGORD_POS_MAX_GAP))
+			pv = entry_positions(plain, ent, n);
 	}
 	sift_cc_policy_default(&pol);
 	initStringInfo(&body);
 	for (uint32 c = 0; c < nchunks; c++)
 	{
-		uint32		m = (uint32) Min((uint64) crows, n - (uint64) c * crows);
+		uint32		m = (uint32) Min((uint64) crows, n - (uint64) c * crows),
+					k0;
 		uint64		at = (uint64) c * crows;
+		bool		cmp = false;
 
 		for (uint32 i = 0; i < m; i++)
 		{
@@ -522,13 +603,14 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 			av[i] = (int64) ent[at + i].code;
 		}
 		dir[c].first = kv[0];
-		dir[c].off = (uint32) body.len;		/* made absolute below */
+		dir[c].off = k0 = (uint32) body.len;		/* made absolute below */
 		if (grouped ? gcompact && at + m <= nvals : compact && at >= 2 * sift_cgord_ends() && at + m + 2 * sift_cgord_ends() <= nvals)
-		{
-			anycompact = compact_smaller(&body, &dir[c], grouped ? ent + at : NULL, kv, av, m, dense, layout == SIFT_CGORD_L_COMPACT, &pol) || anycompact;
-			continue;
-		}
-		whole_chunk(&body, &dir[c], kv, av, m, dense, &pol);
+			cmp = compact_smaller(&body, &dir[c], grouped ? ent + at : NULL, kv, av, m, dense, layout == SIFT_CGORD_L_COMPACT, &pol);
+		else
+			whole_chunk(&body, &dir[c], kv, av, m, dense, &pol);
+		if (pv != NULL && pos_smaller(&body, k0, &dir[c], ent + at, pv + at, m))
+			cmp = false;
+		anycompact = cmp || anycompact;
 	}
 	if (grouped && anycompact)
 		hdr[1] = SIFT_CGORD_VERSION_GROUPQ;
@@ -563,6 +645,8 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	pfree(av);
 	pfree(dir);
 	pfree(body.data);
+	if (pv != NULL)
+		pfree(pv);
 }
 
 #ifdef SIFT_TESTING
@@ -713,14 +797,14 @@ sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnu
 		ord_sort(ent + nvals, nnull);
 		ends_reduce(ent, &nvals, &nnull, &head, &vtotal);
 	}
-	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, 0, head, vtotal, dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, 0, false, dense, out, 0, NULL, 0, head, vtotal, dense && vtotal == 0 && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE, NULL);
 	pfree(ent);
 }
 
 /* The entries of the rows with a group (ok[i]): n values and nn NULL rows of which nvals and nnull have one */
 void
 sift_cgord_build_grouped(const int64 *key, const uint64 *tid, const int64 *group, const uint8 *ok, uint32 n, uint32 nvals, const uint64 *ntid, const int64 *ngroup,
-						 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, StringInfo out)
+						 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, const SiftCGOrdPlain *plain, StringInfo out)
 {
 	OrdEnt	   *ent = sift_rows_alloc(((Size) nvals + nnull + 1) * sizeof(OrdEnt));
 	uint32		k = 0;
@@ -731,7 +815,8 @@ sift_cgord_build_grouped(const int64 *key, const uint64 *tid, const int64 *group
 	for (uint32 i = 0; i < nn; i++)
 		if (nok[i])
 			ent[k++] = (OrdEnt) {ngroup[i], 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, dense && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, gcol, true, dense, out, 0, NULL, 0, 0, 0, dense && nvals > 8 * sift_cgord_ends() && sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? layout : SIFT_CGORD_L_WHOLE,
+				dense ? plain : NULL);
 	pfree(ent);
 }
 
@@ -894,7 +979,7 @@ sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint3
 		ent[i] = (OrdEnt) {0, rank[key[i]], sift_cpoint_tid_code(tid[i])};
 	for (uint32 i = 0; i < nnull; i++)
 		ent[nvals + i] = (OrdEnt) {0, 0, sift_cpoint_tid_code(ntid[i])};
-	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, perm ? SIFT_CGORD_VERSION_TEXTPERM : SIFT_CGORD_VERSION_TEXT, 0, 0, SIFT_CGORD_L_WHOLE);
+	build_block(ent, nvals, nnull, 0, false, dense, out, collid, &strs, perm ? SIFT_CGORD_VERSION_TEXTPERM : SIFT_CGORD_VERSION_TEXT, 0, 0, SIFT_CGORD_L_WHOLE, NULL);
 	pfree(rank);
 	pfree(boff);
 	pfree(ent);

@@ -187,6 +187,21 @@ seek_addrs(StringInfo out, const int64 *kv, const int64 *dv, uint32 m)
 	return true;
 }
 
+/* The chunk whose m entries are at the positions pv of the plain block (col/gorder.h, "Positional chunk"), written to body */
+void
+sift_cgord_pos_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *pv, uint32 m)
+{
+	uint32		start = body->len,
+				first[2] = {(uint32) pv[0], 0};
+
+	seek_keys(body, pv, m);
+	d->klen = body->len - start;
+	sift_cgord_pad8(body);
+	appendBinaryStringInfo(body, (const char *) first, sizeof(first));
+	d->alen = sizeof(first);
+	d->pad = SIFT_CGORD_POS | 1u << 8;
+}
+
 /* The chunk of m entries as a seekable one, written to body; false, nothing written, when its addresses do not fit */
 bool
 sift_cgord_seek_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m)

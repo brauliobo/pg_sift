@@ -76,6 +76,12 @@
 	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/gorder.h", 115, "percent", \
 	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
 	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
+	X(gord_pos_pct, "SIFT_CGORD_POS_MAX_PCT", "col/gorder.h", 75, "percent", \
+	  "the bytes a positional chunk of a grouped order array (its entries as positions in the plain order of the leaf, read through it) may take, against the other form of the same entries: the writer keeps the positional form of a chunk up to this; 0 writes none", \
+	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
+	X(gord_pos_gap, "SIFT_CGORD_POS_MAX_GAP", "col/gorder.h", 1024, "entries", \
+	  "the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own", \
+	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
 	X(gord_mem_rows, "SIFT_CGORD_MEM_MAX", "col/gorder.h", SIFT_CGORD_MEM_MAX, "rows", \
 	  "rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted)", \
 	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \

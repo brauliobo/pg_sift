@@ -43,6 +43,13 @@
  * the chunk is the directory's. The address blob is {u8 width wa, u64 minimum of the codes, per sub-block {u8 gap width gw or 0xFF, u8 bytes}, then for each sub-block its entries, rounded up to bytes}: a code
  * (block << ob | offset, ob in the pad word) less the minimum, wa bits; where gw is not 0xFF an entry after the first whose key is that of the entry before it is the gap to it less 1 (gw bits), the others are
  * whole codes. A chunk that mixes NULL rows (key 0) with values has fences that do not ascend (zigzag).
+ *
+ * Positional chunk (SIFT_CGORD_POS, a chunk of a grouped block, version 2 or 6, written beside the complete plain block of the same leaf, which has no compact chunk): the entry is the
+ * position of its row in the plain block (value rows by key and address, then the NULL rows by address), so its key and address are the plain block's. The key blob is that of a seekable chunk
+ * over the positions (the positions of a group ascend, those of the next start again: zigzag in the sub-block where they do), the address blob is {u32 position of the first entry, u32 0}; the
+ * directory's first key is the key of the first entry, as in any chunk. The pad word is SIFT_CGORD_POS | 1 << 8. The writer keeps a chunk positional where the positions of a group are at most
+ * SIFT_CGORD_POS_MAX_GAP apart on the mean (the entries a scan reads are then a few chunks of the plain order, not one chunk for each) and the chunk takes at most SIFT_CGORD_POS_MAX_PCT percent of the
+ * bytes of the form it would have had. A scan reads the entries of a positional chunk a few at a time, each from the plain order's chunk that holds its position.
  */
 #ifndef SIFT_COL_GORDER_H
 #define SIFT_COL_GORDER_H
@@ -63,6 +70,10 @@
 #define SIFT_CGORD_TIES	4		/* SiftCGOrdDir.pad bit 2, with SIFT_CGORD_COMPACT: the chunk has a run of SIFT_CGORD_TIE_RUN equal keys or more, which the buckets do not tell apart */
 #define SIFT_CGORD_TIE_RUN	8
 #define SIFT_CGORD_SEEK	8		/* SiftCGOrdDir.pad bit 3 (column format minor SIFT_COL_FORMAT_SEEKORD): the chunk is a seekable one, see "Seekable chunk" above; bits 8..11 are the bits of the offset in the address code */
+#define SIFT_CGORD_POS	16		/* SiftCGOrdDir.pad bit 4 (column format minor SIFT_COL_FORMAT_SEEKORD), a chunk of a block grouped beside a complete plain block of the leaf: see "Positional chunk" above */
+#define SIFT_CGORD_POS_MAX_GAP	1024	/* the mean distance between the positions of a group in a chunk the writer keeps positional (twice the entries of a chunk of the plain order) */
+#define SIFT_CGORD_POS_FIRST	4		/* the entries of the first window a scan reads of a positional chunk: each costs a read of the plain order */
+#define SIFT_CGORD_POS_MAX_PCT	75	/* the writer keeps the positional form of a chunk where it takes at most this many percent of the bytes of the other forms */
 #define SIFT_CGORD_SUB	32		/* the entries of a sub-block of a seekable chunk: its first key is a fence */
 #define SIFT_CGORD_SUBS	(SIFT_CGORD_ROWS_FINE / SIFT_CGORD_SUB)
 #define SIFT_CGORD_SEEK_MAX_PCT	115	/* the limit gord_seek_pct: the writer keeps the seekable form of a chunk where it takes at most this many percent of the bytes of the plain one */
@@ -188,9 +199,18 @@ typedef struct SiftCGOrdDir
  * SIFT_CGORD_L_AUTO the same with a compact chunk only where it is at least a fifth smaller than the whole one (a block with none is the whole order).
  */
 extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, bool dense, bool ends, int layout, StringInfo out);
-/* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
+/* The rows of the complete plain block of the leaf, which a grouped block may name its entries by position in (the rows with no group are among them) */
+typedef struct SiftCGOrdPlain
+{
+	const int64 *key;
+	const uint64 *tid;
+	uint32		nvals;
+	const uint64 *ntid;
+	uint32		nnull;
+} SiftCGOrdPlain;
+/* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one. plain: the rows of the plain block written beside it, or NULL */
 extern void sift_cgord_build_grouped(const int64 *key, const uint64 *tid, const int64 *group, const uint8 *ok, uint32 n, uint32 nvals, const uint64 *ntid, const int64 *ngroup,
-									 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, StringInfo out);
+									 const uint8 *nok, uint32 nn, uint32 nnull, int gcol, bool dense, int layout, const SiftCGOrdPlain *plain, StringInfo out);
 
 /*
  * The block of a text leaf (version 3): key[i] is the segment code of the string of the entry in d, ranked here by cmp under collid (0: the bytes), which the caller
@@ -308,6 +328,8 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
 extern void sift_cgord_pad8(StringInfo out);
 extern uint32 sift_cgord_addr_codes(const int64 *av, uint32 m, int64 *dv);
 extern bool sift_cgord_seek_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m);
+/* ... and the chunk of the m positions pv as a positional one (d keeps its first key and offset) */
+extern void sift_cgord_pos_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *pv, uint32 m);
 
 /*
  * Decodes the first w entries (all m when w >= m) of a chunk of m from its two blobs (kb, klen) and (ab, alen) into key[0..w) and addr[0..w) (heap addresses); both need
@@ -338,6 +360,11 @@ extern bool sift_cgord_seek_open(SiftCGOrdSeek *s, const uint8 *kb, uint32 klen,
 extern uint32 sift_cgord_seek_fence(const SiftCGOrdSeek *s, uint32 lo, uint32 hi, int64 key, bool after);
 /* The keys and addresses of sub-block b into key[b * SIFT_CGORD_SUB ..] and addr[..]; false when malformed */
 extern bool sift_cgord_seek_decode(const SiftCGOrdSeek *s, uint32 b, int64 *key, uint64 *addr);
+/* The key and the heap address of entry i of a seekable chunk alone: the entries of its sub-block before it are decoded, not the 32 */
+extern bool sift_cgord_seek_get(const SiftCGOrdSeek *s, uint32 i, int64 *key, uint64 *addr);
+/* A positional chunk of m entries parsed (s->ab is NULL), and the positions of its sub-block b into pos[b * SIFT_CGORD_SUB ..] */
+extern bool sift_cgord_pos_open(SiftCGOrdSeek *s, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m);
+extern void sift_cgord_pos_decode(const SiftCGOrdSeek *s, uint32 b, int64 *pos);
 /* Does a block (of len bytes, header parsed in h) have a seekable chunk: the format minor of its segment */
 extern bool sift_cgord_has_seek(const uint8 *blk, const SiftCGOrdHdr *h);
 /* The first w keys (all m when w >= m) of a chunk from its key blob alone; key needs SIFT_CGORD_CAP slots */
