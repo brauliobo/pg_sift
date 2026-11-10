@@ -73,7 +73,7 @@ The `sift_table` access method.
 
 | Object | Kind | Returns | Since | Description |
 |---|---|---|---|---|
-| `sift.table_find_stale_versions(tbl regclass, sample integer DEFAULT 10)` | function | `setof (duplicate_keys bigint, sample_keys text[])` | 4.3 | The number of primary key values of the table that are on more than one row (the old versions of updated rows that a VACUUM of 4.0.0 to 4.2.1 made live again) and up to sample of them; a row that was deleted and came back has no copy and is not found |
+| `sift.table_find_stale_versions(tbl regclass, sample integer DEFAULT 10)` | function | `setof (duplicate_keys bigint, sample_keys text[])` | 4.2.2 | The number of primary key values of the table that are on more than one row (the old versions of updated rows that a VACUUM of 4.0.0 to 4.2.1 made live again) and up to sample of them; a row that was deleted and came back has no copy and is not found |
 | `sift.table_get_option(tbl regclass, name text)` | function | `text` | 4.2 | The value of a per-table option in force on a sift_table: its own option, else the setting. See [Maintenance and operations](USAGE.md#maintenance-and-operations). |
 | `sift.table_option_values` | table |  | 4.2 | The per-table options of the sift_tables, one row for each option a table sets (sift.table_set_option writes it, sift.table_options reads it); dumped with the database. |
 | `sift.table_option_values_trg()` | function | `trigger` | 4.2 | Trigger of sift.table_option_values: skips the row of a table the database does not have and replaces the entry of the table in the cache of every backend. |
