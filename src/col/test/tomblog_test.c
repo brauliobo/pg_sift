@@ -30,6 +30,7 @@ PG_FUNCTION_INFO_V1(sift_test_log_chan);
 PG_FUNCTION_INFO_V1(sift_test_col_log_hidden);
 PG_FUNCTION_INFO_V1(sift_test_hf_taken);
 PG_FUNCTION_INFO_V1(sift_test_hf_pages_asked);
+PG_FUNCTION_INFO_V1(sift_test_probe_dead);
 PG_FUNCTION_INFO_V1(sift_test_hf_block_hits);
 PG_FUNCTION_INFO_V1(sift_test_xid_state);
 PG_FUNCTION_INFO_V1(sift_test_col_unit_tombs);
@@ -141,6 +142,9 @@ SIFT_TEST_COUNTER_FN(sift_test_hf_taken, sift_col_hf_taken)
 
 /* sift._test_hf_pages_asked(reset bool): the heap pages the scans of this backend asked the tombstone log about (one for each page a walk uses, a superblock's worth for a mask) */
 SIFT_TEST_COUNTER_FN(sift_test_hf_pages_asked, sift_col_hf_asked)
+
+/* sift._test_probe_dead(reset bool): the addresses of dead rows that the heap probes of compact order blocks in this backend listed */
+SIFT_TEST_COUNTER_FN(sift_test_probe_dead, sift_col_probe_dead)
 
 /* sift._test_hf_block_hits(reset bool): the asks about a heap block that the scans of this backend answered from what the scan kept of the log, not from the log */
 SIFT_TEST_COUNTER_FN(sift_test_hf_block_hits, sift_col_hf_block_hits)

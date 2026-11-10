@@ -139,6 +139,8 @@ extern PGDLLIMPORT bool sift_test_hf_ignore_stamp;
 extern PGDLLIMPORT int64 sift_col_hf_taken;
 extern PGDLLIMPORT int64 sift_col_hf_asked;
 extern PGDLLIMPORT int64 sift_col_hf_block_hits;
+/* The addresses of dead rows the probes of compact order blocks listed (tests) */
+extern PGDLLIMPORT int64 sift_col_probe_dead;
 
 /* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
 static inline bool

@@ -390,9 +390,7 @@ typedef struct GOrdLeaf
 	int8		probe;			/* a compact block: whether the keys it does not store can be read from the heap rows (0: not yet asked, -1: no) */
 	int16		hatt;			/* ... and the heap attribute of the leaf */
 	uint32		hrel;			/* ... the heap (its Oid) */
-	bool		deadset;		/* ... and, in a segment with rows bulkdelete cleared, whether their addresses are listed in dead (ascending), which the heap no longer says anything of */
-	uint32		ndead;
-	SiftKey    *dead;
+	struct ProbeDead *pdead;	/* ... and, in a segment with rows bulkdelete cleared, the addresses of those of each unit (one list of the segment when it is cut by key), which the heap no longer says anything of; listed as a probe asks (col/seg/probe.c) */
 	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
 	uint32		gprobes;
 	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */

@@ -8,14 +8,25 @@
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "core/cmp.h"
+#include "col/am.h"
 #include "col/seg_int.h"
+
+int64		sift_col_probe_dead;
+
+/* The rows of a unit (of the segment, cut by key) that bulkdelete cleared, ascending, once listed: a vacuumed address may hold the tuple of another row */
+typedef struct ProbeDead
+{
+	bool		set;
+	uint32		n;
+	SiftKey    *dead;
+} ProbeDead;
 
 /* The heap rows a window of keys is read from (the relation is opened for the window and closed with it) */
 typedef struct HeapProbe
 {
 	Relation	rel;
-	const SiftKey *dead;		/* the rows of the segment that bulkdelete cleared, ascending: a vacuumed address may hold the tuple of another row */
-	uint32		ndead;
+	SiftColSegment *seg;
+	ProbeDead  *dead;			/* NULL: the segment has no row cleared */
 	BlockNumber nblocks;
 	AttrNumber	att;
 	bool		wide;			/* the key is the 8 bytes of the datum, else 4 or 2 */
@@ -76,21 +87,33 @@ probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col)
 }
 
 
-/* The addresses of the rows of the segment that bulkdelete cleared, listed on first use and kept with the leaf */
-static void
-probe_dead(SiftColSegment *seg, GOrdLeaf *g)
+/*
+ * The dead rows a key of block blk is asked of: those of its unit, listed on the first ask (a statement reads the pages of a few units, and a table with tens of thousands of dead
+ * rows would otherwise list and sort them all), or, in a segment cut by key, which has no unit of a page, those of all its units sorted.
+ */
+static const ProbeDead *
+probe_dead(const HeapProbe *pr, BlockNumber blk)
 {
-	uint32		room = 0;
-	uint64	   *dirty = palloc(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+	SiftColSegment *seg = pr->seg;
+	bool		keyed = sift_cseg_keyed(&seg->entry);
+	uint32		u = keyed ? 0 : sift_cseg_unit_of_block(seg, blk),
+				end = keyed ? seg->nsb : u + 1,
+				room = 0;
+	ProbeDead  *d;
 
-	sift_cseg_dirty_units(seg, dirty);
-	for (uint32 u = 0; u < seg->nsb; u++)
-		if (sift_col_bit_test(dirty, u) && !sift_cseg_unit_dead(seg, u, seg->mcxt, &g->dead, &g->ndead, &room))
-			corrupt(seg, "The head of unit %u cannot be read.", u);
-	pfree(dirty);
-	if (g->ndead > 1)
-		qsort(g->dead, g->ndead, sizeof(SiftKey), sift_cmp_u64);
-	g->deadset = true;
+	if (u >= seg->nsb)
+		return NULL;
+	d = &pr->dead[u];
+	if (d->set)
+		return d;
+	for (uint32 k = u; k < end; k++)
+		if (!sift_cseg_unit_dead(seg, k, seg->mcxt, &d->dead, &d->n, &room))
+			corrupt(seg, "The head of unit %u cannot be read.", k);
+	if (keyed && d->n > 1)
+		qsort(d->dead, d->n, sizeof(SiftKey), sift_cmp_u64);
+	sift_col_probe_dead += d->n;
+	d->set = true;
+	return d;
 }
 
 static void *
@@ -105,10 +128,15 @@ probe_open(SiftColSegment *seg, GOrdLeaf *g, int col)
 		pfree(pr);
 		return NULL;
 	}
-	if ((seg->entry.flags & SIFT_SEG_DIRTY) && !g->deadset)
-		probe_dead(seg, g);
-	pr->dead = g->dead;
-	pr->ndead = g->ndead;
+	pr->seg = seg;
+	if (seg->entry.flags & SIFT_SEG_DIRTY)
+	{
+		if (g->pdead == NULL)
+			g->pdead = MemoryContextAllocZero(seg->mcxt, (sift_cseg_keyed(&seg->entry) ? 1 : seg->nsb) * sizeof(ProbeDead));
+		pr->dead = g->pdead;
+	}
+	else
+		pr->dead = NULL;
 	pr->nblocks = RelationGetNumberOfBlocks(pr->rel);
 	pr->att = g->hatt;
 	d = &seg->schema->cols[col % seg->schema->ncols];
@@ -139,8 +167,15 @@ probe_key(void *h, uint64 addr, int64 *key)
 	Page		page;
 	bool		ok = false;
 
-	if (blk >= pr->nblocks || (pr->ndead > 0 && bsearch(&addr, pr->dead, pr->ndead, sizeof(SiftKey), sift_cmp_u64) != NULL))
+	if (blk >= pr->nblocks)
 		return false;
+	if (pr->dead)
+	{
+		const ProbeDead *d = probe_dead(pr, blk);
+
+		if (d && d->n > 0 && bsearch(&addr, d->dead, d->n, sizeof(SiftKey), sift_cmp_u64) != NULL)
+			return false;
+	}
 	b = ReadBuffer(pr->rel, blk);
 	LockBuffer(b, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(b);
