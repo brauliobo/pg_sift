@@ -14,6 +14,8 @@ typedef struct SiftSrcProvider
 	bool		(*owns_table) (Oid tablerelam);
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
+	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending) */
+	void		(*miss) (Relation rel, SiftSrcStats *st);
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
 	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */

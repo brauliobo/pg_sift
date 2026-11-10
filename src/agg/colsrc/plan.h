@@ -16,7 +16,10 @@ extern bool sift_colsrc_is_table(Oid tablerelam);
 
 /* The layout of an open index (table) relation; palloc'd in CurrentMemoryContext */
 extern SiftSrcLayout *sift_colsrc_layout(Relation rel);
+/* The statistics of the source, the *_miss fields read (sift_colsrc_stats), or left pending for sift_colsrc_miss (the _lazy form: most statements never price a pre-aggregate answer) */
 extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
+extern void sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st);
+extern void sift_colsrc_miss(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*

@@ -224,6 +224,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	dst->allvisible_frac = src->allvisible_frac;
 	dst->exact_frac = src->exact_frac;
 	dst->rows_miss = src->rows_miss;
+	dst->miss_pending = src->miss_pending;
 	dst->zones = src->zones;
 	memcpy(dst->dim_miss, src->dim_miss, d);
 	memcpy(dst->mm_miss, src->mm_miss, d);
@@ -273,7 +274,7 @@ facts_check(Relation rel, SrcFacts *e, bool found)
 		e->table_gen = e->table->gen;
 		e->all_gen = facts_all;
 		e->read = false;
-		sift_colsrc_stats(rel, &fresh);
+		sift_colsrc_stats_lazy(rel, &fresh);
 		fresh.zones = zones_copy(fresh.zones, facts_cx);
 		e->stats = fresh;
 		sift_colsrc_preagg(rel, &e->pa);

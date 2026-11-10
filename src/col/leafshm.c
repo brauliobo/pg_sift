@@ -25,7 +25,7 @@
 #define LSHM_WAYS		8
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
-#define LSHM_NAME		"sift_col_leaf_stats_4"
+#define LSHM_NAME		"sift_col_leaf_stats_5"
 
 int			sift_col_leaf_cache_kb = 16384;
 
@@ -34,6 +34,7 @@ typedef struct LshmEnt
 	bool		used;
 	RelFileNumber rel;
 	Oid			db;
+	LshmKind	kind;
 	uint64		stamp;
 	Size		off,
 				len;
@@ -50,7 +51,11 @@ typedef struct Lshm
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 }			Lshm;
 
-/* a record: the header, ncols leaf records, the pre-aggregate counts, then for each leaf with a sample its column number and the lo and hi arrays */
+/*
+ * A record of the leaves: the header, ncols leaf records, then for each leaf with a sample its column number and the lo and hi arrays. A record of the
+ * pre-aggregate counts: the header and the counts. An index has one of each: the counts cost reads of the sections of the units and only the planner of an
+ * aggregate asks for them
+ */
 typedef struct LshmHdr
 {
 	uint32		magic;
@@ -58,7 +63,7 @@ typedef struct LshmHdr
 	uint32		ncols;
 	uint32		nsamples;		/* leaves with arrays */
 	uint32		zn;				/* units sampled */
-	uint32		pad;
+	uint32		kind;
 	uint64		zunits;
 	uint64		zstride;
 }			LshmHdr;
@@ -95,9 +100,11 @@ lshm_get(void)
 }
 
 static Size
-record_size(int ncols, uint32 zn, int nsamples)
+record_size(LshmKind kind, int ncols, uint32 zn, int nsamples)
 {
-	return sizeof(LshmHdr) + ncols * sizeof(SiftColLeafStats) + sizeof(SiftColPreStats) + nsamples * (sizeof(uint64) + 2 * (Size) zn * sizeof(int64));
+	if (kind == LSHM_PRE)
+		return sizeof(LshmHdr) + sizeof(SiftColPreStats);
+	return sizeof(LshmHdr) + ncols * sizeof(SiftColLeafStats) + nsamples * (sizeof(uint64) + 2 * (Size) zn * sizeof(int64));
 }
 
 static pg_crc32c
@@ -112,7 +119,7 @@ record_crc(const char *rec, Size len)
 }
 
 bool
-sift_col_leafshm_peek(RelFileNumber rel, uint64 *stamp)
+sift_col_leafshm_peek(RelFileNumber rel, LshmKind kind, uint64 *stamp)
 {
 	Lshm	   *s = lshm_get();
 	bool		found = false;
@@ -121,7 +128,7 @@ sift_col_leafshm_peek(RelFileNumber rel, uint64 *stamp)
 		return false;
 	SpinLockAcquire(&s->mutex);
 	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId)
+		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].kind == kind)
 		{
 			*stamp = s->dir[i].stamp;
 			found = true;
@@ -131,45 +138,62 @@ sift_col_leafshm_peek(RelFileNumber rel, uint64 *stamp)
 	return found;
 }
 
-bool
-sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafStats *st, SiftColPreStats *pre, SiftColZones *zs)
+/* a copy of the record the ring holds for the index under the stamp, NULL: none */
+static char *
+lshm_copy(RelFileNumber rel, LshmKind kind, uint64 stamp, Size *len)
 {
 	Lshm	   *s = lshm_get();
-	Size		off = 0,
-				len = 0;
+	Size		off = 0;
 	char	   *rec;
+
+	if (s == NULL)
+		return NULL;
+	*len = 0;
+	SpinLockAcquire(&s->mutex);
+	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].kind == kind && s->dir[i].stamp == stamp)
+		{
+			off = s->dir[i].off;
+			*len = s->dir[i].len;
+			s->dir[i].tick = ++s->tick;
+			break;
+		}
+	SpinLockRelease(&s->mutex);
+	if (*len < sizeof(LshmHdr))
+		return NULL;
+	rec = palloc(*len);
+	memcpy(rec, s->data + off, *len);
+	return rec;
+}
+
+/* is rec whole: the magic, the kind, the size the header says and the checksum */
+static bool
+record_whole(const char *rec, Size len, LshmKind kind, const LshmHdr *h)
+{
+	return h->magic == LSHM_MAGIC && h->kind == kind && h->zn <= SIFT_COL_ZONE_SAMPLE &&
+		len == record_size(kind, h->ncols, h->zn, h->nsamples) && h->crc == record_crc(rec, len);
+}
+
+bool
+sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafStats *st, SiftColZones *zs)
+{
+	Size		len;
+	char	   *rec = lshm_copy(rel, LSHM_LEAF, stamp, &len);
 	const char *p;
 	LshmHdr		h;
 	int			nsamples = 0;
 	bool		whole = false;
 
-	if (s == NULL)
+	if (rec == NULL)
 		return false;
-	SpinLockAcquire(&s->mutex);
-	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].stamp == stamp)
-		{
-			off = s->dir[i].off;
-			len = s->dir[i].len;
-			s->dir[i].tick = ++s->tick;
-			break;
-		}
-	SpinLockRelease(&s->mutex);
-	if (len < sizeof(LshmHdr))
-		return false;
-	rec = palloc(len);
-	memcpy(rec, s->data + off, len);
 	memcpy(&h, rec, sizeof(h));
 	for (int c = 0; c < zs->ncols; c++)
 		nsamples += zs->lo[c] != NULL;
-	if (h.magic == LSHM_MAGIC && h.ncols == (uint32) ncols && h.nsamples == (uint32) nsamples && h.zn <= SIFT_COL_ZONE_SAMPLE &&
-		len == record_size(ncols, h.zn, nsamples) && h.crc == record_crc(rec, len))
+	if (h.ncols == (uint32) ncols && h.nsamples == (uint32) nsamples && record_whole(rec, len, LSHM_LEAF, &h))
 	{
 		p = rec + sizeof(LshmHdr);
 		memcpy(st, p, ncols * sizeof(SiftColLeafStats));
 		p += ncols * sizeof(SiftColLeafStats);
-		memcpy(pre, p, sizeof(SiftColPreStats));
-		p += sizeof(SiftColPreStats);
 		zs->n = h.zn;
 		zs->units = h.zunits;
 		zs->stride = h.zstride;
@@ -195,32 +219,76 @@ sift_col_leafshm_read(RelFileNumber rel, uint64 stamp, int ncols, SiftColLeafSta
 	return whole;
 }
 
-void
-sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftColLeafStats *st, const SiftColPreStats *pre, const SiftColZones *zs)
+bool
+sift_col_leafshm_pre_read(RelFileNumber rel, uint64 stamp, SiftColPreStats *pre)
+{
+	Size		len;
+	char	   *rec = lshm_copy(rel, LSHM_PRE, stamp, &len);
+	LshmHdr		h;
+	bool		whole;
+
+	if (rec == NULL)
+		return false;
+	memcpy(&h, rec, sizeof(h));
+	whole = record_whole(rec, len, LSHM_PRE, &h);
+	if (whole)
+		memcpy(pre, rec + sizeof(LshmHdr), sizeof(*pre));
+	pfree(rec);
+	return whole;
+}
+
+/* enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps */
+static void
+lshm_put(RelFileNumber rel, uint64 stamp, char *rec, Size len, LshmHdr h)
 {
 	Lshm	   *s = lshm_get();
-	int			nsamples = 0;
-	Size		len,
-				off;
-	char	   *rec,
-			   *p;
-	LshmHdr		h = {.magic = LSHM_MAGIC, .ncols = ncols, .zn = zs->n, .zunits = zs->units, .zstride = zs->stride};
+	Size		off;
 	int			slot;
 
-	if (s == NULL)
+	if (s == NULL || len > s->size)
 		return;
+	h.magic = LSHM_MAGIC;
+	h.crc = record_crc(rec, len);
+	memcpy(rec, &h, sizeof(h));
+
+	SpinLockAcquire(&s->mutex);
+	off = s->head + len > s->size ? 0 : s->head;
+	s->head = off + len;
+	for (int i = 0; i < LSHM_DIR; i++)
+	{
+		LshmEnt    *e = &s->dir[i];
+
+		/* the record of the same index and kind (an older stamp), and those the new one covers, go */
+		if (e->used && ((e->rel == rel && e->db == MyDatabaseId && e->kind == h.kind) || (e->off < off + len && off < e->off + e->len)))
+			e->used = false;
+	}
+	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
+	slot = lshm_bucket(rel);
+	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
+			slot = i;
+	SpinLockRelease(&s->mutex);
+	memcpy(s->data + off, rec, len);
+	SpinLockAcquire(&s->mutex);
+	s->dir[slot] = (LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .kind = h.kind, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick};
+	SpinLockRelease(&s->mutex);
+}
+
+void
+sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftColLeafStats *st, const SiftColZones *zs)
+{
+	int			nsamples = 0;
+	Size		len;
+	char	   *rec,
+			   *p;
+
 	for (int c = 0; c < zs->ncols; c++)
 		nsamples += zs->lo[c] != NULL;
-	h.nsamples = nsamples;
-	len = record_size(ncols, zs->n, nsamples);
-	if (len > s->size)
-		return;
+	len = record_size(LSHM_LEAF, ncols, zs->n, nsamples);
 	rec = palloc(len);
 	p = rec + sizeof(LshmHdr);
 	memcpy(p, st, ncols * sizeof(SiftColLeafStats));
 	p += ncols * sizeof(SiftColLeafStats);
-	memcpy(p, pre, sizeof(SiftColPreStats));
-	p += sizeof(SiftColPreStats);
 	for (int c = 0; c < zs->ncols; c++)
 		if (zs->lo[c] != NULL)
 		{
@@ -233,29 +301,17 @@ sift_col_leafshm_write(RelFileNumber rel, uint64 stamp, int ncols, const SiftCol
 			memcpy(p, zs->hi[c], zs->n * sizeof(int64));
 			p += zs->n * sizeof(int64);
 		}
-	h.crc = record_crc(rec, len);
-	memcpy(rec, &h, sizeof(h));
+	lshm_put(rel, stamp, rec, len, (LshmHdr) {.kind = LSHM_LEAF, .ncols = ncols, .nsamples = nsamples, .zn = zs->n, .zunits = zs->units, .zstride = zs->stride});
+	pfree(rec);
+}
 
-	SpinLockAcquire(&s->mutex);
-	off = s->head + len > s->size ? 0 : s->head;
-	s->head = off + len;
-	for (int i = 0; i < LSHM_DIR; i++)
-	{
-		LshmEnt    *e = &s->dir[i];
+void
+sift_col_leafshm_pre_write(RelFileNumber rel, uint64 stamp, const SiftColPreStats *pre)
+{
+	Size		len = record_size(LSHM_PRE, 0, 0, 0);
+	char	   *rec = palloc(len);
 
-		/* the record of the same index (an older stamp), and those the new one covers, go */
-		if (e->used && ((e->rel == rel && e->db == MyDatabaseId) || (e->off < off + len && off < e->off + e->len)))
-			e->used = false;
-	}
-	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
-	slot = lshm_bucket(rel);
-	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
-			slot = i;
-	SpinLockRelease(&s->mutex);
-	memcpy(s->data + off, rec, len);
-	SpinLockAcquire(&s->mutex);
-	s->dir[slot] = (LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick};
-	SpinLockRelease(&s->mutex);
+	memcpy(rec + sizeof(LshmHdr), pre, sizeof(*pre));
+	lshm_put(rel, stamp, rec, len, (LshmHdr) {.kind = LSHM_PRE});
 	pfree(rec);
 }

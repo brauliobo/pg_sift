@@ -50,12 +50,11 @@ extern const SiftColPreStats *sift_col_pre_stats(Relation index);
 /* folds the statistics with the shared ring (*incremental: the segments opened) and without it (*full), and tells whether they are the same bytes */
 extern bool sift_col_leaf_fold_check(Relation index, int *incremental, int *full);
 #endif
-/* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the three functions above for the directory it read */
+/* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the two functions above for the directory it read */
 typedef struct SiftColLeafMemo
 {
 	const SiftColLeafStats *leaves;
 	const SiftColZones *zones;
-	const SiftColPreStats *pre;
 } SiftColLeafMemo;
 /*
  * The leaf list and statistics of a sift_col index (allocates in CurrentMemoryContext; the stats read the directory and the visibility map).

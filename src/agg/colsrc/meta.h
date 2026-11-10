@@ -109,6 +109,7 @@ typedef struct SiftSrcStats
 	double		mm_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		roll_miss[SIFT_COLSRC_MAX_LEAVES];
 	double		rows_miss;		/* the same for the rollup of the rows */
+	bool		miss_pending;	/* the four above are not read yet: counting the sections of the units costs reads, sift_colsrc_miss does it for the plan that prices a pre-aggregate answer */
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];

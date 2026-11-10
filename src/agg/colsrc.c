@@ -62,9 +62,23 @@ sift_colsrc_layout(Relation rel)
 }
 
 void
-sift_colsrc_stats(Relation rel, SiftSrcStats *st)
+sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st)
 {
 	provider_of_rel(rel)->stats(rel, st);
+}
+
+void
+sift_colsrc_miss(Relation rel, SiftSrcStats *st)
+{
+	if (st->miss_pending)
+		provider_of_rel(rel)->miss(rel, st);
+}
+
+void
+sift_colsrc_stats(Relation rel, SiftSrcStats *st)
+{
+	sift_colsrc_stats_lazy(rel, st);
+	sift_colsrc_miss(rel, st);
 }
 
 void

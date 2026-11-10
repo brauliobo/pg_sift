@@ -13,6 +13,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 
@@ -150,6 +151,16 @@ preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double row
 	return Min(Min(tuples, 4096.0) * tcost * sift_agg_rollup_cost, elems * ecost) / SIFT_AGG_INSTR_PER_OP;
 }
 
+/* The statistics of the source left the shares of the units without a section unread (miss_pending): an index source reads them now, once for the plan */
+static void
+miss_read(AggCtx *c)
+{
+	Relation	index = index_open(c->indexoid, AccessShareLock);
+
+	sift_colsrc_miss(index, &c->stats);
+	index_close(index, AccessShareLock);
+}
+
 /* The share of the units the pre-aggregates answer (a unit is exact when its pages are all-visible, its superblock plain); 0 when the spec cannot use them */
 double
 preagg_share(AggCtx *c, SiftAggSpec *s)
@@ -161,6 +172,8 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 
 	if (!sift_agg_preagg || !sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape))
 		return 0.0;
+	if (c->stats.miss_pending)
+		miss_read(c);
 	/* a unit written before the options asked for the section it is answered from has none and is scanned: a half refreshed index is priced for the units that have it */
 	for (int i = 0; i < s->naggs; i++)
 		minmax |= saa_minmax(s->agg[i].kind);
