@@ -10,7 +10,7 @@ SET client_min_messages = warning;
 
 CREATE TABLE ev AS SELECT 1 + (i::bigint * 7919 % 200)::int AS ent, now() - (hashint4(i) & 8388607) * interval '1 second' AS ts, i % 1000 AS v FROM generate_series(1, 20000) i;
 CREATE TABLE ents AS SELECT g AS id, g % 30 AS grp FROM generate_series(1, 200) g;
-CREATE INDEX ev_c ON ev USING sift_col (ent, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent');
+CREATE INDEX ev_c ON ev USING sift_col (ent, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'ent');
 VACUUM (FREEZE, ANALYZE) ev, ents;
 
 -- the cost of one probe (the Limit's startup) and of the aggregate of the same entities, in the plan the planner chooses

@@ -84,7 +84,7 @@ END $$;
 CREATE FUNCTION fz_state(label text) RETURNS TABLE (state text, covered bool, indexed bool, differ int) LANGUAGE sql AS $$
 	SELECT label, ran > 20, used > 10, differ FROM fz_run(60)
 $$;
-CALL fz_layout('key_cut = ''ent'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+CALL fz_layout('key_cut = ''ent'', order_array_columns = ''d, ts''');
 SELECT * FROM fz_state('key cut: built');
      state      | covered | indexed | differ 
 ----------------+---------+---------+--------
@@ -139,7 +139,7 @@ SELECT * FROM fz_state('key cut: reindexed');
  key cut: reindexed | t       | t       |      0
 (1 row)
 
-CALL fz_layout('key_cut = ''off'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+CALL fz_layout('key_cut = ''off'', order_array_columns = ''d, ts''');
 SELECT * FROM fz_state('by superblock: built');
         state         | covered | indexed | differ 
 ----------------------+---------+---------+--------

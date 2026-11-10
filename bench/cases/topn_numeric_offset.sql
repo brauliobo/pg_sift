@@ -5,7 +5,7 @@
 DROP SCHEMA IF EXISTS topn_numeric_btree CASCADE;
 CREATE SCHEMA topn_numeric_btree;
 CREATE TABLE orders_num AS SELECT id, ((hashint8extended(id, 11) & 16777215) / 100.0)::numeric(12, 2) AS amount FROM orders;
-CREATE INDEX orders_num_col ON orders_num USING sift_col (id, amount) WITH (order_columns = 'amount', order_array_columns = 'amount');
+CREATE INDEX orders_num_col ON orders_num USING sift_col (id, amount) WITH (order_array_columns = 'amount');
 CREATE TABLE topn_numeric_btree.orders_num AS TABLE orders_num;
 CREATE INDEX orders_num_bt ON topn_numeric_btree.orders_num (amount, id);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orders_num;

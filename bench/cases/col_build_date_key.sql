@@ -1,5 +1,5 @@
--- CREATE INDEX of a sift_col index whose key is a date: `order_columns` and `order_array_columns` on the timestamp, the build that writes an order array of the whole table
--- label: `CREATE INDEX .. USING sift_col` over six columns of a heap table with `order_columns = 'created_at', order_array_columns = 'created_at'`; the build record kind (the leader and the workers counted apart, the segments, the options); a b-tree over the same columns is the native lane
+-- CREATE INDEX of a sift_col index whose key is a date: `order_array_columns` on the timestamp, the build that writes an order array of the whole table
+-- label: `CREATE INDEX .. USING sift_col` over six columns of a heap table with `order_array_columns = 'created_at'`; the build record kind (the leader and the workers counted apart, the segments, the options); a b-tree over the same columns is the native lane
 -- kind: build
 --@ prepare
 CREATE TABLE w AS SELECT id, customer_id, country, category, status, amount, created_at FROM public.orders_src WHERE id <= {rows} ORDER BY id;
@@ -7,6 +7,6 @@ VACUUM (FREEZE, ANALYZE) w
 --@ load
 CREATE INDEX w_ix ON w (customer_id, country, category, status, amount, created_at)
 --@ load_sift
-CREATE INDEX w_ix ON w USING sift_col (customer_id, country, category, status, amount, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at')
+CREATE INDEX w_ix ON w USING sift_col (customer_id, country, category, status, amount, created_at) WITH (order_array_columns = 'created_at')
 --@ check
 SELECT count(*) FROM w

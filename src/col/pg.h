@@ -167,7 +167,7 @@ typedef struct SiftColOptions
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
 	int			key_cut;		/* offset of the "key_cut" string, 0 = none */
 	int			key_cut_rows;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
-	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
+	int			order_columns;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
@@ -183,7 +183,7 @@ typedef struct SiftColOptions
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	int			key_order;		/* offset of the "key_order" string, 0 = none */
 	int			ko_lead;		/* what key_order stands for (am_col_amoptions), offsets of its columns: the first ... */
-	int			ko_last;		/* ... the last (order_columns, order_array_columns) ... */
+	int			ko_last;		/* ... the last (order_array_columns) ... */
 	int			ko_group;		/* ... the first of 'group, key' (order_array_group; a cut by the group and its point directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) ... */
 	bool		ko_auto;		/* ... all of it chosen by the build with key_cut ('auto: a[, b]'): the directory and key_cut are the build's, not key_order's */
 	int			ko_key;			/* ... the column of a key_order of one column (key_cut and point_tid_columns); all 0 while key_order is not set */
@@ -219,7 +219,6 @@ extern const char *sift_col_options_scope(Relation index);	/* "" when none */
 extern const char *sift_col_options_row_key(Relation index);	/* "" when off, "auto" before the build has chosen the primary key */
 extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
-extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_array_columns(Relation index);	/* NULL when not set: the build chooses */
 extern const char *sift_col_options_order_layout(Relation index);	/* "" when not set (auto) */
 extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */

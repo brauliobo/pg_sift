@@ -3,7 +3,6 @@
 -- those. Every query runs three ways, which must give the same rows (text): with the pre-aggregates, without (sift.agg_preagg off), by the plain plan (sift.enable_agg off).
 -- `pre` says how many units the first one answered from metadata, `net` how many of them net of exceptions and `scan` how many units with exceptions it had to scan.
 CREATE EXTENSION pg_sift;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

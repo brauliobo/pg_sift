@@ -49,7 +49,7 @@ CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, dif
 		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int
 	FROM r WHERE h > 0
 $$;
-CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_columns = 'd, ts', order_array_columns = 'd, ts');
+CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_array_columns = 'd, ts');
 SELECT * FROM kl_check('one segment');
    layout    | cases | differ | below_limit | above_limit 
 -------------+-------+--------+-------------+-------------

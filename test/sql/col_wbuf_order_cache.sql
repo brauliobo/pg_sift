@@ -12,7 +12,7 @@ SET client_min_messages = warning;
 
 CREATE TABLE t (id int, k int, v bigint, pad text DEFAULT repeat('x', 40));
 INSERT INTO t (id, k, v) SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i * 7919) % 20011 END, (i * 104729) % 30011 FROM generate_series(1, 20000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, k, v) WITH (order_columns = 'k, v', order_array_columns = 'k, v', write_buffer_limit = 65536);
+CREATE INDEX t_ix ON t USING sift_col (id, k, v) WITH (order_array_columns = 'k, v', write_buffer_limit = 65536);
 VACUUM t;
 CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
@@ -185,7 +185,7 @@ SELECT * FROM reads();
 SELECT * FROM moves('after the promotion');
 
 CREATE TABLE wg AS SELECT i AS id, 1 + (i * 7919) % 250 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts FROM generate_series(1, 20000) i;
-CREATE INDEX wg_i ON wg USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX wg_i ON wg USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g');
 CREATE TABLE wg_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 250 END AS g FROM generate_series(1, 200) n;
 VACUUM (FREEZE, ANALYZE) wg, wg_o;
 -- a LATERAL top-N for each of many groups: the rows of the buffer by group (col/scan/gmem.c), the orders made by a full read of the buffer are three for 200 probes, none for the next statement

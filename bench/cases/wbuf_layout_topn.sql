@@ -5,13 +5,13 @@
 --@ setup
 DROP TABLE IF EXISTS olw;
 CREATE TABLE olw AS SELECT g::int AS id, timestamp '2024-01-01' + (hashint8extended(g, 7) & 35184372088831) * interval '1 microsecond' AS created_at FROM generate_series(1, {rows}) g ORDER BY md5((g * 31 + 7)::text);
-CREATE INDEX olw_col ON olw USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at');
+CREATE INDEX olw_col ON olw USING sift_col (id, created_at) WITH (order_array_columns = 'created_at');
 CREATE SCHEMA c_wbuf_layout_topn__whole;
 CREATE TABLE c_wbuf_layout_topn__whole.olw AS TABLE olw;
-CREATE INDEX olw_col ON c_wbuf_layout_topn__whole.olw USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at', order_layout = 'whole');
+CREATE INDEX olw_col ON c_wbuf_layout_topn__whole.olw USING sift_col (id, created_at) WITH (order_array_columns = 'created_at', order_layout = 'whole');
 CREATE SCHEMA c_wbuf_layout_topn__compact;
 CREATE TABLE c_wbuf_layout_topn__compact.olw AS TABLE olw;
-CREATE INDEX olw_col ON c_wbuf_layout_topn__compact.olw USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at', order_layout = 'compact');
+CREATE INDEX olw_col ON c_wbuf_layout_topn__compact.olw USING sift_col (id, created_at) WITH (order_array_columns = 'created_at', order_layout = 'compact');
 CREATE SCHEMA c_wbuf_layout_topn__btree;
 CREATE TABLE c_wbuf_layout_topn__btree.olw AS TABLE olw;
 CREATE INDEX olw_bt ON c_wbuf_layout_topn__btree.olw (created_at);

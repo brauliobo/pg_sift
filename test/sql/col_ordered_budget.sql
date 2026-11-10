@@ -8,20 +8,20 @@ SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE oc (id int, k int4);
 INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000003)::int END FROM generate_series(1, 36000) i;
-CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_layout = 'compact');
 -- 3 values of 4,000 rows each: the run of equal keys a merge join keeps to restore
 CREATE TABLE od (id int, k int4);
 INSERT INTO od SELECT i, i % 3 FROM generate_series(1, 12000) i;
-CREATE INDEX od_i ON od USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+CREATE INDEX od_i ON od USING sift_col (k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_layout = 'compact');
 CREATE TABLE oe (k int4);
 INSERT INTO oe VALUES (0), (1), (2);
 -- the pair: g with 36,000 rows in compact chunks (sorted here), and 3,000 small groups read group after group
 CREATE TABLE pc (id int, g int4 NOT NULL, k int4);
 INSERT INTO pc SELECT i, i % 40, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
-CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
+CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
 CREATE TABLE pb (id int, g int8 NOT NULL, k int8);
 INSERT INTO pb SELECT i, (i % 3000) - 1000, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 9000) i;
-CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) od;
 VACUUM (ANALYZE) oe;

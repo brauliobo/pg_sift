@@ -14,7 +14,7 @@ CREATE TABLE t AS SELECT i AS id,
 	   CASE WHEN i IN (11, 50011, 100011) THEN 1000 WHEN i % 1500 = 0 THEN 2000 + i / 1500 % 100 WHEN i % 53 = 0 THEN NULL ELSE 1 + abs(hashint4(i)) % 300 END AS g,
 	   CASE WHEN i % 29 = 0 THEN NULL ELSE timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second' END AS created, abs(hashint4(i + 3)) % 1000 AS score
 FROM generate_series(1, 150000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, g, created, score) WITH (order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', point_tid_columns = 'off', key_columns = 'off', key_cut = 'off');
+CREATE INDEX t_ix ON t USING sift_col (id, g, created, score) WITH (order_array_columns = 'created', order_array_group = 'g', point_tid_columns = 'off', key_columns = 'off', key_cut = 'off');
 VACUUM ANALYZE t;
 CREATE TABLE p AS SELECT * FROM t;
 ANALYZE p;

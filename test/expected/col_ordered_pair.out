@@ -7,35 +7,35 @@ SET client_min_messages = warning;
 CREATE TABLE pa (id int, g int4 NOT NULL, k int4, pad text DEFAULT repeat('x', 100));
 ALTER TABLE pa ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO pa (id, g, k) SELECT i, i % 40, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 301 - 150 END FROM generate_series(1, 12000) i;
-CREATE INDEX pa_i ON pa USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pa_i ON pa USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 -- many small groups, int8 keys, a negative group, a date group
 CREATE TABLE pb (id int, g int8 NOT NULL, k int8, pad text DEFAULT repeat('x', 100));
 ALTER TABLE pb ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO pb (id, g, k) SELECT i, (i % 3000) - 1000, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 9000) i;
-CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pb_i ON pb USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 CREATE TABLE pd (id int, g date NOT NULL, k timestamp, pad text DEFAULT repeat('x', 100));
 ALTER TABLE pd ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO pd (id, g, k) SELECT i, date '2024-01-01' + i % 30, CASE WHEN i % 9 = 0 THEN NULL ELSE timestamp '2024-01-01' + ((i * 7919) % 100000) * interval '1 minute' END FROM generate_series(1, 6000) i;
-CREATE INDEX pd_i ON pd USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pd_i ON pd USING sift_col (g, k, id) WITH (count_columns = 'off', write_buffer_limit = 512, order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 -- no order of the pair to read: compact chunks, a nullable g, and a second order grouped by another column
 CREATE TABLE pc (id int, g int4 NOT NULL, k int4);
 INSERT INTO pc SELECT i, i % 40, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
-CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
+CREATE INDEX pc_i ON pc USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'compact');
 CREATE TABLE pn (id int, g int4, k int4);
 INSERT INTO pn SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 40 END, (i * 7919) % 301 FROM generate_series(1, 6000) i;
-CREATE INDEX pn_i ON pn USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pn_i ON pn USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 CREATE TABLE po (id int, g int4 NOT NULL, h int4 NOT NULL, k int4);
 INSERT INTO po SELECT i, i % 40, i % 7, (i * 7919) % 301 FROM generate_series(1, 6000) i;
-CREATE INDEX po_i ON po USING sift_col (g, k, h) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'h', order_layout = 'whole');
+CREATE INDEX po_i ON po USING sift_col (g, k, h) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'h', order_layout = 'whole');
 -- a second table of the same shape, for a merge join on both columns (it marks the position at the start of a run of equal (g, k) and goes back to it)
 CREATE TABLE pe (id int, g int4 NOT NULL, k int4);
 INSERT INTO pe SELECT i, (i * 3) % 40, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729) % 301 - 150 END FROM generate_series(1, 9000) i;
-CREATE INDEX pe_i ON pe USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pe_i ON pe USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 VACUUM (ANALYZE) pe;
 -- every (g, k) three times, in 10 groups: the run of equal keys of a merge join ends at the first row of the next group, and the rows it marked are given again with their own g
 CREATE TABLE pf (id int, g int4 NOT NULL, k int4);
 INSERT INTO pf SELECT i, i / 600, (i / 3) % 200 FROM generate_series(0, 5999) i;
-CREATE INDEX pf_i ON pf USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pf_i ON pf USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 VACUUM (ANALYZE) pf;
 -- partitions: a Merge Append of the pair scans of the partitions
 CREATE TABLE pt (id int, g int4 NOT NULL, k int4) PARTITION BY HASH (id);
@@ -43,7 +43,7 @@ CREATE TABLE pt0 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 0);
 CREATE TABLE pt1 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 1);
 CREATE TABLE pt2 PARTITION OF pt FOR VALUES WITH (MODULUS 3, REMAINDER 2);
 INSERT INTO pt SELECT i, i % 90, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 5003 END FROM generate_series(1, 18000) i;
-CREATE INDEX pt_i ON pt USING sift_col (g, k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX pt_i ON pt USING sift_col (g, k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_array_group = 'g', order_layout = 'whole');
 VACUUM (ANALYZE) pa;
 VACUUM (ANALYZE) pt;
 VACUUM (ANALYZE) pb;

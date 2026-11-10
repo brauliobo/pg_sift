@@ -12,7 +12,7 @@ CREATE TABLE ro (id int, k int, g int, v numeric(10, 2)) WITH (autovacuum_enable
 INSERT INTO ro SELECT i, (i * 7919) % 9000, i % 7, (i % 1000) / 10.0 FROM generate_series(1, 30000) i;
 CREATE INDEX ro_c ON ro USING sift_col (k, g, id, v) WITH (point_tid_columns = 'k');
 -- no directory of heap addresses: the order array is the first the choices read statistics for
-CREATE INDEX ro_o ON ro USING sift_col (k, g, id, v) WITH (point_tid_columns = 'off', order_columns = 'g', order_array_columns = 'g');
+CREATE INDEX ro_o ON ro USING sift_col (k, g, id, v) WITH (point_tid_columns = 'off', order_array_columns = 'g');
 VACUUM (FREEZE, ANALYZE) ro;
 
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$

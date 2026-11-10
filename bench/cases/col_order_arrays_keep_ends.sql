@@ -7,7 +7,7 @@ CREATE SCHEMA col_order_arrays_whole;
 CREATE TABLE orders_ak AS SELECT id, customer_id, amount, created_at + (hashint8extended(id, 7) & 1048575) * interval '1 microsecond' AS created_at FROM orders;
 CREATE INDEX orders_ak_col ON orders_ak USING sift_col (customer_id, amount, created_at) WITH (key_cut = 'customer_id', order_array_columns = 'auto: created_at');
 CREATE TABLE col_order_arrays_whole.orders_ak AS TABLE orders_ak;
-CREATE INDEX orders_ak_col ON col_order_arrays_whole.orders_ak USING sift_col (customer_id, amount, created_at) WITH (key_cut = 'customer_id', order_columns = 'created_at', order_array_columns = 'created_at');
+CREATE INDEX orders_ak_col ON col_order_arrays_whole.orders_ak USING sift_col (customer_id, amount, created_at) WITH (key_cut = 'customer_id', order_array_columns = 'created_at');
 VACUUM (FREEZE, ANALYZE) orders_ak;
 VACUUM (FREEZE, ANALYZE) col_order_arrays_whole.orders_ak
 --@ pg

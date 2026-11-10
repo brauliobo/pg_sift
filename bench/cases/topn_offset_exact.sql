@@ -5,7 +5,7 @@
 DROP SCHEMA IF EXISTS topn_offset_btree CASCADE;
 CREATE SCHEMA topn_offset_btree;
 CREATE TABLE orders_off AS SELECT id, created_at + (hashint8extended(id, 7) & 1048575) * interval '1 microsecond' AS created_at FROM orders;
-CREATE INDEX orders_off_col ON orders_off USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at');
+CREATE INDEX orders_off_col ON orders_off USING sift_col (id, created_at) WITH (order_array_columns = 'created_at');
 CREATE TABLE topn_offset_btree.orders_off AS TABLE orders_off;
 CREATE INDEX orders_off_bt ON topn_offset_btree.orders_off (created_at);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orders_off;

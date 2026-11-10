@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE gd (id int PRIMARY KEY, g int, ts timestamp, pad text DEFAULT repeat('x', 60)) WITH (autovacuum_enabled = off);
 ALTER TABLE gd ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gd (id, g, ts) SELECT i, i % 50, timestamp '2026-01-01' + i * interval '1 minute' FROM generate_series(1, 200000) i;
-CREATE INDEX gd_i ON gd USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g', key_cut = 'off');
+CREATE INDEX gd_i ON gd USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g', key_cut = 'off');
 VACUUM (FREEZE, ANALYZE) gd;
 UPDATE gd SET ts = ts + interval '3 hours', g = (g + 1) % 50 WHERE id % 10 < 3;
 VACUUM gd;

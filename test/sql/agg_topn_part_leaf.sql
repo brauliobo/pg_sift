@@ -19,7 +19,7 @@ ALTER TABLE hp_3 DROP COLUMN junk;
 ALTER TABLE hp ATTACH PARTITION hp_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 INSERT INTO hp SELECT i, i % 40, timestamp '2025-01-01' + (i * 7919 % 7776000) * interval '1 second', CASE WHEN i % 17 = 0 THEN NULL ELSE i % 50 END, repeat('x', 40)
 FROM generate_series(1, 12000) i;
-CREATE INDEX hp_c ON hp USING sift_col (id, tenant, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant');
+CREATE INDEX hp_c ON hp USING sift_col (id, tenant, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'tenant');
 
 -- list and range by a month: the key is the first of the order too
 CREATE TABLE lp (id int NOT NULL, region int NOT NULL, ts timestamp NOT NULL, v int) PARTITION BY LIST (region);
@@ -27,13 +27,13 @@ CREATE TABLE lp_a PARTITION OF lp FOR VALUES IN (1, 2, 3);
 CREATE TABLE lp_b PARTITION OF lp FOR VALUES IN (4, 5);
 CREATE TABLE lp_c PARTITION OF lp FOR VALUES IN (6, 7, 8, 9);
 INSERT INTO lp SELECT i, 1 + i % 9, timestamp '2025-01-01' + (i * 104729 % 5000000) * interval '1 second', i % 30 FROM generate_series(1, 9000) i;
-CREATE INDEX lp_c_i ON lp USING sift_col (id, region, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX lp_c_i ON lp USING sift_col (id, region, ts, v) WITH (order_array_columns = 'ts');
 CREATE TABLE rp (id int NOT NULL, tenant int NOT NULL, ts timestamp NOT NULL) PARTITION BY RANGE (ts);
 CREATE TABLE rp_1 PARTITION OF rp FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
 CREATE TABLE rp_2 PARTITION OF rp FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
 CREATE TABLE rp_3 PARTITION OF rp FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
 INSERT INTO rp SELECT i, i % 20, timestamp '2025-01-01' + (i * 7919 % 7776000) * interval '1 second' FROM generate_series(1, 9000) i;
-CREATE INDEX rp_c ON rp USING sift_col (id, tenant, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX rp_c ON rp USING sift_col (id, tenant, ts) WITH (order_array_columns = 'ts');
 CREATE TABLE tn AS SELECT NULL::int AS id UNION ALL SELECT n FROM generate_series(0, 45) n;
 VACUUM (FREEZE, ANALYZE) hp, lp, rp, tn;
 -- rows after the build: the write buffer, an update and a delete of the partition a probe reads
@@ -93,19 +93,19 @@ CREATE TABLE h2_0 PARTITION OF h2 FOR VALUES WITH (MODULUS 3, REMAINDER 0);
 CREATE TABLE h2_1 PARTITION OF h2 FOR VALUES WITH (MODULUS 3, REMAINDER 1);
 CREATE TABLE h2_2 PARTITION OF h2 FOR VALUES WITH (MODULUS 3, REMAINDER 2);
 INSERT INTO h2 SELECT i, i % 7, i % 5, timestamp '2025-01-01' + (i * 7919 % 7776000) * interval '1 second', i % 40 FROM generate_series(1, 6000) i;
-CREATE INDEX h2_c ON h2 USING sift_col (id, a, b, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'a');
+CREATE INDEX h2_c ON h2 USING sift_col (id, a, b, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'a');
 CREATE TABLE hs (id int NOT NULL, tenant int NOT NULL, region int NOT NULL, ts timestamp NOT NULL) PARTITION BY HASH (tenant);
 CREATE TABLE hs_0 PARTITION OF hs FOR VALUES WITH (MODULUS 2, REMAINDER 0) PARTITION BY LIST (region);
 CREATE TABLE hs_0a PARTITION OF hs_0 FOR VALUES IN (0, 1);
 CREATE TABLE hs_0b PARTITION OF hs_0 FOR VALUES IN (2, 3);
 CREATE TABLE hs_1 PARTITION OF hs FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO hs SELECT i, i % 12, i % 4, timestamp '2025-01-01' + (i * 104729 % 5000000) * interval '1 second' FROM generate_series(1, 4000) i;
-CREATE INDEX hs_c ON hs USING sift_col (id, tenant, region, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant');
+CREATE INDEX hs_c ON hs USING sift_col (id, tenant, region, ts) WITH (order_array_columns = 'ts', order_array_group = 'tenant');
 CREATE TABLE hn (id int NOT NULL, tenant int NOT NULL, ts timestamp NOT NULL) PARTITION BY HASH (tenant);
 CREATE TABLE hn_0 PARTITION OF hn FOR VALUES WITH (MODULUS 2, REMAINDER 0);
 CREATE TABLE hn_1 PARTITION OF hn FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO hn SELECT i, i % 10, timestamp '2025-01-01' + i * interval '1 minute' FROM generate_series(1, 3000) i;
-CREATE INDEX hn_c0 ON hn_0 USING sift_col (id, tenant, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant');
+CREATE INDEX hn_c0 ON hn_0 USING sift_col (id, tenant, ts) WITH (order_array_columns = 'ts', order_array_group = 'tenant');
 VACUUM (FREEZE, ANALYZE) h2, hs, hn;
 
 CREATE TABLE xq (n int, q text);
@@ -132,8 +132,8 @@ CREATE TABLE gv_1 PARTITION OF gv FOR VALUES FROM (0) TO (3000);
 CREATE TABLE gv_2 PARTITION OF gv FOR VALUES FROM (3000) TO (100000);
 INSERT INTO gu SELECT i, 1 + abs(hashint4(i)) % 40, timestamp '2025-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', i % 30 FROM generate_series(1, 6000) i;
 INSERT INTO gv SELECT * FROM gu;
-CREATE INDEX gu_c ON gu USING sift_col (id, g, ts, v) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
-CREATE INDEX gv_c ON gv USING sift_col (id, g, ts, v) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX gu_c ON gu USING sift_col (id, g, ts, v) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX gv_c ON gv USING sift_col (id, g, ts, v) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE) gu, gv;
 INSERT INTO gu SELECT 20000 + i, 1 + i % 40, timestamp '2026-01-01' + i * interval '1 minute', i % 30 FROM generate_series(1, 300) i;
 DELETE FROM gu WHERE id % 211 = 0;

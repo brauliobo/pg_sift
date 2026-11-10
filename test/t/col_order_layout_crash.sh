@@ -17,7 +17,7 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"SELECT setseed(0.42)" \
 	"CREATE TABLE orders (id bigserial PRIMARY KEY, ts timestamp, qty bigint)" \
 	"INSERT INTO orders (ts, qty) SELECT TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', i FROM generate_series(1, 30000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (id, ts, qty) WITH (write_buffer_limit = 64, order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact')" \
+	"CREATE INDEX o_col ON orders USING sift_col (id, ts, qty) WITH (write_buffer_limit = 64, order_array_columns = 'ts', order_layout = 'compact')" \
 	"CREATE FUNCTION ordered_same() RETURNS boolean LANGUAGE plpgsql AS \$\$
 	DECLARE q text; a text; b text; qs text[] = ARRAY[
 		'SELECT ts AS k FROM orders ORDER BY ts LIMIT 40 OFFSET 900',

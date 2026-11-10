@@ -13,7 +13,7 @@ CREATE TABLE gm (id int, g int, k int, ts timestamp, sc text COLLATE "C", sl tex
 INSERT INTO gm SELECT i, i % 50, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 10007 END, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute',
 	CASE WHEN i % 37 = 0 THEN NULL ELSE 's' || lpad((i::bigint * 7919 % 10007)::text, 6, '0') END, 'l' || lpad((i::bigint * 104729 % 20011)::text, 6, '0'), 'f' || lpad((i::bigint * 7919 % 9973)::text, 5, '0'), i % 100
 FROM generate_series(1, 30000) i;
-CREATE INDEX gm_ix ON gm USING sift_col (id, g, k, ts, sc, sl, sf, amount) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: k, ts, sc, sl, sf');
+CREATE INDEX gm_ix ON gm USING sift_col (id, g, k, ts, sc, sl, sf, amount) WITH (key_cut = 'off', order_array_columns = 'auto: k, ts, sc, sl, sf');
 VACUUM (FREEZE, ANALYZE) gm;
 SELECT count(*) AS ts_entries FROM sift._test_col_gorder('gm_ix', 3) \gset
 -- the same rows from the heap (the engine off) and from the scan
@@ -189,7 +189,7 @@ CREATE TABLE gl (id int, ts timestamp) WITH (autovacuum_enabled = off);
 INSERT INTO gl SELECT i, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 1000003) * INTERVAL '1 minute' FROM generate_series(1, 520000) i;
 -- the writer of the build holds the rows of two orders in memory until the segment is cut: at the default 64 MB it cuts 520,000 rows in two, and the overlay is beside the larger half
 SET maintenance_work_mem = '128MB';
-CREATE INDEX gl_ix ON gl USING sift_col (id, ts) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts');
+CREATE INDEX gl_ix ON gl USING sift_col (id, ts) WITH (key_cut = 'off', order_array_columns = 'auto: ts');
 RESET maintenance_work_mem;
 VACUUM (FREEZE, ANALYZE) gl;
 SELECT count(*) AS gl_entries FROM sift._test_col_gorder('gl_ix', 1) \gset
@@ -269,7 +269,7 @@ CREATE TABLE gp (id int, g int, ts timestamp, sl text) PARTITION BY RANGE (g);
 CREATE TABLE gp_a PARTITION OF gp FOR VALUES FROM (0) TO (25) WITH (autovacuum_enabled = off);
 CREATE TABLE gp_b PARTITION OF gp FOR VALUES FROM (25) TO (50) WITH (autovacuum_enabled = off);
 INSERT INTO gp SELECT i, i % 50, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute', 'l' || lpad((i::bigint * 104729 % 20011)::text, 6, '0') FROM generate_series(1, 30000) i;
-CREATE INDEX gp_ix ON gp USING sift_col (id, g, ts, sl) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts, sl');
+CREATE INDEX gp_ix ON gp USING sift_col (id, g, ts, sl) WITH (key_cut = 'off', order_array_columns = 'auto: ts, sl');
 VACUUM (FREEZE, ANALYZE) gp;
 CREATE TABLE gpq (n int, q text, base boolean);
 INSERT INTO gpq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
@@ -303,7 +303,7 @@ SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads
 CREATE TABLE gi (id int, g int, ts timestamp, amount int) WITH (autovacuum_enabled = off);
 INSERT INTO gi SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE i % 100 END, CASE WHEN i % 47 = 0 THEN NULL ELSE TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 30011) * INTERVAL '1 minute' END, i % 100
 FROM generate_series(1, 30000) i;
-CREATE INDEX gi_ix ON gi USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts', order_array_group = 'g');
+CREATE INDEX gi_ix ON gi USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_array_columns = 'auto: ts', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE) gi;
 CREATE TABLE giq (n int, q text, base boolean);
 INSERT INTO giq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[

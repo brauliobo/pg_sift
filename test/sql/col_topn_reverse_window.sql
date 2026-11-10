@@ -2,7 +2,6 @@
 -- The superblocks of a window are read from its best end, so a window holding the rows of the page reads one unit, not every unit of the window in table order.
 -- A page holds one row, so a superblock is 256 rows and 60 of them make the table.
 CREATE EXTENSION pg_sift;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -10,7 +9,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 CREATE TABLE rw (id int, k int, j int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO rw SELECT i, i, i % 7, repeat('x', 600) FROM generate_series(1, 15360) i;
-CREATE INDEX rw_idx ON rw USING sift_col (id, k, j) WITH (order_columns = 'k, j');
+CREATE INDEX rw_idx ON rw USING sift_col (id, k, j);
 VACUUM (FREEZE, ANALYZE) rw;
 
 -- 'same' when the rows and their order are those of the normal plan; the units read by the sorted runs and the units the zones pruned

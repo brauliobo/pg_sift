@@ -6,7 +6,7 @@ CREATE TABLE gr_ev (id bigint PRIMARY KEY, dim_a_id int NOT NULL, created_at tim
 INSERT INTO gr_ev SELECT i, 1 + (hashint8extended(i, 1) & 2147483647) % ({rows} / 100), timestamp '2023-01-01' + (i::float8 / {rows}) * interval '730 days',
   (ARRAY['web','app','phone','mail','partner','kiosk','chat','other'])[1 + (hashint8extended(i, 5) & 2147483647) % 8]
 FROM generate_series(1, {rows}) i;
-CREATE INDEX gr_col ON gr_ev USING sift_col (id, dim_a_id, created_at, kind) WITH (key_cut = off, order_columns = created_at, order_array_columns = created_at, order_array_group = dim_a_id);
+CREATE INDEX gr_col ON gr_ev USING sift_col (id, dim_a_id, created_at, kind) WITH (key_cut = off, order_array_columns = created_at, order_array_group = dim_a_id);
 VACUUM (FREEZE, ANALYZE) gr_ev;
 DROP SCHEMA IF EXISTS c_group_range_count__btree CASCADE;
 CREATE SCHEMA c_group_range_count__btree;

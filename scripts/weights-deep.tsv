@@ -70,11 +70,9 @@ coverage-pct	2	154
 installcheck-col_array_elems	129	152
 soak-gin	126	152
 tap-shell-col_crash_matrix	151	110
-tap-shell-col_run_heads_crash	124	148
 installcheck-agg_preagg_rollup	82	146
 installcheck-build_large_docs	146	123
 tap-shell-pg_upgrade_31	144	125
-installcheck-col_lazy_filter	121	141
 installcheck-col_text_ilike	133	96
 installcheck-parallel_scan	93	133
 build	123	132
@@ -89,7 +87,6 @@ installcheck-parallel_pushdown	81	110
 tap-shell-maint_fanin	109	99
 tap-shell-replica_mixed	1	109
 installcheck-col_scan	96	108
-installcheck-col_sorted_run	106	81
 installcheck-agg_preagg_filter	69	100
 tap-004_wal_consistency	74	100
 installcheck-agg_preagg	99	86
@@ -189,7 +186,6 @@ tap-shell-maint_readers	36	36
 installcheck-agg_join_filter	26	35
 installcheck-col_dict_count	28	35
 tap-shell-maint_concurrent	34	32
-tap-shell-col_run_heads_replica	29	33
 installcheck-agg_calendar_filter	32	29
 installcheck-agg_rollup_shapes	29	32
 installcheck-rank_join	32	25

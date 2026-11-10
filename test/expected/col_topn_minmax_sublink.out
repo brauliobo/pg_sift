@@ -14,7 +14,7 @@ CREATE TABLE ev AS SELECT i AS id,
 	CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 30 END AS m,
 	CASE WHEN i % 37 = 0 THEN NULL ELSE 'c' || lpad(((i * 17) % 500)::text, 3, '0') END AS code, repeat('x', 800) AS pad
 FROM generate_series(1, 3000) i;
-CREATE INDEX ev_i ON ev USING sift_col (id, ent, ts, m, code) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent');
+CREATE INDEX ev_i ON ev USING sift_col (id, ent, ts, m, code) WITH (order_array_columns = 'ts', order_array_group = 'ent');
 -- (pad: the heap pages that the budget of the walk is a quarter of)
 -- entities 0..59 have rows; 60..71 have none; one has a NULL key
 CREATE TABLE ents AS SELECT g AS id, g % 7 AS dim FROM generate_series(0, 71) g UNION ALL SELECT NULL, 99;
@@ -126,7 +126,7 @@ SELECT n, same(q) AS answers FROM tq ORDER BY n;
 
 -- the walk refused: the group is not the order array's (it is of ts alone), the condition on ent passes few rows and the units answer, with no heap row fetched by the walk
 CREATE TABLE ev2 AS SELECT id, ent, ts FROM ev;
-CREATE INDEX ev2_i ON ev2 USING sift_col (id, ent, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX ev2_i ON ev2 USING sift_col (id, ent, ts) WITH (order_array_columns = 'ts');
 ANALYZE ev2;
 SET sift.agg_force = on;
 SELECT (plan_of('SELECT e.id, (SELECT max(ts) FROM ev2 WHERE ent = e.id) FROM ents e WHERE e.dim = 3')).fetches AS refused_fetches;

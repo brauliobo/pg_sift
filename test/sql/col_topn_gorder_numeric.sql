@@ -10,7 +10,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE tt AS SELECT i AS id, CASE WHEN i % 31 = 0 THEN NULL ELSE (((i::bigint * 7919) % 30011) - 15000)::numeric / 100 END::numeric(12,2) AS n,
 	((((i::bigint * 104729) % 2003) - 1000)::numeric / 7)::numeric(18,6) AS m, ((i * 13) % 17)::numeric(5,0) AS z, i % 5 AS g
 FROM generate_series(1, 30000) i;
-CREATE INDEX tt_i ON tt USING sift_col (id, n, m, z, g) WITH (order_columns = 'n, m, z', order_array_columns = 'n, m, z', write_buffer_limit = 256);
+CREATE INDEX tt_i ON tt USING sift_col (id, n, m, z, g) WITH (order_array_columns = 'n, m, z', write_buffer_limit = 256);
 VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;

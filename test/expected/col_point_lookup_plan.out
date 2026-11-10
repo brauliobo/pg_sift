@@ -13,7 +13,7 @@ CREATE TABLE pl (id int, dup int, day int, v int, g int, pad text DEFAULT repeat
 INSERT INTO pl (id, dup, day, v, g)
 SELECT CASE WHEN i % 1009 = 0 THEN NULL ELSE i END, i % 19000, i % 30, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 997 END, i % 7 FROM generate_series(1, 20000) i;
 VACUUM (FREEZE, ANALYZE) pl;
-CREATE INDEX pl_col ON pl USING sift_col (id, dup, day, v, g) WITH (order_columns = 'id, dup, day', point_tid_columns = 'id', order_array_columns = 'id, dup, day');
+CREATE INDEX pl_col ON pl USING sift_col (id, dup, day, v, g) WITH (point_tid_columns = 'id', order_array_columns = 'id, dup, day');
 CREATE TABLE pl_keys AS SELECT n, string_agg(((i::bigint * 7919) % 20000 + 1)::text, ',' ORDER BY i) AS list
 FROM unnest(ARRAY[1, 10, 60, 500, 513]) n, generate_series(1, 513) i WHERE i <= n GROUP BY n;
 CREATE FUNCTION pl_path(sql text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS $$

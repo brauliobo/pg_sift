@@ -8,11 +8,11 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 CREATE TABLE rk AS SELECT i AS id, 1 + (i * 7919) % 250 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts, repeat('x', 100) AS pad FROM generate_series(1, 20000) i;
-CREATE INDEX rk_i ON rk USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX rk_i ON rk USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g');
 CREATE TABLE rk_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 250 END AS g FROM generate_series(1, 200) n;
 VACUUM (FREEZE, ANALYZE) rk, rk_o;
 CREATE TABLE rk2 AS SELECT i AS id, 1 + (i * 7919) % 2 AS g, timestamp '2024-01-01' + i * interval '37 seconds' AS ts, repeat('x', 100) AS pad FROM generate_series(1, 20000) i;
-CREATE INDEX rk2_i ON rk2 USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX rk2_i ON rk2 USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g');
 CREATE TABLE rk2_o AS SELECT n AS i, CASE WHEN n % 47 = 0 THEN NULL WHEN n % 41 = 0 THEN 5000 + n ELSE 1 + (n * 31) % 2 END AS g FROM generate_series(1, 200) n;
 VACUUM (FREEZE, ANALYZE) rk2, rk2_o;
 -- the buffers the SiftAgg node of a statement pins for each of its probes (shared hit and read of the node over its loops), and whether its last probe read the global order (a NULL group goes to the units)
@@ -171,7 +171,7 @@ CREATE TABLE rkp_b PARTITION OF rkp FOR VALUES FROM ('2024-02-01') TO ('2024-03-
 CREATE TABLE rkp_c PARTITION OF rkp FOR VALUES FROM ('2024-03-01') TO ('2024-04-01');
 INSERT INTO rkp SELECT i, 1 + i % 50, timestamp '2024-01-01' + i * interval '6 minutes', repeat('x', 100) FROM generate_series(1, 20000) i;
 INSERT INTO rkp SELECT 30000 + n, 100 + n, timestamp '2024-01-02' + n * interval '1 hour', 'x' FROM generate_series(1, 5) n;
-CREATE INDEX rkp_i ON rkp USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g');
+CREATE INDEX rkp_i ON rkp USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE) rkp;
 CREATE TABLE rkp_o AS SELECT n AS i, CASE WHEN n % 13 = 0 THEN NULL WHEN n % 11 = 0 THEN 100 + n % 7 ELSE 1 + n % 50 END AS g FROM generate_series(1, 120) n;
 ANALYZE rkp_o;

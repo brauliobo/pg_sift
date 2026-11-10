@@ -16,7 +16,7 @@ SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE (i::bigint * 7919 % 100003)::int E
 	   CASE WHEN i % 61 = 0 THEN NULL WHEN i % 47 = 0 THEN '' ELSE chr(97 + (i * 7919 % 26)::int) || (i % 1000)::text END
 FROM generate_series(1, 120000) i;
 CREATE INDEX d_i ON d USING sift_col (b sift.col_int4_ops, t sift.col_int4_ops, c sift.col_int8_ops, s, id sift.col_int4_ops)
-	WITH (write_buffer_limit = 256, order_columns = 'b, t, c', order_array_columns = 'b, t, c, s');
+	WITH (write_buffer_limit = 256, order_array_columns = 'b, t, c, s');
 VACUUM (ANALYZE) d;
 
 -- the rows a statement read: 0 when the segments counted

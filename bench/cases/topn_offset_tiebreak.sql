@@ -3,7 +3,7 @@
 -- ordered: yes
 --@ setup
 CREATE TABLE ott AS SELECT id, (date '2024-01-01' + (hashint8extended(id, 9) & 1023)::int % 730) AS d FROM orders ORDER BY md5((id * 31 + 7)::text);
-CREATE INDEX ott_col ON ott USING sift_col (id, d) WITH (order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX ott_col ON ott USING sift_col (id, d) WITH (order_array_columns = 'd');
 DROP SCHEMA IF EXISTS c_topn_offset_tiebreak__btree CASCADE;
 CREATE SCHEMA c_topn_offset_tiebreak__btree;
 CREATE TABLE c_topn_offset_tiebreak__btree.ott AS TABLE ott;

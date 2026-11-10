@@ -9,7 +9,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE gw (id int, g int, created timestamp, score int);
 INSERT INTO gw SELECT i, 1 + abs(hashint4(i)) % 100, timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second', abs(hashint4(i + 3)) % 1000
 FROM generate_series(1, 20000) i;
-CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g');
+CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gw;
 CREATE TABLE gp AS SELECT * FROM gw;
 ANALYZE gp;

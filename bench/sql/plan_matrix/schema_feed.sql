@@ -34,7 +34,7 @@ $$;
 SELECT pg_temp.fill(1, :n);
 CREATE INDEX feed_ts ON feed (ts);
 CREATE INDEX feed_col ON feed USING sift_col (id, ts, kind, active, deleted_at, q99, q50, q10, q1, q001)
-  WITH (order_columns = 'id, ts', order_array_columns = 'id, ts', order_layout = 'auto', write_buffer_limit = 100000);
+  WITH (order_array_columns = 'id, ts', order_layout = 'auto', write_buffer_limit = 100000);
 VACUUM (FREEZE, ANALYZE) feed;
 SELECT pg_temp.fill(:n + 1, :n + :wbuf) WHERE :wbuf > 0;
 ANALYZE feed;
@@ -50,7 +50,7 @@ CREATE FUNCTION pg_temp.fill_pings(lo bigint, hi bigint, ents int) RETURNS void 
 $$;
 SELECT pg_temp.fill_pings(1, :n, greatest(:n / 100, 1));
 CREATE INDEX pings_ent_ts ON pings (entity, ts);
-CREATE INDEX pings_col ON pings USING sift_col (id, entity, ts, status) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'entity');
+CREATE INDEX pings_col ON pings USING sift_col (id, entity, ts, status) WITH (order_array_columns = 'ts', order_array_group = 'entity');
 VACUUM (FREEZE, ANALYZE) dim_a, pings;
 SELECT pg_temp.fill_pings(:n + 1, :n + :wbuf, greatest(:n / 100, 1)) WHERE :wbuf > 0;
 ANALYZE pings;

@@ -18,8 +18,7 @@ heap, or the btree, as PostgreSQL plans it without the column scan. No parallel 
 import json, os, random, statistics, subprocess, sys
 
 ENV = dict(os.environ, LC_ALL="C")
-NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + key_columns", "point_tid": "sift_col classes + point_tid_columns", "keycut": "sift_col classes + point_tid_columns + key_cut",
-         "ord": "sift_col classes + point_tid_columns + order_columns"}
+NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + key_columns", "point_tid": "sift_col classes + point_tid_columns", "keycut": "sift_col classes + point_tid_columns + key_cut"}
 OPS = ("id sift.col_int4_ops, rnd sift.col_int4_ops, grp sift.col_int4_ops, ts sift.col_timestamptz_ops, "
        "s_short sift.col_text_ops, u sift.col_uuid_ops, amount sift.col_numeric_ops")
 SET_COLUMNS = os.environ.get("SET_COLUMNS", "id, rnd, s_short, u")
@@ -30,10 +29,9 @@ INDEXES = {
     "classes": [f"CREATE INDEX c_scan ON T USING sift_col ({OPS})"],
     "set": [f"CREATE INDEX c_set ON T USING sift_col ({OPS}) WITH (key_columns = '{SET_COLUMNS}')"],
     "point_tid": [f"CREATE INDEX c_point_tid ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}')"],
-    "ord": [f"CREATE INDEX c_ord ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}', order_columns = 'id, rnd, ts')"],
     "keycut": [f"CREATE INDEX c_keycut ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}', key_cut = 'rnd')"],
 }
-DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point_tid", "c_keycut", "c_ord")
+DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point_tid", "c_keycut")
 SIFT = ["SET sift.enable_col_scan = on"]
 PLANS = {
     "btree": [("planner", []), ("forced index scan", ["SET enable_seqscan = off", "SET enable_bitmapscan = off"]),

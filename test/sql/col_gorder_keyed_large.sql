@@ -43,7 +43,7 @@ CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, dif
 	FROM r WHERE h > 0
 $$;
 
-CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_columns = 'd, ts', order_array_columns = 'd, ts');
+CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_array_columns = 'd, ts');
 SELECT * FROM kl_check('one segment');
 INSERT INTO kl SELECT 105000 + i, 1 + (random() * 59)::int, date '2022-01-01' + (random() * 1500)::int, timestamp '2022-01-01' + random() * 1500 * interval '1 day', NULL, repeat('x', 150) FROM generate_series(1, 10000) i;
 UPDATE kl SET d = d + 2 WHERE id % 10 = 0;

@@ -3,7 +3,6 @@
 -- fetched whole and sorted by the tie-break key. The rows are the plan's without the extension through ties across the boundary, nulls, deleted and updated rows, a VACUUM, new rows
 -- and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -16,7 +15,7 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 	   CASE WHEN i % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((i * 7919) % 900000) * interval '1 second' END
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops)
-	WITH (order_columns = 'id, a, b, t', order_array_columns = 'id, a, b, t');
+	WITH (order_array_columns = 'id, a, b, t');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
 

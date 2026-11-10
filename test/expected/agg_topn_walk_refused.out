@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int, ent int, ts int, pad text) WITH (autovacuum_enabled = false);
 ALTER TABLE ev ALTER pad SET STORAGE PLAIN;
 INSERT INTO ev SELECT i, (i::bigint * 7919) % 2003, i, repeat('x', 200) FROM generate_series(1, 60000) i;
-CREATE INDEX ev_i ON ev USING sift_col (id, ent, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX ev_i ON ev USING sift_col (id, ent, ts) WITH (order_array_columns = 'ts');
 CREATE TABLE ents AS SELECT g AS id FROM generate_series(1, 20) g;
 VACUUM (FREEZE, ANALYZE) ev, ents;
 CREATE FUNCTION walk_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$

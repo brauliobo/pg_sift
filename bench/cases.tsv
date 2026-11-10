@@ -28,8 +28,6 @@ cluster_visibility_map	the planner charges the heap check of the rows on pages t
 topn_text_key	`ORDER BY` a text, varchar, uuid, bytea or inet column `LIMIT n` is a top-N of the column scan	orders	default+title	Top-N: title	native,pg_duckdb	-	ms	faster33	no	-
 topn_uuid_key	reads a uuid or bytea sort key as the codes of the dictionary the segment tenants	orders	default	Top-N: ref.*stored dictionary	native,pg_duckdb	-	ms	faster33	no	-
 topn_text_code	compares the rows of a unit with the bar by the order code of the dictionary of their segment	orders	default	Top-N: sku	native,pg_duckdb	-	ms	faster33	no	-
-topn_sorted_runs	`order_columns` (`sift_col` reloption, default none	orders	default WITH (order_columns = 'customer_id')	[1-9][0-9]* units read by sorted run	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	yes	-
-topn_sorted_runs_btree	(a btree needs 0.35)	orders	default WITH (order_columns = 'customer_id')	fallback:Index Only Scan using orders_customer	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	no	-
 topn_zone_keys	bounds the units by the zones of the sort keys after the first too	orders	default	Top-N: status, customer_id	native,pg_duckdb	zone_off:sift.topn_zone_keys = off	ms	faster33	no	-
 topn_big_offset	with `n + m` past 100,000	orders	default	Top-N: amount	native,pg_duckdb	-	ms	faster33	no	-
 topn_many_keys	up to 8 sort columns in the heap of the top-N scan	orders	default	Top-N: customer_id, country, category, status, quantity	native,pg_duckdb	-	ms	faster33	no	-
@@ -47,7 +45,6 @@ lateral_dim_test	a `LIMIT 1` child that tests its row besides the unique key	eve
 cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
 filter_few_rows	when the filters of the source keep under a 32nd of a unit's rows	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
-topn_sorted_runs_filter	a top-N scan with `order_columns` reads the sorted run of a unit also when a `WHERE` leaves few of its rows	orders	default WITH (order_columns = 'customer_id')	[1-9][0-9]* units read by sorted run	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	no	-
 superunit_total	the merged sums and cube of every group of that many consecutive units of a segment are stored once more	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
 numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 topn_six_keys	up to 8 sort columns in the heap of the top-N scan	orders	default	Top-N: customer_id, country, category, status, quantity, amount	native	-	ms	faster33	no	-
@@ -91,7 +88,6 @@ point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directo
 point_in_1000	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no	-
 point_exact_slots	has `ceil(keys * 4 / 3)` slots instead of the next power of two	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no	-
 bigdict_point_probes	dictionary the cache cannot hold is no longer parsed again for every test	orders	default	orders_col	native	-	ms	faster33	no	-
-topn_run_probes	reads the sort key of a unit's rows only for the rows it keeps	orders	default WITH (order_columns = 'customer_id')	[1-9][0-9]* units read by sorted run	native	-	ms	faster33	no	-
 point_key_range	tests the zones and summaries of the other predicates before it asks the point directory	orders	default WITH (point_tid_columns = 'country')	Bitmap Heap Scan on orders|Index Scan using orders_col	native	-	ms	faster33	no	-
 point_prefix_count	priced by the planner as the lookups of the keys the dictionary names	orders	default	^Aggregate	native	-	ms	faster33	no	-
 tbl_update_keys	asks the table which of the page's versions are dead	orders	-	tombstones	native	-	ms	faster33	no	-
@@ -144,7 +140,6 @@ ts_top_devices	ts_top_devices	tseries	-	Pushed Aggregates	native	-	ms	faster33	n
 ts_latest_device	ts_latest_device	tseries	-	fallback:Index Scan	native	-	ms	faster33	no	-
 oltp_insert_index	oltp_insert_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no	-
 oltp_update_index	oltp_update_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no	-
-run_window	a range on a leaf with a sorted run (`order_columns`), or an equality on it	orders	default	[1-9][0-9]* filtered by sorted run	native,pg_duckdb	no_run:search_path = run_window_plain	ms	faster33	no	-
 range_wide_bytes	plain 3, 5, 6 or 7-byte values	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 two_level_cell_conditions	the conditions of the outer aggregates of a two-level scan read the value of each cell once	orders	default	Pushed Aggregates	native	-	ms	faster33	no	-
 dict_small_request	the ids of a dictionary's entries (the key of a group by a text column	orders	default	Group Keys: tag	native	-	ms	faster33	no	-
@@ -163,7 +158,6 @@ order_array	the reloption `order_array_columns` of a `sift_col` index	orders	def
 hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no	-
 order_array_range	the scan searches each segment's array for the first entry of the range	orders	default	Global Order: true	native	no_array:search_path = order_array_range_plain	ms	faster33	no	-
 order_array_text_range	the scan finds the rank of the string in each segment by the collation	orders	default	Global Order: true	native	no_array:search_path = order_array_text_range_plain	ms	faster33	no	-
-topn_run_range	starts at the first entry of the range, found by two binary searches of the run	orders	default	Global Order: true	native	no_run:search_path = topn_run_range_plain	ms	faster33	no	-
 order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no	-
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no	-
 topn_offset_exact	an OFFSET reads the sorted array of the key and does not confirm the entries before it in the heap	orders	default	Global Order: true	native	btree:search_path = topn_offset_btree	ms	faster33	no	-
@@ -187,7 +181,6 @@ cte_shared_series	the shared plan of a CTE that several aggregates read is made 
 cte_hoisted_in	no longer repeats an aggregating `IN` sub-select of the CTE body in every arm	events	-	sift_hoisted	native	-	ms	faster33	no	-
 topn_lateral_per_entity	a top-N scan for each key an enclosing query sets	tseries	-	Top-N: ts DESC	native	-	ms	faster33	no	-
 elem_member_null	are the null test and the count of the typed leaf of the member	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
-topn_scattered_time	answers a superblock (and a unit) from the head of its sorted run	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
 calendar_session_zone	`date_trunc`, `extract` and `date()` (`::date`) of a `timestamptz` in the session's time zone are grouped by the step of the zone's clock	orders	default	\(per day\)	native	-	ms	faster33	no	-
 numeric_image_sum	built from the digits of the stored image, not from its text through `numeric_in`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by default	orders	default	[1-9][0-9]* pruned	native	-	ms	faster33	no	-
@@ -196,7 +189,6 @@ col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (O
 cube_wide_dims	the byte budget of the cube of a `sift_col` unit counts what the cube holds	events	-	[1-9][0-9]* from pre-aggregates	native	scan:sift.agg_preagg = off	ms	faster33	no	-
 few_keys_lookup	keeps its btree probes at the price they are planned for	events	-	Custom Scan \(SiftAgg\)|Index Scan using events_pkey	native	-	ms	faster33	no	-
 keycut_or_ranges	no longer starts the setup of a scan for each morsel	orders	default WITH (key_cut = 'customer_id')	[1-9][0-9]* pruned	native	-	ms	faster33	no	-
-topn_keyset_run	reads a unit from the first entry of the range without running the unit's filters	orders	default	Global Order: true	native	no_run:search_path = topn_keyset_run_plain	ms	faster33	no	-
 topn_desc_window	reads the superblocks of each window of the walk from the window's best end	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no	-
 key_table_point	a key table per segment (column format minor 22, the reloption `key_table`	orders	default WITH (key_columns = 'segment_id')	Rows: \b0 scanned	native,pg_duckdb	units:sift.agg_super = off	ms	faster33	yes	-
 null_count_zone	reads the null counts of the zones of the units	events	-	[1-9][0-9]* from pre-aggregates	native	scan:sift.agg_preagg = off	ms	faster33	no	-

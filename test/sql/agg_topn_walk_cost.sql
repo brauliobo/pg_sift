@@ -9,7 +9,7 @@ CREATE TABLE feed (id int, k int, q50 int, q10 int, q1 int, gone timestamptz, pa
 ALTER TABLE feed ALTER pad SET STORAGE PLAIN;
 INSERT INTO feed SELECT i, (i::bigint * 7919) % 60001, (hashint4(i) & 1023 < 512)::int, (hashint4(i + 1) & 1023 < 102)::int, (hashint4(i + 2) & 1023 < 10)::int,
 	CASE WHEN i % 50 = 0 THEN now() END, repeat('x', 900) FROM generate_series(1, 60000) i;
-CREATE INDEX feed_i ON feed USING sift_col (id, k, q50, q10, q1, gone) WITH (order_columns = 'k', order_array_columns = 'k');
+CREATE INDEX feed_i ON feed USING sift_col (id, k, q50, q10, q1, gone) WITH (order_array_columns = 'k');
 VACUUM (FREEZE, ANALYZE) feed;
 
 CREATE FUNCTION page_cost(cond text) RETURNS float8 LANGUAGE sql AS

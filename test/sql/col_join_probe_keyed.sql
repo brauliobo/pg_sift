@@ -10,7 +10,7 @@ SET jit = off;
 SET client_min_messages = warning;
 
 CREATE TABLE ev AS SELECT i AS id, timestamp '2020-01-01' + ((hashint4(i) & 2147483647) % 157766400) * interval '1 second' + i * interval '1 microsecond' AS t FROM generate_series(1, 300000) i;
-CREATE INDEX ev_c ON ev USING sift_col (t, id) WITH (key_cut = 't', order_columns = 't', order_array_columns = 't');
+CREATE INDEX ev_c ON ev USING sift_col (t, id) WITH (key_cut = 't', order_array_columns = 't');
 CREATE TABLE few AS SELECT t FROM ev WHERE id % 10000 = 0;
 CREATE TABLE many AS SELECT t FROM ev WHERE id % 300 = 0;
 VACUUM (FREEZE, ANALYZE) ev, few, many;

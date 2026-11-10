@@ -8,7 +8,7 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.col_auto_merge = off;
 CREATE TABLE ou (id int, g int, ts timestamp, amount int) WITH (autovacuum_enabled = off);
 INSERT INTO ou SELECT i, i % 50, TIMESTAMP '2026-01-01' + (i * 7919 % 10007) * INTERVAL '1 minute', i % 100 FROM generate_series(1, 20000) i;
-CREATE INDEX ou_ix ON ou USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'auto: ts');
+CREATE INDEX ou_ix ON ou USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_array_columns = 'auto: ts');
 VACUUM (FREEZE, ANALYZE) ou;
 SELECT count(*) AS entries FROM sift._test_col_gorder('ou_ix', 2) \gset
 CREATE FUNCTION ou_answers() RETURNS text LANGUAGE sql AS $$
@@ -114,7 +114,7 @@ SELECT sift.col_verify('ou_ix', true);
 -- arrays the index names (order_array_columns = 'ts', not the choice of the build) stay in every overlay: a group walk reads those of every segment
 CREATE TABLE oe (id int, ts timestamp);
 INSERT INTO oe SELECT i, TIMESTAMP '2026-01-01' + (i * 7919 % 10007) * INTERVAL '1 minute' FROM generate_series(1, 20000) i;
-CREATE INDEX oe_ix ON oe USING sift_col (id, ts) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX oe_ix ON oe USING sift_col (id, ts) WITH (key_cut = 'off', order_array_columns = 'ts');
 VACUUM (FREEZE, ANALYZE) oe;
 SELECT count(*) AS entries FROM sift._test_col_gorder('oe_ix', 1) \gset
 INSERT INTO oe SELECT 20000 + i, TIMESTAMP '2026-03-01' + i * INTERVAL '1 minute' FROM generate_series(1, 300) i;
@@ -134,7 +134,7 @@ DROP TABLE oe;
 -- an overlay holds no more array-free rows than a walk takes from them in memory (SIFT_CGORD_FREE_MAX): past it the overlay keeps its arrays, under a tenth of the index as it is
 CREATE TABLE oc (id int, g int, ts timestamp, amount int) WITH (autovacuum_enabled = off);
 INSERT INTO oc SELECT i, i % 50, TIMESTAMP '2026-01-01' + (i * 7919 % 10007) * INTERVAL '1 minute', i % 100 FROM generate_series(1, 20000) i;
-CREATE INDEX oc_ix ON oc USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'auto: ts');
+CREATE INDEX oc_ix ON oc USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_array_columns = 'auto: ts');
 VACUUM (FREEZE, ANALYZE) oc;
 SELECT count(*) AS entries FROM sift._test_col_gorder('oc_ix', 2) \gset
 SET sift.test_limits = 'gord_free_rows=200';

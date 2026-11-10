@@ -12,7 +12,7 @@ CREATE TABLE tt AS SELECT i AS id, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7) %
 	CASE WHEN i % 29 = 0 THEN NULL ELSE (ARRAY['web', 'app', 'phone', 'mail', 'partner', 'kiosk', 'chat', 'other'])[1 + (i * 13) % 8] END AS src,
 	CASE WHEN i % 31 = 0 THEN NULL ELSE 'v' || lpad(((i * 17) % 500)::text, 3, '0') END AS code
 FROM generate_series(1, 40000) i;
-CREATE INDEX tt_i ON tt USING sift_col (id, g, k, src, code) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'g');
+CREATE INDEX tt_i ON tt USING sift_col (id, g, k, src, code) WITH (order_array_columns = 'k', order_array_group = 'g');
 VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;

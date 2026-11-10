@@ -4,7 +4,6 @@
 -- group, in a table of groups of all sizes (one that fills chunks, 150 rows, 2 rows: more groups to a chunk than a chunk can note, which stays whole), a group of equal keys, NULL keys and a
 -- group that is not there; then a write buffer, a promotion, deleted and updated rows, a merge and a REINDEX with the layout whole and auto.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -26,8 +25,8 @@ FROM generate_series(1, 30000) i;
 UPDATE gc SET created = timestamp '2024-02-01' WHERE g = 5;
 CREATE TABLE gp AS SELECT * FROM gc;
 CREATE TABLE gw AS SELECT * FROM gc;
-CREATE INDEX gc_i ON gc USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', order_layout = 'compact');
-CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g', order_layout = 'whole');
+CREATE INDEX gc_i ON gc USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g', order_layout = 'compact');
+CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g', order_layout = 'whole');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gc;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gw;
 ANALYZE gp;

@@ -13,7 +13,7 @@ CREATE TABLE gi (id int PRIMARY KEY, u bigint, k int, pad text DEFAULT repeat('x
 ALTER TABLE gi ALTER COLUMN pad SET STORAGE PLAIN;
 -- u: unique and scattered; k: 300 keys of about 330 rows, a tenth NULL
 INSERT INTO gi (id, u, k) SELECT i, (i * 104729::bigint) % 1000003, CASE WHEN i % 10 = 0 THEN NULL ELSE (i * 7919::bigint) % 300 END FROM generate_series(1, 100000) i;
-CREATE INDEX gi_i ON gi USING sift_col (id, u, k) WITH (order_columns = 'u, k', order_array_columns = 'u, k', key_cut = 'off');
+CREATE INDEX gi_i ON gi USING sift_col (id, u, k) WITH (order_array_columns = 'u, k', key_cut = 'off');
 VACUUM (FREEZE, ANALYZE) gi;
 -- the lists: 2, 5, 17 and 40 values of the table, 40 that it has not, 1,000 and 1,025 of it, and 10 keys of many rows
 CREATE TABLE gi_l AS

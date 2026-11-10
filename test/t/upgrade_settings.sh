@@ -30,7 +30,7 @@ want=$(qd app "SET sift.enable_agg = off" "SELECT g, count(*) FROM docs GROUP BY
 node_stop us
 
 use_root us "$newroot"
-for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct test_col_legacy_options; do sed_i "/^sift\\.$k = /d" "$(dir us)/data/postgresql.conf"; done   # the shipped defaults, not those of the test clusters
+for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct; do sed_i "/^sift\\.$k = /d" "$(dir us)/data/postgresql.conf"; done   # the shipped defaults, not those of the test clusters
 node_start us || bail "cannot start this tree on $ref data"
 upd=$(qd app "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 check "ALTER EXTENSION UPDATE from $ref" test $rc -eq 0

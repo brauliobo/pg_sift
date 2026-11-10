@@ -16,7 +16,6 @@ plan 106
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
 sift.col_auto_merge = on"
-sed_i "/^sift\\.test_col_legacy_options = /d" "$(dir uc)/data/postgresql.conf"   # a setting of the test build the preflight would report: the clean database stays clean
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
 
@@ -92,7 +91,7 @@ out=$(uc clean)
 check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
 check "key_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +key_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
 check "rollup_columns set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
-check "order_columns (deprecated in 4.3, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated in 4\.3 and removed in 5\.0 .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
+check "order_columns (removed in 4.4, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +removed in 4\.4 and ignored .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
 check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
 check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
@@ -114,7 +113,7 @@ check "to 3.3: an index with sketches (format 20) is a blocker that says to rese
 q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
 # the global order of order_array_columns with no point directory codes its addresses with the bits of the largest offset of a chunk: column format 38, which 3.6 and older refuse
 # (the setting 14 writes no array); 3.6 and 3.7 wrote it as column format 30, whose advice is to turn the option off
-q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_columns = 'id', order_array_columns = 'id')" >/dev/null
+q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_array_columns = 'id')" >/dev/null
 check "an index with a global order is column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 check "to 3.3: an index with a global order is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
 check "to 3.5: the same index is a blocker that says to write the setting 14 and that its arrays are left out" grep -q -E "^blocker +facts_gord .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_gord.*written without its arrays: an ORDER BY \.\. LIMIT above 32 rows on those columns reads their units \(slower\) until a REINDEX at the normal setting writes them again" <<<"$(uc --to 3.5 clean)"
@@ -122,7 +121,7 @@ check "to 3.6: the same index is a blocker that says to write the setting 14 and
 check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
-check "... and it is written without the arrays: column format 12 (no sorted run is written for order_columns), and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 12 ' <<<"$(uc clean)"
+check "... and it is written without the arrays: column format 12 (the setting 14 writes no array), and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 12 ' <<<"$(uc clean)"
 q clean "REINDEX INDEX facts_gord" >/dev/null
 check "a REINDEX at the normal setting writes the arrays again: column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 q clean "DROP INDEX facts_gord" >/dev/null
@@ -131,11 +130,11 @@ q clean "DROP INDEX facts_gord" >/dev/null
 if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_gorder_ends'") == 1 ]]; then
 	# plain chunks: the column format minors below tell the layouts apart (a default build writes seekable chunks, minor 44, checked after them)
 	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "CREATE TABLE gord_rows AS SELECT i AS id, TIMESTAMP '2026-01-01' + (hashint8extended(i, 7) & 35184372088831) * INTERVAL '1 microsecond' AS ts FROM generate_series(1, 20000) i" \
-		"CREATE INDEX gord_whole ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'whole')" \
-		"CREATE INDEX gord_compact ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact')" \
-		"CREATE INDEX gord_auto ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts')" \
+		"CREATE INDEX gord_whole ON gord_rows USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'whole')" \
+		"CREATE INDEX gord_compact ON gord_rows USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'compact')" \
+		"CREATE INDEX gord_auto ON gord_rows USING sift_col (id, ts) WITH (order_array_columns = 'ts')" \
 		"CREATE TABLE gord_ties AS SELECT i AS id, DATE '2026-01-01' + (i * 31 % 40) AS day FROM generate_series(1, 20000) i" \
-		"CREATE INDEX gord_auto_ties ON gord_ties USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day')" >/dev/null
+		"CREATE INDEX gord_auto_ties ON gord_ties USING sift_col (id, day) WITH (order_array_columns = 'day')" >/dev/null
 	check "an index with a whole order is column format 38 to 40" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format (3[89]|40)' <<<"$(uc clean)"
 	check "an index with a compact order is column format 41" grep -q -E '^ok +gord_compact +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
 	check "an index of order_layout auto whose keys are scattered keeps compact chunks: column format 41" grep -q -E '^ok +gord_auto +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
@@ -146,7 +145,7 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_compact)"
 	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
 	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
-	q clean "SET sift.test_col_gorder_ends = 64" "CREATE INDEX gord_seek ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts')" >/dev/null
+	q clean "SET sift.test_col_gorder_ends = 64" "CREATE INDEX gord_seek ON gord_rows USING sift_col (id, ts) WITH (order_array_columns = 'ts')" >/dev/null
 	check "an index with seekable order chunks is column format 44" grep -q -E '^ok +gord_seek +index +format 1\.[0-9]+, column format 44' <<<"$(uc clean)"
 	check "to 3.7: seekable order chunks are a blocker that says to write the setting 14" grep -q -E "^blocker +gord_seek .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_seek" <<<"$(uc --to 3.7 clean)"
 	q clean "DROP TABLE gord_rows, gord_ties" >/dev/null

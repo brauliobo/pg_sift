@@ -11,7 +11,7 @@ SET client_min_messages = warning;
 
 CREATE TABLE pb (id int, v int, pad text DEFAULT repeat('x', 100));
 INSERT INTO pb (id, v) SELECT (i::bigint * 7919) % 300007, i % 997 FROM generate_series(1, 300000) i;
-CREATE INDEX pb_col ON pb USING sift_col (id, v) WITH (order_columns = 'id', order_array_columns = 'id');
+CREATE INDEX pb_col ON pb USING sift_col (id, v) WITH (order_array_columns = 'id');
 CREATE INDEX pb_bt ON pb (id);
 VACUUM (FREEZE, ANALYZE) pb;
 CREATE TABLE pb_keys AS SELECT n, string_agg(((i::bigint * 7919) % 300007)::text, ',' ORDER BY i) AS list

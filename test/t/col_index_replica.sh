@@ -49,7 +49,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	>/dev/null || bail "setup failed"
 # kept_o has the global order of k: a session that keeps the rows of the write buffer keeps their order too
 for T in kept_a kept_b kept_c kept_o; do
-	OPTS=; [[ $T == kept_o ]] && OPTS="WITH (order_columns = 'k', order_array_columns = 'k')"
+	OPTS=; [[ $T == kept_o ]] && OPTS="WITH (order_array_columns = 'k')"
 	sql primary "CREATE TABLE $T (id int PRIMARY KEY, k int NOT NULL, grp int NOT NULL, v int NOT NULL, doc jsonb)" \
 		"INSERT INTO $T SELECT i, i % 3000, i % 40, i % 17, jsonb_build_object('a', i % 9) FROM generate_series(1, 40000) i" \
 		"CREATE INDEX ${T}_col ON $T USING sift_col (id, k, grp, v, doc) $OPTS" "VACUUM (FREEZE, ANALYZE) $T" >/dev/null || bail "setup of $T failed"

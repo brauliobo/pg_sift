@@ -10,7 +10,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE tt AS SELECT i AS id, ((i::bigint * 7919) % 60001)::int AS k, ((i::bigint * 104729 + 13) % 10007)::int AS u, (i % 10) AS st, (i % 3 = 0) AS act,
 	CASE WHEN i % 50 = 0 THEN now() END AS gone, CASE WHEN i % 100 = 0 THEN NULL ELSE now() END AS live, (i % 977) AS tie
 FROM generate_series(1, 60000) i;
-CREATE INDEX tt_i ON tt USING sift_col (id, k, u, st, act, gone, live, tie) WITH (order_columns = 'k, tie', order_array_columns = 'k, tie', write_buffer_limit = 256);
+CREATE INDEX tt_i ON tt USING sift_col (id, k, u, st, act, gone, live, tie) WITH (order_array_columns = 'k, tie', write_buffer_limit = 256);
 VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;

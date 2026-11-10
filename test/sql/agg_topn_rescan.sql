@@ -21,7 +21,7 @@ INSERT INTO gg (id, g, k, t, s) SELECT 20000 + i, 100, NULL, NULL, NULL FROM gen
 INSERT INTO gg (id, g, k, t, s) VALUES (20100, 101, 5, TIMESTAMP '2001-01-01', 's0005');
 CREATE TABLE dd AS SELECT i AS id, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 12 END AS g FROM generate_series(1, 6000) i;
 CREATE INDEX gg_i ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
-	WITH (order_columns = 'k, t', order_array_columns = 'k, t, s', order_array_group = 'g');
+	WITH (order_array_columns = 'k, t, s', order_array_group = 'g');
 SELECT sift.col_verify('gg_i');
 ANALYZE gg;
 ANALYZE dd;

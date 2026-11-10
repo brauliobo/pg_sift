@@ -10,7 +10,7 @@ SET max_parallel_maintenance_workers = 0;
 CREATE TABLE t (id int PRIMARY KEY, ent int, d date, pad text DEFAULT repeat('x', 100));
 ALTER TABLE t ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO t (id, ent, d) SELECT i, 1 + i % 40, date '2024-01-01' + (hashint4(i) & 16777215) % 2000 FROM generate_series(1, 30000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ent, d) WITH (key_cut = 'ent', order_columns = 'd', order_array_columns = 'd', dead_rewrite_pct = 100);
+CREATE INDEX t_ix ON t USING sift_col (id, ent, d) WITH (key_cut = 'ent', order_array_columns = 'd', dead_rewrite_pct = 100);
 CREATE TABLE p AS TABLE t;
 DELETE FROM t WHERE id % 2 = 0;
 DELETE FROM p WHERE id % 2 = 0;

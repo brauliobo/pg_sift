@@ -4,7 +4,6 @@
 -- the temp_file_limit does not allow, or with the setting off, writes the runs of the table's order.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

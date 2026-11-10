@@ -1,6 +1,5 @@
 -- order_layout: the layout of the order array of each column ('whole', 'compact', 'auto', or a list of columns for each), what CREATE INDEX says about it, and that merges and REINDEX keep to it. It never adds an array.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 SET sift.test_col_gorder_ends = 64;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
 SET sift.test_limits = 'gord_seek_pct=0';
@@ -20,21 +19,21 @@ CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: name'
 CREATE INDEX x ON t USING sift_col (id, ts) WITH (order_layout = 'compact: ts; whole: ts');
 
 -- the layout of each segment and the bytes of each column, as CREATE INDEX says them
-CREATE INDEX t_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'id, ts, c', order_layout = 'compact: ts, c; whole: id');
+CREATE INDEX t_ix ON t USING sift_col (id, ts, c) WITH (order_array_columns = 'id, ts, c', order_layout = 'compact: ts, c; whole: id');
 SELECT format, rows FROM sift.col_segments('t_ix') WHERE kind = 'immutable';
 -- the layout names every column, the array is only on ts: the option adds none
-CREATE INDEX u_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'ts', order_layout = 'compact');
+CREATE INDEX u_ix ON t USING sift_col (id, ts, c) WITH (order_array_columns = 'ts', order_layout = 'compact');
 SELECT format FROM sift.col_segments('u_ix') WHERE kind = 'immutable';
 -- the whole order of the same columns, and the minor the notice names for each
-CREATE INDEX w_ix ON t USING sift_col (id, ts, c) WITH (order_columns = 'id, ts, c', order_array_columns = 'ts', order_layout = 'whole');
+CREATE INDEX w_ix ON t USING sift_col (id, ts, c) WITH (order_array_columns = 'ts', order_layout = 'whole');
 SELECT format FROM sift.col_segments('w_ix') WHERE kind = 'immutable';
 SELECT sift.col_verify('t_ix'), sift.col_verify('u_ix'), sift.col_verify('w_ix');
 
 -- keys that tie much (a date) cost less addressed as runs: auto, which is compact a chunk at a time where that is a fifth smaller, never costs more than either layout
 CREATE TABLE d AS SELECT i AS id, DATE '2026-01-01' + (i * 31 % 40) AS day FROM generate_series(1, 20000) i;
-CREATE INDEX d_whole ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day', order_layout = 'whole');
-CREATE INDEX d_compact ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day', order_layout = 'compact');
-CREATE INDEX d_smaller ON d USING sift_col (id, day) WITH (order_columns = 'day', order_array_columns = 'day');
+CREATE INDEX d_whole ON d USING sift_col (id, day) WITH (order_array_columns = 'day', order_layout = 'whole');
+CREATE INDEX d_compact ON d USING sift_col (id, day) WITH (order_array_columns = 'day', order_layout = 'compact');
+CREATE INDEX d_smaller ON d USING sift_col (id, day) WITH (order_array_columns = 'day');
 SELECT pg_relation_size('d_smaller') <= LEAST(pg_relation_size('d_whole'), pg_relation_size('d_compact')) AS smaller_is_least,
 	   pg_relation_size('d_compact') > pg_relation_size('d_whole') AS compact_costs_more_on_ties;
 SELECT sift.col_verify('d_smaller');
@@ -42,7 +41,7 @@ DROP TABLE d;
 -- and compact where the keys are many and spread (a timestamp to the microsecond)
 SELECT setseed(0.42);
 CREATE TABLE e AS SELECT i AS id, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day' AS ts FROM generate_series(1, 20000) i;
-CREATE INDEX e_smaller ON e USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX e_smaller ON e USING sift_col (id, ts) WITH (order_array_columns = 'ts');
 SELECT format FROM sift.col_segments('e_smaller') WHERE kind = 'immutable';
 SELECT sift.col_verify('e_smaller');
 DROP TABLE e;
@@ -54,9 +53,9 @@ CREATE TABLE mx AS SELECT i AS id, CASE WHEN i % 2 = 0 THEN TIMESTAMP '2026-01-0
 CREATE TABLE mo AS SELECT * FROM mx;
 CREATE TABLE mw AS SELECT * FROM mx;
 CREATE TABLE mc AS SELECT * FROM mx;
-CREATE INDEX mx_ix ON mx USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts');
-CREATE INDEX mw_ix ON mw USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'whole');
-CREATE INDEX mc_ix ON mc USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact');
+CREATE INDEX mx_ix ON mx USING sift_col (id, ts) WITH (order_array_columns = 'ts');
+CREATE INDEX mw_ix ON mw USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'whole');
+CREATE INDEX mc_ix ON mc USING sift_col (id, ts) WITH (order_array_columns = 'ts', order_layout = 'compact');
 VACUUM ANALYZE mx;
 VACUUM ANALYZE mw;
 VACUUM ANALYZE mc;

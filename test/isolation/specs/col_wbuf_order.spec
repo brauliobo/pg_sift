@@ -8,7 +8,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 	CREATE TABLE iso_wo (id int PRIMARY KEY, k int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_wo SELECT g, (g * 7) % 41, 'x' FROM generate_series(1, 200) g;
-	CREATE INDEX iso_wo_idx ON iso_wo USING sift_col (id, k) WITH (order_columns = 'k', order_array_columns = 'k');
+	CREATE INDEX iso_wo_idx ON iso_wo USING sift_col (id, k) WITH (order_array_columns = 'k');
 }
 
 setup

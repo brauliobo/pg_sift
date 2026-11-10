@@ -9,7 +9,7 @@ SELECT setseed(0.42);
 -- k is a permutation of 1..200000 in no order of the heap; d repeats each value 4 times; n has NULLs
 CREATE TABLE t AS SELECT i AS id, 1 + (random() * 40)::int AS g, k, k / 4 AS d, CASE WHEN i % 7 = 0 THEN NULL ELSE k END AS n
 FROM (SELECT i, row_number() OVER (ORDER BY random())::int AS k FROM generate_series(1, 200000) i) perm ORDER BY i;
-CREATE INDEX t_ix ON t USING sift_col (id, g, k, d, n) WITH (order_columns = 'k, d, n', order_array_columns = 'k, d, n', point_tid_columns = 'off', key_cut = 'off');
+CREATE INDEX t_ix ON t USING sift_col (id, g, k, d, n) WITH (order_array_columns = 'k, d, n', point_tid_columns = 'off', key_cut = 'off');
 VACUUM ANALYZE t;
 CREATE TABLE p AS SELECT * FROM t;
 ANALYZE p;

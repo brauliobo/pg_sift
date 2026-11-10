@@ -945,10 +945,10 @@ class SiftFacts(unittest.TestCase):
     def test_the_facts_survive_a_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, 'r.tsv')
-            schema.write(p, [{k: v for k, v in r.items() if not k.startswith('_')} for r in build_rows(segments_declared=3, index_options='order_columns=created_at;key_cut=off')])
+            schema.write(p, [{k: v for k, v in r.items() if not k.startswith('_')} for r in build_rows(segments_declared=3, index_options='order_array_columns=created_at;key_cut=off')])
             back = schema.read(p)
         self.assertEqual({(r['segments'], r['immutable_segments'], r['buffer_segments'], r['segments_declared'], r['instr_leader_m'], r['instr_workers_m'], r['index_options']) for r in back},
-                         {(3, 3, 0, 3, 4.0, 6.0, 'order_columns=created_at;key_cut=off')})
+                         {(3, 3, 0, 3, 4.0, 6.0, 'order_array_columns=created_at;key_cut=off')})
         self.assertEqual(problems(back), [])
 
 

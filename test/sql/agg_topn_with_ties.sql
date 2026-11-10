@@ -10,7 +10,7 @@ SET sift.agg_force = on;
 -- 25,000 rows over 500 values of k (50 each); the 5,000 rows added after the statistics are 4,000 of one hot value and 1,000 NULL
 CREATE TABLE wt (id int, k int, g int, t text) WITH (autovacuum_enabled = false);
 INSERT INTO wt SELECT i, i % 500, i % 3, 'v' || lpad((i % 500)::text, 4, '0') FROM generate_series(1, 25000) i;
-CREATE INDEX wt_col ON wt USING sift_col (id, k, g, t) WITH (order_columns = 'k', order_array_columns = 'k');
+CREATE INDEX wt_col ON wt USING sift_col (id, k, g, t) WITH (order_array_columns = 'k');
 VACUUM ANALYZE wt;
 INSERT INTO wt SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE 9999 END, i % 3, 'v' || CASE WHEN i % 5 = 0 THEN 'nul' ELSE '9999' END FROM generate_series(25001, 30000) i;
 SELECT sift.col_promote('wt_col');

@@ -549,26 +549,6 @@ d_hot_updates(Derive *d)
 		add(d, "hot-update-columns", cols.data, NULL);
 }
 
-/* An option that 4.3 deprecated is accepted and ignored by the build, which decides by itself; each row says it once and the release that removes the option */
-static void
-d_deprecated(Derive *d)
-{
-	static const struct
-	{
-		const char *id;
-		bool		(*set) (Relation index);
-		const char *value;
-	} opts[] = {
-		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 4.4"},
-	};
-
-	if (sift_col_legacy_options)
-		return;
-	for (int i = 0; i < lengthof(opts); i++)
-		if (opts[i].set(d->index))
-			add(d, opts[i].id, pstrdup(opts[i].value), NULL);
-}
-
 static void
 d_caps(Derive *d)
 {
@@ -607,7 +587,6 @@ static const struct
 	{"wildcard-keys-overflow", d_key_overflow},
 	{"foreign-key-not-indexed", d_foreign_keys},
 	{"hot-update-columns", d_hot_updates},
-	{"order-columns-deprecated", d_deprecated},
 	{"cube-dim-no-histogram", d_caps},
 	{"keys-bloom-filter", d_caps},
 	{"keys-no-summary", d_caps},

@@ -46,7 +46,7 @@ CREATE FUNCTION kk_check(layout text) RETURNS TABLE (layout text, cases int, dif
 $$;
 
 -- the index is cut by the key, with the array of d
-CREATE INDEX kk_i ON kk USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX kk_i ON kk USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_array_columns = 'd');
 SELECT sift.col_verify('kk_i');
 SELECT * FROM kk_check('one segment');
 

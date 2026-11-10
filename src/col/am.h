@@ -187,8 +187,7 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
-extern bool sift_col_options_order_columns_option(Relation index);
-extern bool sift_col_options_order_columns_set(Relation index);
+extern bool sift_col_options_key_order_user(Relation index);
 extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 /* The NOTICE that a key is worth a key_cut the build did not write, from the sample of the build (autocut.c) or from the units it wrote (cluster.c); detail: why, and what it costs */
@@ -249,7 +248,6 @@ extern void sift_col_validate_rollup_leaves(const char *value);
 extern void sift_col_validate_rollup_columns(const char *value);
 extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_key_columns(const char *value);
-extern void sift_col_validate_order_columns(const char *value);
 extern void sift_col_validate_order_array_columns(const char *value);
 extern void sift_col_validate_order_layout(const char *value);
 extern void sift_col_validate_order_array_group(const char *value);
@@ -412,7 +410,6 @@ extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern PGDLLIMPORT int sift_col_unit_floor;
 extern PGDLLIMPORT int sift_col_test_unit_rows;	/* sift.test_col_unit_rows */
-extern PGDLLIMPORT bool sift_col_legacy_options;	/* sift.test_col_legacy_options: the options 4.3 deprecated are honored (removed in 4.4) */
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);

@@ -1,9 +1,8 @@
 -- key_order = 'group, key' with no key_cut cuts the units by the group (the key as second key where the sample says it costs little): the order arrays answer the lists of one
 -- group, the cut the counts, the ranges and the group-bys of the keys, which the arrays alone read like an index with no layout. The build writes key_cut = 'auto: group, ...' and
--- sift.key_cut_decision says the same; a key_cut of the user's, 'off' too, wins; so does an order_columns of the user's, which the cut is not made with; a group stored together
+-- sift.key_cut_decision says the same; a key_cut of the user's, 'off' too, wins; a group stored together
 -- is not cut. The zones of the other leaves (an arrival timestamp) are not weighed against the layout the user named. The answers are the table's.
 CREATE EXTENSION pg_sift;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -34,7 +33,6 @@ END $$;
 SELECT 'key_order group, key' AS options, k.* FROM kbuilt('ko', 'WITH (key_order = ''group_id, d'')') k
 UNION ALL SELECT 'key_order, key_cut = off', k.* FROM kbuilt('ko', 'WITH (key_order = ''group_id, d'', key_cut = ''off'')') k
 UNION ALL SELECT 'key_order, key_cut = d', k.* FROM kbuilt('ko', 'WITH (key_order = ''group_id, d'', key_cut = ''d'')') k
-UNION ALL SELECT 'key_order, order_columns = d', k.* FROM kbuilt('ko', 'WITH (key_order = ''group_id, d'', order_columns = ''d'')') k
 UNION ALL SELECT 'key_order, stored by group', k.* FROM kbuilt('kt', 'WITH (key_order = ''group_id, d'')') k
 UNION ALL SELECT 'key_order, group follows heap', k.* FROM kbuilt('ko', 'WITH (key_order = ''seq, d'')') k
 UNION ALL SELECT 'no key_order', k.* FROM kbuilt('ko', '') k;
@@ -43,11 +41,10 @@ UNION ALL SELECT 'no key_order', k.* FROM kbuilt('ko', '') k;
  key_order group, key          | group_id | group_id
  key_order, key_cut = off      | off      | group_id
  key_order, key_cut = d        | d        | group_id
- key_order, order_columns = d  | none     | none
  key_order, stored by group    | none     | none
  key_order, group follows heap | none     | none
  no key_order                  | none     | none
-(7 rows)
+(6 rows)
 
 -- the lookups: the group cut reads the units of the group, the list is the table's
 CREATE INDEX ko_i ON ko USING sift_col (id, group_id, d, seq, v) WITH (key_order = 'group_id, d');

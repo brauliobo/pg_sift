@@ -7,7 +7,7 @@ INSERT INTO lh_dim SELECT g FROM generate_series(1, 100) g;
 CREATE TABLE lh_ev (id bigint NOT NULL, dim_a_id int NOT NULL, created_at timestamp NOT NULL, kind text NOT NULL) PARTITION BY HASH (dim_a_id);
 SELECT format('CREATE TABLE lh_ev_%s PARTITION OF lh_ev FOR VALUES WITH (MODULUS 16, REMAINDER %s)', r, r) FROM generate_series(0, 15) r \gexec
 INSERT INTO lh_ev SELECT i, 1 + (hashint8extended(i, 1) & 2147483647) % 100, timestamp '2025-01-01' + (hashint8extended(i, 2) & 2147483647) % 31536000 * interval '1 second', (ARRAY['web','app','phone','mail'])[1 + (hashint8extended(i, 5) & 2147483647) % 4] FROM generate_series(1, {rows}) i;
-CREATE INDEX lh_col ON lh_ev USING sift_col (id, dim_a_id, created_at, kind) WITH (order_columns = created_at, order_array_columns = created_at, order_array_group = dim_a_id);
+CREATE INDEX lh_col ON lh_ev USING sift_col (id, dim_a_id, created_at, kind) WITH (order_array_columns = created_at, order_array_group = dim_a_id);
 VACUUM (FREEZE, ANALYZE) lh_dim, lh_ev;
 DROP SCHEMA IF EXISTS c_lateral_top1_hash_partitions__btree CASCADE;
 CREATE SCHEMA c_lateral_top1_hash_partitions__btree;

@@ -14,8 +14,8 @@ INSERT INTO gw SELECT i, 1 + abs(hashint4(i)) % 300, CASE WHEN i % 29 = 0 THEN N
 FROM generate_series(1, 40000) i;
 CREATE TABLE gn (LIKE gw);
 INSERT INTO gn SELECT id, CASE WHEN id % 41 = 0 THEN NULL ELSE g END, created, score FROM gw;
-CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g');
-CREATE INDEX gn_i ON gn USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'g');
+CREATE INDEX gw_i ON gw USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g');
+CREATE INDEX gn_i ON gn USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gw;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gn;
 CREATE TABLE gp AS SELECT * FROM gw;
@@ -63,25 +63,24 @@ SELECT result, count(*) FROM gw_flt() GROUP BY 1 ORDER BY 1;
  units  |    72
 (1 row)
 
--- the same with the sorted runs of g (order_columns): the scan that does not walk reads them, on and off, under the mask of the condition
+-- the same with the walk off: the scan that does not walk reads the units, under the mask of the condition
 CREATE TABLE gr (LIKE gw);
 INSERT INTO gr SELECT * FROM gw;
-CREATE INDEX gr_i ON gr USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_columns = 'g, created', order_array_columns = 'created', order_array_group = 'g');
+CREATE INDEX gr_i ON gr USING sift_col (id, g, created, score) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gr;
-CREATE FUNCTION gr_chk(q text, runs bool) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION gr_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
-	EXECUTE format('SET LOCAL sift.topn_runs = %s', runs);
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gr') || ') t' INTO ra;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gp') || ') t' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' runs ' || runs ELSE 'same' END;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q ELSE 'same' END;
 END $$;
-SELECT gr_chk(format('SELECT id, g FROM @ WHERE %s ORDER BY %s LIMIT %s OFFSET %s', w, o, l, f), r) AS result, count(*)
-FROM unnest(ARRAY['score < 100', 'score < 0', 'created > timestamp ''2024-02-01''']) w, unnest(ARRAY['g, id', 'g DESC, id', 'g, created, id']) o, unnest(ARRAY[1, 100]) l, unnest(ARRAY[0, 300]) f, unnest(ARRAY[true, false]) r GROUP BY 1;
+SELECT gr_chk(format('SELECT id, g FROM @ WHERE %s ORDER BY %s LIMIT %s OFFSET %s', w, o, l, f)) AS result, count(*)
+FROM unnest(ARRAY['score < 100', 'score < 0', 'created > timestamp ''2024-02-01''']) w, unnest(ARRAY['g, id', 'g DESC, id', 'g, created, id']) o, unnest(ARRAY[1, 100]) l, unnest(ARRAY[0, 300]) f GROUP BY 1;
  result | count 
 --------+-------
- same   |    72
+ same   |    36
 (1 row)
 
 -- rows with no g are not in the second order: the walk is not used, the answers are the table's
@@ -158,5 +157,5 @@ SELECT result, count(*) FROM gw_flt() GROUP BY 1 ORDER BY 1;
 (1 row)
 
 DROP TABLE gw, gn, gp, gq, gr;
-DROP FUNCTION gw_chk(text), gw_all(), gn_chk(text), gw_flt(), gr_chk(text, bool);
+DROP FUNCTION gw_chk(text), gw_all(), gn_chk(text), gw_flt(), gr_chk(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

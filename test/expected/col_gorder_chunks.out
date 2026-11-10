@@ -12,7 +12,7 @@ CREATE TABLE gc (id int, k int, ts timestamp, pad text DEFAULT repeat('x', 100))
 ALTER TABLE gc ALTER COLUMN pad SET STORAGE PLAIN;
 SET sift.test_col_gorder_rows = 1024;
 INSERT INTO gc (id, k, ts) SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i * 7919) % 50021 END, timestamp '2024-01-01' + ((i * 104729::bigint) % 8000000) * interval '1 second' FROM generate_series(1, 20000) i;
-CREATE INDEX gc_i ON gc USING sift_col (id, k, ts) WITH (write_buffer_limit = 256, order_columns = 'k, ts', order_array_columns = 'k, ts');
+CREATE INDEX gc_i ON gc USING sift_col (id, k, ts) WITH (write_buffer_limit = 256, order_array_columns = 'k, ts');
 RESET sift.test_col_gorder_rows;
 INSERT INTO gc (id, k, ts) SELECT 20000 + i, CASE WHEN i % 89 = 0 THEN NULL ELSE (i * 6841) % 50021 END, timestamp '2024-01-01' + ((i * 7919::bigint) % 8000000) * interval '1 second' FROM generate_series(1, 20000) i;
 SELECT sift.col_promote('gc_i'::regclass) >= 0 AS promoted;

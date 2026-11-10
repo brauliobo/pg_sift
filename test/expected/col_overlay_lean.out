@@ -3,7 +3,6 @@
 -- A merge that makes a large segment of it writes the full set again, and the answers are the same all along.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.col_auto_merge = off;
@@ -68,7 +67,7 @@ SELECT ol_answers() = :'native_after_delete' AS same_answers_after_delete;
 -- an index with an order array keeps it in the overlay: the top-N reads the order
 CREATE TABLE og (id int, ts timestamp);
 INSERT INTO og SELECT i, TIMESTAMP '2026-01-01' + (i * 7919 % 10007) * INTERVAL '1 minute' FROM generate_series(1, 20000) i;
-CREATE INDEX og_ix ON og USING sift_col (id, ts) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX og_ix ON og USING sift_col (id, ts) WITH (key_cut = 'off', order_array_columns = 'ts');
 VACUUM (FREEZE, ANALYZE) og;
 INSERT INTO og SELECT 20000 + i, TIMESTAMP '2026-02-01' + i * INTERVAL '1 minute' FROM generate_series(1, 300) i;
 SELECT sift.col_promote('og_ix') >= 0 AS promoted;
@@ -87,7 +86,7 @@ SET enable_sort = off;
 SELECT sift_helpers.plan_reads_global_order('SELECT id FROM og ORDER BY ts DESC LIMIT 20') AS top_n_reads_the_order;
  top_n_reads_the_order 
 -----------------------
- f
+ t
 (1 row)
 
 RESET enable_sort;

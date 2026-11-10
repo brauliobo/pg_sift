@@ -2,7 +2,6 @@
 -- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -17,7 +16,7 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 	   CASE WHEN i % 47 = 0 THEN NULL ELSE 'k' || substr(md5((i % 2500)::text), 1, 1 + i % 9) END
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
-	WITH (order_columns = 'id, a, b, c, t', order_array_columns = 'id, a, b, c, t, s');
+	WITH (order_array_columns = 'id, a, b, c, t, s');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
 
@@ -93,7 +92,7 @@ RESET sift.test_limits;
 
 -- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
-CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
+CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_array_columns = 't');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
 

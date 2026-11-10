@@ -11,7 +11,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE gt (id int PRIMARY KEY, u bigint, pad text DEFAULT repeat('x', 60)) WITH (autovacuum_enabled = off);
 ALTER TABLE gt ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gt (id, u) SELECT i, (i * 104729::bigint) % 1000003 FROM generate_series(1, 100000) i;
-CREATE INDEX gt_i ON gt USING sift_col (id, u) WITH (order_columns = 'u', order_array_columns = 'u', key_cut = 'off');
+CREATE INDEX gt_i ON gt USING sift_col (id, u) WITH (order_array_columns = 'u', key_cut = 'off');
 VACUUM (FREEZE, ANALYZE) gt;
 -- 30,000 rows get another key and the old versions stay: tombstones in the log, no VACUUM
 UPDATE gt SET u = (u + 5000) % 1000003 WHERE id % 10 < 3;

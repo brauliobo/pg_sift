@@ -88,7 +88,7 @@ CREATE FUNCTION fz_state(label text) RETURNS TABLE (state text, covered bool, in
 	SELECT label, ran > 20, used > 10, differ FROM fz_run(60)
 $$;
 
-CALL fz_layout('key_cut = ''ent'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+CALL fz_layout('key_cut = ''ent'', order_array_columns = ''d, ts''');
 SELECT * FROM fz_state('key cut: built');
 INSERT INTO kc SELECT 100000 + i, 1 + (random() * 39)::int, date '2024-01-01' + (random() * 1000)::int, timestamp '2024-01-01' + random() * 1000 * interval '1 day',
 	CASE WHEN random() < 0.05 THEN now() END, repeat('x', 100) FROM generate_series(1, 2000) i;
@@ -104,7 +104,7 @@ SELECT * FROM fz_state('key cut: merged');
 REINDEX INDEX kc_i;
 SELECT * FROM fz_state('key cut: reindexed');
 
-CALL fz_layout('key_cut = ''off'', order_columns = ''d, ts'', order_array_columns = ''d, ts''');
+CALL fz_layout('key_cut = ''off'', order_array_columns = ''d, ts''');
 SELECT * FROM fz_state('by superblock: built');
 SELECT sift.col_promote('kc_i') >= 0 AS promoted;
 SELECT * FROM fz_state('by superblock: promoted');

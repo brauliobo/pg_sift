@@ -8,7 +8,7 @@ CREATE TABLE lt_ev (id bigint PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int 
 INSERT INTO lt_ev SELECT i, t, t + 40 * ((hashint8extended(i, 2) & 2147483647) % ({rows} / 4000)), timestamp '2023-01-01' + (i::float8 / {rows}) * interval '730 days',
   (ARRAY['web','app','phone','mail','partner','kiosk','chat','other'])[1 + (hashint8extended(i, 5) & 2147483647) % 8]
 FROM (SELECT i, 1 + (hashint8extended(i, 1) & 2147483647) % 40 AS t FROM generate_series(1, {rows}) i) x;
-CREATE INDEX lt_col ON lt_ev USING sift_col (id, tenant_id, dim_a_id, created_at, kind) WITH (key_cut = tenant_id, order_columns = created_at, order_array_columns = created_at, order_array_group = dim_a_id);
+CREATE INDEX lt_col ON lt_ev USING sift_col (id, tenant_id, dim_a_id, created_at, kind) WITH (key_cut = tenant_id, order_array_columns = created_at, order_array_group = dim_a_id);
 VACUUM (FREEZE, ANALYZE) lt_dim, lt_ev;
 DROP SCHEMA IF EXISTS c_lateral_top1_kept_source__btree CASCADE;
 CREATE SCHEMA c_lateral_top1_kept_source__btree;

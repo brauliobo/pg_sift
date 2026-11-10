@@ -3,7 +3,6 @@
 -- The rows are the plan's without the extension after deleted, updated (HOT and not), rolled back and vacuumed rows, and for a cursor opened before the update.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -15,7 +14,7 @@ INSERT INTO od (id, n, s) SELECT i, (i * 7919) % 1000, 'k' || lpad(((i::bigint *
 -- pages with gaps (the rows of a page are then a bitmap of its offsets in the unit)
 DELETE FROM od WHERE id % 5 = 2;
 VACUUM od;
-CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_columns = 'id, n', order_array_columns = 'id, n, s', track_changes = 'off');
+CREATE INDEX od_i ON od USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops) WITH (order_array_columns = 'id, n, s', track_changes = 'off');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) od;
 SET sift.test_topn_heads = off;
 

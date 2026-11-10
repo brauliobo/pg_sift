@@ -15,7 +15,7 @@ INSERT INTO fo SELECT i, i % 50, CASE WHEN i % 31 = 0 THEN NULL ELSE i * 7919 % 
 	DATE '2025-01-01' + (i * 7919 % 701), 'l' || lpad((i::bigint * 104729 % 20011)::text, 6, '0'), i % 100
 FROM generate_series(1, 20000) i;
 CREATE INDEX fo_ix ON fo USING sift_col (id, ent_id, k, ts, dt, sl, amount)
-	WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: k, ts, dt, sl', order_array_group = 'auto: ent_id');
+	WITH (key_cut = 'off', order_array_columns = 'auto: k, ts, dt, sl', order_array_group = 'auto: ent_id');
 VACUUM (FREEZE, ANALYZE) fo;
 CREATE TABLE fo_entries AS SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('fo_ix', leaf)) AS n FROM generate_series(2, 5) leaf;
 CREATE FUNCTION fo_same(q text) RETURNS boolean LANGUAGE plpgsql AS $$

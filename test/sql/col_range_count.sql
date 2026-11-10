@@ -13,7 +13,7 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 37) % 3001 - 1500 END, CASE W
 	   date '2020-01-01' + (i * 13) % 2000, timestamp '2020-01-01' + ((i * 7919) % 34560000) * interval '1 second', timestamptz '2020-01-01 00:00:00+00' + ((i * 104729::bigint) % 34560000) * interval '1 second'
 FROM generate_series(1, 60000) i;
 CREATE INDEX rc_i ON rc USING sift_col (a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, e sift.col_timestamp_ops, f sift.col_timestamptz_ops, id sift.col_int4_ops)
-	WITH (write_buffer_limit = 256, order_columns = 'a, b, c, d, e, f', order_array_columns = 'a, b, c, d, e, f');
+	WITH (write_buffer_limit = 256, order_array_columns = 'a, b, c, d, e, f');
 VACUUM (ANALYZE) rc;
 
 -- the rows a statement read: 0 when the segments counted

@@ -7,7 +7,7 @@ CREATE TABLE dim_a (id int PRIMARY KEY, tier smallint NOT NULL);
 INSERT INTO dim_a SELECT g, g % 10 FROM generate_series(1, greatest({rows} / 100, 1)) g;
 CREATE TABLE pings (id bigint PRIMARY KEY, entity int NOT NULL, ts timestamptz NOT NULL, status smallint NOT NULL);
 INSERT INTO pings SELECT g, 1 + (hashint8extended(g, 11) & 2147483647) % greatest({rows} / 100, 1), timestamptz '2024-01-01' + interval '1 second' * (g % 100003) * 600 + interval '1 microsecond' * g, (g % 400)::smallint FROM generate_series(1, {rows}) g;
-CREATE INDEX pings_col ON pings USING sift_col (id, entity, ts, status) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'entity');
+CREATE INDEX pings_col ON pings USING sift_col (id, entity, ts, status) WITH (order_array_columns = 'ts', order_array_group = 'entity');
 VACUUM (FREEZE, ANALYZE) dim_a, pings;
 DROP SCHEMA IF EXISTS c_subselect_max_per_entity__btree CASCADE;
 CREATE SCHEMA c_subselect_max_per_entity__btree;

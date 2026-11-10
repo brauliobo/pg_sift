@@ -18,7 +18,6 @@
 #include "col/scope.h"
 #include "core/ops.h"
 
-bool		sift_col_legacy_options = false;
 int			sift_col_test_unit_rows = 0;
 
 /*
@@ -141,7 +140,6 @@ SYNTAX_VALIDATOR(rollup_leaves, sift_cpagg_rollup_syntax(value))
 SYNTAX_VALIDATOR(rollup_columns, sift_cpagg_rows_syntax(value))
 SYNTAX_VALIDATOR(calendar_columns, sift_cpagg_calendar_syntax(value))
 SYNTAX_VALIDATOR(return_columns, am_return_walk(value, NULL, NULL))
-SYNTAX_VALIDATOR(order_columns, sift_crun_syntax(value))
 SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
 SYNTAX_VALIDATOR(order_layout, sift_cgord_layout_parse(value, NULL, NULL, NULL))
 SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
@@ -367,9 +365,6 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_unit_rows",
 							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages), to get several units out of a small table.",
 							NULL, &sift_col_test_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_col_legacy_options",
-							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 5.0.",
-							 NULL, &sift_col_legacy_options, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -562,8 +557,8 @@ sift_col_init(void)
 					  "Removed in 4.4 and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
-						 "Deprecated, ignored and removed in 5.0: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
-						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+						 "Removed in 4.4 and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (the order arrays of order_array_columns answer what its sorted runs did)",
+						 "", NULL, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
@@ -725,7 +720,7 @@ am_col_amoptions(Datum reloptions, bool validate)
 				sift_relopt_alias_notice("rollup", "rollup_leaves");
 			else if (strcmp(def->defname, "rollup_dims") == 0)
 				sift_relopt_alias_notice("rollup_dims", "rollup_columns");
-			else if (strcmp(def->defname, "key_cut_rows") == 0 || strcmp(def->defname, "point_columns") == 0)
+			else if (strcmp(def->defname, "key_cut_rows") == 0 || strcmp(def->defname, "point_columns") == 0 || strcmp(def->defname, "order_columns") == 0)
 				sift_relopt_removed_notice(def->defname);
 		}
 
@@ -834,31 +829,22 @@ COL_OPT_STR(sift_col_options_connect, connect, "")
 
 COL_OPT_STR(sift_col_options_scope, scope, "")
 
-/* the option order_columns is set: a deprecated one, honored only under sift.test_col_legacy_options */
+/* whether the user wrote a key_order that names an order: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool
-sift_col_options_order_columns_option(Relation index)
+sift_col_options_key_order_user(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return o->order_columns && *((const char *) o + o->order_columns);
+	return o->ko_last && !o->ko_auto;
 }
 
-/* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
-bool
-sift_col_options_order_columns_set(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return (sift_col_legacy_options && sift_col_options_order_columns_option(index)) || (o->ko_last && !o->ko_auto);
-}
-
-/* the group of a key_order of the user's, 'group, key', with no order_columns of their own (NULL for any other): the column a build with no key_cut cuts the units by */
+/* the group of a key_order of the user's, 'group, key' (NULL for any other): the column a build with no key_cut cuts the units by */
 const char *
 sift_col_options_key_order_group(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	if (o->ko_group == 0 || o->ko_auto || (sift_col_legacy_options && sift_col_options_order_columns_option(index)))
+	if (o->ko_group == 0 || o->ko_auto)
 		return NULL;
 	return (const char *) o + o->ko_group;
 }

@@ -35,7 +35,7 @@ declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [install
 	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [tap-shell-extension_lifecycle]=360 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140
-	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [tap-shell-col_run_heads_replica]=480 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350)
+	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350)
 JOB_MB=70
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }

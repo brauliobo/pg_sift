@@ -4,13 +4,13 @@
 --@ setup
 DROP TABLE IF EXISTS olx;
 CREATE TABLE olx AS SELECT g::int AS id, timestamp '2024-01-01' + (hashint8extended(g, 7) & 35184372088831) * interval '1 microsecond' AS created_at FROM generate_series(1, {rows}) g ORDER BY md5((g * 31 + 7)::text);
-CREATE INDEX olx_col ON olx USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at');
+CREATE INDEX olx_col ON olx USING sift_col (id, created_at) WITH (order_array_columns = 'created_at');
 CREATE SCHEMA c_order_layout_topn__whole;
 CREATE TABLE c_order_layout_topn__whole.olx AS TABLE olx;
-CREATE INDEX olx_col ON c_order_layout_topn__whole.olx USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at', order_layout = 'whole');
+CREATE INDEX olx_col ON c_order_layout_topn__whole.olx USING sift_col (id, created_at) WITH (order_array_columns = 'created_at', order_layout = 'whole');
 CREATE SCHEMA c_order_layout_topn__compact;
 CREATE TABLE c_order_layout_topn__compact.olx AS TABLE olx;
-CREATE INDEX olx_col ON c_order_layout_topn__compact.olx USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at', order_layout = 'compact');
+CREATE INDEX olx_col ON c_order_layout_topn__compact.olx USING sift_col (id, created_at) WITH (order_array_columns = 'created_at', order_layout = 'compact');
 CREATE SCHEMA c_order_layout_topn__btree;
 CREATE TABLE c_order_layout_topn__btree.olx AS TABLE olx;
 CREATE INDEX olx_bt ON c_order_layout_topn__btree.olx (created_at);

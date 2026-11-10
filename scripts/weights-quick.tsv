@@ -61,7 +61,6 @@ installcheck-tbl_key_table	28	24
 installcheck-tbl_writepath	26	23
 tap-shell-col_heapfree_replication	26	26
 tap-shell-tbl_load_stream	26	25
-installcheck-col_sorted_run	21	25
 installcheck-facets	11	25
 tap-shell-col_heapfree_xmin	25	3
 installcheck-agg_probe_rewrite	24	17
@@ -70,7 +69,6 @@ installcheck-agg_par_cost	23	15
 tap-shell-col_tomb_horizon	21	23
 installcheck-agg_calendar_step	22	21
 installcheck-batch10	22	16
-installcheck-col_lazy_filter	19	22
 installcheck-col_text_prefilter	21	22
 tap-005_parallel_crash	9	22
 tap-shell-col_crash_matrix	16	22

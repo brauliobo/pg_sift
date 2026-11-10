@@ -3,7 +3,7 @@
 -- ordered: yes
 --@ setup
 CREATE TABLE ova AS SELECT id, timestamp '2024-01-01' + (hashint8extended(id, 7) & 35184372088831) * interval '1 microsecond' AS created_at FROM orders ORDER BY md5((id * 31 + 7)::text);
-CREATE INDEX ova_col ON ova USING sift_col (id, created_at) WITH (order_columns = 'created_at', order_array_columns = 'created_at');
+CREATE INDEX ova_col ON ova USING sift_col (id, created_at) WITH (order_array_columns = 'created_at');
 VACUUM (FREEZE, ANALYZE) ova;
 DELETE FROM ova WHERE id % 33 = 1;
 UPDATE ova SET created_at = created_at + interval '1 second' WHERE id % 33 = 2;

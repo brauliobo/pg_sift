@@ -5,7 +5,6 @@
 -- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -23,7 +22,7 @@ SELECT i,
 	   CASE WHEN i % 47 = 0 THEN NULL ELSE TIMESTAMPTZ '2000-01-01 00:00:00+00' + ((i * 104729) % 900000) * interval '1 second' END
 FROM generate_series(1, 12000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
-	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', dead_rewrite_pct = 50);
+	z sift.col_timestamptz_ops) WITH (order_array_columns = 'id, a, b, c, d, t, z', dead_rewrite_pct = 50);
 ANALYZE gt;
 
 -- an answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key (rows of a tie may come in any order);
@@ -151,7 +150,7 @@ SELECT result, count(*) FROM gt_all(ARRAY[10, 200]) GROUP BY 1 ORDER BY 1;
 RESET sift.test_topn_gorder;
 
 -- a segment without the array (an index built without the option and then given it): the scan sorts its rows in memory and walks the arrays of the others
-CREATE INDEX gt_m ON gt USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b');
+CREATE INDEX gt_m ON gt USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops);
 DROP INDEX gt_i;
 ALTER INDEX gt_m SET (order_array_columns = 'id, b');
 INSERT INTO gt (id, b) SELECT 30000 + i, i FROM generate_series(1, 100) i;
@@ -163,7 +162,7 @@ SELECT gt_chk('b', 'ASC', 'LAST', 100) AS reindexed, gt_chk('id', 'DESC', 'LAST'
 RESET sift.test_topn_heads;
 -- a key_cut index (a unit for each range of the key, thousands of them): the array answers the small LIMITs the heads of the runs would read a unit for
 DROP INDEX gt_m;
-CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
+CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_array_columns = 't');
 SELECT gt_chk('t', 'DESC', 'LAST', 1) AS keycut_1, gt_chk('t', 'DESC', 'LAST', 10) AS keycut_10, gt_chk('t', 'ASC', 'FIRST', 32) AS keycut_32, gt_chk('t', 'DESC', 'LAST', 500) AS keycut_500;
 
 DROP TABLE gt CASCADE;

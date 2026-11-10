@@ -4,7 +4,6 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
-SET sift.test_col_legacy_options = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
 SET sift.test_limits = 'gord_seek_pct=0';
 SET max_parallel_maintenance_workers = 0;

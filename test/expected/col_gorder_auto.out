@@ -5,7 +5,6 @@
 -- The pad column has strings over 64 bytes: a text column of shorter strings is chosen too (col_gorder_text), and the array holds the strings again, so these tests keep it out.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
 SET sift.test_limits = 'gord_seek_pct=0';
@@ -62,7 +61,7 @@ CREATE INDEX ga_off ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_c
 NOTICE:  sift_col index "ga_off": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ga_off');
-CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_columns = 'g', order_array_columns = 'g');
+CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_columns = 'g');
 NOTICE:  sift_col index "ga_list": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id, r;
 order_array_columns = g
@@ -70,9 +69,9 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "ga_list" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ga_off', 'ga_list') ORDER BY 1;
- relname |                               reloptions                                
----------+-------------------------------------------------------------------------
- ga_list | {order_columns=g,order_array_columns=g,"point_tid_columns=auto: id, r"}
+ relname |                        reloptions                         
+---------+-----------------------------------------------------------
+ ga_list | {order_array_columns=g,"point_tid_columns=auto: id, r"}
  ga_off  | {order_array_columns=off,"point_tid_columns=auto: id, r"}
 (2 rows)
 

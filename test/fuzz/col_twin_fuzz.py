@@ -281,8 +281,8 @@ def run_seed(seed, n, steps):
 CREATE TABLE ct (id int PRIMARY KEY, k int, u bigint, ts timestamp, s text, g int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO ct SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE {keys[0]} END, (i * 104729::bigint) % 1000003, {ts},
 	lpad(to_hex((i * 40503::bigint) % 4096), 3, '0'), i % 50, repeat('x', 60) FROM generate_series(1, {n}) i;
-CREATE INDEX ct_i ON ct USING sift_col (id, k, u, ts, s, g) WITH (order_columns = 'ts, u, k', order_array_columns = 'ts, u, k, s'{kc}{trk});
-CREATE INDEX ct_g ON ct USING sift_col (id, g, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'g'{kc}{trk});
+CREATE INDEX ct_i ON ct USING sift_col (id, k, u, ts, s, g) WITH (order_array_columns = 'ts, u, k, s'{kc}{trk});
+CREATE INDEX ct_g ON ct USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g'{kc}{trk});
 CREATE INDEX ct_b1 ON ct (k, id); CREATE INDEX ct_b2 ON ct (u, id); CREATE INDEX ct_b3 ON ct (ts, id); CREATE INDEX ct_b4 ON ct (s, id); CREATE INDEX ct_b5 ON ct (g, ts, id);
 VACUUM (ANALYZE) ct;""")
         if ERR.search(out):

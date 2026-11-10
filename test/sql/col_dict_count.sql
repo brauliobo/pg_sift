@@ -3,7 +3,6 @@
 -- through a write buffer, promotion, merge, delete, VACUUM, update, REINDEX, a transaction in flight, strings stored inline and the option off.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
-SET sift.test_col_legacy_options = on;
 SET sift.agg_force = on;
 
 CREATE TABLE dc (id int, s text, n int) WITH (autovacuum_enabled = off);

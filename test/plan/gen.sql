@@ -57,7 +57,7 @@ CREATE TABLE pings (id int PRIMARY KEY, parent_id int NOT NULL, ts timestamp NOT
 INSERT INTO pings SELECT i, 1 + (i::bigint * 104729) % :np, timestamp '2024-01-01' + ((i::bigint * 7919) % 100003) * interval '5 minutes', 'st_' || lpad((i % 400)::text, 4, '0')
 	FROM generate_series(1, :n / 3) i;
 CREATE INDEX pings_parent ON pings (parent_id, ts);
-CREATE INDEX pings_col ON pings USING sift_col (id, parent_id, ts, status) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'parent_id');
+CREATE INDEX pings_col ON pings USING sift_col (id, parent_id, ts, status) WITH (order_array_columns = 'ts', order_array_group = 'parent_id');
 
 CREATE TABLE buckets (bucket date PRIMARY KEY, span text NOT NULL);
 INSERT INTO buckets SELECT d::date, CASE WHEN d < date '2025-01-01' THEN 'span_b' ELSE 'span_a' END FROM generate_series(date '2024-01-01', date '2025-12-01', interval '1 month') d;

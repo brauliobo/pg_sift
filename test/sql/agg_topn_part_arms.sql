@@ -15,12 +15,12 @@ CREATE TABLE ev_1 PARTITION OF ev FOR VALUES FROM ('2025-01-01') TO ('2025-02-01
 CREATE TABLE ev_2 PARTITION OF ev FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
 CREATE TABLE ev_3 PARTITION OF ev FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
 INSERT INTO ev SELECT i, 1 + i % 20, timestamp '2025-01-01' + (i * 7919 % 7776000) * interval '1 second', i % 50, repeat('x', 60) FROM generate_series(1, 20000) i;
-CREATE INDEX ev_c ON ev USING sift_col (id, tenant_id, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant_id');
+CREATE INDEX ev_c ON ev USING sift_col (id, tenant_id, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'tenant_id');
 CREATE TABLE evh (LIKE ev) PARTITION BY HASH (tenant_id);
 CREATE TABLE evh_0 PARTITION OF evh FOR VALUES WITH (MODULUS 2, REMAINDER 0);
 CREATE TABLE evh_1 PARTITION OF evh FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO evh SELECT * FROM ev;
-CREATE INDEX evh_c ON evh USING sift_col (id, tenant_id, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'tenant_id');
+CREATE INDEX evh_c ON evh USING sift_col (id, tenant_id, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'tenant_id');
 CREATE TABLE tn AS SELECT n AS id FROM generate_series(1, 20) n;
 VACUUM (FREEZE, ANALYZE) ev, evh, tn;
 

@@ -26,9 +26,9 @@ ANALYZE gq;
 -- the plain order of ts keeps every row (the build's own choice of the ends is off), the group is the build's: gp_off writes no positional chunk, gp_on does
 SET sift.test_col_gorder_choice = 2;
 SET sift.test_limits = 'gord_pos_pct=0';
-CREATE INDEX gp_off ON gp USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+CREATE INDEX gp_off ON gp USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
 SET sift.test_limits = 'gord_pos_pct=75';
-CREATE INDEX gq_on ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+CREATE INDEX gq_on ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
 RESET sift.test_limits;
 RESET sift.test_col_gorder_choice;
 SELECT sift.col_verify('gp_off'), sift.col_verify('gq_on');
@@ -60,9 +60,9 @@ ANALYZE gl;
 ANALYZE gm;
 SET sift.test_col_gorder_choice = 2;
 SET sift.test_limits = 'gord_pos_pct=0';
-CREATE INDEX gl_off ON gl USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+CREATE INDEX gl_off ON gl USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
 SET sift.test_limits = 'gord_pos_pct=75';
-CREATE INDEX gm_on ON gm USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+CREATE INDEX gm_on ON gm USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
 RESET sift.test_limits;
 RESET sift.test_col_gorder_choice;
 SELECT (SELECT sum(bytes) FROM sift.col_sections('gm_on') WHERE section = 'order_arrays') > 0.99 * (SELECT sum(bytes) FROM sift.col_sections('gl_off') WHERE section = 'order_arrays') AS sparse_keeps_keys;
@@ -214,7 +214,7 @@ SELECT sift.col_verify('gq_on');
 -- a plain order of the ends only has no positions to name: the group keeps its keys and addresses
 DROP INDEX gq_on;
 SET sift.test_col_gorder_choice = 1;
-CREATE INDEX gq_ends ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
+CREATE INDEX gq_ends ON gq USING sift_col (id, ent_id, ts, pad) WITH (key_cut = 'off', order_array_columns = 'ts', order_array_group = 'auto: ent_id');
 RESET sift.test_col_gorder_choice;
 SELECT sift.col_verify('gq_ends');
  col_verify 

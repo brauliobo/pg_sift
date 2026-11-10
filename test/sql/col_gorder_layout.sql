@@ -16,7 +16,7 @@ CREATE TABLE t (id int, ts timestamp, tz timestamptz, d date, s smallint, b bigi
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30000)::int - 15000 END, CASE WHEN i % 7 = 0 THEN NULL ELSE (random() * 1000000000000)::bigint - 500000000000 END, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint
 FROM generate_series(1, 6000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad, tie) WITH (order_columns = 'ts, tz, d, s, b, dup, tie', order_array_columns = 'ts, tz, d, s, b, dup, tie', write_buffer_limit = 64, order_layout = 'compact');
+CREATE INDEX t_ix ON t USING sift_col (id, ts, tz, d, s, b, dup, pad, tie) WITH (order_array_columns = 'ts, tz, d, s, b, dup, tie', write_buffer_limit = 64, order_layout = 'compact');
 INSERT INTO t SELECT 6000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', TIMESTAMPTZ '2026-01-01 00:00:00+00' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	(random() * 30000)::int - 15000, (random() * 1000000000000)::bigint - 500000000000, (random() * 20)::int, 0, (random() * 2000)::int * 1000000000::bigint FROM generate_series(1, 1500) i;
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;

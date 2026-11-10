@@ -5,7 +5,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tc (id int PRIMARY KEY, g int, a int, b bigint, c smallint, d date, t timestamp, z timestamptz, s text, v varchar(12));
@@ -118,31 +117,17 @@ RESET sift.test_limits;
 ANALYZE tv;
 SELECT tc_check($q$SELECT id, w FROM tv ORDER BY upper(w) DESC, id LIMIT 10$q$) AS overflow_key;
 
--- the sorted run of a column (order_columns) orders the column, not coalesce(column, constant), which moves the NULLs among the values: the scan reads the units
--- of the expression row by row, where the plain column goes through the run
+-- coalesce(column, constant) moves the NULLs among the values: the order of the column is not that of the expression
 CREATE TABLE tq (id int, kn int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE tq ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO tq SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END, repeat('x', 1500) FROM generate_series(1, 12000) g;
-CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (order_columns = 'kn', cube_minmax = false, superunit = 0);
+CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (cube_minmax = false, superunit = 0);
 ANALYZE tq;
-CREATE FUNCTION tq_runs(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE line text;
-BEGIN
-	PERFORM tc_mode(true, 0);
-	PERFORM set_config('seq_page_cost', '1000', true);
-	PERFORM set_config('random_page_cost', '1000', true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF line ~ 'units read by sorted run' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
-SELECT tq_runs($q$SELECT id, kn FROM tq ORDER BY kn, id LIMIT 30$q$) AS column_by_run,
-	   tq_runs($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$q$) AS coalesce_by_run;
 SELECT tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$q$) AS coalesce_asc,
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20) DESC, id LIMIT 30 OFFSET 100$q$) AS coalesce_desc,
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, -1), id LIMIT 30$q$) AS coalesce_below,
 	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 100), id DESC LIMIT 30$q$) AS coalesce_above;
 DROP TABLE tc, tc_q, tq, tv;
-DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer), tq_runs(text);
+DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift;

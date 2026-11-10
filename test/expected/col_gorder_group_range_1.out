@@ -16,15 +16,15 @@ FROM generate_series(1, 120000) i;
 CREATE TABLE gs (LIKE gr);
 ALTER TABLE gs ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gs SELECT * FROM gr;
-CREATE INDEX gr_i ON gr USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'ent_id');
-CREATE INDEX gs_i ON gs USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', order_columns = 'created', order_array_columns = 'created', order_array_group = 'auto: ent_id');
+CREATE INDEX gr_i ON gr USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'ent_id');
+CREATE INDEX gs_i ON gs USING sift_col (id, ent_id, created, score, pad) WITH (key_cut = 'off', order_array_columns = 'created', order_array_group = 'auto: ent_id');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gr;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) gs;
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('gr_i', 'gs_i') ORDER BY 1;
- relname |                                                         reloptions                                                          
----------+-----------------------------------------------------------------------------------------------------------------------------
- gr_i    | {key_cut=off,order_columns=created,order_array_columns=created,order_array_group=ent_id,"key_columns=auto: ent_id"}
- gs_i    | {key_cut=off,order_columns=created,order_array_columns=created,"order_array_group=auto: ent_id","key_columns=auto: ent_id"}
+ relname |                                              reloptions                                               
+---------+-------------------------------------------------------------------------------------------------------
+ gr_i    | {key_cut=off,order_array_columns=created,order_array_group=ent_id,"key_columns=auto: ent_id"}
+ gs_i    | {key_cut=off,order_array_columns=created,"order_array_group=auto: ent_id","key_columns=auto: ent_id"}
 (2 rows)
 
 -- the answer is the heap's; 'counted' says no unit was read (a count from the entries), 'narrowed' that units were read for the rows of the entries only

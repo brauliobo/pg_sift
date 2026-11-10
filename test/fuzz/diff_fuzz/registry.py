@@ -64,7 +64,7 @@ def variants(r, fam):
     if fam == 'dead':  # the dead rows scanned, and any share of them netted
         v.append(('nodelta', 'sift.enable_agg=on;sift.agg_dead_delta=0;max_parallel_workers_per_gather=0'))
         v.append(('alldead', 'sift.enable_agg=on;sift.agg_dead_delta=100;max_parallel_workers_per_gather=0'))
-    if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
+    if fam == 'window':  # the index scan alone, with the pushdown off: the access method answers a range too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
     if fam == 'numsum':  # every SIMD level of the host (a level it lacks runs the next lower one): the sums must be the same bytes
         v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]

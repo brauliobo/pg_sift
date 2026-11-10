@@ -2,7 +2,6 @@
 -- equality in a tenth of the bytes of the directory, for about the same instructions and fewer cold blocks. A key scattered over the heap keeps the directory (its array is as large and reads 2.5 times the instructions),
 -- and an index with no array of the build's ('off', a table under 100,000 rows) keeps the directory for the ordered key too. An array the user lists is the user's: whole, and the directory is not added to it.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -16,7 +15,7 @@ CREATE FUNCTION opt(regclass, text) RETURNS text LANGUAGE sql AS $$ SELECT coale
 
 CREATE INDEX pk_auto ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');
 -- the same index with the directory of the ordered key and no array of it: what the build chose before
-CREATE INDEX pk_dir ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', point_tid_columns = 'id', order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX pk_dir ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', point_tid_columns = 'id', order_array_columns = 'ts');
 SELECT i AS idx, opt(i::regclass, 'order_array_columns') AS order_arrays, opt(i::regclass, 'point_tid_columns') AS directory
 FROM unnest(ARRAY['pk_auto', 'pk_dir']) i ORDER BY 1;
 SELECT pg_relation_size('pk_auto') < pg_relation_size('pk_dir') AS smaller,
@@ -50,7 +49,7 @@ DROP INDEX pk_auto;
 -- a key scattered over the heap keeps the directory (and its own array, as before); no array of the build's, or a table under 100,000 rows: the ordered key keeps the directory; a listed array replaces it
 CREATE INDEX pk_uid ON pk USING sift_col (uid, ts) WITH (key_cut = 'off', key_order = 'off');
 CREATE INDEX pk_off ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_array_columns = 'off');
-CREATE INDEX pk_list ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_columns = 'id', order_array_columns = 'id');
+CREATE INDEX pk_list ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_array_columns = 'id');
 CREATE TABLE pks AS SELECT id, uid, ts, pad FROM pk WHERE id <= 90000;
 VACUUM (FREEZE, ANALYZE) pks;
 CREATE INDEX pks_i ON pks USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');

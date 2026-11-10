@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 
 CREATE TABLE t (id int, k int, pad text);
-CREATE INDEX t_ix ON t USING sift_col (id, k, pad) WITH (order_columns = 'k', order_array_columns = 'k', write_buffer_limit = 65536);
+CREATE INDEX t_ix ON t USING sift_col (id, k, pad) WITH (order_array_columns = 'k', write_buffer_limit = 65536);
 INSERT INTO t SELECT i, (i * 7919) % 40009, repeat(md5(i::text), 16) FROM generate_series(1, 40000) i;
 CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;

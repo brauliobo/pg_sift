@@ -96,7 +96,7 @@ def gen_dead(r, ctx):
     return dict(table='udd', form='agg', keys=ks, aggs=ag, where=[dead_pred(r, 'e') for _ in range(r.choice([0, 0, 1, 1, 2]))], having=[], ordered=True)
 
 
-# ---------- a range on a leaf with a sorted run (order_columns): a unit takes the rows of the range from the run, not from a test of every row ----------
+# ---------- a range on a leaf of units of more than 1,024 rows: a unit tests the rows of the range, whatever their number ----------
 WINDOW_COLS = ['ki', 'kd', 'kt', 'kn']
 
 

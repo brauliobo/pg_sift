@@ -2,7 +2,6 @@
 -- merged with the write buffer, the heap saying what a row holds when its page is not all-visible. The rows must be the heap's, in order, NULL rows last (first for DESC), after
 -- deletes, updates, rows in the write buffer, a transaction's own changes, and for an index whose segments have no order array (the rows are sorted by the scan).
 CREATE EXTENSION pg_sift;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET timezone = 'UTC';
 
@@ -10,7 +9,7 @@ CREATE TABLE os (id int, k int4, d date, pad text DEFAULT repeat('x', 200));
 ALTER TABLE os ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO os (id, k, d) SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 3001 - 1500 END, CASE WHEN i % 17 = 0 THEN NULL ELSE date '2020-01-01' + (i * 31) % 700 END
 FROM generate_series(1, 9000) i;
-CREATE INDEX os_i ON os USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_columns = 'k', order_array_columns = 'k', order_layout = 'whole');
+CREATE INDEX os_i ON os USING sift_col (k, id) WITH (count_columns = 'off', write_buffer_limit = 256, order_array_columns = 'k', order_layout = 'whole');
 CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ot (id, k) SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 104729::int8) % 5003 - 2500 END FROM generate_series(1, 6000) i;
@@ -20,7 +19,7 @@ INSERT INTO oa SELECT CASE WHEN i % 97 = 0 THEN NULL ELSE i % 700 END, i, i FROM
 CREATE INDEX oa_i ON oa USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, b sift.col_int8_ops);
 CREATE TABLE oc (id int, k int4);
 INSERT INTO oc SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE ((i::int8 * 2654435761) % 1000000007)::int END FROM generate_series(1, 36000) i;
-CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_columns = 'k', order_array_columns = 'k', order_layout = 'compact');
+CREATE INDEX oc_i ON oc USING sift_col (k, id) WITH (count_columns = 'off', order_array_columns = 'k', order_layout = 'compact');
 VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) oa;
 VACUUM (ANALYZE) os;

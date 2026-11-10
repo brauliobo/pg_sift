@@ -16,8 +16,6 @@
 #include "col/conn.h"
 #include "col/scope.h"
 
-COL_OPT_STR_KO(sift_col_options_order_columns, order_columns, ko_last)
-
 COL_OPT_STR_KO(sift_col_options_order_array_group, order_array_group, ko_group)
 
 /* NULL while it is not set (the build chooses); '' is the user's none */
@@ -162,10 +160,6 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			if (i == n)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option: column \"%s\" is not a column of the index", c)));
 		}
-		/* the sorted runs of order_columns are deprecated: the order arrays answer what they did */
-		if (sift_col_legacy_options &&
-			(err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
 										"not an integer, date, timestamp, numeric or text column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
@@ -218,12 +212,6 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			for (int i = 0; i < n; i++)
 				if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
 					r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
-		for (int i = 0; i < n; i++)
-			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
-				;
-			else if (sift_col_legacy_options && r->pagg.gorder[i] && !r->pagg.run[i] && !sift_cgord_leaf_text(&r->schema->cols[i]))
-				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
-								errhint("The global order extends the sorted run of a column: add it to order_columns (deprecated).")));
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
 		for (int i = 0; i < n; i++)

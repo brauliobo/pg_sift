@@ -3,7 +3,7 @@
 -- ordered: yes
 --@ setup
 CREATE TABLE oc AS SELECT id, ((hashint8extended(id, 3) & 2147483647) % {rows})::int AS k, left(md5(id::text), 10) AS t, (date '2024-01-01' + (hashint8extended(id, 9) & 1023)::int % 730) AS d, NULL::timestamptz AS deleted_at FROM orders ORDER BY md5((id * 31 + 7)::text);
-CREATE INDEX oc_col ON oc USING sift_col (id, k, t, d, deleted_at) WITH (order_columns = 'k, d', order_array_columns = 'k, t, d');
+CREATE INDEX oc_col ON oc USING sift_col (id, k, t, d, deleted_at) WITH (order_array_columns = 'k, t, d');
 VACUUM (FREEZE, ANALYZE) oc;
 UPDATE oc SET k = k + 1 WHERE id % 14 = 1;
 UPDATE oc SET deleted_at = now() WHERE id % 50 = 5;

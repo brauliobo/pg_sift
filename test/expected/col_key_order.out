@@ -1,4 +1,4 @@
--- key_order stands for key_cut, order_columns and order_array_columns on one column (not point_tid_columns: its directory makes the index 71 to 95% larger), for 'group, key' for order_columns and order_array_columns
+-- key_order stands for key_cut and order_array_columns on one column (not point_tid_columns: its directory makes the index 71 to 95% larger), for 'group, key' for order_array_columns
 -- on the key and order_array_group on the group, while those are not set: the index is the one the options written out build, an option the user wrote wins,
 -- ALTER INDEX SET and RESET change it for the segments written from now on, REINDEX keeps the effective values, and the answers are the heap's.
 CREATE EXTENSION pg_sift;
@@ -25,12 +25,12 @@ CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent
 NOTICE:  sift_col index "ko_two": 2 automatic choices, 1 advice
 NOTICE:  sift_col index "ko_two" is column format minor 38, which a library before 3.7 cannot read
 SET client_min_messages = warning;
-CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_array_columns = 'ts');
 CREATE INDEX ko_point ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', point_tid_columns = 'ts');
-CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent');
+CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'ent');
 -- an option the user wrote wins over what key_order stands for
 CREATE INDEX ko_win ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', key_cut = 'off', point_tid_columns = 'id');
-CREATE INDEX ko_win_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'off', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'id');
+CREATE INDEX ko_win_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'off', order_array_columns = 'ts', point_tid_columns = 'id');
 -- the bytes and the segment format are those of the options written out
 CREATE FUNCTION ko_shape(i regclass) RETURNS text LANGUAGE sql AS
 $$ SELECT format('%s bytes, format %s, %s units', (SELECT bytes FROM sift.col_index_info(i)), (SELECT string_agg(DISTINCT format::text, ',') FROM sift.col_segments(i)),

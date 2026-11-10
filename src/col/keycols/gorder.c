@@ -164,7 +164,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	opt = opt ? pstrdup(opt) : NULL;
 	gopt = pstrdup(gopt);
 	/* a key_cut of the user's shapes the units, as the user chose: only a build's own choice or 'off' takes the layout along */
-	keyorder = layout && sift_col_options_key_order(index)[0] == '\0' && !sift_col_options_order_columns_set(index) && strcmp(gopt, "off") != 0 &&
+	keyorder = layout && sift_col_options_key_order(index)[0] == '\0' && strcmp(gopt, "off") != 0 &&
 		(sift_col_options_key_cut_auto(index) || strcmp(sift_col_options_key_cut(index), "off") == 0);
 	if (!keycols_arrays_open(index))
 		return;

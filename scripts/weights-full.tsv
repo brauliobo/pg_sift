@@ -67,7 +67,6 @@ isolation	154	144
 tap-shell-col_wbuf_crash	149	152
 tap-shell-replica_mixed	0	149
 tap-shell-col_order_layout_compat	0	148
-tap-shell-col_run_heads_crash	113	130
 tap-shell-maint_fanin	110	129
 installcheck-agg_preagg_filter	126	122
 tap-shell-col_build_kill	125	102
@@ -76,7 +75,6 @@ tap-shell-col_online_cut	107	121
 installcheck-agg_tid_range	120	93
 tap-shell-col_unit_floor	26	120
 isolation-emulated	119	54
-installcheck-col_sorted_run	117	99
 installcheck-tbl_writepath	117	114
 installcheck-tbl_key_table	116	77
 installcheck-agg_preagg_dimfilter	115	110
@@ -189,7 +187,6 @@ tap-shell-tbl_load_stream	37	39
 installcheck-agg_group_passes	36	38
 installcheck-batch11	38	32
 installcheck-col_key_table	38	30
-installcheck-col_lazy_filter	38	32
 tap-006_tbl	32	38
 tap-019_tbl_bulk_groups	37	38
 tap-shell-col_build_slices_standby	38	25
@@ -207,7 +204,6 @@ installcheck-agg_cost_speed	21	33
 installcheck-agg_rollup_shapes	33	29
 installcheck-rank_or_union	33	26
 plan-gate-tuned	33	27
-tap-shell-col_run_heads_replica	30	33
 tap-shell-maint_space	33	29
 installcheck-col_topn	23	32
 installcheck-position_blocks	32	32

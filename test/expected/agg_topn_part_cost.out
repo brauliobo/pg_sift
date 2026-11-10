@@ -14,7 +14,7 @@ BEGIN
 		EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS %s, REMAINDER %s)', nm || '_' || i, nm, parts, i);
 	END LOOP;
 	EXECUTE format('INSERT INTO %I SELECT i, i %% 100, timestamp ''2025-01-01'' + (i * 7919 %% 7776000) * interval ''1 second'', repeat(''x'', 20) FROM generate_series(1, 20000) i', nm);
-	EXECUTE format('CREATE INDEX ON %I USING sift_col (id, tenant, ts) WITH (order_columns = ''ts'', order_array_columns = ''ts'', order_array_group = ''tenant'')', nm);
+	EXECUTE format('CREATE INDEX ON %I USING sift_col (id, tenant, ts) WITH (order_array_columns = ''ts'', order_array_group = ''tenant'')', nm);
 END $$;
 SELECT pc_make('p4', 4), pc_make('p16', 16), pc_make('p64', 64), pc_make('q2', 2), pc_make('q8', 8);
  pc_make | pc_make | pc_make | pc_make | pc_make 

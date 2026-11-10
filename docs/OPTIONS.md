@@ -1201,15 +1201,15 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. Written only under order_columns, which 4.3 deprecates (4.4 removes it); segments already written keep them.
+- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. A build of an index writes none since 4.4; segments already written keep them.
 - **Gain:** ORDER BY k LIMIT 10 0.128 to 0.051 ms (800,000 rows; b-tree 0.010), executor 645k to 245k instructions; LIMIT above 32 or a filtered LIMIT gain nothing
 - **Gain and cost:** 2.63x fewer instructions (400k saved a query), index +0.6%, build +0.0%, automatic
-- **Impact:** index size: +0.60% (94,044,160 against 93,478,912 bytes, three order columns, 800,000 rows); +2.4% (narrow index, 353,029 rows); build, merge and writes: Build 1.61 against 1.63 s (800,000 rows), promotion of 100,000 rows 0.052 against 0.052 s, merge of 500,000 rows 0.74 against 0.66 s (noise +-10%); other: format minor 18; Index +0.6% to +2.4% (0.24 B a row at units of 4,096 rows or more); build, promotion and merge within noise. Needs order_columns; none for a unit under 128 rows, a leaf with NULL or overflow, or a key_cut segment. A 3.3 library cannot read minor 18.
-- **When:** An index with order_columns, ORDER BY one sort key LIMIT n of at most min(32, rows / 128) of a unit, no filter, join or aggregate, a unit alone in its superblock with every page all-visible and clean, no write buffer rows. Not for LIMIT above 32, a filtered LIMIT or a leaf with NULL.
-- **Default:** automatic — Meets the 3.3 rule: 2-3x on unfiltered ORDER BY .. LIMIT <= 32 (limit 5%), growth 0.6% to 2.4% (limit 3%), write cost inside noise (limit 5%). It follows order_columns, so no second opt-in.
+- **Impact:** index size: +0.60% (94,044,160 against 93,478,912 bytes, three order columns, 800,000 rows); +2.4% (narrow index, 353,029 rows); build, merge and writes: Build 1.61 against 1.63 s (800,000 rows), promotion of 100,000 rows 0.052 against 0.052 s, merge of 500,000 rows 0.74 against 0.66 s (noise +-10%); other: format minor 18; Index +0.6% to +2.4% (0.24 B a row at units of 4,096 rows or more); build, promotion and merge within noise. Needs a sorted run; none for a unit under 128 rows, a leaf with NULL or overflow, or a key_cut segment. A 3.3 library cannot read minor 18.
+- **When:** An index with sorted runs (4.3 or earlier), ORDER BY one sort key LIMIT n of at most min(32, rows / 128) of a unit, no filter, join or aggregate, a unit alone in its superblock with every page all-visible and clean, no write buffer rows. Not for LIMIT above 32, a filtered LIMIT or a leaf with NULL.
+- **Default:** automatic — Meets the 3.3 rule: 2-3x on unfiltered ORDER BY .. LIMIT <= 32 (limit 5%), growth 0.6% to 2.4% (limit 3%), write cost inside noise (limit 5%). It follows the sorted run, so no second opt-in.
 - **Turn off:** SET sift.col_format_minor = 14 (runs are written without heads; units already written keep them until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off (no top-N scan).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on for an index with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
+- **Advice:** Leave on for an index written by 4.3 or earlier with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
 - **Sources:** benchmark `col-run-heads`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### auto(table-cube-minmax)
@@ -1276,14 +1276,14 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
 
 - **What it does:** ORDER BY .. LIMIT over a sift_col index tells a sort column that follows the table from one that does not by reading the zones of six superblocks from the segment headers, not by opening the unit of each
-- **Gain:** ORDER BY rnd LIMIT 10, 100,000 rows with order_columns: 617,524 to 524,572 instructions a statement (executor 288k to 192k; b-tree 353,686), callgrind, one segment
+- **Gain:** ORDER BY rnd LIMIT 10, 100,000 rows, an index written by 4.3 or earlier with order_columns: 617,524 to 524,572 instructions a statement (executor 288k to 192k; b-tree 353,686), callgrind, one segment
 - **Impact:** index size: -; build, merge and writes: -; other: Nothing stored, no index growth or write cost. Saves about 94k instructions a statement; the begin of each superblock still loads its write buffers.
 - **When:** Every ORDER BY .. LIMIT scan over a sift_col index whose walk visits superblocks, before the walk; the saving is largest for a small LIMIT, where the probe is most of the statement.
 - **Default:** automatic — The same zones read from the headers: 15% fewer instructions with the same plan and rows, so there is nothing to choose.
 - **Turn off:** SET sift.enable_topn = off turns off the top-N scan; the probe has no setting of its own.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on; plan and rows are unchanged (Units Answered By Run Head: 7, Superblocks Skipped By Top-N: 16 in the test).
-- **Sources:** benchmark `test:col_run_heads`; [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
+- **Advice:** Leave on; plan and rows are unchanged.
+- **Sources:** [COL-SEARCH](COL-SEARCH.md#facets-and-top-n)
 
 #### auto(parallel-aggregate-scan)
 
@@ -1388,15 +1388,15 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** A top-N over a table with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. Written only under order_columns, which 4.3 deprecates (5.0 removes it); segments already written keep them.
+- **What it does:** A top-N over a sift_table or an index written by 4.3 or earlier with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. A build of an index writes no run since 4.4; segments already written keep them.
 - **Gain:** 40 scans ORDER BY a key column LIMIT 10..49, 1,000,000 orders: 48 to 24.8 ms; ORDER BY rnd LIMIT 10, 800,000 rows: 113 to 82 us a scan; LIMIT 1000: 1.23 to 1.05 ms
 - **Impact:** index size: -; build, merge and writes: -; other: Nothing stored: the segment format does not change, no index growth or write cost.
-- **When:** A top-N scan whose first key is a leaf with a run (an index with order_columns) and a unit of at least 2 x (limit + 1) rows passing.
+- **When:** A top-N scan whose first key is a leaf with a run (a sift_table, or an index written by 4.3 or earlier with order_columns) and a unit of at least 2 x (limit + 1) rows passing.
 - **Default:** automatic — Same rows and units read, less work per scan; no format change, no growth, no write cost.
 - **Turn off:** SET sift.topn_runs = off (units are tested row by row) or SET sift.enable_topn = off.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave on. A b-tree is still faster on the same queries (15 us and 140 us against 82 us and 1.05 ms).
-- **Sources:** benchmark `topn_run_probes`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
+- **Sources:** [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift.col_leaf_cache_kb
 
@@ -2020,14 +2020,14 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · diagnostic · since 3.3 · default on
 
 - **What it does:** ORDER BY .. LIMIT n from the units, bounded by their zones and sorted runs
-- **Gain:** ORDER BY k LIMIT 100 with order_columns, 1,000,000 rows: 3.5 to 1.4 ms (runs off, on); 2x to 4x up to n of a few thousand, a btree 5x to 14x faster at n = 1000
+- **Gain:** ORDER BY k LIMIT 100 over the sorted runs of a sift_table timestamp column or of an index written by 4.3 or earlier with order_columns, 1,000,000 rows: 3.5 to 1.4 ms (runs off, on); 2x to 4x up to n of a few thousand, a btree 5x to 14x faster at n = 1000
 - **Impact:** index size: +50.8% of a ten-column index with order_columns on every column (1,000,000 rows); heads +0.6% (three columns, 800,000 rows); build, merge and writes: heads vs runs only: serial build 1.61 vs 1.63 s (800,000 rows), merge of 500,000 rows 0.74 vs 0.66 s (+-10% noise); other: none; off gives the normal plan, topn_walk and topn_zone_keys narrow the walk, topn_runs needs order_columns
-- **When:** ORDER BY k LIMIT n where k is in the order_columns reloption, on units written after it was set; n up to a few thousand (b-tree 5x-14x faster at 1000). A removing WHERE and write buffers are read as before.
-- **Default:** on — On, and costs nothing without the option: it acts only on an index with order_columns (default none; the opt-in costs the bytes). With it, LIMIT 100 on 1,000,000 rows 3.5 to 1.4 ms.
-- **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. ALTER INDEX .. RESET (order_columns) plus REINDEX drops them.
+- **When:** ORDER BY k LIMIT n where k has a sorted run (a timestamp column of a sift_table, or a column of order_columns in an index written by 4.3 or earlier with order_columns); n up to a few thousand (b-tree 5x-14x faster at 1000). A removing WHERE and write buffers are read as before.
+- **Default:** on — On, and costs nothing without the option: it acts only where a sorted run exists. With one, LIMIT 100 on 1,000,000 rows 3.5 to 1.4 ms.
+- **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. A merge or a REINDEX of an index writes no run.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on; it acts only on an index with the reloption order_columns (default none). Name only columns sorted with LIMIT: an unordered column costs 2 bytes a row. Off reads whole units.
-- **Sources:** benchmark `topn_sorted_runs`; [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
+- **Advice:** Leave on; it acts only on a sift_table (the sorted run of its timestamp columns) and on an index written by 4.3 or earlier with order_columns. Off reads whole units.
+- **Sources:** [COLUMN-STORAGE](COLUMN-STORAGE.md#order-and-top-n)
 
 #### sift.agg_lookup_pushdown
 
@@ -2720,14 +2720,14 @@ all · deprecated · since 3.4 · default 0
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** deprecated in 4.3, removed in 4.4: a sorted run of the rows of each unit; a build now writes none, and the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
+- **What it does:** removed in 4.4, still accepted and ignored: a sorted run of the rows of each unit; the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
 - **Gain:** ORDER BY an integer LIMIT 100 37.9 ms normal plan, 3.5 without runs, 1.4 with (1,000,000 rows); LIMIT 10 0.128 to 0.051 ms with heads (800,000)
 - **Impact:** index size: 2 bytes a row per unordered leaf (+50.8% of a 10-column index with 8 unordered leaves, 1,000,000 rows); heads add 0.6% to 2.4% (three order columns); build, merge and writes: with heads (not the runs themselves): build 1.61 against 1.63 s, promotion of 100,000 rows 0.052 s, merge of 500,000 rows 0.74 against 0.66 s; other: none: ignored; the runs it wrote took the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units)
-- **When:** An index that carries the option, from 3.3 to 4.2.x; the segments already written keep their runs and heads and are read as before, and a promotion, merge or REINDEX writes none.
+- **When:** An index that carries the option, from 3.3 to 4.3; the segments already written keep their runs and heads and are read as before, and a promotion, merge or REINDEX writes none.
 - **Default:** '' — Accepted so that dumps and scripts restore; the runs hold the same bytes as the order array of the column and read 4 to 6 times the instructions beyond a top-N of 32, so no class needs them.
-- **Turn off:** ALTER INDEX .. RESET (order_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the runs until 4.4.
+- **Turn off:** ALTER INDEX .. RESET (order_columns).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). A CREATE INDEX or REINDEX that finds order_columns says so in the one NOTICE of the build (order-columns-deprecated); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
+- **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). CREATE INDEX, ALTER INDEX and REINDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
 
 #### sift.agg_lookup_max_rows
 

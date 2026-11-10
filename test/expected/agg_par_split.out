@@ -13,7 +13,7 @@ INSERT INTO sp SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i::bigint * 7919 %
        (i::bigint * 7919 % 12000) / 7.0, i % 7, (i::bigint * 7919 % 60000)::int, i % 100, (i % 977) * 0.01 + 1e8 * (i % 3), (i % 50) / 10.0
 FROM generate_series(1, 120000) i;
 -- the order arrays are named: k_i, k_b, k_t and k_f have about 12,000 values each, and which two of them the automatic choice weighs first changes from build to build with the sample
-CREATE INDEX sp_col ON sp USING sift_col (id, k_i, k_b, k_t, k_ts, k_f, k_few, k_hi, v, w, n) WITH (key_cut = off, order_columns = 'k_i, k_ts, k_hi', order_array_columns = 'k_i, k_t, k_ts, k_hi', order_array_group = 'k_b', point_tid_columns = 'id, k_hi');
+CREATE INDEX sp_col ON sp USING sift_col (id, k_i, k_b, k_t, k_ts, k_f, k_few, k_hi, v, w, n) WITH (key_cut = off, order_array_columns = 'k_i, k_t, k_ts, k_hi', order_array_group = 'k_b', point_tid_columns = 'id, k_hi');
 -- the planner takes the groups of this key as many however large the table is priced
 ALTER TABLE sp ALTER COLUMN k_hi SET (n_distinct = 60000);
 VACUUM (FREEZE, ANALYZE) sp;

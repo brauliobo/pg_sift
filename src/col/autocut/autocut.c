@@ -8,7 +8,7 @@
  * units of the superblock cut and in the units of the key cut, the addresses of the rows are priced by what they measured, and the other leaves are
  * priced as unchanged. When the key would be worth cutting by and the index would grow more, the build only says so, with the command. The choice is
  * written to the option as 'auto: col', so that a promotion, a merge and a REINDEX keep it; key_cut = 'off' keeps the units by superblock. An index with
- * point_tid_columns or order_columns is left alone: the first lists rows, the second says the workload sorts by a column without a key, which a key cut
+ * point_tid_columns is left alone: it lists rows, and a key_order of the user says the workload sorts by a column without a key, which a key cut
  * makes slower. sift.key_cut_decision(index) runs the same rule on an existing index and says what it would decide, without changing anything.
  *
  * The sample is a fixed set of superblocks spread over the heap, at most a quarter of it. For a key taken at a random row of the sample, the other sampled superblocks that hold
@@ -175,8 +175,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "key_cut is set";
 	else if (point_tid_set(index))
 		v->reason = "point_tid_columns is set";
-	else if (sift_col_options_order_columns_set(index) && kgroup == NULL)
-		v->reason = "order_columns is set";
+	else if (sift_col_options_key_order_user(index) && kgroup == NULL)
+		v->reason = "key_order is set";
 	else if (!ActiveSnapshotSet())
 		v->reason = "no snapshot";
 	if (v->reason != NULL)

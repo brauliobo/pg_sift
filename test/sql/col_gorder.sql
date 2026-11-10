@@ -1,8 +1,7 @@
--- The global order of a leaf: for each column of order_columns the segment keeps every row's key and heap
+-- The global order of a leaf: for each column of order_array_columns the segment keeps every row's key and heap
 -- address sorted, in chunks. The array is the table sorted by (key, address) with the rows that have no value last, for every type it covers, over NULLs and ties, in a
 -- segment written by a build, a promotion and a merge; col_verify checks it; an index without the option, or with segments written before it, has none.
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = notice;
@@ -41,7 +40,7 @@ BEGIN
 END $$;
 
 CREATE INDEX go_i ON go USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
-	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z');
+	z sift.col_timestamptz_ops) WITH (order_array_columns = 'id, a, b, c, d, t, z');
 SELECT leaf, go_check('go_i', leaf) FROM generate_series(0, 6) leaf;
 SELECT sift.col_verify('go_i');
 
@@ -60,7 +59,7 @@ SELECT leaf, go_check('go_i', leaf) FROM generate_series(0, 6) leaf;
 SELECT sift.col_verify('go_i');
 
 -- an index without the option has no array, and the option on an index that has segments without one writes it for the segments written afterwards only
-CREATE INDEX go_n ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b');
+CREATE INDEX go_n ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops);
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_n', 0);
 ALTER INDEX go_n SET (order_array_columns = 'id, b');
 INSERT INTO go (id, b) SELECT 30000 + i, i FROM generate_series(1, 100) i;
@@ -74,15 +73,14 @@ REINDEX INDEX go_n;
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
 DROP INDEX go_n;
 
--- the array extends the sorted run: a subset of order_columns gets it, a column outside order_columns or of another type is refused
-CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, pad sift.col_text_ops) WITH (order_columns = 'id, b', order_array_columns = 'id');
+-- an order array of one column: the other columns of the index keep none
+CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, pad sift.col_text_ops) WITH (order_array_columns = 'id');
 SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entries FROM generate_series(0, 2) leaf;
 DROP INDEX go_x;
-CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id', order_array_columns = 'b');
 
 -- the setting 14 keeps the sorted runs and no array
 SET sift.col_format_minor = 14;
-CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b', order_array_columns = 'id, b');
+CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'id, b');
 RESET sift.col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
 SELECT max(format) < 21 AS older_format FROM sift.col_segments('go_m') WHERE kind = 'immutable';
@@ -90,14 +88,14 @@ DROP INDEX go_m;
 
 -- a segment too small for a chunk, and an empty table
 CREATE TABLE go_e (a int, b int);
-CREATE INDEX go_e_i ON go_e USING sift_col (a sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'a, b', order_array_columns = 'a, b');
+CREATE INDEX go_e_i ON go_e USING sift_col (a sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'a, b');
 INSERT INTO go_e VALUES (3, NULL), (1, 2), (NULL, 2), (1, 1);
 SELECT sift.col_promote('go_e_i'::regclass) >= 0 AS promoted;
 SELECT seg, pos, key, tid, null_row FROM sift._test_col_gorder('go_e_i', 0) ORDER BY seg, pos;
 SELECT sift.col_verify('go_e_i');
 
 -- a heap address directory (point_tid_columns) and a global order in one segment: the point frame holds both
-CREATE INDEX go_p ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (point_tid_columns = 'id, b', order_columns = 't', order_array_columns = 't');
+CREATE INDEX go_p ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (point_tid_columns = 'id, b', order_array_columns = 't');
 SELECT sift.col_verify('go_p');
 SELECT count(*) = (SELECT count(*) FROM go) AS every_row FROM sift._test_col_gorder('go_p', 2);
 DROP INDEX go_p;

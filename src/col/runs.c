@@ -100,12 +100,6 @@ sift_crun_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 }
 
 const char *
-sift_crun_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
-{
-	return sift_cpagg_leaf_list(opt, s, names, leaf, sift_crun_leaf_ok, "not an integer, date, timestamp, numeric or float column");
-}
-
-const char *
 sift_crun_syntax(const char *opt)
 {
 	return sift_cpagg_leaf_list(opt, NULL, NULL, NULL, NULL, NULL);

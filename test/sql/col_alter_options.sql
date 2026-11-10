@@ -4,7 +4,6 @@
 -- late for the check.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 
 CREATE TABLE ao (id int, pid int, d date, ts timestamptz, cc text, f float8, metrics jsonb, parts jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ao SELECT i, i % 50, date '2024-01-01' + i % 300, timestamptz '2024-01-01' + i * interval '1 minute', 'c' || i % 7, i % 10,
@@ -43,12 +42,6 @@ ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
 \c
 ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
 \c
-SET sift.test_col_legacy_options = on;
-ALTER INDEX ao_paths SET (order_columns = 'nope');
-\c
-SET sift.test_col_legacy_options = on;
-ALTER INDEX ao_paths SET (order_columns = 'cc');
-\c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
 \c
 ALTER INDEX ao_paths SET (return_columns = 'pid');
@@ -74,7 +67,7 @@ VACUUM ao;
 
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;

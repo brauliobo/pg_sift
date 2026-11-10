@@ -4,7 +4,6 @@
 -- buffer, and a second pass of the same scan (a rewind).
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
-SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -16,7 +15,7 @@ INSERT INTO ob (id, n, t, dt, ts)
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i % 43 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 1500)::text, 5, '0') END,
 	   CASE WHEN i % 37 = 0 THEN NULL ELSE DATE '2020-01-01' + (i * 13) % 400 END, CASE WHEN i % 29 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + ((i * 7919) % 100000) * interval '1 second' END
 FROM generate_series(1, 20000) i;
-CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops, dt sift.col_date_ops, ts sift.col_timestamp_ops) WITH (order_columns = 'id, n, dt, ts', order_array_columns = 'id, n, t');
+CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops, dt sift.col_date_ops, ts sift.col_timestamp_ops) WITH (order_array_columns = 'id, n, t');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
 SET sift.test_topn_heads = off;
 
@@ -89,7 +88,7 @@ SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000')
 CREATE TABLE og (id int PRIMARY KEY, g int, w int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE og ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO og (id, g, w) SELECT i, (i * 7919) % 10, CASE WHEN i % 50 = 0 THEN NULL ELSE i % 1000 END FROM generate_series(1, 20000) i;
-CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, w sift.col_int4_ops) WITH (order_columns = 'id, g, w', order_array_columns = 'id, g');
+CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, w sift.col_int4_ops) WITH (order_array_columns = 'id, g');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) og;
 CREATE FUNCTION og_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE pl text; n int := -1; gord bool := false;
@@ -103,7 +102,7 @@ BEGIN
 END $$;
 SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) BETWEEN 0 AND 100 AS read_not_fetched FROM unnest(ARRAY[5000, 9000, 15000]) o;
 -- the same under a condition on another column: decided from the units, not by the heap rows of the entries before the OFFSET
-SELECT o, og_fetches(format('SELECT id, g FROM og WHERE %s ORDER BY g, id LIMIT 20 OFFSET %s', w, o)) BETWEEN 0 AND 100 AS cond_read FROM unnest(ARRAY['w IS NOT NULL', 'w < 900', 'w >= 0 AND w IS NOT NULL']) w, unnest(ARRAY[3000, 5000]) o;
+SELECT o, og_fetches(format('SELECT id, g FROM og WHERE %s ORDER BY g, id LIMIT 20 OFFSET %s', w, o)) BETWEEN 0 AND 100 AS cond_read FROM unnest(ARRAY['w IS NOT NULL', 'w >= 0 AND w IS NOT NULL']) w, unnest(ARRAY[3000, 5000]) o;
 -- the pages of a table that a third of the rows were updated in are not all-visible: every entry is confirmed by the heap once (the cut's, the group's) and the 20 rows go out
 UPDATE og SET pad = repeat('y', 100) WHERE id % 3 = 0;
 SELECT o, og_fetches(format('SELECT id, g FROM og ORDER BY g, id LIMIT 20 OFFSET %s', o)) = (o / 2000) * 2000 + 2000 + 20 AS one_fetch FROM unnest(ARRAY[5000, 9000, 15000]) o;
@@ -115,7 +114,7 @@ DROP TABLE og;
 CREATE TABLE orr (id int PRIMARY KEY, r text, pad text DEFAULT repeat('x', 100));
 ALTER TABLE orr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO orr (id, r) SELECT i, left(md5(i::text), 10) FROM generate_series(1, 20000) i;
-CREATE INDEX orr_i ON orr USING sift_col (id sift.col_int4_ops, r sift.col_text_ops) WITH (order_columns = 'id', order_array_columns = 'id, r');
+CREATE INDEX orr_i ON orr USING sift_col (id sift.col_int4_ops, r sift.col_text_ops) WITH (order_array_columns = 'id, r');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orr;
 DELETE FROM orr WHERE id % 53 = 0;
 UPDATE orr SET r = 'u' || r WHERE id % 97 = 0;

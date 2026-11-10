@@ -4,13 +4,13 @@
 --@ setup
 DROP TABLE IF EXISTS olt;
 CREATE TABLE olt AS SELECT g::int AS id, date '2024-01-01' + (hashint8extended(g, 9) & 1023)::int % 730 AS d FROM generate_series(1, {rows}) g ORDER BY md5((g * 31 + 7)::text);
-CREATE INDEX olt_col ON olt USING sift_col (id, d) WITH (order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX olt_col ON olt USING sift_col (id, d) WITH (order_array_columns = 'd');
 CREATE SCHEMA c_order_layout_ties_offset__whole;
 CREATE TABLE c_order_layout_ties_offset__whole.olt AS TABLE olt;
-CREATE INDEX olt_col ON c_order_layout_ties_offset__whole.olt USING sift_col (id, d) WITH (order_columns = 'd', order_array_columns = 'd', order_layout = 'whole');
+CREATE INDEX olt_col ON c_order_layout_ties_offset__whole.olt USING sift_col (id, d) WITH (order_array_columns = 'd', order_layout = 'whole');
 CREATE SCHEMA c_order_layout_ties_offset__compact;
 CREATE TABLE c_order_layout_ties_offset__compact.olt AS TABLE olt;
-CREATE INDEX olt_col ON c_order_layout_ties_offset__compact.olt USING sift_col (id, d) WITH (order_columns = 'd', order_array_columns = 'd', order_layout = 'compact');
+CREATE INDEX olt_col ON c_order_layout_ties_offset__compact.olt USING sift_col (id, d) WITH (order_array_columns = 'd', order_layout = 'compact');
 CREATE SCHEMA c_order_layout_ties_offset__btree;
 CREATE TABLE c_order_layout_ties_offset__btree.olt AS TABLE olt;
 CREATE INDEX olt_bt ON c_order_layout_ties_offset__btree.olt (d);

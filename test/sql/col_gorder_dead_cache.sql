@@ -11,7 +11,7 @@ SELECT setseed(0.42);
 CREATE TABLE t (id int PRIMARY KEY, k int, u int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE t ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO t (id, k, u) SELECT i, (hashint4(i) & 16777215) % 2000, (hashint4(i + 5) & 16777215) % 1000003 FROM generate_series(1, 30000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', write_buffer_limit = 64);
+CREATE INDEX t_ix ON t USING sift_col (id, k, u) WITH (order_array_columns = 'k, u', write_buffer_limit = 64);
 CREATE TABLE p AS TABLE t;
 ANALYZE t;
 ANALYZE p;

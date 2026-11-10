@@ -9,7 +9,7 @@ TABLE_SKIP = {
     'point': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'keycut': 'key_cut is an option of the sift_col index',
-    'window': 'the sorted runs (order_columns) are an option of the sift_col index',
+    'window': 'the range leaves of the units are read through a sift_col index',
     'trail': 'trf is read through a sift_col index of its own, which the mode drops',
     'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
     'zonekey': 'zkf is read through its sift_col index only',

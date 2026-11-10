@@ -12,7 +12,7 @@ SELECT setseed(0.42);
 CREATE TABLE t (id int, ts timestamp, d date, s smallint, b bigint, pad int);
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 3000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ts, d, s, b, pad) WITH (order_columns = 'ts, d, s, b', order_array_columns = 'ts, d, s, b', write_buffer_limit = 65536);
+CREATE INDEX t_ix ON t USING sift_col (id, ts, d, s, b, pad) WITH (order_array_columns = 'ts, d, s, b', write_buffer_limit = 65536);
 VACUUM t;
 INSERT INTO t SELECT 3000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', DATE '2026-01-01' + (random() * 300)::int,
 	CASE WHEN i % 11 = 0 THEN NULL ELSE (random() * 30)::int END, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 ELSE ((random() * 2 - 1) * 9e18)::bigint END, 0 FROM generate_series(1, 4500) i;

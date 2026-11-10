@@ -194,10 +194,10 @@ CREATE INDEX udd_idx ON udd USING sift_col (id, ki, kd, kt, kn, kf, amount, val,
 	WITH (preagg = 'cube(kind: amount, val, kn, ki; ki: amount, val, kn; kd: amount, ki; kt: amount; kn: amount, ki)', rollup_columns = 'kind, ki: amount, kn', calendar_columns = 'kd, kt');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) udd;
 
--- units with a sorted run of the range leaves (order_columns): a range is answered from the run when it is short; a unit is 256 pages, so the rows of a few thousand fill one unit of more than 1,024 rows
+-- units of more than 1,024 rows: a unit is 256 pages, so the rows of a few thousand fill one
 CREATE TABLE kcut_w (LIKE kcut_a) WITH (autovacuum_enabled = false);
 INSERT INTO kcut_w SELECT * FROM fz.gen_kcut(1, @ROWS@, 60);
-CREATE INDEX kcut_w_idx ON kcut_w USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (order_columns = 'ki, kd, kt, kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX kcut_w_idx ON kcut_w USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off');
 
 -- NULL-heavy columns in runs of units (a unit is 256 pages, a row of 600 bytes a page): soft deletes (deleted_at is NULL in most rows and set in some runs and rows),
 -- a date that is NULL for the first rows, a text and a numeric (NaN, NULLs) that are NULL in whole units and in single rows
@@ -323,11 +323,11 @@ CREATE FUNCTION fz.gen_gof(lo bigint, hi bigint, salt int) RETURNS SETOF gof LAN
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO gof SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
 CREATE INDEX gof_idx ON gof USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
-	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', point_tid_columns = 'b');
+	z sift.col_timestamptz_ops) WITH (order_array_columns = 'id, a, b, c, d, t, z', point_tid_columns = 'b');
 -- ... and the same rows with arrays grouped by a column (order_array_group): WHERE a = x ORDER BY b / t LIMIT n reads the entries of the group
 CREATE TABLE gog (LIKE gof) WITH (autovacuum_enabled = false);
 INSERT INTO gog SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
-CREATE INDEX gog_idx ON gog USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (order_columns = 'b, t', order_array_columns = 'b, t', order_array_group = 'a');
+CREATE INDEX gog_idx ON gog USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (order_array_columns = 'b, t', order_array_group = 'a');
 
 -- instants of a time zone's clock changes (the weeks around the daylight saving time of the northern and the southern zones, the days of the reform, local mean time),
 -- the infinities and NULL, grouped by the day or hour of the session's zone

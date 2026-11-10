@@ -1,7 +1,6 @@
 -- The merge of overlays is a size-tiered step (the merged one is at least twice the largest it takes), and more overlays alive than a read is to open a unit in (four) are merged
 -- whatever their sizes, the smallest first, once the index has been read: overlays that grow by a factor of three each are no step by size, five of them are one over the cap.
 CREATE EXTENSION pg_sift;
-SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.col_auto_merge_partition_kb = 4000;

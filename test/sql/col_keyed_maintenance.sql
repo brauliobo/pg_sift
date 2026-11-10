@@ -45,7 +45,7 @@ CREATE FUNCTION km_check(layout text) RETURNS TABLE (layout text, cases int, dif
 	) v(q) WHERE km_count(q, 'heap') > 0
 $$;
 
-CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_array_columns = 'd');
 SELECT sift.col_verify('km_i', true);
 SELECT * FROM km_check('key_cut + order array: built');
 
@@ -77,7 +77,7 @@ SELECT * FROM km_check('key_cut + order array: reindexed');
 
 -- a key-cut index without an order array, and the units by superblock where the addresses do name them
 DROP INDEX km_i;
-CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent', order_columns = 'off');
+CREATE INDEX km_i ON km USING sift_col (id, ent, d, del) WITH (key_cut = 'ent');
 SELECT sift.col_verify('km_i', true);
 SELECT * FROM km_check('key_cut only: built');
 DELETE FROM km WHERE id % 3 = 0;

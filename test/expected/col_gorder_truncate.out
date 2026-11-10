@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET enable_sort = off;
 CREATE TABLE t (id int, ts timestamp, pad int);
 INSERT INTO t SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', 0 FROM generate_series(1, 6000) i;
-CREATE INDEX t_ix ON t USING sift_col (id, ts, pad) WITH (order_columns = 'ts', order_array_columns = 'ts', write_buffer_limit = 64);
+CREATE INDEX t_ix ON t USING sift_col (id, ts, pad) WITH (order_array_columns = 'ts', write_buffer_limit = 64);
 INSERT INTO t SELECT 6000 + i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', 0 FROM generate_series(1, 1500) i;
 SELECT sift.col_promote('t_ix') >= 0 AS promoted;
  promoted 

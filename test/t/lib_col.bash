@@ -61,6 +61,6 @@ COL_TOPN_FIXTURE=(
 	"CREATE TABLE t (id bigserial PRIMARY KEY, k int NOT NULL, v int NOT NULL, pad text)"
 	"ALTER TABLE t ALTER COLUMN pad SET STORAGE PLAIN"
 	"INSERT INTO t (k, v, pad) SELECT (hashint4(i) & 2147483647) % 100000, i, repeat('x', 400) FROM generate_series(1, 60000) i"
-	"CREATE INDEX t_col ON t USING sift_col (k, v) WITH (write_buffer_limit = 64, order_columns = 'k, v', order_array_columns = 'k, v')"
+	"CREATE INDEX t_col ON t USING sift_col (k, v) WITH (write_buffer_limit = 64, order_array_columns = 'k, v')"
 	"VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) t"
 )

@@ -4,7 +4,6 @@
 -- late for the check.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.test_col_legacy_options = on;
 CREATE TABLE ao (id int, pid int, d date, ts timestamptz, cc text, f float8, metrics jsonb, parts jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ao SELECT i, i % 50, date '2024-01-01' + i % 300, timestamptz '2024-01-01' + i * interval '1 minute', 'c' || i % 7, i % 10,
 	jsonb_build_object('a', i % 10), jsonb_build_array(jsonb_build_object('kind', 't' || i % 3))
@@ -43,14 +42,6 @@ ERROR:  invalid rollup_columns option: "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
 ERROR:  invalid rollup_columns option: "f" must be a boolean, integer, date, numeric or text column
-\c
-SET sift.test_col_legacy_options = on;
-ALTER INDEX ao_paths SET (order_columns = 'nope');
-ERROR:  invalid order_columns option: unknown column
-\c
-SET sift.test_col_legacy_options = on;
-ALTER INDEX ao_paths SET (order_columns = 'cc');
-ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric or float column
 \c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
 ERROR:  invalid return_columns option: unknown column
@@ -94,7 +85,7 @@ SELECT count(*) FROM ao;
 VACUUM ao;
 -- values that fit are applied, and the table goes on working
 \c
-ALTER INDEX ao_paths SET (key_columns = 'pid', order_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
+ALTER INDEX ao_paths SET (key_columns = 'pid', rollup_columns = 'pid, d', return_columns = 'cc');
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'd, ts');
 SET client_min_messages = warning;

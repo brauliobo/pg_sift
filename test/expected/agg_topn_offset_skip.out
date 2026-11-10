@@ -16,14 +16,14 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i 
 FROM generate_series(1, 20000) i;
 -- the same rows with the order array (the walk, and the cut of a large OFFSET) and without it (the heap of the best rows)
 CREATE TABLE sh AS TABLE sk;
-CREATE INDEX sk_i ON sk USING sift_col (id, k, t) WITH (track_changes = 'off', order_columns = 'k', order_array_columns = 'k, t');
-CREATE INDEX sh_i ON sh USING sift_col (id, k, t) WITH (track_changes = 'off', order_columns = 'k');
+CREATE INDEX sk_i ON sk USING sift_col (id, k, t) WITH (track_changes = 'off', order_array_columns = 'k, t');
+CREATE INDEX sh_i ON sh USING sift_col (id, k, t) WITH (track_changes = 'off');
 CREATE TABLE sp (id int, k int, pad text DEFAULT repeat('x', 100)) PARTITION BY RANGE (id);
 CREATE TABLE sp_1 PARTITION OF sp FOR VALUES FROM (0) TO (7000);
 CREATE TABLE sp_2 PARTITION OF sp FOR VALUES FROM (7000) TO (14000);
 CREATE TABLE sp_3 PARTITION OF sp FOR VALUES FROM (14000) TO (21000);
 INSERT INTO sp SELECT id, k FROM sk;
-CREATE INDEX sp_i ON sp USING sift_col (id, k) WITH (track_changes = 'off', order_columns = 'k', order_array_columns = 'k');
+CREATE INDEX sp_i ON sp USING sift_col (id, k) WITH (track_changes = 'off', order_array_columns = 'k');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) sk, sh, sp;
 -- 'DIFFERS' when the rows are not the plan's without the extension; else the rows the custom scan returned (the LIMIT rows it was asked for, or what is left past the OFFSET) and whether
 -- the Limit above it kept an OFFSET; 'native' when the statement does not run the scan

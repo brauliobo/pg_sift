@@ -26,7 +26,6 @@ typedef struct SiftCRun
 
 
 /* The option order_columns, resolved against a schema and the names of its leaves: NULL, or why it is not valid */
-extern const char *sift_crun_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf);
 extern const char *sift_crun_syntax(const char *opt);
 /* A plain integer-like, date, timestamp, numeric (scaled integer) or float attribute of the top level: what an ORDER BY of the scan can key on */
 extern bool sift_crun_leaf_ok(const SiftColSchema *s, const SiftColDef *d);

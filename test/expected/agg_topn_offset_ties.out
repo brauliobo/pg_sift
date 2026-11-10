@@ -4,7 +4,6 @@
 -- and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
-SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -16,8 +15,8 @@ SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i
 	   CASE WHEN i % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((i * 7919) % 900000) * interval '1 second' END
 FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops)
-	WITH (order_columns = 'id, a, b, t', order_array_columns = 'id, a, b, t');
-NOTICE:  sift_col index "ot_i": 1 automatic choice, 2 advice
+	WITH (order_array_columns = 'id, a, b, t');
+NOTICE:  sift_col index "ot_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "ot_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
