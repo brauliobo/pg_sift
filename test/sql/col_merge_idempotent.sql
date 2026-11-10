@@ -47,6 +47,14 @@ INSERT INTO before SELECT im_segments(), im_lsn();
 SELECT sift.col_merge('items_col', true) AS merges;
 SELECT im_segments() = gens AS same_segments FROM before;
 
+-- a smaller allowance cuts the partitions again: a segment over one and a half of its size is no partition of it
+DELETE FROM before;
+INSERT INTO before SELECT im_segments(), im_lsn();
+SET sift.col_auto_merge_partition_kb = 256;
+SELECT sift.col_merge('items_col', true) > 0 AS merged;
+SELECT cardinality(im_segments()) > cardinality(gens) AS more_segments FROM before;
+SET sift.col_auto_merge_partition_kb = 1024;
+
 -- the answers are those of the table
 SET sift.enable_agg = on;
 SELECT kind, count(*), sum(amount) FROM items GROUP BY kind ORDER BY kind;

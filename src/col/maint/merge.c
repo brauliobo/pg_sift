@@ -119,8 +119,9 @@ part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
 }
 
 /*
- * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions, clean, and no more of them than the
- * partitions their bytes make are the minimum, and writing them again would give the same ones (an index built by a parallel build, or merged by a force, is there).
+ * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions (from half the size to one and a half of
+ * it: a merge cuts its partitions within that), clean, and no more of them than the partitions their bytes make are the minimum, and writing them again would give
+ * the same ones (an index built by a parallel build, or merged by a force, is there). A segment over the size is cut again, as a smaller allowance asks.
  */
 static bool
 at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, int n)
@@ -132,7 +133,7 @@ at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, 
 		return false;
 	for (int i = 0; i < n; i++)
 	{
-		if (!maint_is_partition(&sel[i]) || (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS)) || pol->mostly_dead(index, &sel[i]))
+		if (!maint_is_partition(&sel[i]) || sel[i].bytes > (uint64) maint_part_kb * 1536 || (sel[i].flags & (SIFT_SEG_DIRTY | SIFT_SEG_VERS)) || pol->mostly_dead(index, &sel[i]))
 			return false;
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;
