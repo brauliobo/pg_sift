@@ -10,11 +10,11 @@ CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 # BUDGET_MB, the scratch the running jobs may need together (estimates below): quick 1200, full 2000, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the
-# run when the directory really exceeds it: quick 4096 (the quick tier peaks at 2.1 to 2.6 GB on PostgreSQL 18 shard 2 and 17 shard 1, runs 40145861942 and 40149214243), full 8192 up to four lanes, 512 more for each lane above
+# run when the directory really exceeds it: quick 6144 (the quick tier peaks at 3.4 to 3.8 GB on the shards of PostgreSQL 18 that finish, one reached 4223 MB, hosted run 42800632926), full 8192 up to four lanes, 512 more for each lane above
 if [[ $MODE == full ]]; then
 	export SANITIZE=1; BUDGET_MB=${CI_BUDGET_MB:-2000}; MAX_MB=${CI_MAX_MB:-$(( 8192 + 512 * (LANES > 4 ? LANES - 4 : 0) ))}; unset SIFT_QUICK
 else
-	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-4096}
+	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-6144}
 fi
 # CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 900, full 3600; the slowest job takes 283 and 2016 s in hosted runs 42084189989 and 42064806680), so that a
 # stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
