@@ -1,16 +1,17 @@
 -- CREATE INDEX of an index with a scope by the participants of a parallel build (each scans its superblocks and writes entity segments and scope runs of its own, the leader publishes
 -- all and merges the scope runs by the range of their key), and on a partitioned table (each partition builds its own scope segments from the shared scope relation). After each build
--- the scope read is the plain join (md5) from the scope segments, every live row has the entries of its member, and col_verify is clean.
+-- the scope read is the plain join (md5) from the scope segments, every live row has the entries of its member, and col_verify is clean. The pair relation has its journal index; the first
+-- scope index of the relation starts the journal, so it is built twice (the REINDEX takes the stamps) and the builds after it are stamped.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_trust = on;
 -- 12 tenants; 300 members in one to six of them
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m % 25 <> 0;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 -- one table, one index (tbl, idx): the rows of the scope read against the join per key, the entries against the join, whether the scope segments cover
 CREATE FUNCTION check_index(tbl regclass, idx regclass, OUT covered boolean, OUT same boolean, OUT stored boolean, OUT missing bigint, OUT extra bigint) LANGUAGE plpgsql AS $$
 DECLARE
@@ -47,6 +48,7 @@ SET max_parallel_maintenance_workers = 2;
 -- the serial build, the reference
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX events_ser ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_ser;
 SELECT 'serial' AS build, current_setting('sift.test_col_workers')::int AS workers, c.* FROM check_index('events', 'events_ser') c;
  build  | workers | covered | same | stored | missing | extra 
 --------+---------+---------+------+--------+---------+-------

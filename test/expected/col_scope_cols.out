@@ -2,14 +2,14 @@
 -- the column the units are cut by (the first date or timestamp column) and the address of the row: the other columns have no chunk, summary or directory in them. A scan reads the scope units
 -- only when every column it reads is one of those, else it reads the entity rows and EXPLAIN says which column; either way the rows are those of the join. A later release may write units
 -- by reference: a scope segment of a kind this build does not read is refused (the entity rows still answer).
--- PoC: the segments are read as vouched under sift.test_scope_trust (INTERFACE section 5).
+-- The pair relations have their journal indexes; the first scope index of a relation starts its journal at the end of its build, so the first index on each (events_named for
+-- the tenants, events_two for the groups) has no stamps until a REINDEX takes them.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_trust = on;
 CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
@@ -35,8 +35,10 @@ END $$;
 -- 5 tenants, 4 groups; 200 entities, each in one or two of each; events in a heap order that is not the key order
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 3) % 5 FROM generate_series(1, 200) m, generate_series(0, m % 2) j ON CONFLICT DO NOTHING;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE group_scope (dim_a_id int NOT NULL, group_id int NOT NULL, PRIMARY KEY (dim_a_id, group_id));
 INSERT INTO group_scope SELECT m, 1 + (m * 3 + j) % 4 FROM generate_series(1, 200) m, generate_series(0, m % 2) j ON CONFLICT DO NOTHING;
+CREATE INDEX group_scope_journal ON group_scope USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, label text, value_num int NOT NULL, tags int[], pad text)
 	WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 hour', i % 7, 'l' || i % 13, i % 1000, ARRAY[i % 5, i % 3], repeat('x', 40)
@@ -195,6 +197,7 @@ DROP TABLE shapes;
 -- two scopes, each with columns of its own: a statement on a scope is judged against that scope's columns
 CREATE INDEX events_two ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num); group_id: dim_a_id -> group_scope(dim_a_id, group_id) cols(label)');
+REINDEX INDEX events_two;
 SELECT sift.col_verify('events_two', true);
  col_verify 
 ------------

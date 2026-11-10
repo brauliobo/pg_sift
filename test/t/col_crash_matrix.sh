@@ -35,8 +35,8 @@ BASE="CREATE TABLE docs (id int, g int, n int, body text) WITH (autovacuum_enabl
 more() { echo "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 3 || ' beta' || i % 7 FROM generate_series($1, $2) i"; }
 BM25="CREATE INDEX docs_idx ON docs USING sift (body) WITH (write_buffer_limit = 4096)"
 COL="CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, cube_minmax = true, order_columns = 'g, n', key_columns = 'g, n', hll_columns = 'id')"
-# an index with a scope: the member g of docs has one to three keys t in the relation gp; scope_missing() counts the rows of the entity segments (id <= $1: those not in a write buffer) that lack an entry
-GP="CREATE TABLE gp (g int, t int, PRIMARY KEY (g, t)); INSERT INTO gp SELECT g, 1 + (g * 5 + j * 7) % 6 FROM generate_series(0, 8) g, generate_series(0, g % 3) j"
+# an index with a scope: the member g of docs has one to three keys t in the relation gp (with its journal index; the refill is of entries that an edit of the pairs made stale); scope_missing() counts the rows of the entity segments (id <= $1: those not in a write buffer) that lack an entry
+GP="CREATE TABLE gp (g int, t int, PRIMARY KEY (g, t)); INSERT INTO gp SELECT g, 1 + (g * 5 + j * 7) % 6 FROM generate_series(0, 8) g, generate_series(0, g % 3) j; CREATE INDEX gp_journal ON gp USING sift_col (g, t) WITH (track_changes = 'ctid')"
 SCOPEIX="CREATE INDEX docs_sc ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, scope = 't: g -> gp(g, t)')"
 SCOPE="$GP; $SCOPEIX"
 scope_check() { # the highest id of a row that is in an entity segment
@@ -55,7 +55,7 @@ SCENARIOS=(
 	"scope_build~$GP; $(scope_check 6000)~$SCOPEIX"
 	"scope_promote~$SCOPE; $(scope_check 6000); $(more 6001 8000)~SELECT sift.col_promote('docs_sc')"
 	"scope_merge~$SCOPE; $(scope_check 8000); $(more 6001 7000); SELECT sift.col_promote('docs_sc'); $(more 7001 8000); SELECT sift.col_promote('docs_sc')~SELECT sift.col_merge('docs_sc', true)"
-	"scope_refill~$SCOPE; $(scope_check 8000); $(more 6001 8000); SELECT sift.col_promote('docs_sc')~SET sift.test_scope_stale = on; SELECT sift.col_maintain('docs_sc')"
+	"scope_refill~$SCOPE; $(scope_check 8000); $(more 6001 8000); SELECT sift.col_promote('docs_sc')~UPDATE gp SET t = t; SELECT sift.col_maintain('docs_sc')"
 	"vacuum~$BM25; $COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"col_net~$COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"tbl_seal~$TBL; INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; DELETE FROM tbl WHERE id % 5 = 0; DELETE FROM tbl_h WHERE id % 5 = 0~VACUUM tbl"

@@ -1,23 +1,25 @@
 -- The scope segments of an index with a scope live with its entity segments: a promotion writes the scope segments of its rows in the switch of the directory that adds the entity segment,
 -- a merge of entity segments keeps the addresses (the entries stay), the scope segments merge by the range of their key under the oldest stamp, VACUUM ends the entries of a dead
 -- address in every key, a rewrite fills them again when they are stale or an entity segment lost its flag, and REINDEX builds them anew. After each state the scope read is the plain join
--- (md5), it reads the scope segments (the verdict is "covered", not a fallback), every live row has the entries of its member (no more, no fewer), and col_verify is clean.
+-- (md5), it reads the scope segments (the verdict is "covered", not a fallback), every live row has the entries of its member (no more, no fewer), and col_verify is clean. The pair relation has its
+-- journal index; the first scope index of a relation starts the journal at the end of its build, so a REINDEX of the scope index follows its creation (it takes the stamps).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_trust = on;
 
 -- 12 tenants; 300 members, each in one to six of them (6 for none of the multiples of 6 less); padded events in a random heap order, some without a member or with one that has no pair
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m % 25 <> 0;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + (i * 7919) % 320 END,
 	timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 20000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
 
@@ -118,15 +120,15 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged_after_vacuum;
 SELECT * FROM state('merged after vacuum');
 SELECT sift.col_verify('events_col', true);
 
--- a rewrite fills the entries again when they are stale (until the journal says so, a test switch does) and when an entity segment lost its flag (a merge of a covered segment with one
--- that was not): the read falls back meanwhile, exact, and the rewrite covers
+-- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.col_connect_refresh_pct of
+-- the pairs) and when an entity segment lost its flag (a merge of a covered segment with one that was not): the read falls back meanwhile, exact, and the rewrite covers
 SELECT sift._test_col_scope_flag('events_col', false);
 SELECT state, covered, same, stored, why FROM state('flag lost');
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM state('refilled');
-SET sift.test_scope_stale = on;
+UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id % 2 = 0;
+SELECT state, covered, same, stored, why FROM state('pairs edited');
 SELECT sift.col_maintain('events_col') AS rewritten_stale;
-RESET sift.test_scope_stale;
 SELECT * FROM state('refilled stale');
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) >
 	   (SELECT min(horizon) FROM stamps_before WHERE family = 'scope' AND scope = 0) AS stamp_is_new;
