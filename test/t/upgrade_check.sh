@@ -16,6 +16,7 @@ plan 106
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
 sift.col_auto_merge = on"
+sed_i "/^sift\\.test_col_legacy_options = /d" "$(dir uc)/data/postgresql.conf"   # a setting of the test build the preflight would report: the clean database stays clean
 node_start uc || bail "start failed"
 q postgres "CREATE DATABASE clean" "CREATE DATABASE cfg" "CREATE DATABASE old" >/dev/null
 
