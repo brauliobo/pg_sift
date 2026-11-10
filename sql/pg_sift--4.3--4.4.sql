@@ -149,13 +149,16 @@ CREATE FUNCTION sift.scope_create(copy text, source regclass, fk name, scope_rel
 								  options text DEFAULT NULL) RETURNS bigint
 	LANGUAGE plpgsql AS $$
 DECLARE
-	cap       CONSTANT float8 := 3.0;
+	cap       CONSTANT float8 := 1.8;
 	src       text := sift.scope_qualified(source);
 	rel       text := sift.scope_qualified(scope_relation);
 	cname     text;
 	pk        name[];
 	cols      name[];
 	mult      float8;
+	multi     float8;
+	maxk      int;
+	est       float8;
 	key_type  text;
 	ord       name := order_column;
 	defs      text;
@@ -233,12 +236,17 @@ BEGIN
 		RAISE EXCEPTION 'scope_create: order column "%" is not a carried column of "%"', ord, src USING ERRCODE = 'undefined_column';
 	END IF;
 
-	-- replication of the copy: the rows a fact has, weighted by its rows, over the facts that reach a key
-	EXECUTE format('SELECT sum(f.n * p.k)::float8 / NULLIF(sum(f.n), 0) FROM (SELECT %2$I m, count(*) n FROM %1$s GROUP BY 1) f JOIN (SELECT %4$I m, count(*) k FROM %3$s GROUP BY 1) p USING (m)',
-				   src, fk, rel, member) INTO mult;
+	-- the multiplicity of the copy: its rows over the rows of the table that reach a key (each fact counts the keys of its member), the share of those rows whose member has 2 or more keys,
+	-- and the size the copy would take: the table's row width for each copy row, and the sift index and the maintenance btree add 0.4 of the heap (0.34 to 0.44 from 2 to 6 copies per row)
+	SELECT sum(r.copies_per_fact * r.facts)::float8 / NULLIF(sum(r.facts) FILTER (WHERE r.copies_per_fact > 0), 0),
+		   sum(r.facts) FILTER (WHERE r.copies_per_fact > 1)::float8 / NULLIF(sum(r.facts) FILTER (WHERE r.copies_per_fact > 0), 0), max(r.copies_per_fact),
+		   sum(r.copies_per_fact * r.facts) * pg_relation_size(source)::float8 / NULLIF(sum(r.facts), 0) * 1.4
+		INTO mult, multi, maxk, est
+		FROM sift.scope_replica_counts(src, fk, rel, member) r;
 	IF mult > cap THEN
 		RAISE EXCEPTION 'scope_create: a row of "%" would have % copies on average (the limit is %)', src, round(mult::numeric, 2), cap
-			USING DETAIL = 'The copy would hold that many times the rows of the table that reach a scope key and its index grows with them.',
+			USING DETAIL = format('The copy would hold that many times the rows of the table that reach a scope key: about %s MB, +%s%% over the table and its indexes.',
+								  round((est / 1048576)::numeric), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r))),
 				  HINT = 'Key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.', ERRCODE = 'feature_not_supported';
 	END IF;
 
@@ -281,7 +289,10 @@ BEGIN
 	END LOOP;
 	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_truncate_trg(%L)', sift.scope_trigger_name(cname, 'ft'), src, cname);
 	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_truncate_trg(%L)', sift.scope_trigger_name(cname, 'pt'), rel, cname);
-	RAISE NOTICE 'scope copy %: % rows, % copies per row of "%" that reaches a key', cname, rows, round(mult::numeric, 2), src;
+	SELECT sum(pg_total_relation_size(r)) INTO est FROM sift.scope_relations(to_regclass(cname)) r;
+	RAISE NOTICE 'scope copy %: % rows, % copies per row of "%" that reaches a key', cname, rows, round(mult::numeric, 2), src
+		USING DETAIL = format('%s of those rows have 2 or more copies, at most %s; the copy takes %s MB with its indexes, +%s%% over the table and its indexes.',
+							  round(multi * 100) || '%', maxk, round((est / 1048576.0)::numeric, 1), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r)));
 	IF fidx IS NULL AND columns IS NULL THEN
 		SELECT round(sum(pg_relation_size(r)) / 1048576.0, 1) INTO mb FROM sift.scope_relations(to_regclass(cname)) r;
 		RAISE NOTICE 'scope copy %: no sift_col index on "%", all % columns carried, table of % MB', cname, src, cardinality(cols), mb

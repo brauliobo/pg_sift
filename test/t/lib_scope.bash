@@ -26,7 +26,7 @@ scope_setup() {
 		"CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text) WITH (autovacuum_enabled = false)" \
 		"CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false)" \
 		"INSERT INTO pairs SELECT e, k FROM generate_series(1, 40) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) k" \
-		"INSERT INTO facts SELECT i, 1 + i % 45, timestamptz '2026-01-01' + i * interval '1 hour', i % 5, i % 97, 'n' || i % 7 FROM generate_series(1, $SCOPE_ROWS) i" \
+		"INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 45 ELSE 10 * ((i / 2) % 4) + 1 + (i / 8) % 5 END, timestamptz '2026-01-01' + i * interval '1 hour', i % 5, i % 97, 'n' || i % 7 FROM generate_series(1, $SCOPE_ROWS) i" \
 		"SELECT sift.scope_create('cflat', 'facts', 'dim_a_id', 'pairs', 'scope_id')" \
 		"SELECT sift.scope_create('cpart', 'facts', 'dim_a_id', 'pairs', 'scope_id', partition => true)" \
 		"$SCOPE_SAME_SQL" >/dev/null

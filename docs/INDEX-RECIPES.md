@@ -202,40 +202,54 @@ A transaction that changes the facts does not see the uncommitted pairs of anoth
 
 ### The multiplicity cap
 
-A fact is stored once per key of its member, so the copy and its index grow with the average number of keys of the facts. `sift.scope_create` measures it (weighted by the facts of each member), says it in a NOTICE, and refuses a scope relation above 3 copies per fact.
+A fact is stored once per key of its member, so the copy grows with its *multiplicity*: the rows of the copy over the rows of the table that reach a key (a fact whose member is in 3 keys has 3 rows). It is a property of the data of the keys, and `sift.scope_create` measures it before it builds (`sift.scope_replicas(copy)` is the histogram), says it in a NOTICE with the share of those rows that have 2 or more copies, the size of the copy with its indexes and its growth over the table and its indexes, and **refuses a scope relation above 1.8 copies per fact**, with the size it estimated (the row width of the table for each copy row, and 0.4 of that again for the `sift_col` index and the maintenance btree: 0.34 to 0.44 from 2 to 6 copies per fact below).
+
+Where 1.8 comes from. The program's formula weighs the benefit `B` (the mean over the nine read classes of `log2(S) / log2(1.05)`, `S` = join instructions over copy instructions) against the cost `C = G/3 + W/5 + 8` (`G`: the growth of the table and its indexes in %, `W`: the extra instructions of inserting 10,000 facts in %, 8 for the code and the one new concept). The same 2,000,000 facts, 20,000 ids and 60 tenants of skewed size with pairs of 1.14, 2, 3 and 6 copies per fact (10%, 50%, 75% and 100% of the facts' members in 2 or more keys, at most 6; PostgreSQL 18.6, one backend, serial; answers equal in every read, the copy exact by `sift.scope_verify` and with no duplicate row):
+
+| copies per fact | copy rows | heap, `sift_col`, maintenance btree (MB) | growth over table + indexes | build (s, WAL MB) | insert 10,000 facts: M instructions, ms, WAL MB (records / images) | 100 members gain / lose a key: M instructions, ms, WAL MB | B | C | B - C |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.14 | 1,812,118 | 139, 30, 39 | +85% | 4.9, 248 | 887 (658 without), 185, 25.8 (4.7 / 20.9) | 621, 178, 38.5 / 543, 114, 50.1 | 61.2 | 43.4 | +17.8 |
+| 1.98 | 3,149,800 | 241, 51, 55 | +143% | 8.3, 432 | 1071 (664 without), 196, 27.2 (6.1 / 20.9) | 648, 159, 48.0 / 706, 160, 58.6 | 64.3 | 67.8 | -3.5 |
+| 3.01 | 4,795,463 | 367, 76, 70 | +211% | 11.3, 629 | 1298 (648 without), 259, 29.1 (7.7 / 21.1) | 634, 286, 55.3 / 686, 177, 64.9 | 63.2 | 98.3 | -35.2 |
+| 6.00 | 9,560,268 | 732, 144, 107 | +404% | 20.4, 1190 | 1948 (645 without), 365, 34.3 (12.4 / 21.7) | 686, 306, 63.8 / 1421, 614, 71.3 | 55.4 | 183.1 | -127.7 |
+
+`B` does not grow with the multiplicity (55 to 64: a bigger tenant holds more rows in both paths) while `G` and `W` do, so `B - C` is +17.8 at 1.14 copies per fact, -3.5 at 2 (the sign changes at 1.84 by linear interpolation), -35 at 3 and -128 at 6. `B` does not depend on the rows of the table at a fixed share of the tenants either (2 copies per fact, the same read classes: 56.4 at 250,000 facts, 49.9 at 500,000, 58.2 at 1,000,000 and 64.3 at 2,000,000); that spread of 7 moves the sign change by 0.3 copies per fact, so the cap is one constant. A copy is a win up to 1.8 copies per fact and a loss above it; the copies measured on real tables are far below it.
 
 ### What it measures
 
-2,000,000 facts, 20,000 ids, 60 tenants of skewed size, 18,383 pairs, 1.11 copies per fact that reaches a key (scratch measurement, PostgreSQL 18.6, one backend, serial, warm, instructions of the backend; answers equal in every cell). The join is the fact index and `dim_a_id IN (SELECT .. FROM scope_pairs WHERE tenant_id = $1)`.
+The reads of the table above, absolute numbers: the join is the fact index and `dim_a_id IN (SELECT .. FROM scope_pairs WHERE tenant_id = $1)`; a copy is read `WHERE tenant_id = $1`. The tenants are the biggest, the 30th and the 55th by their ids (2,382, 216 and 159 ids at 1.14 copies per fact; 3,716, 385 and 279 at 2; 5,308, 584 and 429 at 3; 9,338, 1,211 and 890 at 6). Each cell is warm M instructions, ms and buffer hits of the join, then of the copy; after the semicolon the blocks read from storage by the first run after a restart of the cluster (the join, then the copy). Instructions are those of the backend (median of 3); the milliseconds are one host's wall clock and noisy.
 
-| statement | tenant of | join: M instructions, ms, buffer hits | copy: M instructions, ms, buffer hits |
-|---|---|---|---|
-| sum, count by kind | 1,803 ids | 274.7, 21.8, 22,134 | 0.77, 0.16, 69 |
-| sum, count by kind | 202 ids | 263.4, 20.7, 22,139 | 0.67, 0.14, 44 |
-| distinct ids by month | 1,803 ids | 89.8, 10.0, 1,925 | 23.2, 2.4, 229 |
-| distinct ids by month | 202 ids | 66.3, 8.7, 1,918 | 4.1, 0.49, 128 |
-| latest 20 facts | 202 ids | 2.25, 0.30, 36 | 0.57, 0.10, 45 |
+| statement | 1.14 copies per fact | 1.98 copies per fact | 3.01 copies per fact | 6.00 copies per fact |
+|---|---|---|---|---|
+| big, distinct month | 339.6, 70.1, 7,408 -> 58.30, 15.60, 2,773; 6,627 -> 3,050 | 904.9, 152.2, 36,897 -> 90.94, 16.83, 4,335; 7,175 -> 4,678 | 979.2, 201.3, 38,322 -> 131.20, 37.49, 6,452; 8,252 -> 6,316 | 1056.1, 146.6, 39,327 -> 206.41, 54.43, 6,686; 9,212 -> 6,878 |
+| big, latest20 | 41.1, 15.2, 2,312 -> 0.65, 0.44, 59; 2,402 -> 354 | 39.9, 12.4, 1,884 -> 0.71, 0.32, 64; 1,707 -> 469 | 37.2, 16.6, 1,687 -> 0.82, 0.49, 80; 1,588 -> 112 | 48.9, 140.9, 2,097 -> 1.15, 0.39, 117; 2,305 -> 519 |
+| big, sum kind | 324.1, 61.0, 7,528 -> 40.73, 17.17, 2,634; 6,561 -> 2,906 | 433.6, 127.3, 8,705 -> 63.40, 18.13, 4,149; 7,124 -> 4,495 | 544.4, 121.2, 10,189 -> 91.11, 36.59, 6,197; 8,296 -> 5,982 | 675.9, 117.5, 11,189 -> 132.45, 37.41, 6,190; 9,301 -> 6,463 |
+| mid, distinct month | 98.2, 23.6, 3,458 -> 6.50, 1.78, 386; 3,609 -> 681 | 840.6, 123.5, 34,288 -> 8.60, 2.67, 484; 5,159 -> 878 | 897.6, 325.8, 35,637 -> 12.71, 5.84, 906; 6,538 -> 875 | 934.1, 75.4, 36,916 -> 43.96, 5.22, 1,447; 8,548 -> 1,744 |
+| mid, latest20 | 25.1, 5.7, 1,794 -> 0.64, 0.25, 57; 1,844 -> 350 | 37.8, 10.8, 2,270 -> 0.68, 0.40, 60; 1,848 -> 465 | 36.8, 20.6, 2,248 -> 0.78, 0.59, 77; 1,894 -> 110 | 46.7, 10.9, 3,128 -> 0.96, 0.29, 105; 3,006 -> 516 |
+| mid, sum kind | 96.0, 15.2, 3,523 -> 4.10, 1.36, 341; 3,746 -> 641 | 174.2, 28.5, 5,321 -> 4.95, 1.91, 452; 5,369 -> 851 | 240.2, 70.8, 6,985 -> 7.60, 3.27, 836; 7,021 -> 791 | 316.8, 46.0, 8,809 -> 34.22, 4.94, 1,351; 8,690 -> 1,648 |
+| small, distinct month | 75.8, 17.5, 2,713 -> 5.64, 1.88, 318; 2,865 -> 616 | 148.4, 31.5, 4,556 -> 20.27, 4.70, 817; 4,394 -> 1,203 | 218.8, 69.9, 6,349 -> 21.82, 5.77, 979; 6,212 -> 981 | 292.2, 41.9, 8,146 -> 39.15, 8.58, 1,289; 8,218 -> 1,572 |
+| small, latest20 | 26.6, 7.5, 1,774 -> 0.62, 0.78, 53; 1,715 -> 350 | 30.8, 7.8, 1,900 -> 0.76, 0.31, 103; 1,549 -> 493 | 39.5, 16.5, 2,387 -> 0.91, 0.60, 111; 1,841 -> 128 | 47.1, 9.9, 3,184 -> 0.95, 0.28, 105; 3,047 -> 517 |
+| small, sum kind | 73.9, 19.1, 2,764 -> 3.75, 1.52, 300; 2,958 -> 603 | 145.8, 32.7, 4,645 -> 17.42, 55.29, 753; 4,665 -> 1,143 | 215.3, 55.6, 6,457 -> 17.91, 5.65, 941; 6,467 -> 940 | 285.7, 42.0, 8,303 -> 30.87, 6.08, 1,192; 8,349 -> 1,491 |
 
-Cold (cluster restarted), sum by kind of the 202-member tenant: 1,224 blocks read and 28.7 ms against 7 blocks and 0.31 ms.
-
-What it costs: the copy of that table is 134 MB of heap, a 29 MB `sift_col` index and a 71 MB btree, 234 MB beside 251 MB of table and indexes (+93%); inserting 10,000 facts takes 807 M instructions against 554 M (+46%) and 4.68 MB of WAL records against 2.04 MB; a fact table without the copy is not slowed on reads.
+What it costs is in the cost table above: the copy of the 1.14 table is 139 MB of heap (76.5 B for each of its 1,812,118 rows), a 30 MB `sift_col` index (16.4 B a row) and a 39 MB btree (21.6 B a row), 207 MB beside 243 MB of table and indexes (+85%); inserting 10,000 facts takes 887 M instructions against 658 M (+35%) and 25.8 MB of WAL against 23.9 MB; deleting 1,000 facts 1,069 M against 1,024 M and updating 1,000 1,195 M against 1,084 M; a fact table without the copy is not slowed on reads.
 
 ### The maintenance btree
 
-A change of a fact finds its copies by the primary key, and an insert checks that a change of the other table in the same statement has not made the copy already (a statement that inserts a pair and a fact of its member). Three designs measured on the table above (1.14 copies per fact; 1,812,118 copy rows; PostgreSQL 18.6, one backend, serial, warm; WAL after a checkpoint):
+A change of a fact finds its copies by the primary key, and an insert checks that a change of the other table in the same statement has not made the copy already (a statement that changes a pair and a fact of its member). The alternatives measured on the 1,812,118 rows of the 1.14 table, and the ones that kept their rank at 2, 3 and 6 copies per fact (WAL after a checkpoint):
 
-| design | btree bytes | per copy row | insert 10,000 facts: M instructions, ms, WAL MB (full-page images) | 100 members gain / lose a key: M instructions |
+| design | btree MB at 1.14 / 2 / 3 / 6 copies per fact | bytes per copy row | insert 10,000 facts, M instructions at 1.14 / 2 / 3 / 6 | WAL MB (full-page images) at 1.14 |
 |---|---|---|---|---|
-| unique `(dim_a_id, id, tenant_id)` with `ON CONFLICT` | 73.5 MB | 40.6 B | 1,007.5, 285.7, 57.8 (51.4) | 598.6 / 270.2 |
-| unique `(id, tenant_id)` with `ON CONFLICT` | 57.1 MB | 31.5 B | 909.9, 205.2, 21.0 (14.8) | 618.1 / 532.4 |
-| **`(id)`, `NOT EXISTS` in the trigger** | **39.1 MB** | **21.6 B** | **841.0, 191.6, 21.1 (16.1)** | 594.8 / 536.5 |
-| the table without a copy | | | 610.9, 131.2, 17.4 (14.2) | |
+| unique `(dim_a_id, id, tenant_id)`, `ON CONFLICT DO NOTHING` | 73.5 | 40.6 | 1,007.5 | 57.8 (51.4) |
+| unique `(id, tenant_id)`, `ON CONFLICT DO NOTHING` | 57.1 / 99.3 / 151.2 / 301.4 | 31.5 | 950 / 1,173 / 1,439 / 2,230 | 26.2 (20.2) |
+| **`(id)`, a probe of the btree for each row (`LATERAL ... LIMIT 1`)** | **39.1 / 55.3 / 69.9 / 107.4** | **21.6 / 17.6 / 14.6 / 11.2** | **887 / 1,071 / 1,298 / 1,948** | **25.8 (20.9)** |
+| `(id)`, `NOT EXISTS` (an anti join) | 39.1 / 55.3 / 69.9 / 107.4 | 21.6 / 17.6 / 14.6 / 11.2 | 857 / 4,785 / 6,916 / 15,578 | 21.5 (16.5) |
+| the table without a copy | | | 658 | 23.9 (20.9) |
 
-The foreign key first spreads the rows of a new fact over random pages (51 MB of full-page images after a checkpoint); the primary key appends them at the right edge. The plain btree is a third smaller than the two-column unique one and the lookup of a new key at the right edge is cached; deleting 1,000 facts (998.8, 1,002.3 and 1,007.6 M instructions) and updating 1,000 (1,218.9, 1,204.9, 1,166.1 M) cost the same in all three. The price: a pair edit writes more full-page images (100 members gaining a key: 11.8, 49.8 and 39.5 MB of WAL), and a pair that goes takes 2x the instructions (the sift index finds its rows instead of the btree). By the formula (G/3 + W/5 on the fact insert) the third design costs 43.5 against 53.5 for the first.
+The foreign key first spreads the rows of a new fact over random pages (51 MB of full-page images after a checkpoint); the primary key appends them at the right edge. The plain btree is deduplicated (the copies of a fact share one entry), so it shrinks per copy row as the multiplicity grows, where the unique one stays at 31.5 B. The `NOT EXISTS` form lets PostgreSQL choose an anti join, and from 2 copies per fact it hashes the whole copy for 10,000 facts (4,785 M instructions and 1,171 ms against 1,071 M for the probe, 62,872 buffer hits); the lateral probe is an index probe whatever the statistics. Deleting 1,000 facts (999 to 1,069 M instructions at 1.14 across the designs) and updating 1,000 (1,166 to 1,219 M) cost the same in all of them. The price of the lean design: a pair edit writes more full-page images (100 members gaining a key: 38.5 MB of WAL against 11.8 MB with the three-column unique btree), and a pair that goes takes 2x the instructions (the `sift_col` index finds its rows instead of the btree: 543 M against 270 M). By the formula (`G/3 + W/5`, the cost table above) the lean design costs 35 at 1.14 copies per fact (+85% / 3 + 35% / 5) against 46 for the first (+99% / 3 + 65% / 5).
 
 ### When not to use it
 
-A fact that reaches many keys (above 3 on average), a scope key of text or uuid (use an integer key), a scope that changes by the expiry of a date with no write when it is not kept from a view (see below: `sift.scope_expire_pairs`), a restricted user inside a tenant (filter the user's ids inside the tenant's rows: the copy gains little when the user's set is a small part of it), and tables small enough that the join answers in a few milliseconds.
+A fact that reaches many keys (above 1.8 copies per fact on average: `sift.scope_create` refuses it), a scope key of text or uuid (use an integer key), a scope that changes by the expiry of a date with no write when it is not kept from a view (see below: `sift.scope_expire_pairs`), a restricted user inside a tenant (filter the user's ids inside the tenant's rows: the copy gains little when the user's set is a small part of it), and tables small enough that the join answers in a few milliseconds.
 
 ## Keeping the pairs from a view
 

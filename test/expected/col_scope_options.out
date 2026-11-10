@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at date NOT NULL, metrics_a jsonb, notes jsonb DEFAULT '[]', note text)
 	WITH (autovacuum_enabled = false);
-INSERT INTO facts SELECT i, 1 + i % 60, date '2026-01-01' + i % 300, jsonb_build_object('mhead', i % 10, 'service', i % 7), '[]', 'n' FROM generate_series(1, 6000) i;
+INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, date '2026-01-01' + i % 300, jsonb_build_object('mhead', i % 10, 'service', i % 7), '[]', 'n' FROM generate_series(1, 6000) i;
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 -- member e has 0 (e % 10 = 0), 1, 2, 3, 4 or 6 keys
 INSERT INTO pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) k;
@@ -15,11 +15,11 @@ SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id')
 ERROR:  the jsonb column "notes" of a sift_col index needs paths
 HINT:  Declare them with the paths option: WITH (paths = 'notes.* float4'), or REINDEX to read them from the documents.
 CONTEXT:  SQL statement "CREATE INDEX by_options_col ON public.by_options USING sift_col (scope_id, id, dim_a_id, created_at, metrics_a, notes, note) WITH (key_order = 'scope_id, created_at')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 112 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 120 at EXECUTE
 SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id', options => 'paths = ''metrics_a.* float8, notes.k int4''') AS copy_rows;
  copy_rows 
 -----------
-     12000
+      9000
 (1 row)
 
 SELECT reloptions FROM pg_class WHERE relname = 'by_options_col';
@@ -54,7 +54,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, metric
 SELECT sift.scope_create('by_index', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
  copy_rows 
 -----------
-     12000
+      9000
 (1 row)
 
 SELECT columns FROM sift.scope_copies WHERE copy = 'public.by_index';
@@ -103,7 +103,7 @@ SELECT sift.scope_create('overridden', 'facts', 'dim_a_id', 'pairs', 'scope_id',
 						 options => 'array_lengths = on, key_order = ''scope_id''') AS copy_rows;
  copy_rows 
 -----------
-     12000
+      9000
 (1 row)
 
 SELECT columns FROM sift.scope_copies WHERE copy = 'public.overridden';
@@ -129,11 +129,11 @@ SELECT sift.scope_create('overridden', 'facts', 'dim_a_id', 'pairs', 'scope_id',
 ERROR:  the paths option names "metrics_a", which is not a jsonb column of the index
 HINT:  A path starts with the name of an indexed jsonb column.
 CONTEXT:  SQL statement "CREATE INDEX overridden_col ON public.overridden USING sift_col (scope_id, id, dim_a_id, created_at, note) WITH (key_order = 'scope_id, created_at', paths = 'metrics_a.* float8', dict_lookup = 'off', array_lengths = 'off')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 112 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 120 at EXECUTE
 SELECT sift.scope_create('overridden', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['created_at', 'note'], options => 'paths = '''' ') AS copy_rows;
  copy_rows 
 -----------
-     12000
+      9000
 (1 row)
 
 SELECT sift.scope_drop('overridden');
@@ -146,7 +146,7 @@ SELECT sift.scope_drop('overridden');
 SELECT sift.scope_create('by_part', 'facts', 'dim_a_id', 'pairs', 'scope_id', partition => true) AS copy_rows;
  copy_rows 
 -----------
-     12000
+      9000
 (1 row)
 
 SELECT vacuumed, pages > 0 AS has_pages FROM sift.scope_status WHERE copy = 'public.by_part';

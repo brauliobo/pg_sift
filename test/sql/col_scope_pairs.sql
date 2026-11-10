@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL)
 	WITH (autovacuum_enabled = false);
-INSERT INTO facts SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97 FROM generate_series(1, 6000) i;
+INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97 FROM generate_series(1, 6000) i;
 CREATE TABLE group_members (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz, PRIMARY KEY (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
 CREATE TABLE links_a (id serial PRIMARY KEY, tenant_id int NOT NULL, group_id int, dim_a_id int, deleted_at timestamptz, expires_at timestamptz,
 	CHECK ((group_id IS NULL) <> (dim_a_id IS NULL))) WITH (autovacuum_enabled = false);
