@@ -81,6 +81,12 @@ sift_sr_unlock(SiftStreamReader *sr)
 {
 }
 
+/* nothing is read ahead */
+void
+sift_sr_point(SiftStreamReader *sr)
+{
+}
+
 void
 sift_sr_release(SiftStreamReader *sr)
 {

@@ -5,14 +5,16 @@
 #include "core/cmp.h"
 #include "col/seg_int.h"
 
-/* The chunk c of a seekable block, read and parsed into s, which points into the bytes returned (pfree them) */
+/* The chunk c of a seekable block, read and parsed into s, which points into the bytes returned (pfree them); point: it is read to find a place in it, not to go on from it, so the pages after it are not read ahead */
 static uint8 *
-seek_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdSeek *s)
+seek_load(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const SiftCGOrdDir *d, SiftCGOrdSeek *s, bool point)
 {
 	Size		kl = ALIGN8((Size) d->klen),
 				al = ALIGN8((Size) d->alen);
 	uint8	   *raw = palloc(kl + al + SIFT_COL_PAD);
 
+	if (point)
+		sift_sr_point(&seg->sr);
 	seg_read(seg, g->at + d->off, kl + al, raw);
 	if (!sift_cgord_seek_open(s, raw, d->klen, raw + kl, d->alen, d->pad, sift_cgord_chunk_rows(&g->hdr, c), d->first))
 		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
@@ -51,7 +53,7 @@ seg_gord_seek_fill(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const Si
 
 	if (buf->at == c * g->hdr.crows && !buf->compact && pe - buf->afrom < buf->an && (w != UINT32_MAX || buf->an == buf->rows))
 		return;
-	raw = seek_load(seg, g, col, c, d, &s);
+	raw = seek_load(seg, g, col, c, d, &s, false);
 	if (w == UINT32_MAX)
 	{
 		b0 = 0;
@@ -85,7 +87,7 @@ seg_gord_seek_seek(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, const Si
 				b,
 				end;
 
-	raw = seek_load(seg, g, col, c, d, &s);
+	raw = seek_load(seg, g, col, c, d, &s, true);
 	b = sift_cgord_seek_fence(&s, (from - base) / SIFT_CGORD_SUB + 1, (to - 1 - base) / SIFT_CGORD_SUB + 1, key, after) - 1;
 	seek_window(seg, g, col, c, &s, b, b + 1, memo);
 	pfree(raw);
@@ -105,7 +107,7 @@ seg_gord_seek_before(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c, uint32
 {
 	SiftCGOrdDir d = seg_gord_dirent(seg, g, col, c);
 	SiftCGOrdSeek s;
-	uint8	   *raw = seek_load(seg, g, col, c, &d, &s);
+	uint8	   *raw = seek_load(seg, g, col, c, &d, &s, true);
 	uint32		b = sift_cgord_seek_fence(&s, 1, (mv + SIFT_CGORD_SUB - 1) / SIFT_CGORD_SUB, v, desc) - 1,
 				end = Min(mv, (b + 1) * SIFT_CGORD_SUB),
 				i;

@@ -29,7 +29,8 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 	run = SIFT_CGORD_GRPRUN(&g->hdr);
 	if (g->hdr.strbytes != 0)
 		(void) seg_gord_strs(seg, g, col);
-	seg_gord_dir_read(seg, g);
+	seg_gord_dir_read(seg, g, col);
+	(void) seg_gord_gat(seg, g, col);
 	if (g->hdr.vtotal != 0)
 	{
 		if (g->hdr.vtotal > total || g->hdr.entries - g->hdr.values > total - g->hdr.vtotal)
@@ -74,7 +75,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 			{
 				wat = r / 2;
 				wn = Min(VERIFY_GROUPS, g->hdr.ngroups - wat);
-				seg_read(seg, g->at + g->gat + (uint64) wat * SIFT_CGORD_GRPENT, (Size) wn * SIFT_CGORD_GRPENT, win);
+				seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) wat * SIFT_CGORD_GRPENT, (Size) wn * SIFT_CGORD_GRPENT, win);
 				if (!sift_cgord_groups_check(&g->hdr, &run, win, wn))
 					corrupt(seg, "The global order of leaf %d has malformed groups.", col);
 			}

@@ -314,6 +314,13 @@ sr_bytes(SiftStreamReader *sr, uint32 lpage, size_t in, size_t len)
 	return SiftPageGetData(page) + in;
 }
 
+/* The next read is a lookup of a place, not a step of a scan in order: the pages after it are not read ahead, whatever the read before it was */
+void
+sift_sr_point(SiftStreamReader *sr)
+{
+	sr->miss_page = -9;
+}
+
 const void *
 sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 {

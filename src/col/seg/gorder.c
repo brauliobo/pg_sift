@@ -8,105 +8,6 @@
 
 /* ---- the global order of a leaf (col/gorder.h) ---- */
 
-/* The block of leaf col with its header read (the directory entries are read and checked when they are used, the whole directory by verify), NULL when the segment has none */
-GOrdLeaf *
-seg_gord_leaf(SiftColSegment *seg, int col)
-{
-	SegPriv    *pv = PRIV(seg);
-	GOrdLeaf   *g;
-	SiftCGOrdHdr h;
-	Size		front;
-	uint8	   *raw;
-	MemoryContext cx;
-	SegGOrdHead *kept;
-
-	seg_points_read(seg);
-	if (pv->go == NULL || pv->go[col].bytes == 0)
-		return NULL;
-	g = &pv->go[col];
-	if (g->dir != NULL)
-		return g;
-	if (HEAD_CACHED() && (kept = sift_cseg_gordh_find(seg, col)) != NULL)
-	{
-		g->hdr = kept->hdr;
-		g->gat = kept->gat;
-		g->dir = kept->dir;
-		g->ents = kept->ents;
-		return g;
-	}
-	front = SIFT_CGORD_HDR + (Size) g->hdr.chunks * SIFT_CGORD_DIRENT;
-	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment order head", ALLOCSET_SMALL_SIZES);
-	raw = MemoryContextAlloc(cx, SIFT_CGORD_HDR + SIFT_CGORD_DIRENT);
-	seg_read(seg, g->at, SIFT_CGORD_HDR, raw);
-	if (!sift_cgord_head(raw, g->bytes, &h) || h.entries != g->hdr.entries || h.values != g->hdr.values || h.chunks != g->hdr.chunks ||
-		(h.gcol >= 0 && h.gcol >= seg->schema->ncols))
-		corrupt(seg, "The global order of leaf %d has a malformed header.", col);
-	/* the chunks end where the groups begin */
-	g->gat = (uint64) front;
-	if (h.chunks > 0)
-	{
-		SiftCGOrdDir last;
-
-		/* a directory of a few pages follows the header on the page the header was read from: it is read whole here, once, in place of its last entry and then again by the first seek (a page read twice is two blocks) */
-		if (g->ents == NULL && (Size) h.chunks * SIFT_CGORD_DIRENT <= SIFT_CGORD_DIR_EAGER)
-		{
-			g->ents = MemoryContextAlloc(cx, (Size) h.chunks * SIFT_CGORD_DIRENT);
-			seg_read(seg, g->at + SIFT_CGORD_HDR, (Size) h.chunks * SIFT_CGORD_DIRENT, g->ents);
-		}
-		if (g->ents != NULL)
-			memcpy(raw + SIFT_CGORD_HDR, g->ents + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT);
-		else
-			seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) (h.chunks - 1) * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, raw + SIFT_CGORD_HDR);
-		if (!sift_cgord_dirent(raw + SIFT_CGORD_HDR, &h, g->bytes, h.chunks - 1, &last))
-			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, h.chunks - 1);
-		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(last.pad));
-	}
-	if (g->gat + (h.strbytes != 0 ? (uint64) h.strbytes : (uint64) h.ngroups * SIFT_CGORD_GRPENT) != g->bytes)
-		corrupt(seg, "The global order of leaf %d ends at %llu of %llu.", col, (unsigned long long) g->gat, (unsigned long long) g->bytes);
-	g->hdr = h;
-	g->dir = raw;
-	if (HEAD_CACHED())
-	{
-		SegGOrdHead *k = MemoryContextAlloc(cx, sizeof(SegGOrdHead));
-
-		*k = (SegGOrdHead) {h, g->gat, raw, g->ents};
-		sift_cseg_gordh_keep(seg, col, cx, k);
-	}
-	return g;
-}
-
-/* the directory, for the bisections of a seek: a few reads of the entries would cost more than the copy of it */
-void
-seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g)
-{
-	if (g->ents == NULL)
-	{
-		Size		len = (Size) g->hdr.chunks * SIFT_CGORD_DIRENT;
-
-		g->ents = MemoryContextAlloc(seg->mcxt, Max(len, 1));
-		seg_read(seg, g->at + SIFT_CGORD_HDR, len, g->ents);
-	}
-}
-
-/* the directory entry of chunk c, checked against the block */
-SiftCGOrdDir
-seg_gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c)
-{
-	SiftCGOrdDir d;
-	uint8		one[SIFT_CGORD_DIRENT];
-	const uint8 *ent = one;
-
-	if (c >= g->hdr.chunks)
-		corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
-	if (g->ents != NULL)
-		ent = g->ents + (uint64) c * SIFT_CGORD_DIRENT;
-	else
-		seg_read(seg, g->at + SIFT_CGORD_HDR + (uint64) c * SIFT_CGORD_DIRENT, SIFT_CGORD_DIRENT, one);
-	if (!sift_cgord_dirent(ent, &g->hdr, g->bytes, c, &d))
-		corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
-	return d;
-}
-
 /* The slot of the block of leaf col to read: the one sorted by group (the second slot, ncols + col; the first when it is grouped, as the user's order_array_group writes it) or the plain one; -1 when the segment has none */
 int
 sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
@@ -484,7 +385,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		if (g->grps != NULL)
 			e = g->grps[mid];
 		else
-			seg_read(seg, g->at + g->gat + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
+			seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group < group)
 			lo = mid + 1;
 		else
@@ -497,7 +398,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		if (g->grps != NULL)
 			e = g->grps[lo];
 		else
-			seg_read(seg, g->at + g->gat + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
+			seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
 		if (e.group == group)
 		{
 			if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
@@ -534,7 +435,7 @@ gord_group_table(SiftColSegment *seg, int col)
 		return;
 	Assert((uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER);
 	g->grps = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
-	seg_read(seg, g->at + g->gat, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, g->grps);
+	seg_read(seg, g->at + seg_gord_gat(seg, g, col), (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, g->grps);
 }
 
 /* The group at place gi in the order of the groups of a grouped block, and its entries as sift_cseg_gorder_range gives them */
@@ -551,7 +452,7 @@ sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group,
 	if (g->grps != NULL)
 		e = g->grps[gi];
 	else
-		seg_read(seg, g->at + g->gat + (uint64) gi * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) gi * SIFT_CGORD_GRPENT, sizeof(e), &e);
 	if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
 		corrupt(seg, "The global order of leaf %d has a malformed group.", col);
 	*group = e.group;
@@ -682,8 +583,8 @@ seg_gord_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, boo
 	c0 = vs / crows;
 	lo = c0 + 1;
 	hi = (ve - 1) / crows + 1;
-	seg_gord_dir_read(seg, g);
-	SIFT_BISECT(uint32, mid, lo, hi, after ? seg_gord_dirent(seg, g, col, mid).first <= key : seg_gord_dirent(seg, g, col, mid).first < key);
+	seg_gord_dir_read(seg, g, col);
+	SIFT_BISECT(uint32, mid, lo, hi, after ? seg_gord_dir_first(g, mid) <= key : seg_gord_dir_first(g, mid) < key);
 	lo--;
 	d = seg_gord_dirent(seg, g, col, lo);
 	if (d.pad & SIFT_CGORD_COMPACT)
@@ -926,17 +827,17 @@ sift_cseg_gorder_before(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int6
 	crows = g->hdr.crows;
 	lo = vs / crows + 1;
 	hi = (ve - 1) / crows + 1;
-	seg_gord_dir_read(seg, g);
+	seg_gord_dir_read(seg, g, col);
 	if (!desc)
 	{
-		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dirent(seg, g, col, mid).first < v);
+		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dir_first(g, mid) < v);
 		cs = lo - 1;
 		if (seg_gord_dirent(seg, g, col, cs).first >= v)
 			return true;
 	}
 	else
 	{
-		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dirent(seg, g, col, mid).first <= v);
+		SIFT_BISECT(uint32, mid, lo, hi, seg_gord_dir_first(g, mid) <= v);
 		cs = lo - 1;
 		if (seg_gord_dirent(seg, g, col, cs).first > v)
 		{

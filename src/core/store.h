@@ -579,6 +579,7 @@ extern void sift_sr_release(SiftStreamReader *sr);
 
 /* Drops the share lock the last read left on its page (a pointer it returned is invalid): the caller may then serve interrupts */
 extern void sift_sr_unlock(SiftStreamReader *sr);
+extern void sift_sr_point(SiftStreamReader *sr);
 
 /*
  * Blocks referenced by any directory entry, the free list or the metapage

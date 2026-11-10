@@ -365,7 +365,7 @@ typedef struct GOrdLeaf
 	uint64		bytes;
 	SiftCGOrdHdr hdr;
 	uint8	   *dir;			/* the header bytes, read on first use (NULL: not yet) */
-	uint64		gat;			/* a grouped block: where its groups start in the block */
+	uint64		gat;			/* where the chunks end, which is where the groups or the strings start (seg_gord_gat; 0: not yet known) */
 	uint8	   *ents;			/* the directory entries, read by the first seek (a cursor reads the one entry of its chunk) and checked entry by entry as they are used (verify checks them all) */
 	uint32		nstr;			/* a text block: the number of strings (read by the first one; 0 until then), the block of them in sblk (sbno, sblen bytes; UINT32_MAX: none) */
 	uint32		sbno;
@@ -383,6 +383,7 @@ typedef struct GOrdLeaf
 	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
 	uint32		gprobes;
 	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
+	struct SegGOrdHead *head;	/* the backend's copy of the header, which also keeps where the chunks end once it is known */
 } GOrdLeaf;
 
 /* What a segment's point directory records say, kept by the backend (col/dictcache.c): the records of seg_points_read, without the state a scan adds to a leaf */
@@ -395,13 +396,14 @@ typedef struct SegPts
 	GOrdLeaf   *go;				/* [2 * ncols], NULL: the segment has no global order */
 } SegPts;
 
-/* The header of a global order block and its chunk directory, parsed once: they are of an immutable segment (the entries are read where the directory fits SIFT_CGORD_DIR_EAGER) */
+/* The header of a global order block, parsed once: it is of an immutable segment. Its chunk directory joins it in cx when a seek or a cursor first reads it (most statements never do) */
 typedef struct SegGOrdHead
 {
 	SiftCGOrdHdr hdr;
 	uint64		gat;
 	uint8	   *dir;
-	uint8	   *ents;			/* NULL: the directory is read by the first seek */
+	MemoryContext cx;
+	uint8	   *ents;
 } SegGOrdHead;
 
 /* The backend's cache of both, pinned for the segment's context, else NULL; keep takes the one made in cx, a child of the segment's context */
@@ -409,6 +411,7 @@ extern SegPts *sift_cseg_pts_find(SiftColSegment *seg);
 extern void sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p);
 extern SegGOrdHead *sift_cseg_gordh_find(SiftColSegment *seg, int col);
 extern void sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h);
+extern void sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes);
 
 /* The hooks of the reader of the heap rows of a compact block (set by sift_cseg_probe_init, col/seg/probe.c) */
 extern bool (*sift_gprobe_ok) (SiftColSegment *seg, GOrdLeaf *g, int col);
@@ -556,6 +559,7 @@ extern const RunsLeaf *	seg_run_leaf(SiftColSegment *seg, int col);
 extern bool	seg_within(uint64 room, uint64 off, uint64 a, uint64 b);
 extern const uint8 *	seg_unit_blob(SiftColSegment *seg, uint32 n, uint32 u, uint64 dir_off, uint64 bytes, uint64 **dir, uint8 **buf, Size *cap, uint32 *len);
 extern GOrdLeaf *	seg_gord_leaf(SiftColSegment *seg, int col);
+extern bool	seg_gord_present(SiftColSegment *seg, int col);
 extern bool		seg_gord_probe_ok(SiftColSegment *seg, GOrdLeaf *g, int col);
 extern uint32	seg_gord_chunk_memo(SiftColSegment *seg, int col, uint32 c, SiftCGOrdBuf *memo);
 
@@ -599,8 +603,19 @@ extern uint64 *	seg_point_list_read(SiftColSegment *seg, int col, const PointLea
 extern uint32	seg_point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off);
 extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
 
-extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g);
-extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c);
+extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c);
+extern uint64	seg_gord_gat(SiftColSegment *seg, GOrdLeaf *g, int col);
+
+/* The first key of chunk c of a directory read whole (seg_gord_dir_read): a bisection compares these, and the entry it ends at is the one that is checked (seg_gord_dirent) */
+static inline int64
+seg_gord_dir_first(const GOrdLeaf *g, uint32 c)
+{
+	int64		first;
+
+	memcpy(&first, g->ents + (uint64) c * SIFT_CGORD_DIRENT + offsetof(SiftCGOrdDir, first), sizeof(first));
+	return first;
+}
 extern uint64	seg_gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col);
 extern uint32	seg_gord_perm(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 r);
 

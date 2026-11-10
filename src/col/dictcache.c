@@ -289,6 +289,23 @@ sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead
 	leaf_keep(seg, col, GORDH_UNIT, cx, h);
 }
 
+/* The header's entry holds bytes more than it was kept with (they were allocated in its context since): the cache counts them */
+void
+sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes)
+{
+	DictKey		k;
+	DictEnt    *e;
+
+	if (cache == NULL)
+		return;
+	dict_key(&k, seg, col, GORDH_UNIT);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		e->size += bytes;
+		cache_bytes += bytes;
+	}
+}
+
 void *
 sift_cseg_sets_find(SiftColSegment *seg, int col)
 {

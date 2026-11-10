@@ -466,7 +466,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 					acc->gord_chunks += g->hdr.chunks;
 					if (g->hdr.quant != 0)
 					{
-						seg_gord_dir_read(seg, g);
+						seg_gord_dir_read(seg, g, col + k * seg->schema->ncols);
 						for (uint32 c = 0; c < g->hdr.chunks; c++)
 						{
 							uint32		pad = seg_gord_dirent(seg, g, col + k * seg->schema->ncols, c).pad;

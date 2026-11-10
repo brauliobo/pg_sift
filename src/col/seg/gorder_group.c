@@ -21,7 +21,7 @@ gorder_group_view(SiftColSegment *seg, int col, int gcol)
 bool
 sift_cseg_gorder_has(SiftColSegment *seg, int col)
 {
-	return seg_gord_leaf(seg, col) != NULL || seg_gord_leaf(seg, seg->schema->ncols + col) != NULL;
+	return seg_gord_present(seg, col) || seg_gord_present(seg, seg->schema->ncols + col);
 }
 
 /* Does leaf col have a second order grouped by leaf gcol (sift_cseg_gorder_tids_group) */

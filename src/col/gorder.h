@@ -88,7 +88,7 @@
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
 #define SIFT_CGORD_GRP_EAGER	1048576	/* bytes of the group table read whole by the second probe of a segment (43,690 groups): a probe that starts over for each row of an enclosing query searches it in memory, not entry by entry through the buffers */
-#define SIFT_CGORD_DIR_EAGER	262144	/* bytes of a directory read with the header (about 5.4 million rows in a segment), not entry by entry */
+#define SIFT_CGORD_DIR_EAGER	262144	/* bytes of a directory a cursor reads whole (about 5.4 million rows in a segment), not entry by entry */
 #define SIFT_GORD_PIN_MAX	16		/* the values of a group a scan reads at once: the elements of an IN list, or the equalities of a conjunction (a scan with more reads the plain order or the units) */
 #define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan/scan.c, prune_range_tids) */
 #define SIFT_CORDER_MAX_KEYS 512		/* an IN list of more keys is read from the units: each key seeks a chunk of its own, which past this many costs more than the key columns of the units (col/scan/prune_point.c, scan_prune_set_tids) */

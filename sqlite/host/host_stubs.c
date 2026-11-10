@@ -170,6 +170,11 @@ sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead
 {
 }
 
+void
+sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes)
+{
+}
+
 void *
 sift_cseg_sets_find(SiftColSegment *seg, int col)
 {

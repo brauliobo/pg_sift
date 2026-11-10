@@ -34,6 +34,7 @@ col/seg/gorder.c
 col/seg/gorder_seek.c
 col/seg/gorder_str.c
 col/seg/gorder_group.c
+col/seg/gorder_head.c
 col/seg/prune.c
 col/seg/verify.c
 col/seg/vers.c
