@@ -219,6 +219,7 @@ Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `fre
 - **Faster paths:**
   - *Top-N by a float key, or by a column that follows the table:* a float sort key goes through the same min/max and compare kernels as an integer one, so units whose best value cannot pass the n-th are not read: `ORDER BY value DESC LIMIT 10` over 1,000,000 readings 47.5 to 0.80 ms (`ts_top_value`, 60x); the newest 10 rows of a time column with no btree 80.6 to 0.22 ms (`hits_latest_time`, 367x).
   - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off (`verdict_shared_report`); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
+- **Joins from the child:** a `sift_col` index on a child table connects to the index of the parent it joins (`WITH (connect = 'fk -> parent(key)')`, made by itself for a validated integer foreign key), so `EXISTS`, `NOT EXISTS` and counting joins to the parent are answered from the child, and a `LEFT JOIN` of two indexed tables groups the child first: 1,000,000 child rows and 100,000 parents, the join count 4.3 ms against 228 ms for the normal plan and `NOT EXISTS` 2.8 ms against 244 ms ([docs/COL-CONNECT.md](docs/COL-CONNECT.md), [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md)).
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
@@ -262,9 +263,7 @@ SELECT sift_count('news', 'power AND plant');
 - **One library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
 - **Platforms:** PostgreSQL 17, 18 or 19 (x86-64 tested; arm64 tested with 18); SQLite port on Linux x86-64 with SQLite 3.38 or newer; MariaDB port on 10.5 to 13.x.
 - **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
-- **Which options to touch (about ten of 150):** [docs/TUNING.md](docs/TUNING.md).
-- **Which `sift_col` indexes to create, what they cost and which btrees to keep:** [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md).
-- **Column engine types, options and limits:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
+- **Which options to touch (about ten of 150):** [docs/TUNING.md](docs/TUNING.md).- **Column engine types, options and limits:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
 
 [^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).
 
@@ -303,6 +302,8 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 - [docs/CONTAINMENT.md](docs/CONTAINMENT.md): range and network containment from `sift_col`, its numbers and what it does not serve.
 - [docs/FORMATS.md](docs/FORMATS.md): the on-disk format numbers (metapage minor, segment formats, flags).
 - [docs/UPGRADING.md](docs/UPGRADING.md): the upgrade preflight (`scripts/upgrade-check.sh`), `ALTER EXTENSION UPDATE`, `pg_upgrade` to a newer PostgreSQL major and going back to an older release.
+- [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md): which `sift_col` indexes to create, what they cost in size and writes, and which btrees to keep.
+- [docs/COL-CONNECT.md](docs/COL-CONNECT.md): connected indexes: declaring a connection, the automatic one, what it costs and its limits.
 - [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.
 - [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
 
