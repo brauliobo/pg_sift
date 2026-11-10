@@ -21,7 +21,7 @@ DECLARE
 	l text;
 BEGIN
 	SELECT * INTO c FROM sift.scope_copies WHERE copy = 'public.facts_by_tenant';
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || CASE TG_TABLE_NAME WHEN 'facts' THEN sift.scope_fact_insert(c, '') ELSE sift.scope_pairs_insert(c, '') END LOOP
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || CASE TG_TABLE_NAME WHEN 'facts' THEN sift.scope_fact_insert(c, 'new_rows') ELSE sift.scope_pairs_insert(c, 'new_rows') END LOOP
 		INSERT INTO plans VALUES (current_setting('spec.label'), TG_TABLE_NAME, l);
 	END LOOP;
 	RETURN NULL;

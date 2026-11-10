@@ -1,0 +1,91 @@
+-- The statements a scope copy's triggers run for an UPDATE or DELETE never compare every old row with every new one: the transition tables are joined only through a set
+-- difference (one hash or sort pass), so no estimate of them can make PostgreSQL choose a nested loop with a join filter (a NOT EXISTS over the two tables did, quadratic in the
+-- rows changed: 59.6 G instructions for 4,000 updated facts of 300,000 against 0.7 G). The plans are those of the statements the triggers run (sift.scope_fact_delete,
+-- sift.scope_fact_insert, sift.scope_pairs_delete, sift.scope_pairs_insert), explained from a trigger of the spec's own over the same transition tables, with the default
+-- settings and with hash and merge joins off; the planner's cost grows with the rows changed within twice linear; and the copy equals the join after the edits.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note jsonb NOT NULL);
+CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+INSERT INTO scope_pairs SELECT d, 1 + d % 2 FROM generate_series(0, 1999) d;
+CREATE INDEX ON facts (dim_a_id);
+INSERT INTO facts SELECT g, g % 2000, g % 5, g, jsonb_build_object('n', g % 7) FROM generate_series(1, 6000) g;
+ANALYZE facts;
+SELECT count(*) > 0 AS built FROM (SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id')) q;
+
+CREATE TABLE plans (setting text, edit text, size int, statement text, line text);
+CREATE FUNCTION explain_statements() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+	c sift.scope_copies;
+	s text;
+	l text;
+BEGIN
+	SELECT * INTO c FROM sift.scope_copies WHERE copy = 'public.facts_by_tenant';
+	FOREACH s IN ARRAY CASE WHEN TG_TABLE_NAME = 'facts' THEN ARRAY[sift.scope_fact_delete(c, TG_OP), sift.scope_fact_insert(c, sift.scope_changed(c.key_columns, c.columns, TG_OP, 'new'))]
+		ELSE ARRAY[sift.scope_pairs_delete(c, TG_OP),
+				   sift.scope_pairs_insert(c, sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], TG_OP, 'new'))] END LOOP
+		FOR l IN EXECUTE 'EXPLAIN ' || s LOOP
+			INSERT INTO plans VALUES (current_setting('spec.setting'), current_setting('spec.edit'), current_setting('spec.size')::int, left(s, 6), l);
+		END LOOP;
+	END LOOP;
+	RETURN NULL;
+END $$;
+-- an INSERT has no statement for the old rows and a DELETE none for the new ones: the builders are called with the operation, which says which transition table exists
+CREATE TRIGGER explain_facts_upd AFTER UPDATE ON facts REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION explain_statements();
+CREATE TRIGGER explain_pairs_upd AFTER UPDATE ON scope_pairs REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION explain_statements();
+CREATE FUNCTION explain_deletes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+	c sift.scope_copies;
+	l text;
+BEGIN
+	SELECT * INTO c FROM sift.scope_copies WHERE copy = 'public.facts_by_tenant';
+	FOR l IN EXECUTE 'EXPLAIN ' || CASE WHEN TG_TABLE_NAME = 'facts' THEN sift.scope_fact_delete(c, TG_OP) ELSE sift.scope_pairs_delete(c, TG_OP) END LOOP
+		INSERT INTO plans VALUES (current_setting('spec.setting'), current_setting('spec.edit'), current_setting('spec.size')::int, 'DELETE', l);
+	END LOOP;
+	RETURN NULL;
+END $$;
+CREATE TRIGGER explain_pairs_del AFTER DELETE ON scope_pairs REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION explain_deletes();
+
+CREATE TABLE edits (n serial, edit text, size int, stmt text);
+INSERT INTO edits (edit, size, stmt)
+SELECT e.edit, s.size, replace(e.stmt, '$n', s.size::text) FROM (VALUES
+	(1, 'fact update', 'UPDATE facts SET amount = amount + 1 WHERE id <= $n'),
+	(2, 'pair update', 'UPDATE scope_pairs SET tenant_id = 3 - tenant_id WHERE dim_a_id < $n'),
+	(3, 'pair delete', 'DELETE FROM scope_pairs WHERE dim_a_id < $n'),
+	(4, 'pair insert', 'INSERT INTO scope_pairs SELECT d, 1 + d % 2 FROM generate_series(0, $n - 1) d')) e(ord, edit, stmt), (VALUES (250), (2000)) s(size)
+ORDER BY s.size, e.ord;
+
+CREATE FUNCTION run_edits(setting text, joins text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	e record;
+BEGIN
+	PERFORM set_config('spec.setting', setting, false), set_config('enable_hashjoin', joins, true), set_config('enable_mergejoin', joins, true);
+	FOR e IN SELECT * FROM edits ORDER BY n LOOP
+		PERFORM set_config('spec.edit', e.edit, false), set_config('spec.size', e.size::text, false);
+		EXECUTE e.stmt;
+	END LOOP;
+END $$;
+SELECT run_edits('default', 'on');
+SELECT run_edits('hash and merge joins off', 'off');
+
+-- no plan has a join filter or an anti or semi join of the transition tables; the updates are planned through a set difference
+SELECT setting, edit, count(*) FILTER (WHERE line ~ 'Join Filter|Nested Loop (Anti|Semi) Join|Hash (Anti|Semi) Join|Merge (Anti|Semi) Join') AS joins_of_transition_tables,
+	   count(*) FILTER (WHERE line ~ 'SetOp Except All') > 0 AS set_difference
+FROM plans GROUP BY setting, edit ORDER BY setting DESC, edit;
+
+-- the cost the planner gives the statements grows with the rows changed within twice linear (8x the rows: below 16x the cost), whatever the settings
+SELECT setting, edit, cost_2000 < 16 * cost_250 AS within_twice_linear
+FROM (SELECT setting, edit, sum(cost) FILTER (WHERE size = 250) AS cost_250, sum(cost) FILTER (WHERE size = 2000) AS cost_2000
+	  FROM (SELECT setting, edit, size, (regexp_match(line, 'cost=[0-9.]+\.\.([0-9.]+)'))[1]::numeric AS cost FROM plans WHERE line ~ '^(Insert|Delete) on') q GROUP BY setting, edit) c
+ORDER BY setting DESC, edit;
+
+-- the copy equals the join after the edits
+SELECT count(*) AS differs FROM sift.scope_verify('facts_by_tenant');
+SELECT (SELECT md5(string_agg(tenant_id || '/' || id || '/' || dim_a_id || '/' || kind || '/' || amount || '/' || note, ',' ORDER BY tenant_id, id)) FROM facts_by_tenant)
+	 = (SELECT md5(string_agg(s.tenant_id || '/' || f.id || '/' || f.dim_a_id || '/' || f.kind || '/' || f.amount || '/' || f.note, ',' ORDER BY s.tenant_id, f.id))
+		FROM facts f JOIN scope_pairs s USING (dim_a_id)) AS rows_equal_join;
+
+SELECT sift.scope_drop('facts_by_tenant');
+DROP TABLE plans, edits, facts, scope_pairs;
+DROP FUNCTION explain_statements(), explain_deletes(), run_edits(text, text);
+DROP EXTENSION pg_sift;

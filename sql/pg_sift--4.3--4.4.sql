@@ -43,25 +43,44 @@ BEGIN
 END $$;
 COMMENT ON FUNCTION sift.scope_refuse_isolation(text) IS 'Internal: the error of a scope copy trigger that runs in a REPEATABLE READ or SERIALIZABLE transaction';
 
--- The INSERT of the copy's rows that a statement trigger runs for the transition table new_rows; same: more conditions on its rows. A row is added unless the copy has it: the other
+-- The rows of a transition table that a trigger applies to the copy. An UPDATE applies only the rows whose columns changed: the set difference of the two transition tables over
+-- those columns, one hash (or sort) pass of both tables whatever the planner estimates for them, in the order of the keys so that the probes of the copy that follow find the
+-- pages they read before. A NOT EXISTS over the two tables joined by key and compared by column plans as a nested loop that compares every old row with every new one
+-- when the estimate of a transition table is low.
+CREATE FUNCTION sift.scope_changed(keys name[], cols name[], op text, side text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE
+	RETURN CASE WHEN op <> 'UPDATE' THEN side || '_rows'
+				ELSE format('(SELECT %1$s FROM %2$s_rows EXCEPT ALL SELECT %1$s FROM %3$s_rows ORDER BY %4$s)', sift.scope_list(cols, ''), side, CASE side WHEN 'old' THEN 'new' ELSE 'old' END,
+							sift.scope_list(keys, '')) END;
+COMMENT ON FUNCTION sift.scope_changed(name[], name[], text, text) IS 'Internal: the transition table (side old or new) that a trigger of a scope copy applies; for an UPDATE the sub-select of its rows whose columns are not among the other side''s, in key order';
+
+-- The INSERT of the copy's rows that a statement trigger runs for the rows of src (sift.scope_changed). A row is added unless the copy has it: the other
 -- table's trigger may have made it in the same statement. The probe of the copy is a lateral sub-select with LIMIT 1, which PostgreSQL can only run as an index probe of the
 -- maintenance index for each row (an anti join it chose by estimate read the whole copy when the scope relation had no statistics).
-CREATE FUNCTION sift.scope_fact_insert(c sift.scope_copies, same text) RETURNS text LANGUAGE sql STABLE AS $$
-	SELECT format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = s.%I LIMIT 1) h ON true WHERE h.present IS NULL%s',
-		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk,
-		c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key, same) $$;
-CREATE FUNCTION sift.scope_pairs_insert(c sift.scope_copies, same text) RETURNS text LANGUAGE sql STABLE AS $$
-	SELECT format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM new_rows n JOIN %s f ON f.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = n.%I LIMIT 1) h ON true WHERE h.present IS NULL%s',
-		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'f'), c.source, c.fk, c.member,
-		c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key, same) $$;
-COMMENT ON FUNCTION sift.scope_fact_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the table of a scope copy runs for its transition table new_rows';
-COMMENT ON FUNCTION sift.scope_pairs_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the scope relation of a scope copy runs for its transition table new_rows';
+CREATE FUNCTION sift.scope_fact_insert(c sift.scope_copies, src text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM %s n JOIN %s s ON s.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = s.%I LIMIT 1) h ON true WHERE h.present IS NULL',
+		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'n'), src, c.scope_relation, c.member, c.fk,
+		c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key) $$;
+CREATE FUNCTION sift.scope_pairs_insert(c sift.scope_copies, src text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM %s n JOIN %s f ON f.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = n.%I LIMIT 1) h ON true WHERE h.present IS NULL',
+		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'f'), src, c.source, c.fk, c.member,
+		c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key) $$;
+COMMENT ON FUNCTION sift.scope_fact_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the table of a scope copy runs for the rows of its transition table (sift.scope_changed)';
+COMMENT ON FUNCTION sift.scope_pairs_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the scope relation of a scope copy runs for the rows of its transition table (sift.scope_changed)';
+
+-- The DELETE of the copy's rows that a statement trigger of op runs: the rows of the old transition table whose copies go (sift.scope_changed)
+CREATE FUNCTION sift.scope_fact_delete(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('DELETE FROM %s d USING %s o WHERE %s', c.copy, sift.scope_changed(c.key_columns, c.columns, op, 'old'), sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND ')) $$;
+CREATE FUNCTION sift.scope_pairs_delete(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('DELETE FROM %s d USING %s o WHERE d.%I = o.%I AND d.%I = o.%I', c.copy, sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], op, 'old'),
+		c.fk, c.member, c.scope_key, c.scope_key) $$;
+COMMENT ON FUNCTION sift.scope_fact_delete(sift.scope_copies, text) IS 'Internal: the DELETE of the copy''s rows that the trigger of the table of a scope copy runs for its transition table old_rows (op: the trigger''s operation)';
+COMMENT ON FUNCTION sift.scope_pairs_delete(sift.scope_copies, text) IS 'Internal: the DELETE of the copy''s rows that the trigger of the scope relation of a scope copy runs for its transition table old_rows (op: the trigger''s operation)';
 
 -- The statements that keep a copy exact. A partitioned copy gets the partition of a scope key that appears in the scope relation when the pair is inserted.
 CREATE FUNCTION sift.scope_fact_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	c        sift.scope_copies;
-	same     text;
+	src      text;
 	k        bigint;
 BEGIN
 	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
@@ -69,22 +88,17 @@ BEGIN
 	-- a transaction does not see the uncommitted rows of the other table's: the writers of the facts share a lock that the writers of the pairs take alone
 	PERFORM pg_advisory_xact_lock_shared(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
-		-- an updated row whose carried columns did not change keeps its copies
-		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE %s AND %s)',
-			sift.scope_cmp(c.key_columns, 'n', 'o', '=', ' AND '), sift.scope_cmp(c.columns, 'n', 'o', 'IS NOT DISTINCT FROM', ' AND ')) ELSE '' END;
-		EXECUTE format('DELETE FROM %s d USING old_rows o WHERE %s%s', c.copy,
-			sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND '), same);
+		EXECUTE sift.scope_fact_delete(c, TG_OP);
 	END IF;
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
-		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM old_rows o WHERE %s AND %s)',
-			sift.scope_cmp(c.key_columns, 'o', 'n', '=', ' AND '), sift.scope_cmp(c.columns, 'o', 'n', 'IS NOT DISTINCT FROM', ' AND ')) ELSE '' END;
+		src := sift.scope_changed(c.key_columns, c.columns, TG_OP, 'new');
 		-- a statement that changes the facts and the pairs fires this trigger first, on pairs whose partition their own trigger has not made yet
 		IF c.partitioned THEN
-			FOR k IN EXECUTE format('SELECT DISTINCT s.%I FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s', c.scope_key, c.scope_relation, c.member, c.fk, same) LOOP
+			FOR k IN EXECUTE format('SELECT DISTINCT s.%I FROM %s n JOIN %s s ON s.%I = n.%I', c.scope_key, src, c.scope_relation, c.member, c.fk) LOOP
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE sift.scope_fact_insert(c, same);
+		EXECUTE sift.scope_fact_insert(c, src);
 	END IF;
 	RETURN NULL;
 END $$;
@@ -92,24 +106,23 @@ END $$;
 CREATE FUNCTION sift.scope_pairs_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	c        sift.scope_copies;
-	same     text;
+	src      text;
 	k        bigint;
 BEGIN
 	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
-		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE n.%1$I = o.%1$I AND n.%2$I = o.%2$I)', c.member, c.scope_key) ELSE '' END;
-		EXECUTE format('DELETE FROM %s d USING old_rows o WHERE d.%I = o.%I AND d.%I = o.%I%s', c.copy, c.fk, c.member, c.scope_key, c.scope_key, same);
+		EXECUTE sift.scope_pairs_delete(c, TG_OP);
 	END IF;
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
-		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM old_rows o WHERE n.%1$I = o.%1$I AND n.%2$I = o.%2$I)', c.member, c.scope_key) ELSE '' END;
+		src := sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], TG_OP, 'new');
 		IF c.partitioned THEN
-			FOR k IN EXECUTE format('SELECT DISTINCT n.%I FROM new_rows n WHERE true%s', c.scope_key, same) LOOP
+			FOR k IN EXECUTE format('SELECT DISTINCT n.%I FROM %s n', c.scope_key, src) LOOP
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE sift.scope_pairs_insert(c, same);
+		EXECUTE sift.scope_pairs_insert(c, src);
 	END IF;
 	RETURN NULL;
 END $$;
