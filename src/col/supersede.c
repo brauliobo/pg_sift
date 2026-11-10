@@ -150,6 +150,13 @@ journal_hold(Relation index, Oid keytype, Datum key)
 		tomb_hold(index, &rec);
 }
 
+/* A journal record of a scope relation's index (col/conn.h), held with the tombstones of the transaction */
+void
+sift_col_tomb_hold_rec(Relation index, const SiftTomb *rec)
+{
+	tomb_hold(index, rec);
+}
+
 /* A row trigger (track_changes = ctid): the entry at the address of a version a statement ended, held with the others of the transaction */
 void
 sift_col_tomb_hold_tid(Relation index, ItemPointer tid)

@@ -40,7 +40,7 @@ scope_open(AggExec *ex)
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
-	ex->scope_why = sift_scope_why(ex->index, sc->key_name, sc->nkeys, sc->once);
+	ex->scope_why = sift_scope_why(ex->index, sc->key_name, sc->nkeys, sc->once, ex->snap);
 	ex->scope_stored = ex->scope_why == NULL;
 	return ex->scope_stored;
 }

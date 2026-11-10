@@ -14,6 +14,7 @@
 #include "access/skey.h"
 #include "access/stratnum.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_am_d.h"
@@ -28,10 +29,22 @@
 
 bool		sift_agg_scope = true;
 int			sift_scope_patch_keys = 4096;
+double		sift_scope_max_multiplicity = 8.0;
 #ifdef SIFT_TESTING
-/* RELEASE-TODO(4.4): goes away with the journal and the patch reader of the scope index */
+/* RELEASE-TODO(4.4): both go away with the patch reader of the scope index; a scope without a journal index is then always refused */
 bool		sift_test_scope_trust = false;
+bool		sift_test_scope_need_journal = false;
 #endif
+
+static bool
+journal_required(void)
+{
+#ifdef SIFT_TESTING
+	return sift_test_scope_need_journal;
+#else
+	return true;
+#endif
+}
 
 /* One scope, from *pp to its end (a ';' or the end of the text); NULL with *err set when it does not parse */
 static SiftScopeSpec *
@@ -190,6 +203,27 @@ pair_index(Relation rel, AttrNumber member, AttrNumber key)
 	return found;
 }
 
+/* The journal index of the scope relation: a ready sift_col index with track_changes = 'ctid' whose first column is the member and that holds the scope key; the lowest oid when several do */
+Oid
+sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key)
+{
+	Oid			found = InvalidOid;
+
+	foreach_oid(ioid, RelationGetIndexList(rel))
+	{
+		Relation	idx;
+
+		if (OidIsValid(found))
+			break;
+		idx = index_open(ioid, AccessShareLock);
+		if (sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
+			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber)
+			found = ioid;
+		index_close(idx, AccessShareLock);
+	}
+	return found;
+}
+
 /*
  * The checks of one scope and the unique btree of its relation that serves it. The relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with the
  * declaration.
@@ -232,18 +266,35 @@ sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s,
 	return btree;
 }
 
-/* The dependencies of the index on btrees (its scopes'): the ones that are not in keep are removed, the ones of keep that are not there are made */
+/* Is the sift_col index a scope relation's journal index (track_changes = 'ctid', as opposed to the parent index of a connection, which tracks a key column)? */
+static bool
+is_journal_index(Oid oid)
+{
+	Relation	idx = index_open(oid, AccessShareLock);
+	bool		ctid = sift_col_track_ctid(idx);
+
+	index_close(idx, AccessShareLock);
+	return ctid;
+}
+
+/*
+ * The dependencies of the index on btrees and journal indexes (its scopes'): the ones that are not in keep are removed, the ones of keep that are not there are made. The parent
+ * indexes of its connections are the business of sift_conn_resolve, which removes the edges to sift_col indexes it does not name: its removal is made visible first.
+ */
 static void
 sync_edges(Oid index, List *keep)
 {
-	Relation	drel = table_open(DependRelationId, RowExclusiveLock);
+	Relation	drel;
 	ScanKeyData key[2];
 	SysScanDesc scan;
 	HeapTuple	tup;
 	List	   *stale = NIL,
-			   *present = NIL;
+			   *present = NIL,
+			   *edges = NIL;
 	ObjectAddress from;
 
+	CommandCounterIncrement();
+	drel = table_open(DependRelationId, RowExclusiveLock);
 	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
 	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(index));
 	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
@@ -251,16 +302,20 @@ sync_edges(Oid index, List *keep)
 	{
 		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
 
-		if (d->refclassid != RelationRelationId || d->deptype != DEPENDENCY_NORMAL || d->objsubid != 0 || d->refobjsubid != 0 ||
-			get_rel_relkind(d->refobjid) != RELKIND_INDEX || sift_col_is_index_oid(d->refobjid))
-			continue;
-		if (list_member_oid(keep, d->refobjid))
-			present = lappend_oid(present, d->refobjid);
-		else
-			stale = lappend_oid(stale, d->refobjid);
+		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL && d->objsubid == 0 && d->refobjsubid == 0 && get_rel_relkind(d->refobjid) == RELKIND_INDEX)
+			edges = lappend_oid(edges, d->refobjid);
 	}
 	systable_endscan(scan);
 	table_close(drel, RowExclusiveLock);
+	foreach_oid(edge, edges)
+	{
+		if (sift_col_is_index_oid(edge) && !is_journal_index(edge))
+			continue;
+		if (list_member_oid(keep, edge))
+			present = lappend_oid(present, edge);
+		else
+			stale = lappend_oid(stale, edge);
+	}
 	foreach_oid(old, stale)
 		deleteDependencyRecordsForSpecific(RelationRelationId, index, DEPENDENCY_NORMAL, RelationRelationId, old);
 	ObjectAddressSet(from, RelationRelationId, index);
@@ -293,9 +348,16 @@ sift_scope_resolve(Relation heap, Relation index)
 		AttrNumber	member,
 					key;
 		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
+		Oid			journal = sift_scope_journal_index(rel, member, key);
 
+		if (!OidIsValid(journal) && journal_required())
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
+							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which members changed since the scope segments were written.",
+									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
 		table_close(rel, NoLock);
 		keep = list_append_unique_oid(keep, btree);
+		if (OidIsValid(journal))
+			keep = list_append_unique_oid(keep, journal);
 	}
 	sync_edges(RelationGetRelid(index), keep);
 	list_free(keep);
@@ -308,6 +370,7 @@ sift_scope_alter(Relation index)
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 	sift_scope_resolve(heap, index);
+	sift_scope_start(heap, index);
 	table_close(heap, NoLock);
 }
 

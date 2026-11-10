@@ -48,6 +48,34 @@ extern void sift_scope_alter(Relation index);
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
 /*
+ * The journal of the scope relation (col/scope_journal.c, INTERFACE.md section 5): a sift_col index of the relation with track_changes = 'ctid' whose first column is the member key and
+ * that holds the scope key (the journal index; the lowest oid that qualifies). Its tombstone log keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended
+ * and a KEYADD record for the member of every pair inserted; the rule that reads them is the one of the connections (col/conn.h, docs/COL-CONNECT.md). The scope is the ordinal of the
+ * scope in the declaration of the fact index; a scope whose relation has no journal index vouches for nothing (SIFT_CONN_NO_JOURNAL).
+ */
+/* The journal index of the relation for the pair (member, scope_key); InvalidOid when it has none */
+extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key);
+extern bool sift_scope_has_journal(Relation index, int scope);
+/* The journals of the scopes of the index, made when its build has read the table (the writers of the scope relation are held out to the end of the statement) */
+extern void sift_scope_start(Relation heap, Relation index);
+/* The stamp of the scope relation's journal at snap: fill, promotion and merge take it before they read the relation (lineage 0 and the reason when the journal cannot vouch) */
+extern SiftConnWhy sift_scope_take(Relation index, int scope, Snapshot snap, SiftConnStamp *stamp);
+/* May a derivation stamped so be read by snap */
+extern SiftConnWhy sift_scope_vouch(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap);
+/* The members whose pairs changed in (X, S], ended or inserted: sorted, unique, at most cap (SIFT_CONN_OVERFLOW), the keys palloc'd in the current context (sift_conn_keys_free) */
+extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+
+/*
+ * Refresh: is a scope segment of the index worth a rewrite for what its stamps say (sift_conn_stale for the scopes)? NULL from begin: the index declares no scope. The reason in
+ * sift.col_maintenance_due is "stale connection".
+ */
+typedef struct SiftScopeStale SiftScopeStale;
+extern SiftScopeStale *sift_scope_stale_begin(Relation index, MemoryContext mcxt);
+struct SiftColSegment;
+extern bool sift_scope_stale(SiftScopeStale *st, const struct SiftColSegment *seg);
+extern void sift_scope_stale_end(SiftScopeStale *st);
+
+/*
  * The fill: the writer of a build, promotion or merge expands each batch of fact rows by the scope keys of their fk under one stamp of the scope relation (col/scope_fill.c).
  * expand: for the nrows of the batch, the number of scope entries of each row (out_n[row]); the pairs are then taken in order by scope_fill_keys (n entries, row[i], key[i]).
  */
@@ -67,15 +95,17 @@ extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const i
  * The reader (col/scan/scope.c): NULL when a scan that has a scope conjunct of nkeys keys of the scope key_name reads the scope segments of the index, else the word for
  * "Scope Fallback" (it then reads the entity rows of the members); and the member keys that have a pair with one of the keys under the snapshot, ascending, each once.
  */
-extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once);
+extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 
 #ifdef SIFT_TESTING
 /* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 extern PGDLLIMPORT bool sift_test_scope_trust;	/* a scope without a journal is read as if it vouched (the proof of concept) */
+extern PGDLLIMPORT bool sift_test_scope_need_journal;	/* a scope whose relation has no journal index is refused at CREATE INDEX (a release always does) */
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
 extern PGDLLIMPORT int sift_scope_patch_keys;
+extern PGDLLIMPORT double sift_scope_max_multiplicity;
 
 #endif							/* SIFT_COL_SCOPE_H */

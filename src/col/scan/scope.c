@@ -30,14 +30,68 @@ scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
 	return -1;
 }
 
+/* A scope whose relation has no journal index is read as if it vouched under the test switch (the proof of concept); a release never does */
 static bool
-scope_trusted(void)
+scope_trusted(Relation index, int scope)
 {
 #ifdef SIFT_TESTING
-	return sift_test_scope_trust;
+	return sift_test_scope_trust && !sift_scope_has_journal(index, scope);
 #else
 	return false;
 #endif
+}
+
+/*
+ * The stamp the scope segments were filled under for the scope, the oldest when they differ in their horizon (changed(S, X) for the oldest covers the rest); NULL, with *why set, when a
+ * segment was never filled (lineage 0) or two were filled under journals of two lineages.
+ */
+static const char *
+scope_stamp(Relation index, const SiftDirSnapshot *dir, int scope, SiftConnStamp *oldest)
+{
+	bool		first = true;
+
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		SiftConnStamp st;
+
+		if (!sift_seg_is_scope(&dir->segs[i]))
+			continue;
+		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
+		st = scope < seg->nscope ? seg->scope[scope] : (SiftConnStamp) {0};
+		sift_cseg_close(seg);
+		if (st.lineage == 0)
+			return "unfilled";
+		if (!first && st.lineage != oldest->lineage)
+			return "several stamps";
+		if (first || TransactionIdPrecedes(st.xmin, oldest->xmin))
+			*oldest = st;
+		first = false;
+	}
+	return NULL;
+}
+
+/*
+ * The verdict of the journal of the scope relation on the scope segments for the snapshot (INTERFACE section 5): it vouches for their stamp, and no member changed in the relation since
+ * it. A stored read is valid only for the members that did not change; until the patch reads those through the entity path, any change is a fallback.
+ */
+static const char *
+scope_verdict(Relation index, const SiftDirSnapshot *dir, int scope, Snapshot snap)
+{
+	SiftConnStamp stamp;
+	SiftConnKeys keys;
+	SiftConnWhy why;
+	const char *no;
+
+	if ((no = scope_stamp(index, dir, scope, &stamp)) != NULL)
+		return no;
+	if ((why = sift_scope_vouch(index, scope, &stamp, snap)) != SIFT_CONN_OK)
+		return sift_conn_why_name(why);
+	if ((why = sift_scope_changed(index, scope, &stamp, snap, sift_scope_patch_keys, &keys)) != SIFT_CONN_OK)
+		return sift_conn_why_name(why);
+	no = keys.n > 0 ? "members changed" : NULL;
+	sift_conn_keys_free(&keys);
+	return no;
 }
 
 /*
@@ -45,20 +99,21 @@ scope_trusted(void)
  * order of the contract (INTERFACE section 6): the setting, the declaration, the shape of the request, then the verdict on the segments.
  */
 const char *
-sift_scope_why(Relation index, const char *key_name, int nkeys, bool once)
+sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap)
 {
 	SiftDirSnapshot *dir;
 	const char *why = NULL;
+	int			scope = scope_ordinal(sift_scope_specs(index), key_name);
 	uint64		first_scope = UINT64_MAX,
 				last_entity = 0;
 
 	if (!sift_agg_scope)
 		return "disabled";
-	if (scope_ordinal(sift_scope_specs(index), key_name) < 0)
+	if (scope < 0)
 		return "no scope index";
 	if (once && nkeys > 1)
 		return "several keys, row counted once";
-	if (!scope_trusted())
+	if (!scope_trusted(index, scope) && !sift_scope_has_journal(index, scope))
 		return "no journal";
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
@@ -78,16 +133,18 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once)
 		if (rows > 0)
 			why = "write buffer";
 	}
-	pfree(dir);
-	if (why != NULL)
-		return why;
-	if (first_scope == UINT64_MAX)
-		return "unfilled";
+	if (why == NULL && first_scope == UINT64_MAX)
+		why = "unfilled";
 	/*
 	 * The build writes the scope segments after the entity segments, so a later entity segment (a promotion, a merge) holds rows, or the same rows under a new
 	 * generation, that no scope entry describes: the stored read would miss them. Exact and simple until the promotion and the merge fill the scope family.
 	 */
-	return last_entity > first_scope ? "scope segments do not cover the rows" : NULL;
+	if (why == NULL && last_entity > first_scope)
+		why = "scope segments do not cover the rows";
+	if (why == NULL && !scope_trusted(index, scope))
+		why = scope_verdict(index, dir, scope, snap);
+	pfree(dir);
+	return why;
 }
 
 static int

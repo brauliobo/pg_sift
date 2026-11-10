@@ -84,6 +84,7 @@ extern struct SiftTombLog *sift_col_log_appender(Relation index);
 /* The tombstones of the replaced entries that a statement holds back (col/supersede.c): written before the log is read, before commit and before a savepoint starts, dropped when the transaction or the savepoint aborts */
 extern void sift_col_batch_hook(void);
 extern void sift_col_tomb_hold_tid(Relation index, ItemPointer tid);
+extern void sift_col_tomb_hold_rec(Relation index, const SiftTomb *rec);
 extern void sift_col_tombs_flush(void);
 extern void sift_col_tombs_discard(void);
 /* The option track_changes (col/rowkey.c): is a column named, the check of the option, and the preparation of a build */

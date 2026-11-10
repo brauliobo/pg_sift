@@ -30,7 +30,8 @@ struct LookValid
 bool
 lookvalid_journal(Relation index, AttrNumber keyatt)
 {
-	return index != NULL && sift_conn_journal_on(index) && index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1] == keyatt;
+	return index != NULL && sift_col_row_key_on(index) && sift_conn_journal_on(index) &&
+		index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1] == keyatt;
 }
 
 /*

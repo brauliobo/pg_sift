@@ -57,6 +57,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 {
 	RewriteView *v = MemoryContextAllocZero(cx, sizeof(RewriteView));
 	SiftConnStale *conn = sift_conn_stale_begin(index, cx);
+	SiftScopeStale *scope = sift_scope_stale_begin(index, cx);
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -65,7 +66,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			v->seg[v->n] = sift_cseg_open(index, &v->imm[v->n], cx);
 			v->span[v->n] = maint_seg_spans(v->seg[v->n]);
 			v->over[v->n] = !maint_is_partition(&v->imm[v->n]);
-			v->stale[v->n] = conn != NULL && sift_conn_stale(conn, v->seg[v->n]);
+			v->stale[v->n] = (conn != NULL && sift_conn_stale(conn, v->seg[v->n])) || (scope != NULL && sift_scope_stale(scope, v->seg[v->n]));
 			v->n++;
 		}
 	for (int i = 0; i < v->n; i++)
@@ -81,5 +82,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 		maint_mark_key_overlap(index, v);
 	if (conn != NULL)
 		sift_conn_stale_end(conn);
+	if (scope != NULL)
+		sift_scope_stale_end(scope);
 	return v;
 }

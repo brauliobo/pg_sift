@@ -3,7 +3,7 @@
  *
  * For each scope the fill knows the pairs (member, scope key) of the relation under a snapshot the way the fill of the found flags knows a parent (col/conn_fill.c): by reading the relation
  * once into the pairs sorted by member, or by asking its unique btree for the members of each batch, whichever the rows to fill make cheaper (the same price rule and the same btree probe). The stamp is taken before the
- * relation is read. The proof of concept has no journal for the relation (docs: INTERFACE.md section 5 is phase 2), so the stamp has lineage 0 and the snapshot's xmin.
+ * relation is read, from the journal of the relation (col/scope_journal.c): lineage 0 (and the snapshot's xmin) when the relation has no journal that vouches for the snapshot.
  */
 #include "postgres.h"
 
@@ -112,13 +112,15 @@ seen_new(MemoryContext cx)
 	return hash_create("sift scope probe", 1024, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
-/* The relation is open (AccessShare, held to the end of the transaction) and btree is its unique index on (member, key), in either order */
+/*
+ * The relation is open (AccessShare, held to the end of the transaction) and btree is its unique index on (member, key), in either order. stamp is the stamp of its journal taken
+ * before the relation is read (lineage 0: the journal cannot vouch, the entries are written all the same and a reader will not take them for the relation's).
+ */
 static void
-map_begin(SiftScopeFill *f, ScopeMap *m, Relation rel, Oid btree, AttrNumber member, AttrNumber key, Snapshot snap, uint64 rows)
+map_begin(SiftScopeFill *f, ScopeMap *m, Relation rel, Oid btree, AttrNumber member, AttrNumber key, Snapshot snap, uint64 rows, SiftConnStamp stamp)
 {
 	m->cx = f->cx;
-	/* the stamp comes before the first read of the relation */
-	m->stamp = (SiftConnStamp) {.lineage = 0,.xmin = snap->xmin};
+	m->stamp = stamp;
 	if (sift_conn_probe_cheaper(rows, sift_conn_rows_of(rel)) || !pairs_load(m, f->cx, rel, member, key, snap, (Size) maintenance_work_mem * 1024 / 2))
 	{
 		m->probe = sift_conn_probe_begin_on(f->cx, rel, btree, member, snap);
@@ -178,9 +180,13 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		AttrNumber	member,
 					key;
 		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
+		SiftConnStamp stamp;
 
+		/* the stamp comes before the first read of the relation */
+		if (sift_scope_take(index, i, f->snap, &stamp) != SIFT_CONN_OK)
+			stamp.xmin = f->snap->xmin;
 		f->m[i].fk_leaf = r->first[r->schema->cols[r->scope_leaf[i]].attno];
-		map_begin(f, &f->m[i], rel, btree, member, key, f->snap, rows);
+		map_begin(f, &f->m[i], rel, btree, member, key, f->snap, rows, stamp);
 		table_close(rel, NoLock);
 	}
 	fill_done(f);
@@ -194,7 +200,7 @@ sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumbe
 {
 	SiftScopeFill *f = fill_new(mcxt, 1);
 
-	map_begin(f, &f->m[0], rel, btree, member, key, f->snap, rows);
+	map_begin(f, &f->m[0], rel, btree, member, key, f->snap, rows, (SiftConnStamp) {.xmin = f->snap->xmin});
 	fill_done(f);
 	return f;
 }

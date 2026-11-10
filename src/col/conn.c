@@ -80,15 +80,51 @@ key64(Oid typid, Datum d, int64 *out)
 	}
 }
 
-bool
-sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *rec)
+static bool
+journal_record(Relation index, Oid keytype, Datum key, SiftTombKind kind, uint16 flags, SiftTomb *rec)
 {
 	int64		k;
 
 	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !key64(keytype, key, &k))
 		return false;
-	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = SIFT_TOMB_KEYCHG,.flags = kept ? SIFT_TOMB_KEPT : 0};
+	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
 	return true;
+}
+
+bool
+sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *rec)
+{
+	return journal_record(index, keytype, key, SIFT_TOMB_KEYCHG, kept ? SIFT_TOMB_KEPT : 0, rec);
+}
+
+/*
+ * The journal of a scope relation (col/scope.h) is kept by a sift_col index with track_changes = 'ctid' whose first column is the member key: the row trigger of the index
+ * calls ended for the old version of each row an UPDATE or DELETE ended (KEYCHG), its aminsert calls added for each version inserted (KEYADD, an UPDATE writes one too). Both are held
+ * with the tombstones of the transaction. An index that keeps no journal ignores them.
+ */
+static void
+journal_row(Relation index, Relation heap, SiftTombKind kind, Datum key, bool isnull)
+{
+	SiftTomb	rec;
+	AttrNumber	att = index->rd_index->indkey.values[0];
+
+	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, kind, 0, &rec))
+		sift_col_tomb_hold_rec(index, &rec);
+}
+
+void
+sift_conn_ended_row(Relation index, Relation heap, HeapTuple old)
+{
+	bool		isnull;
+	Datum		key = heap_getattr(old, index->rd_index->indkey.values[0], RelationGetDescr(heap), &isnull);
+
+	journal_row(index, heap, SIFT_TOMB_KEYCHG, key, isnull);
+}
+
+void
+sift_conn_added_row(Relation index, Relation heap, const Datum *values, const bool *isnull)
+{
+	journal_row(index, heap, SIFT_TOMB_KEYADD, values[0], isnull[0]);
 }
 
 bool
@@ -131,7 +167,8 @@ journal_make(Relation heap, Relation index)
 	/* the records start here: a stamp of a snapshot older than the journal cannot be vouched (a change between the snapshot and now is in no record); the writers are out, so no transaction below the next id writes the table */
 	k.trim = ReadNextTransactionId();
 	sift_tomb_set_keys(index, log, &k);
-	sift_tomb_set_format(index, SIFT_COL_FORMAT_KEYJOURNAL);
+	/* a scope relation's journal holds KEYADD records: an older library refuses it */
+	sift_tomb_set_format(index, sift_col_track_ctid(index) ? SIFT_COL_FORMAT_SCOPE : SIFT_COL_FORMAT_KEYJOURNAL);
 	CacheInvalidateRelcache(index);
 	return k.lineage;
 }
@@ -142,10 +179,10 @@ check_key(Relation heap, Relation index)
 	AttrNumber	hatt;
 	Oid			typid;
 
-	if (!sift_col_row_key_on(index))
+	if (!sift_col_track_on(index) || (sift_col_track_ctid(index) && index->rd_index->indkey.values[0] == 0))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: it does not track a key column", RelationGetRelationName(index)),
 						errhint("Connect to an index with track_changes naming the unique key of its table.")));
-	hatt = index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
+	hatt = sift_col_track_ctid(index) ? index->rd_index->indkey.values[0] : index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
 	typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
 	if (typid != INT2OID && typid != INT4OID && typid != INT8OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: its key column is not an integer", RelationGetRelationName(index)),
@@ -221,7 +258,7 @@ sift_conn_build(Relation heap, Relation index)
 
 	if (!wanted && (origin = sift_col_track_swap_origin(heap, index)) != InvalidOid)
 		wanted = sift_conn_children(origin) != NIL;
-	if (wanted && sift_col_row_key_on(index))
+	if (wanted && sift_col_track_on(index))
 	{
 		check_key(heap, index);
 		(void) journal_make(heap, index);
@@ -354,6 +391,13 @@ sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *sta
 SiftConnWhy
 sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {
+	return sift_conn_changed_by(heap, index, stamp, snap, cap, false, out);
+}
+
+/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones */
+SiftConnWhy
+sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out)
+{
 	SiftTombLog *log;
 	SiftConnWhy why = sift_conn_vouches(heap, index, stamp, snap);
 	const SiftTomb *rec;
@@ -373,7 +417,7 @@ sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Sna
 	recs = n > 0 ? sift_rows_alloc(n * sizeof(KeyRec)) : NULL;
 	for (int i = 0; i < n; i++)
 	{
-		if (rec[i].kind != SIFT_TOMB_KEYCHG || TransactionIdPrecedes(rec[i].xid, stamp->xmin))
+		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin))
 			continue;
 		if (rec[i].xid != last)
 		{

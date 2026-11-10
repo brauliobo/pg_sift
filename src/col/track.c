@@ -817,6 +817,8 @@ track_row(TriggerData *td)
 		return PointerGetDatum(NULL);
 	index = index_open(rowmemo.index, RowExclusiveLock);
 	sift_col_tomb_hold_tid(index, &tid);
+	if (sift_conn_journal_on(index))
+		sift_conn_ended_row(index, td->tg_relation, td->tg_trigtuple);
 	index_close(index, NoLock);
 	return PointerGetDatum(NULL);
 }

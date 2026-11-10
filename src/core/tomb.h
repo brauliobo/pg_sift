@@ -85,8 +85,11 @@ typedef enum SiftTombKind
 	SIFT_TOMB_DELETE = 1,		/* the version (an index: the entry) is not live from the entry's transaction on */
 	SIFT_TOMB_UPDATE,			/* succ is the new version */
 	SIFT_TOMB_LOCK,				/* row lock: never deletes */
-	SIFT_TOMB_KEYCHG			/* key journal (col/conn.h): the entry of key `succ` was ended by xid; key is SIFT_TOMB_KEYS_KEY, not a heap address */
+	SIFT_TOMB_KEYCHG,			/* key journal (col/conn.h): the entry of key `succ` was ended by xid; key is SIFT_TOMB_KEYS_KEY, not a heap address */
+	SIFT_TOMB_KEYADD			/* key journal of a scope relation (col/scope.h): an entry of key `succ` was inserted by xid */
 } SiftTombKind;
+
+#define SIFT_TOMB_IS_JOURNAL(kind)	((kind) == SIFT_TOMB_KEYCHG || (kind) == SIFT_TOMB_KEYADD)
 
 /* The key of every KEYCHG record: above the largest heap address (block * 65536 + offset), so the range lookups of the tombstones never reach it and the records sort together at the end */
 #define SIFT_TOMB_KEYS_KEY		(UINT64CONST(1) << 48)

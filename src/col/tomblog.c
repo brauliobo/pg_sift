@@ -229,7 +229,7 @@ drop_keep(SiftTomb *t, void *arg)
 	 * A journal record (col/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
 	 * the record's transaction. It goes when its transaction aborted, and when it is so old that the comparison would wrap (the journal then vouches from the horizon on).
 	 */
-	if (t->kind == SIFT_TOMB_KEYCHG)
+	if (SIFT_TOMB_IS_JOURNAL(t->kind))
 	{
 		if (!TransactionIdPrecedes(t->xid, d->aged) && (!TransactionIdIsNormal(t->xid) || sift_xid_state(t->xid) != SIFT_XID_ABORTED))
 			return true;
@@ -269,7 +269,7 @@ trim_journal(Relation index, SiftTombLog *log, TransactionId aged)
 	const SiftTomb *rec = log->keys_cover && log->keys.lineage != 0 ? sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n) : NULL;
 
 	for (int i = 0; rec != NULL && i < n; i++)
-		if (rec[i].kind == SIFT_TOMB_KEYCHG && TransactionIdPrecedes(rec[i].xid, aged))
+		if (SIFT_TOMB_IS_JOURNAL(rec[i].kind) && TransactionIdPrecedes(rec[i].xid, aged))
 		{
 			SiftTombKeys keys = log->keys;
 

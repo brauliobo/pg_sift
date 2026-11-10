@@ -118,6 +118,15 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  */
 extern bool sift_conn_inserted_since(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+/* The same, with the keys of the inserted entries (adds) of a scope relation's journal as well (col/scope.h) */
+extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out);
+
+/*
+ * The journal of a scope relation: a sift_col index with track_changes = 'ctid' whose first column is the member key. The row trigger of the index writes a KEYCHG record for the old
+ * version of each row an UPDATE or DELETE ended (ended), its aminsert a KEYADD record for each version inserted (added); both are held with the tombstones.
+ */
+extern void sift_conn_ended_row(Relation index, Relation heap, HeapTuple old);
+extern void sift_conn_added_row(Relation index, Relation heap, const Datum *values, const bool *isnull);
 
 /* Short words for EXPLAIN and the tests */
 extern const char *sift_conn_why_name(SiftConnWhy why);

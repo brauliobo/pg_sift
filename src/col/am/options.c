@@ -277,6 +277,11 @@ sift_col_init(void)
 							"The most member keys changed in a scope relation since the stamp of its scope segments that a statement patches through the entity path before it reads the entity path whole.",
 							"A read of a scope key reads its scope units less the rows of the members that changed since the stamp, which it reads from the entity path; more changed keys than this make the read fall back to the join.",
 							&sift_scope_patch_keys, 4096, 1, 1048576, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.scope_max_multiplicity",
+							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts.",
+							 "The scope segments hold a row once for each scope key of its member, so they are this many times the rows of the table in the worst case; a scope above the limit is refused with the figure "
+							 "(a member that is in many scope keys is better read through the join).",
+							 &sift_scope_max_multiplicity, 8.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
@@ -387,6 +392,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_scope_trust",
 							 "Testing: a scope whose relation has no journal is read as if it vouched for the stamp of its scope segments (the proof of concept of the scope index); reads are wrong after writes.",
 							 NULL, &sift_test_scope_trust, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_scope_need_journal",
+							 "Testing: CREATE INDEX of a scope index refuses a scope relation that has no journal index (a release always does).",
+							 NULL, &sift_test_scope_need_journal, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
