@@ -111,6 +111,55 @@ CREATE INDEX parent_col ON parent USING sift_col (id, grp, state, rank);        
 - **A filter of the parent** (the fifth row) is the shape closest to the normal plan: check it with `EXPLAIN (ANALYZE)` and `SET sift.enable_agg = off`.
 - **`EXISTS` and `NOT EXISTS` from the parent to a child with conditions** keep the normal plan in every set (the differences of the last row are the noise of the host).
 
+## Keys above the fact table
+
+A request often carries a key that lives above the fact table: a tenant, a group, a plan. The facts reach it through a *scope relation*, a table of unique `(member key, scope key)` pairs (the ids a tenant sees, the ids of a group). An index keyed by the member answers such a request by expanding the pairs and testing every fact row against the set of ids, so its cost follows the table, not the tenant. A *scope copy* is a copy of the fact table that holds each fact once for every scope key of its member, with a `sift_col` index keyed by the scope key: the cost then follows the rows of the key.
+
+```sql
+-- facts(id primary key, dim_a_id, created_at, kind, amount); scope_pairs(dim_a_id, tenant_id) with a unique index on both
+SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id');
+SELECT kind, count(*), sum(amount) FROM facts_by_tenant WHERE tenant_id = 38 GROUP BY kind;
+SELECT * FROM sift.scope_verify('facts_by_tenant');   -- no rows: the copy equals the join
+SELECT sift.scope_drop('facts_by_tenant');
+```
+
+`sift.scope_create` creates the copy (the scope key first, then the carried columns, all of them by default), the `sift_col` index with `key_order = 'tenant_id, created_at'` (the first date or timestamp column; `order_column` names another), a btree on the copy that a change of a fact or of a pair looks its rows up by, and the triggers that keep the copy exact in the transaction of each change: statement triggers with transition tables on the fact table (insert, update, delete, truncate) and on the scope relation (the same). The fact table needs a primary key, and a btree on the foreign key keeps a membership edit from scanning it. `partition => true` makes the copy a LIST partition per scope key.
+
+### The contract of a read
+
+- A copy is read **one key at a time**: `WHERE tenant_id = $1`. A fact is in the copy once for each key of its member (ids in no key are in none).
+- `WHERE tenant_id IN (1, 2)` counts a fact of both keys twice; `count(DISTINCT id)` counts it once, as does the member path (`dim_a_id IN (SELECT dim_a_id FROM scope_pairs WHERE tenant_id IN (1, 2))`). A reader of two keys reads through the member path or deduplicates on the primary key.
+- `GROUP BY tenant_id` counts a fact in each of its keys.
+- A fact delete or update changes all of its copies; a pair that appears, goes or moves changes the rows of its member in the keys concerned.
+
+### Exactness
+
+The copy equals the join while its triggers are enabled and the tables are not written by a logical-replication apply worker (`sift.scope_create` refuses a subscription target: the apply worker fires no statement trigger). `ALTER TABLE .. DISABLE TRIGGER` and `COPY` with triggers off leave the copy behind; `sift.scope_verify(copy)` lists the rows that are `missing` from the copy, are `extra` in it or `differs` in a carried column. The roles that write the fact table or the scope relation need the privileges of the copy (the triggers run as the writer).
+
+### The multiplicity cap
+
+A fact is stored once per key of its member, so the copy and its index grow with the average number of keys of the facts. `sift.scope_create` measures it (weighted by the facts of each member), says it in a NOTICE, and refuses a scope relation above 3 copies per fact.
+
+### What it measures
+
+2,000,000 facts, 20,000 ids, 60 tenants of skewed size, 18,383 pairs, 1.11 copies per fact that reaches a key (scratch measurement, PostgreSQL 18.6, one backend, serial, warm, instructions of the backend; answers equal in every cell). The join is the fact index and `dim_a_id IN (SELECT .. FROM scope_pairs WHERE tenant_id = $1)`.
+
+| statement | tenant of | join: M instructions, ms, buffer hits | copy: M instructions, ms, buffer hits |
+|---|---|---|---|
+| sum, count by kind | 1,803 ids | 274.7, 21.8, 22,134 | 0.77, 0.16, 69 |
+| sum, count by kind | 202 ids | 263.4, 20.7, 22,139 | 0.67, 0.14, 44 |
+| distinct ids by month | 1,803 ids | 89.8, 10.0, 1,925 | 23.2, 2.4, 229 |
+| distinct ids by month | 202 ids | 66.3, 8.7, 1,918 | 4.1, 0.49, 128 |
+| latest 20 facts | 202 ids | 2.25, 0.30, 36 | 0.57, 0.10, 45 |
+
+Cold (cluster restarted), sum by kind of the 202-member tenant: 1,224 blocks read and 28.7 ms against 7 blocks and 0.31 ms.
+
+What it costs: the copy of that table is 134 MB of heap, a 29 MB `sift_col` index and a 71 MB btree, 234 MB beside 251 MB of table and indexes (+93%); inserting 10,000 facts takes 807 M instructions against 554 M (+46%) and 4.68 MB of WAL records against 2.04 MB; a fact table without the copy is not slowed on reads.
+
+### When not to use it
+
+A fact that reaches many keys (above 3 on average), a scope key of text or uuid (use an integer key), a scope that changes by the expiry of a date with no write (keep the date in the copy and test it), a restricted user inside a tenant (filter the user's ids inside the tenant's rows: the copy gains little when the user's set is a small part of it), and tables small enough that the join answers in a few milliseconds.
+
 ## What an index of this kind does not answer yet
 
 A text group key or filter on the columns of a joined parent (`GROUP BY customers.country`) loads the parent rows one by one, so the join may be faster in the normal plan; `EXPLAIN (VERBOSE)` says why a table is read from the heap (`Lookup Heap Reason`). [AGG.md](AGG.md) lists the joins the scan answers and the ones it leaves to the normal plan.
