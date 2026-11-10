@@ -3,8 +3,8 @@
 # (inserts, deletes, moves an entity between keys: entities in 0 to 6 keys), vacuums, promotes and merges, while readers on the standby run REPEATABLE READ transactions that read one key through the scope path and
 # through the plain join inside the same snapshot (they must agree; no failed transaction). After the replay the standby answers the scope forms (one key, a set counted once, per pair, top-N) as the primary's
 # plain join does, the index verifies there, a REINDEX of the primary (the scope segments written again) replays to a standby that reads them (stored where the reader may, exact always), and the promoted
-# standby takes fact and pair writes and its scope reads are the join. The reads are under the real verdict of the reader; the proof-of-concept switch is used only in the phase where no pair has been edited
-# since the build (a phase the script knows). SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
+# standby takes fact and pair writes and its scope reads are the join. The reads are under the real verdict of the reader (the journal of the pairs says which entities changed; the first scope index of a relation
+# is made again by a REINDEX to take its stamps). SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
@@ -23,6 +23,7 @@ sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
 	"INSERT INTO events (dim_a_id, created_at, v, pad) SELECT CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 9999 ELSE 1 + (i * 7919) % 650 END,
 		timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 30000) i" \
 	"CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 64, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+	"REINDEX INDEX events_col" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" \
 	"CREATE FUNCTION scope_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
 	DECLARE a text; b text; c text; d text;
@@ -57,10 +58,10 @@ wal_receiver_status_interval = 1s"
 node_start scs || bail "standby start failed"
 ok "standby streaming from a base backup"
 
-# a phase with no edit of the pairs since the build: the reader may read the units under the proof-of-concept switch (the journal makes it unnecessary and removes the switch)
+# a phase with no edit of the pairs since the build
 sql scp "SELECT 1" >/dev/null
 catchup scp scs
-check "a fresh standby reads one key as the join does" test "$(sql scs "SET sift.test_scope_trust = on" "SELECT scope_same(5) AND scope_same(17) AND scope_same(40) AND scope_set_same('{2,9,31}')")" == t
+check "a fresh standby reads one key as the join does" test "$(sql scs "SELECT scope_same(5) AND scope_same(17) AND scope_same(40) AND scope_set_same('{2,9,31}')")" == t
 
 P=$(dir scp)
 cat >"$P/ins.sql" <<'EOF'
@@ -121,8 +122,7 @@ catchup scp scs
 ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id)"
 check "after a REINDEX of the primary the scope entries of the standby are the join" test "$(sql scs "$ENTJ")" == t
-check "... and its reads are the join's, with the switch and without it" \
-	test "$(sql scs "SET sift.test_scope_trust = on" "$SC")" == t -a "$(sql scs "$SC")" == t
+check "... and its reads are the join's" test "$(sql scs "$SC")" == t
 check "the index verifies on the standby after the REINDEX" test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)"
 
 node_promote scs

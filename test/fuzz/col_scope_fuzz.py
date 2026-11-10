@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential fuzz of the scope index (test/t/col_scope_fuzz.sh runs it).
 
-  test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8] [--caps auto] [--trust auto]    needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
+  test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8]     needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
 and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between members), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
@@ -12,11 +12,9 @@ After every step a battery is the plain join: through the scope path (sift.in_sc
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
 entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size and track_changes.
 
-What is not finished is skipped by what the probe finds (--caps auto: journal, maint, dedupe, planner, cols; or a comma list, or none; SIFT_SCOPE_CAPS): without 'journal' the reader trusts its stamps
-(sift.test_scope_trust) only in a read-only phase: no pair edited, no fact inserted or updated, no promotion, merge or VACUUM since the build, the last one allowed with 'maint' (--trust auto; none: never; always:
-the negative control, it must FAIL) and every other read must fall back (`no journal`); 'dedupe' asserts that
-a set of tenants is read from the units; 'planner' asserts that the SQL forms (IN, EXISTS) have a scope conjunct; 'cols' declares a cols(..) subset on half of the seeds (a read of another column must
-fall back with the column reason).
+The journal index of the pairs is made first and the scope index is made again (REINDEX) after its first build, which starts the journal. 'planner' (probed: the SQL forms IN and EXISTS have a
+scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset (a read of another column must fall back with the
+column reason).
 """
 import argparse, collections, os, random, re, sys, time
 
@@ -32,10 +30,9 @@ CREATE TABLE sf_q (qid int PRIMARY KEY, class text, q text, plain text, sql_form
 CREATE TABLE sf_res (stage text, qid int, class text, ok bool, stored bool, why text, detail text);
 
 -- the statements of sf_q through the scope path, the planned plan and the plain plan, and the verdict of the reader
-CREATE OR REPLACE FUNCTION sf_run(stage text, clean bool, strict bool, planner bool) RETURNS void LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION sf_run(stage text, strict bool, planner bool) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE d record; r record; ok bool; det text;
 BEGIN
-	PERFORM scope_trust(clean);
 	FOR d IN SELECT * FROM sf_q ORDER BY qid LOOP
 		det := NULL; r := NULL; ok := true;
 		BEGIN
@@ -51,15 +48,13 @@ BEGIN
 		END;
 		INSERT INTO sf_res VALUES (stage, d.qid, d.class, ok, coalesce(r.stored, false), r.why, det || ' [' || coalesce(r.why, 'stored') || '] ' || left(d.q, 200));
 	END LOOP;
-	PERFORM scope_trust(false);
 END $$;
 
 -- the reader: the plain rows of the first read of a statement stay the rows of every later read, through the scope path and through the plain plan
-CREATE OR REPLACE FUNCTION sf_snap(clean bool) RETURNS text LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION sf_snap() RETURNS text LANGUAGE plpgsql AS $$
 DECLARE d record; r text; h text; h0 text; bad text := '';
 BEGIN
 	CREATE TEMP TABLE IF NOT EXISTS sf_snap0 (qid int PRIMARY KEY, h text);
-	PERFORM scope_trust(clean);
 	FOR d IN SELECT * FROM sf_q ORDER BY qid LOOP
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE 'SELECT coalesce(md5(json_agg(t)::text), '''') FROM (' || d.plain || ') t' INTO h;
@@ -69,7 +64,6 @@ BEGIN
 		SELECT s.h INTO h0 FROM sf_snap0 s WHERE s.qid = d.qid;
 		IF r <> h OR h <> h0 THEN bad := bad || format('q%s scope=%s plain=%s first=%s; ', d.qid, r, h, h0); END IF;
 	END LOOP;
-	PERFORM scope_trust(false);
 	RETURN bad;
 END $$;
 
@@ -94,36 +88,15 @@ END $$;
 """
 
 PROBE = """DROP TABLE IF EXISTS sfp, sfp_s CASCADE;
--- whether the scope units are read, and exact, under the trust switch (the probe below moves facts to other entities, promotes and vacuums first: the maintenance of the scope family)
-CREATE OR REPLACE FUNCTION maint_exact(rel regclass, idx regclass) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE
-	r record;
-	ok boolean := true;
-BEGIN
-	PERFORM scope_trust(true);
-	FOR r IN SELECT k FROM generate_series(1, 4) k LOOP
-		ok := ok AND (SELECT same AND stored FROM scope_run(format('SELECT count(*), sum(v), min(id) FROM %s e WHERE sift.in_scope(%L::regclass, ''k'', e.m, %s)', rel, idx, r.k),
-			format('SELECT count(*), sum(v), min(id) FROM %s e WHERE e.m IN (SELECT m FROM sfp_s WHERE k = %s)', rel, r.k)));
-	END LOOP;
-	PERFORM scope_trust(false);
-	RETURN ok;
-END $$;
-
 CREATE TABLE sfp_s (m int, k int, PRIMARY KEY (m, k));
 INSERT INTO sfp_s SELECT m, 1 + (m + j) % 4 FROM generate_series(1, 40) m, generate_series(0, 2) j WHERE j < m % 4;
 CREATE INDEX sfp_j ON sfp_s USING sift_col (m, k) WITH (track_changes = 'ctid');
 CREATE TABLE sfp (id int PRIMARY KEY, m int, t timestamp, v int);
 INSERT INTO sfp SELECT i, 1 + i % 40, TIMESTAMP '2026-01-01' + i * interval '1 hour', i % 7 FROM generate_series(1, 4000) i;
 CREATE INDEX sfp_i ON sfp USING sift_col (id, m, t, v) WITH (scope = 'k: m -> sfp_s(m, k)');
+REINDEX INDEX sfp_i;
 VACUUM (FREEZE, ANALYZE) sfp, sfp_s;
-SELECT 'caps', array_to_string(scope_caps('sfp'::regclass, 'sfp_i'::regclass, 'k', 'm'), ',');
 SELECT 'planner', engaged FROM scope_run('SELECT count(*) FROM sfp e WHERE e.m IN (SELECT m FROM sfp_s WHERE k = 2)', 'SELECT 1');
-UPDATE sfp SET m = 1 + (m * 7 + id) % 40 WHERE id % 5 < 3;
-SELECT sift.col_promote('sfp_i') >= 0;
-VACUUM sfp;
-SELECT 'maint', maint_exact('sfp'::regclass, 'sfp_i'::regclass);
-DROP INDEX sfp_i;
-CREATE INDEX sfp_i ON sfp USING sift_col (id, m, t, v) WITH (scope = 'k: m -> sfp_s(m, k) cols(t, v)');
 """
 
 # the number of tenants of entity m, by the distribution of the seed (h: a hash of m in 0..999)
@@ -137,9 +110,9 @@ STEPS = [('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 
 
 
 class Seed:
-    def __init__(self, seed, rows, caps, trust):
+    def __init__(self, seed, rows, caps):
         r = self.rng = random.Random(seed)
-        self.seed, self.caps, self.trust = seed, caps, trust
+        self.seed, self.caps = seed, caps
         self.n = r.choice([rows // 2, rows])
         self.members = r.choice([60, 300, 1500])
         self.nkeys = r.choice([12, 16, 24, 40])
@@ -150,20 +123,8 @@ class Seed:
         self.profile = r.choice(list(KEYS_PER))
         self.track = r.choice(['on', 'on', 'off'])
         self.seg_kb = r.choice([None, None, None, 96])
-        # a small segment size writes a scope segment before the entity segments (generation order), which the reader refuses (`scope segments do not cover the rows`): the stored
-        # reads are asserted for it only with SIFT_SCOPE_STRICT_SEG=1
-        self.strict_ok = self.seg_kb is None or bool(os.environ.get('SIFT_SCOPE_STRICT_SEG'))
-        self.cols = ['created_at', 'v'] if 'cols' in caps and r.random() < 0.5 else None
-        self.dirty = set()
+        self.cols = ['created_at', 'v'] if r.random() < 0.5 else None
         self.next_id = self.n + 1
-        self.journal = 'journal' in caps
-
-    def clean(self):
-        if self.journal or self.trust == 'none':
-            return False
-        if self.trust == 'always':   # the negative control: it must fail on the first pair edit, which proves that the battery sees a stale read
-            return True
-        return self.dirty <= {'deletes'} | ({'maint'} if 'maint' in self.caps else set())
 
     def setup_sql(self):
         trk = ", track_changes = 'off'" if self.track == 'off' else ''
@@ -177,6 +138,7 @@ INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys} FROM (SE
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO events SELECT {self.fact_rows(1, self.n)};
 {jr}CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(text)}{trk});
+REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;"""
 
@@ -254,18 +216,6 @@ VACUUM (ANALYZE) tenant_scope;"""
                           "TRUNCATE tenant_scope; INSERT INTO tenant_scope SELECT * FROM sf_pairs"), 'pairs'
         return kind, 'ANALYZE events', 'none'
 
-    def apply(self, kind, effect):
-        if effect == 'rebuild':
-            self.dirty = set()
-        elif effect in ('pairs', 'in_txn'):
-            self.dirty.add('pairs')
-        elif effect in ('maint', 'vacuum'):
-            self.dirty.add('maint')
-        elif kind in ('del', 'aborted'):
-            self.dirty.add('deletes')
-        elif effect == 'facts':
-            self.dirty.add('facts')
-
     # ---- the battery of one check: (class, scoped, plain, sql_form, stored_wanted, engage_wanted, want_why)
     def battery(self, keys):
         r = self.rng
@@ -321,7 +271,7 @@ def current_keys(a):
 
 def check(a, s, label, strict, stats):
     qs = s.battery(current_keys(a))
-    out = a.run(insert_battery(qs) + f"\nSELECT sf_run({sqlstr(label)}, {str(s.clean()).lower()}, {str(strict and s.strict_ok).lower()}, {str('planner' in s.caps).lower()});\n"
+    out = a.run(insert_battery(qs) + f"\nSELECT sf_run({sqlstr(label)}, {str(strict).lower()}, {str('planner' in s.caps).lower()});\n"
                 "SELECT 'verify', sf_verify();\nSELECT 'bad', stage, qid, class, left(detail, 500) FROM sf_res WHERE NOT ok;\n"
                 "SELECT 'why', coalesce(why, CASE WHEN stored THEN 'stored' ELSE 'none' END), count(*) FROM sf_res GROUP BY 2;\nTRUNCATE sf_res;")
     if ERR.search(out):
@@ -336,35 +286,21 @@ def check(a, s, label, strict, stats):
             stats[why] += int(n)
 
 
-def check_in_txn(a, s, label, stats, rng, before):
+def check_in_txn(a, s, label, stats, rng):
     """The reads inside the transaction that edited the pairs (its own changes visible), then it commits or rolls back."""
     check(a, s, f'{label} inside', False, stats)
-    if rng.random() < 0.5:
-        a.run('COMMIT;')
-    else:
-        a.run('ROLLBACK;')
-        s.dirty = before
+    a.run('COMMIT;' if rng.random() < 0.5 else 'ROLLBACK;')
     check(a, s, f'{label} ended', False, stats)
 
 
 def probe(a):
-    """What works now: scope_caps() on a small index, the planner form, and the cols(..) subset."""
+    """Whether the planner puts a scope conjunct on the SQL forms."""
     out = a.run(PROBE)
-    caps = set()
-    m = re.search(r'^caps\|(.*)$', out, re.M)
-    if m and m.group(1):
-        caps |= set(m.group(1).split(','))
-    if re.search(r'^planner\|t$', out, re.M):
-        caps.add('planner')
-    if 'maint' in out and re.search(r'^maint\|t$', out, re.M):
-        caps.add('maint')
-    if not ERR.search(out):
-        caps.add('cols')
     a.run("DROP TABLE IF EXISTS sfp, sfp_s CASCADE;")
-    return caps
+    return {'planner'} if re.search(r'^planner\|t$', out, re.M) else set()
 
 
-def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
+def run_seed(seed, rows, steps, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     path = f'{out_dir}/seed_{seed}.log'
     log = open(path, 'w')
@@ -372,10 +308,10 @@ def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
     stats = collections.Counter()
     try:
         helpers = open(HELPERS).read().replace('\\set ECHO none', '').replace('\\set ECHO all', '')
-        a.run("DROP FUNCTION IF EXISTS scope_trust(boolean), scope_reason_ok(text), scope_run(text, text), scope_caps(regclass, regclass, text, text) CASCADE;\n" + helpers)
-        caps = probe(a) if caps_arg == 'auto' else set(filter(None, caps_arg.split(',')))
-        s = Seed(seed, rows, caps, trust)
-        log.write(f'-- seed {seed} caps={sorted(caps)} {vars(s)}\n')
+        a.run("DROP FUNCTION IF EXISTS scope_reason_ok(text), scope_run(text, text) CASCADE;\n" + helpers)
+        caps = probe(a)
+        s = Seed(seed, rows, caps)
+        log.write(f'-- seed {seed} planner={"planner" in caps} {vars(s)}\n')
         a.run(LIB)
         out = a.run(s.setup_sql())
         if ERR.search(out):
@@ -385,7 +321,7 @@ def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
         if reader:
             rd.run('CREATE TEMP TABLE sf_q (LIKE public.sf_q);')   # the reader's own battery, in its own snapshot
             rd.run('BEGIN ISOLATION LEVEL REPEATABLE READ;')
-            out = rd.run(insert_battery(s.battery(current_keys(a))) + f"\nSELECT 'snap', sf_snap({str(s.clean()).lower()});")
+            out = rd.run(insert_battery(s.battery(current_keys(a))) + f"\nSELECT 'snap', sf_snap();")
             if not re.search(r'^snap\|$', out, re.M):
                 raise Fail(f'reader first read: {out.strip()[:500]}')
         for i in range(steps):
@@ -393,11 +329,9 @@ def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
             out = a.run(sql + ';')
             if ERR.search(out):
                 raise Fail(f'step {i} {kind}: {sql[:300]}: {out.strip()[:800]}')
-            before = set(s.dirty)
-            s.apply(kind, effect)
             label = f'step {i} {kind}'
             if effect == 'in_txn':
-                check_in_txn(a, s, label, stats, s.rng, before)
+                check_in_txn(a, s, label, stats, s.rng)
             else:
                 check(a, s, label, effect == 'rebuild', stats)
             if effect == 'vacuum' and not reader:
@@ -405,7 +339,7 @@ def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
                 if 'dead|0' not in dead:
                     raise Fail(f'{label}: entries of dead addresses after VACUUM: {dead.strip()[:200]}')
             if reader:
-                out = rd.run(f"SELECT 'snap', sf_snap({str(s.clean()).lower()});")
+                out = rd.run(f"SELECT 'snap', sf_snap();")
                 if ERR.search(out) or not re.search(r'^snap\|$', out, re.M):
                     raise Fail(f'{label}: reader snapshot changed: {out.strip()[:800]}')
         if reader:
@@ -413,15 +347,14 @@ def run_seed(seed, rows, steps, caps_arg, trust, out_dir):
         a.run('VACUUM events;')
         check(a, s, 'final', False, stats)
         a.run('REINDEX INDEX events_col;')
-        s.apply('reindex', 'rebuild')
         check(a, s, 'final rebuild', True, stats)
         if s.cols is None and 'entries|t' not in a.run("SELECT 'entries', sf_entries_are_the_join();"):
             raise Fail('final rebuild: the scope entries are not the join of the facts and the pairs')
-        if stats['stored'] == 0 and s.strict_ok:
+        if stats['stored'] == 0:
             raise Fail('no read of the scope units in the whole seed: the fuzz does not reach the feature')
         a.run('DROP TABLE events, tenant_scope CASCADE;')
         log.write(f'-- OK {dict(stats)}\n')
-        return 0, path, f'caps={",".join(sorted(caps)) or "none"} {s.profile}/{s.mtype}/{s.ktype}/{s.ttype} reads: ' + ' '.join(f'{k}={v}' for k, v in sorted(stats.items()))
+        return 0, path, f'planner={"planner" in caps} {s.profile}/{s.mtype}/{s.ktype}/{s.ttype} reads: ' + ' '.join(f'{k}={v}' for k, v in sorted(stats.items()))
     except Fail as e:
         log.write(f'-- FAIL {e}\n')
         print(f'seed={seed} FAIL: {e}', flush=True)
@@ -435,14 +368,12 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=12000)
     ap.add_argument('--steps', type=int, default=8)
-    ap.add_argument('--caps', default=os.environ.get('SIFT_SCOPE_CAPS', 'auto'))
-    ap.add_argument('--trust', default=os.environ.get('SIFT_SCOPE_TRUST', 'auto'), choices=['auto', 'none', 'always'])
     o = ap.parse_args()
     lo, _, hi = o.seeds.partition('-')
     bad = 0
     for seed in range(int(lo), int(hi or lo) + 1):
         t0 = time.time()
-        rc, path, note = run_seed(seed, o.rows, o.steps, o.caps, o.trust, OUT)
+        rc, path, note = run_seed(seed, o.rows, o.steps, OUT)
         print(f'seed={seed} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s {note} log={path}', flush=True)
         bad += rc
     sys.exit(1 if bad else 0)

@@ -4,8 +4,8 @@
 # the nth directory update (n > 0) or after it (n < 0), so that a scope segment is written and the directory is still the old one, or the directory is the new one and what follows did not run. The points are the
 # first and the last of the updates of each operation (more in the full run). After the restart (wal_consistency_checking = generic) the index verifies (heapallindexed), the store checks pass, the answers
 # through the scope path (the marker sift.in_scope, one key, a set of keys counted once, per pair) are the plain join's whatever the verdict of the reader (a read through the segments or its documented
-# fallback), and the operation, run again, completes and leaves the same, for the scope entries too: after a build or a REINDEX the scope entries are the join of the facts and the pairs, and so they are after
-# the others once the maintenance lane fills the scope family (the script probes it: SIFT_SCOPE_CAPS=maint forces it, none turns it off). SIFT_CRASHMX_ITERS caps the number of crashes (default 40, 14 quick),
+# fallback), and the operation, run again, completes and leaves the same, for the scope entries too: after a build, a REINDEX, a promotion and a merge the scope entries are the join of the
+# facts and the pairs (not after the VACUUM scenario, whose updates leave the new versions in the write buffer, nor the pairs scenario, which edits the pairs: the entries are those of the pairs as built). SIFT_CRASHMX_ITERS caps the number of crashes (default 40, 14 quick),
 # SIFT_CRASHMX_ONLY a regex of scenario names.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
@@ -32,15 +32,16 @@ BASE="CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a
 		timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 60) FROM generate_series(1, 6000) i"
 more() { echo "INSERT INTO events SELECT i, 1 + i % 320, timestamptz '2026-06-01' + i * interval '1 minute', i % 10, 'y' FROM generate_series($1, $2) i"; }
 IDX="CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (write_buffer_limit = 4096, scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')"
+IDXR="$IDX; REINDEX INDEX events_col"   # the first scope index of a relation takes its stamps by a REINDEX
 
-# scenario ~ setup (after the base tables) ~ the operation ~ whether the scope entries are the join after the operation without the maintenance lane (1: build and REINDEX)
+# scenario ~ setup (after the base tables) ~ the operation ~ whether the scope entries are the join of the facts and the pairs after the operation
 SCENARIOS=(
 	"scope_build~~$IDX~1"
 	"scope_reindex~$IDX; $(more 6001 6600)~REINDEX INDEX events_col~1"
-	"scope_promote~$IDX; $(more 6001 8000)~SELECT sift.col_promote('events_col')~0"
-	"scope_merge~$IDX; $(more 6001 7000); SELECT sift.col_promote('events_col'); $(more 7001 8000); SELECT sift.col_promote('events_col')~SELECT sift.col_merge('events_col', true)~0"
-	"scope_vacuum~$IDX; DELETE FROM events WHERE id % 3 = 0; UPDATE events SET v = v + 1 WHERE id % 7 = 0~VACUUM events~0"
-	"scope_pairs~$IDX; UPDATE tenant_scope SET tenant_id = 1 + tenant_id % 60 WHERE dim_a_id % 5 = 0; $(more 6001 6500)~SELECT sift.col_promote('events_col')~0"
+	"scope_promote~$IDXR; $(more 6001 8000)~SELECT sift.col_promote('events_col')~1"
+	"scope_merge~$IDXR; $(more 6001 7000); SELECT sift.col_promote('events_col'); $(more 7001 8000); SELECT sift.col_promote('events_col')~SELECT sift.col_merge('events_col', true)~1"
+	"scope_vacuum~$IDXR; DELETE FROM events WHERE id % 3 = 0; UPDATE events SET v = v + 1 WHERE id % 7 = 0~VACUUM events~0"
+	"scope_pairs~$IDXR; UPDATE tenant_scope SET tenant_id = 1 + tenant_id % 60 WHERE dim_a_id % 5 = 0; $(more 6001 6500)~SELECT sift.col_promote('events_col')~0"
 )
 
 # the answers in a mode: one key, a set counted once, per pair (the scope forms and the joins as written), a plain statement over the facts
@@ -60,7 +61,7 @@ VERIFY="DO \$\$ DECLARE r record; BEGIN
 		PERFORM sift._test_check(r.ix);
 	END LOOP; END \$\$"
 has_index() { [[ $(sql scc "SELECT to_regclass('events_col') IS NOT NULL") == t ]]; }
-healthy() { # the indexes verify, and the plain answers are REF's; the scope forms (trust off: the reader's own verdict) are the plain join's, and so are the planned plain forms
+healthy() { # the indexes verify, and the plain answers are REF's; the scope forms (the reader's own verdict) are the plain join's, and so are the planned plain forms
 	local plain
 	sql scc "$VERIFY" >&2 || return 1
 	plain=$(sql scc "${PLAIN[@]}" "$P_ONE" "$P_SET" "$P_PAIR" 2>&1)
@@ -69,7 +70,7 @@ healthy() { # the indexes verify, and the plain answers are REF's; the scope for
 	[[ $(sql scc "${IDXMODE[@]}" "$P_ONE" "$P_SET" "$P_PAIR" 2>&1) == "$plain" ]] || { diag "the plain forms through the index differ from the plain plan"; return 1; }
 	[[ $(sql scc "${IDXMODE[@]}" "$Q_ONE" "$Q_SET" "$Q_PAIR" 2>&1) == "$plain" ]] || { diag "the scope forms differ from the join"; return 1; }
 }
-settled() { # after the operation ran again: the entries are the join where they must be, and a scope read under the switch (build, REINDEX) is stored and exact
+settled() { # after the operation ran again: the entries are the join where they must be
 	healthy || return 1
 	has_index || return 1
 	[[ $ENTRIES_JOIN == 0 || $(sql scc "$ENTRIES") == t ]] || { diag "the scope entries are not the join of the facts and the pairs"; return 1; }
@@ -84,18 +85,11 @@ await_exit() { # PID
 	return 1
 }
 
-# what the maintenance of the scope family does today: the scope entries after a promotion of new facts (1: the join)
-fresh "$IDX; $(more 6001 7000)"
-sql scc "SELECT sift.col_promote('events_col')" >/dev/null
-MAINT=$([[ $(sql scc "$ENTRIES") == t ]] && echo 1 || echo 0)
-[[ -z ${SIFT_SCOPE_CAPS:-} ]] || MAINT=$([[ ,$SIFT_SCOPE_CAPS, == *,maint,* ]] && echo 1 || echo 0)
-diag "scope family maintained by promotion, merge and VACUUM: $MAINT"
-
 total=0
 for row in "${SCENARIOS[@]}"; do
 	IFS='~' read -r name setup op build_joins <<<"$row"
 	[[ -z ${SIFT_CRASHMX_ONLY:-} || $name =~ $SIFT_CRASHMX_ONLY ]] || continue
-	ENTRIES_JOIN=$(( build_joins || MAINT ))
+	ENTRIES_JOIN=$build_joins
 	fresh "$setup" || bail "$name: setup"
 	healthy || bail "$name: the starting state is not healthy"
 	# the directory updates of the operation, counted in a session of its own
