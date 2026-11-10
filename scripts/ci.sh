@@ -63,7 +63,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 5; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 6; fi
 	exit
 fi
 # stop [DIR]: ends the run whose scratch directory is DIR (default $SIFT_CI_TMP) by the pid it recorded there (stop_run in scripts/ci/procs.sh); no other process is looked up or touched
