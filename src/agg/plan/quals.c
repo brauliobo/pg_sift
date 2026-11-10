@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
@@ -79,6 +80,20 @@ where_refused(AggCtx *c, Node *q)
 	return agg_refuse(WHERE);
 }
 
+/* the conjuncts the predicate of a partial index does not imply: every row the index holds passes the others, so the scan does not test them and their columns need not be in it */
+static List *
+without_implied(AggCtx *c, List *quals)
+{
+	List	   *rest = NIL;
+
+	if (c->indpred == NIL)
+		return quals;
+	foreach_ptr(Node, q, quals)
+		if (!predicate_implied_by(list_make1(q), c->indpred, false))
+			rest = lappend(rest, q);
+	return rest;
+}
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -91,7 +106,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 
 	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
 		return agg_refuse(JOIN_CONDITION);
-	quals = list_concat(quals, scan_quals);
+	quals = without_implied(c, list_concat(quals, scan_quals));
 	/* a containment with a boolean or a JSON null member is several conjuncts (plan_contains.c) */
 	{
 		List	   *expanded = NIL;

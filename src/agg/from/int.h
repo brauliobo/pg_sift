@@ -15,6 +15,7 @@ typedef struct PartCand
 	SiftSrcLayout *lay;
 	const SiftPartStats *stats;
 	const SiftSrcPreagg *pa;
+	List	   *indpred;		/* the predicate of a partial index, in the terms of the partitioned table (NIL: none) */
 } PartCand;
 
 typedef struct PartVars

@@ -49,6 +49,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	index_facts(rel, c->lay->nleaves, &c->stats, &c->pa);
 	index_close(rel, AccessShareLock);
 	c->indexoid = (*ixout)->indexoid;
+	c->indpred = (*ixout)->indpred;
 	return true;
 }
 

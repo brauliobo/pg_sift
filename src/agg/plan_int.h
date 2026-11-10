@@ -122,6 +122,7 @@ typedef struct AggCtx
 	Oid			heapoid;
 	Oid			indexoid;
 	SiftSrcLayout *lay;
+	List	   *indpred;		/* the predicate of a partial source index, with varno = relid: the rows it holds all pass it (NIL: a full index or a table) */
 	int			nparts;			/* a partitioned table: its live partitions, which the scan reads one after the other (indexoid is the first's) */
 	Oid		   *partheap;
 	Oid		   *partindex;

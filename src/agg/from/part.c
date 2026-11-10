@@ -74,9 +74,9 @@ part_attlist(List *in, PartVars *pv, int natts)
 	return out;
 }
 
-/* the facts of a partition's source, with the layout in the terms of the partitioned table; added to cands unless they cannot be */
+/* the facts of a partition's source, with the layout and the index predicate in the terms of the partitioned table; added to cands unless they cannot be */
 static List *
-part_cand(AggCtx *c, RelOptInfo *leaf, List *cands, Oid relid, bool table)
+part_cand(AggCtx *c, RelOptInfo *leaf, List *cands, Oid relid, bool table, List *indpred)
 {
 	const PartCand *facts = part_facts(relid, table);
 	PartCand   *pc = palloc(sizeof(PartCand));
@@ -84,6 +84,8 @@ part_cand(AggCtx *c, RelOptInfo *leaf, List *cands, Oid relid, bool table)
 	SiftSrcLayout *lay = palloc(sizeof(SiftSrcLayout));
 
 	*pc = *facts;
+	pc->indpred = (List *) part_vars_mutator((Node *) indpred, &pv);
+	ChangeVarNodes((Node *) pc->indpred, leaf->relid, c->relid, 0);
 	pc->lay = lay;
 	*lay = *facts->lay;
 	if (table)
@@ -114,10 +116,10 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 	if (!part_readable(c, leaf))
 		return NIL;
 	if (part_is_table(c, leaf))
-		return part_cand(c, leaf, NIL, planner_rt_fetch(leaf->relid, c->root)->relid, true);
+		return part_cand(c, leaf, NIL, planner_rt_fetch(leaf->relid, c->root)->relid, true, NIL);
 	foreach_node(IndexOptInfo, ii, leaf->indexlist)
 		if (part_index_usable(ii))
-			cands = part_cand(c, leaf, cands, ii->indexoid, false);
+			cands = part_cand(c, leaf, cands, ii->indexoid, false, ii->indpred);
 	return cands;
 }
 
@@ -439,7 +441,8 @@ part_source(AggCtx *c)
 			PartCand   *m = NULL;
 
 			foreach_ptr(PartCand, pc, part_candidates(c, list_nth_node(RelOptInfo, leaves, i)))
-				if (OidIsValid(pc->indexoid) == OidIsValid(f->indexoid) && sift_aggpart_same_layout(f->lay, pc->lay) && part_preagg_common(&common, pc->pa))
+				if (OidIsValid(pc->indexoid) == OidIsValid(f->indexoid) && equal(f->indpred, pc->indpred) && sift_aggpart_same_layout(f->lay, pc->lay) &&
+					part_preagg_common(&common, pc->pa))
 				{
 					m = pc;
 					break;
@@ -464,6 +467,7 @@ part_source(AggCtx *c)
 			sift_aggpart_add_stats(&c->stats, pc->stats);
 		}
 		c->lay = f->lay;
+		c->indpred = f->indpred;
 		c->pa = common;
 		c->indexoid = f->indexoid;
 		c->part_read = read;

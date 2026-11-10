@@ -1,0 +1,316 @@
+-- A partial sift_col index that does not hold the columns of its predicate (CREATE INDEX .. (dim_a_id, kind, qty) WHERE status = 'open') answers a query whose
+-- conditions imply the predicate: every row of the index passes it, so the scan does not test the conditions the predicate implies. A query that does not imply
+-- the predicate, or that reads the predicate's column, keeps the normal plan. Results with the scan off and on are the same after every change of the heap.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int, dim_a_id int, kind int, status text, flag bool, qty float8);
+INSERT INTO events
+SELECT i, i % 40, i % 5, CASE WHEN i % 11 = 0 THEN NULL ELSE (ARRAY['new', 'open', 'held', 'closed'])[1 + i % 4] END, i % 3 = 0, i % 13
+FROM generate_series(1, 20000) i;
+CREATE TABLE kinds (id int, label text);
+INSERT INTO kinds SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 4) i;
+CREATE INDEX events_open ON events USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
+NOTICE:  sift_col index "events_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_open');
+CREATE INDEX events_null ON events USING sift_col (dim_a_id, kind, qty) WHERE status IS NULL;
+NOTICE:  sift_col index "events_null": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_null');
+CREATE INDEX events_held_flag ON events USING sift_col (dim_a_id, kind, qty) WHERE status = 'held' AND flag;
+NOTICE:  sift_col index "events_held_flag": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_held_flag');
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE kinds;
+SET app.status = 'open';
+\ir test/agg_helpers.sql
+\set ECHO none
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 60);
+END $$;
+CREATE FUNCTION check_all() RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE sql AS $$
+ SELECT * FROM check_query('implied', 'SELECT kind, count(*), sum(qty) FROM events WHERE status = ''open'' AND dim_a_id < 20 GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('the predicate alone', 'SELECT count(*) FROM events WHERE status = ''open''')
+ UNION ALL SELECT * FROM check_query('not null and equal', 'SELECT kind, count(*) FROM events WHERE status IS NOT NULL AND status = ''open'' GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('folded constant', 'SELECT kind, count(*) FROM events WHERE status = lower(''OPEN'') GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('list of one', 'SELECT kind, count(*) FROM events WHERE status IN (''open'') GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('and with a disjunction', 'SELECT kind, count(*) FROM events WHERE status = ''open'' AND (dim_a_id < 5 OR kind = 2) GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('no condition on the status', 'SELECT kind, count(*) FROM events WHERE dim_a_id < 20 GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('other value', 'SELECT kind, count(*) FROM events WHERE status = ''new'' GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('weaker', 'SELECT kind, count(*) FROM events WHERE status <> ''closed'' GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('list of two', 'SELECT kind, count(*) FROM events WHERE status IN (''open'', ''held'') GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('or', 'SELECT kind, count(*) FROM events WHERE status = ''open'' OR dim_a_id < 5 GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('stable operand', 'SELECT kind, count(*) FROM events WHERE status = current_setting(''app.status'') GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('null predicate', 'SELECT kind, count(*), sum(qty) FROM events WHERE status IS NULL AND dim_a_id < 20 GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('null against the value', 'SELECT kind, count(*) FROM events WHERE status = NULL GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('two conditions', 'SELECT kind, count(*) FROM events WHERE flag AND status = ''held'' AND dim_a_id < 30 GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('one of two conditions', 'SELECT kind, count(*) FROM events WHERE status = ''held'' GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('group by the status', 'SELECT status, count(*) FROM events WHERE status = ''open'' GROUP BY status')
+ UNION ALL SELECT * FROM check_query('aggregate of the status', 'SELECT kind, count(status) FROM events WHERE status = ''open'' GROUP BY kind')
+ UNION ALL SELECT * FROM check_query('join', 'SELECT k.label, count(*) FROM events e JOIN kinds k ON k.id = e.kind WHERE e.status = ''open'' GROUP BY k.label')
+ UNION ALL SELECT * FROM check_query('left join', 'SELECT k.label, count(e.dim_a_id) FROM kinds k LEFT JOIN events e ON e.kind = k.id AND e.status = ''open'' GROUP BY k.label')
+$$;
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2713, "kind": 1, "count": 454}, {"sum": 2713, "kind
+ the predicate alone        | t    | t    | [{"count": 4546}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ folded constant            | t    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ list of one                | t    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 454}, {"kind": 2, "count": 909}]
+ no condition on the status | f    | t    | [{"kind": 0, "count": 2000}, {"kind": 1, "count": 2000}, {"k
+ other value                | f    | t    | [{"kind": 0, "count": 910}, {"kind": 1, "count": 909}, {"kin
+ weaker                     | f    | t    | [{"kind": 0, "count": 2728}, {"kind": 1, "count": 2727}, {"k
+ list of two                | f    | t    | [{"kind": 0, "count": 1818}, {"kind": 1, "count": 1818}, {"k
+ or                         | f    | t    | [{"kind": 0, "count": 1409}, {"kind": 1, "count": 955}, {"ki
+ stable operand             | f    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ null predicate             | t    | t    | [{"sum": 1073, "kind": 2, "count": 181}, {"sum": 1085, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 151}, {"kind": 1, "count": 303}, {"kin
+ one of two conditions      | f    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ group by the status        | f    | t    | [{"count": 4546, "status": "open"}]
+ aggregate of the status    | f    | t    | [{"kind": 0, "count": 909}, {"kind": 1, "count": 909}, {"kin
+ join                       | t    | t    | [{"count": 1818, "label": "b"}, {"count": 2728, "label": "a"
+ left join                  | t    | t    | [{"count": 1818, "label": "b"}, {"count": 2728, "label": "a"
+(20 rows)
+
+-- rows move into and out of the predicates: new rows of every status, a status changed both ways, a column the index holds changed, deleted rows
+INSERT INTO events SELECT 20000 + i, i % 40, i % 5, (ARRAY['new', 'open', 'held', 'closed'])[1 + i % 4], i % 2 = 0, i % 7 FROM generate_series(1, 4000) i;
+INSERT INTO events SELECT 30000 + i, i % 40, i % 5, NULL, true, 1 FROM generate_series(1, 300) i;
+UPDATE events SET status = 'open' WHERE id % 50 = 1 AND status IS DISTINCT FROM 'open';
+UPDATE events SET status = 'closed' WHERE id % 50 = 2 AND status = 'open';
+UPDATE events SET status = NULL WHERE id % 70 = 3;
+UPDATE events SET qty = qty + 1, kind = (kind + 1) % 5 WHERE id % 9 = 4;
+DELETE FROM events WHERE id % 111 = 5;
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2667, "kind": 3, "count": 478}, {"sum": 3003, "kind
+ the predicate alone        | t    | t    | [{"count": 5600}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ folded constant            | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ list of one                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 498}, {"kind": 2, "count": 1127}]
+ no condition on the status | f    | t    | [{"kind": 0, "count": 2409}, {"kind": 1, "count": 2411}, {"k
+ other value                | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1100}, {"k
+ weaker                     | f    | t    | [{"kind": 0, "count": 3298}, {"kind": 1, "count": 3532}, {"k
+ list of two                | f    | t    | [{"kind": 0, "count": 2198}, {"kind": 1, "count": 2432}, {"k
+ or                         | f    | t    | [{"kind": 0, "count": 1701}, {"kind": 1, "count": 1438}, {"k
+ stable operand             | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ null predicate             | t    | t    | [{"sum": 1044, "kind": 1, "count": 191}, {"sum": 1107, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 250}, {"kind": 1, "count": 490}, {"kin
+ one of two conditions      | f    | t    | [{"kind": 0, "count": 1098}, {"kind": 1, "count": 1099}, {"k
+ group by the status        | f    | t    | [{"count": 5600, "status": "open"}]
+ aggregate of the status    | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ join                       | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+ left join                  | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+(20 rows)
+
+BEGIN;
+UPDATE events SET status = 'open' WHERE id % 20 = 7;
+INSERT INTO events SELECT 40000 + i, 1, 1, 'open', true, 1 FROM generate_series(1, 500) i;
+ROLLBACK;
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2667, "kind": 3, "count": 478}, {"sum": 3003, "kind
+ the predicate alone        | t    | t    | [{"count": 5600}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ folded constant            | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ list of one                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 498}, {"kind": 2, "count": 1127}]
+ no condition on the status | f    | t    | [{"kind": 0, "count": 2409}, {"kind": 1, "count": 2411}, {"k
+ other value                | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1100}, {"k
+ weaker                     | f    | t    | [{"kind": 0, "count": 3298}, {"kind": 1, "count": 3532}, {"k
+ list of two                | f    | t    | [{"kind": 0, "count": 2198}, {"kind": 1, "count": 2432}, {"k
+ or                         | f    | t    | [{"kind": 0, "count": 1701}, {"kind": 1, "count": 1438}, {"k
+ stable operand             | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ null predicate             | t    | t    | [{"sum": 1044, "kind": 1, "count": 191}, {"sum": 1107, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 250}, {"kind": 1, "count": 490}, {"kin
+ one of two conditions      | f    | t    | [{"kind": 0, "count": 1098}, {"kind": 1, "count": 1099}, {"k
+ group by the status        | f    | t    | [{"count": 5600, "status": "open"}]
+ aggregate of the status    | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ join                       | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+ left join                  | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+(20 rows)
+
+VACUUM events;
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2667, "kind": 3, "count": 478}, {"sum": 3003, "kind
+ the predicate alone        | t    | t    | [{"count": 5600}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ folded constant            | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ list of one                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 498}, {"kind": 2, "count": 1127}]
+ no condition on the status | f    | t    | [{"kind": 0, "count": 2409}, {"kind": 1, "count": 2411}, {"k
+ other value                | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1100}, {"k
+ weaker                     | f    | t    | [{"kind": 0, "count": 3298}, {"kind": 1, "count": 3532}, {"k
+ list of two                | f    | t    | [{"kind": 0, "count": 2198}, {"kind": 1, "count": 2432}, {"k
+ or                         | f    | t    | [{"kind": 0, "count": 1701}, {"kind": 1, "count": 1438}, {"k
+ stable operand             | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ null predicate             | t    | t    | [{"sum": 1044, "kind": 1, "count": 191}, {"sum": 1107, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 250}, {"kind": 1, "count": 490}, {"kin
+ one of two conditions      | f    | t    | [{"kind": 0, "count": 1098}, {"kind": 1, "count": 1099}, {"k
+ group by the status        | f    | t    | [{"count": 5600, "status": "open"}]
+ aggregate of the status    | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ join                       | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+ left join                  | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+(20 rows)
+
+REINDEX INDEX events_open;
+NOTICE:  sift_col index "events_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_open');
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2667, "kind": 3, "count": 478}, {"sum": 3003, "kind
+ the predicate alone        | t    | t    | [{"count": 5600}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ folded constant            | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ list of one                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 498}, {"kind": 2, "count": 1127}]
+ no condition on the status | f    | t    | [{"kind": 0, "count": 2409}, {"kind": 1, "count": 2411}, {"k
+ other value                | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1100}, {"k
+ weaker                     | f    | t    | [{"kind": 0, "count": 3298}, {"kind": 1, "count": 3532}, {"k
+ list of two                | f    | t    | [{"kind": 0, "count": 2198}, {"kind": 1, "count": 2432}, {"k
+ or                         | f    | t    | [{"kind": 0, "count": 1701}, {"kind": 1, "count": 1438}, {"k
+ stable operand             | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ null predicate             | t    | t    | [{"sum": 1044, "kind": 1, "count": 191}, {"sum": 1107, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 250}, {"kind": 1, "count": 490}, {"kin
+ one of two conditions      | f    | t    | [{"kind": 0, "count": 1098}, {"kind": 1, "count": 1099}, {"k
+ group by the status        | f    | t    | [{"count": 5600, "status": "open"}]
+ aggregate of the status    | f    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ join                       | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+ left join                  | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+(20 rows)
+
+-- a prepared statement: a custom plan folds the parameter into a constant that implies the predicate, a generic plan cannot know it
+CREATE FUNCTION check_prepared(mode text) RETURNS TABLE (label text, scan bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE diff bigint;
+BEGIN
+  PERFORM set_config('plan_cache_mode', mode, true);
+  PERFORM set_config('sift.enable_agg', 'off', true);
+  EXECUTE 'DEALLOCATE ALL';
+  EXECUTE 'PREPARE by_status (text) AS SELECT kind, count(*) AS n FROM events WHERE status = $1 GROUP BY kind';
+  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS EXECUTE by_status(''open'')';
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+  EXECUTE 'DEALLOCATE ALL';
+  EXECUTE 'PREPARE by_status (text) AS SELECT kind, count(*) AS n FROM events WHERE status = $1 GROUP BY kind';
+  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS EXECUTE by_status(''open'')';
+  SELECT count(*) INTO diff FROM ((TABLE r_off EXCEPT TABLE r_on) UNION ALL (TABLE r_on EXCEPT TABLE r_off)) t;
+  RETURN QUERY SELECT mode, runs_in_scan('EXECUTE by_status(''open'')'), diff = 0 AND (SELECT count(*) FROM r_on) = 5;
+END $$;
+SELECT * FROM check_prepared('force_custom_plan');
+       label       | scan | same 
+-------------------+------+------
+ force_custom_plan | t    | t
+(1 row)
+
+SELECT * FROM check_prepared('force_generic_plan');
+       label        | scan | same 
+--------------------+------+------
+ force_generic_plan | f    | t
+(1 row)
+
+-- a full index beside the partial ones: either answers a query they cover
+CREATE INDEX events_all ON events USING sift_col (dim_a_id, kind, qty, status);
+NOTICE:  sift_col index "events_all": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = kind, status
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_all');
+VACUUM (FREEZE, ANALYZE) events;
+SELECT * FROM check_all();
+           label            | scan | same |                           outcome                            
+----------------------------+------+------+--------------------------------------------------------------
+ implied                    | t    | t    | [{"sum": 2667, "kind": 3, "count": 478}, {"sum": 3003, "kind
+ the predicate alone        | t    | t    | [{"count": 5600}]
+ not null and equal         | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ folded constant            | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ list of one                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ and with a disjunction     | t    | t    | [{"kind": 1, "count": 498}, {"kind": 2, "count": 1127}]
+ no condition on the status | t    | t    | [{"kind": 0, "count": 2409}, {"kind": 1, "count": 2411}, {"k
+ other value                | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1100}, {"k
+ weaker                     | t    | t    | [{"kind": 0, "count": 3298}, {"kind": 1, "count": 3532}, {"k
+ list of two                | t    | t    | [{"kind": 0, "count": 2198}, {"kind": 1, "count": 2432}, {"k
+ or                         | t    | t    | [{"kind": 0, "count": 1701}, {"kind": 1, "count": 1438}, {"k
+ stable operand             | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ null predicate             | t    | t    | [{"sum": 1044, "kind": 1, "count": 191}, {"sum": 1107, "kind
+ null against the value     | f    | t    | no rows
+ two conditions             | t    | t    | [{"kind": 0, "count": 250}, {"kind": 1, "count": 490}, {"kin
+ one of two conditions      | t    | t    | [{"kind": 0, "count": 1098}, {"kind": 1, "count": 1099}, {"k
+ group by the status        | t    | t    | [{"count": 5600, "status": "open"}]
+ aggregate of the status    | t    | t    | [{"kind": 0, "count": 1100}, {"kind": 1, "count": 1333}, {"k
+ join                       | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+ left join                  | t    | t    | [{"count": 2291, "label": "b"}, {"count": 3309, "label": "a"
+(20 rows)
+
+DROP INDEX events_all;
+-- a partitioned table: a partial index on each partition, or on the parent
+CREATE TABLE pev (id int, dim_a_id int, kind int, status text, qty float8) PARTITION BY RANGE (dim_a_id);
+CREATE TABLE pev_a PARTITION OF pev FOR VALUES FROM (0) TO (20);
+CREATE TABLE pev_b PARTITION OF pev FOR VALUES FROM (20) TO (40);
+INSERT INTO pev SELECT i, i % 40, i % 5, (ARRAY['new', 'open', 'held', 'closed'])[1 + i % 4], i % 13 FROM generate_series(1, 20000) i;
+CREATE INDEX pev_open ON pev USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
+NOTICE:  sift_col index "pev_a_dim_a_id_kind_qty_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_a_dim_a_id_kind_qty_idx');
+NOTICE:  sift_col index "pev_b_dim_a_id_kind_qty_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_b_dim_a_id_kind_qty_idx');
+VACUUM (FREEZE, ANALYZE) pev;
+SELECT * FROM check_query('partitions, implied', 'SELECT kind, count(*), sum(qty) FROM pev WHERE status = ''open'' AND dim_a_id < 30 GROUP BY kind');
+        label        | scan | same |                           outcome                            
+---------------------+------+------+--------------------------------------------------------------
+ partitions, implied | t    | t    | [{"sum": 2979, "kind": 3, "count": 500}, {"sum": 3003, "kind
+(1 row)
+
+SELECT * FROM check_query('partitions, not implied', 'SELECT kind, count(*), sum(qty) FROM pev WHERE dim_a_id < 30 GROUP BY kind');
+          label          | scan | same |                           outcome                            
+-------------------------+------+------+--------------------------------------------------------------
+ partitions, not implied | f    | t    | [{"sum": 17983, "kind": 1, "count": 3000}, {"sum": 17990, "k
+(1 row)
+
+UPDATE pev SET status = 'open' WHERE id % 40 = 1;
+UPDATE pev SET status = 'new' WHERE id % 40 = 2 AND status = 'open';
+SELECT * FROM check_query('partitions, after changes', 'SELECT kind, count(*), sum(qty) FROM pev WHERE status = ''open'' AND dim_a_id < 30 GROUP BY kind');
+           label           | scan | same |                           outcome                            
+---------------------------+------+------+--------------------------------------------------------------
+ partitions, after changes | t    | t    | [{"sum": 2979, "kind": 3, "count": 500}, {"sum": 3003, "kind
+(1 row)
+
+-- the partitions do not share a predicate: the plan of the table is the normal one
+DROP INDEX pev_open;
+CREATE INDEX pev_a_open ON pev_a USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
+NOTICE:  sift_col index "pev_a_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_a_open');
+CREATE INDEX pev_b_held ON pev_b USING sift_col (dim_a_id, kind, qty) WHERE status = 'held';
+NOTICE:  sift_col index "pev_b_held": 1 automatic choice (rollup_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_b_held');
+VACUUM (FREEZE, ANALYZE) pev;
+SELECT * FROM check_query('partitions, other predicates', 'SELECT kind, count(*) FROM pev WHERE status = ''open'' GROUP BY kind');
+            label             | scan | same |                           outcome                            
+------------------------------+------+------+--------------------------------------------------------------
+ partitions, other predicates | f    | t    | [{"kind": 0, "count": 1000}, {"kind": 1, "count": 1000}, {"k
+(1 row)
+
+SELECT * FROM check_query('partitions, one pruned', 'SELECT kind, count(*) FROM pev WHERE status = ''open'' AND dim_a_id < 10 GROUP BY kind');
+         label          | scan | same |                           outcome                            
+------------------------+------+------+--------------------------------------------------------------
+ partitions, one pruned | t    | t    | [{"kind": 0, "count": 500}, {"kind": 1, "count": 500}, {"kin
+(1 row)
+
+DROP FUNCTION check_prepared(text), check_all(), check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP TABLE events, kinds, pev;
+DROP EXTENSION pg_sift;
