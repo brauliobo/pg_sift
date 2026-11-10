@@ -143,10 +143,6 @@ extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
 extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
 
-#ifndef SIFT_SEG_SCOPE
-#define SIFT_SEG_SCOPE	0x0008	/* col/scope.h: a scope segment. Defined by core/page.h once the declaration lane lands; delete this fallback then */
-#endif
-
 /* A scope segment holds the fact rows replicated once per scope key (col/scope.h): the readers of the rows of the index never see it */
 static inline bool
 sift_seg_is_scope(const SiftSegEntry *e)
