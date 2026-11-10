@@ -464,17 +464,7 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 					acc->gord_rows += g->hdr.entries;
 					acc->gord_bytes += g->bytes;
 					acc->gord_chunks += g->hdr.chunks;
-					if (g->hdr.quant != 0)
-					{
-						seg_gord_dir_read(seg, g, col + k * seg->schema->ncols);
-						for (uint32 c = 0; c < g->hdr.chunks; c++)
-						{
-							uint32		pad = seg_gord_dirent(seg, g, col + k * seg->schema->ncols, c).pad;
-
-							acc->gord_compact_chunks += (pad & SIFT_CGORD_COMPACT) != 0;
-							acc->gord_tie_chunks += (pad & SIFT_CGORD_TIES) != 0;
-						}
-					}
+					acc->gord_compact_blocks += g->hdr.quant != 0;	/* a block has a header of the compact version only when one of its chunks is compact */
 				}
 				acc->gord_seek_blocks += g->hdr.vtotal == 0 && seg->entry.format >= SIFT_COL_FORMAT_SEEKORD;
 				acc->gord_perm += g->hdr.strperm;
@@ -509,6 +499,25 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 	}
 	else
 		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
+}
+
+/* The chunks of the order blocks of leaf col (the plain and the second order) that are compact, from their directories: what the statistics leave out, as reading them costs the blocks of the directories */
+double
+sift_cseg_gorder_compact_chunks(SiftColSegment *seg, int col)
+{
+	double		n = 0;
+
+	for (int k = 0; k < 2; k++)
+	{
+		int			slot = col + k * seg->schema->ncols;
+		GOrdLeaf   *g = seg_gord_leaf(seg, slot);
+
+		if (g == NULL || g->hdr.vtotal != 0 || g->hdr.quant == 0)
+			continue;
+		for (uint32 c = 0; c < g->hdr.chunks; c++)
+			n += (seg_gord_dirent(seg, g, slot, c).pad & SIFT_CGORD_COMPACT) != 0;
+	}
+	return n;
 }
 
 /* sift_cgord_pay over the zones of the units of an integer leaf; false for a leaf with no integer zones */

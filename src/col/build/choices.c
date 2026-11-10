@@ -281,7 +281,7 @@ order_minor(const SiftColLeafStats *ls, int ncols)
 		if (ls[c].gord_perm > 0)
 			return SIFT_COL_FORMAT_TEXTPERM;
 	for (int c = 0; c < ncols; c++)
-		if (ls[c].gord_compact_chunks > 0)
+		if (ls[c].gord_compact_blocks > 0)
 			return SIFT_COL_FORMAT_ORDLAYOUT;
 	return SIFT_COL_FORMAT_ADDRPACK;
 }
@@ -361,9 +361,9 @@ d_order_layout(Derive *d)
 
 		if (ls[c].gord_rows <= 0)
 			continue;
-		any = any || ls[c].gord_compact_chunks > 0;
-		if (ls[c].gord_compact_chunks > 0)
-			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * ls[c].gord_compact_chunks / ls[c].gord_chunks);
+		any = any || ls[c].gord_compact_blocks > 0;
+		if (ls[c].gord_compact_blocks > 0)
+			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * sift_col_gorder_compact_chunks(d->index, c) / ls[c].gord_chunks);
 		else
 			appendStringInfo(&out, "%s%s exact", out.len ? ", " : "", name);
 		appendStringInfo(&cost, "%s%s %.1f bytes a row", cost.len ? ", " : "", name, ls[c].gord_bytes / ls[c].gord_rows);

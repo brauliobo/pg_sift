@@ -281,6 +281,27 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	}
 }
 
+double
+sift_col_gorder_compact_chunks(Relation index, int leaf)
+{
+	SiftDirSnapshot dir;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col compact chunks", ALLOCSET_DEFAULT_SIZES);
+	double		n = 0;
+
+	(void) sift_col_rel_private(index, cx);	/* opening segments reads catalogs and reloads the cached state */
+	sift_dir_read(index, &dir);
+	for (int i = 0; i < dir.nsegs; i++)
+		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &dir.segs[i], cx);
+
+			n += sift_cseg_gorder_compact_chunks(seg, leaf);
+			sift_cseg_close(seg);
+		}
+	MemoryContextDelete(cx);
+	return n;
+}
+
 const SiftColPreStats *
 sift_col_pre_stats(Relation index)
 {

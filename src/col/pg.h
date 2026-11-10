@@ -28,6 +28,8 @@
 
 /* Per leaf (ncols entries, memoized per backend, valid until the index changes or the memo of 8192 indexes is dropped): what the zones and dictionaries of the immutable segments say, no chunk read */
 extern const SiftColLeafStats *sift_col_leaf_stats(Relation index);
+/* The compact chunks of the order blocks of leaf over the segments, read from their directories (the statistics only say which blocks have one) */
+extern double sift_col_gorder_compact_chunks(Relation index, int leaf);
 /* The sample of the unit zones of the integer leaves (same memo and validity as sift_col_leaf_stats) */
 extern const SiftColZones *sift_col_zones(Relation index);
 

@@ -25,7 +25,7 @@
 #define LSHM_WAYS		8
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
-#define LSHM_NAME		"sift_col_leaf_stats_3"
+#define LSHM_NAME		"sift_col_leaf_stats_4"
 
 int			sift_col_leaf_cache_kb = 16384;
 
