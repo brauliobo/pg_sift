@@ -151,6 +151,12 @@ typedef struct SiftConnSpecs
 
 /* Parses the option text without the catalog (after an 'auto:'); NULL with *err set to what is wrong */
 extern SiftConnSpecs *sift_conn_parse(const char *text, const char **err);
+/* What the declarations of connect and scope (col/scope.h) share: the name and blank readers of their grammar, the column of the index of a table column, the integer types, and the oid of a named table */
+extern const char *sift_conn_skip_ws(const char *p);
+extern const char *sift_conn_read_name(const char *p, char **out, const char **err);
+extern AttrNumber sift_conn_index_column(Relation index, AttrNumber heap_att);
+extern bool sift_conn_integer_type(Oid typid);
+extern Oid	sift_conn_relation_oid(Oid index_table, const char *schema, const char *name, LOCKMODE lock, bool missing_ok);
 /* The connections a child index declares (ERROR for text that does not parse), NULL when it declares none */
 extern SiftConnSpecs *sift_conn_specs(Relation child_index);
 

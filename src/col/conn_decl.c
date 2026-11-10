@@ -33,8 +33,8 @@
 #include "col/am.h"
 #include "col/conn.h"
 
-static const char *
-skip_ws(const char *p)
+const char *
+sift_conn_skip_ws(const char *p)
 {
 	while (*p == ' ' || *p == '\t' || *p == '\n')
 		p++;
@@ -42,8 +42,8 @@ skip_ws(const char *p)
 }
 
 /* A plain name (folded to lower case) or a double-quoted one; NULL with *err set when there is none here */
-static const char *
-read_name(const char *p, char **out, const char **err)
+const char *
+sift_conn_read_name(const char *p, char **out, const char **err)
 {
 	StringInfoData s;
 
@@ -84,43 +84,43 @@ static SiftConnSpec *
 parse_one(const char **pp, const char **err)
 {
 	SiftConnSpec *s = palloc0(sizeof(SiftConnSpec));
-	const char *p = skip_ws(*pp);
+	const char *p = sift_conn_skip_ws(*pp);
 	char	   *name;
 
-	if ((p = read_name(p, &s->fk, err)) == NULL)
+	if ((p = sift_conn_read_name(p, &s->fk, err)) == NULL)
 		return NULL;
-	p = skip_ws(p);
+	p = sift_conn_skip_ws(p);
 	if (strncmp(p, "->", 2) != 0)
 	{
 		*err = "expected '->' after the column of this index that holds the parent key";
 		return NULL;
 	}
-	p = skip_ws(p + 2);
-	if ((p = read_name(p, &name, err)) == NULL)
+	p = sift_conn_skip_ws(p + 2);
+	if ((p = sift_conn_read_name(p, &name, err)) == NULL)
 		return NULL;
 	if (*p == '.')
 	{
 		s->parent_schema = name;
-		if ((p = read_name(p + 1, &s->parent_table, err)) == NULL)
+		if ((p = sift_conn_read_name(p + 1, &s->parent_table, err)) == NULL)
 			return NULL;
 	}
 	else
 		s->parent_table = name;
-	p = skip_ws(p);
+	p = sift_conn_skip_ws(p);
 	if (*p != '(')
 	{
 		*err = "expected '(' and the key column of the parent table after its name";
 		return NULL;
 	}
-	if ((p = read_name(skip_ws(p + 1), &s->parent_key, err)) == NULL)
+	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 1), &s->parent_key, err)) == NULL)
 		return NULL;
-	p = skip_ws(p);
+	p = sift_conn_skip_ws(p);
 	if (*p != ')')
 	{
 		*err = "expected ')' after the key column: the key is one column";
 		return NULL;
 	}
-	*pp = skip_ws(p + 1);
+	*pp = sift_conn_skip_ws(p + 1);
 	return s;
 }
 
@@ -153,7 +153,7 @@ sift_conn_parse(const char *text, const char **err)
 				return NULL;
 			}
 		all->c[all->n++] = s;
-		p = skip_ws(p);
+		p = sift_conn_skip_ws(p);
 		if (*p == ';')
 		{
 			p++;
@@ -185,8 +185,8 @@ sift_conn_specs(Relation child_index)
 	return s;
 }
 
-static AttrNumber
-index_column(Relation index, AttrNumber heap_att)
+AttrNumber
+sift_conn_index_column(Relation index, AttrNumber heap_att)
 {
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 		if (index->rd_index->indkey.values[i] == heap_att)
@@ -194,8 +194,8 @@ index_column(Relation index, AttrNumber heap_att)
 	return InvalidAttrNumber;
 }
 
-static bool
-integer_type(Oid typid)
+bool
+sift_conn_integer_type(Oid typid)
 {
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
 }
@@ -241,7 +241,7 @@ drop_stale_edges(Oid child, List *keep)
 		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
 
 		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL && d->objsubid == 0 && !list_member_oid(keep, d->refobjid) &&
-			get_rel_relkind(d->refobjid) == RELKIND_INDEX)
+			sift_col_is_index_oid(d->refobjid))
 			stale = lappend_oid(stale, d->refobjid);
 	}
 	systable_endscan(scan);
@@ -251,11 +251,11 @@ drop_stale_edges(Oid child, List *keep)
 	list_free(stale);
 }
 
-/* The oid of the parent table of a connection: an unqualified name is in the schema of the child's table (CREATE INDEX builds with a restricted search_path and a dump restores with an empty one) */
-static Oid
-parent_table_oid(Oid child_table, const SiftConnSpec *s, LOCKMODE lock, bool missing_ok)
+/* The oid of the table a declaration names: an unqualified name is in the schema of the table of the index (CREATE INDEX builds with a restricted search_path and a dump restores with an empty one) */
+Oid
+sift_conn_relation_oid(Oid index_table, const char *schema, const char *name, LOCKMODE lock, bool missing_ok)
 {
-	RangeVar   *rv = makeRangeVar(s->parent_schema ? s->parent_schema : get_namespace_name(get_rel_namespace(child_table)), s->parent_table, -1);
+	RangeVar   *rv = makeRangeVar(schema ? (char *) schema : get_namespace_name(get_rel_namespace(index_table)), (char *) name, -1);
 
 	return RangeVarGetRelid(rv, lock, missing_ok);
 }
@@ -274,14 +274,14 @@ sift_conn_parent_index(Relation heap, Relation index, const SiftConnSpec *s, Rel
 	Form_pg_attribute att;
 
 	fk = get_attnum(RelationGetRelid(heap), s->fk);
-	if (fk == InvalidAttrNumber || index_column(index, fk) == InvalidAttrNumber)
+	if (fk == InvalidAttrNumber || sift_conn_index_column(index, fk) == InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: \"%s\" is not a column of this index", s->fk),
 						errhint("Name the column of the index that holds the key of the parent table.")));
 	att = TupleDescAttr(RelationGetDescr(heap), fk - 1);
-	if (!integer_type(att->atttypid))
+	if (!sift_conn_integer_type(att->atttypid))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: column \"%s\" is not an integer", s->fk),
 						errhint("The key of a connection is an int2, int4 or int8 column.")));
-	poid = parent_table_oid(RelationGetRelid(heap), s, AccessShareLock, false);
+	poid = sift_conn_relation_oid(RelationGetRelid(heap), s->parent_schema, s->parent_table, AccessShareLock, false);
 	if (poid == RelationGetRelid(heap))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: the parent table is the table of the index"),
 						errhint("Name the table that this table joins.")));
@@ -377,7 +377,7 @@ sift_conn_leaves(Relation index, SiftColDef *defs, int n, int *found, int *nconn
 	for (int c = 0; c < specs->n; c++)
 	{
 		const SiftConnSpec *s = specs->c[c];
-		AttrNumber	fk = index_column(index, get_attnum(index->rd_index->indrelid, s->fk));
+		AttrNumber	fk = sift_conn_index_column(index, get_attnum(index->rd_index->indrelid, s->fk));
 
 		if (fk == InvalidAttrNumber)
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("connect: \"%s\" is not a column of this index", s->fk),
@@ -403,8 +403,8 @@ sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, A
 		Relation	parent;
 		char	   *flag = psprintf("%s#found", s->fk);
 
-		if (index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
-			parent_table_oid(RelationGetRelid(heap), s, NoLock, false) != parent_relid || get_attnum(parent_relid, s->parent_key) != parent_key)
+		if (sift_conn_index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
+			sift_conn_relation_oid(RelationGetRelid(heap), s->parent_schema, s->parent_table, NoLock, false) != parent_relid || get_attnum(parent_relid, s->parent_key) != parent_key)
 			continue;
 		for (int i = 0; i < meta->ncols; i++)
 			if ((meta->cols[i].flags & SIFT_COLD_FOUND) && strcmp(meta->cols[i].path, flag) == 0)
@@ -522,7 +522,7 @@ sift_col_connection_list(PG_FUNCTION_ARGS)
 		const SiftConnSpec *s = specs->c[c];
 		Datum		v[5];
 		bool		nulls[5] = {false};
-		Oid			poid = parent_table_oid(index->rd_index->indrelid, s, NoLock, true);
+		Oid			poid = sift_conn_relation_oid(index->rd_index->indrelid, s->parent_schema, s->parent_table, NoLock, true);
 		Oid			pidx = InvalidOid;
 
 		if (OidIsValid(poid))
@@ -595,7 +595,7 @@ auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **co
 		bool		inside = false;
 
 		for (int i = 0; i < fk->nkeys; i++)
-			inside |= index_column(index, fk->conkey[i]) != InvalidAttrNumber;
+			inside |= sift_conn_index_column(index, fk->conkey[i]) != InvalidAttrNumber;
 		if (!inside)
 			*why = "its columns are not in the index";
 	}
@@ -614,13 +614,13 @@ auto_one(Relation heap, Relation index, const ForeignKeyCacheInfo *fk, char **co
 	*say = true;
 	if (fk->nkeys != 1)
 		*why = "it has more than one column";
-	else if (index_column(index, fkatt) == InvalidAttrNumber)
+	else if (sift_conn_index_column(index, fkatt) == InvalidAttrNumber)
 		*why = "its column is not in the index";
 	else if (!valid)
 		*why = "it is not validated";
-	else if (!integer_type(TupleDescAttr(RelationGetDescr(heap), fkatt - 1)->atttypid))
+	else if (!sift_conn_integer_type(TupleDescAttr(RelationGetDescr(heap), fkatt - 1)->atttypid))
 		*why = "its column is not an int2, int4 or int8";
-	else if (!integer_type(TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid))
+	else if (!sift_conn_integer_type(TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid))
 		*why = "the referenced column is not an int2, int4 or int8";
 	else if (!OidIsValid(parent_index_for(parent, key)))
 		*why = "no sift_col index of the referenced table is ready and tracks the referenced column";
