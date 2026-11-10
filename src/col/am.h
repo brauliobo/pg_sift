@@ -120,6 +120,7 @@ extern PGDLLEXPORT void sift_col_track_worker_main(Datum main_arg);
 /* An UPDATE wrote the version at newtid with these index values: the tombstones of the entries of the key that it replaces (col/supersede.c); speculative_stmt: the statement has an ON CONFLICT clause */
 extern bool sift_col_updates_supersede(void);
 extern bool sift_col_writing(void);
+extern bool sift_col_ends_rows(Oid heapoid);
 extern CommandId sift_col_stmt_cid(void);
 extern void sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt);
 #ifdef SIFT_TESTING

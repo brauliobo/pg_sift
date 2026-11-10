@@ -688,6 +688,9 @@ sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 		return false;
 	if (snap == NULL)
 		return true;
+	/* a statement of this transaction that ends versions of the table has not been heard yet (sift_col_ends_rows) */
+	if (sift_col_ends_rows(RelationGetRelid(heap)))
+		return false;
 	/* not the transaction that made the log (REINDEX, ALTER INDEX): its snapshot may be older than the baseline, which ends versions that snapshot still sees (sift_col_track_own) */
 	return snap->snapshot_type == SNAPSHOT_MVCC && !sift_col_track_own(log) &&
 		!XidInMVCCSnapshot(log->chan.base_xid, snap) && sift_xid_state(log->chan.base_xid) == SIFT_XID_COMMITTED;

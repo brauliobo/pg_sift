@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a read through a `sift_col` index with `track_changes` (an aggregate, a filtered count, a top-N over groups) inside the statement that deletes or updates the key of rows, or before its statement triggers have run, counted the rows the statement ended: an `AFTER DELETE` statement trigger of the table whose name sorts before the index's own (`sift_track_*`), an `AFTER ROW` trigger, a function the statement calls (a `WHERE` clause, a `MERGE` condition) and a `BEFORE` trigger of the same statement read the log before the tombstones of the statement were written (50,000 rows against 47,500 in a statement trigger that deleted 2,500). The index reads the heap for the table while a statement that ends row versions of it runs, so the answers equal the heap's; the next statement, an `AFTER` trigger with a later name and the commit were correct. Affects 4.0.0 to 4.3.0 (test `col_track_own_statement_reads`).
 - Fixed: pg_sift: sessions that run one query at once could load the rows of its joined table more than once (the shared lookup): a session that looked for the rows just before another kept them, and asked for the load's claim just after that one dropped it, found no claim to wait for and loaded the table again (the answers were right); it now looks for the rows again once it holds the claim
 
 ## 4.3.0 - 2026-11-10
