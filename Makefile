@@ -82,7 +82,7 @@ TESTING_REGRESS += col_gorder_group_walk col_gorder_group_compact col_gorder_tie
 TESTING_REGRESS += col_topn_offset agg_child_warm agg_probe_direct agg_probe_direct_race agg_topn_offset_ties agg_topn_offset_dirty agg_topn_offset_bulk agg_topn_offset_keyed agg_topn_key_only
 TESTING_REGRESS += col_unit_of_block agg_float_step
 TESTING_REGRESS += tbl_hot_sift_index merge_parts merge_heal
-TESTING_REGRESS += col_topn_text_offset col_gorder_text_count col_dsm_write_statements col_stmt_cid col_stmt_cid_bm25 col_track_rebaseline col_track_reindex_concurrently col_track_drop_concurrently
+TESTING_REGRESS += col_topn_text_offset col_gorder_text_count col_dsm_write_statements col_stmt_cid col_stmt_cid_bm25 col_track_own_statement_reads col_track_rebaseline col_track_reindex_concurrently col_track_drop_concurrently
 # Listed although scripts/check-testing-regress.sh would not select them (each fails on the release library, so the stock-library jobs must not run it):
 # sift.test_run_docs, a setting only the testing build has
 TESTING_REGRESS += build_memory build_parallel build_runs

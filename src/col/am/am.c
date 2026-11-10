@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/relation.h"
+#include "parser/parsetree.h"
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/am_int.h"
@@ -153,13 +154,24 @@ batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 #define STMT_SPECULATIVE	1
 #define STMT_UPDATING		2
 #define STMT_WRITING		4
+#define STMT_ENDING			8
 
 typedef struct StmtState
 {
 	int			what;
 	CommandId	prev_cid;
 	bool		prev_set;
+	struct StmtState *next;		/* the statements that may end row versions, in batch_ending (STMT_ENDING) */
+	int			nrels;
+	Oid			rels[FLEXIBLE_ARRAY_MEMBER];	/* the tables it changes */
 } StmtState;
+
+/*
+ * The statements running that may end row versions (DELETE, UPDATE, MERGE and a CTE that does) and the tables they change. An index with track_changes hears the versions a statement
+ * ends from its statement trigger, which fires after the statement has run: until the statement is over (its AFTER triggers included) the log lacks them, and a read of the
+ * transaction that goes through the log alone (a function the statement calls, an AFTER ROW trigger, a trigger of the table that fires before the one of the index) would count them.
+ */
+static StmtState *batch_ending;
 
 static void
 batch_stmt_done(void *arg)
@@ -169,6 +181,13 @@ batch_stmt_done(void *arg)
 
 	batch_cid = st->prev_cid;
 	batch_cid_set = st->prev_set;
+	if (what & STMT_ENDING)
+		for (StmtState **p = &batch_ending; *p != NULL; p = &(*p)->next)
+			if (*p == st)
+			{
+				*p = st->next;
+				break;
+			}
 
 	batch_stmts -= (what & STMT_SPECULATIVE) != 0;
 	batch_updates -= (what & STMT_UPDATING) != 0;
@@ -184,6 +203,31 @@ plan_updates(Plan *plan)
 		((ModifyTable *) plan)->onConflictAction == ONCONFLICT_UPDATE;
 }
 
+/* The tables the statement changes: the range table entries of its result relations (a list before PostgreSQL 19, a set of them from it) */
+static int
+stmt_result_count(PlannedStmt *ps)
+{
+#if PG_VERSION_NUM >= 190000
+	return bms_num_members(ps->resultRelationRelids);
+#else
+	return list_length(ps->resultRelations);
+#endif
+}
+
+static void
+stmt_result_rels(PlannedStmt *ps, Oid *rels)
+{
+	int			n = 0;
+
+#if PG_VERSION_NUM >= 190000
+	for (int rti = -1; (rti = bms_next_member(ps->resultRelationRelids, rti)) >= 0;)
+		rels[n++] = rt_fetch(rti, ps->rtable)->relid;
+#else
+	foreach_int(rti, ps->resultRelations)
+		rels[n++] = rt_fetch(rti, ps->rtable)->relid;
+#endif
+}
+
 void
 sift_col_stmt_start(QueryDesc *queryDesc)
 {
@@ -192,6 +236,7 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 
 	bool		updating = plan_updates(ps->planTree);
 	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
+	bool		ending = updating || ps->commandType == CMD_DELETE || ps->hasModifyingCTE;
 
 	if (ps->parallelModeNeeded)
 		sift_col_flush_held();
@@ -203,9 +248,17 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 	if (speculative || updating || writing)
 	{
 		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
-		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(StmtState));
+		int			nrels = ending ? stmt_result_count(ps) : 0;
+		StmtState  *st = MemoryContextAlloc(queryDesc->estate->es_query_cxt, offsetof(StmtState, rels) + nrels * sizeof(Oid));
 
-		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0);
+		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0) | (ending ? STMT_ENDING : 0);
+		st->nrels = nrels;
+		stmt_result_rels(ps, st->rels);
+		if (ending)
+		{
+			st->next = batch_ending;
+			batch_ending = st;
+		}
 		st->prev_cid = batch_cid;
 		st->prev_set = batch_cid_set;
 		cb->func = batch_stmt_done;
@@ -230,6 +283,17 @@ CommandId
 sift_col_stmt_cid(void)
 {
 	return batch_cid_set ? batch_cid : GetCurrentCommandId(true);
+}
+
+/* Does a statement that is running (in this backend) end row versions of the table, whose index with track_changes has not heard them yet? */
+bool
+sift_col_ends_rows(Oid heapoid)
+{
+	for (StmtState *st = batch_ending; st != NULL; st = st->next)
+		for (int i = 0; i < st->nrels; i++)
+			if (st->rels[i] == heapoid)
+				return true;
+	return false;
 }
 
 /*
