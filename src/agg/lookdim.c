@@ -66,8 +66,10 @@ lookdim_load(AggExec *ex, int ci, Relation rel, MemoryContext cxt)
 		index_close(ix, AccessShareLock);
 		return NULL;
 	}
-	if ((m = dim_find(rel, ix, keyatt, ex->snap, key, before, &need, &have, cxt)) != NULL ||
-		(lookshm_claim(LOOK_DIM, key, cxt) && (m = dim_find(rel, ix, keyatt, ex->snap, key, before, &need, &have, cxt)) != NULL))
+	m = dim_find(rel, ix, keyatt, ex->snap, key, before, &need, &have, cxt);
+	if (m == NULL && lookshm_claim(LOOK_DIM, key, cxt) && (m = dim_find(rel, ix, keyatt, ex->snap, key, before, &need, &have, cxt)) != NULL)
+		lookshm_unclaim(LOOK_DIM, key);
+	if (m != NULL)
 	{
 		index_close(ix, AccessShareLock);
 		ex->ndim_shared++;

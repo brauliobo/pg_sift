@@ -121,6 +121,7 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	/* sessions that run the same query at once: one loads the rows, the others wait for them */
 	if (!ex->first_peek && lookshm_claim(LOOK_ROWS, t->key, cxt) && (m = lookcache_find(t->key, lookvalid_finger(t->before), &need, &have, cxt)) != NULL)
 	{
+		lookshm_unclaim(LOOK_ROWS, t->key);
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);

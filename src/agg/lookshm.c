@@ -23,6 +23,7 @@
 
 #include "agg/agg_int.h"
 #include "col/dsmreg.h"
+#include "core/compat.h"
 
 int			sift_agg_lookup_shared_kb = -1;
 int			sift_agg_dimmap_kb = 64 * 1024;
@@ -489,8 +490,9 @@ claim_clear(LookShm *s, int pid)
 /*
  * The backend is about to load the rows of a key that nobody has kept. Many sessions that run the same query at once would each load a copy;
  * the first to ask claims the load, until mcxt goes, and the others wait for it (at most LOOKSHM_WAIT_MS) to find its rows in the shared
- * memory. True when this backend waited and should look for the rows again; false when it loads them (it has the claim, or there is no
- * claim to take, or the other backend took too long).
+ * memory. True when this backend took the claim (the rows may have been kept since its last look, by a backend whose claim ended in between) or waited for
+ * another's, and should look for the rows again, dropping its claim (lookshm_unclaim) if it finds them; false when it loads them without a claim (none was free,
+ * or the other backend took too long).
  */
 bool
 lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt)
@@ -509,7 +511,10 @@ lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt)
 	r->key = kh;
 	for (;;)
 	{
-		int			pid = claim_try(s, kh, waited ? NULL : r);
+		int			pid;
+
+		SIFT_POINT("sift-lookshm-before-claim");
+		pid = claim_try(s, kh, r);
 
 		if (pid == 0)
 			break;
@@ -528,5 +533,5 @@ lookshm_claim(LookPool pool, const char *key, MemoryContext mcxt)
 		r->cb = (MemoryContextCallback) {claim_release, r, NULL};
 		MemoryContextRegisterResetCallback(mcxt, &r->cb);
 	}
-	return waited;
+	return waited || r->taken;
 }

@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: sessions that run one query at once could load the rows of its joined table more than once (the shared lookup): a session that looked for the rows just before another kept them, and asked for the load's claim just after that one dropped it, found no claim to wait for and loaded the table again (the answers were right); it now looks for the rows again once it holds the claim
+
 ## 4.3.0 - 2026-11-10
 
 - Fixed: pg_sift: on PostgreSQL 19 the parents that have no child (a `LEFT JOIN` with a `WHERE` on a column of the child being `NULL`, `NOT EXISTS`: an anti join) were counted by a serial scan of the parents with the whole child as its lookup, where 17 and 18 scan the child with the parents as its lookup and use workers; the child-first scan is also planned for the anti join, and for `NOT EXISTS` on every major
