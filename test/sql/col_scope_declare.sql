@@ -8,6 +8,8 @@ SET jit = off;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 500) i;
 INSERT INTO tenant_scope SELECT i, 6 FROM generate_series(1, 500, 7) i;
+-- the journal index of the scope relation: a scope index needs it (member first, track_changes = 'ctid')
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind int NOT NULL, label text, value_num int NOT NULL, pad int)
 	WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 500, timestamptz '2026-01-01' + i * interval '1 minute', i % 7, 'l' || i % 11, i, 0 FROM generate_series(1, 3000) i;
@@ -75,7 +77,6 @@ CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (scope = 'off');
 DROP INDEX bad;
 SHOW sift.agg_scope;
 SHOW sift.scope_patch_keys;
-SHOW sift.test_scope_trust;
 SELECT try('SET sift.scope_patch_keys = 0');
 SELECT try('SET sift.scope_patch_keys = 1048577');
 
@@ -152,8 +153,10 @@ SELECT count(*) AS scope_indexes FROM pg_class WHERE relname = 'events_col';
 CREATE SCHEMA other;
 CREATE TABLE other.region_scope (dim_a_id int NOT NULL, region_id int NOT NULL, UNIQUE (region_id, dim_a_id));
 INSERT INTO other.region_scope SELECT i, i % 3 FROM generate_series(1, 500) i;
+CREATE INDEX region_scope_journal ON other.region_scope USING sift_col (dim_a_id, region_id) WITH (track_changes = 'ctid');
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 500) i;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL);
 INSERT INTO dim_a SELECT i, i % 10 FROM generate_series(1, 500) i;
 CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id);

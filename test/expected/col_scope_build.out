@@ -1,6 +1,7 @@
 -- The build of a scope index writes, besides the entity segments, scope segments (col/build/scope.c): key-cut segments whose entries are the fact rows replicated once for each
 -- scope key of their member, each unit holding a single scope key. The multiset of (address, scope key) of the scope segments is the join of the fact rows with the scope relation,
 -- for members in 0..6 keys, rows with a NULL or an unknown member, skewed members; the segments of the entities are as without the scope (rows counted once).
+-- The scope relation carries its journal index (a scope index needs it); the stamps are not looked at here.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -9,6 +10,7 @@ SET client_min_messages = warning;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 -- member m (1..1500) is in (m % 7) of the 40 keys: 0..6; members 1..20 are the hot ones of the facts below
 INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 40 FROM generate_series(1, 1500) m, generate_series(0, 5) j WHERE j < m % 7;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int NOT NULL, value_num int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events
 	SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 19 = 0 THEN 100000 + i WHEN i % 3 = 0 THEN 1 + i % 20 ELSE 1 + (i * 7919) % 1500 END,

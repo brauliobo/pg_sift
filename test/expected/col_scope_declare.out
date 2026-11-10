@@ -8,6 +8,11 @@ SET jit = off;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 500) i;
 INSERT INTO tenant_scope SELECT i, 6 FROM generate_series(1, 500, 7) i;
+-- the journal index of the scope relation: a scope index needs it (member first, track_changes = 'ctid')
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "tenant_scope_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tenant_scope_journal');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind int NOT NULL, label text, value_num int NOT NULL, pad int)
 	WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 500, timestamptz '2026-01-01' + i * interval '1 minute', i % 7, 'l' || i % 11, i, 0 FROM generate_series(1, 3000) i;
@@ -124,12 +129,6 @@ SHOW sift.scope_patch_keys;
  4096
 (1 row)
 
-SHOW sift.test_scope_trust;
- sift.test_scope_trust 
------------------------
- off
-(1 row)
-
 SELECT try('SET sift.scope_patch_keys = 0');
                                          try                                          
 --------------------------------------------------------------------------------------
@@ -150,9 +149,9 @@ NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_ch
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT edges('events_col') AS edges;
-       edges       
--------------------
- tenant_scope_pkey
+                 edges                  
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 SELECT leaf, path, type, kind FROM sift.col_leaves('events_col') ORDER BY leaf;
@@ -261,9 +260,9 @@ NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_ch
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT edges('events_col') AS after_restore;
-   after_restore   
--------------------
- tenant_scope_pkey
+             after_restore              
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 SELECT leaf, path FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
@@ -279,9 +278,9 @@ NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_ch
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT edges('events_col') AS after_reindex;
-   after_reindex   
--------------------
- tenant_scope_pkey
+             after_reindex              
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 REINDEX INDEX CONCURRENTLY events_col;
@@ -292,23 +291,23 @@ NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_ch
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 SELECT edges('events_col') AS after_reindex_concurrently, (SELECT count(*) FROM pg_class WHERE relname LIKE 'events_col%') AS indexes;
- after_reindex_concurrently | indexes 
-----------------------------+---------
- tenant_scope_pkey          |       1
+       after_reindex_concurrently       | indexes 
+----------------------------------------+---------
+ tenant_scope_journal tenant_scope_pkey |       1
 (1 row)
 
 ALTER INDEX events_col SET (superunit = 8);
 SELECT edges('events_col') AS after_other_option;
- after_other_option 
---------------------
- tenant_scope_pkey
+           after_other_option           
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 REINDEX INDEX CONCURRENTLY tenant_scope_pkey;
 SELECT edges('events_col') AS after_btree_reindex_concurrently;
- after_btree_reindex_concurrently 
-----------------------------------
- tenant_scope_pkey
+    after_btree_reindex_concurrently    
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 REINDEX INDEX events_col;
@@ -333,9 +332,9 @@ SELECT edges('events_col') AS after_off;
 
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT edges('events_col') AS after_set;
-     after_set     
--------------------
- tenant_scope_pkey
+               after_set                
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, nokey)'')');
@@ -345,9 +344,9 @@ SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_
 (1 row)
 
 SELECT edges('events_col') AS after_bad_set;
-   after_bad_set   
--------------------
- tenant_scope_pkey
+             after_bad_set              
+----------------------------------------
+ tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 ALTER INDEX events_col RESET (scope);
@@ -412,8 +411,16 @@ SELECT count(*) AS scope_indexes FROM pg_class WHERE relname = 'events_col';
 CREATE SCHEMA other;
 CREATE TABLE other.region_scope (dim_a_id int NOT NULL, region_id int NOT NULL, UNIQUE (region_id, dim_a_id));
 INSERT INTO other.region_scope SELECT i, i % 3 FROM generate_series(1, 500) i;
+CREATE INDEX region_scope_journal ON other.region_scope USING sift_col (dim_a_id, region_id) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "region_scope_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('region_scope_journal');
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 500) i;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "tenant_scope_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tenant_scope_journal');
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL);
 INSERT INTO dim_a SELECT i, i % 10 FROM generate_series(1, 500) i;
 CREATE INDEX dim_a_col ON dim_a USING sift_col (id, category_id);
@@ -435,9 +442,9 @@ NOTICE:  sift_col index "events_two": 2 automatic choices (key_columns, track_ch
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_two');
 SELECT edges('events_two') AS edges;
-                                 edges                                 
------------------------------------------------------------------------
- dim_a_col other.region_scope_region_id_dim_a_id_key tenant_scope_pkey
+                                                         edges                                                         
+-----------------------------------------------------------------------------------------------------------------------
+ dim_a_col other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 SELECT leaf, path, type FROM sift.col_leaves('events_two') ORDER BY leaf;
@@ -468,17 +475,17 @@ SELECT sift.col_verify('events_two', true);
 
 ALTER INDEX events_two SET (connect = 'off');
 SELECT edges('events_two') AS after_connect_off;
-                      after_connect_off                      
--------------------------------------------------------------
- other.region_scope_region_id_dim_a_id_key tenant_scope_pkey
+                                              after_connect_off                                              
+-------------------------------------------------------------------------------------------------------------
+ other.region_scope_journal other.region_scope_region_id_dim_a_id_key tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 ALTER INDEX events_two SET (connect = 'dim_a_id -> dim_a(id)');
 ALTER INDEX events_two SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT edges('events_two') AS after_one_scope_off;
-     after_one_scope_off     
------------------------------
- dim_a_col tenant_scope_pkey
+               after_one_scope_off                
+--------------------------------------------------
+ dim_a_col tenant_scope_journal tenant_scope_pkey
 (1 row)
 
 ALTER INDEX events_two RESET (scope);
