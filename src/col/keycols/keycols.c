@@ -132,11 +132,14 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 				repl[Natts_pg_class] = {false};
 	List	   *def = list_make1(makeDefElem((char *) name, value ? (Node *) makeString(pstrdup(value)) : NULL, -1));
 
-	/* the lock an update of an index's pg_class row expects on its table (checked in assert builds); the ShareLock of the build already excludes every other holder of it */
-	LockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
 	CommandCounterIncrement();
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: no pg_class row for index %u", RelationGetRelid(index));
+	/*
+	 * The lock an update of an index's pg_class row expects (checked in assert builds) is the tuple lock of the row, not a lock on its table: ShareUpdateExclusiveLock on the table waits for
+	 * the ShareLock of every other build of an index of it, and two builds that wait for each other are a deadlock (a parallel restore).
+	 */
+	LockTuple(pgclass, &tuple->t_self, InplaceUpdateTupleLock);
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
 	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
 	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
