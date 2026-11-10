@@ -596,6 +596,7 @@ typedef struct CteVerdict
 
 #define VERDICT_CTE		0		/* inline or shared CTE (cte.c plan_cte) */
 #define VERDICT_FLAT	1		/* the flattened form of the statement or the one as written (cte.c plan_flat) */
+#define VERDICT_ROWS	2		/* the plan with the groups of a row's entity joined once or the one without it (cte.c plan_flat) */
 
 extern void verdict_new_planning(void);
 extern void verdict_lookup(Query *q, int kind, CteVerdict *vd);

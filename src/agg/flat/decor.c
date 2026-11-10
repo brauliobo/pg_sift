@@ -28,9 +28,6 @@
 #include "agg/agg.h"
 #include "agg/flat/int.h"
 
-/* the sub-select joined once reads the whole link table, which the lateral child's keys leave partly unread: where the plan with the child's runs is estimated at 2.5 times the joined one the instructions of the two are equal (a link table of 133,000 rows, 3,000 groups: 9,500 entities of the request) */
-#define FLAT_ROWS_MARGIN 2.5
-
 #if PG_VERSION_NUM >= 180000
 typedef struct Ungroup
 {
@@ -367,6 +364,28 @@ decor_rows(Query *sub, Decor *d)
 	return true;
 }
 
+/* does a query level of the statement hold a lateral sub-select with a sub-link (the one decor_rows takes)? A walk, not the analysis: it is made for each statement */
+static bool
+rows_candidate_walker(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+	{
+		foreach_node(RangeTblEntry, rte, ((Query *) n)->rtable)
+			if (rte->rtekind == RTE_SUBQUERY && rte->lateral && rte->subquery->hasSubLinks)
+				return true;
+		return query_tree_walker((Query *) n, rows_candidate_walker, context, 0);
+	}
+	return expression_tree_walker(n, rows_candidate_walker, context);
+}
+
+bool
+sift_agg_decor_rows_candidate(Query *q)
+{
+	return rows_candidate_walker((Node *) q, NULL);
+}
+
 /* a sub-select the lateral join may be replaced by the query it ties to the outer one with: aggregates of one table, one row of a table, or the rows of a table kept by an EXISTS */
 static bool
 decor_lateral(Query *sub, Decor *d)
@@ -374,7 +393,7 @@ decor_lateral(Query *sub, Decor *d)
 	if (decor_analyze(sub, d))
 		return true;
 	memset(d, 0, sizeof(Decor));
-	return decor_rows(sub, d);
+	return sift_agg_decor_rows && decor_rows(sub, d);
 }
 
 /* an aggregate becomes a column of the grouped query (a count of no rows is 0, not NULL) */
@@ -696,12 +715,7 @@ decor_apply(Query *q, DecorJoin *r)
 	}
 	j->quals = (Node *) make_ands_explicit(join);
 	sift_agg_by_cost = true;
-	if (r->d.rows)
-	{
-		/* both plans are in the scan, the lateral child run for each entity and the sub-select joined once: the cheaper wins */
-		sift_agg_flat_any = sift_agg_flat_in_scan = true;
-		sift_agg_flat_margin = FLAT_ROWS_MARGIN;
-	}
+	sift_agg_rows_made |= r->d.rows;
 }
 
 /* the columns of a FROM item, as a join's range table entry holds them */

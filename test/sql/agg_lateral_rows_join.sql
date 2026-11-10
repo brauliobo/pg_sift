@@ -2,7 +2,8 @@
 -- table once, when the link table holds each (group, entity) pair once: a unique index of the link table all of whose columns the EXISTS binds (to the group's
 -- column, to the outer row's, to a constant). The scan then reads the joined rows once, where the lateral child runs for each distinct entity (child_runs).
 -- A link table that repeats a pair, has no unique index on the bound columns or a partial one keeps the lateral child (the EXISTS counts a group once, the
--- join would count it for each link). Every query runs with and without the scan: the rows must be the same. The data has links soft-deleted, a NULL entity
+-- join would count it for each link). So does a request of a few entities, for which the lateral child costs less than the link table read whole (the plan with
+-- the join is kept where it costs 2.5 times less). Every query runs with and without the scan: the rows must be the same. The data has links soft-deleted, a NULL entity
 -- in the link table and in the facts, entities with no link, entities in two groups, a group of deleted members, and facts of entities in no table.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -93,6 +94,9 @@ INSERT INTO forms VALUES
                            (SELECT 1 FROM links_unique x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = d.id)) g ON true
                            WHERE d.id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL))
                            SELECT ents.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN ents ON ents.id = e.dim_a_id GROUP BY ents.group_id$q$),
+ ('unique_pair_few_entities', $q$SELECT g.id, count(*) AS n, sum(e.value_num) AS total FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM links_unique x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (1, 2, 4) GROUP BY g.id$q$),
 -- no unique index the EXISTS binds all of: the lateral child stays
  ('pair_twice',           groups_of('links_twice')),
  ('pair_twice_no_index',  groups_of('links_all')),

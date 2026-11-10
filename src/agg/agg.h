@@ -168,6 +168,7 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_rank_plan_methods;
 extern int64 sift_source_lookups;	/* the asks of has_column_source that went to the catalog */
 #endif
 extern bool sift_agg_has_flattenable_laterals(Query *q);
+extern bool sift_agg_decor_rows_candidate(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_minmax_sublinks(Query *q, bool apply);
 extern bool sift_agg_probe_joins(Query *q, bool apply);
@@ -189,7 +190,8 @@ extern bool sift_agg_partial_left(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern double sift_agg_flat_margin;		/* the margin a rewrite whose plan wins by cost alone must win by (0: FLAT_KEYS_MARGIN) */
 extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */
-extern bool sift_agg_flat_in_scan;		/* a rewrite of the flattening wins by cost only where its plan runs in the scan (the plan as written already does) */
+extern bool sift_agg_decor_rows;		/* the flattening may take the groups of a row's entity as a join (decor_rows): plan_flat plans that as a plan of its own */
+extern bool sift_agg_rows_made;		/* the flattening took one */
 #define SIFT_PROBE_ALIAS "sift_probe"	/* the alias of the lateral probe agg/flat/probe.c makes of a sublink or a join */
 extern PGDLLIMPORT bool sift_agg_probe_rewrite;
 extern PGDLLIMPORT bool sift_agg_case_filter_enabled;

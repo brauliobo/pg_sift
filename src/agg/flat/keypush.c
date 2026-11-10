@@ -20,7 +20,8 @@
 #include "agg/flat/int.h"
 
 bool		sift_agg_flat_any;
-bool		sift_agg_flat_in_scan;
+bool		sift_agg_decor_rows;
+bool		sift_agg_rows_made;
 double		sift_agg_flat_margin;
 
 /* the entries of the inner joins of a level (their ON conditions and its WHERE are conditions of the same rows) and the conditions */

@@ -272,6 +272,7 @@ reads_column_index(Query *q)
 #define FLAT_KEYS_MARGIN	2.0
 /* the probes of a join or sub-select made a lateral child (agg/flat/probe.c) win by this much: the plan that reads the table whole or by its keys is as good within it (the instructions of 17 shapes are the same at 1.0 to 1.5 but one, which 1.5 loses 17% of) */
 #define FLAT_PROBE_MARGIN	1.1
+#define FLAT_ROWS_MARGIN	2.5
 
 /* the groups that a nested loop unnests: the rescans of a function scan below this node */
 static double
@@ -465,8 +466,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && (!sift_agg_flat_in_scan || uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
-		plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
+	if (flatplan != NULL && sift_agg_flat_any && plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
@@ -509,30 +509,65 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 }
 
 /*
- * The plan of the query with its correlated min() and max() sub-selects as first rows (agg/flat/minmax.c) is a third plan of it: an ordinary one, priced as any, kept
- * where it runs in the scan and costs less than the one of the pair. The loser's context is deleted with the statement's.
+ * A plan of the query that the pair does not make, an ordinary one priced as any: kept where it runs in the scan and costs less than margin times the one of the pair.
+ * The loser's context is deleted with the statement's.
+ */
+static PlannedStmt *
+plan_beside(SIFT_PLANNER_PARAMS, PlannedStmt *stmt, double margin)
+{
+	MemoryContext cx;
+	PlannedStmt *top = plan_grouped(SIFT_PLANNER_ARGS(parse), &cx, true);
+
+	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) && plan_beats(top->planTree, margin, 0, stmt->planTree))
+		return top;
+	discard_plan(cx);
+	return stmt;
+}
+
+/*
+ * Two more plans of the statement. The query with its correlated min() and max() sub-selects as first rows (agg/flat/minmax.c). The query with the groups of a row's
+ * entity joined once (decor_rows): it reads the whole link table, which the pair's lateral child, run for the distinct entities of the request, reads in part, so it
+ * is kept where it costs FLAT_ROWS_MARGIN times less (the instructions of the two are equal at that ratio of the estimates: a link table of 133,000 rows and 3,000
+ * groups, 9,500 entities of the request).
  */
 static PlannedStmt *
 plan_flat(SIFT_PLANNER_PARAMS)
 {
-	Query	   *first = NULL;
+	Query	   *first = NULL,
+			   *rows = NULL;
 	PlannedStmt *stmt,
-			   *top;
-	MemoryContext cx;
+			   *alt;
+	CteVerdict	rv = {0};
 
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse) && sift_agg_minmax_sublinks(parse, false))
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse))
 	{
-		first = copyObject(parse);
-		sift_agg_minmax_sublinks(first, true);
+		if (sift_agg_minmax_sublinks(parse, false))
+		{
+			first = copyObject(parse);
+			sift_agg_minmax_sublinks(first, true);
+		}
+		if (sift_agg_decor_rows_candidate(parse))
+		{
+			rows = copyObject(parse);
+			verdict_lookup(rows, VERDICT_ROWS, &rv);
+		}
 	}
 	stmt = plan_flat_pair(SIFT_PLANNER_ARGS(parse));
-	if (first == NULL)
-		return stmt;
-	top = plan_grouped(SIFT_PLANNER_ARGS(first), &cx, true);
-	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) && plan_beats(top->planTree, 1.0, 0, stmt->planTree))
-		return top;
-	discard_plan(cx);
-	return stmt;
+	/* a verdict that the join lost is kept like the ones of verdict.c: the plan beside it is made again when the request has another size and every few hits */
+	if (rows != NULL && !(rv.known && !rv.won && verdict_accept(&rv, cte_size(stmt)) == VERDICT_TAKE))
+	{
+		sift_agg_push_arms = 0;
+		sift_agg_decor_rows = true;
+		sift_agg_flatten_laterals(rows);
+		sift_agg_decor_rows = false;
+		if (sift_agg_rows_made)
+		{
+			alt = plan_beside(SIFT_PLANNER_ARGS(rows), stmt, FLAT_ROWS_MARGIN);
+			verdict_remember(&rv, alt != stmt, 0, 0, cte_size(alt), cte_size(alt));
+			stmt = alt;
+		}
+	}
+	return first == NULL ? stmt : plan_beside(SIFT_PLANNER_ARGS(first), stmt, 1.0);
 }
 
 /*

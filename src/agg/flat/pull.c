@@ -310,7 +310,7 @@ sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
-	sift_agg_flat_any = sift_agg_flat_in_scan = false;
+	sift_agg_flat_any = sift_agg_rows_made = false;
 	sift_agg_flat_margin = 0;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
