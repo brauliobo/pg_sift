@@ -56,7 +56,7 @@ scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
 static const char *
 unit_missing(Relation index, int scope, const int *leaves, int n)
 {
-	const SiftColRel *r = sift_col_rel(index);
+	const SiftColRel *r = sift_col_rel(index);	/* check-memory: allow nothing below reads the catalog */
 
 	for (int i = 0; i < n; i++)
 	{
@@ -73,8 +73,8 @@ unit_missing(Relation index, int scope, const int *leaves, int n)
 void
 sift_scope_columns(Relation index, const char *key_name, int *kept, int *all)
 {
-	const SiftColRel *r = sift_col_rel(index);
 	int			scope = scope_ordinal(sift_scope_specs(index), key_name);
+	const SiftColRel *r = sift_col_rel(index);	/* check-memory: allow nothing below reads the catalog */
 	int			natts = RelationGetNumberOfAttributes(index);
 
 	*all = natts;
