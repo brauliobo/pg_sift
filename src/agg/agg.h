@@ -189,6 +189,7 @@ extern bool sift_agg_partial_left(Query *q, bool apply);
 extern bool sift_agg_fence_alone;			/* the only rewrite of the flattening is a fenced sub-select (a scope sublink): no other plan of the query reads the scope differently unless a shared CTE does */
 extern double sift_agg_flat_margin;		/* the margin a rewrite whose plan wins by cost alone must win by (0: FLAT_KEYS_MARGIN) */
 extern bool sift_agg_flat_any;			/* the flattening made a rewrite whose plan wins by cost alone, with the scan or without it */
+extern bool sift_agg_flat_in_scan;		/* a rewrite of the flattening wins by cost only where its plan runs in the scan (the plan as written already does) */
 #define SIFT_PROBE_ALIAS "sift_probe"	/* the alias of the lateral probe agg/flat/probe.c makes of a sublink or a join */
 extern PGDLLIMPORT bool sift_agg_probe_rewrite;
 extern PGDLLIMPORT bool sift_agg_case_filter_enabled;

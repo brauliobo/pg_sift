@@ -465,7 +465,8 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
+	if (flatplan != NULL && sift_agg_flat_any && (!sift_agg_flat_in_scan || uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
+		plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
 	{
 		discard_plan(plain_cx);
 		if (quiet)

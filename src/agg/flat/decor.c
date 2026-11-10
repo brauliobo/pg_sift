@@ -13,6 +13,7 @@
 
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -26,6 +27,9 @@
 
 #include "agg/agg.h"
 #include "agg/flat/int.h"
+
+/* the sub-select joined once reads the whole link table, which the lateral child's keys leave partly unread: where the plan with the child's runs is estimated at 2.5 times the joined one the instructions of the two are equal (a link table of 133,000 rows, 3,000 groups: 9,500 entities of the request) */
+#define FLAT_ROWS_MARGIN 2.5
 
 #if PG_VERSION_NUM >= 180000
 typedef struct Ungroup
@@ -152,7 +156,7 @@ decor_equality(Node *c, Decor *d)
 	r = lsecond(op->args);
 	in = l->varlevelsup == 0 ? l : r;
 	out = l->varlevelsup == 0 ? r : l;
-	if (in->varlevelsup != 0 || in->varno != 1 || in->varattno < 1 || out->varlevelsup != 1 || out->varattno < 1 || in->vartype != out->vartype)
+	if (in->varlevelsup != 0 || in->varno != d->tbl || in->varattno < 1 || out->varlevelsup != 1 || out->varattno < 1 || in->vartype != out->vartype)
 		return false;
 	t = lookup_type_cache(in->vartype, TYPECACHE_EQ_OPR);
 	if (!OidIsValid(t->eq_opr) || t->eq_opr != op->opno)
@@ -192,26 +196,53 @@ ungrouped(Query *sub)
 #endif
 }
 
-/* do the equalities hold every column of a unique key of the table? */
+/* does the expression read a column of the range table entry (of the query level it is in)? */
 static bool
-decor_unique(Oid relid, List *conds)
+reads_table(Node *n, Index *rti)
 {
-	int		   *atts = palloc(list_length(conds) * sizeof(int));
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varno == *rti;
+	return expression_tree_walker(n, reads_table, rti);
+}
+
+/* the column of the table that the condition equates to an expression of no column of it (`x.a = g.b`, `x.k = outer.k`, `x.f = 5`), or 0 */
+static int
+bound_column(Node *c, Index rti)
+{
+	OpExpr	   *op = (OpExpr *) c;
+
+	if (!IsA(c, OpExpr) || list_length(op->args) != 2 || (OidIsValid(op->inputcollid) && !get_collation_isdeterministic(op->inputcollid)))
+		return 0;
+	for (int i = 0; i < 2; i++)
+	{
+		Node	   *a = list_nth(op->args, i),
+				   *b = list_nth(op->args, 1 - i);
+		TypeCacheEntry *t;
+
+		if (!IsA(a, Var) || ((Var *) a)->varlevelsup != 0 || ((Var *) a)->varno != rti || ((Var *) a)->varattno < 1 ||
+			exprType(b) != ((Var *) a)->vartype || reads_table(b, &rti))
+			continue;
+		t = lookup_type_cache(((Var *) a)->vartype, TYPECACHE_EQ_OPR);
+		if (OidIsValid(t->eq_opr) && t->eq_opr == op->opno)
+			return ((Var *) a)->varattno;
+	}
+	return 0;
+}
+
+/* do the conditions bind every column of a unique key of the table (a non-partial, immediate unique index: its rows have one row of the table at most)? */
+static bool
+decor_unique(Decor *d, Oid relid)
+{
+	List	   *all = list_concat_copy(d->rest, d->conds);
+	int		   *atts = palloc(list_length(all) * sizeof(int));
 	int			n = 0;
 
-	foreach_ptr(OpExpr, c, conds)
-	{
-		Var		   *in = castNode(Var, linitial(c->args));
-		bool		seen = false;
-
-		if (in->varlevelsup != 0)
-			in = castNode(Var, lsecond(c->args));
-		for (int i = 0; i < n; i++)
-			seen |= atts[i] == in->varattno;
-		if (!seen)
-			atts[n++] = in->varattno;
-	}
-	return sift_agg_unique_key(relid, n, 0, atts, NULL);
+	foreach_ptr(Node, c, all)
+		if ((atts[n] = bound_column(c, d->tbl)) > 0)
+			n++;
+	return n > 0 && sift_agg_unique_key(relid, n, 0, atts, NULL);
 }
 
 static bool
@@ -220,6 +251,7 @@ decor_analyze(Query *sub, Decor *d)
 	RangeTblEntry *t;
 
 	sub = ungrouped(sub);
+	d->tbl = 1;
 	d->lookup = !d->exists && !sub->hasAggs && sub->groupClause == NIL;
 	if (sub->commandType != CMD_SELECT || (d->exists && (sub->hasAggs || sub->groupClause != NIL)) || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
 		sub->setOperations != NULL || sub->groupingSets != NIL || sub->groupDistinct || (sub->groupClause == NIL && sub->havingQual != NULL) || sub->sortClause != NIL ||
@@ -258,7 +290,91 @@ decor_analyze(Query *sub, Decor *d)
 		foreach_node(TargetEntry, te, sub->targetList)
 			if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
 				return false;
-	return d->conds != NIL && (!d->lookup || decor_unique(t->relid, d->conds));
+	return d->conds != NIL && (!d->lookup || decor_unique(d, t->relid));
+}
+
+/* the one EXISTS the WHERE ANDs and its other conditions (a WHERE with another sub-select has no one) */
+static SubLink *
+decor_exists(Query *sub, List **others)
+{
+	SubLink    *s = NULL;
+
+	foreach_ptr(Node, c, make_ands_implicit((Expr *) sub->jointree->quals))
+	{
+		if (IsA(c, SubLink) && ((SubLink *) c)->subLinkType == EXISTS_SUBLINK && s == NULL)
+			s = (SubLink *) c;
+		else if (checkExprHasSubLink(c))
+			return NULL;
+		else
+			*others = lappend(*others, c);
+	}
+	return s;
+}
+
+/*
+ * `SELECT g.* FROM g WHERE .. AND EXISTS (SELECT 1 FROM x WHERE x.a = g.b AND x.k = o.k AND ..)`: a row of g is there once for each row of the outer query o
+ * that some row of x matches. It is the rows of g joined to x, one for each such row of x, when the equalities and the conditions of the x side hold a whole
+ * unique key of x (the non-partial unique index, as decor_unique): a row of g has one row of x at most, so the join makes no row twice. Where the table repeats
+ * a (a, k) pair the join would, and the sub-select stays what it is. The ties to o move out as the join's condition (decor_group); a condition on o that is not a
+ * tie, or a column of o in the select list, keeps the sub-select too.
+ */
+static bool
+decor_rows(Query *sub, Decor *d)
+{
+	List	   *others = NIL,
+			   *moved;
+	SubLink    *s;
+	Query	   *m,
+			   *qx;
+	RangeTblEntry *x;
+	RangeTblRef *ref = makeNode(RangeTblRef);
+
+	if (!flat_plain_select(sub) || !sub->hasSubLinks || checkExprHasSubLink((Node *) sub->targetList) || contain_vars_of_level((Node *) sub->targetList, 1) ||
+		contain_vars_of_level((Node *) sub, 2) || (s = decor_exists(sub, &others)) == NULL)
+		return false;
+	qx = castNode(Query, s->subselect);
+	x = list_length(qx->rtable) == 1 ? linitial_node(RangeTblEntry, qx->rtable) : NULL;
+	if (!flat_plain_select(qx) || qx->hasSubLinks || x == NULL || list_length(qx->jointree->fromlist) != 1 || !IsA(linitial(qx->jointree->fromlist), RangeTblRef) ||
+		x->rtekind != RTE_RELATION || x->relkind != RELKIND_RELATION || x->tablesample != NULL || has_subclass(x->relid))
+		return false;
+	foreach_ptr(Node, f, sub->jointree->fromlist)
+		if (!IsA(f, RangeTblRef) || rt_fetch(((RangeTblRef *) f)->rtindex, sub->rtable)->rtekind != RTE_RELATION)
+			return false;
+	/* the copy takes the sub-select's WHERE in place of the EXISTS: the table of the EXISTS joins the FROM list, its conditions are the WHERE's (the columns of the sub-select a level up, those of the outer query one) */
+	m = copyObject(sub);
+	others = NIL;
+	qx = castNode(Query, decor_exists(m, &others)->subselect);
+	d->tbl = ref->rtindex = list_length(m->rtable) + 1;
+	moved = make_ands_implicit((Expr *) qx->jointree->quals);
+	OffsetVarNodes((Node *) moved, list_length(m->rtable), 0);
+	IncrementVarSublevelsUp((Node *) moved, -1, 1);
+	CombineRangeTables(&m->rtable, &m->rteperminfos, qx->rtable, qx->rteperminfos);
+	m->jointree->fromlist = lappend(m->jointree->fromlist, ref);
+	m->hasSubLinks = false;
+	foreach_ptr(Node, c, list_concat(others, moved))
+	{
+		if (!contain_vars_of_level(c, 1))
+			d->rest = lappend(d->rest, c);
+		else if (decor_equality(c, d))
+			d->conds = lappend(d->conds, c);
+		else
+			return false;
+	}
+	if (d->conds == NIL || !decor_unique(d, x->relid))
+		return false;
+	d->rows = true;
+	d->sub = m;
+	return true;
+}
+
+/* a sub-select the lateral join may be replaced by the query it ties to the outer one with: aggregates of one table, one row of a table, or the rows of a table kept by an EXISTS */
+static bool
+decor_lateral(Query *sub, Decor *d)
+{
+	if (decor_analyze(sub, d))
+		return true;
+	memset(d, 0, sizeof(Decor));
+	return decor_rows(sub, d);
 }
 
 /* an aggregate becomes a column of the grouped query (a count of no rows is 0, not NULL) */
@@ -384,7 +500,7 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 			TargetEntry *te = makeTargetEntry((Expr *) copyObject(in), list_length(g->targetList) + 1, psprintf("k%d", list_length(g->targetList) + 1), false);
 
 			g->targetList = lappend(g->targetList, te);
-			if (!d->lookup)
+			if (!d->lookup && !d->rows)
 				group_by(g, te);
 			keys = lappend_int(keys, in->varattno);
 			at = list_length(keys);
@@ -424,7 +540,7 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 	{
 		if (te->resjunk)
 			continue;
-		if (d->groups == NIL && !d->lookup)
+		if (d->groups == NIL && !d->lookup && !d->rows)
 			*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
 		else if (d->lookup && !IsA(te->expr, Var))
 			*exprs = lappend(*exprs, makeTargetEntry((Expr *) lookup_expression(g, grti, nulled, te->expr), te->resno, te->resname, false));
@@ -439,6 +555,8 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 			*exprs = lappend(*exprs, makeTargetEntry((Expr *) v, te->resno, te->resname, false));
 		}
 	}
+	if (d->rows)
+		g->limitOffset = flat_offset_zero();
 	return g;
 }
 
@@ -486,7 +604,7 @@ decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor)
 		return false;
 	r->lrti = ((RangeTblRef *) j->rarg)->rtindex;
 	rte = rt_fetch(r->lrti, q->rtable);
-	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_analyze(rte->subquery, &r->d) || !decor_outer_ok(q, &r->d, j->larg))
+	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_lateral(rte->subquery, &r->d) || !decor_outer_ok(q, &r->d, j->larg))
 		return false;
 	if (apply)
 		*decor = lappend(*decor, r);
@@ -557,7 +675,7 @@ decor_apply(Query *q, DecorJoin *r)
 	RangeTblEntry *rte;
 	JoinExpr   *j;
 	DecorRead	read;
-	bool		grouped = r->d.groups != NIL || r->d.lookup;
+	bool		grouped = r->d.groups != NIL || r->d.lookup || r->d.rows;
 
 	j = join_of((Node *) q->jointree, r->lrti);
 	/* one row for every outer row, so a join that did not null the columns now does; the groups of the sub-select (the row of a lookup) keep an inner join an inner join */
@@ -578,6 +696,12 @@ decor_apply(Query *q, DecorJoin *r)
 	}
 	j->quals = (Node *) make_ands_explicit(join);
 	sift_agg_by_cost = true;
+	if (r->d.rows)
+	{
+		/* both plans are in the scan, the lateral child run for each entity and the sub-select joined once: the cheaper wins */
+		sift_agg_flat_any = sift_agg_flat_in_scan = true;
+		sift_agg_flat_margin = FLAT_ROWS_MARGIN;
+	}
 }
 
 /* the columns of a FROM item, as a join's range table entry holds them */
@@ -744,7 +868,7 @@ decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor)
 		int			k = 0;
 
 		if (IsA(n, RangeTblRef) && (rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable))->rtekind == RTE_SUBQUERY && rte->lateral &&
-			decor_analyze(rte->subquery, &d))
+			decor_lateral(rte->subquery, &d))
 		{
 			while (k < i && !decor_outer_ok(q, &d, list_nth(f->fromlist, k)))
 				k++;

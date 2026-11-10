@@ -1,0 +1,131 @@
+-- The lateral sub-select that gives the groups of a row's entity (a group table with an EXISTS over a link table) is the group table joined to the link
+-- table once, when the link table holds each (group, entity) pair once: a unique index of the link table all of whose columns the EXISTS binds (to the group's
+-- column, to the outer row's, to a constant). The scan then reads the joined rows once, where the lateral child runs for each distinct entity (child_runs).
+-- A link table that repeats a pair, has no unique index on the bound columns or a partial one keeps the lateral child (the EXISTS counts a group once, the
+-- join would count it for each link). Every query runs with and without the scan: the rows must be the same. The data has links soft-deleted, a NULL entity
+-- in the link table and in the facts, entities with no link, entities in two groups, a group of deleted members, and facts of entities in no table.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE dim_a (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, 'a' || i FROM generate_series(0, 279) i;
+CREATE TABLE groups (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO groups SELECT i, 'g' || i FROM generate_series(1, 12) i;
+-- links: every entity but each seventh is in a group, 1 in 8 in a second one; each ninth link is deleted; group 11 has deleted members; a NULL entity
+CREATE TABLE links_all (group_id int NOT NULL, dim_a_id int, kind int NOT NULL DEFAULT 1, deleted_at timestamptz, created_at date) WITH (autovacuum_enabled = false);
+INSERT INTO links_all SELECT i % 10 + 1, i, 1, CASE WHEN i % 9 = 0 THEN timestamptz '2026-01-01' END, date '2026-01-01' + i FROM generate_series(0, 279) i WHERE i % 7 <> 0;
+INSERT INTO links_all SELECT (i + 3) % 10 + 1, i, 1, NULL, date '2026-01-01' + i FROM generate_series(0, 279) i WHERE i % 8 = 0;
+INSERT INTO links_all SELECT 11, i, 1, timestamptz '2026-01-01', date '2026-01-01' + i FROM generate_series(0, 279) i WHERE i % 50 = 0;
+INSERT INTO links_all VALUES (3, NULL, 1, NULL, date '2026-01-01');
+-- the same links, an index (or none) of each
+CREATE TABLE links_unique (LIKE links_all) WITH (autovacuum_enabled = false);
+INSERT INTO links_unique SELECT * FROM links_all;
+CREATE UNIQUE INDEX links_unique_pair ON links_unique (group_id, dim_a_id);
+CREATE INDEX links_unique_dim ON links_unique (dim_a_id);
+CREATE TABLE links_kind (LIKE links_all) WITH (autovacuum_enabled = false);
+INSERT INTO links_kind SELECT * FROM links_all;
+-- group 4's pairs are there again with the kind 2: a pair twice, a triple once
+INSERT INTO links_kind SELECT group_id, dim_a_id, 2, deleted_at, created_at FROM links_all WHERE group_id = 4;
+CREATE UNIQUE INDEX links_kind_triple ON links_kind (group_id, dim_a_id, kind);
+CREATE TABLE links_entity (group_id int NOT NULL, dim_a_id int UNIQUE, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO links_entity SELECT DISTINCT ON (dim_a_id) group_id, dim_a_id, deleted_at FROM links_all WHERE dim_a_id IS NOT NULL ORDER BY dim_a_id, group_id;
+-- a pair twice: the join would count the group twice
+CREATE TABLE links_twice (LIKE links_all) WITH (autovacuum_enabled = false);
+INSERT INTO links_twice SELECT * FROM links_all;
+INSERT INTO links_twice SELECT * FROM links_all WHERE dim_a_id % 25 = 0;
+-- a partial unique index (live links) over unique live pairs: the planner does not prove the EXISTS' filter implies the predicate
+CREATE TABLE links_partial (LIKE links_all) WITH (autovacuum_enabled = false);
+INSERT INTO links_partial SELECT * FROM links_all;
+CREATE UNIQUE INDEX links_partial_live ON links_partial (group_id, dim_a_id) WHERE deleted_at IS NULL;
+-- a unique index on a column the EXISTS does not bind
+CREATE TABLE links_serial (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int, deleted_at timestamptz, created_at date) WITH (autovacuum_enabled = false);
+INSERT INTO links_serial (group_id, dim_a_id, deleted_at, created_at) SELECT group_id, dim_a_id, deleted_at, created_at FROM links_all;
+INSERT INTO links_serial (group_id, dim_a_id, deleted_at, created_at) SELECT group_id, dim_a_id, deleted_at, created_at FROM links_all WHERE dim_a_id % 25 = 0;
+CREATE TABLE tenant_access (tenant_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_access SELECT 1, i, CASE WHEN i % 11 = 0 THEN timestamptz '2026-01-01' END FROM generate_series(0, 279) i WHERE i % 3 = 0;
+INSERT INTO tenant_access SELECT 3, i, NULL FROM generate_series(0, 279) i WHERE i % 40 < 12;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind int, value_num numeric(8,2)) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 47 = 0 THEN NULL ELSE i % 300 END, date '2026-01-01' + i % 200, i % 5, i % 97 FROM generate_series(1, 6000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (key_columns = 'dim_a_id', key_order = 'dim_a_id, created_at');
+VACUUM (FREEZE, ANALYZE) dim_a, groups, links_all, links_unique, links_kind, links_entity, links_twice, links_partial, links_serial, tenant_access, events;
+-- how many times the scan runs the plan of the sub-select it joins (its top node's loops): once where the rows are joined, for each distinct entity where
+-- the lateral child runs
+CREATE FUNCTION child_runs(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE line text; scan bool := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		scan := scan OR line LIKE '%SiftAgg%';
+		IF scan AND line LIKE '%->%' THEN RETURN substring(line from 'loops=(\d+)')::int; END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+-- a lateral form of the groups of the row's entity over each link table: its EXISTS, the row's set, the group column read
+CREATE FUNCTION groups_of(link text, lateral_kind text DEFAULT 'LEFT', extra text DEFAULT '', outer_pred text DEFAULT '', cols text DEFAULT 'groups.*') RETURNS text LANGUAGE sql AS $$
+	SELECT format($f$SELECT g.id, count(*) AS n, sum(e.value_num) AS total FROM events e %s JOIN LATERAL (SELECT %s FROM groups WHERE %s EXISTS
+	               (SELECT 1 FROM %s x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id %s)) g ON true
+	               WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$f$,
+	              lateral_kind, cols, extra, link, outer_pred) $$;
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+-- a unique (group, entity) pair
+ ('unique_pair_left',     groups_of('links_unique')),
+ ('unique_pair_inner',    groups_of('links_unique', 'INNER')),
+ ('unique_pair_group_filter', groups_of('links_unique', 'LEFT', 'groups.id < 6 AND')),
+ ('unique_pair_expression', groups_of('links_unique', 'LEFT', '', '', 'groups.id, upper(groups.label) AS label')),
+-- the key the EXISTS binds is the unique index's columns: a constant for one of them, one column alone
+ ('unique_bound_constant', groups_of('links_kind', 'LEFT', '', 'AND x.kind = 1')),
+ ('unique_entity_alone',  groups_of('links_entity')),
+-- the sub-select as the comma form and in a CTE PostgreSQL inlines
+ ('unique_pair_comma',    $q$SELECT g.id, count(*) AS n, sum(e.value_num) AS total FROM events e, LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM links_unique x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('unique_pair_count_distinct', $q$SELECT g.id, count(DISTINCT e.id) AS ids, count(DISTINCT e.dim_a_id) AS n_keys FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM links_unique x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('unique_pair_entities_cte', $q$WITH ents AS (SELECT d.id, g.id AS group_id FROM dim_a d LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM links_unique x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = d.id)) g ON true
+                           WHERE d.id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL))
+                           SELECT ents.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN ents ON ents.id = e.dim_a_id GROUP BY ents.group_id$q$),
+-- no unique index the EXISTS binds all of: the lateral child stays
+ ('pair_twice',           groups_of('links_twice')),
+ ('pair_twice_no_index',  groups_of('links_all')),
+ ('partial_unique',       groups_of('links_partial')),
+ ('unique_unbound_column', groups_of('links_kind')),
+ ('serial_key_unbound',   groups_of('links_serial')),
+-- a condition on the outer row beyond the tie, a column of the outer row selected, an IN: the lateral child stays
+ ('outer_condition',      groups_of('links_unique', 'LEFT', '', 'AND x.created_at <= e.created_at')),
+ ('outer_column_selected', groups_of('links_unique', 'LEFT', '', '', 'groups.*, e.kind AS ekind')),
+ ('in_instead_of_exists', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id IN
+                           (SELECT x.group_id FROM links_unique x WHERE x.deleted_at IS NULL AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$);
+-- whether the scan answers each, the rows it differs by from the plan without it (none), and how many times its lateral child runs
+SELECT f.name, c.pushed, c.rows, c.differences, child_runs(f.q) > 1 AS child_per_entity
+FROM forms f, LATERAL sift_helpers.agg_pushed_and_differences(f.q) c ORDER BY f.name;
+            name            | pushed | rows | differences | child_per_entity 
+----------------------------+--------+------+-------------+------------------
+ in_instead_of_exists       | t      |   11 |           0 | t
+ outer_column_selected      | t      |   11 |           0 | t
+ outer_condition            | f      |   11 |           0 | 
+ pair_twice                 | t      |   11 |           0 | t
+ pair_twice_no_index        | t      |   11 |           0 | t
+ partial_unique             | t      |   11 |           0 | t
+ serial_key_unbound         | t      |   11 |           0 | t
+ unique_bound_constant      | t      |   11 |           0 | f
+ unique_entity_alone        | t      |   10 |           0 | f
+ unique_pair_comma          | t      |   10 |           0 | f
+ unique_pair_count_distinct | t      |   11 |           0 | f
+ unique_pair_entities_cte   | t      |   11 |           0 | f
+ unique_pair_expression     | t      |   11 |           0 | f
+ unique_pair_group_filter   | t      |    6 |           0 | f
+ unique_pair_inner          | t      |   10 |           0 | f
+ unique_pair_left           | t      |   11 |           0 | f
+ unique_unbound_column      | t      |   11 |           0 | t
+(17 rows)
+
+DROP TABLE forms, events, tenant_access, links_serial, links_partial, links_twice, links_entity, links_kind, links_unique, links_all, groups, dim_a;
+DROP FUNCTION child_runs(text), groups_of(text, text, text, text, text);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

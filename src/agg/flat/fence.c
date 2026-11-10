@@ -60,8 +60,8 @@ from_has_join(Query *q, Node *n)
 	return false;
 }
 
-static Node *
-offset_zero(void)
+Node *
+flat_offset_zero(void)
 {
 	return (Node *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, FLOAT8PASSBYVAL);
 }
@@ -124,7 +124,7 @@ fence_exists(Query *sub, bool apply)
 			rest = lappend(rest, q);
 	keys->jointree->quals = rest == NIL ? NULL : (Node *) make_ands_explicit(rest);
 	keys->targetList = list_make1(makeTargetEntry((Expr *) copyObject(inner), 1, "k", false));
-	keys->limitOffset = offset_zero();
+	keys->limitOffset = flat_offset_zero();
 	if (contain_vars_of_level((Node *) keys, 1))
 		return NULL;
 	if (!apply)
@@ -165,7 +165,7 @@ fence_sublink(SubLink *sl, bool apply)
 		if (!simple_select(sub) || !from_has_join(sub, (Node *) sub->jointree) || contain_vars_of_level((Node *) sub, 1))
 			return false;
 		if (apply)
-			sub->limitOffset = offset_zero();
+			sub->limitOffset = flat_offset_zero();
 		return true;
 	}
 	if (sl->subLinkType != EXISTS_SUBLINK || (w = fence_exists(sub, apply)) == NULL)

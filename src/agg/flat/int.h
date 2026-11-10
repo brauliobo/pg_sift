@@ -31,6 +31,8 @@ typedef struct Decor
 	List	   *groups;			/* the expressions it groups by (a LATERAL one, which gives a row for each group, not one row) */
 	bool		exists;			/* EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..): whether a row is there, whatever it holds */
 	bool		lookup;			/* (SELECT expr FROM d WHERE d.k = x.k): no aggregate, and the equalities hold a whole unique key of d, so a row of x has one row of d at most */
+	bool		rows;			/* (SELECT g.* FROM g WHERE EXISTS (SELECT 1 FROM d WHERE d.a = g.b AND d.k = x.k)): the rows of g joined to d, which a row of g has once for each x */
+	Index		tbl;			/* the range table entry of the table the conditions tie to the outer query (1 for a sub-select of one table, the sub-select's EXISTS table for rows) */
 } Decor;
 
 /* a lateral sub-select to replace (the replacement waits for the joins of the level to be spliced, as for a pull-up) */
@@ -43,6 +45,8 @@ typedef struct DecorJoin
 extern List *flat_levels;
 
 extern bool true_or_missing(Node *quals);
+extern bool flat_plain_select(Query *q);
+extern Node *flat_offset_zero(void);
 extern Node * read_columns(Node *n, Pulled *p);
 extern void group_by(Query *q, TargetEntry *te);
 extern bool group_aggregate_lateral(Query *q, bool apply);

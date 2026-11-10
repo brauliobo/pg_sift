@@ -25,14 +25,21 @@
 #include "agg/agg.h"
 #include "agg/flat/int.h"
 
-/* A sub-select PostgreSQL's own pull-up takes: no aggregate, window, SRF, grouping, ordering, limit, CTE, row mark or volatile function. */
+/* A sub-select that is its FROM list kept by its WHERE: no aggregate, window, SRF, grouping, ordering, limit, CTE, row mark or volatile function. */
+bool
+flat_plain_select(Query *q)
+{
+	return q->commandType == CMD_SELECT && q->setOperations == NULL && !q->hasAggs && !q->hasWindowFuncs && !q->hasTargetSRFs &&
+		!q->hasForUpdate && q->groupClause == NIL && q->groupingSets == NIL && q->havingQual == NULL &&
+		q->sortClause == NIL && q->distinctClause == NIL && q->limitOffset == NULL && q->limitCount == NULL && q->cteList == NIL &&
+		q->rowMarks == NIL && q->jointree != NULL && q->jointree->fromlist != NIL && !contain_volatile_functions((Node *) q);
+}
+
+/* the one PostgreSQL's own pull-up takes: no sub-select of its own either */
 static bool
 simple_subquery(Query *q)
 {
-	return q->commandType == CMD_SELECT && q->setOperations == NULL && !q->hasAggs && !q->hasWindowFuncs && !q->hasTargetSRFs &&
-		!q->hasSubLinks && !q->hasForUpdate && q->groupClause == NIL && q->groupingSets == NIL && q->havingQual == NULL &&
-		q->sortClause == NIL && q->distinctClause == NIL && q->limitOffset == NULL && q->limitCount == NULL && q->cteList == NIL &&
-		q->rowMarks == NIL && q->jointree != NULL && q->jointree->fromlist != NIL && !contain_volatile_functions((Node *) q);
+	return flat_plain_select(q) && !q->hasSubLinks;
 }
 
 bool
@@ -303,7 +310,7 @@ sift_agg_flatten_laterals(Query *q)
 {
 	flat_levels = NIL;
 	sift_agg_by_cost = false;
-	sift_agg_flat_any = false;
+	sift_agg_flat_any = sift_agg_flat_in_scan = false;
 	sift_agg_flat_margin = 0;
 	sift_agg_probe_applied = sift_agg_probe_mixed = false;
 	flat_fenced = false;
