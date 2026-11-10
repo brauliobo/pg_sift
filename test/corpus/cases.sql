@@ -78,6 +78,14 @@ select count(*), sum(amount) from events where dim_a_id in (select dim_a_id from
 select e.type, count(*), sum(v.amount) from events v join dim_a e on e.id = v.dim_a_id where e.id in (select dim_a_id from dim_b where set_id = 2 and deleted_at is null) group by 1;
 -- @case join_set_in_subselect_1000 | join | set of 1000
 select count(*), avg(amount) from events where dim_a_id in (select dim_a_id from dim_b where set_id = 5);
+-- @case join_set_in_pairs_10 | join | set of 10 ids via IN (SELECT ...) over a table of 12,010 unique pairs (a probe of it is priced as the set)
+select kind_id, count(*), sum(amount) from events where dim_a_id in (select dim_a_id from links_a where set_id = 1) group by 1;
+-- @case join_set_in_pairs_200 | join | set of 200 ids via IN (SELECT ...) over a table of 12,010 unique pairs (a probe of it is priced as the set)
+select kind_id, count(*), sum(amount) from events where dim_a_id in (select dim_a_id from links_a where set_id = 2) group by 1;
+-- @case join_set_in_pairs_1800 | join | set of 1800 ids via IN (SELECT ...) over a table of 12,010 unique pairs (a probe of it is priced as the set)
+select kind_id, count(*), sum(amount) from events where dim_a_id in (select dim_a_id from links_a where set_id = 3) group by 1;
+-- @case join_set_in_pairs_all | join | set of 2000 ids via IN (SELECT ...) over a table of 12,010 unique pairs (a probe of it is priced as the set)
+select kind_id, count(*), sum(amount) from events where dim_a_id in (select dim_a_id from links_a where set_id = 4) group by 1;
 -- @case join_set_cte_materialized | join | MATERIALIZED key CTE
 with ids as materialized (select distinct dim_a_id from dim_b where set_id = 1 and deleted_at is null) select v.status, count(*) from events v join ids on ids.dim_a_id = v.dim_a_id group by 1;
 -- @case join_set_bigdim | join | key set joined through a 1M-row dimension (RC1 class)

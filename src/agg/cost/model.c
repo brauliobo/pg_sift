@@ -245,14 +245,17 @@ agg_open_cost(int nparts)
 
 double		agg_read_rows;
 
-/* the cheapest path of the table, under its Gather when it has one: what the normal plan reads the table with */
+/*
+ * the cheapest path of the table that is not parameterized, under its Gather when it has one: what the normal plan reads the table with. The cost of a parameterized path is one probe
+ * (8 units for a lookup of a join's key), not a read of the table: it would put a join query's scan in the units of a plan that reads a few rows, 4 times what the plan that reads the table whole costs
+ */
 static Path *
 cheapest_read(AggCtx *c)
 {
 	Path	   *best = NULL;
 
 	foreach_ptr(Path, p, c->rel->pathlist)
-		if (best == NULL || p->total_cost < best->total_cost)
+		if (p->param_info == NULL && (best == NULL || p->total_cost < best->total_cost))
 			best = p;
 	if (best && IsA(best, GatherPath))
 		best = ((GatherPath *) best)->subpath;

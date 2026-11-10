@@ -8,7 +8,7 @@ set client_min_messages = warning;
 select setseed(0.42);
 select :n_events / 4 as n_orders, :n_events / 2 as n_ledger, :n_events * 3 / 4 as n_web, :n_events * 2 / 5 as n_edges, :n_events / 500 + 1 as n_reads, 50000 as n_big \gset
 set sift.col_auto_merge = off;
-drop table if exists events, dim_a, kinds, dim_b, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, tenants, spans, wide cascade;
+drop table if exists events, dim_a, kinds, dim_b, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, tenants, spans, wide cascade;
 
 create table tenants (id int primary key, plan text);
 create table dim_a (id int primary key, tenant_id int not null, type text not null, region text not null);
@@ -33,6 +33,12 @@ insert into dim_b select 3, g, null from generate_series(250, 252) g;
 insert into dim_b select 4, g, null from generate_series(20, 38) g;
 insert into dim_b select 5, g, null from generate_series(1, 1000) g;
 insert into dim_b select 1, 99, now() from generate_series(1, 1) g;
+-- unique (id, set) pairs of sets of 10, 200, 1,800 and all the ids, and four more of all: 12,010 rows, above the 10,000 from which a probe of the table is considered
+create table links_a (dim_a_id int not null, set_id int not null, primary key (set_id, dim_a_id));
+insert into links_a select g, 1 from generate_series(1, :n_entities) g where g % 200 = 7;
+insert into links_a select g, 2 from generate_series(1, :n_entities) g where g % 10 = 7;
+insert into links_a select g, 3 from generate_series(1, :n_entities) g where g % 10 <> 7;
+insert into links_a select g, s from generate_series(1, :n_entities) g, generate_series(4, 8) s;
 
 -- dim_a_id is Zipf-like (a few busy entities); rows are inserted in random order (scattered heap)
 insert into events (tenant_id, dim_a_id, kind_id, status, region, amount, qty, score, created_at, d, note, label, attrs, tags, payload)

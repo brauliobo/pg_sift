@@ -34,6 +34,10 @@ join_left_dim	SiftAgg	single:t
 join_set_in_subselect_11	SiftAgg	single:t
 join_set_in_subselect_75_group	SiftAgg	single:t
 join_set_in_subselect_1000	SiftAgg	single:t
+join_set_in_pairs_10	SiftAgg	single:t
+join_set_in_pairs_200	SiftAgg	single:t
+join_set_in_pairs_1800	SiftAgg	single:t
+join_set_in_pairs_all	SiftAgg	single:t
 join_set_cte_materialized	SiftAgg	-
 join_set_bigdim	SiftAgg	single:t
 join_set_bigdim_cte	SiftAgg	-
