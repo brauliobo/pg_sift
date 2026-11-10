@@ -104,6 +104,7 @@ marker_scope(AggCtx *c, Node *q)
 	}
 	sc->once = true;
 #ifdef SIFT_TESTING
+	/* RELEASE-TODO(4.4): the planner recognises the join forms that mean one row for each pair */
 	sc->once = !sift_test_scope_pairs;
 #endif
 	use_leaf(c, leaf);
