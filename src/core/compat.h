@@ -74,22 +74,82 @@ sift_path_disable(Path *p, int nodes)
 #endif
 
 /*
- * The nodes of a plan that an enable_ setting disabled, and its cost without their penalty, so that plans are ranked alike on every major: 18 counts the nodes apart
- * from the cost, 17 has disable_cost in total_cost once for each.
+ * The nodes of a plan that an enable_ setting disabled, and its cost, so that plans are ranked alike on every major: 18 counts the nodes apart from the cost. 17 has
+ * disable_cost in the cost of each, which a nested loop multiplies by the rows of its outer side, so the nodes are counted in the tree: a leaf that carries the penalty in
+ * its startup cost (a scan whose enable_ is off, or a path made to lose), a bitmap heap scan (it has the index scan below), a join or a sort whose enable_ is off. The cost of 17 is the plan's own, as PostgreSQL ranks it.
  */
+#if PG_VERSION_NUM >= 180000
 static inline int
 sift_plan_disabled(const Plan *plan, double *cost)
 {
-#if PG_VERSION_NUM >= 180000
 	*cost = plan->total_cost;
 	return plan->disabled_nodes;
-#else
-	int			nodes = (int) (plan->total_cost / disable_cost);
-
-	*cost = plan->total_cost - nodes * disable_cost;
-	return nodes;
-#endif
 }
+#else
+static inline bool
+sift_node_disabled(const Plan *plan)
+{
+	switch (nodeTag(plan))
+	{
+		case T_NestLoop:
+			return !enable_nestloop;
+		case T_MergeJoin:
+			return !enable_mergejoin;
+		case T_HashJoin:
+			return !enable_hashjoin;
+		case T_Sort:
+		case T_IncrementalSort:
+			return !enable_sort && plan->startup_cost >= disable_cost;
+		case T_BitmapHeapScan:
+			return !enable_bitmapscan;
+		default:
+			return plan->lefttree == NULL && plan->righttree == NULL && plan->startup_cost >= disable_cost;
+	}
+}
+
+static inline int
+sift_nodes_disabled(const Plan *plan)
+{
+	int			nodes = sift_node_disabled(plan);
+	ListCell   *lc;
+	List	   *kids = NIL;
+
+	if (plan->lefttree)
+		nodes += sift_nodes_disabled(plan->lefttree);
+	if (plan->righttree)
+		nodes += sift_nodes_disabled(plan->righttree);
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			kids = ((const Append *) plan)->appendplans;
+			break;
+		case T_MergeAppend:
+			kids = ((const MergeAppend *) plan)->mergeplans;
+			break;
+		case T_BitmapAnd:
+			kids = ((const BitmapAnd *) plan)->bitmapplans;
+			break;
+		case T_BitmapOr:
+			kids = ((const BitmapOr *) plan)->bitmapplans;
+			break;
+		case T_CustomScan:
+			kids = ((const CustomScan *) plan)->custom_plans;
+			break;
+		default:
+			break;
+	}
+	foreach(lc, kids)
+		nodes += sift_nodes_disabled((const Plan *) lfirst(lc));
+	return nodes;
+}
+
+static inline int
+sift_plan_disabled(const Plan *plan, double *cost)
+{
+	*cost = plan->total_cost;
+	return sift_nodes_disabled(plan);
+}
+#endif
 
 /* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
 #if PG_VERSION_NUM >= 190000
