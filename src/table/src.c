@@ -306,8 +306,7 @@ tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 	{
 		memcpy(t->dir, view->data, view->dir_len);
 		t->nwbuf = view->nwbuf;
-		t->wbuf = palloc(t->nwbuf * sizeof(SiftTblSeg));
-		memcpy(t->wbuf, (char *) view + view_wbuf_at(view->dir_len), t->nwbuf * sizeof(SiftTblSeg));
+		t->wbuf = sift_tbl_wbuf_copy((const SiftTblSeg *) ((const char *) view + view_wbuf_at(view->dir_len)), t->nwbuf, CurrentMemoryContext);
 		sift_tomb_sync_at(t->rel, &st->tomb, t->dir);
 	}
 	else
@@ -315,8 +314,7 @@ tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
 		sift_tomb_sync(t->rel, &st->tomb);
 		*t->dir = st->dir;
 		t->nwbuf = st->nwbuf;
-		t->wbuf = palloc(t->nwbuf * sizeof(SiftTblSeg));
-		memcpy(t->wbuf, st->wbuf, t->nwbuf * sizeof(SiftTblSeg));
+		t->wbuf = sift_tbl_wbuf_copy(st->wbuf, t->nwbuf, CurrentMemoryContext);
 		for (int i = 0; i < t->nwbuf; i++)
 			sift_tbl_seg_load(t->rel, &t->wbuf[i]);
 	}

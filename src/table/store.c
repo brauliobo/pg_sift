@@ -237,6 +237,17 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 		pfree(old);
 }
 
+/* A copy of n write buffers in cxt. A table with no page has none, and then the cache holds no array to copy (memcpy takes no null pointer, whatever the size) */
+SiftTblSeg *
+sift_tbl_wbuf_copy(const SiftTblSeg *wbuf, int n, MemoryContext cxt)
+{
+	SiftTblSeg *copy = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(SiftTblSeg));
+
+	if (n > 0)
+		memcpy(copy, wbuf, n * sizeof(SiftTblSeg));
+	return copy;
+}
+
 /* Every directory update bumps its version: a cache that holds the current one has nothing to read (the metapage fields that change without an update, the high-water mark and the generation counter, are not the cache's: sift_tbl_refresh_full) */
 void
 sift_tbl_refresh(Relation rel, SiftTblRel *st)

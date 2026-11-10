@@ -280,8 +280,7 @@ fetch_state_copy(SiftTblFetch *f, Relation rel)
 	else
 		f->cxt = AllocSetContextCreate(f->parent, "sift_table fetch state", ALLOCSET_SMALL_SIZES);
 	f->ss = (SiftTblScanState) {.st = st,.nwbuf = st->nwbuf,.vers = sift_tbl_vers_build(rel, st, &st->dir, f->cxt)};
-	f->ss.wbuf = MemoryContextAlloc(f->cxt, Max(st->nwbuf, 1) * sizeof(SiftTblSeg));
-	memcpy(f->ss.wbuf, st->wbuf, st->nwbuf * sizeof(SiftTblSeg));
+	f->ss.wbuf = sift_tbl_wbuf_copy(st->wbuf, st->nwbuf, f->cxt);
 	f->vend = st->initialized ? SIFT_TBL_NEXT_VBLOCK(&st->dir.meta) : 0;
 }
 
