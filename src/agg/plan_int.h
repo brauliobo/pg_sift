@@ -126,8 +126,9 @@ typedef struct AggCtx
 	Oid		   *partheap;
 	Oid		   *partindex;
 	List	   *partprune;		/* the conditions on the partition key that the scan evaluates when it starts (part_prune_clauses) */
-	double		part_pages;		/* ... and the pages of their heaps */
-	double		part_tuples;	/* ... and their rows (rel->tuples counts every partition of the table, the ones pruning left out too) */
+	int			part_read;		/* the partitions the scan opens when it runs: nparts, or one of them when a condition it evaluates at start pins the partition key (part_key_pinned) */
+	double		part_pages;		/* the pages of the partitions it opens (the average partition's when it opens one of nparts) */
+	double		part_tuples;	/* ... and their rows */
 	List	   *attexpr;		/* per attribute of the source: its expression with varno = relid (NULL: none) */
 	List	   *attalias;		/* per attribute: another expression that denotes it (NULL: none or no list) */
 	bool		own_filter;		/* the ON clause of a joined table is being lowered (join_filter) */
@@ -511,6 +512,7 @@ extern double join_agg_extra(const AggPath *a);
 extern Node *topn_window_aggs(Node *n, void *context);
 extern bool spelled_wide(const SiftSrcLeaf *lf);
 extern double agg_stage_normal;
+extern bool part_key_pinned(AggCtx *c);
 extern double agg_read_rows;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
 extern bool few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess, bool *sure);

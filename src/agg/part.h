@@ -94,5 +94,6 @@ typedef struct SiftPartStats
 
 extern SiftPartStats *sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves);
 extern void sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s);
+extern void sift_aggpart_average_stats(SiftSrcStats *tot, int nleaves, int n);
 
 #endif							/* SIFT_AGGPART_H */

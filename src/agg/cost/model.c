@@ -369,10 +369,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
 	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost :
-			   s->nkeys > 0 && !s->topn && c->joins == NIL && !c->search && c->nparts == 0 ? agg_group_open_cost() : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
+			   s->nkeys > 0 && !s->topn && c->joins == NIL && !c->search && c->nparts == 0 ? agg_group_open_cost() : agg_open_cost(c->part_read)) + k.child_cost + c->subplan_cost;
 	/* the partitions the scan reads are each opened (a probe restarted for each row opens those its parameter leaves: AGG_GORD_RESTART_PART) */
 	if (c->level_params == NIL)
-		startup += AGG_PART_OPEN * c->nparts * cpu_operator_cost;
+		startup += AGG_PART_OPEN * c->part_read * cpu_operator_cost;
 	/* a search is opened first (k.open_cost) and its native plan is the index scan of the search, which the scan starts no cheaper than */
 	if (s->nkeys == 0 && s->naggs > 0 && !s->topn && c->nparts == 0 && c->level_params == NIL && !c->search)
 		startup -= (AGG_START_COST - AGG_START_PLAIN) * cpu_operator_cost;
@@ -397,7 +397,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	{
 		/* the rows sorted in memory are read and sorted again by each scan, a probe restarted for each row of a join included */
 		startup = (c->level_params != NIL ? AGG_GORD_RESTART + (c->nparts > 1 ? AGG_GORD_RESTART_PART * c->nparts : 0.0) :
-				   AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->nparts : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS) +
+				   AGG_GORD_START + AGG_GORD_SEG * ceil(Max(c->nparts > 0 ? c->part_tuples / c->part_read : c->rel->tuples, 1.0) / AGG_GORD_SEG_ROWS) +
 				   AGG_GORD_MEM_ROW * c->topn_free) * cpu_operator_cost;
 		k.scan_cost = 0;
 	}

@@ -298,36 +298,14 @@ topn_array_bounded(const SiftAggPred *p, int key)
 }
 
 /*
- * Does the scan read one partition at the most, whose own order array it can walk (sift_topn_gorder)? Pruning left one, or the partition key is one column that a condition the scan
- * evaluates when it starts (c->partprune) compares for equality with a value, which only one partition holds. The scan counts the partitions it reads when it runs
- * (sift_aggpart_only): a plan made for one that finds more reads the units.
+ * Does the scan read one partition at the most, whose own order array it can walk (sift_topn_gorder)? Pruning left one, or a condition the scan evaluates
+ * when it starts pins the partition key (part_key_pinned). The scan counts the partitions it reads when it runs (sift_aggpart_only): a plan made for
+ * one that finds more reads the units.
  */
 bool
 topn_one_leaf(AggCtx *c)
 {
-	PartitionScheme sc = c->rel->part_scheme;
-	Node	   *key;
-
-	if (c->nparts <= 1)
-		return true;
-	key = sc != NULL && sc->partnatts == 1 ? linitial(c->rel->partexprs[0]) : NULL;
-	if (key == NULL || !IsA(key, Var))
-		return false;
-	foreach_ptr(Node, cl, c->partprune)
-	{
-		Var		   *v;
-		Node	   *operand;
-		Oid			opno,
-					collid;
-		bool		any;
-
-		if (!sift_aggpart_key_clause(cl, &v, &operand, &opno, &collid, &any) || any || v->varattno != ((Var *) key)->varattno)
-			continue;
-		/* the strategy numbers of a hash and a btree family overlap (1 is the hash equality and the btree less-than) */
-		if (get_op_opfamily_strategy(opno, sc->partopfamily[0]) == (sc->strategy == PARTITION_STRATEGY_HASH ? HTEqualStrategyNumber : BTEqualStrategyNumber))
-			return true;
-	}
-	return false;
+	return c->nparts <= 1 || part_key_pinned(c);
 }
 
 /*

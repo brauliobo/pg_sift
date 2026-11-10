@@ -112,3 +112,14 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 	tot->nunits += s->nunits;
 	tot->bytes += s->bytes;
 }
+
+/* the sums of the partitions' rows, units, bytes and rows without an order array, as the part of them that n of the partitions hold on average */
+void
+sift_aggpart_average_stats(SiftSrcStats *tot, int nleaves, int n)
+{
+	tot->nrows /= n;
+	tot->nunits /= n;
+	tot->bytes /= n;
+	for (int i = 0; i < nleaves; i++)
+		tot->gord_free[i] /= n;
+}

@@ -1,0 +1,204 @@
+-- A scope copy is read with the scope key bound by a parameter: a prepared statement (custom plans, then the generic plan from the sixth execution) or a driver's Bind. The generic plan
+-- prices the equality like any bound key (the rows of an average key; PostgreSQL's estimate), and on a copy partitioned by the key the scan reads the one partition the parameter
+-- selects when it starts, priced as one partition of the average size, not as all of them. Plans and rows only: every statement keeps the scan, answers equal the normal plan's,
+-- and a prepared statement on the partitioned copy takes its generic plan like one on the single copy.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE facts (id bigserial PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL)
+	WITH (autovacuum_enabled = false);
+-- 260 ids of 100 facts each: ids 1..150 are in tenant 1 (large), 151..180 in tenant 2, 181..183 in tenant 3 (small), tenants 4..9 hold one id each,
+-- id 1 is also in tenant 2 and id 151 in tenant 3 (two keys), ids 241..260 are in no tenant
+INSERT INTO facts (dim_a_id, created_at, kind, amount)
+SELECT 1 + i % 260, timestamptz '2026-01-01' + (i * 37 % 8760) * interval '1 hour', i % 7, (i * 13 % 1000)::numeric / 10 FROM generate_series(1, 26000) i;
+CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id)) WITH (autovacuum_enabled = false);
+INSERT INTO pairs SELECT m, 1 FROM generate_series(1, 150) m;
+INSERT INTO pairs SELECT m, 2 FROM generate_series(151, 180) m;
+INSERT INTO pairs SELECT m, 3 FROM generate_series(181, 183) m;
+INSERT INTO pairs SELECT 190 + t, t FROM generate_series(4, 9) t;
+INSERT INTO pairs VALUES (1, 2), (151, 3);
+SET client_min_messages = warning;
+SELECT sift.scope_create('copy_single', 'facts', 'dim_a_id', 'pairs', 'tenant_id') > 0 AS built_single;
+ built_single 
+--------------
+ t
+(1 row)
+
+SELECT sift.scope_create('copy_parts', 'facts', 'dim_a_id', 'pairs', 'tenant_id', partition => true) > 0 AS built_partitioned;
+ built_partitioned 
+-------------------
+ t
+(1 row)
+
+RESET client_min_messages;
+SET synchronous_commit = on;
+VACUUM (FREEZE, ANALYZE) copy_single, copy_parts;
+CREATE FUNCTION plan_kind(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+-- the cost of the top node of a plan
+CREATE FUNCTION plan_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		RETURN substring(l from 'cost=[0-9.]+\.\.([0-9.]+)')::float8;
+	END LOOP;
+END $$;
+-- the partitions the scan reads when it runs, the rows against the literal statement planned without the scan
+CREATE FUNCTION same_exec(stmt text, ref text) RETURNS TABLE (partitions_read int, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+DECLARE l text; listed int := 0; removed int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
+		IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
+		IF l ~ '(\d+) partitions removed' THEN removed := substring(l from '(\d+) partitions removed')::int; END IF;
+	END LOOP;
+	partitions_read := CASE WHEN listed > 0 THEN listed - removed END;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', stmt);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', ref);
+	RESET sift.enable_agg;
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) d);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE TABLE classes (n int PRIMARY KEY, class text, q text);
+INSERT INTO classes VALUES
+	(1, 'sum and count by kind', 'SELECT kind, count(*), sum(amount) FROM %1$s WHERE tenant_id = %2$s GROUP BY kind'),
+	(2, 'distinct ids by month', 'SELECT date_trunc(''month'', created_at) AS m, count(DISTINCT dim_a_id) FROM %1$s WHERE tenant_id = %2$s GROUP BY 1'),
+	(3, 'top 20 ids by sum', 'SELECT dim_a_id, sum(amount) AS s FROM %1$s WHERE tenant_id = %2$s GROUP BY 1 ORDER BY s DESC, dim_a_id LIMIT 20'),
+	(4, 'latest 20', 'SELECT id, created_at, kind, amount FROM %1$s WHERE tenant_id = %2$s ORDER BY created_at DESC, id LIMIT 20');
+-- one prepared statement per copy and class
+SELECT format('PREPARE %s_%s (int) AS %s', t.copy, c.n, format(c.q, t.copy, '$1')) FROM (VALUES ('copy_single'), ('copy_parts')) t(copy), classes c ORDER BY 1 \gexec
+PREPARE copy_parts_1 (int) AS SELECT kind, count(*), sum(amount) FROM copy_parts WHERE tenant_id = $1 GROUP BY kind
+PREPARE copy_parts_2 (int) AS SELECT date_trunc('month', created_at) AS m, count(DISTINCT dim_a_id) FROM copy_parts WHERE tenant_id = $1 GROUP BY 1
+PREPARE copy_parts_3 (int) AS SELECT dim_a_id, sum(amount) AS s FROM copy_parts WHERE tenant_id = $1 GROUP BY 1 ORDER BY s DESC, dim_a_id LIMIT 20
+PREPARE copy_parts_4 (int) AS SELECT id, created_at, kind, amount FROM copy_parts WHERE tenant_id = $1 ORDER BY created_at DESC, id LIMIT 20
+PREPARE copy_single_1 (int) AS SELECT kind, count(*), sum(amount) FROM copy_single WHERE tenant_id = $1 GROUP BY kind
+PREPARE copy_single_2 (int) AS SELECT date_trunc('month', created_at) AS m, count(DISTINCT dim_a_id) FROM copy_single WHERE tenant_id = $1 GROUP BY 1
+PREPARE copy_single_3 (int) AS SELECT dim_a_id, sum(amount) AS s FROM copy_single WHERE tenant_id = $1 GROUP BY 1 ORDER BY s DESC, dim_a_id LIMIT 20
+PREPARE copy_single_4 (int) AS SELECT id, created_at, kind, amount FROM copy_single WHERE tenant_id = $1 ORDER BY created_at DESC, id LIMIT 20
+-- generic plans: the scan for the large and the small tenant (the plan is made once, for any value), the same rows as the normal plan, and a price of the order of the custom plans'
+SET plan_cache_mode = force_generic_plan;
+SELECT t.copy, c.class, plan_kind(format('EXECUTE %s_%s (%s)', t.copy, c.n, v.tenant)) AS generic_plan, v.tenant,
+       (SELECT vs_normal_plan FROM same_exec(format('EXECUTE %s_%s (%s)', t.copy, c.n, v.tenant), format(c.q, t.copy, v.tenant))) AS vs_normal_plan
+FROM (VALUES ('copy_single'), ('copy_parts')) t(copy), classes c, (VALUES (1), (3)) v(tenant) ORDER BY 1, c.n, v.tenant;
+    copy     |         class         | generic_plan | tenant | vs_normal_plan 
+-------------+-----------------------+--------------+--------+----------------
+ copy_parts  | sum and count by kind | scan         |      1 |              0
+ copy_parts  | sum and count by kind | scan         |      3 |              0
+ copy_parts  | distinct ids by month | scan         |      1 |              0
+ copy_parts  | distinct ids by month | scan         |      3 |              0
+ copy_parts  | top 20 ids by sum     | scan         |      1 |              0
+ copy_parts  | top 20 ids by sum     | scan         |      3 |              0
+ copy_parts  | latest 20             | scan         |      1 |              0
+ copy_parts  | latest 20             | scan         |      3 |              0
+ copy_single | sum and count by kind | scan         |      1 |              0
+ copy_single | sum and count by kind | scan         |      3 |              0
+ copy_single | distinct ids by month | scan         |      1 |              0
+ copy_single | distinct ids by month | scan         |      3 |              0
+ copy_single | top 20 ids by sum     | scan         |      1 |              0
+ copy_single | top 20 ids by sum     | scan         |      3 |              0
+ copy_single | latest 20             | scan         |      1 |              0
+ copy_single | latest 20             | scan         |      3 |              0
+(16 rows)
+
+SELECT t.copy, c.class,
+       plan_cost(format('EXECUTE %s_%s (1)', t.copy, c.n)) <= 3 * plan_cost(format(c.q, t.copy, 1)) AS generic_price_of_the_custom_plan
+FROM (VALUES ('copy_single'), ('copy_parts')) t(copy), classes c ORDER BY 1, c.n;
+    copy     |         class         | generic_price_of_the_custom_plan 
+-------------+-----------------------+----------------------------------
+ copy_parts  | sum and count by kind | t
+ copy_parts  | distinct ids by month | t
+ copy_parts  | top 20 ids by sum     | t
+ copy_parts  | latest 20             | t
+ copy_single | sum and count by kind | t
+ copy_single | distinct ids by month | t
+ copy_single | top 20 ids by sum     | t
+ copy_single | latest 20             | t
+(8 rows)
+
+-- the partitioned copy reads the one partition the parameter selects
+SELECT v.tenant, s.partitions_read, s.vs_normal_plan
+FROM (VALUES (1), (2), (3), (99)) v(tenant),
+     LATERAL same_exec(format('EXECUTE copy_parts_1 (%s)', v.tenant), format((SELECT q FROM classes WHERE n = 1), 'copy_parts', v.tenant)) s ORDER BY 1;
+ tenant | partitions_read | vs_normal_plan 
+--------+-----------------+----------------
+      1 |               1 |              0
+      2 |               1 |              0
+      3 |               1 |              0
+     99 |               0 |              0
+(4 rows)
+
+-- from the sixth execution PostgreSQL takes the generic plan when it is not dearer than the custom plans: the partitioned copy does, as the single one
+SET plan_cache_mode = auto;
+SELECT format('PREPARE auto_%s (int) AS %s', t.copy, format((SELECT q FROM classes WHERE n = 1), t.copy, '$1')) FROM (VALUES ('copy_single'), ('copy_parts')) t(copy) \gexec
+PREPARE auto_copy_single (int) AS SELECT kind, count(*), sum(amount) FROM copy_single WHERE tenant_id = $1 GROUP BY kind
+PREPARE auto_copy_parts (int) AS SELECT kind, count(*), sum(amount) FROM copy_parts WHERE tenant_id = $1 GROUP BY kind
+DO $$ BEGIN FOR i IN 1..8 LOOP EXECUTE 'EXECUTE auto_copy_single (1)'; EXECUTE 'EXECUTE auto_copy_parts (1)'; END LOOP; END $$;
+SELECT right(name, -5) AS copy, generic_plans > 0 AS takes_the_generic_plan FROM pg_prepared_statements WHERE name LIKE 'auto\_%' ORDER BY 1;
+    copy     | takes_the_generic_plan 
+-------------+------------------------
+ copy_parts  | t
+ copy_single | t
+(2 rows)
+
+DEALLOCATE ALL;
+-- a driver's Bind: the plan is made for the value
+SELECT format(c.q, 'copy_parts', '$1') || ' ORDER BY 1' AS q FROM classes c WHERE c.n = 1 \gset
+EXPLAIN (COSTS OFF) :q \bind 1 \g
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: (partitions)
+   Partitions: copy_parts_p1
+   Filters: tenant_id = 1
+   Group Keys: kind
+   Pushed Aggregates: count(*), sum(copy_parts.amount)
+(6 rows)
+
+:q \bind 3 \g
+ kind | count |   sum   
+------+-------+---------
+    0 |    58 | 2618.50
+    1 |    57 | 2487.20
+    2 |    56 | 2616.60
+    3 |    57 | 2939.60
+    4 |    57 | 3205.60
+    5 |    57 | 3110.60
+    6 |    58 | 2911.90
+(7 rows)
+
+EXPLAIN (COSTS OFF) :q \bind 99 \g
+              QUERY PLAN              
+--------------------------------------
+ GroupAggregate
+   Group Key: kind
+   ->  Sort
+         Sort Key: kind
+         ->  Result
+               One-Time Filter: false
+(6 rows)
+
+SELECT sift.scope_drop('copy_single');
+ scope_drop 
+------------
+ 
+(1 row)
+
+SELECT sift.scope_drop('copy_parts');
+ scope_drop 
+------------
+ 
+(1 row)
+
+DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text);
+DROP TABLE classes, facts, pairs;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

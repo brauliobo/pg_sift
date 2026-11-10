@@ -349,6 +349,53 @@ part_prune_clauses(AggCtx *c)
 }
 
 /*
+ * Does a condition the scan evaluates when it starts (c->partprune) compare the partition key, one column, for equality with a value? Only one partition holds it.
+ */
+bool
+part_key_pinned(AggCtx *c)
+{
+	PartitionScheme sc = c->rel->part_scheme;
+	Node	   *key = sc != NULL && sc->partnatts == 1 ? linitial(c->rel->partexprs[0]) : NULL;
+
+	if (key == NULL || !IsA(key, Var))
+		return false;
+	foreach_ptr(Node, cl, c->partprune)
+	{
+		Var		   *v;
+		Node	   *operand;
+		Oid			opno,
+					collid;
+		bool		any;
+
+		if (!sift_aggpart_key_clause(cl, &v, &operand, &opno, &collid, &any) || any || v->varattno != ((Var *) key)->varattno)
+			continue;
+		/* the strategy numbers of a hash and a btree family overlap (1 is the hash equality and the btree less-than) */
+		if (get_op_opfamily_strategy(opno, sc->partopfamily[0]) == (sc->strategy == PARTITION_STRATEGY_HASH ? HTEqualStrategyNumber : BTEqualStrategyNumber))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The scan opens one of the partitions the plan lists (a parameter or a stable function pins the key): it is priced as the scan of one partition of the average
+ * size, as the plan made for a constant, which PostgreSQL prunes to that partition, is. PostgreSQL sums the rows of every partition for the parameter, because
+ * the statistics of each say its key has one value; the estimates of the table are set to the average's (the same values each time they are made).
+ */
+static void
+part_price_average(AggCtx *c, List *leaves)
+{
+	double		rows = 0;
+
+	foreach_ptr(RelOptInfo, leaf, leaves)
+		rows += leaf->rows;
+	c->part_pages /= c->nparts;
+	c->part_tuples /= c->nparts;
+	c->rel->tuples = c->part_tuples;
+	c->rel->rows = Min(rows / c->nparts, c->rel->tuples);
+	sift_aggpart_average_stats(&c->stats, c->lay->nleaves, c->nparts);
+}
+
+/*
  * The source of a partitioned table: the live partitions after PostgreSQL's pruning, each read through a sift_col index of the same layout, the
  * columns in the terms of the table (the query is compiled once, against them). A partition without such an index, of another storage, or whose
  * index differs from the others' keeps the normal plan, and so does a table split by hash on a column that a parameter is compared with other than by
@@ -359,7 +406,8 @@ part_source(AggCtx *c)
 {
 	List	   *leaves = NIL,
 			   *first;
-	int			n;
+	int			n,
+				read;
 
 	if (c->rel->part_scheme == NULL || c->rel->nparts == 0)
 		return agg_refuse_on(PARTITION_SOURCE, "the table is not partitioned, or has no partition");
@@ -373,11 +421,12 @@ part_source(AggCtx *c)
 	foreach_ptr(RelOptInfo, leaf, leaves)
 		if (!part_has_index(c, leaf))
 			return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
-	/* opening the partitions alone can cost more than the normal plan: nothing of them is read to find that out */
-	if (agg_open_cost(n) > agg_stage_normal && !sift_agg_force)
-		return agg_refuse_f(COST, "opening %d partitions costs the scan %.2f, the normal plan %.2f", n, agg_open_cost(n), agg_stage_normal);
 	if (!part_prune_clauses(c))
 		return agg_refuse_on(PARTITION_SOURCE, "a condition on the partition key cannot be evaluated when the scan starts");
+	read = n > 1 && part_key_pinned(c) ? 1 : n;
+	/* opening the partitions alone can cost more than the normal plan: nothing of them is read to find that out */
+	if (agg_open_cost(read) > agg_stage_normal && !sift_agg_force)
+		return agg_refuse_f(COST, "opening %d partitions costs the scan %.2f, the normal plan %.2f", read, agg_open_cost(read), agg_stage_normal);
 	first = part_candidates(c, linitial_node(RelOptInfo, leaves));
 	foreach_ptr(PartCand, f, first)
 	{
@@ -417,6 +466,9 @@ part_source(AggCtx *c)
 		c->lay = f->lay;
 		c->pa = common;
 		c->indexoid = f->indexoid;
+		c->part_read = read;
+		if (read < n)
+			part_price_average(c, leaves);
 		return true;
 	}
 	return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
