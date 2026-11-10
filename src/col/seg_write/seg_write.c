@@ -62,6 +62,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	for (int c = 0; c < schema->ncols; c++)
 		if (schema->cols[c].store == SIFT_COLS_STR)
 			w->dict[c] = sift_cdict_create(mcxt);
+	if (format >= SIFT_COL_FORMAT_PRESENCE && sift_cref_host != NULL)
+		w->vstore = sift_cref_host->leaf_stores(sift_wt_index(wt), schema);
 	w->capsb = 64;
 	w->vunit = palloc0(w->capsb * sizeof(VersUnit));
 	initStringInfo(&w->vblob);

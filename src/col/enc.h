@@ -35,6 +35,25 @@ typedef struct SiftColSchema
 extern void (*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *chosen, const SiftCcScanSum *kept);
 extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n);
 
+/*
+ * The shared value store of a column (col/vstore/, docs/COL-VSTORE.md), for the segment reader and writer, which are portable: a host that has none
+ * leaves it NULL, and every dictionary is written and read as before. A store is named by a number (0: none).
+ */
+struct SiftCDict;
+
+typedef struct SiftCRefHost
+{
+	/* the store of each leaf of the index, palloc'ed [ncols] (0: the leaf holds its strings); NULL when no leaf has one */
+	uint32	   *(*leaf_stores) (Relation index, const SiftColSchema *schema);
+	/* the store that leaf of the index reads its strings from, 0: none */
+	uint32		(*leaf_store) (Relation index, const SiftColDef *leaf);
+	/* interns the strings of dict into the store and appends the form DICT_REF to out */
+	void		(*serialize) (uint32 store, const struct SiftCDict *dict, const SiftCcPolicy *pol, StringInfo out);
+	/* the dictionary, in the code order of the segment, of a form DICT_REF; NULL when malformed */
+	struct SiftCDict *(*parse) (MemoryContext mcxt, uint32 store, const char *data, uint64 len);
+} SiftCRefHost;
+extern const SiftCRefHost *sift_cref_host;
+
 /* The SCHEMA section of a segment: magic 'COLS', ncols, hash, per leaf a fixed part and the path */
 extern int	sift_cschema_nconn(const SiftColSchema *s);
 extern int	sift_cschema_nscope(const SiftColSchema *s);
@@ -127,6 +146,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
+#define DICT_REF		5			/* column format minor 46: no strings, the code in the shared value store of the leaf's column of each code, packed (col/vstore/vstore_ref.c) */
 #define DICT_HASHED		0x10		/* or'ed into form 2, 3 or 4: after everything of the form (4-aligned), a hash of the strings to their codes */
 #define DICT_PERM_PACKED	0x20		/* or'ed into form 2 or 4: code[] holds its n codes in sift_cdict_perm_bits(n) bits each, lowest first, the bytes padded to 4 (column format minor 39) */
 #define DICT_FLAGS		(DICT_HASHED | DICT_PERM_PACKED)

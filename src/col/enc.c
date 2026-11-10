@@ -396,6 +396,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 /* The chunk of an STR leaf stored inline: the strings of the rows (the batch's codes looked up in its dictionary bd), no codes of the segment */
 /* set by the host while it builds an index, to name the leaf whose strings the formula wrapped otherwise than the cold rule (col/build/build.c) */
 void		(*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *chosen, const SiftCcScanSum *kept);
+const SiftCRefHost *sift_cref_host = NULL;
 
 static void
 chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const SiftCcPolicy *pol, bool tags, SiftCZone *z, SiftCcScan *scan)

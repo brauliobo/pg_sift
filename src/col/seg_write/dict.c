@@ -42,6 +42,18 @@ tsig_wanted(const SiftColSegWriter *w, int c)
 	return segw_dict_uncached(w, c, 100);
 }
 
+/*
+ * The shared value store the dictionary of leaf c is written as a reference to: not for a leaf that counts the rows of its strings (count_columns), which
+ * the reference cannot hold, and not in a segment whose point directories come first (minor 37 and up is read as the rooted layout, segw_rooted_ok)
+ */
+static uint32
+ref_store(const SiftColSegWriter *w, int c)
+{
+	if (w->vstore == NULL || w->dict[c] == NULL || w->dict[c]->n == 0 || w->pagg.count[c])
+		return 0;
+	return segw_rooted_ok(w) || (!w->anypoints && !w->anyord) ? w->vstore[c] : 0;
+}
+
 void
 segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 {
@@ -75,7 +87,7 @@ segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		}
 	for (int c = 0; blocks && c < ncols; c++)
 	{
-		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN) || ref_store(w, c) != 0)
 			extra[c] = SIZE_MAX;
 		else
 			extra[c] = sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact[c]);
@@ -94,6 +106,12 @@ segw_write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
+		if (ref_store(w, c) != 0)
+		{
+			sift_cref_host->serialize(w->vstore[c], w->dict[c], w->pol ? &w->pol[c] : NULL, &blob);
+			w->format = Max(w->format, SIFT_COL_FORMAT_VSTORE);
+			continue;
+		}
 		if (extra[c] != SIZE_MAX && blocks && !asked[c])
 		{
 			if (extra[c] <= budget || tsig_wanted(w, c))

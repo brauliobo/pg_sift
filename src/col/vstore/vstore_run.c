@@ -5,7 +5,7 @@
  * The code space of a store is append-only: a value has exactly one code, the position at which it was appended, and a code never moves. A run
  * is an immutable segment of the directory (kind SIFT_SEG_VALRUN) that holds the values of the codes [base, base + n) in code order, in the
  * serialized form of a string dictionary. A writer asks the store for the codes of a batch of values: those it finds are answered, the others are
- * appended as one run, under a lock that is held for the append and no longer, and published by a directory update that is logged after the pages
+ * appended as one run, under the extension lock of the store (the one heavyweight lock that the members of a parallel build do not share) that is held for the append and no longer, and published by a directory update that is logged after the pages
  * of the run, so that a segment that names the codes (published later, by the writer) is never seen without them. An append that is not followed
  * by a segment leaves values nobody uses: the store keeps them until its epoch is retired (col/vstore/vstore_gc.c).
  * Runs are merged by the appender (adjacent runs, the codes unchanged), so that a lookup reads few of them.
@@ -29,7 +29,6 @@
 #include "core/store.h"
 
 #define VRUN_MAGIC			0x4e555256	/* 'VRUN' */
-#define VSTORE_APPEND_CLASS	0x5D1D
 #define VRUN_MERGE_ABOVE	12			/* runs of an epoch above which the appender merges the smallest adjacent ones */
 #define VRUN_MERGE_WIDTH	4
 
@@ -242,6 +241,16 @@ sift_vstore_view(SiftVStore *vs)
 	return vs->view->dict;
 }
 
+const SiftCDict *
+sift_vstore_view_to(SiftVStore *vs, uint64 ncodes, uint32 epoch)
+{
+	VStoreView *v = vs->view;
+
+	if (v->dict == NULL || v->dict->n < ncodes || (uint32) v->epoch != epoch)
+		pfree(view_refresh(vs));
+	return v->dict->n >= ncodes && (uint32) v->epoch == epoch ? v->dict : NULL;
+}
+
 uint64
 sift_vstore_epoch(SiftVStore *vs)
 {
@@ -392,7 +401,7 @@ sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *p
 	}
 	if (missing == 0)
 		return 0;
-	LockDatabaseObject(RelationRelationId, RelationGetRelid(vs->rel), VSTORE_APPEND_CLASS, ExclusiveLock);
+	LockRelationForExtension(vs->rel, ExclusiveLock);
 	snap = view_refresh(vs);
 	view = vs->view->dict;
 	{
@@ -428,7 +437,7 @@ sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *p
 		}
 	}
 	merge_runs(vs, pol, snap);
-	UnlockDatabaseObject(RelationRelationId, RelationGetRelid(vs->rel), VSTORE_APPEND_CLASS, ExclusiveLock);
+	UnlockRelationForExtension(vs->rel, ExclusiveLock);
 	for (uint32 i = 0; i < batch->n; i++)
 		if (map[i] == PG_UINT32_MAX)
 		{

@@ -103,6 +103,7 @@ struct SiftColSegWriter
 	MemoryContext mcxt;
 	SiftStreamWriter *sw;
 	SiftCDict **dict;			/* [ncols], STR leaves */
+	uint32	   *vstore;			/* [ncols] the shared value store whose codes the dictionary of a STR leaf is written as (col/vstore/), 0: it holds its strings; NULL: none does */
 	uint32	  **dictmap;		/* [ncols] scratch: batch code -> segment code */
 	bool	   *inl;			/* [ncols] scratch: the STR leaf is stored inline in the unit being added */
 	SiftCZone  *zones;			/* [unit * ncols + col] */

@@ -19,26 +19,6 @@
 #ifdef SIFT_TESTING
 char	   *sift_test_vstore_columns = NULL;
 
-/* The columns of sift.test_vstore_columns get their shared value store at the build, whatever the rule says */
-static void
-sift_test_vstore_columns_build(Relation heap, Relation index)
-{
-	List	   *cols = NIL;
-
-	if (sift_test_vstore_columns == NULL || sift_test_vstore_columns[0] == '\0')
-		return;
-	SplitIdentifierString(pstrdup(sift_test_vstore_columns), ',', &cols);
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-	{
-		AttrNumber	attno = index->rd_index->indkey.values[i];
-		const char *name = attno > 0 ? get_attname(RelationGetRelid(heap), attno, false) : NULL;
-
-		foreach_ptr(char, c, cols)
-			if (name != NULL && strcmp(c, name) == 0)
-				(void) sift_vstore_ensure(heap, index, attno);
-	}
-}
-
 int			sift_test_col_workers = 0;
 
 int			sift_test_col_fail_sb = 0;
@@ -147,9 +127,6 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_scope_resolve(heap, index, false);
 	sift_scope_precheck(heap, index);
 #ifdef SIFT_TESTING
-	sift_test_vstore_columns_build(heap, index);
-#endif
-#ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 	sift_test_col_merge_slices = 0;
 #endif
@@ -163,6 +140,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_row_key_prepare(heap, index);
 	sift_col_track_check(heap, index);
 	sift_col_auto_point(heap, index);
+	sift_vstore_auto(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)

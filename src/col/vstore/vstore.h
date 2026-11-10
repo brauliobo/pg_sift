@@ -22,6 +22,16 @@
 extern Oid	sift_vstore_ensure(Relation heap, Relation index, AttrNumber attno);
 /* The store of the column, InvalidOid when there is none */
 extern Oid	sift_vstore_find(Relation heap, AttrNumber attno);
+extern Oid	sift_vstore_find_oid(Oid heapoid, AttrNumber attno);
+/* The attribute of the table that a string leaf of the index holds as it is (not a path, a carried leaf, a group child or a lane), InvalidAttrNumber for the others */
+extern AttrNumber sift_vstore_leaf_attno(Relation index, const SiftColDef *leaf);
+/* The store that leaf c of the index reads its strings from (the store of its column when the index depends on it), InvalidOid: the leaf has dictionaries of its own */
+extern Oid	sift_vstore_leaf_store(Relation index, const SiftColDef *leaf);
+/* The same for every leaf of the schema, NULL when the index has no store */
+extern Oid *sift_vstore_leaf_stores(Relation index, const SiftColSchema *schema);
+/* The rule (col/vstore/vstore_rule.c): whether sharing the strings of the leaf pays, and the build step that makes the stores of the leaves it does */
+extern bool sift_vstore_pays(Relation heap, Relation index, const SiftColDef *leaf);
+extern void sift_vstore_auto(Relation heap, Relation index);
 /* Whether a relation is a value store */
 extern bool sift_vstore_is_store(Oid relid);
 /* Drops the stores of the table that no index depends on any more (VACUUM of the table) */
@@ -46,6 +56,18 @@ extern SiftCDict *sift_vstore_view(SiftVStore *vs);
 extern uint64 sift_vstore_epoch(SiftVStore *vs);
 /* map[i] = the code in the store of the value i of the batch; the values it has not got are appended as one run; returns how many were */
 extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map);
+
+/* The view with at least ncodes codes of the epoch (low 32 bits), read again when it has fewer or is of another; NULL when the store does not have them */
+extern const SiftCDict *sift_vstore_view_to(SiftVStore *vs, uint64 ncodes, uint32 epoch);
+
+/*
+ * The dictionary of a leaf of a segment as a reference to the store (col/vstore/vstore_ref.c, form DICT_REF): the writer interns the strings of dict
+ * into the store and appends the form to out; the reader makes the dictionary in the code order of the segment from the form (NULL if malformed)
+ */
+extern void sift_vstore_ref_serialize(Oid store, const SiftCDict *dict, const SiftCcPolicy *pol, StringInfo out);
+extern SiftCDict *sift_vstore_ref_parse(MemoryContext mcxt, Oid store, const char *data, uint64 len);
+/* The segment reader and writer use the store through the host struct of col/enc.h */
+extern void sift_vstore_ref_install(void);
 
 #ifdef SIFT_TESTING
 extern void sift_vstore_forget_views(void);

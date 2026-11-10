@@ -43,6 +43,24 @@ sift_cseg_dict_stored(SiftColSegment *seg, int col)
 	return len;
 }
 
+/* A dictionary of column format minor 46 that is a reference to the shared value store of the leaf's column (col/vstore/vstore_ref.c) */
+static SiftCDict *
+ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt)
+{
+	uint32		store = sift_cref_host ? sift_cref_host->leaf_store(seg->index, &seg->schema->cols[col]) : 0;
+	char	   *data = palloc(len);
+	SiftCDict  *d;
+
+	if (store == 0)
+		corrupt(seg, "The dictionary of leaf %d names a shared value store that is not there.", col);
+	seg_read(seg, at, len, data);
+	d = sift_cref_host->parse(mcxt, store, data, len);
+	if (d == NULL)
+		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+	pfree(data);
+	return d;
+}
+
 /* The dictionary of leaf col read from the segment into mcxt (the loader of the backend's cache, col/dictcache.c) */
 static SiftCDict *
 dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
@@ -61,6 +79,8 @@ dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
 		uint64		at = seg_sec(seg, SIFT_SEC_DICT)->off + off;
 
 		seg_read(seg, at, sizeof(head), head);
+		if (head[0] == DICT_REF)
+			return ref_load(seg, col, at, len, mcxt);
 		if (head[0] == DICT_PLAIN && (len - DICT_HEAD) / sizeof(uint32) >= (uint64) head[1] + 1)
 		{
 			d = sift_cdict_plain_begin(mcxt, head[1]);

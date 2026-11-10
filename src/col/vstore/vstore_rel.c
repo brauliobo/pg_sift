@@ -128,12 +128,85 @@ find_visit(Oid store, void *arg)
 }
 
 Oid
+sift_vstore_find_oid(Oid heapoid, AttrNumber attno)
+{
+	FindArg		f = {get_attname(heapoid, attno, false), InvalidOid};
+
+	each_store(heapoid, find_visit, &f);
+	return f.found;
+}
+
+Oid
 sift_vstore_find(Relation heap, AttrNumber attno)
 {
-	FindArg		f = {get_attname(RelationGetRelid(heap), attno, false), InvalidOid};
+	return sift_vstore_find_oid(RelationGetRelid(heap), attno);
+}
 
-	each_store(RelationGetRelid(heap), find_visit, &f);
-	return f.found;
+/* Whether the index depends on the store (it built or merged a segment that names it) */
+static bool
+index_uses(Oid index, Oid store)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	bool		uses = false;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(index));
+	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
+	while (!uses && HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		uses = d->refclassid == RelationRelationId && d->refobjid == store && d->deptype == DEPENDENCY_NORMAL;
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return uses;
+}
+
+/* A string leaf that is a column of the table as it is: not a path of a jsonb, a carried or found leaf, a child of a group or a lane */
+AttrNumber
+sift_vstore_leaf_attno(Relation index, const SiftColDef *d)
+{
+	if (d->store != SIFT_COLS_STR || d->parent >= 0 || (d->path != NULL && d->path[0] != 0) || d->lanes > 1 || d->attno < 1 ||
+		d->attno > index->rd_index->indnatts)
+		return InvalidAttrNumber;
+	return index->rd_index->indkey.values[d->attno - 1];
+}
+
+Oid
+sift_vstore_leaf_store(Relation index, const SiftColDef *leaf)
+{
+	AttrNumber	attno = sift_vstore_leaf_attno(index, leaf);
+	Oid			store;
+
+	if (attno == InvalidAttrNumber)
+		return InvalidOid;
+	store = sift_vstore_find_oid(index->rd_index->indrelid, attno);
+	return OidIsValid(store) && index_uses(RelationGetRelid(index), store) ? store : InvalidOid;
+}
+
+Oid *
+sift_vstore_leaf_stores(Relation index, const SiftColSchema *schema)
+{
+	Oid		   *stores = NULL;
+
+	if (index->rd_rel->relkind != RELKIND_INDEX)
+		return NULL;
+	for (int c = 0; c < schema->ncols; c++)
+	{
+		Oid			store = sift_vstore_leaf_store(index, &schema->cols[c]);
+
+		if (OidIsValid(store))
+		{
+			if (stores == NULL)
+				stores = palloc0(schema->ncols * sizeof(Oid));
+			stores[c] = store;
+		}
+	}
+	return stores;
 }
 
 static void
@@ -367,6 +440,7 @@ void
 sift_vstore_init(void)
 {
 	RegisterXactCallback(gone_xact, NULL);
+	sift_vstore_ref_install();
 }
 
 /* The owner of the stores of the table is the table's (ALTER TABLE ... OWNER TO), as an index's is */
