@@ -46,11 +46,11 @@ CREATE FUNCTION forget_pair_statistics() RETURNS void LANGUAGE sql AS $$
 
 CREATE TABLE edits (n serial, edit text, size int, stmt text);
 INSERT INTO edits (edit, size, stmt) VALUES
-	('members with facts', 3,    'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1 AND 3'),
-	('members with facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 101 AND 200'),
-	('members with facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1001 AND 4000'),
-	('members without facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 6101 AND 6200'),
-	('members without facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 7001 AND 10000'),
+	('ids with facts', 3,    'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1 AND 3'),
+	('ids with facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 101 AND 200'),
+	('ids with facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1001 AND 4000'),
+	('ids without facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 6101 AND 6200'),
+	('ids without facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 7001 AND 10000'),
 	('half of them have facts', 2000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 5001 AND 7000');
 CREATE FUNCTION run_edits(setting text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -67,7 +67,7 @@ SELECT run_edits('with statistics');
 SELECT forget_pair_statistics();
 SELECT run_edits('pair table never analyzed');
 
--- the pairs listed: those of members with facts only, and no statement for none
+-- the pairs listed: those of ids with facts only, and no statement for none
 SELECT setting, edit, size, pairs FROM gone ORDER BY setting DESC, size, edit;
 -- the delete never hashes the copy (the pairs are the hashed side) and never scans it for each pair: it reads the copy once, or probes it by its index (for the few pairs of 3)
 SELECT setting, edit, size, count(*) FILTER (WHERE line ~ 'Seq Scan on facts_by_tenant') <= 1 AS copy_scanned_at_most_once,

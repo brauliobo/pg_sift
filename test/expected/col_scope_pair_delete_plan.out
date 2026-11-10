@@ -48,11 +48,11 @@ CREATE FUNCTION forget_pair_statistics() RETURNS void LANGUAGE sql AS $$
 	UPDATE pg_class SET reltuples = -1, relpages = 0, relallvisible = 0 WHERE oid = 'scope_pairs'::regclass $$;
 CREATE TABLE edits (n serial, edit text, size int, stmt text);
 INSERT INTO edits (edit, size, stmt) VALUES
-	('members with facts', 3,    'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1 AND 3'),
-	('members with facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 101 AND 200'),
-	('members with facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1001 AND 4000'),
-	('members without facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 6101 AND 6200'),
-	('members without facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 7001 AND 10000'),
+	('ids with facts', 3,    'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1 AND 3'),
+	('ids with facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 101 AND 200'),
+	('ids with facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 1001 AND 4000'),
+	('ids without facts', 100,  'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 6101 AND 6200'),
+	('ids without facts', 3000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 7001 AND 10000'),
 	('half of them have facts', 2000, 'DELETE FROM scope_pairs WHERE tenant_id <= 50 AND dim_a_id BETWEEN 5001 AND 7000');
 CREATE FUNCTION run_edits(setting text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -83,22 +83,22 @@ SELECT run_edits('pair table never analyzed');
  
 (1 row)
 
--- the pairs listed: those of members with facts only, and no statement for none
+-- the pairs listed: those of ids with facts only, and no statement for none
 SELECT setting, edit, size, pairs FROM gone ORDER BY setting DESC, size, edit;
           setting          |          edit           | size | pairs 
 ---------------------------+-------------------------+------+-------
- with statistics           | members with facts      |    3 |     3
- with statistics           | members with facts      |  100 |   100
- with statistics           | members without facts   |  100 |      
+ with statistics           | ids with facts          |    3 |     3
+ with statistics           | ids with facts          |  100 |   100
+ with statistics           | ids without facts       |  100 |      
  with statistics           | half of them have facts | 2000 |  1000
- with statistics           | members with facts      | 3000 |  3000
- with statistics           | members without facts   | 3000 |      
- pair table never analyzed | members with facts      |    3 |     3
- pair table never analyzed | members with facts      |  100 |   100
- pair table never analyzed | members without facts   |  100 |      
+ with statistics           | ids with facts          | 3000 |  3000
+ with statistics           | ids without facts       | 3000 |      
+ pair table never analyzed | ids with facts          |    3 |     3
+ pair table never analyzed | ids with facts          |  100 |   100
+ pair table never analyzed | ids without facts       |  100 |      
  pair table never analyzed | half of them have facts | 2000 |  1000
- pair table never analyzed | members with facts      | 3000 |  3000
- pair table never analyzed | members without facts   | 3000 |      
+ pair table never analyzed | ids with facts          | 3000 |  3000
+ pair table never analyzed | ids without facts       | 3000 |      
 (12 rows)
 
 -- the delete never hashes the copy (the pairs are the hashed side) and never scans it for each pair: it reads the copy once, or probes it by its index (for the few pairs of 3)
@@ -108,14 +108,14 @@ SELECT setting, edit, size, count(*) FILTER (WHERE line ~ 'Seq Scan on facts_by_
 FROM (SELECT *, row_number() OVER () AS ord FROM plans) p GROUP BY setting, edit, size ORDER BY setting DESC, size, edit;
           setting          |          edit           | size | copy_scanned_at_most_once | probes_the_copy | hashes_the_copy 
 ---------------------------+-------------------------+------+---------------------------+-----------------+-----------------
- with statistics           | members with facts      |    3 | t                         | t               | f
- with statistics           | members with facts      |  100 | t                         | f               | f
+ with statistics           | ids with facts          |    3 | t                         | t               | f
+ with statistics           | ids with facts          |  100 | t                         | f               | f
  with statistics           | half of them have facts | 2000 | t                         | f               | f
- with statistics           | members with facts      | 3000 | t                         | f               | f
- pair table never analyzed | members with facts      |    3 | t                         | t               | f
- pair table never analyzed | members with facts      |  100 | t                         | f               | f
+ with statistics           | ids with facts          | 3000 | t                         | f               | f
+ pair table never analyzed | ids with facts          |    3 | t                         | t               | f
+ pair table never analyzed | ids with facts          |  100 | t                         | f               | f
  pair table never analyzed | half of them have facts | 2000 | t                         | f               | f
- pair table never analyzed | members with facts      | 3000 | t                         | f               | f
+ pair table never analyzed | ids with facts          | 3000 | t                         | f               | f
 (8 rows)
 
 -- facts and pairs that change in one statement: the pairs of a member whose facts go, move to another member or come from nothing are still taken from the copy
