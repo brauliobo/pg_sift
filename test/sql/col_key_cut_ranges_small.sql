@@ -30,13 +30,14 @@ BEGIN
 END $$;
 
 SET sift.col_build_key_ranges = off;
-CREATE INDEX ks_runs ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+SET sift.test_col_unit_rows = 1200;
+CREATE INDEX ks_runs ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 1 AS several_runs FROM sift.col_segments('ks_runs') WHERE kind = 'immutable';
 SELECT ks_units('ks_runs') > 1 AS units_in_every_run;
 DROP INDEX ks_runs;
 
 SET sift.col_build_key_ranges = on;
-CREATE INDEX ks_idx ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX ks_idx ON ks USING sift_col (id, tenant_id, note, price, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 1 AS several_runs FROM sift.col_segments('ks_idx') WHERE kind = 'immutable';
 SELECT ks_units('ks_idx') AS units_for_a_key;
 SELECT sift.col_maintenance_due('ks_idx') AS ranges_due;

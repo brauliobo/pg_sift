@@ -66,7 +66,6 @@ typedef struct SiftColRel
 	SiftCWbufHint hint;
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
-	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;
@@ -188,7 +187,6 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
-extern bool sift_col_options_key_cut_rows_set(Relation index);
 extern bool sift_col_options_order_columns_option(Relation index);
 extern bool sift_col_options_order_columns_set(Relation index);
 extern bool sift_col_options_key_order_auto(Relation index);
@@ -414,7 +412,8 @@ extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern PGDLLIMPORT int sift_col_unit_floor;
-extern PGDLLIMPORT bool sift_col_legacy_options;	/* sift.test_col_legacy_options: the options 4.3 deprecated are honored (removed in 5.0) */
+extern PGDLLIMPORT int sift_col_test_unit_rows;	/* sift.test_col_unit_rows */
+extern PGDLLIMPORT bool sift_col_legacy_options;	/* sift.test_col_legacy_options: the options 4.3 deprecated are honored (removed in 4.4) */
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);

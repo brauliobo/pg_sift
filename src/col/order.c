@@ -16,7 +16,7 @@
 #include "col/seg.h"
 
 #define ORDER_DEFAULT_ROWS	1024
-#define ORDER_MAX_ROWS		32768		/* the most rows of a unit (key_cut_rows); the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
+#define ORDER_MAX_ROWS		32768		/* the most rows of a unit; the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
 
 typedef struct RowRef
 {
@@ -90,13 +90,13 @@ sift_colk_row_bytes(const SiftColSchema *schema)
 }
 
 /*
- * Rows a key-cut unit aims at: the rows of 256 average heap pages (pg_class: ANALYZE or VACUUM keeps reltuples and relpages) or the option, so that the number of
+ * Rows a key-cut unit aims at: the rows of 256 average heap pages (pg_class: ANALYZE or VACUUM keeps reltuples and relpages; sift.test_col_unit_rows for a test), so that the number of
  * units stays what the superblock cut gave and the planner's per-unit costs are as before; 0 when unknown. A unit has at most ORDER_MAX_ROWS of them.
  */
 uint32
 sift_colk_aim_rows(Relation index)
 {
-	uint32		n = sift_col_rel(index)->cut_rows;
+	uint32		n = sift_col_test_unit_rows;
 	HeapTuple	tp;
 
 	if (n == 0 && (tp = SearchSysCache1(RELOID, ObjectIdGetDatum(index->rd_index->indrelid))) != NULL)

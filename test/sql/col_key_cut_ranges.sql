@@ -36,7 +36,8 @@ CREATE FUNCTION kr_units(ix regclass) RETURNS numeric LANGUAGE sql AS $$
 
 -- the runs of the table's order: a unit in each run for a key
 SET sift.col_build_key_ranges = off;
-CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+SET sift.test_col_unit_rows = 1200;
+CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 3 AS several_runs FROM sift.col_segments('kr_runs') WHERE kind = 'immutable';
 SELECT kr_units('kr_runs') > 3 AS units_in_every_run;
 SELECT sift.col_maintenance_due('kr_runs') AS runs_due;
@@ -44,7 +45,7 @@ DROP INDEX kr_runs;
 
 -- the runs by ranges: a unit, nothing due
 SET sift.col_build_key_ranges = on;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 3 AS several_runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 SELECT kr_units('kr_idx') AS units_for_a_key;
 SELECT sift.col_maintenance_due('kr_idx') AS ranges_due;
@@ -57,11 +58,11 @@ DROP INDEX kr_idx;
 -- a key of floats is cut as well (the order of a float is that of its key: -0 and +0 are the same, NaN last)
 UPDATE kr SET score = CASE WHEN id % 89 = 0 THEN 'NaN' WHEN id % 83 = 0 THEN -0.0 WHEN id % 79 = 0 THEN 0.0 ELSE score END;
 SET sift.col_build_key_ranges = off;
-CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200, point_tid_columns = 'id');
+CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', point_tid_columns = 'id');
 SELECT sift.col_maintenance_due('kr_runs') AS float_runs_due;
 DROP INDEX kr_runs;
 SET sift.col_build_key_ranges = on;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score');
 SELECT count(*) > 3 AS several_runs, sift.col_maintenance_due('kr_idx') AS float_ranges_due FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('kr_idx', true);
 SELECT kr_same() AS same_rows_float_key;
@@ -69,7 +70,7 @@ DROP INDEX kr_idx;
 
 -- a temp_file_limit below the rows leaves the runs of the table's order, and the rows are the same
 SET temp_file_limit = '1MB';
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT kr_units('kr_idx') > 3 AS runs_of_the_table_order;
 SELECT kr_same() AS same_rows_without_ranges;
 RESET temp_file_limit;
@@ -77,7 +78,7 @@ DROP INDEX kr_idx;
 
 -- so does a disk with less room than the rows need (half of what is free is the most the files take)
 SET sift.test_col_temp_free_kb = 1024;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT kr_units('kr_idx') > 3 AS runs_of_the_table_order;
 SELECT kr_same() AS same_rows_without_room;
 RESET sift.test_col_temp_free_kb;
@@ -85,11 +86,11 @@ DROP INDEX kr_idx;
 
 -- a first run larger than the memory a run of the ranges may take (a large maintenance_work_mem) is cut into runs of that size, still without overlap
 SET sift.test_col_segment_kb = 6000;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 CREATE TEMP TABLE kr_first AS SELECT count(*) AS runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 DROP INDEX kr_idx;
 SET sift.test_col_spill_run_kb = 1500;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 2 * (SELECT runs FROM kr_first) AS smaller_runs FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 DROP TABLE kr_first;
 SELECT kr_units('kr_idx') AS units_for_a_key, sift.col_maintenance_due('kr_idx') AS capped_ranges_due;
@@ -101,7 +102,7 @@ DROP INDEX kr_idx;
 
 -- changes after the build are kept
 SET sift.col_build_key_ranges = on;
-CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 INSERT INTO kr SELECT 1000000 + g, g % 300, 'late', 1, 1, true, date '2027-01-01', ARRAY['z'], md5(g::text) FROM generate_series(1, 2000) g;
 UPDATE kr SET price = price + 1 WHERE id % 50 = 3;
 DELETE FROM kr WHERE id % 97 = 5;
@@ -110,7 +111,7 @@ SET sift.test_col_segment_kb = 1500;
 REINDEX INDEX kr_idx;
 SELECT kr_units('kr_idx') AS units_after_reindex, kr_same() AS same_after_reindex;
 DROP INDEX kr_idx;
-CREATE INDEX CONCURRENTLY kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 1200);
+CREATE INDEX CONCURRENTLY kr_idx ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT kr_units('kr_idx') AS units_concurrently, kr_same() AS same_concurrently;
 
 RESET sift.test_col_segment_kb;

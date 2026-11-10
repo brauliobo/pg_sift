@@ -247,12 +247,6 @@ def col_pair(db, key, exp, n, idx_a, idx_b, query, extra_write=True):
 BASE = 'CREATE INDEX {i} ON {t} USING sift_col (id, k, g, v, s, d) %s'
 
 
-def exp_key_cut_rows(db, n):
-    q = 'SELECT g, count(*), sum(v) FROM {t} WHERE k BETWEEN 100 AND 140 GROUP BY g'
-    for rows in (256, 4096):
-        col_pair(db, 'sift_col(key_cut_rows)', 'key_cut_rows 0/%d' % rows, n, BASE % "WITH (key_cut = 'k')", BASE % ("WITH (key_cut = 'k', key_cut_rows = %d)" % rows), q)
-
-
 def exp_point_columns(db, n):
     col_pair(db, 'sift_col(point_columns)', 'point_columns none/k', n, BASE % '', BASE % "WITH (point_columns = 'k')", 'SELECT count(*) FROM {t} WHERE k IN (17, 4242, 3)')
 
@@ -352,7 +346,7 @@ def exp_prefetch(db, n):
     fresh(db, 'oe_src', 'oe_a')
 
 
-EXPS = {'text': exp_text, 'keyword': exp_keyword, 'fields': exp_fields, 'merge_fanin': exp_merge_fanin, 'key_cut_rows': exp_key_cut_rows, 'point_columns': exp_point_columns,
+EXPS = {'text': exp_text, 'keyword': exp_keyword, 'fields': exp_fields, 'merge_fanin': exp_merge_fanin, 'point_columns': exp_point_columns,
         'dead_rewrite': exp_dead_rewrite, 'vis_page_cache': exp_vis_page_cache, 'compression': exp_compression, 'key_columns': exp_key_columns, 'key_columns_named': exp_key_columns_named, 'table': exp_table,
         'prefetch': exp_prefetch, 'async': exp_async, 'switches': exp_switches}
 

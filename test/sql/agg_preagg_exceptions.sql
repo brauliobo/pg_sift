@@ -150,10 +150,11 @@ SELECT g, (g - 1) / 100, g % 10, g * 100,
             WHEN g % 100 = 0 THEN '{"x":1}'::jsonb ELSE '{}'::jsonb END
 FROM generate_series(1, 1000) g;
 CREATE TABLE ex_alternate AS SELECT *, CASE WHEN id % 100 = 99 THEN 1 END::bigint stamp FROM ex_reuse;
+SET sift.test_col_unit_rows = 100;
 CREATE INDEX ex_reuse_col ON ex_reuse USING sift_col (id, k, dim, val, j)
-  WITH (key_cut = 'k', key_cut_rows = 100, paths = 'j.x bigint', superunit = 0);
+  WITH (key_cut = 'k', paths = 'j.x bigint', superunit = 0);
 CREATE INDEX ex_alternate_col ON ex_alternate USING sift_col (id, k, dim, val, j, stamp)
-  WITH (key_cut = 'k', key_cut_rows = 100, paths = 'j.x bigint', superunit = 0);
+  WITH (key_cut = 'k', paths = 'j.x bigint', superunit = 0);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_reuse, ex_alternate;
 SELECT sift.col_verify('ex_reuse_col', true);
 SELECT sift.col_verify('ex_alternate_col', true);
@@ -178,8 +179,9 @@ CREATE TABLE ex_cut AS
 SELECT g AS id, g / 2000 AS tenant, g % 3 AS status, g * 10 AS qty, (g / 2.0)::float8 AS price, CASE WHEN g % 101 = 0 THEN g END::bigint AS stamp,
        jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || g % 5, 'qty', g % 7))) AS doc
 FROM generate_series(1, 60000) g;
+SET sift.test_col_unit_rows = 4000;
 CREATE INDEX ex_cut_col ON ex_cut USING sift_col (id, tenant, status, qty, price, stamp, doc)
-  WITH (key_cut = 'tenant', key_cut_rows = 4000, paths = 'doc.items[]{category text, qty int4}',
+  WITH (key_cut = 'tenant', paths = 'doc.items[]{category text, qty int4}',
         preagg = 'cube(tenant: qty, price; status: qty) rollup(doc.items[].category: doc.items[].qty)', superunit = 0);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_cut;
 SELECT sift.col_verify('ex_cut_col', true);

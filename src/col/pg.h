@@ -166,7 +166,7 @@ typedef struct SiftColOptions
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
 	int			key_cut;		/* offset of the "key_cut" string, 0 = none */
-	int			key_cut_rows;	/* rows a key-cut unit aims at, 0 = as many as an average superblock holds */
+	int			key_cut_rows;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */

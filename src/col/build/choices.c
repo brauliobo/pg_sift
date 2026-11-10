@@ -565,9 +565,8 @@ d_deprecated(Derive *d)
 		bool		(*set) (Relation index);
 		const char *value;
 	} opts[] = {
-		{"key-cut-rows-deprecated", sift_col_options_key_cut_rows_set, "ignored, removed in 5.0"},
-		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 5.0"},
-		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 5.0"},
+		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 4.4"},
+		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 4.4"},
 	};
 
 	if (sift_col_legacy_options)
@@ -620,7 +619,6 @@ static const struct
 	{"wildcard-keys-overflow", d_key_overflow},
 	{"foreign-key-not-indexed", d_foreign_keys},
 	{"hot-update-columns", d_hot_updates},
-	{"key-cut-rows-deprecated", d_deprecated},
 	{"point-columns-deprecated", d_deprecated},
 	{"order-columns-deprecated", d_deprecated},
 	{"cube-dim-no-histogram", d_caps},

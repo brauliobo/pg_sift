@@ -218,6 +218,7 @@ extern const SiftCatalog *sift_catalog(void);
 
 extern void _PG_init(void);
 extern void sift_relopt_alias_notice(const char *old, const char *new);
+extern void sift_relopt_removed_notice(const char *name);
 
 #ifdef SIFT_TESTING
 extern void sift_leak_test_init(void);

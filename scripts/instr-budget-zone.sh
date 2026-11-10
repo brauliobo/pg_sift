@@ -12,7 +12,8 @@ BUDGET=${BUDGET:-500000}
 ib_begin instr-budget-zone 56230 <<'SQL'
 CREATE TABLE ibz (id int, k int, grp int, amount int) WITH (autovacuum_enabled = off);
 INSERT INTO ibz SELECT g, g / 64, g % 7, g % 1000 FROM generate_series(1, 200000) g;
-CREATE INDEX ibz_idx ON ibz USING sift_col (id, k, grp, amount) WITH (key_cut = 'k', key_cut_rows = 64);
+SET sift.test_col_unit_rows = 64;
+CREATE INDEX ibz_idx ON ibz USING sift_col (id, k, grp, amount) WITH (key_cut = 'k');
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) ibz;
 SQL
 { echo "SET max_parallel_workers_per_gather = 0"; echo "SET sift.agg_preagg = off"; echo "SET sift.agg_force = on"

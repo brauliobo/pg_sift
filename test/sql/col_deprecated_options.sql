@@ -1,5 +1,5 @@
--- The options that 4.3 deprecated are accepted and ignored: the build decides by itself, says so once in its NOTICE (and sift.index_choices), and an index that carries
--- one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor them, which is how the tests of their layouts run until 5.0 removes both.
+-- key_cut_rows, point_columns and order_columns, the options that 4.3 deprecated, are accepted and ignored: the build decides by itself and says so once in its NOTICE
+-- (and sift.index_choices), and an index that carries one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor point_columns and order_columns until 4.4 removes both.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
@@ -15,25 +15,18 @@ CREATE FUNCTION dp_units(ix regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT s
 CREATE FUNCTION dp_choice(ix regclass, name text) RETURNS text LANGUAGE sql AS $$
 	SELECT kind || ': ' || value FROM sift.index_choices(ix) WHERE choice = name $$;
 
--- key_cut_rows: the units aim at the rows of an average superblock, whatever the option says
-SET sift.test_col_legacy_options = off;
+-- key_cut_rows (removed in 4.4) is accepted and ignored: the same units, a NOTICE where it is written, and an index that stores it still takes other options, a REINDEX and a RESET
 CREATE INDEX dp_rows ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 64);
 CREATE INDEX dp_plain ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id');
 SELECT dp_units('dp_rows') = dp_units('dp_plain') AS same_units_as_without;
-SELECT dp_choice('dp_rows', 'key_cut_rows');
-SELECT dp_choice('dp_plain', 'key_cut_rows') IS NULL AS no_advice_without;
-SET sift.test_col_legacy_options = on;
-CREATE INDEX dp_legacy ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 64);
-SELECT dp_units('dp_legacy') > 10 * dp_units('dp_plain') AS legacy_cuts_small_units;
-SELECT dp_choice('dp_legacy', 'key_cut_rows') IS NULL AS legacy_says_nothing;
-
--- an index built with the option under the legacy setting keeps its option and reads the same after a REINDEX that ignores it
-SET sift.test_col_legacy_options = off;
-SELECT reloptions FROM pg_class WHERE relname = 'dp_legacy';
-SELECT count(*), sum(id) FROM dp WHERE tenant_id = 42;
-REINDEX INDEX dp_legacy;
-SELECT dp_units('dp_legacy') = dp_units('dp_plain') AS reindex_ignores_it;
-SELECT dp_choice('dp_legacy', 'key_cut_rows');
+SELECT reloptions FROM pg_class WHERE relname = 'dp_rows';
+ALTER INDEX dp_rows SET (cube_minmax = true);
+REINDEX INDEX dp_rows;
+SELECT dp_units('dp_rows') = dp_units('dp_plain') AS reindex_same_units;
+ALTER INDEX dp_plain SET (key_cut_rows = 16);
+ALTER INDEX dp_rows RESET (key_cut_rows);
+SELECT reloptions FROM pg_class WHERE relname IN ('dp_rows', 'dp_plain') ORDER BY relname;
+DROP INDEX dp_rows, dp_plain;
 
 -- point_columns: its leaves are listed as heap addresses, which an equality reads with no unit read, where the rows form reads the unit of each row
 CREATE TABLE dq (id int, uid int, pad text) WITH (autovacuum_enabled = false);

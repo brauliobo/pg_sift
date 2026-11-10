@@ -284,7 +284,6 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
 				r->cut[r->ncut++] = id;
 			}
-			r->cut_rows = sift_col_legacy_options ? sift_col_options(index)->key_cut_rows : 0;
 		}
 	}
 	if (sift_col_row_key_on(index))

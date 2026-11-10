@@ -360,11 +360,10 @@ static const relopt_parse_elt sift_relopt_tab[] = {
 	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftOptions, vacuum_truncate)},
 };
 
-/* An older name of a reloption that stays accepted: said where the option is written (CREATE and ALTER INDEX), never when the stored options are only read */
-void
-sift_relopt_alias_notice(const char *old, const char *new)
+/* The options of one statement are parsed more than once (the check, then the stored value): a name is said once for each statement */
+static bool
+relopt_first_mention(const char *name)
 {
-	/* the options of one statement are parsed more than once (the check, then the stored value): say it once for each name */
 	static TimestampTz stmt;
 	static char said[8][NAMEDATALEN];
 	static int	nsaid;
@@ -376,13 +375,31 @@ sift_relopt_alias_notice(const char *old, const char *new)
 		nsaid = 0;
 	}
 	for (int i = 0; i < nsaid; i++)
-		if (strcmp(said[i], old) == 0)
-			return;
+		if (strcmp(said[i], name) == 0)
+			return false;
 	if (nsaid < lengthof(said))
-		strlcpy(said[nsaid++], old, NAMEDATALEN);
-	ereport(NOTICE,
-			(errmsg("reloption \"%s\" is the older name of \"%s\"", old, new),
-			 errhint("Use \"%s\"; the older name keeps working.", new)));
+		strlcpy(said[nsaid++], name, NAMEDATALEN);
+	return true;
+}
+
+/* An older name of a reloption that stays accepted: said where the option is written (CREATE and ALTER INDEX), never when the stored options are only read */
+void
+sift_relopt_alias_notice(const char *old, const char *new)
+{
+	if (relopt_first_mention(old))
+		ereport(NOTICE,
+				(errmsg("reloption \"%s\" is the older name of \"%s\"", old, new),
+				 errhint("Use \"%s\"; the older name keeps working.", new)));
+}
+
+/* A reloption that a release removed stays accepted and is ignored, so that an index that stores it, a dump and ALTER INDEX keep working; said where it is written */
+void
+sift_relopt_removed_notice(const char *name)
+{
+	if (relopt_first_mention(name))
+		ereport(NOTICE,
+				(errmsg("reloption \"%s\" was removed in 4.4 and is ignored", name),
+				 errhint("Drop it from the index with ALTER INDEX <index> RESET (%s).", name)));
 }
 
 static bytea *

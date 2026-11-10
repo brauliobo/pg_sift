@@ -22,7 +22,8 @@ sql fs "CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int NOT NULL, kind_id int 
 	"INSERT INTO ev SELECT row_number() OVER (), e, 1 + (e + g) % 19, date '2024-01-01' + (random() * 900)::int, round((random() * 100)::numeric, 2),
 		random(), random(), random(), random(), random(), random(), random(), random()
 		FROM generate_series(1, 2000) e, generate_series(1, 50) g ORDER BY random()" \
-	"CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, kind_id, day, amount, m1, m2, m3, m4, m5, m6, m7, m8) WITH (key_cut = dim_a_id, key_cut_rows = 400)" \
+	"SET sift.test_col_unit_rows = 400" \
+	"CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, kind_id, day, amount, m1, m2, m3, m4, m5, m6, m7, m8) WITH (key_cut = dim_a_id)" \
 	"CREATE TABLE evict (id serial PRIMARY KEY, k int NOT NULL, pad text NOT NULL)" \
 	"INSERT INTO evict (k, pad) SELECT (random() * 1000000)::int, repeat('x', 200) FROM generate_series(1, 300000)" \
 	"CREATE INDEX evict_k ON evict (k)" \

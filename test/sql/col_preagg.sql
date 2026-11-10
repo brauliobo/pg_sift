@@ -182,7 +182,8 @@ BEGIN
 		                    FROM pa WHERE id BETWEEN k.lo AND k.hi) h
 	$q$, idx, leaf, typ, withsum, CASE WHEN withsum THEN format('sum(%I)::numeric', leaf) ELSE 'NULL::numeric' END);
 END $f$;
-CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id', key_cut_rows = 3000);
+SET sift.test_col_unit_rows = 3000;
+CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id');
 SELECT sift.col_merge('pa_cut', true);
 SELECT 'built' AS step, leaf, (r).exact_units > 0 AS exact, (r).bad
 FROM (VALUES ('i2', 'int2', true), ('i4', 'int4', true), ('n', 'numeric', true), ('d', 'date', false)) v(leaf, typ, withsum),

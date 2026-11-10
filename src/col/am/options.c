@@ -19,6 +19,7 @@
 #include "core/ops.h"
 
 bool		sift_col_legacy_options = false;
+int			sift_col_test_unit_rows = 0;
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
@@ -364,6 +365,9 @@ sift_col_init(void)
 							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 44. "
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_unit_rows",
+							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages), to get several units out of a small table.",
+							NULL, &sift_col_test_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_legacy_options",
 							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 5.0.",
 							 NULL, &sift_col_legacy_options, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -556,7 +560,7 @@ sift_col_init(void)
 						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
-					  "Deprecated, ignored and removed in 5.0: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
+					  "Removed in 4.4 and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "Deprecated, ignored and removed in 5.0: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
@@ -722,6 +726,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 				sift_relopt_alias_notice("rollup", "rollup_leaves");
 			else if (strcmp(def->defname, "rollup_dims") == 0)
 				sift_relopt_alias_notice("rollup_dims", "rollup_columns");
+			else if (strcmp(def->defname, "key_cut_rows") == 0)
+				sift_relopt_removed_notice("key_cut_rows");
 		}
 
 	if (validate && o && o->superunit == 1)
@@ -830,12 +836,6 @@ COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
 COL_OPT_STR(sift_col_options_connect, connect, "")
 
 COL_OPT_STR(sift_col_options_scope, scope, "")
-
-bool
-sift_col_options_key_cut_rows_set(Relation index)
-{
-	return sift_col_options(index)->key_cut_rows != 0;
-}
 
 /* the option order_columns is set: a deprecated one, honored only under sift.test_col_legacy_options */
 bool

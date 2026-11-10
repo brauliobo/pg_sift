@@ -17,7 +17,8 @@ SELECT ov_rows(60000, 3000);
  
 (1 row)
 
-CREATE INDEX ov_idx ON ov USING sift_col (id, dim_a_id, kind_id, amount) WITH (key_cut = dim_a_id, key_cut_rows = 25);
+SET sift.test_col_unit_rows = 25;
+CREATE INDEX ov_idx ON ov USING sift_col (id, dim_a_id, kind_id, amount) WITH (key_cut = dim_a_id);
 -- the partition holds dead rows (it is dirty): the merge of the overlays leaves it as it is, whatever the rewrite of a dirty segment would do
 DELETE FROM ov WHERE id % 97 = 0;
 UPDATE ov SET amount = amount + 1 WHERE id % 89 = 0;

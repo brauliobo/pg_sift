@@ -17,7 +17,8 @@ CREATE TABLE sm_k (LIKE sm) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO sm_k SELECT * FROM sm ORDER BY (id * 7919) % 25600;
 CREATE INDEX sm_idx ON sm USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops);
 CREATE INDEX sm_o_idx ON sm_o USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops);
-CREATE INDEX sm_k_idx ON sm_k USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops) WITH (key_cut = 'k', key_cut_rows = 256);
+SET sift.test_col_unit_rows = 256;
+CREATE INDEX sm_k_idx ON sm_k USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops) WITH (key_cut = 'k');
 VACUUM (FREEZE, ANALYZE) sm, sm_o, sm_k;
 
 CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_read(q) $$;

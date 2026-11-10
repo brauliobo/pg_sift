@@ -2707,25 +2707,25 @@ all · deprecated · since 3.3 · default ''
 
 all · deprecated · since 3.4 · default 0
 
-- **What it does:** deprecated in 4.3, removed in 5.0: the rows a key-cut unit aims at; the build now uses the rows of an average superblock, whatever the option says
+- **What it does:** removed in 4.4, still accepted and ignored: the rows a key-cut unit aims at; the build uses the rows of an average superblock, whatever the option says
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: none: ignored
 - **When:** An index that carries the option, from 3.4 to 4.2.x; the units already written are read as before and the next build, promotion or merge cuts them by superblock.
 - **Default:** 0 — Accepted so that dumps and scripts restore; ignored because no query gained from it at 100,000 rows and it only moved the index size and the number of units.
-- **Turn off:** ALTER INDEX .. RESET (key_cut_rows). The setting sift.test_col_legacy_options (testing only) makes a build honor it until 5.0.
+- **Turn off:** ALTER INDEX .. RESET (key_cut_rows).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave it out. A CREATE INDEX or REINDEX that finds it says so in the one NOTICE of the build (key-cut-rows-deprecated); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
+- **Advice:** Leave it out. CREATE INDEX, ALTER INDEX and REINDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
 
 #### sift_col(order_columns)
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** deprecated in 4.3, removed in 5.0: a sorted run of the rows of each unit; a build now writes none, and the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
+- **What it does:** deprecated in 4.3, removed in 4.4: a sorted run of the rows of each unit; a build now writes none, and the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
 - **Gain:** ORDER BY an integer LIMIT 100 37.9 ms normal plan, 3.5 without runs, 1.4 with (1,000,000 rows); LIMIT 10 0.128 to 0.051 ms with heads (800,000)
 - **Impact:** index size: 2 bytes a row per unordered leaf (+50.8% of a 10-column index with 8 unordered leaves, 1,000,000 rows); heads add 0.6% to 2.4% (three order columns); build, merge and writes: with heads (not the runs themselves): build 1.61 against 1.63 s, promotion of 100,000 rows 0.052 s, merge of 500,000 rows 0.74 against 0.66 s; other: none: ignored; the runs it wrote took the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units)
 - **When:** An index that carries the option, from 3.3 to 4.2.x; the segments already written keep their runs and heads and are read as before, and a promotion, merge or REINDEX writes none.
 - **Default:** '' — Accepted so that dumps and scripts restore; the runs hold the same bytes as the order array of the column and read 4 to 6 times the instructions beyond a top-N of 32, so no class needs them.
-- **Turn off:** ALTER INDEX .. RESET (order_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the runs until 5.0.
+- **Turn off:** ALTER INDEX .. RESET (order_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the runs until 4.4.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). A CREATE INDEX or REINDEX that finds order_columns says so in the one NOTICE of the build (order-columns-deprecated); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
 

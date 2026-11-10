@@ -168,11 +168,13 @@ INSERT INTO kcut_c SELECT * FROM fz.gen_kcut(1, @ROWS@, 40);
 -- keys of 8,192 rows or more under a second key, which a unit of 16,384 rows aims at: the units of a key are cut at 4,096 rows
 CREATE TABLE kcut_d (LIKE kcut_a) WITH (autovacuum_enabled = false);
 INSERT INTO kcut_d SELECT id, ki % 3, kd, kt, kn, kf, amount, val, kind, pad FROM fz.gen_kcut(1, @ROWS@ * 20, 60);
-CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd', key_cut_rows = 64);
-CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn', key_cut_rows = 64);
-CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki', key_cut_rows = 64);
+SET sift.test_col_unit_rows = 64;
+CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd');
+CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn');
+CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki');
 SET max_parallel_maintenance_workers = 0;	-- one segment, so that a key keeps its rows together
-CREATE INDEX kcut_d_idx ON kcut_d USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd', key_cut_rows = 16384);
+SET sift.test_col_unit_rows = 16384;
+CREATE INDEX kcut_d_idx ON kcut_d USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd');
 RESET max_parallel_maintenance_workers;
 
 -- a plain index over rows of 3 kB (two to a page, so a table of a few thousand rows has a dozen superblocks): the promotions that churn leaves are cut by TID range into units of the
@@ -287,8 +289,9 @@ SELECT i, (i - 1) / 100, i % 10, i * 100,
             WHEN i % 100 = 0 THEN '{"x":1}'::jsonb ELSE '{}'::jsonb END,
        CASE WHEN i % 100 = 99 THEN 1 END
 FROM generate_series(1, 1000) i;
+SET sift.test_col_unit_rows = 100;
 CREATE INDEX exr_col ON exr USING sift_col (id, org, kind, amount, marker, stamp)
-  WITH (key_cut = 'org', key_cut_rows = 100, paths = 'marker.x bigint', superunit = 0);
+  WITH (key_cut = 'org', paths = 'marker.x bigint', superunit = 0);
 VACUUM (FREEZE, ANALYZE) exr;
 -- @end
 
