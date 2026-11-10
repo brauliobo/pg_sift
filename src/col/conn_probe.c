@@ -38,6 +38,7 @@ struct SiftConnProbe
 	Oid			parent;
 	Oid			index;
 	Oid			keytype;
+	AttrNumber	pos;			/* the probed column in the btree */
 	Snapshot	snap;
 	MemoryContext cx;
 	HTAB	   *seen;
@@ -54,15 +55,24 @@ seen_new(MemoryContext cx)
 SiftConnProbe *
 sift_conn_probe_begin(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap)
 {
-	SiftConnProbe *p = MemoryContextAllocZero(cx, sizeof(SiftConnProbe));
+	return sift_conn_probe_begin_on(cx, parent, sift_col_row_key_unique(parent, key), key, snap);
+}
 
+SiftConnProbe *
+sift_conn_probe_begin_on(MemoryContext cx, Relation parent, Oid btree, AttrNumber key, Snapshot snap)
+{
+	SiftConnProbe *p = MemoryContextAllocZero(cx, sizeof(SiftConnProbe));
 	Relation	idx;
 
 	/* the lock on the parent table is the one fill_begin took; the btree is locked here, and both are held to the end of the transaction (a batch opens them with NoLock) */
 	Assert(CheckRelationLockedByMe(parent, AccessShareLock, true));
 	p->parent = RelationGetRelid(parent);
-	p->index = sift_col_row_key_unique(parent, key);
+	p->index = btree;
 	idx = index_open(p->index, AccessShareLock);
+	for (int j = 0; j < idx->rd_index->indnkeyatts; j++)
+		if (idx->rd_index->indkey.values[j] == key)
+			p->pos = j + 1;
+	Assert(p->pos > 0);
 	index_close(idx, NoLock);
 	p->keytype = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
 	p->snap = snap;
@@ -91,17 +101,55 @@ key_datum(Oid typid, int64 k, Datum *d, RegProcedure *eq)
 	}
 }
 
+void
+sift_conn_probe_open(SiftConnProbe *p, SiftConnProbeScan *s)
+{
+	s->heap = table_open(p->parent, NoLock);
+	s->idx = index_open(p->index, NoLock);
+	Assert(CheckRelationLockedByMe(s->heap, AccessShareLock, true) && CheckRelationLockedByMe(s->idx, AccessShareLock, true));
+	s->scan = sift_index_beginscan(s->heap, s->idx, p->snap, 1);
+	s->slot = table_slot_create(s->heap, NULL);
+}
+
+void
+sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnProbeFn each, void *arg)
+{
+	ScanKeyData skey;
+	Datum		d;
+	RegProcedure eq;
+
+	if (!key_datum(p->keytype, key, &d, &eq))
+		return;
+	ScanKeyInit(&skey, p->pos, BTEqualStrategyNumber, eq, d);
+	index_rescan(s->scan, &skey, 1, NULL, 0);
+	while (index_getnext_slot(s->scan, ForwardScanDirection, s->slot) && each(arg, s->slot))
+		;
+	CHECK_FOR_INTERRUPTS();
+}
+
+void
+sift_conn_probe_close(SiftConnProbeScan *s)
+{
+	ExecDropSingleTupleTableSlot(s->slot);
+	index_endscan(s->scan);
+	index_close(s->idx, NoLock);
+	table_close(s->heap, NoLock);
+}
+
+static bool
+seen_one(void *arg, TupleTableSlot *slot)
+{
+	*(bool *) arg = true;
+	return false;
+}
+
 /* For each row of the batch that has a key (nulls: its bitmap), whether the parent has a visible row for it: its unique index holds at most one */
 void
 sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, uint32 nrows, bool *one)
 {
-	Relation	heap = table_open(p->parent, NoLock);
-	Relation	idx = index_open(p->index, NoLock);
+	SiftConnProbeScan s;
 
-	Assert(CheckRelationLockedByMe(heap, AccessShareLock, true) && CheckRelationLockedByMe(idx, AccessShareLock, true));
-	IndexScanDesc scan = sift_index_beginscan(heap, idx, p->snap, 1);
-	TupleTableSlot *slot = table_slot_create(heap, NULL);
-
+	sift_conn_probe_open(p, &s);
 	for (uint32 row = 0; row < nrows; row++)
 	{
 		ProbeSeen  *e;
@@ -113,17 +161,8 @@ sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, 
 		e = hash_search(p->seen, &keys[row], HASH_ENTER, &hit);
 		if (!hit)
 		{
-			ScanKeyData skey;
-			Datum		d;
-			RegProcedure eq;
-
 			e->one = false;
-			if (key_datum(p->keytype, keys[row], &d, &eq))
-			{
-				ScanKeyInit(&skey, 1, BTEqualStrategyNumber, eq, d);
-				index_rescan(scan, &skey, 1, NULL, 0);
-				e->one = index_getnext_slot(scan, ForwardScanDirection, slot);
-			}
+			sift_conn_probe_key(p, &s, keys[row], seen_one, &e->one);
 		}
 		one[row] = e->one;
 		if (hash_get_num_entries(p->seen) > PROBE_SEEN_MAX)
@@ -131,10 +170,6 @@ sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, 
 			hash_destroy(p->seen);
 			p->seen = seen_new(p->cx);
 		}
-		CHECK_FOR_INTERRUPTS();
 	}
-	ExecDropSingleTupleTableSlot(slot);
-	index_endscan(scan);
-	index_close(idx, NoLock);
-	table_close(heap, NoLock);
+	sift_conn_probe_close(&s);
 }

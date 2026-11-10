@@ -51,22 +51,30 @@ key_of(Oid typid, Datum d, int64 *out)
 	}
 }
 
-/* Calls f for every row of the parent that holds a key, under snap */
-static void
-scan_keys(Relation parent, AttrNumber key, Snapshot snap, void (*f) (void *arg, int64 k), void *arg)
+/* The integer key of a column of the row, false for a NULL */
+bool
+sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
 {
-	TableScanDesc scan = sift_table_beginscan(parent, snap, 0, NULL);
-	TupleTableSlot *slot = table_slot_create(parent, NULL);
-	Oid			keytype = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
+	bool		isnull;
+	Datum		d = slot_getattr(slot, att, &isnull);
+
+	return !isnull && key_of(TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid, d, k);
+}
+
+/* Calls f for every row of rel that holds both columns (key2 InvalidAttrNumber: the first alone, k2 is then 0), under snap */
+void
+sift_conn_scan_keys(Relation rel, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
+{
+	TableScanDesc scan = sift_table_beginscan(rel, snap, 0, NULL);
+	TupleTableSlot *slot = table_slot_create(rel, NULL);
 
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		bool		isnull;
-		Datum		d = slot_getattr(slot, key, &isnull);
-		int64		k;
+		int64		k,
+					k2 = 0;
 
-		if (!isnull && key_of(keytype, d, &k))
-			f(arg, k);
+		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_key(slot, key2, &k2)))
+			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
 	ExecDropSingleTupleTableSlot(slot);
@@ -81,7 +89,7 @@ typedef struct KeyStats
 } KeyStats;
 
 static void
-count_key(void *arg, int64 k)
+count_key(void *arg, int64 k, int64 k2)
 {
 	KeyStats   *st = arg;
 
@@ -97,7 +105,7 @@ typedef struct KeyFill
 } KeyFill;
 
 static void
-set_bit(void *arg, int64 k)
+set_bit(void *arg, int64 k, int64 k2)
 {
 	SiftConnKeySet *set = arg;
 	uint64		slot = (uint64) k - (uint64) set->lo;
@@ -112,7 +120,7 @@ set_bit(void *arg, int64 k)
 }
 
 static void
-add_key(void *arg, int64 k)
+add_key(void *arg, int64 k, int64 k2)
 {
 	KeyFill    *kf = arg;
 
@@ -138,7 +146,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 	uint64		range;
 	MemoryContext old = MemoryContextSwitchTo(cx);
 
-	scan_keys(parent, key, snap, count_key, &st);
+	sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, count_key, &st);
 	range = st.rows == 0 ? 0 : (uint64) st.hi - (uint64) st.lo;
 	set = palloc0(sizeof(SiftConnKeySet));
 	set->lo = st.lo;
@@ -158,7 +166,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 	if (set->slots > 0)
 	{
 		set->bits = palloc_extended((set->slots + 63) / 64 * sizeof(uint64), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
-		scan_keys(parent, key, snap, set_bit, set);
+		sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, set_bit, set);
 	}
 	else
 	{
@@ -167,7 +175,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 
 		/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
 		set->keys = palloc_extended(Max(st.rows, 1) * sizeof(int64), MCXT_ALLOC_HUGE);
-		scan_keys(parent, key, snap, add_key, &kf);
+		sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, add_key, &kf);
 		set->nkeys = kf.n;
 		qsort(set->keys, set->nkeys, sizeof(int64), cmp_key);
 		set->again = palloc_extended(Max(set->nkeys, 1), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);

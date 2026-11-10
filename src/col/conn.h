@@ -21,7 +21,9 @@
 #ifndef SIFT_COL_CONN_H
 #define SIFT_COL_CONN_H
 
+#include "access/genam.h"
 #include "access/transam.h"
+#include "executor/tuptable.h"
 #include "nodes/pg_list.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -207,15 +209,39 @@ extern struct SiftColFill *sift_conn_fill_begin(Relation child_index, MemoryCont
 /* The writer is done with the fill (every segment it writes is finished): releases the snapshot a probing fill keeps. NULL is fine. */
 extern void sift_conn_fill_end(struct SiftColFill *fill);
 
+/* What a fill prices its two ways to know the keys of a table with: its estimated rows, and whether asking its btree for `rows` keys is cheaper than reading it (the connection fill and the scope fill) */
+extern double sift_conn_rows_of(Relation rel);
+extern bool sift_conn_probe_cheaper(uint64 rows, double parent_rows);
+
 /* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
 typedef struct SiftConnKeySet SiftConnKeySet;
 extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit);
 extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
+/* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation */
+extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
+typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
+extern void sift_conn_scan_keys(Relation rel, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
 
 /* The btree probe of the keys of a batch (col/conn_probe.c): the other way to know whether the parent has one visible row for a key */
 typedef struct SiftConnProbe SiftConnProbe;
 extern SiftConnProbe *sift_conn_probe_begin(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap);
 extern void sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, uint32 nrows, bool *one);
+/*
+ * The probe of any btree by one of its columns: a scan opened for a run of keys, each key looked up with each(arg, slot) called for every visible row of the table it names (the scan
+ * stops when it returns false). sift_conn_probe_begin_on names the btree and the probed column of the table (a pair index of a scope relation holds it first or second).
+ */
+typedef struct SiftConnProbeScan
+{
+	Relation	heap,
+				idx;
+	IndexScanDesc scan;
+	TupleTableSlot *slot;
+} SiftConnProbeScan;
+typedef bool (*SiftConnProbeFn) (void *arg, TupleTableSlot *slot);
+extern SiftConnProbe *sift_conn_probe_begin_on(MemoryContext cx, Relation parent, Oid btree, AttrNumber key, Snapshot snap);
+extern void sift_conn_probe_open(SiftConnProbe *p, SiftConnProbeScan *s);
+extern void sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnProbeFn each, void *arg);
+extern void sift_conn_probe_close(SiftConnProbeScan *s);
 
 /*
  * Refresh: is a segment of a connected index worth a rewrite for what its stamps say? For a connection whose parent journal vouches now, a segment is stale when it was never filled

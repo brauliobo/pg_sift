@@ -55,8 +55,8 @@ static SiftConnStamp fill_stamp(const SiftColFill *hook, int i);
 static void fill_end(SiftColFill *hook);
 
 /* The estimated rows of a table */
-static double
-rows_of(Relation rel)
+double
+sift_conn_rows_of(Relation rel)
 {
 	BlockNumber pages;
 	double		tuples,
@@ -67,8 +67,8 @@ rows_of(Relation rel)
 }
 
 /* Is asking the btree for `rows` keys cheaper than reading a parent of `parent_rows` rows? */
-static bool
-probe_cheaper(uint64 rows, double parent_rows)
+bool
+sift_conn_probe_cheaper(uint64 rows, double parent_rows)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_conn_fill != 0)
@@ -120,7 +120,7 @@ sift_conn_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		{
 			AttrNumber	key = get_attnum(RelationGetRelid(parent), s->parent_key);
 
-			if (!probe_cheaper(rows, rows_of(parent)))
+			if (!sift_conn_probe_cheaper(rows, sift_conn_rows_of(parent)))
 				fc->keys = sift_conn_keyset_load(mcxt, parent, key, snap, (Size) maintenance_work_mem * 1024 / 2);
 			if (fc->keys == NULL)
 			{
