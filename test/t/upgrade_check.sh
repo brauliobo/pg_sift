@@ -92,11 +92,11 @@ out=$(uc clean)
 check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
 check "key_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +key_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
 check "rollup_columns set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
-check "order_columns set after the build warns that the old units have no sorted run, with the REINDEX" grep -q -E '^warn +facts_late_ord +option +order_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_ord;' <<<"$out"
+check "order_columns (deprecated in 4.3, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated in 4\.3 and removed in 4\.4 .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
 check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
 check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \
-	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_ord; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
+	"reindex true REINDEX INDEX CONCURRENTLY public.docs_idx; reindex true REINDEX INDEX CONCURRENTLY public.facts_old_opt; reindex false REINDEX INDEX CONCURRENTLY public.facts_late; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_roll; reindex false REINDEX INDEX CONCURRENTLY public.facts_late_set;"
 # cube_minmax and superunit are on unless the index says otherwise: an index written before 3.3 lacks them, and a REINDEX gives them
 q clean "SET sift.col_format_minor = 6" "CREATE INDEX facts_legacy ON facts USING sift_col (id, g, n)" >/dev/null
 out=$(uc clean)
@@ -122,7 +122,7 @@ check "to 3.6: the same index is a blocker that says to write the setting 14 and
 check "to 3.7: the same index is ok" test -z "$(row "$(uc --to 3.7 clean)" blocker facts_gord)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_gord" >/dev/null
 check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
-check "... and it is written without the arrays: column format 13, and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 13 ' <<<"$(uc clean)"
+check "... and it is written without the arrays: column format 12 (no sorted run is written for order_columns), and the preflight says the option waits for a REINDEX" grep -q -E '^warn +facts_gord +option +order_array_columns with column format 12 ' <<<"$(uc clean)"
 q clean "REINDEX INDEX facts_gord" >/dev/null
 check "a REINDEX at the normal setting writes the arrays again: column format 38" grep -q -E '^ok +facts_gord +index +format 1\.[0-9]+, column format 38' <<<"$(uc clean)"
 q clean "DROP INDEX facts_gord" >/dev/null

@@ -63,8 +63,8 @@ LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/
 TSDDL=; TSC=
 if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"; TSC="TABLESPACE ts1"; fi
 
-# the options of this tree's column index; a released library has none of them (cube_minmax, order_columns and key_columns are 3.3's, hll_columns 3.4's)
-FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g', hll_columns = 'id')"
+# the options of this tree's column index; a released library has none of them (cube_minmax and key_columns are 3.3's, hll_columns 3.4's)
+FACTS_OPTS="WITH (cube_minmax = true, key_columns = 'g', hll_columns = 'id')"
 [[ -z $OLD_REF ]] || FACTS_OPTS=
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'

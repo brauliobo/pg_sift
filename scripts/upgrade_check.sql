@@ -30,6 +30,7 @@ DECLARE
 	lib text;
 	avail text;
 	r record;
+	dep record;
 	maj int;
 	mnr int;
 	lo int;
@@ -146,6 +147,17 @@ BEGIN
 			advice := format('the deprecated name of write_buffer_limit: ALTER INDEX %s RESET (mutable_limit), then SET (write_buffer_limit = N)', r.rel);
 			RETURN NEXT;
 		END IF;
+
+		-- 4.3 accepts these and ignores them (point_columns lists heap addresses); 4.4 removes them
+		FOR dep IN SELECT * FROM (VALUES ('key_cut_rows', 'the units aim at the rows of an average superblock'),
+									   ('point_columns', 'its columns are listed as heap addresses, as point_tid_columns does'),
+									   ('order_columns', 'no sorted run is written; the order arrays, order_array_columns, answer what it did')) v(opt, what)
+		LOOP
+			CONTINUE WHEN NOT EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE dep.opt || '=%');
+			kind := 'option'; detected := dep.opt; status := 'warn';
+			advice := format('deprecated in 4.3 and removed in 4.4 (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
+			RETURN NEXT;
+		END LOOP;
 	END LOOP;
 
 	-- the two event triggers of 3.3 call table_ddl_check, a function that only the 3.3 library has (sift_table_paths_drop is 3.2's): with an older library every ALTER TABLE
