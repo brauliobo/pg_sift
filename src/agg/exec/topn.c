@@ -241,7 +241,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->typid = ex->lay->leaf[p->leaf].typid;
 		return g;
 	}
-	/* leaf IN (constants) is an OR of equalities (as many as a global order grouped by the leaf reads at once); NOT IN and a NULL element are for the units, and so is the set of keys of a join, which has no expression */
+	/* leaf IN (constants) is an OR of equalities (as many as a global order grouped by the leaf reads at once, or the walk of the key takes one after another); NOT IN and a NULL element are for the units, and so is the set of keys of a join, which has no expression */
 	if (p->kind == SAP_IN && p->op == 0 && p->expr != NULL && p->level == 0 && !p->late && p->leaf < ex->nbase &&
 		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{
@@ -263,7 +263,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		arr = DatumGetArrayTypeP(d);
 		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elen, &ebyval, &ealign);
 		deconstruct_array(arr, ARR_ELEMTYPE(arr), elen, ebyval, ealign, &elems, &nulls, &n);
-		if (n == 0 || n > SIFT_GORD_PIN_MAX)
+		if (n == 0 || n > (p->leaf == keyleaf ? SIFT_GORD_IN_MAX : SIFT_GORD_PIN_MAX))
 			return NULL;
 		g->kind = STG_OR;
 		g->nchild = n;

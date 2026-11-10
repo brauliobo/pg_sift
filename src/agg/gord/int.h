@@ -20,6 +20,8 @@ typedef struct GCur
 	uint32		values;
 	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
 	uint32		ve;
+	uint32		rvs;			/* the range of all the values of the source: the window [vs, ve) is cut from it */
+	uint32		rve;
 	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
 	uint32		ne;
 	uint32		sk;				/* the entries sift_gord_skip took off the front of [vs, ve) (the back, descending) */
@@ -56,6 +58,9 @@ struct SiftGOrd
 	bool		nulls_first;
 	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
 	bool		bounded;		/* a range of the key: the rows with no value are not in it */
+	uint32		nin;			/* an IN list on the key: its values (in, ascending), the one the cursors are in is the iin-th of the scan (the last first, descending) */
+	uint32		iin;
+	int64	   *in;
 	int64		far;			/* the bound of the key at the end of the scan (the upper one ascending, the lower one descending), where a cursor with lazy set stops */
 	uint32		head;			/* the entries of a chunk decoded when the scan enters it (the rows asked for, shared by the sources, at least GORD_HEAD_MIN) */
 	int			ncur;

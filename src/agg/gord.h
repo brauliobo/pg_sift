@@ -31,7 +31,10 @@ typedef struct SiftGBound
 	int			npin;			/* conditions leaf = value of the query: a global order grouped by one of the leaves reads the entries of that group only, and cannot answer without it */
 	int			pinleaf[SIFT_GORD_PIN_MAX];	/* the same leaf more than once: an IN list, the group of any of the values */
 	int64		pinval[SIFT_GORD_PIN_MAX];
+	uint32		nin;			/* an IN list on the key (an integer one): its values, ascending and distinct, at least two, between lo and hi; the scan reads the entries of each value after those of the one before it */
+	const int64 *in;
 } SiftGBound;
+
 
 /* The merge for a scan that wants rows rows. NULL when the source has no global order of the leaf, or its write buffers hold too many rows to sort for so few (sift_colsrc_gorder_open) */
 extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *bound, MemoryContext cxt);

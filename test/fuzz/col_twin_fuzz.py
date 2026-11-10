@@ -126,6 +126,12 @@ def queries(n):
     q.append(('in_u', f'SELECT id, u FROM ct WHERE u IN ({us}) ORDER BY u DESC, id LIMIT 10 OFFSET 20'))
     q.append(('in_k', 'SELECT id, k FROM ct WHERE k IN (3, 77, 120, 299) ORDER BY k, id LIMIT 200 OFFSET 2048'))
     q.append(('in_k', 'SELECT id, k FROM ct WHERE k IN (3, 77, 120, 299) ORDER BY k DESC, id LIMIT 200'))
+    q.append(('in_u1', f'SELECT u FROM ct WHERE u IN ({us}) ORDER BY u LIMIT 100'))
+    q.append(('in_u1', f'SELECT u FROM ct WHERE u IN ({us}) ORDER BY u DESC LIMIT 10 OFFSET 3'))
+    ks = ','.join(str(x) for x in range(3, 300, 7))
+    q.append(('in_k1', f'SELECT k FROM ct WHERE k IN ({ks}) ORDER BY k LIMIT 300 OFFSET 2048'))
+    q.append(('in_k1', f'SELECT k FROM ct WHERE k IN ({ks}) AND k > 100 ORDER BY k DESC LIMIT 100'))
+    q.append(('in_k1', 'SELECT k FROM ct WHERE k IN (3, 3, 77) ORDER BY k LIMIT 400'))
     ss = ','.join(f"'{x:03x}'" for x in range(0, 4096, 97))
     q.append(('in_s', f'SELECT id, s FROM ct WHERE s IN ({ss}) ORDER BY s, id LIMIT 100'))
     for g in (3, 7, 49):

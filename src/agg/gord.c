@@ -226,6 +226,41 @@ cur_start(SiftGOrd *g, GCur *c)
 	cur_next(g, c);
 }
 
+/* The part [vs, ve) of the values of a numeric cursor that the bound keeps; the end of it the scan comes to last is not sought (lazy), cur_next stops there */
+static void
+cur_window(SiftGOrd *g, GCur *c, const SiftGBound *b)
+{
+	c->lazy = !c->ends && g->bounded && (g->desc ? b->has_lo : b->has_hi);
+	c->vs = g->bounded && b->has_lo && !(c->lazy && g->desc) ? sift_colsrc_gorder_seek(g->src, c->src, g->leaf, c->rvs, c->rve, b->lo, false, g->desc ? NULL : c->buf) : c->rvs;
+	c->ve = g->bounded && b->has_hi && !(c->lazy && !g->desc) ? sift_colsrc_gorder_seek(g->src, c->src, g->leaf, c->rvs, c->rve, b->hi, true, g->desc ? c->buf : NULL) : c->rve;
+}
+
+/* An IN list: the cursors are put on the entries of the value that is the j-th of the scan (the values ascend, so the entries of one are all before those of the next) */
+static void
+gord_in_window(SiftGOrd *g, uint32 j)
+{
+	int64		v = g->in[g->desc ? g->nin - 1 - j : j];
+	SiftGBound	b = {true, true, v, v};
+
+	g->iin = j;
+	g->far = v;
+	for (int i = 0; i < g->ncur; i++)
+		cur_window(g, g->cur[i], &b);
+}
+
+/* The entries of the value before the next one of an IN list are all read: the cursors move to it (false: there is none) */
+static bool
+gord_in_advance(SiftGOrd *g)
+{
+	if (g->in == NULL || g->iin + 1 >= g->nin)
+		return false;
+	gord_in_window(g, g->iin + 1);
+	for (int i = 0; i < g->ncur; i++)
+		cur_start(g, g->cur[i]);
+	g->prev = g->runner = NULL;
+	return true;
+}
+
 SiftGOrd *
 sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *b, MemoryContext cxt)
 {
@@ -254,6 +289,12 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 	g->collid = collid;
 	g->bounded = b != NULL && (b->has_lo || b->has_hi);
 	g->far = b == NULL ? 0 : desc ? b->lo : b->hi;
+	if (b != NULL && collid == 0 && b->nin > 1)
+	{
+		g->nin = b->nin;
+		g->in = MemoryContextAlloc(cxt, b->nin * sizeof(int64));
+		memcpy(g->in, b->in, b->nin * sizeof(int64));
+	}
 	g->cur =MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
 	g->release.func = gord_release;
 	g->release.arg = g;
@@ -261,8 +302,6 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 	for (int i = 0; i < n; i++)
 	{
 		GCur	   *c = MemoryContextAlloc(cxt, sizeof(GCur));
-		uint32		rvs,
-					rve;
 
 		memset(c, 0, offsetof(GCur, str));
 		c->src = i;
@@ -280,24 +319,20 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 		}
 		c->ends = sift_colsrc_gorder_cuts(src, i, leaf, &c->cuts);
 		g->ends |= c->ends;
-		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
+		sift_colsrc_gorder_range(src, i, leaf, &c->rvs, &c->rve, &c->ns, &c->ne);
 		if (g->bounded && collid != 0)
 		{
 			/* the ends are ranks of this source's strings, found by the order of the collation */
 			uint32		rlo = b->has_lo ? sift_colsrc_gorder_strrank(src, i, leaf, b->slo, b->slolen, b->slo_excl) : 0,
 						rhi = b->has_hi ? sift_colsrc_gorder_strrank(src, i, leaf, b->shi, b->shilen, !b->shi_excl) : PG_UINT32_MAX;
 
-			c->vs = b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, rlo, false, desc ? NULL : c->buf) : rvs;
-			c->ve = b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, rhi, false, desc ? c->buf : NULL) : rve;
+			c->vs = b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, c->rvs, c->rve, rlo, false, desc ? NULL : c->buf) : c->rvs;
+			c->ve = b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, c->rvs, c->rve, rhi, false, desc ? c->buf : NULL) : c->rve;
 		}
-		else
-		{
-			/* the end of the range the scan comes to last is found when the scan gets there (cur_next, cur_group): a LIMIT stops long before it, and the seek reads a chunk of every segment */
-			c->lazy = !c->ends && g->bounded && (desc ? b->has_lo : b->has_hi);
-			c->vs = g->bounded && b->has_lo && !(c->lazy && desc) ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
-			c->ve = g->bounded && b->has_hi && !(c->lazy && !desc) ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
-		}
-		if ((g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
+		else if (g->in == NULL)
+			cur_window(g, c, b);
+		/* the cursors of an IN list stay: a source with no entry of the first value has some of another */
+		if (g->in == NULL && ((g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne))))
 		{
 			/* nothing in the part of the ends this scan reads; the segment's own order goes on past it when the part is cut at the side the scan comes to */
 			g->short_ |= !(g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) && (cur_cut(g, c, false) || (!g->bounded && cur_cut(g, c, true)));
@@ -323,6 +358,8 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 		c->slot = g->ncur;
 		g->cur[g->ncur++] = c;
 	}
+	if (g->in != NULL)
+		gord_in_window(g, 0);
 	g->head = Max(GORD_HEAD_MIN, Min((uint32) SIFT_CGORD_ROWS, g->ncur > 0 ? 5 * (uint32) Max(rows, 0) / (4 * g->ncur) : 0));
 	return g;
 }
@@ -581,7 +618,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 	if (sift_test_col_gorder_noskip)
 		return 0;
 #endif
-	if (g->started || g->ends || k == 0 || g->ncur == 0 || (g->collid != 0 && k < GORD_TEXT_SKIP_MIN))
+	if (g->started || g->ends || g->in != NULL || k == 0 || g->ncur == 0 || (g->collid != 0 && k < GORD_TEXT_SKIP_MIN))
 		return 0;
 	if (g->gm)
 		return g->collid == 0 && g->ncur > 0 ? gord_group_skip(g, k) : 0;
@@ -708,6 +745,8 @@ sift_gord_rewind(SiftGOrd *g)
 	g->started = false;
 	g->last_set = false;
 	g->short_ = false;
+	if (g->in != NULL)
+		gord_in_window(g, 0);
 }
 
 bool
@@ -905,6 +944,8 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 	{
 		GCur	   *best = g->cur[0];
 
+		while (!g->short_ && !best->have && gord_in_advance(g))
+			;
 		if (g->short_ || !best->have)
 			return false;
 		*key = best->k;
@@ -918,7 +959,10 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 	{
 		GCur	   *best;
 
-		if (g->short_ || (best = gord_pick(g)) == NULL)
+		best = NULL;
+		while (!g->short_ && (best = gord_pick(g)) == NULL && gord_in_advance(g))
+			;
+		if (g->short_ || best == NULL)
 			return false;
 		*key = best->k;
 		*isnull = best->cls != 1;
