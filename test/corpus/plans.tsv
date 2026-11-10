@@ -380,3 +380,11 @@ having_in_cte	SiftAgg	-
 c3_case_else_count	SiftAgg	single:t
 c3_case_else_avg_min	SiftAgg	single:t
 c3_case_else_value	SiftAgg	single:t
+bridge_group_join	SiftAgg	single:t
+bridge_group_left	SiftAgg	single:t
+bridge_group_distinct	-	distinct:f:distinct_set,single:f:cost
+bridge_group_lateral_exists	SiftAgg	single:t
+bridge_group_lateral_in	SiftAgg	single:t
+bridge_group_lateral_filter	SiftAgg	single:t
+bridge_group_dim_a_cte	SiftAgg	single:t
+bridge_group_lateral_array	-	single:f:join_condition

@@ -817,3 +817,19 @@ select tenant_id, count(case when status = 'paid' then qty else 0 end) a, count(
 select tenant_id, avg(case when status = 'paid' then qty else 0 end) a, min(case when status = 'paid' then qty else 0 end) mn, max(case when status = 'open' then kind_id else 0 end) mx, avg(case when status = 'paid' then amount else 0 end) am from events group by 1;
 -- @case c3_case_else_value | pred | a minimum, a maximum and an average of a CASE whose ELSE is a value, by tenant
 select tenant_id, min(case when status = 'paid' then amount else 500 end) mn, max(case when status = 'paid' then qty else 3 end) mx, avg(case when status = 'paid' then qty else 3 end) av from events group by 1;
+-- @case bridge_group_join | join | a link table (set_id, dim_a_id) joined and grouped by its set column: a row counts in each of its sets
+select b.set_id, count(*), sum(v.amount) from events v join dim_b b on b.dim_a_id = v.dim_a_id and b.deleted_at is null where v.dim_a_id in (select dim_a_id from dim_b where set_id = 4) group by 1;
+-- @case bridge_group_left | join | the same through a LEFT JOIN: an entity in no set is a NULL group
+select b.set_id, count(*), sum(v.amount) from events v left join dim_b b on b.dim_a_id = v.dim_a_id and b.deleted_at is null where v.dim_a_id between 1 and 40 group by 1;
+-- @case bridge_group_distinct | join | distinct counts per set of the link table
+select b.set_id, count(distinct v.id), count(distinct v.dim_a_id) from events v join dim_b b on b.dim_a_id = v.dim_a_id where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+-- @case bridge_group_lateral_exists | join | the sets of the row's entity as a lateral sub-select with EXISTS, grouped by set
+select t.id, count(*), sum(v.amount) from events v left join lateral (select tenants.* from tenants where exists (select 1 from dim_b b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 4) group by 1;
+-- @case bridge_group_lateral_in | join | the same with IN in the lateral sub-select, an inner lateral join
+select t.id, count(*), sum(v.amount) from events v join lateral (select tenants.* from tenants where tenants.id in (select b.set_id from dim_b b where b.deleted_at is null and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+-- @case bridge_group_lateral_filter | join | a condition on the group table inside the lateral sub-select
+select t.id, count(*) from events v left join lateral (select tenants.* from tenants where tenants.plan = 'pro' and exists (select 1 from dim_b b where b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+-- @case bridge_group_dim_a_cte | join | the entities of a set with their sets as a CTE the planner inlines, the events joined to it
+with ents as (select a.id, t.id as set_id from dim_a a left join lateral (select tenants.* from tenants where exists (select 1 from dim_b b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = a.id)) t on true where a.id in (select dim_a_id from dim_b where set_id = 4)) select ents.set_id, count(*), sum(v.amount) from events v join ents on ents.id = v.dim_a_id group by 1;
+-- @case bridge_group_lateral_array | join | an ARRAY of the links in the lateral sub-select stays with the normal plan
+select t.id, count(*) from events v left join lateral (select tenants.* from tenants where tenants.id = any (array(select b.set_id from dim_b b where b.dim_a_id = v.dim_a_id))) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;

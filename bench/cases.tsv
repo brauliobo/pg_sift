@@ -475,3 +475,5 @@ parent_filter_child_sum	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	fa
 parent_child_distinct	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 parent_child_id_list	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 parent_lateral_top1	-	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+group_split_lateral	the groups of a row's entity as a lateral sub-select over a link table	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+group_split_entities	the request over a set of keys with their groups in a CTE	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
