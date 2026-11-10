@@ -32,10 +32,11 @@ DECLARE r text; BEGIN
 	RETURN r;
 END $$;
 
+-- the key is unique: PostgreSQL 19 plans an EXISTS or IN as an inner join (no "(semi)"), and the keys of an inner join are loaded alone as well (semi_lut_possible)
 CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		IF l ~ 'Lookup Joins: ko_\w+ \((semi|anti)\)' THEN r := 'scan with the table loaded as keys'; END IF;
+		IF l ~ 'Lookup Joins: ko_\w+( \((semi|anti)\))?$' THEN r := 'scan with the table loaded as keys'; END IF;
 		IF l ~ 'sift_probe' THEN r := 'scan probing the table'; END IF;
 	END LOOP;
 	RETURN r;
