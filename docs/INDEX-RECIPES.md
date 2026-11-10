@@ -285,22 +285,22 @@ The pair table cuts the expansion about 6 times in instructions and by 94 to 99%
 
 ### What one edit costs
 
-The same fixture. Each row is one statement in a transaction that is rolled back, after a checkpoint (so the WAL includes the full-page image of the first change of each page), median of 3 or 5 runs, instructions of the backend, the milliseconds of the statement inside the backend (the host ran at 15 to 30% CPU pressure), WAL records plus full-page images. *Source alone* is the statement with no trigger; *pairs followed* adds the refresh of the pair table; *with a copy* adds the copy on the pairs (2,112,841 rows, 154 MB of heap, a 33 MB `sift_col` index, an 82 MB maintenance btree), which holds one row of the fact table for each fact of an id and each key of it: the figures of that column follow the 100 facts an id has on average (the 1,000 ids of the group edits hold 73,664 facts, 4,637 for a group of 51).
+The same fixture. Each row is one statement in a transaction that is rolled back, after a checkpoint (so the WAL includes the full-page image of the first change of each page), median of 3 or 5 runs, instructions of the backend, the milliseconds of the statement inside the backend (the host ran at 15 to 30% CPU pressure), WAL records plus full-page images. *Source alone* is the statement with no trigger; *pairs followed* adds the refresh of the pair table; *with a copy* adds the copy on the pairs (2,112,841 rows, 154 MB of heap, a 33 MB `sift_col` index, a 42 MB btree on the primary key, measured on the tip that keeps the pairs' deletes in the `sift_col` index), which holds one row of the fact table for each fact of an id and each key of it: the figures of that column follow the 100 facts an id has on average (the 1,000 ids of the group edits hold 73,664 facts, 4,637 for a group of 51).
 
 | edit | source alone: M instr, ms, WAL | pairs followed: M instr, ms, WAL | with a copy: M instr, ms, WAL |
 |---|---|---|---|
-| an id moves between groups (1 row) | 0.4, 1.1, 0.02 MB | 4.6, 4.2, 0.04 MB | 42.1, 13.6, 0.50 MB |
-| a group gains 1 id | 0.2, 0.6, 0.02 MB | 4.3, 3.8, 0.04 MB | 8.4, 6.7, 0.07 MB |
-| a group gains 1,000 ids | 25.2, 10.7, 0.32 MB | 125.8, 35.9, 0.69 MB | 3,444, 1,296, 46.6 MB |
-| a group loses 1,000 ids (delete) | 15.4, 3.8, 0.09 MB | 80.6, 19.0, 0.18 MB | 475, 163, 9.2 MB |
-| 1,000 ids soft deleted | 50.9, 16.5, 0.47 MB | 122.9, 22.2, 0.56 MB | 515, 135, 9.5 MB |
-| a tenant gains a group of 51 ids | 0.3, 2.1, 0.02 MB | 9.7, 27.1, 0.38 MB | 216, 86, 3.3 MB |
-| a tenant gains a group of 1,051 ids | 0.3, 1.3, 0.02 MB | 51.9, 16.2, 0.74 MB | 3,725, 2,023, 43.4 MB |
-| a tenant loses that group (delete) | 0.3, 0.6, 0.01 MB | 17.7, 7.4, 0.11 MB | 481, 142, 10.6 MB |
-| that assignment soft deleted | 0.4, 1.0, 0.01 MB | 17.8, 10.1, 0.11 MB | 481, 127, 10.5 MB |
-| ... and restored | 0.3, 1.6, 0.01 MB | 52.8, 18.6, 0.74 MB | 3,795, 2,706, 43.1 MB |
+| an id moves between groups (1 row) | 0.4, 1.1, 0.02 MB | 4.6, 4.2, 0.04 MB | 43.6, 33, 6.0 MB |
+| a group gains 1 id | 0.2, 0.6, 0.02 MB | 4.3, 3.8, 0.04 MB | 9.5, 8.6, 0.53 MB |
+| a group gains 1,000 ids | 25.2, 10.7, 0.32 MB | 125.8, 35.9, 0.69 MB | 4,526, 1,977, 67.2 MB |
+| a group loses 1,000 ids (delete) | 15.4, 3.8, 0.09 MB | 80.6, 19.0, 0.18 MB | 1,008, 131, 9.1 MB |
+| 1,000 ids soft deleted | 50.9, 16.5, 0.47 MB | 122.9, 22.2, 0.56 MB | 1,042, 139, 9.4 MB |
+| a tenant gains a group of 51 ids | 0.3, 2.1, 0.02 MB | 9.7, 27.1, 0.38 MB | 377, 430, 29.1 MB |
+| a tenant gains a group of 1,051 ids | 0.3, 1.3, 0.02 MB | 51.9, 16.2, 0.74 MB | 5,777, 2,397, 73.4 MB |
+| a tenant loses that group (delete) | 0.3, 0.6, 0.01 MB | 17.7, 7.4, 0.11 MB | 4,578, 585, 10.5 MB |
+| that assignment soft deleted | 0.4, 1.0, 0.01 MB | 17.8, 10.1, 0.11 MB | 4,578, 561, 10.5 MB |
+| ... and restored | 0.3, 1.6, 0.01 MB | 52.8, 18.6, 0.74 MB | 6,016, 2,704, 72.3 MB |
 
-The refresh of the pair table costs a plan of its statement (about 4 M instructions and 4 ms for one id; the statement is planned on each call) and a read of the ids' or keys' pairs and of the view for them, so it follows the size of the edit and, for a key, the size of the key: 1,000 ids cost 80 to 125 M instructions and 0.2 to 0.7 MB of WAL. The copy is what the edit costs once the facts of the ids are rewritten: about 45,000 instructions and 620 B of WAL (300 B of records) for each copy row inserted, and 5,400 instructions and 120 B for each deleted. An edit that changes the ids of a tenant in bulk is the one to batch in one statement; a copy on the pairs is worth it where the reads it serves (above) outnumber such edits.
+The refresh of the pair table costs a plan of its statement (about 4 M instructions and 4 ms for one id; the statement is planned on each call) and a read of the ids' or keys' pairs and of the view for them, so it follows the size of the edit and, for a key, the size of the key: 1,000 ids cost 80 to 125 M instructions and 0.2 to 0.7 MB of WAL. The copy is what the edit costs once the facts of the ids are rewritten: about 60,000 instructions and 240 B of WAL records for each copy row inserted (900 B with the full-page images of the first change of each page), 12,600 instructions and 50 B of records for each row deleted by the id that leaves and 62,000 instructions for each row deleted by the key that leaves (a pair that goes is found by the `sift_col` index of the copy; the full-page images of a checkpoint's first touch are 5 to 28 MB of the WAL columns of the rolled-back runs). An edit that changes the ids of a tenant in bulk is the one to batch in one statement; a copy on the pairs is worth it where the reads it serves (above) outnumber such edits.
 
 ## What an index of this kind does not answer yet
 
