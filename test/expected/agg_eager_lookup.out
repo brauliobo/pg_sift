@@ -89,7 +89,7 @@ SELECT n, label, eager_plan(q) AS plan, eager_rows(q, false, 0) <> '' AS has_row
  22 | a count of a column with NULLs      | scan, sums only     | t        | t    | t
  23 | a count and no group                | normal              | t        | t    | t
  24 | a having on the count               | scan, sums only     | t        | t    | t
- 25 | a count of distinct values          | normal              | t        | t    | t
+ 25 | a count of distinct values          | scan, product in it | t        | t    | t
  26 | a count with a filter               | normal              | t        | t    | t
  27 | a sum of a column and a count       | scan, sums only     | t        | t    | t
 (27 rows)

@@ -76,6 +76,12 @@ filtered_keys(AggCtx *c, const SiftAggSpec *s, int leaf)
 {
 	double		keys = HUGE_VAL;
 
+	if (!sift_agg_join_filter || s->topn)
+		return keys;
+	/* a rest of an ON clause that compares values of the tuple loads the tables whole: their keys are all there are (join_key_zone) */
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (on_tests_tuple(s, ci))
+			return keys;
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
