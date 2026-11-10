@@ -48,7 +48,8 @@ BIG=$(biggest)
 check "the build left several runs that overlap in the key" test "$first_runs" -ge 6 -a "$(due)" == "key ranges overlap"
 size_build=$(size)
 diag "build: file $size_build live $(live) runs $first_runs due $(due) biggest $BIG"
-check "the file is within 1.05 times the live bytes after the build" test "$size_build" -le "$(( $(live) * 105 / 100 ))"
+# the blocks the eight runs reserved and did not fill (about 90 of 8 kB whatever the size of the index: 0.73 MB of a 16.0 MB index before the arrays were smaller, 0.79 MB of 14.9 MB now)
+check "the file is within 1.05 times the live bytes and 1 MB after the build" test "$size_build" -le "$(( $(live) * 105 / 100 + (1 << 20) ))"
 
 PGAPPNAME=holder psql -X -q -h "$(dir held)/sock" -p "$(port held)" -U postgres -d postgres -c "BEGIN ISOLATION LEVEL REPEATABLE READ" \
 	-c "SELECT count(*) FROM kp" -c "SELECT pg_sleep(600)" >/dev/null 2>&1 &

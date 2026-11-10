@@ -19,8 +19,9 @@ done
 LOG=$(dir sp)/postgres.log
 moves() { grep -c "relocated index \"$1_idx\"\|shifted index \"$1_idx\"" "$LOG"; }
 size() { sql sp "SELECT pg_relation_size('$1_idx')"; }
-# a round: every thirty-third row, the VACUUM with the given settings, the rewrite
-round() { sql sp "UPDATE $1 SET amount = amount + 1 WHERE id % 33 = $3" "SET sift.col_auto_merge = $2" "SET sift.async_maintenance = $2" "VACUUM $1" "SELECT sift.col_maintain('$1_idx')" >/dev/null; }
+# a round: every sixty-sixth row (1.5% of them, less than the VACUUM's rewrite of a lone segment pays for: it costs 800 + 230 bytes a row, and an index of 4 bytes a row,
+# since the arrays are smaller, pays for it at 3%), the VACUUM with the given settings, the rewrite
+round() { sql sp "UPDATE $1 SET amount = amount + 1 WHERE id % 66 = $3" "SET sift.col_auto_merge = $2" "SET sift.async_maintenance = $2" "VACUUM $1" "SELECT sift.col_maintain('$1_idx')" >/dev/null; }
 exact() { sql sp "SELECT count(*) FILTER (WHERE exact) || '/' || count(*) FROM sift.col_unit_agg('$1_idx', 'amount')"; }
 
 for i in 1 2 3 4 5 6; do round t_off off "$i"; done
