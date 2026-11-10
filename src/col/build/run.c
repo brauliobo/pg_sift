@@ -59,11 +59,11 @@ sift_colb_budget(int nslots)
 	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
 }
 
-/* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem (below the least a segment is worth, 16 MB, the participants overshoot it) */
+/* The segment a participant writes without key_cut: its writer within its share of maintenance_work_mem */
 Size
 colb_writer_budget(int nslots)
 {
-	return Max(sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots), SIFT_COL_BUILD_MIN_BUDGET);
+	return sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots);
 }
 
 /* The most memory the rows of a run may take: the references the sort makes of them are a third of their bytes, the writer and the rest are what a participant keeps besides */

@@ -142,6 +142,63 @@ sift_cfound_done(SiftColFoundView *c)
 		c->own->col[i] = c->vcol[i];
 }
 
+/* Empties the batch and gives back the arrays that grew past the first slots of a unit: one that is not used for a while holds the memory of its largest unit */
+void
+sift_cbatch_release(SiftColBatch *b)
+{
+	sift_cbatch_reset(b, b->sb);
+	if (b->rowcap > 256)
+	{
+		b->rowcap = 256;
+		b->keys = repalloc_huge(b->keys, b->rowcap * sizeof(SiftKey));
+		if (b->xmin)
+		{
+			b->xmin = repalloc_huge(b->xmin, b->rowcap * sizeof(uint32));
+			b->cmin = repalloc_huge(b->cmin, b->rowcap * sizeof(uint32));
+		}
+		for (int i = 0; i < b->schema->ncols; i++)
+			if (b->col[i].eoff)
+				b->col[i].eoff = repalloc_huge(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+	}
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		SiftCVals  *v = &b->col[i];
+
+		if (v->key == NULL || v->cap <= 64)
+			continue;
+		v->cap = 64;
+		v->key = repalloc_huge(v->key, v->cap * sizeof(int64));
+		if (v->nulls)
+			v->nulls = repalloc_huge(v->nulls, words_of(v->cap) * sizeof(uint64));
+		if (v->ovf)
+			v->ovf = repalloc_huge(v->ovf, words_of(v->cap) * sizeof(uint64));
+		if (v->otag)
+			v->otag = repalloc_huge(v->otag, v->cap);
+		if (v->voff)
+		{
+			v->voff = repalloc_huge(v->voff, ((Size) v->cap + 1) * sizeof(uint32));
+			v->vcap = 1024;
+			v->vb = repalloc_huge(v->vb, v->vcap);
+		}
+	}
+}
+
+/* The bytes the arrays of the batch hold, at the capacity they grew to (the dictionaries of its string leaves are not counted) */
+Size
+sift_cbatch_bytes(const SiftColBatch *b)
+{
+	Size		m = (Size) b->rowcap * (sizeof(SiftKey) + (b->xmin ? 2 * sizeof(uint32) : 0));
+
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		const SiftCVals *v = &b->col[i];
+
+		m += (Size) v->cap * (sizeof(int64) + (v->otag ? 1 : 0)) + (Size) (v->nulls ? 1 : 0) * words_of(v->cap) * sizeof(uint64) +
+			(Size) (v->ovf ? 1 : 0) * words_of(v->cap) * sizeof(uint64) + (v->eoff ? ((Size) b->rowcap + 1) * sizeof(uint32) : 0) + (v->voff ? v->vcap + ((Size) v->cap + 1) * sizeof(uint32) : 0);
+	}
+	return m;
+}
+
 /* A batch that is complete, at the rows it holds: the arrays grew by doubling, and a batch of 43,008 rows holds 65,536 slots of each (a third of its memory) */
 void
 sift_cbatch_trim(SiftColBatch *b)
@@ -788,7 +845,10 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		l->inl = l->c.enc == SIFT_COLENC_ISTR;
 		l->tag = palloc(Max(l->c.n, 1));
 		if (!sift_cchunk_tags(&l->c, l->tag))
+		{
+			pfree(l->tag);
 			l->tag = NULL;
+		}
 		if (s->cols[col].store == SIFT_COLS_VAR || l->inl)
 			sift_cchunk_strs(&l->c, CurrentMemoryContext, &l->voff, &l->vb);
 		if (leaf_is_str(&s->cols[col]) && !l->inl)

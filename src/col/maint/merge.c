@@ -427,6 +427,7 @@ typedef struct MergeOut
 	uint64		live_rows;
 	struct SiftColFill *fill;	/* of the partition in hand */
 	uint64		rows_done;		/* the rows of the segments written */
+	Size		held;			/* the arrays of the batches of the inputs and the output (an input with no unit in the step gave its own back): memory the writer's budget shares */
 	bool		keyed;
 	SiftWriteTarget *wt;
 	SiftColSegWriter *w;
@@ -514,7 +515,7 @@ out_next(void *arg, SiftColSegWriter *w)
 		return o->w;
 	}
 	/* a partition is done at its share of the bytes; any segment, when its writer holds its budget of memory or SIFT_CPOINT_BUILD_ROWS rows */
-	if (o->nneu + 1 < o->maxout && ((o->nneu + 1 < o->parts && sift_colw_bytes(w) >= o->cut) || sift_colw_full(w, o->budget)))
+	if (o->nneu + 1 < o->maxout && ((o->nneu + 1 < o->parts && sift_colw_bytes(w) >= o->cut) || sift_colw_full(w, o->budget - Min(o->held, o->budget / 2))))
 	{
 		uint64		rows = sift_colw_rows(w);
 
@@ -687,7 +688,11 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 		for (int i = 0; i < n; i++)
 		{
 			if (at[i] != sb)
+			{
+				if (part[i]->rowcap > 256)
+					sift_cbatch_release(part[i]);
 				continue;
+			}
 			if (tin[i].buf)
 				tid_take(&tin[i], sb, part[i], freeze, freeze_arg);
 			else
@@ -699,6 +704,9 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			continue;
 		sift_cbatch_reset(out, sb);
 		sift_cbatch_merge(out, use, nuse);
+		o.held = sift_cbatch_bytes(out);
+		for (int i = 0; i < n; i++)
+			o.held += sift_cbatch_bytes(part[i]);
 		if (o.w == NULL)
 			out_begin(&o);
 		sift_colw_add(o.w, out);

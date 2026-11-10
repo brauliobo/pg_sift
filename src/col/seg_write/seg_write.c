@@ -438,12 +438,20 @@ sift_colw_full(const SiftColSegWriter *w, Size budget)
 
 /*
  * The memory a participant that writes segments within `mem` bytes may let its writer estimate (sift_colw_memory): it resides at 1.4 times that (the batches, the blobs of
- * the end of the segment, the allocator's) and takes 30 MB besides, and never less than half of `mem`, or a small one would cut a segment at every batch (a fit of the peaks of 5,000,000 rows at 64 and 256 MB: 1.4 times and 29 MB).
+ * the end of the segment, the allocator's) and takes 30 MB besides (a fit of the peaks of 5,000,000 rows at 64 and 256 MB: 1.4 times and 29 MB), and at least a segment worth
+ * writing: below it the participants overshoot, a writer that estimates nothing would cut a segment at every batch.
  */
 Size
 sift_colw_budget(Size mem)
 {
-	return Max(mem > SIFT_COLW_BASE ? (mem - SIFT_COLW_BASE) * 10 / 14 : 0, mem / 2);
+	return Max(mem > SIFT_COLW_BASE ? (mem - SIFT_COLW_BASE) * 10 / 14 : 0, SIFT_COLW_MIN_BUDGET);
+}
+
+/* The resident bytes the rows of a segment may take in a writer within mem: what sift_colw_row_memory counts per row, for the partitions of a merge */
+Size
+sift_colw_resident(Size mem)
+{
+	return sift_colw_budget(mem) * 14 / 10;
 }
 
 /* The resident bytes of a row of a segment: what sift_colw_memory counts for it, at its peak, and what the writer takes beyond what it counts */
