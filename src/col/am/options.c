@@ -388,17 +388,6 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	/* RELEASE-TODO(4.4): goes away with the journal and the patch reader of the scope index */
-	DefineCustomBoolVariable("sift.test_scope_trust",
-							 "Testing: a scope whose relation has no journal is read as if it vouched for the stamp of its scope segments (the proof of concept of the scope index); reads are wrong after writes.",
-							 NULL, &sift_test_scope_trust, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_scope_need_journal",
-							 "Testing: CREATE INDEX of a scope index refuses a scope relation that has no journal index (a release always does).",
-							 NULL, &sift_test_scope_need_journal, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	/* RELEASE-TODO(4.4): goes away with the planner recognition of the join forms */
-	DefineCustomBoolVariable("sift.test_scope_pairs",
-							 "Testing: the marker sift.in_scope(index, name, fk, keys) of a scan reads a row once for each pair of its member with the keys, as the join to the scope relation does, not once.",
-							 NULL, &sift_test_scope_pairs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_scope_unit_kind",
 							"Testing: the unit kind (bits 8..15 of the stamp) the scope segments of an index are read as having: a segment of a later release, which this build refuses.",
 							NULL, &sift_test_scope_unit_kind, 0, 0, 255, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

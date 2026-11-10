@@ -31,22 +31,8 @@ bool		sift_agg_scope = true;
 int			sift_scope_patch_keys = 4096;
 double		sift_scope_max_multiplicity = 8.0;
 #ifdef SIFT_TESTING
-/* RELEASE-TODO(4.4): both go away with the patch reader of the scope index; a scope without a journal index is then always refused */
-bool		sift_test_scope_trust = false;
-bool		sift_test_scope_need_journal = false;
-bool		sift_test_scope_pairs = false;
 int			sift_test_scope_unit_kind = 0;
 #endif
-
-static bool
-journal_required(void)
-{
-#ifdef SIFT_TESTING
-	return sift_test_scope_need_journal;
-#else
-	return true;
-#endif
-}
 
 /* One scope, from *pp to its end (a ';' or the end of the text); NULL with *err set when it does not parse */
 static SiftScopeSpec *
@@ -408,7 +394,7 @@ sift_scope_resolve(Relation heap, Relation index)
 		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
 		Oid			journal = sift_scope_journal_index(rel, member, key);
 
-		if (!OidIsValid(journal) && journal_required())
+		if (!OidIsValid(journal))
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
 							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which members changed since the scope segments were written.",
 									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));

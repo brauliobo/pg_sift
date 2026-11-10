@@ -868,6 +868,7 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 	const char *why;
 
 	*agg = -1;
+	/* the verdict, the changed members and the patch of a scope read are made from the snapshot of the statement (col/scan/scope.c): a worker would make them again */
 	if (s->scope)
 		return "a scope read is decided once, by the leader";
 	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */

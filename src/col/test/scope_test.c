@@ -322,7 +322,7 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
-PG_FUNCTION_INFO_V1(sift_test_scope_changed);
+PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
 
 /* sift._test_scope_take(index, scope): the stamp of the journal of the scope relation of scope (from 0) under the snapshot of the statement: lineage, horizon, why not */
@@ -354,9 +354,9 @@ sift_test_scope_vouch(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(sift_conn_why_name(why)));
 }
 
-/* sift._test_scope_changed(index, scope, lineage, horizon, cap): why not (one row, key NULL) or 'ok' with the members whose pairs changed since the stamp */
+/* sift._test_scope_journal_changes(index, scope, lineage, horizon, cap): why not (one row, key NULL) or 'ok' with the members whose pairs changed since the stamp */
 Datum
-sift_test_scope_changed(PG_FUNCTION_ARGS)
+sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(2),.xmin = PG_GETARG_TRANSACTIONID(3)};

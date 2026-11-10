@@ -548,8 +548,8 @@ CREATE FUNCTION sift._test_scope_take(index regclass, scope int, OUT lineage int
 	AS 'MODULE_PATHNAME', 'sift_test_scope_take' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_scope_vouch' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_scope_changed(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_scope_changed' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_journal_changes' LANGUAGE C STRICT;
 
 -- sets or clears the by-reference flag in the directory entry of every scope segment of an index, as a later release would write it
 CREATE FUNCTION sift._test_col_scope_mark(index regclass, ref bool) RETURNS void
@@ -614,4 +614,9 @@ CREATE FUNCTION sift._test_col_scope_flag(index regclass, scoped bool) RETURNS v
 CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, key int8) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_in_scope' LANGUAGE C STABLE PARALLEL SAFE;
 CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, keys int8[]) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_in_scope_set' LANGUAGE C STABLE PARALLEL SAFE;
+-- the same test, read by a scan as the join counts it: a row once for each pair of its member with the keys
+CREATE FUNCTION sift.in_scope_pairs(index regclass, key_name text, fk anyelement, key int8) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_in_scope' LANGUAGE C STABLE PARALLEL SAFE;
+CREATE FUNCTION sift.in_scope_pairs(index regclass, key_name text, fk anyelement, keys int8[]) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_in_scope_set' LANGUAGE C STABLE PARALLEL SAFE;

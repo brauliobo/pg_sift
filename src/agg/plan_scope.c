@@ -1,7 +1,8 @@
 /*
  * agg/plan_scope.c - the scope conjunct in the WHERE of a scan (col/scope.h, agg/scope.c)
  *
- * Until the planner recognises the joins that mean it (docs/INDEX-RECIPES.md), the test form is the marker sift.in_scope(index, key_name, fk, key or keys): true for the rows
+ * Until the planner recognises the joins that mean it (docs/INDEX-RECIPES.md), the test form is the marker sift.in_scope(index, key_name, fk, key or keys), or sift.in_scope_pairs for
+ * the meaning of a join (a row once for each pair of its member with the keys): true for the rows
  * whose fk has a pair with the key (one of the keys of the array) in the scope relation the scope key_name of the index declares (its body, in the test flavour, reads that relation under the
  * snapshot, so a statement the scan does not take is exact as written). The scan takes it as the SiftAggScope of the spec when the index is the scanned one, the
  * scope is declared with that fk column and the key is a constant; anything else stays in the quals, which the scan then refuses.
@@ -30,7 +31,7 @@ is_marker(Node *q)
 		return false;
 	f = (FuncExpr *) q;
 	return list_length(f->args) == 4 && get_func_namespace(f->funcid) == get_namespace_oid("sift", true) &&
-		strcmp(get_func_name(f->funcid), "in_scope") == 0;
+		(strcmp(get_func_name(f->funcid), "in_scope") == 0 || strcmp(get_func_name(f->funcid), "in_scope_pairs") == 0);
 }
 
 static Const *
@@ -102,11 +103,7 @@ marker_scope(AggCtx *c, Node *q)
 			sc->keys[i] = DatumGetInt64(elems[i]);
 		}
 	}
-	sc->once = true;
-#ifdef SIFT_TESTING
-	/* RELEASE-TODO(4.4): the planner recognises the join forms that mean one row for each pair */
-	sc->once = !sift_test_scope_pairs;
-#endif
+	sc->once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
 	use_leaf(c, leaf);
 	return sc;
 }
