@@ -9,17 +9,17 @@ node_init sp 48
 node_start sp || bail "start failed"
 sql sp "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE group_members (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id))" \
-	"CREATE TABLE assignments (id serial PRIMARY KEY, tenant_id int NOT NULL, group_id int NOT NULL)" \
-	"CREATE VIEW visible_dim_a AS SELECT m.dim_a_id, a.tenant_id FROM assignments a JOIN group_members m USING (group_id)" \
+	"CREATE TABLE links_a (id serial PRIMARY KEY, tenant_id int NOT NULL, group_id int NOT NULL)" \
+	"CREATE VIEW visible_dim_a AS SELECT m.dim_a_id, a.tenant_id FROM links_a a JOIN group_members m USING (group_id)" \
 	"CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id))" \
-	"SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'assignments', 'key', 'tenant_id')" \
+	"SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'key', 'tenant_id')" \
 	"SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'group_members', 'member', 'dim_a_id')" >/dev/null || bail "setup failed"
 
 drift() { sql sp "SELECT count(*) FROM ((SELECT * FROM visible_dim_a EXCEPT SELECT * FROM scope_pairs) UNION ALL (SELECT * FROM scope_pairs EXCEPT SELECT * FROM visible_dim_a)) d"; }
 waiting() { sql sp "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'"; }
 
 # the holder assigns group 1 to tenant 1 and keeps its transaction open; the other session adds an id to group 1 meanwhile
-sql sp "BEGIN" "INSERT INTO assignments (tenant_id, group_id) VALUES (1, 1)" "SELECT pg_sleep(4)" "COMMIT" >/dev/null & HOLDER=$!
+sql sp "BEGIN" "INSERT INTO links_a (tenant_id, group_id) VALUES (1, 1)" "SELECT pg_sleep(4)" "COMMIT" >/dev/null & HOLDER=$!
 sleep 0.5 # timeout-ok: the holder has inserted and sleeps 4 s; the next statement is what is under test
 sql sp "INSERT INTO group_members VALUES (1, 10)" >/dev/null & WRITER=$!
 check "the second refresh waits for the first one's commit" wait_for '[[ $(waiting) == 1 ]]' 20
@@ -29,7 +29,7 @@ check "the pairs equal the view" test "$(drift)" == 0
 
 # the other way round: the id leaves while the assignment is moved to another tenant
 sql sp "INSERT INTO group_members VALUES (1, 11), (1, 12)" >/dev/null
-sql sp "BEGIN" "UPDATE assignments SET tenant_id = 2 WHERE tenant_id = 1" "SELECT pg_sleep(3)" "COMMIT" >/dev/null & HOLDER=$!
+sql sp "BEGIN" "UPDATE links_a SET tenant_id = 2 WHERE tenant_id = 1" "SELECT pg_sleep(3)" "COMMIT" >/dev/null & HOLDER=$!
 sleep 0.5 # timeout-ok: as above
 sql sp "DELETE FROM group_members WHERE dim_a_id = 11" >/dev/null & WRITER=$!
 wait "$HOLDER" "$WRITER"
