@@ -1,21 +1,12 @@
 -- The scope units describe the scope relation as of their stamp. A read of a scope key leaves out the members whose pairs changed since (the journal says which) and the members that have a row in a write buffer, and
--- reads their entity rows through the entity path as one stream with the units (INTERFACE section 6, "patched"). Every state is md5 equal to the plain join. The journal of the scope relation is the stand-in of
--- col/scan/scope_stub.c: a trigger lists the members a pair edit touched, and the test hands the list to sift.test_scope_changed (the real journal replaces both, PHASE 2).
+-- reads their entity rows through the entity path as one stream with the units (INTERFACE section 6, "patched"). Every state is md5 equal to the plain join. The journal of the scope relation is the real one
+-- (the pair relation has its journal index; a REINDEX of the scope index follows its creation, which takes the stamps); sift.in_scope_pairs is the marker with the meaning of the join.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_trust = on;
-
-CREATE TABLE touched (dim_a_id int);
-CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-	IF TG_OP <> 'INSERT' THEN INSERT INTO touched VALUES (OLD.dim_a_id); END IF;
-	IF TG_OP <> 'DELETE' THEN INSERT INTO touched VALUES (NEW.dim_a_id); END IF;
-	RETURN NULL;
-END $$;
 
 -- q: the statement over the scope units; plain: the same over the join of the pairs; pairs: the join counts a fact once for each pair of its member
 CREATE FUNCTION scope_run(q text, plain text, pairs boolean, OUT same boolean, OUT stored boolean, OUT why text, OUT patched_keys int, OUT patched_rows int)
@@ -25,8 +16,9 @@ DECLARE
 	a text;
 	b text;
 BEGIN
-	PERFORM set_config('sift.test_scope_changed', coalesce((SELECT string_agg(DISTINCT dim_a_id::text, ',') FROM touched), ''), true);
-	PERFORM set_config('sift.test_scope_pairs', pairs::text, true);
+	IF pairs THEN
+		q := replace(q, 'sift.in_scope(', 'sift.in_scope_pairs(');
+	END IF;
 	SET LOCAL sift.enable_agg = on;
 	BEGIN
 		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
@@ -50,14 +42,15 @@ END $$;
 -- 12 groups; member m is in 1 + m % 6 of them (1 to 6), members 100..109 are in none, members 301..320 have facts and no pair; 20,000 padded facts, some without a member
 CREATE TABLE membership (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
 INSERT INTO membership SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m NOT BETWEEN 100 AND 109 ON CONFLICT DO NOTHING;
+CREATE INDEX membership_journal ON membership USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 320 END,
 	timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, at, v)
 	WITH (scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id)');
+REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (ANALYZE) membership;
-CREATE TRIGGER membership_touch AFTER INSERT OR UPDATE OR DELETE ON membership FOR EACH ROW EXECUTE FUNCTION touch();
 
 -- one key, several keys (a fact once, IN and EXISTS) and the pairs of several keys (a fact once for each pair, as the join counts it)
 CREATE TABLE probes (n int, keys int8[], pairs boolean);
@@ -98,7 +91,7 @@ UPDATE facts SET v = v + 100 WHERE id % 9 = 0 AND id <= 20000;
 DELETE FROM facts WHERE id % 11 = 0 AND id <= 20000;
 SELECT * FROM probe();
 
--- a writer that aborted: its pair edits and its facts are in no snapshot (the touched list of the stand-in journal rolls back with it)
+-- a writer that aborted: its pair edits and its facts are in no snapshot
 BEGIN;
 INSERT INTO membership VALUES (4, 12), (5, 12), (6, 12), (304, 4) ON CONFLICT DO NOTHING;
 DELETE FROM membership WHERE dim_a_id IN (8, 9, 10);
@@ -169,7 +162,7 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 SELECT * FROM probe();
 SELECT sift.col_verify('facts_col', true);
 
-DROP TABLE fuzz_result, probes, facts, membership, touched;
-DROP FUNCTION probe(), scope_run(text, text, boolean), touch();
+DROP TABLE fuzz_result, probes, facts, membership;
+DROP FUNCTION probe(), scope_run(text, text, boolean);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

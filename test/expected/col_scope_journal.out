@@ -1,7 +1,7 @@
 -- The journal of the scope relation (src/col/scope_journal.c, INTERFACE section 5, docs/COL-CONNECT.md "The rule"): a sift_col index of the relation with track_changes = 'ctid' and the
 -- member key first keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended and a KEYADD record for the member of every pair inserted. The scope segments
--- are read as stored only while the journal vouches for their stamp and no member changed since; every other state is read through the entity rows, with the same answer as the join.
--- No trust switch here: the verdicts are the journal's.
+-- are read as stored only while the journal vouches for their stamp; the members that changed since are read through the entity rows (a top-N reads the entity rows of all the members), every
+-- other state of the journal reads them all, with the same answer as the join. The verdicts are the journal's.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -33,8 +33,7 @@ INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN
 CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
--- a scope relation with no journal index: refused (a release always refuses it; the test flavour allows it for the proof of concept unless asked)
-SET sift.test_scope_need_journal = on;
+-- a scope relation with no journal index: refused
 SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS no_journal_index;
                                                                                                                                           no_journal_index                                                                                                                                          
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -51,7 +50,6 @@ SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, crea
 (1 row)
 
 DROP INDEX tenant_scope_wrong_order, tenant_scope_no_key;
-RESET sift.test_scope_need_journal;
 -- the journal index, then the scope index: no journal exists until a scope index is declared on the relation
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 SELECT lineage = 0 AS no_journal_yet FROM sift._test_conn_gen('tenant_scope_journal');
@@ -148,7 +146,7 @@ SELECT why FROM sift._test_scope_take('events_col', 0);
 (1 row)
 
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
-SELECT why, key FROM sift._test_scope_changed('events_col', 0, :lin, :'hor');
+SELECT why, key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor');
  why | key 
 -----+-----
  ok  |    
@@ -162,16 +160,7 @@ SELECT sift._test_scope_vouch('events_col', 0, :lin, :'hor') AS vouch_now,
  ok        | other lineage       | snapshot older than the stamp
 (1 row)
 
--- the trust switch does not apply to a relation that has a journal
-SET sift.test_scope_trust = on;
-SELECT * FROM verdict();
- all_same | stored | reasons 
-----------+--------+---------
- t        |      4 | -
-(1 row)
-
-RESET sift.test_scope_trust;
--- every change of the scope relation: the members it changes are in the journal's set (the whole read falls back, with the rows of the join), a rebuild stamps again
+-- every change of the scope relation: the members it changes are in the journal's set (the read leaves them out of the units and reads their entity rows; a top-N falls back), a rebuild stamps again
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
 -- (1) pairs inserted: KEYADD for each inserted pair (an existing pair under ON CONFLICT DO NOTHING is a speculative insertion that is killed: its record only widens the set)
 INSERT INTO tenant_scope VALUES (1, 3), (2, 3), (301, 3), (302, 13) ON CONFLICT DO NOTHING;
@@ -181,7 +170,7 @@ SELECT kind, count(*) FROM sift._test_col_log_entries('tenant_scope_journal') WH
     5 |     4
 (1 row)
 
-SELECT why, key FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') ORDER BY key;
+SELECT why, key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') ORDER BY key;
  why | key 
 -----+-----
  ok  |   1
@@ -191,16 +180,16 @@ SELECT why, key FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') ORD
 (4 rows)
 
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored |        reasons         
+----------+--------+------------------------
+ t        |      3 | top-n, changed members
 (1 row)
 
 VACUUM tenant_scope;
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored |        reasons         
+----------+--------+------------------------
+ t        |      3 | top-n, changed members
 (1 row)
 
 REINDEX INDEX events_col;
@@ -213,16 +202,16 @@ SELECT * FROM verdict();
 -- (2) pairs deleted: KEYCHG for the member of each
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
 DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id % 5 = 0;
-SELECT count(*) > 0 AS members_changed, min(key) AS first, bool_and(key % 5 = 0) AS all_multiples FROM sift._test_scope_changed('events_col', 0, :lin, :'hor');
+SELECT count(*) > 0 AS members_changed, min(key) AS first, bool_and(key % 5 = 0) AS all_multiples FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor');
  members_changed | first | all_multiples 
 -----------------+-------+---------------
  t               |    10 | t
 (1 row)
 
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 REINDEX INDEX events_col;
@@ -235,16 +224,16 @@ SELECT * FROM verdict();
 -- (3) pairs moved to another key, (4) given to another member, (5) upserted: the old member (KEYCHG) and the new one (KEYADD) both change
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
 UPDATE tenant_scope SET tenant_id = 13 WHERE tenant_id = 4 AND dim_a_id % 7 = 0;
-SELECT count(*) > 0 AS members_changed FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
+SELECT count(*) > 0 AS members_changed FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
  members_changed 
 -----------------
  t
 (1 row)
 
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 REINDEX INDEX events_col;
@@ -256,16 +245,16 @@ SELECT * FROM verdict();
 
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
 UPDATE tenant_scope SET dim_a_id = dim_a_id + 1000 WHERE tenant_id = 5 AND dim_a_id < 40;
-SELECT count(*) FILTER (WHERE key < 1000) > 0 AS old_members, count(*) FILTER (WHERE key >= 1000) > 0 AS new_members FROM sift._test_scope_changed('events_col', 0, :lin, :'hor');
+SELECT count(*) FILTER (WHERE key < 1000) > 0 AS old_members, count(*) FILTER (WHERE key >= 1000) > 0 AS new_members FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor');
  old_members | new_members 
 -------------+-------------
  t           | t
 (1 row)
 
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 REINDEX INDEX events_col;
@@ -277,9 +266,9 @@ SELECT * FROM verdict();
 
 INSERT INTO tenant_scope VALUES (3, 3), (5, 4) ON CONFLICT (dim_a_id, tenant_id) DO UPDATE SET tenant_id = 13;
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored |        reasons         
+----------+--------+------------------------
+ t        |      3 | top-n, changed members
 (1 row)
 
 REINDEX INDEX events_col;
@@ -307,7 +296,7 @@ SELECT try('INSERT INTO tenant_scope VALUES (305, 3), (305, 3)') AS failed_inser
  duplicate key value violates unique constraint "tenant_scope_pkey" []
 (1 row)
 
-SELECT count(*) AS changed_after_rollbacks FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
+SELECT count(*) AS changed_after_rollbacks FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
  changed_after_rollbacks 
 -------------------------
                        0
@@ -325,7 +314,7 @@ SAVEPOINT s;
 DELETE FROM tenant_scope WHERE dim_a_id = 22;
 RELEASE s;
 COMMIT;
-SELECT key FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
+SELECT key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
  key 
 -----
   22
@@ -336,9 +325,9 @@ REINDEX INDEX events_col;
 BEGIN;
 DELETE FROM tenant_scope WHERE dim_a_id = 25;
 SELECT * FROM verdict();
- all_same | stored |     reasons     
-----------+--------+-----------------
- t        |      0 | members changed
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 SELECT sift._test_scope_vouch('events_col', 0, :lin, :'hor') AS vouch_in_own_transaction;
@@ -367,16 +356,16 @@ ROLLBACK;
 DELETE FROM events WHERE id % 13 = 0;
 UPDATE events SET v = v + 1 WHERE id % 17 = 0;
 SELECT * FROM verdict();
- all_same | stored |   reasons    
-----------+--------+--------------
- t        |      0 | write buffer
+ all_same | stored |        reasons         
+----------+--------+------------------------
+ t        |      3 | top-n, changed members
 (1 row)
 
 VACUUM events;
 SELECT * FROM verdict();
- all_same | stored |   reasons    
-----------+--------+--------------
- t        |      0 | write buffer
+ all_same | stored |        reasons         
+----------+--------+------------------------
+ t        |      3 | top-n, changed members
 (1 row)
 
 -- TRUNCATE of the scope relation and REINDEX of its journal index make another journal: the stamp names the old one
@@ -511,40 +500,17 @@ REINDEX INDEX events_col;
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset
 DELETE FROM tenant_scope WHERE dim_a_id = 23;
 VACUUM tenant_scope;
-SELECT key FROM sift._test_scope_changed('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
+SELECT key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
  key 
 -----
 (0 rows)
 
-SELECT why FROM sift._test_scope_changed('events_col', 0, :lin, :'hor', 0) LIMIT 1;
+SELECT why FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor', 0) LIMIT 1;
  why 
 -----
  ok
 (1 row)
 
--- a scope relation without a journal index: no stamp vouches (the proof of concept's trust switch is the only way to read it)
-CREATE TABLE region_scope (dim_a_id int NOT NULL, region_id int NOT NULL, PRIMARY KEY (dim_a_id, region_id));
-INSERT INTO region_scope SELECT i, 1 + i % 3 FROM generate_series(1, 300) i;
-CREATE INDEX events_region ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'region_id: dim_a_id -> region_scope(dim_a_id, region_id)');
-SELECT why FROM sift._test_scope_take('events_region', 0);
-    why     
-------------
- no journal
-(1 row)
-
-SELECT sift.col_verify('events_region', true);
- col_verify 
-------------
- 
-(1 row)
-
-SELECT sift._test_scope_vouch('events_region', 0, 1, '3') AS vouch_without_journal;
- vouch_without_journal 
------------------------
- no journal
-(1 row)
-
-DROP INDEX events_region;
 -- the multiplicity of a scope key is said when the index is built and bounded by sift.scope_max_multiplicity
 SET client_min_messages = notice;
 REINDEX INDEX events_col;
@@ -573,7 +539,7 @@ SELECT sift.col_verify('events_col', true);
  
 (1 row)
 
-DROP TABLE shapes, events, tenant_scope, tenant_scope_copy, region_scope;
+DROP TABLE shapes, events, tenant_scope, tenant_scope_copy;
 DROP FUNCTION phase(), verdict(), scope_run(text, text), try(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
