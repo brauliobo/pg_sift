@@ -10,12 +10,12 @@
 #
 # Components: pg_wal, base (table and index files), temp (pgsql_tmp), data (the rest of a data directory), logs, regress (output of
 # pg_regress), work (fuzz, difftest, soak, isolation, sanitizer reports), install (the staged build, the initdb templates), tap
-# (what else is in a job directory), other.
+# (what else is in a job directory), other (listed by its three leading path levels at its peak).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 BASE=$1
 declare -A peak lane_peak job_peak lane_size
-total_peak=0 rss_peak=0 at_peak=
+total_peak=0 rss_peak=0 at_peak= other_at_peak=
 
 # shellcheck disable=SC2016  # awk program
 classify='{
@@ -32,9 +32,10 @@ classify='{
 	else if (p ~ /^logs\//) c = "logs"
 	else if (p ~ /\/tap/) c = "tap"
 	else c = "other"
+	if (c == "other") { split(p, e, "/"); od[e[1] "/" e[2] "/" e[3]] += b }
 	comp[c] += b; ln[lane] += b; tot += b
 }
-END { for (c in comp) print "c", c, comp[c]; for (l in ln) print "l", l, ln[l]; print "t", "total", tot }'
+END { for (k in od) print "o", k, od[k]; for (c in comp) print "c", c, comp[c]; for (l in ln) print "l", l, ln[l]; print "t", "total", tot }'
 
 pss_mb() { # postgres processes of this scratch directory
 	local pid kb=0 k
@@ -60,6 +61,8 @@ report() {
 	echo "scratch peak by component (MB, each at its own peak; the sum of the peaks is higher than the peak total):"
 	for k in pg_wal base data temp logs regress work install tap other; do printf '  %-8s %6d\n' "$k" $(( ${peak[c $k]:-0} / 1048576 )); done
 	echo "  peak total $((total_peak / 1048576)) MB at: ${at_peak}"
+	echo "other at its peak (MB, three path levels):"
+	printf '%s' "$other_at_peak" | sort -rn | head -8 | awk '{ printf "  %6d %s\n", $1 / 1048576, $2 }'
 	echo "scratch peak by lane (MB):"
 	for k in "${!lane_peak[@]}"; do printf '  %-14s %6d\n' "$k" $(( ${lane_peak[$k]} / 1048576 )); done | sort
 	echo "scratch peak by job (MB, the lane directory while it ran):"
@@ -73,14 +76,17 @@ trap finish TERM INT
 
 while [[ ! -e $BASE/logs/stats.stop ]]; do
 	sample=$(find "$BASE" -type f -printf '%b %P\n' 2>/dev/null | awk "$classify")
-	line='' total=0
+	line='' total=0 others='' new_other=0
 	while read -r kind name bytes; do
 		case $kind in
-			c) (( bytes > ${peak[c $name]:-0} )) && peak[c $name]=$bytes; line+="$name=$((bytes / 1048576)) " ;;
+			c) [[ $name == other ]] && (( bytes > ${peak[c other]:-0} )) && new_other=1
+			   (( bytes > ${peak[c $name]:-0} )) && peak[c $name]=$bytes; line+="$name=$((bytes / 1048576)) " ;;
+			o) others+="$bytes $name"$'\n' ;;
 			l) lane_size[$name]=$bytes; (( bytes > ${lane_peak[$name]:-0} )) && lane_peak[$name]=$bytes ;;
 			t) total=$bytes ;;
 		esac
 	done <<<"$sample"
+	(( new_other )) && other_at_peak=$others
 	(( total > total_peak )) && { total_peak=$total; at_peak=$line; }
 	running_jobs
 	rss=$(pss_mb)
