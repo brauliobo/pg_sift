@@ -71,7 +71,8 @@ typedef enum MirrorPrio
 	MIR_ZONES,					/* the directory of the zones */
 	MIR_PAGG,					/* the header of the pre-aggregates */
 	MIR_SETS,					/* the headers of the small-set summaries, the sorted runs and the sketches */
-	MIR_HEAD					/* the schema and the unit directory */
+	MIR_HEAD,					/* the schema and the unit directory */
+	MIR_ZONEARR					/* the zone arrays of the leaves: last, so that they never displace the rest */
 } MirrorPrio;
 
 typedef struct MirrorPiece

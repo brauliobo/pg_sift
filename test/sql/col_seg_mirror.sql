@@ -48,7 +48,8 @@ SELECT sift.col_verify('mm_idx'::regclass);
 
 -- the damage of the mirror is refused when the segment is opened or checked: its sum, the head of it, one range of it
 \set mirror_end :plain_lower
-SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 40, 255, 1);
+SELECT lower - 8 AS tail FROM sift._test_page('mr_idx', :mr_hdr) \gset
+SELECT sift._test_poke('mr_idx', :mr_hdr, :tail, 255, 1);
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT sift.col_verify('mr_idx'::regclass);
 REINDEX INDEX mr_idx;
@@ -63,6 +64,12 @@ SELECT sift.col_verify('mr_idx'::regclass);
 -- a mirror that no longer says what the stream says (here the stream under its first range) is refused by the check
 REINDEX INDEX mr_idx;
 SELECT sift._test_poke('mr_idx', 3, 4132, 255, 1);
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+SELECT sift.col_verify('mr_idx'::regclass);
+
+-- the zone arrays of the leaves are in the mirror as well: the same range reaches past its directory
+REINDEX INDEX mr_idx;
+SELECT sift._test_poke('mr_idx', 3, 4132 + 300, 255, 1);
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT sift.col_verify('mr_idx'::regclass);
 

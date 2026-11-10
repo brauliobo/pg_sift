@@ -108,7 +108,8 @@ SELECT sift.col_verify('mm_idx'::regclass);
 
 -- the damage of the mirror is refused when the segment is opened or checked: its sum, the head of it, one range of it
 \set mirror_end :plain_lower
-SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 40, 255, 1);
+SELECT lower - 8 AS tail FROM sift._test_page('mr_idx', :mr_hdr) \gset
+SELECT sift._test_poke('mr_idx', :mr_hdr, :tail, 255, 1);
  _test_poke 
 ------------
  
@@ -122,7 +123,7 @@ SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 
 SELECT sift.col_verify('mr_idx'::regclass);
 ERROR:  sift index "mr_idx" segment 1 is corrupted
-DETAIL:  The mirror in the header page (432 bytes, 4 ranges) is damaged.
+DETAIL:  The mirror in the header page (608 bytes, 3 ranges) is damaged.
 REINDEX INDEX mr_idx;
 SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
 SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 8, 255, 1);
@@ -133,7 +134,7 @@ SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 8, 255, 1);
 
 SELECT sift.col_verify('mr_idx'::regclass);
 ERROR:  sift index "mr_idx" segment 1 is corrupted
-DETAIL:  The mirror in the header page (511 bytes, 4 ranges) is damaged.
+DETAIL:  The mirror in the header page (767 bytes, 3 ranges) is damaged.
 REINDEX INDEX mr_idx;
 SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
 SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 16, 4000000000, 4);
@@ -144,7 +145,7 @@ SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 16, 4000000000, 4);
 
 SELECT sift.col_verify('mr_idx'::regclass);
 ERROR:  sift index "mr_idx" segment 1 is corrupted
-DETAIL:  The mirror in the header page (432 bytes, 4 ranges) is damaged.
+DETAIL:  The mirror in the header page (608 bytes, 3 ranges) is damaged.
 -- a mirror that no longer says what the stream says (here the stream under its first range) is refused by the check
 REINDEX INDEX mr_idx;
 SELECT sift._test_poke('mr_idx', 3, 4132, 255, 1);
@@ -161,7 +162,24 @@ SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 
 SELECT sift.col_verify('mr_idx'::regclass);
 ERROR:  sift index "mr_idx" segment 1 is corrupted
-DETAIL:  The mirror of the header page differs from the stream at 12248 (40 bytes).
+DETAIL:  The mirror of the header page differs from the stream at 12248 (424 bytes).
+-- the zone arrays of the leaves are in the mirror as well: the same range reaches past its directory
+REINDEX INDEX mr_idx;
+SELECT sift._test_poke('mr_idx', 3, 4132 + 300, 255, 1);
+ _test_poke 
+------------
+ 
+(1 row)
+
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+ reset 
+-------
+ t
+(1 row)
+
+SELECT sift.col_verify('mr_idx'::regclass);
+ERROR:  sift index "mr_idx" segment 1 is corrupted
+DETAIL:  The mirror of the header page differs from the stream at 12248 (424 bytes).
 -- a header page whose mirror has no magic (an older segment) is read from its stream
 REINDEX INDEX mr_idx;
 SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset

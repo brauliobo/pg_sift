@@ -362,7 +362,7 @@ segw_write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 			if (lo != NULL)
 				rec->sample_off = (uint8 *) lo - w->lst;
 		}
-		sift_sw_write(w->sw, blk, sz);
+		segw_write_mirrored(w, MIR_ZONEARR, blk, sz);
 		pfree(blk);
 	}
 	segw_sw_pad8(w->sw);

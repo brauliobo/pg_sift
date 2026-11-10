@@ -62,7 +62,7 @@ void *
 segw_mirror_block(SiftColSegWriter *w, uint32 nextents, uint32 *len)
 {
 	Size		room = Min((Size) sift_limit(mirror_bytes, SEG_MIRROR_BYTES), SIFT_PAGE_PAYLOAD - offsetof(SiftSegHeaderData, extents) - nextents * sizeof(SiftExtent));
-	MirrorPrio	prio = MIR_HEAD;
+	MirrorPrio	prio = MIR_ZONEARR;
 	MirrorHeader h = {MIRROR_MAGIC, 0, 0, 0};
 	MirrorRange *r;
 	uint8	   *blk;
