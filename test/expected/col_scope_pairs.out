@@ -27,34 +27,34 @@ CREATE TABLE other_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL);
 CREATE TABLE text_source (id int, label text, at timestamptz);
 SELECT sift.scope_refresh_pairs('scope_pairs', 'three_columns', 'key');
 ERROR:  scope_refresh_pairs: "three_columns" must have two columns, the member and the scope key
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[]) line 9 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 8 at RAISE
 SELECT sift.scope_refresh_pairs('other_pairs', 'visible_dim_a', 'key');
 ERROR:  scope_refresh_pairs: table public.other_pairs has no columns dim_a_id, tenant_id
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[]) line 15 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 17 at RAISE
 SELECT sift.scope_refresh_pairs('scope_pairs', 'visible_dim_a', 'group');
-ERROR:  scope_refresh_pairs: by is "group", it must be 'member' or 'key'
-CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[]) line 12 at RAISE
+ERROR:  scope_refresh_pairs: by is "group", it must be 'member', 'key' or 'pair'
+CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 11 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'visible_dim_a', 'key', 'tenant_id');
 ERROR:  scope_follow_pairs: "public.visible_dim_a" is not a table
 CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 8 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'both', 'tenant_id');
-ERROR:  scope_follow_pairs: by is "both", it must be 'member' or 'key'
+ERROR:  scope_follow_pairs: by is "both", it must be 'member', 'key' or 'pair'
 CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 11 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'key', 'nope');
 ERROR:  scope_follow_pairs: table public.links_a has no integer column "nope"
-CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 15 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 22 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'text_source', 'key', 'label');
 ERROR:  scope_follow_pairs: table public.text_source has no integer column "label"
-CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 15 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 22 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'key', 'tenant_id', expires => 'deleted_at_nope');
 ERROR:  scope_follow_pairs: table public.links_a has no date or timestamp column "deleted_at_nope"
-CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 19 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 26 at RAISE
 SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'text_source', 'key', 'id', expires => 'label');
 ERROR:  scope_follow_pairs: table public.text_source has no date or timestamp column "label"
-CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 19 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 26 at RAISE
 SELECT sift.scope_expire_pairs('scope_pairs');
 ERROR:  scope_expire_pairs: no source of "scope_pairs" has an expires column
-CONTEXT:  PL/pgSQL function sift.scope_expire_pairs(regclass,interval) line 20 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_expire_pairs(regclass,interval) line 18 at RAISE
 SELECT sift.scope_unfollow_pairs('scope_pairs');
 ERROR:  scope_unfollow_pairs: "scope_pairs" follows no such table
 CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 13 at RAISE
@@ -158,7 +158,11 @@ INSERT INTO edits (label, stmt) VALUES
 	('a group loses 1,000 ids (hard delete)', 'DELETE FROM group_members WHERE group_id = 3 AND dim_a_id > 1000'),
 	('an id moves between groups (one row)', 'UPDATE group_members SET group_id = 6 WHERE group_id = 4 AND dim_a_id = 8'),
 	('a tenant loses a group (hard delete)', 'DELETE FROM links_a WHERE tenant_id = 8 AND group_id = 3'),
-	('a tenant gains a group again', 'INSERT INTO links_a (tenant_id, group_id) VALUES (8, 3)');
+	('a tenant gains a group again', 'INSERT INTO links_a (tenant_id, group_id) VALUES (8, 3)'),
+	('a direct assignment moves to another tenant', 'UPDATE links_a SET tenant_id = 2 WHERE tenant_id = 7 AND dim_a_id = 20'),
+	('a direct assignment names another id', 'UPDATE links_a SET dim_a_id = 31 WHERE tenant_id = 2 AND dim_a_id = 20'),
+	('an assignment of an id its group gives is soft deleted (no pair changes)', 'UPDATE links_a SET deleted_at = now() WHERE tenant_id = 1 AND dim_a_id = 6'),
+	('and restored (no pair changes)', 'UPDATE links_a SET deleted_at = NULL WHERE tenant_id = 1 AND dim_a_id = 6');
 CREATE FUNCTION run_edits() RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint, copy_rows bigint, copy_differing bigint, keys_differing bigint) LANGUAGE plpgsql AS $$
 DECLARE e record;
 BEGIN
@@ -204,7 +208,11 @@ SELECT * FROM run_edits();
  an id moves between groups (one row)                                                 |   120 |               0 |      9006 |              0 |              0
  a tenant loses a group (hard delete)                                                 |   120 |               0 |      9006 |              0 |              0
  a tenant gains a group again                                                         |   138 |               0 |      9907 |              0 |              0
-(31 rows)
+ a direct assignment moves to another tenant                                          |   138 |               0 |      9907 |              0 |              0
+ a direct assignment names another id                                                 |   138 |               0 |      9907 |              0 |              0
+ an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0 |      9907 |              0 |              0
+ and restored (no pair changes)                                                       |   138 |               0 |      9907 |              0 |              0
+(35 rows)
 
 RESET client_min_messages;
 -- a refresh named by member ids or scope keys repairs those and no others; the whole refresh repairs all (what a disabled trigger or a COPY with triggers off leaves behind)
@@ -315,6 +323,136 @@ SELECT edit, pairs, pairs_differing, copy_differing, keys_differing FROM state('
  after the sweep with an overlap |   175 |               0 |              0 |              0
 (1 row)
 
+-- the same edits with links_a followed by pair: a row that names its member and its key refreshes that pair, a group row its key, a membership its member
+CREATE FUNCTION seed() RETURNS void LANGUAGE sql AS $$
+	DELETE FROM facts WHERE id >= 900000;
+	TRUNCATE group_members;
+	TRUNCATE links_a RESTART IDENTITY;
+	INSERT INTO group_members SELECT g, e FROM generate_series(1, 60) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) g;
+	INSERT INTO links_a (tenant_id, group_id) SELECT g, g FROM generate_series(1, 6) g;
+	INSERT INTO links_a (tenant_id, dim_a_id) SELECT 1, e FROM generate_series(1, 60) e WHERE e % 3 = 0 AND e % 10 <> 0;
+	INSERT INTO links_a (tenant_id, dim_a_id) SELECT 7, e FROM generate_series(20, 60, 20) e $$;
+SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'pair', 'dim_a_id');
+ERROR:  scope_follow_pairs: by pair takes the scope key column of the view as source_column
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 18 at RAISE
+CREATE TABLE one_column (tenant_id int);
+SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'one_column', 'pair', 'tenant_id');
+ERROR:  scope_follow_pairs: by pair needs the two columns of the view as integer columns of "public.one_column"
+CONTEXT:  PL/pgSQL function sift.scope_follow_pairs(regclass,regclass,regclass,text,name,name) line 15 at RAISE
+DROP TABLE one_column;
+SELECT sift.scope_unfollow_pairs('scope_pairs', 'links_a');
+ scope_unfollow_pairs 
+----------------------
+ 
+(1 row)
+
+SELECT inserted, deleted FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'pair', 'tenant_id', expires => 'expires_at');
+ inserted | deleted 
+----------+---------
+        0 |       0
+(1 row)
+
+SET client_min_messages = warning;
+SELECT seed();
+ seed 
+------
+ 
+(1 row)
+
+SELECT * FROM run_edits();
+                                         edit                                         | pairs | pairs_differing | copy_rows | copy_differing | keys_differing 
+--------------------------------------------------------------------------------------+-------+-----------------+-----------+----------------+----------------
+ start                                                                                |   123 |               0 |      9150 |              0 |              0
+ a tenant is assigned a group                                                         |   141 |               0 |     10050 |              0 |              0
+ a direct assignment of an id the group already gives (one pair)                      |   143 |               0 |     10350 |              0 |              0
+ the group assignment is soft deleted (the direct ones stay)                          |   125 |               0 |      9450 |              0 |              0
+ the group assignment is restored                                                     |   143 |               0 |     10350 |              0 |              0
+ a direct assignment of an id that also comes through its group goes (the pair stays) |   143 |               0 |     10350 |              0 |              0
+ the group membership of that id is soft deleted (the pair goes)                      |   142 |               0 |     10200 |              0 |              0
+ the membership is restored                                                           |   143 |               0 |     10350 |              0 |              0
+ an id moves to another group                                                         |   143 |               0 |     10350 |              0 |              0
+ the group of an id in 6 keys is deleted from its memberships                         |   137 |               0 |     10050 |              0 |              0
+ an id in no key joins a group                                                        |   140 |               0 |     10200 |              0 |              0
+ a group assignment moves to another tenant                                           |   140 |               0 |     10200 |              0 |              0
+ an assignment turns from a group to a member                                         |   135 |               0 |      9950 |              0 |              0
+ an update that changes nothing                                                       |   135 |               0 |      9950 |              0 |              0
+ an assignment that has already expired gives no pair                                 |   135 |               0 |      9950 |              0 |              0
+ an assignment that expires later gives its pairs                                     |   137 |               0 |     10250 |              0 |              0
+ links_a and memberships change in one statement                                      |   134 |               0 |     10100 |              0 |              0
+ links_a and memberships change in one statement, the other way                       |   122 |               0 |      9500 |              0 |              0
+ the memberships are truncated                                                        |    25 |               0 |      2550 |              0 |              0
+ the memberships return                                                               |   128 |               0 |      9800 |              0 |              0
+ the links_a are truncated                                                            |     0 |               0 |         0 |              0 |              0
+ the links_a return                                                                   |   120 |               0 |      9000 |              0 |              0
+ a fact of an id in 6 keys is added                                                   |   120 |               0 |      9006 |              0 |              0
+ facts of ids that are in no group yet                                                |   120 |               0 |      9006 |              0 |              0
+ a group gains 1,000 ids                                                              |  1120 |               0 |      9026 |              0 |              0
+ 1,000 ids are soft deleted                                                           |   120 |               0 |      9006 |              0 |              0
+ and restored                                                                         |  1120 |               0 |      9026 |              0 |              0
+ a group loses 1,000 ids (hard delete)                                                |   120 |               0 |      9006 |              0 |              0
+ an id moves between groups (one row)                                                 |   120 |               0 |      9006 |              0 |              0
+ a tenant loses a group (hard delete)                                                 |   120 |               0 |      9006 |              0 |              0
+ a tenant gains a group again                                                         |   138 |               0 |      9907 |              0 |              0
+ a direct assignment moves to another tenant                                          |   138 |               0 |      9907 |              0 |              0
+ a direct assignment names another id                                                 |   138 |               0 |      9907 |              0 |              0
+ an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0 |      9907 |              0 |              0
+ and restored (no pair changes)                                                       |   138 |               0 |      9907 |              0 |              0
+(35 rows)
+
+RESET client_min_messages;
+-- random edits of both sources, by key and by pair: the pairs equal the view after every statement
+CREATE FUNCTION random_edits(steps int) RETURNS TABLE (statements int, drifting int) LANGUAGE plpgsql AS $$
+DECLARE i int; k int; g int; e int; d int := 0; stmt text;
+BEGIN
+	PERFORM setseed(0.42);
+	FOR i IN 1..steps LOOP
+		k := 1 + (random() * 8)::int; g := 1 + (random() * 5)::int; e := 1 + (random() * 59)::int;
+		stmt := (ARRAY[
+			format('INSERT INTO links_a (tenant_id, dim_a_id, expires_at) VALUES (%s, %s, CASE WHEN random() < 0.2 THEN now() - interval ''1 day'' END)', k, e),
+			format('INSERT INTO links_a (tenant_id, group_id) VALUES (%s, %s)', k, g),
+			format('UPDATE links_a SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE tenant_id = %s AND (dim_a_id = %s OR group_id = %s)', k, e, g),
+			format('UPDATE links_a SET tenant_id = %s WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)', k),
+			format('UPDATE links_a SET dim_a_id = %s, group_id = NULL WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)', e),
+			'DELETE FROM links_a WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)',
+			format('INSERT INTO group_members VALUES (%s, %s) ON CONFLICT DO NOTHING', g, e),
+			format('UPDATE group_members SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE group_id = %s AND dim_a_id = %s', g, e),
+			format('DELETE FROM group_members WHERE group_id = %s AND dim_a_id %% 7 = %s', g, e % 7)])[1 + floor(random() * 9)::int];
+		EXECUTE stmt;
+		d := d + (SELECT (SELECT count(*) FROM ((SELECT dim_a_id, tenant_id FROM visible_dim_a EXCEPT SELECT dim_a_id, tenant_id FROM scope_pairs)
+												UNION ALL (SELECT dim_a_id, tenant_id FROM scope_pairs EXCEPT SELECT dim_a_id, tenant_id FROM visible_dim_a)) x) > 0)::int;
+	END LOOP;
+	RETURN QUERY SELECT steps, d;
+END $$;
+SELECT * FROM random_edits(300);
+ statements | drifting 
+------------+----------
+        300 |        0
+(1 row)
+
+SELECT sift.scope_unfollow_pairs('scope_pairs', 'links_a');
+ scope_unfollow_pairs 
+----------------------
+ 
+(1 row)
+
+SELECT inserted, deleted FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'key', 'tenant_id', expires => 'expires_at');
+ inserted | deleted 
+----------+---------
+        0 |       0
+(1 row)
+
+SELECT * FROM random_edits(300);
+ statements | drifting 
+------------+----------
+        300 |        0
+(1 row)
+
+SELECT edit, pairs_differing, copy_differing, keys_differing FROM state('after the random edits');
+          edit          | pairs_differing | copy_differing | keys_differing 
+------------------------+-----------------+----------------+----------------
+ after the random edits |               0 |              0 |              0
+(1 row)
+
 -- the copy is read by its sift index, with the answers of the normal plan
 CREATE EXTENSION pg_sift_helpers;
 VACUUM (FREEZE, ANALYZE) facts_by_tenant;
@@ -362,7 +500,7 @@ DELETE FROM links_a WHERE tenant_id = 8;
 SELECT edit, pairs_differing, copy_differing FROM state('a source change after the unfollow is not seen');
                       edit                      | pairs_differing | copy_differing 
 ------------------------------------------------+-----------------+----------------
- a source change after the unfollow is not seen |              54 |              0
+ a source change after the unfollow is not seen |              38 |              0
 (1 row)
 
 SELECT sift.scope_drop('facts_by_tenant');
@@ -371,7 +509,7 @@ SELECT sift.scope_drop('facts_by_tenant');
  
 (1 row)
 
-DROP FUNCTION run_edits(), state(text), answers(int);
+DROP FUNCTION run_edits(), state(text), answers(int), seed(), random_edits(int);
 DROP TABLE edits, facts, scope_pairs, links_a, group_members CASCADE;
 NOTICE:  drop cascades to view visible_dim_a
 DROP EXTENSION pg_sift_helpers;

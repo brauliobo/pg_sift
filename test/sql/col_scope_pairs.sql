@@ -96,7 +96,11 @@ INSERT INTO edits (label, stmt) VALUES
 	('a group loses 1,000 ids (hard delete)', 'DELETE FROM group_members WHERE group_id = 3 AND dim_a_id > 1000'),
 	('an id moves between groups (one row)', 'UPDATE group_members SET group_id = 6 WHERE group_id = 4 AND dim_a_id = 8'),
 	('a tenant loses a group (hard delete)', 'DELETE FROM links_a WHERE tenant_id = 8 AND group_id = 3'),
-	('a tenant gains a group again', 'INSERT INTO links_a (tenant_id, group_id) VALUES (8, 3)');
+	('a tenant gains a group again', 'INSERT INTO links_a (tenant_id, group_id) VALUES (8, 3)'),
+	('a direct assignment moves to another tenant', 'UPDATE links_a SET tenant_id = 2 WHERE tenant_id = 7 AND dim_a_id = 20'),
+	('a direct assignment names another id', 'UPDATE links_a SET dim_a_id = 31 WHERE tenant_id = 2 AND dim_a_id = 20'),
+	('an assignment of an id its group gives is soft deleted (no pair changes)', 'UPDATE links_a SET deleted_at = now() WHERE tenant_id = 1 AND dim_a_id = 6'),
+	('and restored (no pair changes)', 'UPDATE links_a SET deleted_at = NULL WHERE tenant_id = 1 AND dim_a_id = 6');
 CREATE FUNCTION run_edits() RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint, copy_rows bigint, copy_differing bigint, keys_differing bigint) LANGUAGE plpgsql AS $$
 DECLARE e record;
 BEGIN
@@ -141,6 +145,55 @@ SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs', interval '0
 SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs', interval '3 hours');
 SELECT edit, pairs, pairs_differing, copy_differing, keys_differing FROM state('after the sweep with an overlap');
 
+-- the same edits with links_a followed by pair: a row that names its member and its key refreshes that pair, a group row its key, a membership its member
+CREATE FUNCTION seed() RETURNS void LANGUAGE sql AS $$
+	DELETE FROM facts WHERE id >= 900000;
+	TRUNCATE group_members;
+	TRUNCATE links_a RESTART IDENTITY;
+	INSERT INTO group_members SELECT g, e FROM generate_series(1, 60) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) g;
+	INSERT INTO links_a (tenant_id, group_id) SELECT g, g FROM generate_series(1, 6) g;
+	INSERT INTO links_a (tenant_id, dim_a_id) SELECT 1, e FROM generate_series(1, 60) e WHERE e % 3 = 0 AND e % 10 <> 0;
+	INSERT INTO links_a (tenant_id, dim_a_id) SELECT 7, e FROM generate_series(20, 60, 20) e $$;
+SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'pair', 'dim_a_id');
+CREATE TABLE one_column (tenant_id int);
+SELECT sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'one_column', 'pair', 'tenant_id');
+DROP TABLE one_column;
+SELECT sift.scope_unfollow_pairs('scope_pairs', 'links_a');
+SELECT inserted, deleted FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'pair', 'tenant_id', expires => 'expires_at');
+SET client_min_messages = warning;
+SELECT seed();
+SELECT * FROM run_edits();
+RESET client_min_messages;
+
+-- random edits of both sources, by key and by pair: the pairs equal the view after every statement
+CREATE FUNCTION random_edits(steps int) RETURNS TABLE (statements int, drifting int) LANGUAGE plpgsql AS $$
+DECLARE i int; k int; g int; e int; d int := 0; stmt text;
+BEGIN
+	PERFORM setseed(0.42);
+	FOR i IN 1..steps LOOP
+		k := 1 + (random() * 8)::int; g := 1 + (random() * 5)::int; e := 1 + (random() * 59)::int;
+		stmt := (ARRAY[
+			format('INSERT INTO links_a (tenant_id, dim_a_id, expires_at) VALUES (%s, %s, CASE WHEN random() < 0.2 THEN now() - interval ''1 day'' END)', k, e),
+			format('INSERT INTO links_a (tenant_id, group_id) VALUES (%s, %s)', k, g),
+			format('UPDATE links_a SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE tenant_id = %s AND (dim_a_id = %s OR group_id = %s)', k, e, g),
+			format('UPDATE links_a SET tenant_id = %s WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)', k),
+			format('UPDATE links_a SET dim_a_id = %s, group_id = NULL WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)', e),
+			'DELETE FROM links_a WHERE id = (SELECT id FROM links_a ORDER BY random() LIMIT 1)',
+			format('INSERT INTO group_members VALUES (%s, %s) ON CONFLICT DO NOTHING', g, e),
+			format('UPDATE group_members SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE group_id = %s AND dim_a_id = %s', g, e),
+			format('DELETE FROM group_members WHERE group_id = %s AND dim_a_id %% 7 = %s', g, e % 7)])[1 + floor(random() * 9)::int];
+		EXECUTE stmt;
+		d := d + (SELECT (SELECT count(*) FROM ((SELECT dim_a_id, tenant_id FROM visible_dim_a EXCEPT SELECT dim_a_id, tenant_id FROM scope_pairs)
+												UNION ALL (SELECT dim_a_id, tenant_id FROM scope_pairs EXCEPT SELECT dim_a_id, tenant_id FROM visible_dim_a)) x) > 0)::int;
+	END LOOP;
+	RETURN QUERY SELECT steps, d;
+END $$;
+SELECT * FROM random_edits(300);
+SELECT sift.scope_unfollow_pairs('scope_pairs', 'links_a');
+SELECT inserted, deleted FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'links_a', 'key', 'tenant_id', expires => 'expires_at');
+SELECT * FROM random_edits(300);
+SELECT edit, pairs_differing, copy_differing, keys_differing FROM state('after the random edits');
+
 -- the copy is read by its sift index, with the answers of the normal plan
 CREATE EXTENSION pg_sift_helpers;
 VACUUM (FREEZE, ANALYZE) facts_by_tenant;
@@ -156,7 +209,7 @@ SELECT count(*) AS follow_triggers FROM pg_trigger WHERE NOT tgisinternal AND tg
 DELETE FROM links_a WHERE tenant_id = 8;
 SELECT edit, pairs_differing, copy_differing FROM state('a source change after the unfollow is not seen');
 SELECT sift.scope_drop('facts_by_tenant');
-DROP FUNCTION run_edits(), state(text), answers(int);
+DROP FUNCTION run_edits(), state(text), answers(int), seed(), random_edits(int);
 DROP TABLE edits, facts, scope_pairs, links_a, group_members CASCADE;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -263,14 +263,14 @@ CREATE VIEW visible_dim_a AS   -- (dim_a_id, tenant_id): the member first, the s
 	WHERE a.group_id IS NOT NULL AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > now());
 CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
 CREATE INDEX ON scope_pairs (dim_a_id);
--- a change of a row of assignments names a tenant (its keys), a change of a row of group_members names an id (the pairs of that id)
-SELECT * FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'assignments', 'key', 'tenant_id', expires => 'expires_at');
+-- a change of a row of assignments names its pair (id, tenant), or its tenant when it names a group; a change of a row of group_members names an id (the pairs of that id)
+SELECT * FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'assignments', 'pair', 'tenant_id', expires => 'expires_at');
 SELECT * FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'group_members', 'member', 'dim_a_id');
 SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id');   -- optional: the copy on the pairs
 SELECT * FROM sift.scope_expire_pairs('scope_pairs');   -- from a scheduler, for the pairs that expired with no write
 ```
 
-`sift.scope_follow_pairs` makes the pair table equal to the view (the first column of the view is the member, the second the scope key; the pair table has columns of those names) and puts statement triggers with transition tables on the source table: after an insert, update, delete or truncate of its rows, the ids (`'member'`) or keys (`'key'`) that the old and new rows name in `source_column` are recomputed from the view, in the transaction of the change, with `sift.scope_refresh_pairs`. That function reads the pairs the table has for those ids, compares them with the view's in one statement and inserts the missing pairs and deletes the extra ones: the pair table and a copy on it (its own triggers fire on the difference) are equal to the view when the statement ends. An assignment that names a group is covered because the recompute is by key: the key's pairs are read again from the whole view, and so is a pair given both by a direct assignment and through a group (the view's `UNION` and the function's `DISTINCT` make it one pair). `sift.scope_refresh_pairs(pairs, view, 'key', ARRAY[3, 7])` names ids or keys by hand and a call without ids recomputes everything; `sift.scope_unfollow_pairs` drops the triggers (do it before dropping a table or the view).
+`sift.scope_follow_pairs` makes the pair table equal to the view (the first column of the view is the member, the second the scope key; the pair table has columns of those names) and puts statement triggers with transition tables on the source table: after an insert, update, delete or truncate of its rows, what the old and new rows name is recomputed from the view: the ids of `source_column` (`'member'`), its keys (`'key'`: every pair of the key) or, with `'pair'`, the (id, key) pairs of the rows that have both columns of the view under their names (`source_column` is the key; a row that names only its key or only its id refreshes that key or that id), in the transaction of the change, with `sift.scope_refresh_pairs`. That function reads the pairs the table has for those ids, compares them with the view's in one statement and inserts the missing pairs and deletes the extra ones: the pair table and a copy on it (its own triggers fire on the difference) are equal to the view when the statement ends. An assignment that names a group is covered because the recompute is by key: the key's pairs are read again from the whole view. A direct assignment is refreshed by its pair, which reads the view for that one id and key: a soft delete of an assignment of an id its group also gives changes nothing and costs the read of that one pair, and so does every pair given both directly and through a group (the view's `UNION` and the function's `DISTINCT` make it one pair); `'key'` recomputes all the pairs of the tenant for the same edit (the next section). A pair mode is exact where a row contributes only to the pairs of its own member and key, or to those of its key when it names no member, which is what an assignments table is. `sift.scope_refresh_pairs(pairs, view, 'key', ARRAY[3, 7])` names ids or keys by hand (`'pair'` takes the ids and, as a fifth argument, the keys, element by element) and a call without ids recomputes everything; `sift.scope_unfollow_pairs` drops the triggers (do it before dropping a table or the view).
 
 What a recipe needs to hold:
 
@@ -296,6 +296,27 @@ What a recipe needs to hold:
 | latest 20 facts | 91 ids | 3.19, 1.24, 88 (7.2, 73) | 2.29, 0.82, 40 (3.0, 26) |
 
 The pair table cuts the expansion about 6 times in instructions and by 94 to 99% in buffer hits and in blocks read cold; a request that reads the facts of the ids gains what the expansion cost (2,032 ids: 85.0 to 73.4 M instructions, 2,373 to 1,347 hits; a latest-20 read 15.6 to 4.0 M, 1,068 to 42 hits) and nothing more, because the fact read dominates. The pairs column is the plan with `sift.agg_probe_rewrite = off`: with the setting on, the planner prices a probe of the primary key of `scope_pairs` for each id the scan meets (20,000 probes) below the one hashed set of the tenant's ids and chooses it, and the sum by kind then takes 282, 266 and 266 M instructions and 22,100 hits for the three tenants against the 1,350 of the set (the view, a `UNION`, cannot be probed and is planned as the set). That is the price of the probe plan, not of the pair table: a pair table of a small tenant in a large id range, read by a `sift_col` aggregate, is planned wrongly until the probe's price follows the tenant's size; until then `SET sift.agg_probe_rewrite = off` for the statement gives the set plan. The latest-20 reads were planned as the set in both columns.
+
+### What an assignment edit costs by pair and by key
+
+Edits of `assignments` and `group_members` on a 500,000-fact fixture of 20,000 ids and three tenants that see 100, 1,000 and 11,884 pairs (a group is 75 ids; direct assignments fill the rest); one statement in a transaction that is rolled back, after a checkpoint, median of 3 runs, instructions of the backend (no parallel worker takes part in a write), the statement's milliseconds inside the backend and the WAL. `'key'` is the tenant followed by key (all its pairs are recomputed), `'pair'` by pair; a copy is the scope copy of the facts on the pairs. The key mode of a group assignment and the member mode of `group_members` are the same in both columns.
+
+| edit | tenant of | `'key'`: M instr, ms | `'pair'`: M instr, ms | `'pair'` with a copy: M instr, ms, WAL |
+|---|---|---|---|---|
+| insert a direct assignment (+1 pair) | 100 | 6.5, 2.1 | 6.4, 3.1 | 9.0, 4.2, 0.16 MB |
+| insert a direct assignment (+1 pair) | 1,000 | 18.1, 4.7 | 6.6, 3.2 | 9.2, 9.6, 0.16 MB |
+| insert a direct assignment (+1 pair) | 11,884 | 163.8, 24.8 | 6.6, 2.3 | 9.2, 6.3, 0.17 MB |
+| soft delete of an assignment of an id its group gives (no pair change) | 100 | 6.6, 2.0 | 6.5, 2.8 | 8.3, 4.6, 0.00 MB |
+| soft delete of an assignment of an id its group gives (no pair change) | 1,000 | 18.2, 7.5 | 6.6, 2.9 | 8.4, 2.9, 0.00 MB |
+| soft delete of an assignment of an id its group gives (no pair change) | 11,884 | 163.8, 27.4 | 6.6, 2.6 | 8.4, 4.2, 0.00 MB |
+| update of the key column of a direct assignment (-1 +1 pair) | 100 | 6.8, 2.0 | 6.9, 3.1 | 9.6, 4.7, 0.16 MB |
+| update of the key column of a direct assignment (-1 +1 pair) | 1,000 | 18.4, 7.5 | 7.0, 3.3 | 9.7, 4.0, 0.17 MB |
+| update of the key column of a direct assignment (-1 +1 pair) | 11,884 | 164.2, 20.1 | 7.0, 2.3 | 9.8, 4.6, 0.17 MB |
+| soft delete of a group assignment (its 75 ids) | 11,884 | 163.8, 21.1 | 164.1, 17.9 | 630.2, 93.2, 11.03 MB |
+| a group of the tenant gains 1 / 100 / 1,000 ids | 11,884 | 5.3 / 14.7 / 100.3 | 5.3 / 14.7 / 100.4 | 7.1 / 17.3 / 110.0 |
+| a group of the tenant loses 1 / 100 / 1,000 ids | 11,884 | 5.8 / 9.4 / 46.3 | 5.8 / 9.4 / 46.3 | 7.8 / 432.7 / 914.7 |
+
+A direct assignment costs the plan of one pair (about 6.5 M instructions, 2 to 3 ms, whatever the size of the tenant) instead of the read of the tenant's 11,884 pairs (164 M, 20 to 27 ms), and an edit that changes no pair writes no WAL. The soft delete of a group assignment still reads all the pairs of its key: the row names the group, and which ids it contributes is the view's to say. A copy on the pairs deletes the facts of each pair that goes at about 4 M instructions a pair for a group that loses ids, which the copy's own maintenance owns, not the refresh.
 
 ### What one edit costs
 
