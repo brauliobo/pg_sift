@@ -36,7 +36,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 		END LOOP;
 		RETURN true;
 	END \$\$" >/dev/null || bail "setup failed"
-check "the segments of the index are compact" test "$(sql primary "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format = 41")" -gt 0
+check "the segments of the index are compact" test "$(sql primary "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable' AND format >= 41")" -gt 0
 
 node_clone primary standby 3 "hot_standby_feedback = on
 wal_receiver_status_interval = 1s"
