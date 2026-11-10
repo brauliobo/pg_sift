@@ -47,8 +47,8 @@ BEGIN
 		-- an updated row whose carried columns did not change keeps its copies
 		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE %s AND %s)',
 			sift.scope_cmp(c.key_columns, 'n', 'o', '=', ' AND '), sift.scope_cmp(c.columns, 'n', 'o', 'IS NOT DISTINCT FROM', ' AND ')) ELSE '' END;
-		EXECUTE format('DELETE FROM %s d USING old_rows o WHERE %s AND %s%s', c.copy,
-			sift.scope_cmp(ARRAY[c.fk], 'd', 'o', '=', ''), sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND '), same);
+		EXECUTE format('DELETE FROM %s d USING old_rows o WHERE %s%s', c.copy,
+			sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND '), same);
 	END IF;
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
 		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM old_rows o WHERE %s AND %s)',
@@ -59,8 +59,9 @@ BEGIN
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s ON CONFLICT DO NOTHING', c.copy, c.scope_key,
-			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk, same);
+		EXECUTE format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s AND NOT EXISTS (SELECT 1 FROM %s x WHERE %s AND x.%I = s.%I)', c.copy, c.scope_key,
+			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk, same,
+			c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key);
 	END IF;
 	RETURN NULL;
 END $$;
@@ -84,8 +85,9 @@ BEGIN
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM new_rows n JOIN %s f ON f.%I = n.%I WHERE true%s ON CONFLICT DO NOTHING', c.copy, c.scope_key,
-			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'f'), c.source, c.fk, c.member, same);
+		EXECUTE format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM new_rows n JOIN %s f ON f.%I = n.%I WHERE true%s AND NOT EXISTS (SELECT 1 FROM %s x WHERE %s AND x.%I = n.%I)', c.copy, c.scope_key,
+			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'f'), c.source, c.fk, c.member, same,
+			c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key);
 	END IF;
 	RETURN NULL;
 END $$;
@@ -208,9 +210,10 @@ BEGIN
 	opts := CASE WHEN partition THEN CASE WHEN ord IS NULL THEN '' ELSE format('key_order = %L', ord) END ELSE format('key_order = %L', concat_ws(', ', scope_key, ord)) END;
 	SELECT relname INTO base FROM pg_class WHERE oid = to_regclass(cname);
 	EXECUTE format('CREATE INDEX %I ON %s USING sift_col (%I, %s)%s', left(base, 55) || '_col', cname, scope_key, sift.scope_list(cols, '')::text, CASE WHEN opts = '' THEN '' ELSE ' WITH (' || opts || ')' END);
-	-- what a change of the facts or of the pairs looks up in the copy: the foreign key and the primary key identify its rows
-	EXECUTE format('CREATE UNIQUE INDEX %I ON %s (%I, %s, %I)', left(base, 54) || '_maint', cname, fk,
-				   array_to_string(ARRAY(SELECT format('%I', k) FROM unnest(pk) k), ', '), scope_key);
+	-- what a change of a fact looks up in the copy (all its copies share the primary key) and the insert checks for a copy a change of the other table made in the same statement;
+	-- a pair that goes is found by the sift index on (scope key, foreign key)
+	EXECUTE format('CREATE INDEX %I ON %s (%s)', left(base, 54) || '_maint', cname,
+				   array_to_string(ARRAY(SELECT format('%I', k) FROM unnest(pk) k), ', '));
 
 	INSERT INTO sift.scope_copies VALUES (cname, src, fk, rel, member, scope_key, pk, cols, partition);
 	FOR tr IN SELECT unnest(ARRAY['ins', 'upd', 'del']) LOOP

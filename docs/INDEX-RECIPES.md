@@ -123,7 +123,7 @@ SELECT * FROM sift.scope_verify('facts_by_tenant');   -- no rows: the copy equal
 SELECT sift.scope_drop('facts_by_tenant');
 ```
 
-`sift.scope_create` creates the copy (the scope key first, then the carried columns, all of them by default), the `sift_col` index with `key_order = 'tenant_id, created_at'` (the first date or timestamp column; `order_column` names another), a btree on the copy that a change of a fact or of a pair looks its rows up by, and the triggers that keep the copy exact in the transaction of each change: statement triggers with transition tables on the fact table (insert, update, delete, truncate) and on the scope relation (the same). The fact table needs a primary key, and a btree on the foreign key keeps a membership edit from scanning it. `partition => true` makes the copy a LIST partition per scope key. A prepared statement or a driver's Bind (`WHERE tenant_id = $1`) keeps the scan on either form: the partitioned copy reads the one partition the parameter selects when the statement starts and its generic plan is priced for one partition of the average size, so PostgreSQL takes it from the sixth execution as it does for the single copy.
+`sift.scope_create` creates the copy (the scope key first, then the carried columns, all of them by default), the `sift_col` index with `key_order = 'tenant_id, created_at'` (the first date or timestamp column; `order_column` names another), a btree on the copy's primary key (a change of a fact finds all its copies by it; a pair that goes is found by the `sift_col` index on the scope key and the foreign key), and the triggers that keep the copy exact in the transaction of each change: statement triggers with transition tables on the fact table (insert, update, delete, truncate) and on the scope relation (the same). The fact table needs a primary key, and a btree on the foreign key keeps a membership edit from scanning it. `partition => true` makes the copy a LIST partition per scope key. A prepared statement or a driver's Bind (`WHERE tenant_id = $1`) keeps the scan on either form: the partitioned copy reads the one partition the parameter selects when the statement starts and its generic plan is priced for one partition of the average size, so PostgreSQL takes it from the sixth execution as it does for the single copy.
 
 ### The contract of a read
 
@@ -166,6 +166,19 @@ A fact is stored once per key of its member, so the copy and its index grow with
 Cold (cluster restarted), sum by kind of the 202-member tenant: 1,224 blocks read and 28.7 ms against 7 blocks and 0.31 ms.
 
 What it costs: the copy of that table is 134 MB of heap, a 29 MB `sift_col` index and a 71 MB btree, 234 MB beside 251 MB of table and indexes (+93%); inserting 10,000 facts takes 807 M instructions against 554 M (+46%) and 4.68 MB of WAL records against 2.04 MB; a fact table without the copy is not slowed on reads.
+
+### The maintenance btree
+
+A change of a fact finds its copies by the primary key, and an insert checks that a change of the other table in the same statement has not made the copy already (a statement that inserts a pair and a fact of its member). Three designs measured on the table above (1.14 copies per fact; 1,812,118 copy rows; PostgreSQL 18.6, one backend, serial, warm; WAL after a checkpoint):
+
+| design | btree bytes | per copy row | insert 10,000 facts: M instructions, ms, WAL MB (full-page images) | 100 members gain / lose a key: M instructions |
+|---|---|---|---|---|
+| unique `(dim_a_id, id, tenant_id)` with `ON CONFLICT` | 73.5 MB | 40.6 B | 1,007.5, 285.7, 57.8 (51.4) | 598.6 / 270.2 |
+| unique `(id, tenant_id)` with `ON CONFLICT` | 57.1 MB | 31.5 B | 909.9, 205.2, 21.0 (14.8) | 618.1 / 532.4 |
+| **`(id)`, `NOT EXISTS` in the trigger** | **39.1 MB** | **21.6 B** | **841.0, 191.6, 21.1 (16.1)** | 594.8 / 536.5 |
+| the table without a copy | | | 610.9, 131.2, 17.4 (14.2) | |
+
+The foreign key first spreads the rows of a new fact over random pages (51 MB of full-page images after a checkpoint); the primary key appends them at the right edge. The plain btree is a third smaller than the two-column unique one and the lookup of a new key at the right edge is cached; deleting 1,000 facts (998.8, 1,002.3 and 1,007.6 M instructions) and updating 1,000 (1,218.9, 1,204.9, 1,166.1 M) cost the same in all three. The price: a pair edit writes more full-page images (100 members gaining a key: 11.8, 49.8 and 39.5 MB of WAL), and a pair that goes takes 2x the instructions (the sift index finds its rows instead of the btree). By the formula (G/3 + W/5 on the fact insert) the third design costs 43.5 against 53.5 for the first.
 
 ### When not to use it
 

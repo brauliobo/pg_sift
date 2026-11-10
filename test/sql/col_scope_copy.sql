@@ -154,7 +154,7 @@ INSERT INTO damage (label, stmt, keys) VALUES
 	('a copy in a key the member does not have', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[4]),
 	('the same, a key of the member is requested first', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[1, 4]),
 	('the same, the key of the copy is requested first', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[4, 1]),
-	('a fact twice in a key', 'DROP INDEX facts_by_scope_maint; INSERT INTO facts_by_scope SELECT * FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[1]),
+	('a fact twice in a key', 'INSERT INTO facts_by_scope SELECT * FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[1]),
 	('a stale amount', 'UPDATE facts_by_scope SET amount = amount + 1 WHERE id = 100401 AND scope_id = 2', ARRAY[2]),
 	('a stale amount in a key outside the set', 'UPDATE facts_by_scope SET amount = amount + 1 WHERE id = 100401 AND scope_id = 2', ARRAY[1]),
 	('a fact lost, every key checked', 'DELETE FROM facts_by_scope WHERE id = 100401', NULL);
