@@ -539,6 +539,8 @@ CREATE FUNCTION sift._test_dsm_deferred(OUT name text, OUT asks int8) RETURNS SE
 	AS 'MODULE_PATHNAME', 'sift_test_dsm_deferred' LANGUAGE C;
 CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_hf_pages_asked' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_col_unit_tombs(index regclass, OUT segment int8, OUT unit int4, OUT keyed bool, OUT rows int4, OUT pages int4, OUT pages_any int4, OUT pages_own int4, OUT tombs int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_unit_tombs' LANGUAGE C STRICT;

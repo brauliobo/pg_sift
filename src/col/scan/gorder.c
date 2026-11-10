@@ -812,7 +812,7 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 
 		x->state = 2;
 		if (!keyed)
-			col_sb_mask(src, seg, sb, x->av);
+			src->visibility.sb_mask(src->visibility.arg, sb, x->av);
 		if (segments_current(src))
 		{
 			SIFT_COL_JITTER();
@@ -863,6 +863,9 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 	{
 		memcpy(av, x->av, sizeof(av));
 		pg = sift_key_block(tid) - sb * SIFT_SB_PAGES;
+		/* the map holds x->av; a page it does not hold is asked of the log alone: the entries of a walk are spread over the superblocks, whose masks would read the whole log */
+		if (!(av[pg / 64] >> (pg % 64) & 1) && col_hf_page_clear(src, seg, sift_key_block(tid)))
+			return 1;
 	}
 	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
 }

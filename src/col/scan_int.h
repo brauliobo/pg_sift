@@ -400,7 +400,7 @@ extern bool unit_pages_allvisible(ColUnit *cu);
  * source that can take the log for complete, the pages no tombstone deletes a row of for the snapshot as well. seg NULL: the rows are not a stored segment's (a write
  * buffer batch): the map alone.
  */
-extern void col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av);
+extern bool col_hf_page_clear(SiftColSource *src, const SiftColSegment *seg, BlockNumber blk);
 extern bool col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm);
 extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi);
 extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);

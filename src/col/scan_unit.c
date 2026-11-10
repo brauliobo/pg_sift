@@ -151,6 +151,9 @@ bool		sift_test_hf_ignore_stamp = false;
 /* The masks, ranges and blocks the log made all-visible where the map said no (tests, sift._test_hf_taken) */
 int64		sift_col_hf_taken;
 
+/* The heap pages the scans asked the log about (tests, sift._test_hf_pages_asked) */
+int64		sift_col_hf_asked;
+
 /*
  * Opens the log before the first segment or liveness page is read: a tombstone is dropped by the VACUUM that cleared the entry it names, after it cleared it, so a
  * source that took the log first and the liveness after sees the tombstone or the clear bit. Only an index that tracks deletes and a snapshot of the usual kind: the
@@ -182,6 +185,7 @@ col_hf_deleted(SiftColSource *src, BlockNumber first, uint32 nblocks, uint64 *ma
 	if (sift_test_hf_ignore_tombs)
 		return false;
 #endif
+	sift_col_hf_asked += nblocks;
 	return sift_tomb_deleted_blocks(src->hflog, src->snap, first, nblocks, mask, &src->hfmemo);
 }
 
@@ -268,16 +272,19 @@ sb_add_log(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
 	}
 }
 
-void
-col_sb_mask(SiftColSource *src, const SiftColSegment *seg, uint32 sb, uint64 *av)
+/* Does no tombstone delete a row of page blk for the snapshot, in a stored segment that is stamped: the one page of sb_add_log, for a read that takes a few pages of many superblocks */
+bool
+col_hf_page_clear(SiftColSource *src, const SiftColSegment *seg, BlockNumber blk)
 {
-	src->visibility.sb_mask(src->visibility.arg, sb, av);
-	sb_add_log(src, seg, sb, av);
+	if (!hf_seg(src, seg) || col_hf_block_any(src, blk))
+		return false;
+	sift_col_hf_taken++;
+	return true;
 }
 
 /*
  * Is every page of pm all-visible for the snapshot: by the visibility map, or by the log for the pages it does not hold (none of them has a tombstone). The tombstones of the
- * superblock are walked once and the first on one of those pages ends it, where col_sb_mask reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
+ * superblock are walked once and the first on one of those pages ends it, where sb_add_log reads every tombstone of the superblock. vm: the map as an earlier read of the caller has it, NULL to
  * read it now.
  */
 bool
