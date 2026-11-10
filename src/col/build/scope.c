@@ -20,15 +20,12 @@ is_time(const SiftColDef *d)
 		(d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ);
 }
 
-/* The cut of the units of a scope: its derived key, then the first date or timestamp leaf the cut of the entities names, else the first of the index, else none */
+/* The cut of the units of a scope: its derived key, then the first date or timestamp column of the index, else none */
 void
 colb_scope_cut(SiftColRel *r, int scope)
 {
 	int			time = -1;
 
-	for (int i = 0; i < r->ncut && time < 0; i++)
-		if (is_time(&r->schema->cols[r->cut[i]]))
-			time = r->cut[i];
 	for (int id = 0; id < r->schema->ncols && time < 0; id++)
 		if (is_time(&r->schema->cols[id]))
 			time = id;

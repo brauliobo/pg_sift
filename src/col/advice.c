@@ -230,7 +230,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 	}
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_SCOPE))
 		{
 			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], cx);
 
@@ -258,7 +258,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		{
 			SiftColSegment *seg;
 
-			if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || (snap->segs[i].flags & SIFT_SEG_SCOPE))
 				continue;
 			seg = sift_cseg_open(index, &snap->segs[i], cx);
 			for (; k < nk; k++)

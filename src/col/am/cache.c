@@ -412,7 +412,7 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
 
-		if (e->kind == SIFT_SEG_IMMUTABLE)
+		if (e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & SIFT_SEG_SCOPE))
 		{
 			m->stats.nrows += e->ndocs;
 			m->stats.bytes += e->bytes;

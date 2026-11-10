@@ -106,7 +106,7 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	{
 		SiftColSegment *seg;
 
-		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || (dir->segs[i].flags & SIFT_SEG_SCOPE))
 			continue;
 		seg = sift_cseg_open(rel, &dir->segs[i], mcxt);
 		if (seg->schema->hash == schema->hash)
@@ -144,7 +144,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 				 errhint("REINDEX the index.")));
 	src->seg = palloc0(src->dir.nsegs * sizeof(ColCursor));
 	for (int i = 0; i < src->dir.nsegs; i++)
-		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && !(src->dir.segs[i].flags & SIFT_SEG_SCOPE))	/* the scope reader opens those */
 			src->seg[src->nseg++].seg = sift_cseg_open(index, &src->dir.segs[i], mcxt);
 	/* no index: segments_current (scan_unit.c) is the directory rule of a column scan, and it holds the map's trust through a promotion, which adds a segment and replaces none */
 	sift_vis_begin(&src->vis, heap, snapshot, NULL, 0);

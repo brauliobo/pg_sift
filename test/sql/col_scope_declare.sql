@@ -1,6 +1,6 @@
 -- The reloption scope of a sift_col index: 'key_name: fk -> [schema.]relation(member, scope_key)'. CREATE INDEX, REINDEX and ALTER INDEX resolve it: the index depends
 -- on the unique btree of the scope relation on (member, scope_key), has the derived leaf "<key_name>#scope" (NULL in every row the entity segments hold) and is
--- column format minor 45. The text is the record (pg_dump writes it). This round builds no scope segment: the index answers as one without the scope.
+-- column format minor 45. The text is the record (pg_dump writes it). The build writes the scope segments too (test col_scope_build): the entity segments answer as for an index without the scope.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;

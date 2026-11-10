@@ -1,6 +1,6 @@
 -- The reloption scope of a sift_col index: 'key_name: fk -> [schema.]relation(member, scope_key)'. CREATE INDEX, REINDEX and ALTER INDEX resolve it: the index depends
 -- on the unique btree of the scope relation on (member, scope_key), has the derived leaf "<key_name>#scope" (NULL in every row the entity segments hold) and is
--- column format minor 45. The text is the record (pg_dump writes it). This round builds no scope segment: the index answers as one without the scope.
+-- column format minor 45. The text is the record (pg_dump writes it). The build writes the scope segments too (test col_scope_build): the entity segments answer as for an index without the scope.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -170,7 +170,8 @@ SELECT format, rows, kind FROM sift.col_segments('events_col') WHERE kind = 'imm
  format | rows |   kind    
 --------+------+-----------
      45 | 3000 | immutable
-(1 row)
+     45 | 3432 | immutable
+(2 rows)
 
 SELECT o AS option FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'events_col' AND o LIKE 'scope=%';
                              option                             
@@ -228,7 +229,8 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
 --------+-----------
      45 | immutable
      45 | immutable
-(2 rows)
+     45 | immutable
+(3 rows)
 
 SELECT sift.col_verify('events_col', true);
  col_verify 
@@ -312,7 +314,8 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
  format |   kind    
 --------+-----------
      45 | immutable
-(1 row)
+     45 | immutable
+(2 rows)
 
 -- off removes the declaration (the leaf stays in the segments until the next REINDEX), the text brings it back, RESET removes it again
 ALTER INDEX events_col SET (scope = 'off');
@@ -445,7 +448,9 @@ SELECT format, rows FROM sift.col_segments('events_two') WHERE kind = 'immutable
  format | rows 
 --------+------
      45 | 3100
-(1 row)
+     45 | 3100
+     45 | 3100
+(3 rows)
 
 SELECT sift.col_verify('events_two', true);
  col_verify 

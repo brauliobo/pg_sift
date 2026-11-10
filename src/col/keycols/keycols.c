@@ -569,7 +569,7 @@ sift_col_auto_keys_report(Relation index)
 		SiftColSegment *seg;
 		SiftCPaggCensus c;
 
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || (snap->segs[i].flags & SIFT_SEG_SCOPE))	/* the choices are of the rows of the entities */
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], cx);
 		units += seg->nsb;

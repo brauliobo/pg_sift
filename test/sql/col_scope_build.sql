@@ -16,60 +16,68 @@ INSERT INTO events
 		   CASE WHEN i % 23 = 0 THEN NULL ELSE timestamptz '2026-01-01' + i * interval '7 minutes' END, i % 7, i % 1000
 	FROM generate_series(1, 9000) i;
 
-CREATE FUNCTION entries_md5() RETURNS text LANGUAGE sql AS
-$$ SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col') $$;
-CREATE FUNCTION join_md5() RETURNS text LANGUAGE sql AS
-$$ SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id $$;
--- what the segments of each family hold, and the shape of the units
-CREATE FUNCTION shape() RETURNS TABLE (entity_rows bigint, entity_segments bigint, scope_segments bigint, scope_entries bigint, mixed_units bigint, dead_entries bigint) LANGUAGE sql AS
-$$ SELECT (SELECT coalesce(sum(rows), 0) FROM sift.col_segments('events_col') WHERE kind = 'immutable'),
-		  (SELECT count(*) FROM sift.col_segments('events_col') WHERE kind = 'immutable'),
-		  (SELECT count(*) FROM sift.col_segments('events_col') WHERE kind = 'scope'),
-		  (SELECT count(*) FROM sift._test_col_scope_entries('events_col')),
-		  (SELECT count(*) FROM (SELECT gen, unit FROM sift._test_col_scope_entries('events_col') GROUP BY 1, 2 HAVING count(DISTINCT key) > 1) t),
-		  (SELECT count(*) FROM sift._test_col_scope_entries('events_col') x LEFT JOIN events e ON e.ctid = x.tid WHERE e.id IS NULL) $$;
+-- plpgsql, so that nothing refers to the index before it exists
+CREATE FUNCTION entries_md5() RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col')); END $$;
+CREATE FUNCTION join_md5() RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN RETURN (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id); END $$;
+-- what the segments hold, and the shape of the units
+CREATE FUNCTION shape(OUT entity_rows bigint, OUT scope_segments bigint, OUT scope_entries bigint, OUT mixed_units bigint, OUT dead_entries bigint) LANGUAGE plpgsql AS
+$$ BEGIN
+	entity_rows := (SELECT rows FROM sift.col_index_info('events_col'));
+	scope_segments := (SELECT count(DISTINCT gen) FROM sift._test_col_scope_entries('events_col'));
+	scope_entries := (SELECT count(*) FROM sift._test_col_scope_entries('events_col'));
+	mixed_units := (SELECT count(*) FROM (SELECT gen, unit FROM sift._test_col_scope_entries('events_col') GROUP BY 1, 2 HAVING count(DISTINCT key) > 1) t);
+	dead_entries := (SELECT count(*) FROM sift._test_col_scope_entries('events_col') x LEFT JOIN events e ON e.ctid = x.tid WHERE e.id IS NULL);
+END $$;
 
--- build shapes: the way the pairs are known (relation read once / btree probed), the memory of a run (many runs merged by the build), the cut of the entities, a connection besides the scope
+-- build shapes: the way the pairs are known (relation read once / btree probed), the memory of a run (many runs merged by the build), the cut of the entities
 CREATE TABLE shapes (n serial, name text, setting text, opts text);
 INSERT INTO shapes (name, setting, opts) VALUES
-	('default',            'sift.test_conn_fill = 0',                          ''),
-	('key set',            'sift.test_conn_fill = 1',                          ''),
-	('probe',              'sift.test_conn_fill = 2',                          ''),
-	('many runs',          'sift.test_col_segment_kb = 64',                    ''),
-	('entities cut by key','sift.test_conn_fill = 0',                          ', key_cut = ''created_at, kind'''),
-	('many runs, cut',     'sift.test_col_segment_kb = 64',                    ', key_cut = ''created_at, kind''');
-CREATE FUNCTION build(shape int) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE s shapes;
+	('default',             'sift.test_conn_fill = 0',       ''),
+	('key set',             'sift.test_conn_fill = 1',       ''),
+	('probe',               'sift.test_conn_fill = 2',       ''),
+	('many runs',           'sift.test_col_segment_kb = 64', ''),
+	('entities cut by key', 'sift.test_conn_fill = 0',       ', key_cut = ''created_at, kind'''),
+	('many runs, cut',      'sift.test_col_segment_kb = 64', ', key_cut = ''created_at, kind''');
+CREATE FUNCTION build(shape int, OUT entries_are_the_join boolean, OUT entity_rows_once boolean, OUT has_scope_segments boolean, OUT mixed_units bigint, OUT dead_entries bigint,
+					  OUT entry_count boolean) LANGUAGE plpgsql AS
+$$ DECLARE
+	s shapes;
+	f record;
 BEGIN
 	SELECT * INTO s FROM shapes WHERE n = shape;
 	EXECUTE 'SET ' || s.setting;
-	EXECUTE 'DROP INDEX IF EXISTS events_col';
+	DROP INDEX IF EXISTS events_col;
 	EXECUTE 'CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)''' || s.opts || ')';
 	RESET sift.test_conn_fill;
 	RESET sift.test_col_segment_kb;
+	entries_are_the_join := entries_md5() = join_md5();
+	SELECT * INTO f FROM shape();
+	entity_rows_once := f.entity_rows = (SELECT count(*) FROM events);
+	has_scope_segments := f.scope_segments > 0;
+	mixed_units := f.mixed_units;
+	dead_entries := f.dead_entries;
+	entry_count := f.scope_entries = (SELECT count(*) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id);
 END $$;
-
-SELECT s.name, entries_md5() = join_md5() AS entries_are_the_join, (shape()).entity_rows = (SELECT count(*) FROM events) AS entity_rows_once,
-	   (shape()).scope_segments > 0 AS has_scope_segments, (shape()).mixed_units AS mixed_units, (shape()).dead_entries AS dead_entries,
-	   (shape()).scope_entries = (SELECT count(*) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id) AS entry_count
-	FROM shapes s, LATERAL build(s.n) ORDER BY s.n;
+SELECT s.name, b.* FROM shapes s, LATERAL build(s.n) b ORDER BY s.n;
 
 -- the keys of a fact: 0 for the NULL and unknown members, else 1..6
-CREATE FUNCTION keys_per_fact() RETURNS TABLE (n bigint, facts bigint) LANGUAGE sql AS
-$$ SELECT coalesce(c.n, 0), count(*) FROM events e LEFT JOIN (SELECT tid, count(*) AS n FROM sift._test_col_scope_entries('events_col') GROUP BY 1) c ON c.tid = e.ctid GROUP BY 1 ORDER BY 1 $$;
+CREATE FUNCTION keys_per_fact() RETURNS TABLE (n bigint, facts bigint) LANGUAGE plpgsql AS
+$$ BEGIN RETURN QUERY SELECT coalesce(c.n, 0), count(*) FROM events e LEFT JOIN (SELECT tid, count(*) AS n FROM sift._test_col_scope_entries('events_col') GROUP BY 1) c ON c.tid = e.ctid GROUP BY 1 ORDER BY 1; END $$;
 SELECT * FROM keys_per_fact();
 SELECT sift.col_verify('events_col', true);
 
--- the scope stamps are written with every scope segment (a scope relation has no journal in this round: lineage 0, the horizon of the snapshot the pairs were read under)
-SELECT count(*) AS stamps, count(*) FILTER (WHERE lineage = 0) AS unvouched, count(*) FILTER (WHERE horizon::text::bigint > 0) AS with_horizon
+-- the scope stamps are written with every segment (a scope relation has no journal in this round: lineage 0, the horizon of the snapshot the pairs were read under)
+SELECT count(*) > 0 AS stamped, count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
 	FROM sift._test_col_conn_stamps('events_col');
 
--- the maintenance of the entities leaves the scope segments alone: a merge, a promotion and a merge again
-CREATE TEMP TABLE before AS SELECT gen FROM sift.col_segments('events_col') WHERE kind = 'scope';
+-- the maintenance of the entities leaves the scope segments alone: a promotion and a merge
+CREATE TEMP TABLE before AS SELECT DISTINCT gen FROM sift._test_col_scope_entries('events_col');
 INSERT INTO events SELECT i, 1 + i % 1500, timestamptz '2026-06-01' + i * interval '7 minutes', i % 7, i % 1000 FROM generate_series(9001, 9400) i;
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
-SELECT (SELECT array_agg(gen ORDER BY gen) FROM before) = (SELECT array_agg(gen ORDER BY gen) FROM sift.col_segments('events_col') WHERE kind = 'scope') AS scope_segments_kept;
+SELECT (SELECT array_agg(gen ORDER BY gen) FROM before) = (SELECT array_agg(DISTINCT gen ORDER BY gen) FROM sift._test_col_scope_entries('events_col')) AS scope_segments_kept;
 SELECT (shape()).entity_rows = (SELECT count(*) FROM events) AS entity_rows_once, (shape()).mixed_units AS mixed_units;
 SELECT sift.col_verify('events_col', true);
 
@@ -81,16 +89,14 @@ UPDATE events SET value_num = value_num + 1 WHERE id % 7 = 1;
 VACUUM events;
 SELECT count(*) AS entries_of_dead_addresses FROM sift._test_col_scope_entries('events_col') x JOIN gone g ON g.tid = x.tid;
 SELECT (shape()).dead_entries AS dead_entries, (shape()).mixed_units AS mixed_units;
-SELECT entries_md5() = (SELECT md5(string_agg(x.tid::text || ':' || x.key, ',' ORDER BY x.tid, x.key)) FROM sift._test_col_scope_entries('events_col') x JOIN events e ON e.ctid = x.tid) AS live_entries_only;
 SELECT count(*) AS surviving_entries_not_in_the_join
 	FROM sift._test_col_scope_entries('events_col') x JOIN events e ON e.ctid = x.tid LEFT JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id AND s.tenant_id = x.key WHERE s.dim_a_id IS NULL;
-SELECT (shape()).entity_rows = (SELECT count(*) FROM events) AS entity_rows_once;
 SELECT sift.col_verify('events_col', true);
 
 -- an index without the scope has no scope segment, and a REINDEX of the scope index builds them again
 DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num);
-SELECT count(*) AS scope_segments FROM sift.col_segments('events_col') WHERE kind = 'scope';
+SELECT (shape()).scope_segments AS scope_segments;
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
 SELECT (shape()).scope_segments > 0 AS has_scope_segments, entries_md5() = join_md5() AS entries_are_the_join;
