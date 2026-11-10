@@ -82,6 +82,9 @@ lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 scripts/
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
 drop_figure_waivers() { awk '!/^figure /' "$1" >"$1.new" && mv "$1.new" "$1"; }   # not sed -i: BSD sed reads the expression as the backup suffix
+# the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs;
+# neither is the allow list of the figure waivers, which the bump itself edits and the lint of the bumped tree reads)
+GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*' ':!scripts/bench-cases.allow')
 selftest() {
 	local bad=0 v
 	t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT   # global: the trap runs after the function
@@ -148,6 +151,11 @@ selftest() {
 	mkdir -p "$t/tree/scripts"
 	printf '#!/usr/bin/env bash\n[[ ${SIFT_NEUTRAL_REQUIRED:-} == 1 && ${GITHUB_BASE_REF:-} == main && -n ${NEUTRAL_VOCAB_FILE:-} ]]\n' >"$t/tree/scripts/lint.sh"; chmod +x "$t/tree/scripts/lint.sh"
 	chk pass "the lint of the release commit requires the vocabulary" env NEUTRAL_VOCAB_FILE="$t/voc" bash -c "$(declare -f lint_tree); lint_tree '$t/tree'"
+	# the bump edits the figure waivers: a run of the tree before it is still evidence for the tree after it, and a change of a build input is not
+	local r=$t/guarded
+	mkdir -p "$r/src" "$r/scripts" && ( cd "$r" && git init -q && echo a >src/a.c && echo a >scripts/bench-cases.allow && git add -A && env "${gid[@]}" git commit -q -m base )
+	chk pass "a change of the figure waivers leaves the build inputs as they were" bash -c 'cd "$1" && echo b >scripts/bench-cases.allow && git diff --quiet HEAD -- "${@:2}"' _ "$r" "${GUARDED[@]}"
+	chk fail "a change of a source file does not" bash -c 'cd "$1" && echo b >src/a.c && git diff --quiet HEAD -- "${@:2}"' _ "$r" "${GUARDED[@]}"
 	printf '# reasons\nfigure A line\twhy\nORDER BY offset\tcase x\nfigure B line\twhy\ncommit abc\tgate\n' >"$t/allow"
 	drop_figure_waivers "$t/allow"
 	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"
@@ -169,9 +177,7 @@ fi
 
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
-# the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs)
 CI_SKIPPED='ci: SKIPPED by --skip-ci (no green full-scope run required)'
-GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 soft() { if [[ -n $DRY ]]; then log "dry run, would stop: $*"; else die "$*"; fi; }	# a precondition of the real release, a note in a dry run
 
