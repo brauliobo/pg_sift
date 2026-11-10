@@ -451,6 +451,13 @@ sift_colw_budget(Size mem, int resident_pct, Size base)
 
 /* The bytes of a row of a segment that sift_colw_memory counts for it, at its peak */
 Size
+sift_colw_leaves_memory(int leaves, int ords, bool grouped)
+{
+	/* a leaf keeps a key and a row or address (16 bytes), a grouped order the group and its flag (9) besides; the end builds one leaf at a time: 24 bytes an entry of an order, 32 of a directory */
+	return leaves ? (Size) leaves * 16 + (grouped ? (Size) ords * 9 : 0) + 24 + 32 : 0;
+}
+
+Size
 sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 {
 	int			leaves = 0,
@@ -461,8 +468,7 @@ sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 		leaves += spec->point[c] || spec->point_tid[c] || spec->gorder[c];
 		ords += spec->gorder[c] != 0;
 	}
-	/* a leaf keeps a key and a row or address (16 bytes), a grouped order the group and its flag (9) besides; the end builds one leaf at a time: 24 bytes an entry of an order, 32 of a directory */
-	return leaves ? ((Size) leaves * 16 + (spec->gorder_group > 0 ? (Size) ords * 9 : 0) + 24 + 32) : 0;
+	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);
 }
 
 Size

@@ -78,6 +78,7 @@ extern Size sift_colw_memory(const SiftColSegWriter *w);
 extern bool sift_colw_full(const SiftColSegWriter *w, Size budget);
 /* An upper bound of the bytes of memory a writer with this spec holds for each row of a segment: its accumulators for the point directories and order arrays and the arrays the end of the segment builds from them (what sift_colw_memory counts) */
 extern Size sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols);
+extern Size sift_colw_leaves_memory(int leaves, int ords, bool grouped);	/* ... of a table that has that many leaves, of them ords order arrays */
 extern Size sift_colw_budget(Size mem, int resident_pct, Size base);
 #define SIFT_COLW_BUILD_PCT 140
 #define SIFT_COLW_BUILD_BASE ((Size) 30 * 1024 * 1024)

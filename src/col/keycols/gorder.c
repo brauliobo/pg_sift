@@ -5,6 +5,7 @@
 
 #include <math.h>
 
+#include "miscadmin.h"
 #include "utils/lsyscache.h"
 #include "utils/varlena.h"
 #include "col/am.h"
@@ -26,7 +27,25 @@ typedef struct GordCand
 	double		write;
 	double		benefit;		/* B and C of the choice of a text column, said by the NOTICE */
 	double		cost;
+	double		nullfrac;		/* the share of the rows with no value: the table of groups of its array is packed only where a segment has no NULL key */
 } GordCand;
+
+/*
+ * The bytes a row of the table of groups of an array grouped by ndist values in a table of rows rows. Every segment holds a table of the groups it has (about seg rows of the table: a segment
+ * of 227,000 rows has 85,000 of 93,000 values), 24 bytes a group, or from SIFT_CGORD_GRP_PACK_MIN groups on, with no NULL key in the segment, the bits of the distance of a group from
+ * the first (those of its values) and of the start of its entries (those of the rows of the segment), as sift_cgord_grp_pack writes it. seg: the rows of a segment, from the memory a build
+ * has (sift_colw_budget) and the bytes a row takes in the writer of narrays order arrays
+ */
+static double
+gord_table_row_bytes(double rows, double ndist, double nullfrac, int narrays)
+{
+	double		seg = Max(Min(rows, (double) sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_BUILD_PCT, SIFT_COLW_BUILD_BASE) /
+							  Max(sift_colw_leaves_memory(narrays, narrays, true), 1)), 1.0),
+				groups = ndist * (1.0 - exp(-seg / Max(ndist, 1.0)));
+	bool		packed = groups >= SIFT_CGORD_GRP_PACK_MIN && nullfrac * seg < 1.0;
+
+	return groups * (packed ? (ceil(log2(Max(ndist, 2.0))) + ceil(log2(seg + 1.0))) / 8.0 : SIFT_CGORD_GRPENT) / seg;
+}
 
 static int
 gord_cand_cmp(const void *a, const void *b)
@@ -173,7 +192,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		ties = !nofit && ndistinct < GORD_AUTO_DISTINCT;
 		if (((ties || nofit) && (text || !sift_cgord_leaf_time(d) || ndistinct < 2)) || (nofit && !sift_cgord_leaf_ok(rel->schema, d)))
 			continue;
-		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d) && !point, point, cr, 0, 0, 0, 0};
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, ties, nofit, sift_cgord_leaf_ok(rel->schema, d) && !point, point, cr, 0, 0, 0, 0, keycols_col_nullfrac(heap, hatt)};
 		if (ties)
 		{
 			double		rows = keycols_heap_rows(heap),
@@ -274,21 +293,25 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	}
 	/*
 	 * the second order against the build and the size it adds, as for a text array: B = log2(S) / log2(1.05), C = G / 3 + W / 5. G is what it writes: GORD_GROUP_BYTES an entry of each grouped array and the
-	 * directory of the groups (SIFT_CGORD_GRPENT bytes for each of them, so a few rows an entity cost it), less the array the entity does not get any more
+	 * table of the groups of each segment (gord_table_row_bytes: a few rows an entity cost it), less the array the entity does not get any more
 	 */
 	if (grp >= 0)
 	{
 		double		bytes = 0;
-		int			ngrouped = 0;
+		int			ngrouped = 0,
+					narrays = 0;
 
 		for (int i = 0; i < ncand; i++)
+		{
+			narrays += fit[i] || cand[i].time;
 			if (cand[i].leaf == grp && fit[i])
 				bytes -= GORD_ENDS_BYTES;
+		}
 		/* one array at a time, the dates and timestamps first: an array has a second order while the whole still pays (a narrow index can afford one where it cannot afford all) */
 		for (int pass = 0; pass < 2; pass++)
 			for (int i = 0; i < ncand; i++)
 			{
-				double		more = bytes + GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+				double		more = bytes + GORD_GROUP_BYTES + gord_table_row_bytes(keycols_heap_rows(heap), keycols_heap_rows(heap) / Max(gdepth, 1.0), cand[i].nullfrac, narrays);
 
 				if (cand[i].leaf == grp || !cand[i].grouped || !(fit[i] || cand[i].time) || cand[i].time != (pass == 0) || ngrouped >= SIFT_CGORD_ENDS_LEAVES)
 					continue;
@@ -380,11 +403,19 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		 */
 		if (tkey >= 0 && egrp >= 0)
 		{
-			double		bytes = GORD_GROUP_BYTES + SIFT_CGORD_GRPENT / Max(gdepth, 1.0);
+			double		bytes = GORD_GROUP_BYTES;
+			double		knull = 0;
+			int			narrays = 0;
 
 			for (int i = 0; i < ncand; i++)
+			{
+				narrays += fit[i] || cand[i].time;
+				if (cand[i].leaf == tkey)
+					knull = cand[i].nullfrac;
 				if (fit[i] && !cand[i].text && !cand[i].point)
 					bytes -= GORD_ENDS_BYTES;
+			}
+			bytes += gord_table_row_bytes(keycols_heap_rows(heap), keycols_heap_rows(heap) / Max(gdepth, 1.0), knull, narrays);
 			if (log2(GORD_GROUP_SPEEDUP) / log2(1.05) <= bytes / index_bytes * 100.0 / 3.0 + GORD_GROUP_WRITE / 5.0)
 				tkey = -1;
 		}
