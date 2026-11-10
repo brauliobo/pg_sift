@@ -174,6 +174,7 @@ typedef struct AggCtx
 	Bitmapset  *txt_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
+	struct ScopeTake *scope_take;	/* the join to the scope relation the second pass took out of the FROM list (plan_scope.c); NULL: none */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
@@ -290,8 +291,28 @@ typedef struct LeftJoin
 	Relids		tree;			/* a semi or anti join to a tree of joined tables: the relids of the join PostgreSQL planned for it; rti is its one table the ON clause reads */
 } LeftJoin;
 
+/*
+ * The second pass over a statement that joins the scope relation of a scope index (plan_scope.c): the join is taken out of the FROM list and its conditions are the scope
+ * conjunct of the scan (SiftAggScope), which the price of the pass weighs against the first pass's join.
+ */
+typedef struct ScopeTake
+{
+	bool		try;			/* the first pass scanned an index that declares scopes and joined tables to it: a second pass may take a join out */
+	bool		second;			/* this is the second pass: it scans as the first did (skip, flip) */
+	int			skip;
+	bool		flip;
+	Index		rti;			/* what the pass took out: the scope relation, or the view over it (0: nothing yet) */
+	const char *key_name;
+	Var		   *fk;				/* the member key of the scanned table the join equated to the scope relation's member column */
+	bool		once;			/* a semi join: a row counts once whichever of the keys it has */
+	int			nkeys;
+	int64	   *keys;
+	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them */
+} ScopeTake;
+
 typedef struct FromScan
 {
+	struct ScopeTake *scope;	/* the second pass of a statement over a scope index: take the scope join out (scope_take) */
 	List	   *rtis;			/* range table indexes, in FROM order */
 	List	   *quals;
 	List	   *scan_quals;		/* conditions inside the nullable scanned input, before preservation */
@@ -564,8 +585,11 @@ extern void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 
 extern bool agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs);
 extern SiftAggSpec *agg_spec_new(AggCtx *c);
-extern void sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
+/* plan_scope.c: the scope conjunct of the scan into s->scope, from the marker in the conjuncts or from the join the second pass took out (false: it has none to take); a scan that builds its spec in another way reads none */
+extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
+extern bool sift_agg_scope_wanted(AggCtx *c);
+extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern bool spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys);
 extern void agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel,

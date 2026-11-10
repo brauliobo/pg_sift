@@ -37,11 +37,12 @@ groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
 
 /*
  * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
- * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
+ * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target). The second pass of a
+ * statement over a scope index (scope->second) scans as the first did, with the join to the scope relation taken out of the FROM list.
  */
 static void
-group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others,
-				 bool *flippable)
+group_paths_one(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others,
+				bool *flippable, ScopeTake *scope)
 {
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
@@ -54,7 +55,15 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 			   *firsts = NIL;
 	bool		lead = true;
 
-	if (skip == FLIP_SCAN)
+	if (scope->second)
+	{
+		fs.skip = scope->skip;
+		fs.flip = scope->flip;
+		fs.scope = scope;
+		if (!agg_base(c, root, input_rel, &fs))
+			return;
+	}
+	else if (skip == FLIP_SCAN)
 	{
 		fs.flip = true;
 		if (!agg_base(c, root, input_rel, &fs))
@@ -75,6 +84,9 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 		if (!agg_base(c, root, input_rel, &fs))
 			return;
 	}
+	scope->skip = fs.skip;
+	scope->flip = fs.flip;
+	scope->try = !scope->second && sift_agg_scope_wanted(c);
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
@@ -90,8 +102,7 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 				return;
 		}
 	}
-	sift_agg_scope_extract(c, s, &fs);
-	if (!agg_quals(c, s, &fs))
+	if (!sift_agg_scope_extract(c, s, &fs) || !agg_quals(c, s, &fs))
 		return;
 
 	/* keys */
@@ -169,6 +180,20 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 	group_topn(root, s, ow.aggs, groupClause, gextra);
 	c->having_sel = gextra && gextra->havingQual ? Max(clauselist_selectivity(root, (List *) gextra->havingQual, 0, JOIN_INNER, NULL), 1e-9) : 0;
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
+}
+
+/* group_paths_one, and a second time over the scope index the first pass scanned, with its join to the scope relation taken out (sift_agg_scope_take): the prices choose */
+static void
+group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others,
+				 bool *flippable)
+{
+	ScopeTake	scope = {0};
+
+	group_paths_one(root, input_rel, output_rel, target, gextra, groupClause, skip, others, flippable, &scope);
+	if (!scope.try)
+		return;
+	scope.second = true;
+	group_paths_one(root, input_rel, output_rel, target, gextra, groupClause, skip, others, flippable, &scope);
 }
 
 /*

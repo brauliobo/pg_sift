@@ -31,10 +31,29 @@ smaller again with `cols(created_at)`; the entries are the same.
 A scan of the index with a scope conjunct (the rows whose member has a pair with a key) reads the scope units of those keys, less the members that changed in the relation of pairs since the
 stamp of the units (the journal says which), plus the entity rows of those of them that have a pair with a key now (the patch), and the rows of the write buffers' members the same way. A statement
 that the scope cannot answer reads the entity rows of the members the relation lists for the keys; the answer is the join's in every case (the tests compare md5 against the plain join after every
-state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). In this release the scan takes the scope conjunct from the marker
-`sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join); the planner's recognition of the join forms (`JOIN scope_rel USING
-(member) WHERE scope_key = k`, `member IN (SELECT member FROM scope_rel WHERE scope_key = k)`, `EXISTS`, `GROUP BY` the key) is a separate piece of the 5.0 work, and until it lands a release
-build has the declaration, the segments and the journal but no statement that reads them.
+state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). The scan takes the scope conjunct from the join the way an application writes it
+(the recognition below), or from the marker `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join).
+
+## What the planner recognises
+
+A statement that joins the scanned table to the scope relation of one of its scope indexes is planned twice: as written, and with that join taken out of the `FROM` list and its two
+conditions, the equality of the member column with the declared column of the table and the binding of the scope key, made the scope conjunct of the scan (`EXPLAIN`: `Scope Index`). The
+estimated costs of the two plans choose: the scope read leaves the share of the rows that the pairs of the keys own (`pg_stats` of the key column of the relation, the most common keys by their
+own frequency) of the distinct members of the table, where the join's key filter on the member column leaves the units that hold a member of the keys, most of them for facts ordered by time. The
+rows are those of the join in every case; whether the index may be read at execution is the reader's verdict (`Scope Fallback`).
+
+| form | counts a row | recognised |
+|---|---|---|
+| `JOIN scope_rel s ON s.member = f.fk WHERE s.scope_key = k` (also `IN (k1, k2)` with one distinct key) | once for each pair | yes |
+| `f.fk IN (SELECT member FROM scope_rel WHERE scope_key = k or IN (list))`, `EXISTS`, a CTE of the members, a set-returning SQL function of them | once | yes, any number of constant keys |
+| the same through a view, a security barrier view that projects the two columns, an inlined `STABLE` SQL function | as written | yes |
+| `JOIN` with several keys | once for each pair | no: a member whose pairs changed needs the join, which counts them |
+| `GROUP BY` the scope key or any other column of the relation read | | no: the units give the rows, not the pair |
+| a table or sub-select of keys, a parameter of a generic plan (the custom plan has the constant) | | no: the keys are constants |
+| another condition on the relation, a view with a condition, `DISTINCT` or a join inside the sub-select, `NOT EXISTS`, an outer join, row-level security on the relation | | no |
+
+A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
+`ORDER BY .. LIMIT` and the aggregates are the scan's as ever.
 
 **Many to many.** A member may be in several keys: a fact has one entry for each. A read of one key counts each fact of a member that has the pair once. A read of several keys with the meaning of
 `IN` or `EXISTS` counts a fact once whichever of the keys its member has (`Scope Semantics: once`): the units of all but the least key of a member leave the member's facts out, from lists the read
@@ -119,16 +138,16 @@ make; they differ in what they keep.
 | writes to the facts | none beyond the index's (the write buffer of the index; the pairs are read through their journal) | a statement trigger applies the change to the copy in the statement |
 | writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
 | a pair table that is a view | no: the pairs are a table with a unique btree | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
-| the planner uses it | not in this release: the planner's recognition of the join forms is a separate piece of 5.0 | the copy is a table: `WHERE tenant_id = k` on it, today |
+| the planner uses it | the join forms of the statement, as the application writes them (the recognition above) | the copy is a table: `WHERE tenant_id = k` on it |
 | state | EXPERIMENTAL | released API (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
 
-Use the copy today, for a request that names the key and wants the rows of the key by a plain query on a table. Use the index when the facts must stay one table (no second copy to size, to vacuum and to
-keep by triggers on the write path) and the planner's recognition has landed, or to measure it. The copy stores a fact once for each key of its member, so it grows with that figure (refused above 3
+Use the copy for a request that names the key and wants the rows of the key by a plain query on a table. Use the index when the facts must stay one table (no second copy to size, to vacuum and to
+keep by triggers on the write path). The copy stores a fact once for each key of its member, so it grows with that figure (refused above 3
 copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.scope_max_multiplicity`.
 
 ## Limits
 
 EXPERIMENTAL; one constant key or a list of constants per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning need the join once a member changed; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join; a key that is a parameter of a generic plan, a table of keys and a `GROUP BY` the key are not recognised; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
 by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

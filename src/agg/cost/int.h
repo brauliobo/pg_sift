@@ -89,5 +89,6 @@ extern double lookup_sure(AggCtx *c, const JoinCtx *jc);
 extern bool lookup_guessed(AggCtx *c, const JoinCtx *jc);
 extern bool filter_has_stats(PlannerInfo *root, RestrictInfo *ri);
 extern bool lookup_counted(AggCtx *c, const JoinCtx *jc);
+extern double scope_share(AggCtx *c, const SiftAggSpec *s);
 
 #endif							/* SIFT_AGG_COST_INT_H */

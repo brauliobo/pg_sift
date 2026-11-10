@@ -313,7 +313,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
-	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
+	k.sel_rows = Max(Min(Max(c->rel->rows, 1.0), k.rows) * scope_share(c, s), 1.0);
 	if (!pricing_scratch)
 		agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));

@@ -477,7 +477,7 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters, double *key_share)
 	kept = Min(kept, set_kept(c, s));
 	foreach_ptr(SiftAggPred, p, rest)
 		kept = Min(kept, p->kind == SAP_TID ? p->sel : pred_zone_kept(c, p));
-	return kept;
+	return Min(kept, scope_share(c, s));
 }
 
 /*

@@ -255,8 +255,9 @@ sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel)
 		}
 }
 
-void
-topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
+/* the top-N path of the rows of one scan; the second pass over a scope index (scope->second) has the join to the scope relation taken out of the FROM list */
+static void
+topn_paths_one(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel, ScopeTake *scope)
 {
 	RelOptInfo *input_rel = window_rel;
 	Query	   *parse = root->parse;
@@ -309,8 +310,10 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		agg_refused_on(TOPN_SHAPE, "the window functions are not over the rows of one scan");
 		return;
 	}
+	fs.scope = scope->second ? scope : NULL;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
+	scope->try = !scope->second && sift_agg_scope_wanted(c);
 	if (c->func_rti != 0 || !topn_lefts_ok(fs.lefts) ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) :
 		  sift_colsrc_can_tids(get_rel_relam(agg_src_table(c)), false)))
@@ -328,8 +331,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
-	sift_agg_scope_extract(c, s, &fs);
-	if (!agg_quals(c, s, &fs))
+	if (!sift_agg_scope_extract(c, s, &fs) || !agg_quals(c, s, &fs))
 		return;
 	if (s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))
 	{
@@ -501,4 +503,16 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_frac = 1.0;
 	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, lookup_spec, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nkey, count + offset);
+}
+
+void
+topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
+{
+	ScopeTake	scope = {0};
+
+	topn_paths_one(root, window_rel, output_rel, &scope);
+	if (!scope.try)
+		return;
+	scope.second = true;
+	topn_paths_one(root, window_rel, output_rel, &scope);
 }
