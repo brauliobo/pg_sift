@@ -1,4 +1,4 @@
--- Custom Scan (SiftAgg) asks the point directory (point_columns: the rows of the segment; point_tid_columns: heap addresses) for the rows of a short IN list, an
+-- Custom Scan (SiftAgg) asks the point directory (point_tid_columns: the rows of the segment; point_tid_columns: heap addresses) for the rows of a short IN list, an
 -- equality, a short range and the keys of an inner or semi lookup join: a unit that holds none is not read, and one that does goes on as those rows alone
 -- ("Units From Point Directory" of EXPLAIN ANALYZE). The directory lists the rows whose fingerprint matches, so every conjunct still runs on them: the rows are
 -- those of the normal plan over NULLs, duplicates, text, DML in and out of the transaction, VACUUM, the write buffer, a merge and parallel workers.
@@ -24,7 +24,7 @@ CREATE TABLE pk_t AS TABLE src;
 CREATE TABLE pk_r AS TABLE src;
 CREATE TABLE pk_n AS TABLE src;
 CREATE INDEX pk_t_col ON pk_t USING sift_col (k, s, d, v) WITH (point_tid_columns = 'k, s');
-CREATE INDEX pk_r_col ON pk_r USING sift_col (k, s, d, v) WITH (point_columns = 'k, s');
+CREATE INDEX pk_r_col ON pk_r USING sift_col (k, s, d, v) WITH (point_tid_columns = 'k, s');
 CREATE INDEX pk_n_col ON pk_n USING sift_col (k, s, d, v);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) pk_t, pk_r, pk_n, dim;
 

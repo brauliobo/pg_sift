@@ -20,7 +20,7 @@ INSERT INTO dh
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 97 = 0 THEN '' WHEN i % 89 = 0 THEN repeat('long', 20 + i % 7) || i ELSE 'k' || md5(i::text) END,
 	   CASE WHEN i % 53 = 0 THEN NULL ELSE md5((i % 4000)::text)::uuid END, 'v' || (i % 1500)
 FROM generate_series(1, 6000) i;
-CREATE INDEX dh_idx ON dh USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, f sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's,u,f', dict_lookup = 'on', write_buffer_limit = 256);
+CREATE INDEX dh_idx ON dh USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, f sift.col_text_ops, id sift.col_int4_ops) WITH (point_tid_columns = 's,u,f', dict_lookup = 'on', write_buffer_limit = 256);
 INSERT INTO dh SELECT i, 'k' || md5(i::text), md5((i % 4000)::text)::uuid, 'v' || (i % 1500) FROM generate_series(6001, 9000) i;
 SELECT sift.col_promote('dh_idx') > 0 AS promoted;
 INSERT INTO dh SELECT i, 'k' || md5(i::text), md5(i::text)::uuid, 'w' || i FROM generate_series(9001, 12000) i;

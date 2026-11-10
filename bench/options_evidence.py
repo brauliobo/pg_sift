@@ -247,10 +247,6 @@ def col_pair(db, key, exp, n, idx_a, idx_b, query, extra_write=True):
 BASE = 'CREATE INDEX {i} ON {t} USING sift_col (id, k, g, v, s, d) %s'
 
 
-def exp_point_columns(db, n):
-    col_pair(db, 'sift_col(point_columns)', 'point_columns none/k', n, BASE % '', BASE % "WITH (point_columns = 'k')", 'SELECT count(*) FROM {t} WHERE k IN (17, 4242, 3)')
-
-
 def exp_dead_rewrite(db, n):
     """update 30% of the rows, VACUUM: the rows of the units that carry a dead row against a lone segment rewritten"""
     fresh(db, 'oe_src', 'oe_a', 'oe_b')
@@ -346,7 +342,7 @@ def exp_prefetch(db, n):
     fresh(db, 'oe_src', 'oe_a')
 
 
-EXPS = {'text': exp_text, 'keyword': exp_keyword, 'fields': exp_fields, 'merge_fanin': exp_merge_fanin, 'point_columns': exp_point_columns,
+EXPS = {'text': exp_text, 'keyword': exp_keyword, 'fields': exp_fields, 'merge_fanin': exp_merge_fanin,
         'dead_rewrite': exp_dead_rewrite, 'vis_page_cache': exp_vis_page_cache, 'compression': exp_compression, 'key_columns': exp_key_columns, 'key_columns_named': exp_key_columns_named, 'table': exp_table,
         'prefetch': exp_prefetch, 'async': exp_async, 'switches': exp_switches}
 

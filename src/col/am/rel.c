@@ -241,15 +241,6 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				else if (r->pagg.set[i])
 					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is in key_columns, which keeps its distinct keys exactly", names[i])));
 			}
-		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
-		/* point_columns is deprecated: its leaves get the directory of heap addresses, which answers the same lookups with no unit read */
-		for (int i = 0; i < n && !sift_col_legacy_options; i++)
-			if (r->pagg.point[i])
-			{
-				r->pagg.point_tid[i] = true;
-				r->pagg.point[i] = false;
-			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
@@ -260,7 +251,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		r->pagg.dict_hash = sift_col_options(index)->dict_lookup != SIFT_COL_DICT_OFF;
 		for (int i = 0; i < n; i++)
 			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||
-				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));
+				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point_tid[i]));
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
 				r->pagg.lookup[r->first[a]] = true;

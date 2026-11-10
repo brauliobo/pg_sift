@@ -10,7 +10,7 @@ ALTER TABLE prx ALTER COLUMN pad SET STORAGE PLAIN;
 -- small: 7,000 keys; neg: negative and positive 20-bit keys; wide: keys 2^40 apart; same: one key
 INSERT INTO prx (id, small, neg, wide, same, v)
 SELECT i, i % 7000, (i * 7919 % 1000003) - 500000, (i % 9000)::bigint << 40, 42, i % 7 FROM generate_series(1, 40000) i;
-CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_columns = 'small, neg, wide, same', rollup_columns = 'off');
+CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_tid_columns = 'small, neg, wide, same', rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) prx;
 SELECT sift.col_verify('prx_ix', true);
 

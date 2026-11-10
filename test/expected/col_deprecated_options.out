@@ -55,56 +55,47 @@ SELECT reloptions FROM pg_class WHERE relname IN ('dp_rows', 'dp_plain') ORDER B
 (2 rows)
 
 DROP INDEX dp_rows, dp_plain;
--- point_columns: its leaves are listed as heap addresses, which an equality reads with no unit read, where the rows form reads the unit of each row
+-- point_columns (removed in 4.4) is accepted and ignored: it lists nothing, where point_tid_columns lists the heap addresses that an equality reads with no unit read
 CREATE TABLE dq (id int, uid int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dq SELECT i, (i::bigint * 7919 % 40009)::int, md5(i::text) FROM generate_series(1, 40000) i;
 VACUUM (FREEZE, ANALYZE) dq;
-SET sift.test_col_legacy_options = on;
-CREATE INDEX dq_rows ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', key_cut = 'off');
-NOTICE:  sift_col index "dq_rows": 1 advice (track_changes)
-SELECT dp_choice('dq_rows', 'point_columns') IS NULL AS legacy_says_nothing;
- legacy_says_nothing 
----------------------
- t
-(1 row)
-
-SET sift.test_col_legacy_options = off;
-CREATE INDEX dq_addr ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', key_cut = 'off');
-NOTICE:  sift_col index "dq_addr" stores columns id, uid, pad of index "dq_rows", which has the same layout
-NOTICE:  sift_col index "dq_addr": 2 advice (track_changes, point_columns)
-NOTICE:  sift_col index "dq_addr" is column format minor 33, which a library before 3.7 cannot read
+CREATE INDEX dq_ignored ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', point_tid_columns = 'off', key_cut = 'off');
+NOTICE:  reloption "point_columns" was removed in 4.4 and is ignored
+NOTICE:  sift_col index "dq_ignored": 1 advice (track_changes)
+CREATE INDEX dq_none ON dq USING sift_col (id, uid, pad) WITH (point_tid_columns = 'off', key_cut = 'off');
+NOTICE:  sift_col index "dq_none" stores columns id, uid, pad of index "dq_ignored", which has the same layout
+NOTICE:  sift_col index "dq_none": 1 advice (track_changes)
 CREATE INDEX dq_tid ON dq USING sift_col (id, uid, pad) WITH (point_tid_columns = 'uid', key_cut = 'off');
-NOTICE:  sift_col index "dq_tid" stores columns id, uid, pad of index "dq_rows", which has the same layout
+NOTICE:  sift_col index "dq_tid" stores columns id, uid, pad of index "dq_ignored", which has the same layout
 NOTICE:  sift_col index "dq_tid": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "dq_tid" is column format minor 33, which a library before 3.7 cannot read
 SELECT i AS idx, c.units > 0 AS reads_units, c.rows_scanned
-FROM unnest(ARRAY['dq_rows', 'dq_addr', 'dq_tid']) i, LATERAL sift._test_col_counters(i::regclass, '1:eq:7919', 24) c ORDER BY 1;
-   idx   | reads_units | rows_scanned 
----------+-------------+--------------
- dq_addr | f           |            0
- dq_rows | t           |        27392
- dq_tid  | f           |            0
+FROM unnest(ARRAY['dq_ignored', 'dq_none', 'dq_tid']) i, LATERAL sift._test_col_counters(i::regclass, '1:eq:7919', 24) c ORDER BY 1;
+    idx     | reads_units | rows_scanned 
+------------+-------------+--------------
+ dq_ignored | t           |        40000
+ dq_none    | t           |        40000
+ dq_tid     | f           |            0
 (3 rows)
 
-SELECT pg_relation_size('dq_addr') = pg_relation_size('dq_tid') AS same_size_as_point_tid;
- same_size_as_point_tid 
-------------------------
+SELECT pg_relation_size('dq_ignored') = pg_relation_size('dq_none') AS same_size_as_without;
+ same_size_as_without 
+----------------------
  t
 (1 row)
 
-SELECT dp_choice('dq_addr', 'point_columns');
-                   dp_choice                   
------------------------------------------------
- advice: now point_tid_columns, removed in 5.0
-(1 row)
-
-SELECT dp_choice('dq_tid', 'point_columns') IS NULL AS no_advice_without;
- no_advice_without 
+ALTER INDEX dq_ignored SET (cube_minmax = true);
+NOTICE:  reloption "point_columns" was removed in 4.4 and is ignored
+REINDEX INDEX dq_ignored;
+NOTICE:  sift_col index "dq_ignored" stores columns id, uid, pad of index "dq_none", which has the same layout
+NOTICE:  sift_col index "dq_ignored": 1 advice (track_changes)
+SELECT pg_relation_size('dq_ignored') = pg_relation_size('dq_none') AS reindex_same_size;
+ reindex_same_size 
 -------------------
  t
 (1 row)
 
-SELECT sift.col_verify('dq_addr');
+SELECT sift.col_verify('dq_ignored');
  col_verify 
 ------------
  
@@ -118,6 +109,13 @@ SELECT count(*), min(id) FROM dq WHERE uid = 7919;
 (1 row)
 
 RESET enable_seqscan; RESET enable_bitmapscan;
+ALTER INDEX dq_ignored RESET (point_columns);
+SELECT reloptions FROM pg_class WHERE relname = 'dq_ignored';
+                      reloptions                      
+------------------------------------------------------
+ {point_tid_columns=off,key_cut=off,cube_minmax=true}
+(1 row)
+
 DROP TABLE dq;
 -- order_columns: no sorted run is written; the order arrays answer the top-N, and an index that has runs keeps reading them
 CREATE TABLE dr (id int, ts timestamp, pad text) WITH (autovacuum_enabled = false);

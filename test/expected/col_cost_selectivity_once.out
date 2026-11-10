@@ -9,9 +9,9 @@ INSERT INTO sel_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
 CREATE TABLE sel_dim (id int PRIMARY KEY, n int);
 INSERT INTO sel_dim SELECT i, i FROM generate_series(0, 6) i;
 -- the point directory of k is what the estimate reads for an equality
-CREATE INDEX sel_fact_col ON sel_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_columns = 'off');
-NOTICE:  sift_col index "sel_fact_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+CREATE INDEX sel_fact_col ON sel_fact USING sift_col (id, k, v) WITH (key_cut = k, point_tid_columns = 'k', rollup_columns = 'off');
+NOTICE:  sift_col index "sel_fact_col": 2 advice (point_tid_columns, track_changes)
+DETAIL:  advice: point_tid_columns = k; advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sel_fact_col');
 ANALYZE sel_fact;
 ANALYZE sel_dim;

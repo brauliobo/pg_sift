@@ -13,9 +13,9 @@ INSERT INTO rt SELECT hashint8extended(g, 1) & 4611686018427387903, 'k' || md5(g
 ANALYZE rt;
 -- addresses of an integer leaf, rows of a text leaf with its dictionary read in place, an order array
 SET sift.test_col_point_unrooted = on;
-CREATE INDEX rt_old ON rt USING sift_col (id, s, d) WITH (key_cut = 'off', point_tid_columns = 'id', point_columns = 's', order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX rt_old ON rt USING sift_col (id, s, d) WITH (key_cut = 'off', point_tid_columns = 'id, s', order_columns = 'd', order_array_columns = 'd');
 RESET sift.test_col_point_unrooted;
-CREATE INDEX rt_new ON rt USING sift_col (id, s, d) WITH (key_cut = 'off', point_tid_columns = 'id', point_columns = 's', order_columns = 'd', order_array_columns = 'd');
+CREATE INDEX rt_new ON rt USING sift_col (id, s, d) WITH (key_cut = 'off', point_tid_columns = 'id, s', order_columns = 'd', order_array_columns = 'd');
 SELECT ix, min(format) AS min_minor, max(format) AS max_minor, count(*) AS segments
 FROM (SELECT 'old' ix, format FROM sift.col_segments('rt_old') WHERE kind = 'immutable' UNION ALL SELECT 'new', format FROM sift.col_segments('rt_new') WHERE kind = 'immutable') x
 GROUP BY ix ORDER BY ix;

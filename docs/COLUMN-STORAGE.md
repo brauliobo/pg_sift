@@ -14,11 +14,11 @@ Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the 
 
 An equality, an `IN` list or a short range on a column of many distinct values.
 
-- **`point_columns`** (deprecated in 4.3, removed in 5.0).
-  - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. A build now lists the columns it names in the directory of heap addresses (`point_tid_columns`), which reads no unit; the segments already written are read as before.
+- **`point_columns`** (removed in 4.4, still accepted).
+  - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. It is accepted and ignored; `point_tid_columns` lists the heap addresses of the rows of its columns, which reads no unit; the segments already written are read as before.
   - **Why**: the directory of addresses is within 3% of its size and reads fewer instructions in every shape measured (integer equality 0.119 to 0.020 ms on 200,000 rows with the rows form, 0.013 ms with addresses; a b-tree 0.006 ms), case `point_in_100`.
-  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX` and `REINDEX` say so once (`point-columns-deprecated`).
-  - **Message**: `point-columns-deprecated`, `point-tid-key-cut`.
+  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX`, `ALTER INDEX` and `REINDEX` say so in a `NOTICE` (`reloption-removed`).
+  - **Message**: `reloption-removed`, `point-tid-key-cut`.
 - **`point_tid_columns`** (opt-in; chosen by the default formula, below).
   - **What**: the same lookup, with the directory listing the heap addresses of the rows, so no unit is read.
   - **Default**: off. An equality on a unique id reads 1.67 M instructions with the key filter and 0.66 M with the addresses (2.51x), for +57.6% of the index and +3.6% of the build. Its segments are column format minor 37 or more, which only 3.7 and later read.
@@ -34,7 +34,7 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 - **Point directory in the aggregate scan** (automatic).
   - **What**: the aggregate scan asks the directory for the rows of a short `IN` list, an equality, a short range or the keys of an inner or semi lookup join, and reads only the units that hold them.
   - **Default**: on, costed: the planner prices the units the directory leaves, and keeps it off where it costs more than the zones. No format change, no growth.
-  - **Off**: `sift.enable_agg = off` turns the aggregate scan off; `RESET (point_columns)` and `RESET (point_tid_columns)` with a `REINDEX` drop the directory.
+  - **Off**: `sift.enable_agg = off` turns the aggregate scan off; `RESET (point_tid_columns)` with a `REINDEX` drops the directory.
   - **Measured**: `point_keys_agg` on 1,000,000 rows, 80.9 to 2.85 ms.
 
 ## Order and top-N
@@ -146,7 +146,7 @@ Text and other columns stored as a dictionary of distinct values.
 
 - **`dict_lookup`** (default `auto`, column format minor 14).
   - **What**: an equality, `IN` or prefix test reads a dictionary of 1,024 strings or more in place, from blocks of 64 strings, without parsing it whole.
-  - **Default**: `auto`: the order of the strings is 4 bytes a string (+10% to +70% of a one-column index), so only `point_columns`, `key_columns` and `return_columns` get it.
+  - **Default**: `auto`: the order of the strings is 4 bytes a string (+10% to +70% of a one-column index), so only `point_tid_columns`, `key_columns` and `return_columns` get it.
   - **Off**: `ALTER INDEX .. SET (dict_lookup = off)` stores no order; `sift.col_format_minor <= 13` writes neither the blocks nor the order.
   - **Measured**: first query of a new backend, 300,000 rows: uuid equality 12.1 to 0.43 ms, text equality 29.3 to 0.54 ms; case `dict_equality`.
 - **`sift.col_dict_shared_cache_kb`** (setting, 64 MB).

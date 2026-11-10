@@ -148,15 +148,11 @@ SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kin
 SELECT sift.col_verify('pt_r', true);
 DROP INDEX pt_t;
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
-ALTER INDEX pt_r RESET (point_tid_columns);
-ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 SET sift.col_format_minor = 14;
 REINDEX INDEX pt_r;
 RESET sift.col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
-ALTER INDEX pt_r RESET (point_columns);
-ALTER INDEX pt_r SET (point_tid_columns = 'k, s, u');
 SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
 REINDEX INDEX pt_r;
 SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';

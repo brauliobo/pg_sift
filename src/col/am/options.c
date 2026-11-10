@@ -146,7 +146,6 @@ SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
 SYNTAX_VALIDATOR(order_layout, sift_cgord_layout_parse(value, NULL, NULL, NULL))
 SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
 SYNTAX_VALIDATOR(hll_columns, sift_hll_syntax(value))
-SYNTAX_VALIDATOR(point_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 
@@ -535,7 +534,7 @@ sift_col_init(void)
 					   array_lengths_names, SIFT_COL_ARRLEN_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
-					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
+					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_tid_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
 					   dict_lookup_names, SIFT_COL_DICT_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
@@ -581,8 +580,8 @@ sift_col_init(void)
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
-						 "Deprecated, removed in 5.0: the plain integer, text and uuid columns whose rows every segment written from now on lists by value; a build lists them in the directory of heap addresses of point_tid_columns instead (default none)",
-						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
+						 "Removed in 4.4 and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (point_tid_columns lists the heap addresses of the rows of a column)",
+						 "", NULL, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "count_columns",
 						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
 						 "", sift_col_validate_count_columns, ShareUpdateExclusiveLock);
@@ -726,8 +725,8 @@ am_col_amoptions(Datum reloptions, bool validate)
 				sift_relopt_alias_notice("rollup", "rollup_leaves");
 			else if (strcmp(def->defname, "rollup_dims") == 0)
 				sift_relopt_alias_notice("rollup_dims", "rollup_columns");
-			else if (strcmp(def->defname, "key_cut_rows") == 0)
-				sift_relopt_removed_notice("key_cut_rows");
+			else if (strcmp(def->defname, "key_cut_rows") == 0 || strcmp(def->defname, "point_columns") == 0)
+				sift_relopt_removed_notice(def->defname);
 		}
 
 	if (validate && o && o->superunit == 1)
@@ -815,8 +814,6 @@ sift_col_alter_check(Relation index)
 
 
 COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
-
-COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 

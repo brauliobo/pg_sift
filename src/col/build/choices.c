@@ -549,12 +549,6 @@ d_hot_updates(Derive *d)
 		add(d, "hot-update-columns", cols.data, NULL);
 }
 
-static bool
-point_columns_set(Relation index)
-{
-	return *sift_col_options_point_columns(index) != '\0';
-}
-
 /* An option that 4.3 deprecated is accepted and ignored by the build, which decides by itself; each row says it once and the release that removes the option */
 static void
 d_deprecated(Derive *d)
@@ -565,7 +559,6 @@ d_deprecated(Derive *d)
 		bool		(*set) (Relation index);
 		const char *value;
 	} opts[] = {
-		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 4.4"},
 		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 4.4"},
 	};
 
@@ -574,11 +567,6 @@ d_deprecated(Derive *d)
 	for (int i = 0; i < lengthof(opts); i++)
 		if (opts[i].set(d->index))
 			add(d, opts[i].id, pstrdup(opts[i].value), NULL);
-	/* the directory of heap addresses that point_columns now asks for is a newer column format than the directory of rows */
-	if (point_columns_set(d->index))
-		for (int c = 0; c < d->defs.ncols; c++)
-			if (stats(d)[c].point_tid_units > 0)
-				need_minor(d, SIFT_COL_FORMAT_EXACTSLOT);
 }
 
 static void
@@ -619,7 +607,6 @@ static const struct
 	{"wildcard-keys-overflow", d_key_overflow},
 	{"foreign-key-not-indexed", d_foreign_keys},
 	{"hot-update-columns", d_hot_updates},
-	{"point-columns-deprecated", d_deprecated},
 	{"order-columns-deprecated", d_deprecated},
 	{"cube-dim-no-histogram", d_caps},
 	{"keys-bloom-filter", d_caps},

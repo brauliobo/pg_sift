@@ -22,7 +22,7 @@ vacuum freeze t;"""
 
 
 def at(size):
-    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v, {WIDE_COLS}) with (point_columns = 'id') where id <= {size * ROWS};"
+    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v, {WIDE_COLS}) with (point_tid_columns = 'id') where id <= {size * ROWS};"
 
 
 # The gate's units hold 8 rows, so the leaf statistics block (16 bytes of sample a unit and leaf) is near the 3% of the segment it may take and some sizes keep it, some

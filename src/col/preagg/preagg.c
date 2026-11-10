@@ -116,7 +116,7 @@ sift_cpagg_spec_keep(SiftCPaggSpec *spec, const SiftColSchema *s, const bool *ke
 		{
 			spec->absent[c] = true;
 			spec->set[c] = spec->pres[c] = spec->run[c] = spec->hll[c] = spec->gorder[c] = spec->gorder_only[c] = spec->gorder_with[c] = false;
-			spec->count[c] = spec->point[c] = spec->point_tid[c] = false;
+			spec->count[c] = spec->point_tid[c] = false;
 		}
 	if (spec->gorder_group > 0 && !kept[spec->gorder_group - 1])
 		spec->gorder_group = 0;

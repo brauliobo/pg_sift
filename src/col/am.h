@@ -254,7 +254,6 @@ extern void sift_col_validate_order_array_columns(const char *value);
 extern void sift_col_validate_order_layout(const char *value);
 extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
-extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
 extern void sift_col_validate_track_changes(const char *value);
 extern void sift_col_validate_connect(const char *value);

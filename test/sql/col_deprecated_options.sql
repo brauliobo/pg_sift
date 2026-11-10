@@ -28,25 +28,25 @@ ALTER INDEX dp_rows RESET (key_cut_rows);
 SELECT reloptions FROM pg_class WHERE relname IN ('dp_rows', 'dp_plain') ORDER BY relname;
 DROP INDEX dp_rows, dp_plain;
 
--- point_columns: its leaves are listed as heap addresses, which an equality reads with no unit read, where the rows form reads the unit of each row
+-- point_columns (removed in 4.4) is accepted and ignored: it lists nothing, where point_tid_columns lists the heap addresses that an equality reads with no unit read
 CREATE TABLE dq (id int, uid int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dq SELECT i, (i::bigint * 7919 % 40009)::int, md5(i::text) FROM generate_series(1, 40000) i;
 VACUUM (FREEZE, ANALYZE) dq;
-SET sift.test_col_legacy_options = on;
-CREATE INDEX dq_rows ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', key_cut = 'off');
-SELECT dp_choice('dq_rows', 'point_columns') IS NULL AS legacy_says_nothing;
-SET sift.test_col_legacy_options = off;
-CREATE INDEX dq_addr ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', key_cut = 'off');
+CREATE INDEX dq_ignored ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', point_tid_columns = 'off', key_cut = 'off');
+CREATE INDEX dq_none ON dq USING sift_col (id, uid, pad) WITH (point_tid_columns = 'off', key_cut = 'off');
 CREATE INDEX dq_tid ON dq USING sift_col (id, uid, pad) WITH (point_tid_columns = 'uid', key_cut = 'off');
 SELECT i AS idx, c.units > 0 AS reads_units, c.rows_scanned
-FROM unnest(ARRAY['dq_rows', 'dq_addr', 'dq_tid']) i, LATERAL sift._test_col_counters(i::regclass, '1:eq:7919', 24) c ORDER BY 1;
-SELECT pg_relation_size('dq_addr') = pg_relation_size('dq_tid') AS same_size_as_point_tid;
-SELECT dp_choice('dq_addr', 'point_columns');
-SELECT dp_choice('dq_tid', 'point_columns') IS NULL AS no_advice_without;
-SELECT sift.col_verify('dq_addr');
+FROM unnest(ARRAY['dq_ignored', 'dq_none', 'dq_tid']) i, LATERAL sift._test_col_counters(i::regclass, '1:eq:7919', 24) c ORDER BY 1;
+SELECT pg_relation_size('dq_ignored') = pg_relation_size('dq_none') AS same_size_as_without;
+ALTER INDEX dq_ignored SET (cube_minmax = true);
+REINDEX INDEX dq_ignored;
+SELECT pg_relation_size('dq_ignored') = pg_relation_size('dq_none') AS reindex_same_size;
+SELECT sift.col_verify('dq_ignored');
 SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*), min(id) FROM dq WHERE uid = 7919;
 RESET enable_seqscan; RESET enable_bitmapscan;
+ALTER INDEX dq_ignored RESET (point_columns);
+SELECT reloptions FROM pg_class WHERE relname = 'dq_ignored';
 DROP TABLE dq;
 
 -- order_columns: no sorted run is written; the order arrays answer the top-N, and an index that has runs keeps reading them

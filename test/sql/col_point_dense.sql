@@ -8,7 +8,7 @@ CREATE TABLE pdn (id int, u int, d int, v int, pad text DEFAULT repeat('x', 400)
 ALTER TABLE pdn ALTER COLUMN pad SET STORAGE PLAIN;
 -- u: a key of one row; d: 100 keys of 300 rows each, in every unit (a list of 10 of them expects 3,000 rows for each of the few units)
 INSERT INTO pdn (id, u, d, v) SELECT i, (i::bigint * 7919 % 30011)::int, i % 100, i % 7 FROM generate_series(1, 30000) i;
-CREATE INDEX pdn_ix ON pdn USING sift_col (id, u, d, v) WITH (key_columns = 'off', point_columns = 'u, d');
+CREATE INDEX pdn_ix ON pdn USING sift_col (id, u, d, v) WITH (key_columns = 'off', point_tid_columns = 'u, d');
 ANALYZE pdn;
 
 CREATE FUNCTION pdn_from_point(w text) RETURNS text LANGUAGE plpgsql

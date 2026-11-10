@@ -7,10 +7,12 @@ CREATE EXTENSION pg_sift_test;
 SET sift.test_col_legacy_options = on;
 CREATE TABLE bs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO bs SELECT g, 'key ' || md5(g::text) FROM generate_series(1, 30000) g;
-CREATE INDEX bs_idx ON bs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
-NOTICE:  sift_col index "bs_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+CREATE INDEX bs_idx ON bs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_tid_columns = 's', write_buffer_limit = 4096);
+NOTICE:  sift_col index "bs_idx": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('bs_idx');
+NOTICE:  sift_col index "bs_idx" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT count(*) > 0 AS has_segment FROM sift.col_segments('bs_idx'::regclass) WHERE kind = 'immutable';
  has_segment 
 -------------
@@ -117,9 +119,11 @@ SELECT bs_check('promoted again', 1);
 (1 row)
 
 REINDEX INDEX bs_idx;
-NOTICE:  sift_col index "bs_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "bs_idx": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('bs_idx');
+NOTICE:  sift_col index "bs_idx" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 SELECT bs_check('reindexed', 1);
              bs_check             
 ----------------------------------

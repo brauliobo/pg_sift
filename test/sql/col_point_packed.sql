@@ -6,7 +6,7 @@ SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;
 
--- one table of n rows of the shape per call, one index with the directory of the option (point_tid_columns: addresses, or point_columns: rows of the segment), and what the directory holds:
+-- one table of n rows of the shape per call, one index with the directory of the option (point_tid_columns), and what the directory holds:
 -- the bytes a row of its block, the layout (packed: the segment is minor 35, written before the root: minor 37 is col_point_root's), the keys of a sample all found with every row of the heap, 300 absent keys listing no more than the chance of a 16 bit fingerprint allows
 CREATE FUNCTION pk_probe(shape text, n int, opt text, unpacked bool DEFAULT false) RETURNS TABLE (shape_ text, rows int, bytes_a_row text, packed bool, all_found bool, absent_ok bool, verified bool) LANGUAGE plpgsql AS $$
 DECLARE b bigint; step int := greatest(n / 300, 1); lost bigint; extra bigint; fmt int; ix text := 'pk_i';
@@ -50,13 +50,9 @@ SELECT * FROM pk_probe('down', 20000, 'point_tid_columns = ''k''');
 SELECT * FROM pk_probe('extreme', 20000, 'point_tid_columns = ''k''');
 -- a key in a third of the rows is not packed (a bucket of 10,000 entries): the slots and a list, as before
 SELECT * FROM pk_probe('heavy', 30000, 'point_tid_columns = ''k''');
--- rows of the segment, not addresses
-SELECT * FROM pk_probe('dense', 20000, 'point_columns = ''k''');
-SELECT * FROM pk_probe('sparse', 20000, 'point_columns = ''k''');
-SELECT * FROM pk_probe('dupes', 30000, 'point_columns = ''k''');
 -- the slots, for the same shapes
 SELECT * FROM pk_probe('dense', 20000, 'point_tid_columns = ''k''', true);
-SELECT * FROM pk_probe('sparse', 20000, 'point_columns = ''k''', true);
+SELECT * FROM pk_probe('sparse', 20000, 'point_tid_columns = ''k''', true);
 -- few rows, and one
 SELECT * FROM pk_probe('dense', 40, 'point_tid_columns = ''k''');
 SELECT * FROM pk_probe('sparse', 3, 'point_tid_columns = ''k''');

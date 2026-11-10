@@ -73,9 +73,9 @@ SELECT plain_range > 0 AND sift._test_gorder_decoded(true) * 3 < plain_range AS 
 
 DROP INDEX gs_dec;
 SET sift.test_limits = 'gord_seek_pct=0';
-CREATE INDEX gs_old ON gs USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', point_columns = 'k', key_columns = 'off', key_cut = 'off');
+CREATE INDEX gs_old ON gs USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', point_tid_columns = 'k', key_columns = 'off', key_cut = 'off');
 SET sift.test_col_gorder_seek = on;
-CREATE INDEX gs_new ON gs USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', point_columns = 'k', key_columns = 'off', key_cut = 'off');
+CREATE INDEX gs_new ON gs USING sift_col (id, k, u) WITH (order_columns = 'k, u', order_array_columns = 'k, u', point_tid_columns = 'k', key_columns = 'off', key_cut = 'off');
 RESET sift.test_limits;
 RESET sift.test_col_gorder_seek;
 SELECT sift.col_verify('gs_old', true), sift.col_verify('gs_new', true);

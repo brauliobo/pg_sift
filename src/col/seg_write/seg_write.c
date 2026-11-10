@@ -220,7 +220,7 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
 		{
-			bool		want = !spec->lean && (spec->point[c] || spec->point_tid[c] || segw_elem_point(w, c));
+			bool		want = !spec->lean && (spec->point_tid[c] || segw_elem_point(w, c));
 			bool		ord = spec->gorder[c] && !spec->unordered;
 
 			if (want || ord)
@@ -478,7 +478,7 @@ sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 
 	for (int c = 0; c < ncols; c++)
 	{
-		leaves += spec->point[c] || spec->point_tid[c] || spec->gorder[c];
+		leaves += spec->point_tid[c] || spec->gorder[c];
 		ords += spec->gorder[c] != 0;
 	}
 	return sift_colw_leaves_memory(leaves, ords, spec->gorder_group > 0);

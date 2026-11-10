@@ -67,7 +67,7 @@ DROP TABLE dc;
 -- parse is not repeated for every test (it costs thousands of tests of the stream), and the answers do not change
 CREATE TABLE dl (id int, s text);
 INSERT INTO dl SELECT g, 'key ' || g FROM generate_series(1, 20000) g;
-CREATE INDEX dl_idx ON dl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's');
+CREATE INDEX dl_idx ON dl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_tid_columns = 's');
 SET sift.test_limits = 'dict_cache_kb=1';
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT sum(rows) AS rows, count(*) AS tests FROM generate_series(1, 100) l, LATERAL sift._test_col_counters('dl_idx', '1:eq:key ' || l * 7);

@@ -455,8 +455,6 @@ SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_
  21 | id IN (17,34,51,68,85,102,119,136,153,170,187,204,221,238,25 | t          | t
 (21 rows)
 
-ALTER INDEX pt_r RESET (point_tid_columns);
-ALTER INDEX pt_r SET (point_columns = 'k, s, u');
 SET sift.col_format_minor = 14;
 REINDEX INDEX pt_r;
 NOTICE:  sift_col index "pt_r": 1 advice (track_changes)
@@ -495,8 +493,6 @@ SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_
  21 | id IN (17,34,51,68,85,102,119,136,153,170,187,204,221,238,25 | t          | t
 (21 rows)
 
-ALTER INDEX pt_r RESET (point_columns);
-ALTER INDEX pt_r SET (point_tid_columns = 'k, s, u');
 SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
   kind   | object |                 command                 
 ---------+--------+-----------------------------------------

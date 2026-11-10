@@ -291,7 +291,7 @@ leaf_rows_per_value(Relation index, const SiftColDef *def, double rows)
 }
 
 /*
- * The key a workload looks rows up by (a leaf of point_columns, point_tid_columns or key_columns that is not unique) whose equality reads many units, when no
+ * The key a workload looks rows up by (a leaf of point_tid_columns or key_columns that is not unique) whose equality reads many units, when no
  * other leaf is ordered by the table: key_cut then keeps the key ordered through writes and merges and widens nothing. The same rule as the key_cut note of
  * sift.cluster_advice(). Returns the name of the leaf, or NULL.
  */
@@ -335,7 +335,7 @@ sift_col_key_cut_note(Relation index)
 		LeafClust	lc;
 
 		if (def->store != SIFT_COLS_INT || def->kind != SIFT_COLK_SCALAR || def->lane != 0 ||
-			!(rel->pagg.point[c] || rel->pagg.point_tid[c] || rel->pagg.pres[c] || rel->pagg.set[c]))
+			!(rel->pagg.point_tid[c] || rel->pagg.pres[c] || rel->pagg.set[c]))
 			continue;
 		leaf_clustering(seg, nseg, c, units, 0.01, &lc);
 		if (lc.has_range && strcmp(lc.verdict, "scattered") == 0 && lc.point > kc.point &&

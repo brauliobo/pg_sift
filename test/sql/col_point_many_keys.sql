@@ -8,7 +8,7 @@ CREATE TABLE pmk (id int, u int, v int, pad text DEFAULT repeat('x', 400));
 ALTER TABLE pmk ALTER COLUMN pad SET STORAGE PLAIN;
 -- u: a key of one row; the table is a few dozen units
 INSERT INTO pmk (id, u, v) SELECT i, (i::bigint * 7919 % 30011)::int, i % 7 FROM generate_series(1, 30000) i;
-CREATE INDEX pmk_ix ON pmk USING sift_col (id, u, v) WITH (key_columns = 'off', point_columns = 'u');
+CREATE INDEX pmk_ix ON pmk USING sift_col (id, u, v) WITH (key_columns = 'off', point_tid_columns = 'u');
 ANALYZE pmk;
 
 CREATE FUNCTION pmk_from_point(w text) RETURNS text LANGUAGE plpgsql

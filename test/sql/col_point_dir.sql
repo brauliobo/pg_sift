@@ -112,7 +112,7 @@ INSERT INTO pd_qk (preds, heapwhere) VALUES
 
 -- the directory: the segment is minor 14 because of it (no dictionary of 1,024 strings is in the index), verify lists every row under its key, and a
 -- point query reads the units that hold its rows only
-CREATE INDEX pd_k ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 'k, v');
+CREATE INDEX pd_k ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k, v');
 CREATE INDEX pd_n ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) pd;
 SELECT sift.col_verify('pd_k', true), sift.col_verify('pd_n', true);
@@ -134,7 +134,7 @@ DROP INDEX pd_n;
 -- into segments by how its workers take the heap blocks, so the units of a lookup are bounded by the superblocks of the rows and by the rows (every unit read holds one);
 -- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
 CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
-	WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 'k, s, u, v');
+	WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u, v');
 SELECT sift.col_verify('pd_all', true);
 SELECT least(min(format), 15) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
@@ -146,7 +146,7 @@ FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849
 	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE u = md5('1')::uuid) sb;
 
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 's, u, k');
+CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 's, u, k');
 RESET max_parallel_maintenance_workers;
 SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
 SELECT p.units = sb.n AS exact_units_text, p.rows = f.rows AS same_rows, p.rows, p.units
@@ -222,25 +222,25 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
 
 -- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
 SET sift.col_format_minor = 13;
-CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_columns = 'k, v');
+CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, v');
 RESET sift.col_format_minor;
 SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
 SELECT n, pd_cmp('pd_13', preds, heapwhere) FROM pd_qk ORDER BY n;
 SELECT sift.col_verify('pd_13', true);
 DROP INDEX pd_13, pd_k;
-ALTER INDEX pd_all SET (point_columns = 'k');
+ALTER INDEX pd_all SET (point_tid_columns = 'k');
 REINDEX INDEX pd_all;
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 SELECT sift.col_verify('pd_all', true);
-ALTER INDEX pd_all RESET (point_columns);
+ALTER INDEX pd_all RESET (point_tid_columns);
 REINDEX INDEX pd_all;
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 
 -- a string kept inline cannot be listed: the leaf gets no table; a key in very many rows does not take the table of the other keys with it
 CREATE TABLE ph (id int, k int, s text, pad text DEFAULT repeat('x', 100));
 INSERT INTO ph SELECT i, CASE WHEN i % 10 = 0 THEN i ELSE 1 END, CASE WHEN i = 2500 THEN repeat('long', 3000) ELSE 's' || i % 700 END FROM generate_series(1, 9000) i;
-CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
-CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's');
+CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
+CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 's');
 SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') >= 14 AS hot_key_has_a_directory,
 	   (SELECT min(format) FROM sift.col_segments('ph_s') WHERE kind = 'immutable') < 14 AS inline_string_has_no_directory;
 SELECT sift.col_verify('ph_k', true), sift.col_verify('ph_s', true);
@@ -252,7 +252,7 @@ DROP TABLE ph;
 -- a key in more rows than a lookup takes (65,536) is answered by the units, and the other keys of the leaf are still answered by the directory, one unit for one row
 CREATE TABLE phb (id int, k int, pad text DEFAULT repeat('x', 20));
 INSERT INTO phb SELECT i, CASE WHEN i % 100 = 0 THEN i ELSE 1 END FROM generate_series(1, 70000) i;
-CREATE INDEX phb_k ON phb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+CREATE INDEX phb_k ON phb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
 SELECT sift.col_verify('phb_k', true);
 SELECT p.units = f.units AS hot_key_read_by_the_units, p.rows = f.rows AS same_rows, p.rows AS rows
 FROM sift._test_col_counters('phb_k', '0:eq:1', 8) p, sift._test_col_counters('phb_k', '0:eq:1', 0) f;
@@ -265,7 +265,7 @@ CREATE TABLE px AS
 SELECT i AS id, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775807 - 1 ELSE i END AS v,
 	   CASE i % 7 WHEN 0 THEN 'infinity'::timestamp WHEN 1 THEN '-infinity' ELSE timestamp '2024-01-01' + i * interval '1 minute' END AS ts
 FROM generate_series(1, 3000) i;
-CREATE INDEX px_i ON px USING sift_col (id sift.col_int4_ops, v sift.col_int8_ops, ts sift.col_timestamp_ops) WITH (point_columns = 'v, ts');
+CREATE INDEX px_i ON px USING sift_col (id sift.col_int4_ops, v sift.col_int8_ops, ts sift.col_timestamp_ops) WITH (point_tid_columns = 'v, ts');
 SELECT sift.col_verify('px_i', true);
 SELECT (SELECT count(*) FROM sift._test_col_tids('px_i', '1:eq:9223372036854775807', 8)) AS v_max, (SELECT count(*) FROM px WHERE v = 9223372036854775807) AS heap_v_max,
 	   (SELECT count(*) FROM sift._test_col_tids('px_i', '1:eq:-9223372036854775808', 8)) AS v_min, (SELECT count(*) FROM px WHERE v = -9223372036854775807 - 1) AS heap_v_min,
@@ -280,7 +280,7 @@ DROP TABLE px;
 CREATE TABLE pw (id int, k int, pad text) WITH (fillfactor = 10);
 INSERT INTO pw SELECT i, CASE i / 256 WHEN 0 THEN 1 WHEN 63 THEN 2 WHEN 64 THEN 3 ELSE 100 + i / 256 END, repeat('x', 600) FROM generate_series(0, 65 * 256 - 1) i;
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX pw_k ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+CREATE INDEX pw_k ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k');
 CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
 RESET max_parallel_maintenance_workers;
 SELECT units FROM sift.col_segments('pw_k') WHERE kind = 'immutable';
@@ -303,7 +303,7 @@ SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 997 END, CASE WHEN g % 37 = 0 
 	   CASE WHEN g % 53 = 0 THEN NULL ELSE (g % 2500) / 100.0 END, CASE WHEN g % 59 = 0 THEN NULL ELSE g % 7 = 0 END
 FROM generate_series(1, 20000) g;
 CREATE INDEX pt_i ON pt USING sift_col (i2 sift.col_int2_ops, d sift.col_date_ops, t sift.col_timestamp_ops, tz sift.col_timestamptz_ops, n sift.col_numeric_ops, b sift.col_bool_ops, id sift.col_int4_ops)
-	WITH (point_columns = 'i2, d, t, tz, n, b', write_buffer_limit = 256);
+	WITH (point_tid_columns = 'i2, d, t, tz, n, b', write_buffer_limit = 256);
 SELECT sift.col_verify('pt_i', true);
 CREATE FUNCTION pt_arr(w text, idx bool) RETURNS bigint[] LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE r bigint[];
@@ -335,11 +335,11 @@ DROP FUNCTION pt_arr(text, bool), pt_plan(text);
 
 -- the option names plain integer, text and uuid columns of the top level (a date is an integer leaf)
 CREATE TABLE pe (id int, f float8, j jsonb, d date);
-CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_columns = 'f');
-CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_columns = 'nope');
-CREATE INDEX pe_s ON pe USING sift_col (id sift.col_int4_ops, d sift.col_date_ops) WITH (point_columns = 'id, d');
+CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'f');
+CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_tid_columns = 'nope');
+CREATE INDEX pe_s ON pe USING sift_col (id sift.col_int4_ops, d sift.col_date_ops) WITH (point_tid_columns = 'id, d');
 DROP TABLE pe;
-ALTER INDEX pd_all SET (point_columns = 'k,');
+ALTER INDEX pd_all SET (point_tid_columns = 'k,');
 DROP TABLE pd CASCADE;
 DROP FUNCTION pd_cmp(regclass, text, text), pd_idx(text), pd_bmp(text), pd_seq(text), pd_plan(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

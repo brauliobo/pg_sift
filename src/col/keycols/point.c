@@ -17,7 +17,7 @@
  * The point directory by the default formula. An equality on an integer column of nearly unique values that does not follow the order of the heap
  * reads every unit, whatever the zones and the key lists: the keys are spread over the whole range of each unit. The directory of heap addresses (option point_tid_columns: an equality or
  * an IN list returns the addresses with no unit read) answers it in a flat 0.2 M instructions, and a 16-key IN list in 0.49 M (a b-tree 0.50 M; the directory of
- * rows, point_columns, reads a unit for each key: 0.74 M). Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
+ * rows form, which a key-cut index still writes, reads a unit for each key: 0.74 M). Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
  * 0.17 M + 5 instructions a row), 0.2 M with it (a b-tree 0.14 M); the index 16.5 bytes a row larger with the table sized to a power of two (8.3 to 25.4 MB at 1,000,000 int8 rows, a b-tree 22.5 MB), 10.9 to 12.2 with the exact slot count (column format minor 33; 400,000 rows of 1.0, 0.75 and 0.5 distinct values a row: 10.9, 12.2 and 11.1), 3.6 to 4.7 with the packed table (minor 35, point_dir_bytes); CREATE INDEX
  * +21% instructions (1,756 to 2,126 a row, 1,719 to 2,092 for int4). B = log2(S) / log2(1.05) against C = G / 3 + W / 5.
  * A column that the order array answers (order_array_columns lists it, and the index is not cut by a key) is weighed for the directory's gain over the array, S = 1.7
@@ -197,7 +197,6 @@ sift_col_auto_point(Relation heap, Relation index)
 {
 	const char *opt;
 	const char *ordopt;
-	const char *plain;
 	const SiftColRel *rel;
 	StringInfoData list;
 	bool		autolist,
@@ -209,14 +208,13 @@ sift_col_auto_point(Relation heap, Relation index)
 		return;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the options an earlier default wrote reach the relation here */
 	opt = pstrdup(sift_col_options_point_tid_columns(index));
-	plain = sift_col_options_point_columns(index);
 	ordopt = sift_col_options_order_array_columns(index);	/* NULL: not set */
 	if (ordopt != NULL)
 		ordopt = pstrdup(ordopt);
 	(void) sift_cpagg_auto_list(ordopt, &ordauto);
 	ordauto = ordauto && sift_col_key_cut(rel);	/* in an index cut by a key the build may keep the ends of a column's order, which answer no equality: the directory is the equality's */
 	(void) sift_cpagg_auto_list(opt, &autolist);
-	if (plain[0] != '\0' || (opt[0] != '\0' && !autolist))
+	if (opt[0] != '\0' && !autolist)
 		return;
 	rows = keycols_heap_rows(heap);
 	initStringInfo(&list);

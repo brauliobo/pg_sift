@@ -10,10 +10,12 @@ ALTER TABLE prx ALTER COLUMN pad SET STORAGE PLAIN;
 -- small: 7,000 keys; neg: negative and positive 20-bit keys; wide: keys 2^40 apart; same: one key
 INSERT INTO prx (id, small, neg, wide, same, v)
 SELECT i, i % 7000, (i * 7919 % 1000003) - 500000, (i % 9000)::bigint << 40, 42, i % 7 FROM generate_series(1, 40000) i;
-CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_columns = 'small, neg, wide, same', rollup_columns = 'off');
-NOTICE:  sift_col index "prx_ix": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_tid_columns = 'small, neg, wide, same', rollup_columns = 'off');
+NOTICE:  sift_col index "prx_ix": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = small, neg, wide, same
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('prx_ix');
+NOTICE:  sift_col index "prx_ix" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) prx;
 SELECT sift.col_verify('prx_ix', true);
  col_verify 

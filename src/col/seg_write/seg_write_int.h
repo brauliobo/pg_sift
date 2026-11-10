@@ -25,7 +25,7 @@ typedef struct PointAcc
 	uint32		n;
 	uint32		cap;
 	bool		bad;
-	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
+	bool		want;			/* the index names the leaf (option point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
 	bool		ends;			/* ... and keeps the ends of its order only (sift_cgord_pay, column format minor 40) */
 	bool		tperm;			/* the order of the text leaf names its strings by their dictionary codes (version 5), so the dictionary is written to be read in place */

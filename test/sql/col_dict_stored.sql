@@ -145,15 +145,15 @@ REINDEX INDEX ds_new;
 SELECT min(format) AS format FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
--- the default (auto) stores the order of the strings of a leaf that a lookup structure reads (set_columns, point_columns, return_columns) and of no other; on stores every one, off none
+-- the default (auto) stores the order of the strings of a leaf that a lookup structure reads (set_columns, point_tid_columns, return_columns) and of no other; on stores every one, off none
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
 CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = off);
 CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off');
 CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', key_columns = 's');
-CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 'u');
+CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'u');
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', return_columns = 's, v');
-CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's, u', dict_lookup = off);
+CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 's, u', dict_lookup = off);
 RESET max_parallel_maintenance_workers;
 SELECT i.idx, d.leaf, d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_on') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS with_order
 FROM (VALUES ('ds_on'), ('ds_off2'), ('ds_auto'), ('ds_auto_set'), ('ds_auto_point'), ('ds_auto_ret'), ('ds_auto_off')) i(idx), LATERAL sift.col_sections(i.idx::regclass) d

@@ -10,7 +10,7 @@ INSERT INTO sel_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
 CREATE TABLE sel_dim (id int PRIMARY KEY, n int);
 INSERT INTO sel_dim SELECT i, i FROM generate_series(0, 6) i;
 -- the point directory of k is what the estimate reads for an equality
-CREATE INDEX sel_fact_col ON sel_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_columns = 'off');
+CREATE INDEX sel_fact_col ON sel_fact USING sift_col (id, k, v) WITH (key_cut = k, point_tid_columns = 'k', rollup_columns = 'off');
 ANALYZE sel_fact;
 ANALYZE sel_dim;
 SET sift.enable_agg = off;

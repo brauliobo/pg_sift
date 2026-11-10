@@ -338,9 +338,9 @@ INSERT INTO dk SELECT 200000 + g, 'd' || to_char(CASE WHEN g <= 70000 THEN 5 ELS
 INSERT INTO dk SELECT 300000 + g, 'e' || to_char(g, 'FM00000') FROM generate_series(1, 3000) g;
 -- order_array_columns is named: the formula weighs a text column by its distinct values, which ANALYZE estimates from a sample of 30,000 of the 134,000 rows (3,600 distinct, estimated 1,005 to 1,106
 -- in 40 samples), and below 1,000 it takes the column for one of ties; the test is about the dictionary counts and builds the index the formula builds for most samples
-CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', order_array_columns = 's', write_buffer_limit = 4096);
-NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
+CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_tid_columns = 's', order_array_columns = 's', write_buffer_limit = 4096);
+NOTICE:  sift_col index "dk_idx": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
 NOTICE:  sift_col index "dk_idx" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
@@ -399,8 +399,8 @@ SELECT sift.col_verify('dk_idx', true);
 
 ALTER INDEX dk_idx SET (count_columns = 'off');
 REINDEX INDEX dk_idx;
-NOTICE:  sift_col index "dk_idx": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = s
+NOTICE:  sift_col index "dk_idx": 2 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = s; order_array_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dk_idx');
 NOTICE:  sift_col index "dk_idx" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

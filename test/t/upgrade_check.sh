@@ -180,7 +180,7 @@ check "an index with row counts and a hash is column format 25 or later" grep -q
 check "to 3.4: an index with a hash is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_cnt .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
 q clean "DROP INDEX facts_cnt" >/dev/null
 # a point directory is a packed table of entries: column format 35, which 3.6 refuses; the setting 14 writes the power of two of slots
-q clean "CREATE INDEX facts_exact ON key_facts USING sift_col (id, k) WITH (cube_minmax = false, key_columns = 'off', point_columns = 'id')" >/dev/null
+q clean "CREATE INDEX facts_exact ON key_facts USING sift_col (id, k) WITH (cube_minmax = false, key_columns = 'off', point_tid_columns = 'id')" >/dev/null
 check "an index with a point directory is column format 35 or later" grep -q -E '^ok +facts_exact +index +format 1\.[0-9]+, column format (3[5-9]|[4-9][0-9])' <<<"$(uc clean)"
 check "to 3.6: an index with a point directory is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_exact .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_exact" <<<"$(uc --to 3.6 clean)"
 check "... and an index with no order arrays is not told about arrays" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact | grep "without its arrays")"

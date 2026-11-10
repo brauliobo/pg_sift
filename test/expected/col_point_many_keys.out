@@ -8,10 +8,12 @@ CREATE TABLE pmk (id int, u int, v int, pad text DEFAULT repeat('x', 400));
 ALTER TABLE pmk ALTER COLUMN pad SET STORAGE PLAIN;
 -- u: a key of one row; the table is a few dozen units
 INSERT INTO pmk (id, u, v) SELECT i, (i::bigint * 7919 % 30011)::int, i % 7 FROM generate_series(1, 30000) i;
-CREATE INDEX pmk_ix ON pmk USING sift_col (id, u, v) WITH (key_columns = 'off', point_columns = 'u');
-NOTICE:  sift_col index "pmk_ix": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+CREATE INDEX pmk_ix ON pmk USING sift_col (id, u, v) WITH (key_columns = 'off', point_tid_columns = 'u');
+NOTICE:  sift_col index "pmk_ix": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pmk_ix');
+NOTICE:  sift_col index "pmk_ix" is column format minor 33, which a library before 3.7 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 ANALYZE pmk;
 CREATE FUNCTION pmk_from_point(w text) RETURNS text LANGUAGE plpgsql
 	SET sift.agg_force = on SET max_parallel_workers_per_gather = 0 SET jit = off AS $$

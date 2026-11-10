@@ -8,7 +8,7 @@ SET sift.test_col_legacy_options = on;
 
 CREATE TABLE bs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO bs SELECT g, 'key ' || md5(g::text) FROM generate_series(1, 30000) g;
-CREATE INDEX bs_idx ON bs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
+CREATE INDEX bs_idx ON bs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_tid_columns = 's', write_buffer_limit = 4096);
 SELECT count(*) > 0 AS has_segment FROM sift.col_segments('bs_idx'::regclass) WHERE kind = 'immutable';
 
 -- (few searches in the first stages, so that the cache is read, not the parsed dictionary the many searches bring)

@@ -11,9 +11,9 @@ INSERT INTO dp SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE 'k' || md5(i::text)
 VACUUM (ANALYZE) dp;
 
 SET sift.test_col_dict_unpacked = on;
-CREATE INDEX dp_old ON dp USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = 'on', write_buffer_limit = 256);
+CREATE INDEX dp_old ON dp USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_tid_columns = 's, u', dict_lookup = 'on', write_buffer_limit = 256);
 RESET sift.test_col_dict_unpacked;
-CREATE INDEX dp_new ON dp USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = 'on', write_buffer_limit = 256);
+CREATE INDEX dp_new ON dp USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_tid_columns = 's, u', dict_lookup = 'on', write_buffer_limit = 256);
 SELECT 'dp_old' AS idx, min(format) AS format FROM sift.col_segments('dp_old') WHERE kind = 'immutable' UNION ALL SELECT 'dp_new', min(format) FROM sift.col_segments('dp_new') WHERE kind = 'immutable' ORDER BY 1;
 -- 19,513 strings of s and 20,000 of u take 15 bits a code, rounded up to 4 bytes, where they took 4 bytes each (the sections that follow may pad a few bytes more)
 SELECT abs((SELECT sum(bytes) FROM sift.col_sections('dp_old') WHERE section = 'dict') - (SELECT sum(bytes) FROM sift.col_sections('dp_new') WHERE section = 'dict')

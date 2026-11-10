@@ -318,7 +318,7 @@ prefix_clause(const OpExpr *op, int strategy)
 }
 
 /*
- * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
+ * The share of the units that hold the rows a point directory lists for the equalities and short IN lists of the quals, and whether it answers
  * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS, and past SIFT_CPOINT_MIN_KEYS a sixteenth of the rows), the rows of the keys the selectivity of the clause (misses and the keys with many rows
  * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole. *tid is the
  * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).

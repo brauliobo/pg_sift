@@ -20,9 +20,9 @@ SELECT kt_fill('kt_clustered', 'clustered');
 SELECT kt_fill('kt_refilled', 'refilled');
 -- the default decision is off (format minor 14): the states are those of an index built before it, which the advice is for
 SET sift.col_format_minor = 14;
-CREATE INDEX kt_arrival_col ON kt_arrival USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
-CREATE INDEX kt_clustered_col ON kt_clustered USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
-CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) WITH (point_columns = 'tenant_id', key_columns = 'off');
+CREATE INDEX kt_arrival_col ON kt_arrival USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
+CREATE INDEX kt_clustered_col ON kt_clustered USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
+CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
 RESET sift.col_format_minor;
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) kt_arrival, kt_clustered, kt_refilled;

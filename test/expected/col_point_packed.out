@@ -6,7 +6,7 @@ NOTICE:  installing required extension "pg_sift"
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;
--- one table of n rows of the shape per call, one index with the directory of the option (point_tid_columns: addresses, or point_columns: rows of the segment), and what the directory holds:
+-- one table of n rows of the shape per call, one index with the directory of the option (point_tid_columns), and what the directory holds:
 -- the bytes a row of its block, the layout (packed: the segment is minor 35, written before the root: minor 37 is col_point_root's), the keys of a sample all found with every row of the heap, 300 absent keys listing no more than the chance of a 16 bit fingerprint allows
 CREATE FUNCTION pk_probe(shape text, n int, opt text, unpacked bool DEFAULT false) RETURNS TABLE (shape_ text, rows int, bytes_a_row text, packed bool, all_found bool, absent_ok bool, verified bool) LANGUAGE plpgsql AS $$
 DECLARE b bigint; step int := greatest(n / 300, 1); lost bigint; extra bigint; fmt int; ix text := 'pk_i';
@@ -79,25 +79,6 @@ SELECT * FROM pk_probe('heavy', 30000, 'point_tid_columns = ''k''');
  heavy  | 30000 | under 9     | f      | t         | t         | t
 (1 row)
 
--- rows of the segment, not addresses
-SELECT * FROM pk_probe('dense', 20000, 'point_columns = ''k''');
- shape_ | rows  | bytes_a_row | packed | all_found | absent_ok | verified 
---------+-------+-------------+--------+-----------+-----------+----------
- dense  | 20000 | under 4.5   | t      | t         | t         | t
-(1 row)
-
-SELECT * FROM pk_probe('sparse', 20000, 'point_columns = ''k''');
- shape_ | rows  | bytes_a_row | packed | all_found | absent_ok | verified 
---------+-------+-------------+--------+-----------+-----------+----------
- sparse | 20000 | under 4.5   | t      | t         | t         | t
-(1 row)
-
-SELECT * FROM pk_probe('dupes', 30000, 'point_columns = ''k''');
- shape_ | rows  | bytes_a_row | packed | all_found | absent_ok | verified 
---------+-------+-------------+--------+-----------+-----------+----------
- dupes  | 30000 | under 4.5   | t      | t         | t         | t
-(1 row)
-
 -- the slots, for the same shapes
 SELECT * FROM pk_probe('dense', 20000, 'point_tid_columns = ''k''', true);
  shape_ | rows  | bytes_a_row | packed | all_found | absent_ok | verified 
@@ -105,7 +86,7 @@ SELECT * FROM pk_probe('dense', 20000, 'point_tid_columns = ''k''', true);
  dense  | 20000 | over 9      | f      | t         | t         | t
 (1 row)
 
-SELECT * FROM pk_probe('sparse', 20000, 'point_columns = ''k''', true);
+SELECT * FROM pk_probe('sparse', 20000, 'point_tid_columns = ''k''', true);
  shape_ | rows  | bytes_a_row | packed | all_found | absent_ok | verified 
 --------+-------+-------------+--------+-----------+-----------+----------
  sparse | 20000 | over 9      | f      | t         | t         | t

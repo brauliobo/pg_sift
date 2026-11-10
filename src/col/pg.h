@@ -134,7 +134,7 @@ extern void sift_col_shred_recheck_haskey(struct SiftShredRecheck *rc, const Sif
  * 5. Options and SQL entry points (PG_FUNCTION_INFO_V1 are in core/handler.c)
  * ------------------------------------------------------------------------- */
 
-/* The values of the option dict_lookup: auto stores the dictionaries of the leaves a lookup structure reads (point_columns, key_columns, return_columns) */
+/* The values of the option dict_lookup: auto stores the dictionaries of the leaves a lookup structure reads (point_tid_columns, key_columns, return_columns) */
 enum
 {
 	SIFT_COL_DICT_AUTO,
@@ -169,7 +169,7 @@ typedef struct SiftColOptions
 	int			key_cut_rows;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
-	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
+	int			point_columns;	/* removed in 4.4: parsed so that a stored value and a dump load, never read */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
@@ -213,7 +213,6 @@ extern const char *sift_col_options_rollup_leaves(Relation index);	/* "" when no
 extern const char *sift_col_options_rollup_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
-extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_connect(Relation index);	/* "" when none */
 extern const char *sift_col_options_scope(Relation index);	/* "" when none */

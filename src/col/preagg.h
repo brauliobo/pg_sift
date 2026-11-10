@@ -136,7 +136,6 @@ typedef struct SiftCPaggSpec
 	bool		gorder_with[SIFT_COL_MAX_COLS];
 	bool		absent[SIFT_COL_MAX_COLS];	/* the leaves a family of segments keeps no values of (the scope segments of a scope with cols(..), col/scope.h): no chunk, summary, directory or order in any unit; their zones say all NULL */
 	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write/seg_write.c) */
-	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */

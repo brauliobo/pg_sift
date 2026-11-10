@@ -31,10 +31,9 @@ SELECT popt('pau_rid') AS unique_btree;
 DROP TABLE pau;
 -- the options the user sets are kept
 CREATE INDEX pa_off ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'off');
-CREATE INDEX pa_user ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'a');
+CREATE INDEX pa_user ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'a');
 CREATE INDEX pa_tid ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'rid');
-CREATE INDEX pa_plain ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'rid');
-SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid', 'pa_plain']) i ORDER BY 1;
+SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid']) i ORDER BY 1;
 
 -- an index cut by a key (key_cut) keeps the directory, and a rebuild keeps both: the choice of the build does not stop the cut
 CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
@@ -55,7 +54,7 @@ REINDEX INDEX pa_rid;
 SELECT popt('pa_rid') AS rid_decided_again;
 
 -- the answers are those of the table
-DROP INDEX pa_id, pa_few, pa_off, pa_user, pa_tid, pa_plain;
+DROP INDEX pa_id, pa_few, pa_off, pa_user, pa_tid;
 SELECT rid AS k FROM pa WHERE id = 123457 \gset
 SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*), min(id) FROM pa WHERE rid = :k;

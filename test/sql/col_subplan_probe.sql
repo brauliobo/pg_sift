@@ -10,7 +10,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE sp_o AS SELECT g id, g % 11 a, g % 11 b, g % 11 c, g % 11 e FROM generate_series(1, 20000) g;
 CREATE TABLE sp_d AS SELECT g d, g / 90 y FROM generate_series(0, 1799) g;
 CREATE TABLE sp_f AS SELECT g id, (g * 7919 % 20000) + 1 cust, g % 1800 d, g % 97 q, (g % 5000)::numeric(7,2) p, g % 31 w FROM generate_series(1::bigint, 60000) g;
-CREATE INDEX sp_f_col ON sp_f USING sift_col (id, cust, d, q, p, w) WITH (point_columns = 'cust');
+CREATE INDEX sp_f_col ON sp_f USING sift_col (id, cust, d, q, p, w) WITH (point_tid_columns = 'cust');
 VACUUM (ANALYZE) sp_o, sp_d, sp_f;
 
 CREATE FUNCTION sp_plan(q text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
@@ -18,7 +18,7 @@ DECLARE r text = '';
 	l text;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) %s', q) LOOP r = r || l || E'\n'; END LOOP;
-	RETURN CASE WHEN r ~ 'hashed SubPlan' THEN 'hashed subplan' WHEN r ~ 'Index Only Scan using sp_f_col' THEN 'probe of the index' WHEN r ~ 'Seq Scan on sp_f' THEN 'seq scan of the fact' ELSE r END;
+	RETURN CASE WHEN r ~ 'hashed SubPlan' THEN 'hashed subplan' WHEN r ~ 'Index (Only )?Scan using sp_f_col' THEN 'probe of the index' WHEN r ~ 'Seq Scan on sp_f' THEN 'seq scan of the fact' ELSE r END;
 END $$;
 CREATE FUNCTION sp_count(q text, scan bool) RETURNS bigint LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
 DECLARE r bigint;

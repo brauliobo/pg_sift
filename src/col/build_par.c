@@ -232,7 +232,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 		if (limit != PAR_BUILD_ROWS || min_parallel_table_scan_size < 1024)
 			nworkers = Min(nworkers, (int) Min(tuples / (limit * Min(1.0, min_parallel_table_scan_size / 1024.0)), MAX_WORKERS) - 1);
 		else
-			nworkers = par_participants(tuples, index->rd_index->indnatts, *sift_col_options_point_tid_columns(index) != '\0' || *sift_col_options_point_columns(index) != '\0',
+			nworkers = par_participants(tuples, index->rd_index->indnatts, *sift_col_options_point_tid_columns(index) != '\0',
 										Min(nworkers, MAX_WORKERS) + 1) - 1;
 	}
 	if (nworkers < 1)
