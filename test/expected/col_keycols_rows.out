@@ -20,9 +20,9 @@ INSERT INTO kn SELECT i, i / 300, i % 7 FROM generate_series(0, 119999) i;
 CREATE INDEX kn_k ON kn (k);
 CREATE INDEX kn_col ON kn USING sift_col (id, k, v);
 SELECT reloptions FROM pg_class WHERE relname = 'kn_col';
-                         reloptions                         
-------------------------------------------------------------
- {"rollup_columns=auto: k, v","point_tid_columns=auto: id"}
+                          reloptions                          
+--------------------------------------------------------------
+ {"rollup_columns=auto: k, v","order_array_columns=auto: id"}
 (1 row)
 
 -- analyzed at 30,000 rows and grown to 120,000 since: the rows are counted from the pages, the statistics are the old ones
@@ -33,9 +33,9 @@ INSERT INTO kg SELECT i, i / 300, i % 7 FROM generate_series(30000, 119999) i;
 CREATE INDEX kg_k ON kg (k);
 CREATE INDEX kg_col ON kg USING sift_col (id, k, v);
 SELECT reloptions FROM pg_class WHERE relname = 'kg_col';
-                         reloptions                         
-------------------------------------------------------------
- {"rollup_columns=auto: k, v","point_tid_columns=auto: id"}
+                          reloptions                          
+--------------------------------------------------------------
+ {"rollup_columns=auto: k, v","order_array_columns=auto: id"}
 (1 row)
 
 DROP TABLE kw, kn, kg;

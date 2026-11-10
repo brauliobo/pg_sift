@@ -33,14 +33,14 @@ CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpe
 SELECT 'page cut' AS index, nunits('SELECT sum(amt) FROM nu') AS sum_units UNION ALL SELECT 'key cut', nunits('SELECT sum(amt) FROM nk');
   index   |                       sum_units                       
 ----------+-------------------------------------------------------
- page cut |  Units: 26 read, 26 from pre-aggregates, 2 superunits
+ page cut |  Units: 26 read, 26 from pre-aggregates, 3 superunits
  key cut  |  Units: 37 read, 37 from pre-aggregates, 3 superunits
 (2 rows)
 
 SELECT 'page cut' AS index, nunits('SELECT q, count(*), sum(amt) FROM nu GROUP BY 1') AS group_units UNION ALL SELECT 'key cut', nunits('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1');
   index   |                      group_units                      
 ----------+-------------------------------------------------------
- page cut |  Units: 26 read, 26 from pre-aggregates, 2 superunits
+ page cut |  Units: 26 read, 26 from pre-aggregates, 3 superunits
  key cut  |  Units: 37 read, 37 from pre-aggregates, 3 superunits
 (2 rows)
 

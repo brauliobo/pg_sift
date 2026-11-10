@@ -96,7 +96,7 @@ DROP INDEX kr_idx;
 -- a key of floats is cut as well (the order of a float is that of its key: -0 and +0 are the same, NaN last)
 UPDATE kr SET score = CASE WHEN id % 89 = 0 THEN 'NaN' WHEN id % 83 = 0 THEN -0.0 WHEN id % 79 = 0 THEN 0.0 ELSE score END;
 SET sift.col_build_key_ranges = off;
-CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200);
+CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'score', key_cut_rows = 1200, point_tid_columns = 'id');
 SELECT sift.col_maintenance_due('kr_runs') AS float_runs_due;
    float_runs_due   
 --------------------

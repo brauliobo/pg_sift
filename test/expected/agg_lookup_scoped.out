@@ -7,8 +7,8 @@ SET jit = off;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, (i * 7) % 100000, i % 11 FROM generate_series(1, 400000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
-NOTICE:  sift_col index "ev_col": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; point_tid_columns = id; order_array_columns = k
+NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = id, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 NOTICE:  sift_col index "ev_col" is column format minor 47, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

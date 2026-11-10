@@ -140,9 +140,9 @@ SELECT sift.col_promote('mk3_auto') > 0 AS promoted;
 CREATE TEMP TABLE mk3_units AS SELECT mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promoted;
 REINDEX INDEX mk3_auto;
 SELECT mk_opt('mk3_auto') AS auto, promoted <= mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promotion_prunes_like_reindex FROM mk3_units;
-                                  auto                                   | promotion_prunes_like_reindex 
--------------------------------------------------------------------------+-------------------------------
- order_array_columns=auto: v,point_tid_columns=auto: id,key_columns=auto | t
+                       auto                       | promotion_prunes_like_reindex 
+--------------------------------------------------+-------------------------------
+ order_array_columns=auto: id, v,key_columns=auto | t
 (1 row)
 
 SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
