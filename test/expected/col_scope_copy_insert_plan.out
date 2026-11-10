@@ -1,0 +1,126 @@
+-- The INSERT a scope copy's triggers run for new facts or pairs probes the copy by its maintenance index, whatever the statistics say: a pair table that was only filled
+-- (no ANALYZE yet) made PostgreSQL estimate millions of rows for the statement and read the whole copy with an anti join for as few as 100 facts. The plans are those of the
+-- statements the triggers run (sift.scope_fact_insert, sift.scope_pairs_insert), explained from a trigger of the spec's own over the same transition table.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE facts (id serial PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+INSERT INTO scope_pairs SELECT d, t FROM generate_series(0, 3999) d, generate_series(1, 2) t WHERE d % 10 <> 0;
+INSERT INTO facts (dim_a_id, kind, amount) SELECT g % 4000, g % 5, g FROM generate_series(1, 20000) g;
+SELECT count(*) > 0 AS built FROM (SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id', partition => false)) q;
+ built 
+-------
+ t
+(1 row)
+
+VACUUM ANALYZE facts_by_tenant;
+CREATE TABLE plans (label text, statement text, line text);
+CREATE FUNCTION explain_inserts() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+	c sift.scope_copies;
+	l text;
+BEGIN
+	SELECT * INTO c FROM sift.scope_copies WHERE copy = 'public.facts_by_tenant';
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || CASE TG_TABLE_NAME WHEN 'facts' THEN sift.scope_fact_insert(c, '') ELSE sift.scope_pairs_insert(c, '') END LOOP
+		INSERT INTO plans VALUES (current_setting('spec.label'), TG_TABLE_NAME, l);
+	END LOOP;
+	RETURN NULL;
+END $$;
+CREATE TRIGGER explain_facts AFTER INSERT ON facts REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION explain_inserts();
+CREATE TRIGGER explain_pairs AFTER INSERT ON scope_pairs REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION explain_inserts();
+-- the pair table never analyzed: what a table filled by a bulk load has until autovacuum
+CREATE FUNCTION forget_pair_statistics() RETURNS void LANGUAGE sql AS $$
+	DELETE FROM pg_statistic WHERE starelid = 'scope_pairs'::regclass;
+	UPDATE pg_class SET reltuples = -1, relpages = 0, relallvisible = 0 WHERE oid = 'scope_pairs'::regclass $$;
+CREATE FUNCTION edits(label text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('spec.label', label, false);
+	INSERT INTO facts (dim_a_id, kind, amount) SELECT g % 4000, g % 5, g FROM generate_series(1, 100) g;
+	INSERT INTO facts (dim_a_id, kind, amount) SELECT g % 4000, g % 5, g FROM generate_series(1, 5000) g;
+	INSERT INTO scope_pairs SELECT d, 3 + length(label) FROM generate_series(0, 3999) d WHERE d % 7 = 0;
+END $$;
+SELECT analyzed FROM sift.scope_status;
+ analyzed 
+----------
+ t
+(1 row)
+
+SELECT edits('with statistics');
+ edits 
+-------
+ 
+(1 row)
+
+SELECT forget_pair_statistics();
+ forget_pair_statistics 
+------------------------
+ 
+(1 row)
+
+SELECT analyzed FROM sift.scope_status;
+ analyzed 
+----------
+ f
+(1 row)
+
+SELECT edits('pair table never analyzed');
+ edits 
+-------
+ 
+(1 row)
+
+-- no statement reads the whole copy, and each probes it by the maintenance index
+SELECT label, statement, count(*) FILTER (WHERE line ~ 'Seq Scan on facts_by_tenant') AS copy_seq_scans,
+	   count(*) FILTER (WHERE line ~ 'Index Scan (using |on )facts_by_tenant_maint') > 0 AS probes_maintenance_index
+FROM plans GROUP BY label, statement ORDER BY label, statement;
+           label           |  statement  | copy_seq_scans | probes_maintenance_index 
+---------------------------+-------------+----------------+--------------------------
+ pair table never analyzed | facts       |              0 | t
+ pair table never analyzed | scope_pairs |              0 | t
+ with statistics           | facts       |              0 | t
+ with statistics           | scope_pairs |              0 | t
+(4 rows)
+
+-- the copy equals the join after the edits
+SELECT count(*) AS differs FROM sift.scope_verify('facts_by_tenant');
+ differs 
+---------
+       0
+(1 row)
+
+SELECT (SELECT md5(string_agg(tenant_id || '/' || id || '/' || dim_a_id || '/' || kind || '/' || amount, ',' ORDER BY tenant_id, id)) FROM facts_by_tenant)
+	 = (SELECT md5(string_agg(s.tenant_id || '/' || f.id || '/' || f.dim_a_id || '/' || f.kind || '/' || f.amount, ',' ORDER BY s.tenant_id, f.id))
+		FROM facts f JOIN scope_pairs s USING (dim_a_id)) AS rows_equal_join;
+ rows_equal_join 
+-----------------
+ t
+(1 row)
+
+-- a pair table filled from a view by a full refresh (sift.scope_follow_pairs does the same) has statistics at once
+CREATE TABLE pair_source (dim_a_id int NOT NULL, tenant_id int NOT NULL);
+INSERT INTO pair_source SELECT d, 1 + d % 3 FROM generate_series(1, 500) d;
+CREATE VIEW pair_source_v AS SELECT dim_a_id, tenant_id FROM pair_source;
+CREATE TABLE followed (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+SELECT inserted FROM sift.scope_refresh_pairs('followed', 'pair_source_v', 'member');
+ inserted 
+----------
+      500
+(1 row)
+
+SELECT reltuples AS statistics_of_followed FROM pg_class WHERE oid = 'followed'::regclass;
+ statistics_of_followed 
+------------------------
+                    500
+(1 row)
+
+DROP VIEW pair_source_v;
+DROP TABLE pair_source, followed;
+SELECT sift.scope_drop('facts_by_tenant');
+ scope_drop 
+------------
+ 
+(1 row)
+
+DROP TABLE plans, facts, scope_pairs;
+DROP FUNCTION explain_inserts(), forget_pair_statistics(), edits(text);
+DROP EXTENSION pg_sift;

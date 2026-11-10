@@ -43,6 +43,20 @@ BEGIN
 END $$;
 COMMENT ON FUNCTION sift.scope_refuse_isolation(text) IS 'Internal: the error of a scope copy trigger that runs in a REPEATABLE READ or SERIALIZABLE transaction';
 
+-- The INSERT of the copy's rows that a statement trigger runs for the transition table new_rows; same: more conditions on its rows. A row is added unless the copy has it: the other
+-- table's trigger may have made it in the same statement. The probe of the copy is a lateral sub-select with LIMIT 1, which PostgreSQL can only run as an index probe of the
+-- maintenance index for each row (an anti join it chose by estimate read the whole copy when the scope relation had no statistics).
+CREATE FUNCTION sift.scope_fact_insert(c sift.scope_copies, same text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = s.%I LIMIT 1) h ON true WHERE h.present IS NULL%s',
+		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk,
+		c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key, same) $$;
+CREATE FUNCTION sift.scope_pairs_insert(c sift.scope_copies, same text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM new_rows n JOIN %s f ON f.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = n.%I LIMIT 1) h ON true WHERE h.present IS NULL%s',
+		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'f'), c.source, c.fk, c.member,
+		c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key, same) $$;
+COMMENT ON FUNCTION sift.scope_fact_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the table of a scope copy runs for its transition table new_rows';
+COMMENT ON FUNCTION sift.scope_pairs_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the scope relation of a scope copy runs for its transition table new_rows';
+
 -- The statements that keep a copy exact. A partitioned copy gets the partition of a scope key that appears in the scope relation when the pair is inserted.
 CREATE FUNCTION sift.scope_fact_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -70,9 +84,7 @@ BEGIN
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s AND NOT EXISTS (SELECT 1 FROM %s x WHERE %s AND x.%I = s.%I)', c.copy, c.scope_key,
-			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk, same,
-			c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key);
+		EXECUTE sift.scope_fact_insert(c, same);
 	END IF;
 	RETURN NULL;
 END $$;
@@ -97,9 +109,7 @@ BEGIN
 				PERFORM sift.scope_partition(c.copy, k);
 			END LOOP;
 		END IF;
-		EXECUTE format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM new_rows n JOIN %s f ON f.%I = n.%I WHERE true%s AND NOT EXISTS (SELECT 1 FROM %s x WHERE %s AND x.%I = n.%I)', c.copy, c.scope_key,
-			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'f'), c.source, c.fk, c.member, same,
-			c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key);
+		EXECUTE sift.scope_pairs_insert(c, same);
 	END IF;
 	RETURN NULL;
 END $$;
@@ -254,8 +264,9 @@ BEGIN
 	EXECUTE format('CREATE INDEX %I ON %s (%s)', left(base, 54) || '_maint', cname,
 				   array_to_string(ARRAY(SELECT format('%I', k) FROM unnest(pk) k), ', '));
 
-	-- ANALYZE may run in a function, VACUUM may not: the pages of the copy are all-visible only after the caller's VACUUM
-	EXECUTE format('ANALYZE %s', cname);
+	-- ANALYZE may run in a function, VACUUM may not: the pages of the copy are all-visible only after the caller's VACUUM. The scope relation is analyzed too: a pair table that
+	-- only the copy's creation or a bulk load has filled has no statistics until autovacuum, and a trigger statement that joins it is then planned for millions of rows
+	EXECUTE format('ANALYZE %s, %s', cname, rel);
 
 	INSERT INTO sift.scope_copies VALUES (cname, src, fk, rel, member, scope_key, pk, cols, partition);
 	FOR tr IN SELECT unnest(ARRAY['ins', 'upd', 'del']) LOOP
@@ -365,15 +376,17 @@ END $$;
 COMMENT ON FUNCTION sift.scope_replica_counts(text, name, text, name) IS 'Internal: the facts of a table by the number of scope keys their foreign key has in a scope relation';
 COMMENT ON FUNCTION sift.scope_read_keys(text, bigint[], text) IS 'The WHERE condition that reads a scope copy over several keys with each fact once: a fact counts under the first requested key that holds its member';
 COMMENT ON FUNCTION sift.scope_replicas(text) IS 'The facts of a scope copy by how many copies each has (the number of scope keys of its foreign key; 0: none): the multiplicity of the copy';
-COMMENT ON FUNCTION sift.scope_verify(text, bigint[]) IS 'The rows of a scope copy that differ from the join of its table with the scope relation (missing, extra, differs or duplicate), and a row for each of its tables that a logical replication subscription writes (its apply worker fires no trigger); no rows: the copy is exact. With keys, only those keys, and the facts a read over them through sift.scope_read_keys returns against the facts of their members (multi_key_missing, multi_key_extra)';
+COMMENT ON FUNCTION sift.scope_verify(text, bigint[]) IS 'The rows of a scope copy that differ from the join of its table with the scope relation (missing, extra, differs, duplicate) and a logical replication target row for each table a subscription writes; no rows: the copy is exact. With keys, only those keys and the read over them through sift.scope_read_keys (multi_key_missing, multi_key_extra)';
 
--- Whether the copies were vacuumed: the pages of a leaf of a copy that the last VACUUM or ANALYZE found all-visible, over its pages; none of them means never vacuumed
+-- Whether the copies were vacuumed: the pages of a leaf of a copy that the last VACUUM or ANALYZE found all-visible, over its pages; none of them means never vacuumed.
+-- Whether the copy and its scope relation have statistics (analyzed): without them the statements of the triggers are planned for far more rows than they get
 CREATE VIEW sift.scope_status AS
-	SELECT s.copy, sum(c.relpages)::bigint AS pages, sum(c.relallvisible)::bigint AS all_visible_pages, sum(c.relallvisible) > 0 AS vacuumed
+	SELECT s.copy, sum(c.relpages)::bigint AS pages, sum(c.relallvisible)::bigint AS all_visible_pages, sum(c.relallvisible) > 0 AS vacuumed,
+		   bool_and(c.reltuples >= 0) AND (SELECT p.reltuples >= 0 FROM pg_class p WHERE p.oid = s.scope_relation::regclass) AS analyzed
 	FROM sift.scope_copies s CROSS JOIN LATERAL sift.scope_relations(to_regclass(s.copy)) r JOIN pg_class c ON c.oid = r
 	GROUP BY s.copy;
 
-COMMENT ON VIEW sift.scope_status IS 'One row for each scope copy: its pages, its all-visible pages and whether it was vacuumed (not vacuumed: a read checks the rows in the heap, run VACUUM on the copy)';
+COMMENT ON VIEW sift.scope_status IS 'One row for each scope copy: its pages, its all-visible pages, whether it was vacuumed (not vacuumed: a read checks the rows in the heap, run VACUUM on the copy) and whether it and its scope relation have statistics (not analyzed: run ANALYZE on them)';
 
 -- Drops the triggers and the copy
 CREATE FUNCTION sift.scope_drop(copy text) RETURNS void LANGUAGE plpgsql AS $$
@@ -448,6 +461,10 @@ BEGIN
 		SELECT (SELECT count(*) FROM ins), (SELECT count(*) FROM gone)$q$,
 		cols[1], cols[2], sift.scope_qualified(definition), target,
 		CASE WHEN ids IS NULL THEN '' ELSE format(' WHERE %I = ANY ($1)', col) END, CASE WHEN ids IS NULL THEN 'true' ELSE format('p.%I = ANY ($1)', col) END) USING ids;
+	-- a refresh of all the pairs fills a new or emptied table: the statements that join it are planned from its statistics, which autovacuum would only make later
+	IF ids IS NULL THEN
+		EXECUTE format('ANALYZE %s', target);
+	END IF;
 END $$;
 
 -- The member ids or scope keys that a change to the rows of a followed table names: the column of the old and new rows
