@@ -9,6 +9,7 @@ from .db import REF, psql
 from .tablemode import TABLE_SKIP
 from .fam_lists import dml_trail, dml_txn
 from .fam_groups import dml_groupsplit
+from .fam_scope import dml_scope
 from .fam_cte import dml_ctecopies, dml_dictcount, dml_exceptions, dml_flatkeys, dml_gorder, dml_keylist, dml_keytable
 from .registry import FAMILIES, prepared_variants, variants
 from .dml import dml, dml_arrlen, dml_dead, dml_floor, dml_kcut, dml_nullzone, dml_window
@@ -70,6 +71,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rc = random.Random(seed * 217645177 + 43)
     rl = random.Random(seed * 198491317 + 41)
     rs = random.Random(seed * 236887691 + 47)
+    rp = random.Random(seed * 256203221 + 53)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -101,6 +103,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_keylist(rl, ctx) for _ in range(rl.randrange(dmls + 1))]
         if not tablemode.TABLE and (not only or 'groupsplit' in only):
             st += [dml_groupsplit(rs, ctx) for _ in range(rs.randrange(dmls + 1))]
+        if not tablemode.TABLE and (not only or 'scope' in only):
+            st += [dml_scope(rp, ctx) for _ in range(rp.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:

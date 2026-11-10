@@ -60,8 +60,14 @@ CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF even
 	                                              ELSE make_interval(0, fz.h(i, 57 + salt) % 4, 0, fz.h(i, 58 + salt) % 40, fz.h(i, 59 + salt) % 30, 0, fz.h(i, 60 + salt) % 100 / 4.0) END END
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO events SELECT * FROM fz.gen_events(1, @ROWS@, 0);
+-- the scope relation of the scope family: (member, scope key) pairs, unique, a member in none, one or several scopes; its journal, and the scope of events by parent_id
+CREATE TABLE item_scope (item_id int NOT NULL, tenant_id int NOT NULL, UNIQUE (item_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO item_scope SELECT i, t FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 200 + t) % 100 < 22 AND i % 17 <> 3;
+CREATE INDEX item_scope_journal ON item_scope USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv, ivl)
-	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8');
+	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id)');
+-- the journal of the pairs starts at the build of the first scope index: a rebuild stamps its scope segments
+REINDEX INDEX events_col;
 
 -- first-row lookups: a unique key, a key some rows repeat, three versions of a key (unique with the version), versions with a NULL one
 CREATE TABLE dims (a int, b int, label text, score int) WITH (autovacuum_enabled = false);

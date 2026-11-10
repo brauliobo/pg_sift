@@ -1,0 +1,52 @@
+# The scope family: the facts cut by the scope key of item_scope (events.parent_id -> tenant_id) in every form the planner recognises
+# (join, IN, EXISTS, GROUP BY the key, a keys table) and in the near misses it refuses. The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
+
+from .columns import EVENTS, aggs, keys, preds
+from .fam_basic import grouped
+
+SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered']
+
+
+def gen_scope(r, ctx):
+    ks = r.sample(range(6), r.choice([1, 1, 2, 3]))
+    return dict(table='events', form=r.choice(SCOPE_FORMS), tenants=ks, keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])),
+                aggs=aggs(r, 'e', EVENTS, r.randrange(1, 5)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True,
+                cut=r.randrange(100, 600))
+
+
+def render_scope_parts(p):
+    """(from, extra where, extra keys) of the form"""
+    ts = ', '.join(map(str, p['tenants']))
+    one = p['tenants'][0]
+    j = 'events e JOIN item_scope s ON s.item_id = e.parent_id'
+    return {
+        'join': (j, [f's.tenant_id = {one}'], []),
+        'in': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id IN ({ts}))'], []),
+        'exists': ('events e', [f'EXISTS (SELECT 1 FROM item_scope s WHERE s.item_id = e.parent_id AND s.tenant_id = {one})'], []),
+        'group': (j, [f's.tenant_id IN ({ts})'], ['s.tenant_id']),
+        'keytable': (j + ' JOIN (VALUES %s) k(t) ON k.t = s.tenant_id' % ', '.join(f'({t})' for t in p['tenants']), [], []),
+        'anyarray': ('events e', [f'e.parent_id = ANY (ARRAY(SELECT item_id FROM item_scope WHERE tenant_id = {one}))'], []),
+        'joinin': (j, [f's.tenant_id IN ({ts})'], []),
+        'left': ('events e LEFT JOIN item_scope s ON s.item_id = e.parent_id AND s.tenant_id = %d' % one, [], ['s.tenant_id IS NULL']),
+        'notin': ('events e', [f'e.parent_id NOT IN (SELECT item_id FROM item_scope WHERE tenant_id = {one})'], []),
+        'other': (j, [f's.tenant_id = {one}', "e.kind <> 'k0'"], []),
+        'filtered': (j, [f's.tenant_id = {one}', f's.item_id < {p["cut"]}'], []),
+    }[p['form']]
+
+
+def render_scope(p):
+    frm, wh, ks = render_scope_parts(p)
+    q = dict(p, where=wh + p['where'], keys=ks + p['keys'])
+    return grouped(q, frm), bool(q['keys'])
+
+
+def dml_scope(r, ctx):
+    """Pairs ended, inserted, moved and dropped (the ids the reader patches), VACUUM of the pairs, and a promotion, merge or rebuild of the index the units are in."""
+    m = r.choice([3, 7, 13, 50])
+    k, t, u = r.randrange(m), r.randrange(6), r.randrange(6)
+    return r.choice([
+        f'DELETE FROM item_scope WHERE item_id % {m} = {k} AND tenant_id = {t}', f'DELETE FROM item_scope WHERE item_id % {m * 5} = {k}',
+        f'INSERT INTO item_scope SELECT i, {t} FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
+        f'INSERT INTO item_scope SELECT i, {u} FROM item_scope WHERE tenant_id = {t} AND item_id % {m} = {k} ON CONFLICT DO NOTHING',
+        f'UPDATE item_scope s SET tenant_id = (tenant_id + 1) % 6 WHERE item_id % {m} = {k} AND NOT EXISTS (SELECT 1 FROM item_scope o WHERE o.item_id = s.item_id AND o.tenant_id = (s.tenant_id + 1) % 6)',
+        'VACUUM item_scope', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])

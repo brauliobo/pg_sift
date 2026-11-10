@@ -10,6 +10,7 @@ from .fam_lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point,
 from .fam_units import gen_arrlen, gen_dead, gen_floor, gen_keycut, gen_nullzone, gen_window, render_keycut, render_window
 from .fam_groups import gen_groupsplit, render_groupsplit
 from .fam_having import gen_having, render_having
+from .fam_scope import dml_scope, gen_scope, render_scope
 from .fam_cte import gen_ctecopies, gen_dictcount, gen_exceptions, gen_flatkeys, gen_gorder, gen_keylist, gen_keytable, gen_zonekey, render_ctecopies, render_exceptions, render_flatkeys, render_gorder, render_keylist
 
 def base_of(parts, nl):
@@ -29,6 +30,7 @@ FAMILIES = {
     'having': (gen_having, render_having, 0),   # opt-in: --families having, --having-weight
     'listpage': (gen_listpage, render_listpage, 3), 'groupsplit': (gen_groupsplit, render_groupsplit, 4),
     'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'ctecopies': (gen_ctecopies, render_ctecopies, 4), 'keylist': (gen_keylist, render_keylist, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
+    'scope': (gen_scope, render_scope, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -77,6 +79,8 @@ def variants(r, fam):
         v += [('gpar%d' % n, 'sift.enable_agg=on;' + PAR % (n, 'on')) for n in (2, 4)]
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
+    if fam == 'scope':  # the join the plan keeps (the switch off), and the planner's two plans with workers planned (a scope read has none)
+        v += [('scopepar', 'sift.enable_agg=on;' + PAR % (2, 'on')), ('scopeoff', 'sift.enable_agg=on;sift.agg_scope=off;max_parallel_workers_per_gather=0')]
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
