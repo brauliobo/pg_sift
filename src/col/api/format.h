@@ -53,7 +53,8 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_REFBUF	SIFT_COL_FORMAT_V43	/* 4.3: the write buffer has records that are references to heap tuples (SIFT_COLR_REF, option sift.col_wbuf_ref): the format of its directory entry, so that an older release refuses the index */
 #define SIFT_COL_FORMAT_SEEKORD	SIFT_COL_FORMAT_V43	/* 4.3: a chunk of a global order may be seekable (SIFT_CGORD_SEEK): a fence key every 32 entries, so that a seek or a cursor decodes 32 entries and not 512; written under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_SCOPE	45	/* 5.0: the leaf list of the index has the derived key of a scope (col/scope.h, SIFT_COLD_SCOPE, leaf "<key_name>#scope"), and the index may hold scope segments (directory flag SIFT_SEG_SCOPE); written only for an index with the reloption scope */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SCOPE	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_VSTORE	46	/* 5.0: a leaf dictionary of a segment is a reference to the shared value store of its column (col/vstore/), and the directory of a value store holds runs (SIFT_SEG_VALRUN) */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_VSTORE	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

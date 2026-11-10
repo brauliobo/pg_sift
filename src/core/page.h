@@ -92,7 +92,8 @@ typedef enum SiftSegKind
 	SIFT_SEG_IMMUTABLE = 1,
 	SIFT_SEG_WBUF_OPEN,
 	SIFT_SEG_WBUF_SEALED,
-	SIFT_SEG_TOMB				/* the tombstone log of a heap sift_col index (core/tomb.h): a lane chain that is no write buffer */
+	SIFT_SEG_TOMB,				/* the tombstone log of a heap sift_col index (core/tomb.h): a lane chain that is no write buffer */
+	SIFT_SEG_VALRUN				/* a run of values of a shared value store (col/vstore/vstore_run.c): reserved = epoch, sum_dl = first code, ndocs = values */
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */

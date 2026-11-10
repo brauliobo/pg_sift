@@ -1,0 +1,173 @@
+-- The values of a shared value store (docs/COL-VSTORE.md): a value has one code for ever, the codes are handed out in the order the values arrive,
+-- the store is a chain of runs that is merged when it gets long, and a backend that forgets what it has read finds the same codes again.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.test_vstore_columns = 'url';
+CREATE TABLE vr_t(id int PRIMARY KEY, url text);
+CREATE INDEX vr_a ON vr_t USING sift_col (id, url);
+CREATE INDEX vr_b ON vr_t USING sift_col (url, id);
+-- a new value gets the next code; a value that is there keeps its code, in the same batch or in a later one
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['a', 'b', 'c']) AS codes;
+  codes  
+---------
+ {0,1,2}
+(1 row)
+
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['b', 'd', 'a', 'e', 'd']) AS codes;
+    codes    
+-------------
+ {1,3,0,4,3}
+(1 row)
+
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['e', 'a']) AS codes;
+ codes 
+-------
+ {4,0}
+(1 row)
+
+SELECT runs, view_values FROM sift._test_vstore_info('vr_t_url_sift_values');
+ runs | view_values 
+------+-------------
+    2 |           5
+(1 row)
+
+-- what a backend reads again is what it had: the codes, the values, and nothing for a code that is not there
+SELECT sift._test_vstore_forget();
+ _test_vstore_forget 
+---------------------
+ 
+(1 row)
+
+SELECT runs, view_values FROM sift._test_vstore_info('vr_t_url_sift_values');
+ runs | view_values 
+------+-------------
+    2 |           5
+(1 row)
+
+SELECT c AS code, sift._test_vstore_value('vr_t_url_sift_values', c) AS value FROM generate_series(0, 5) c;
+ code | value 
+------+-------
+    0 | a
+    1 | b
+    2 | c
+    3 | d
+    4 | e
+    5 | 
+(6 rows)
+
+-- many small appends, each its own transaction: the chain is merged (at most 12 runs), the codes do not change, and the relation does not grow a run at a time
+\o /dev/null
+SELECT format('SELECT sift._test_vstore_intern(%L, array[%L, %L])', 'vr_t_url_sift_values', 'v' || i, 'w' || i) FROM generate_series(1, 60) i \gexec
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v1', 'w1'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v2', 'w2'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v3', 'w3'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v4', 'w4'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v5', 'w5'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v6', 'w6'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v7', 'w7'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v8', 'w8'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v9', 'w9'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v10', 'w10'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v11', 'w11'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v12', 'w12'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v13', 'w13'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v14', 'w14'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v15', 'w15'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v16', 'w16'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v17', 'w17'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v18', 'w18'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v19', 'w19'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v20', 'w20'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v21', 'w21'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v22', 'w22'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v23', 'w23'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v24', 'w24'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v25', 'w25'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v26', 'w26'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v27', 'w27'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v28', 'w28'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v29', 'w29'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v30', 'w30'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v31', 'w31'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v32', 'w32'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v33', 'w33'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v34', 'w34'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v35', 'w35'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v36', 'w36'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v37', 'w37'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v38', 'w38'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v39', 'w39'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v40', 'w40'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v41', 'w41'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v42', 'w42'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v43', 'w43'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v44', 'w44'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v45', 'w45'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v46', 'w46'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v47', 'w47'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v48', 'w48'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v49', 'w49'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v50', 'w50'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v51', 'w51'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v52', 'w52'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v53', 'w53'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v54', 'w54'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v55', 'w55'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v56', 'w56'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v57', 'w57'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v58', 'w58'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v59', 'w59'])
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['v60', 'w60'])
+\o
+SELECT runs <= 12 AS merged, view_values, blocks < 64 AS compact FROM sift._test_vstore_info('vr_t_url_sift_values');
+ merged | view_values | compact 
+--------+-------------+---------
+ t      |         125 | t
+(1 row)
+
+SELECT sift._test_vstore_forget();
+ _test_vstore_forget 
+---------------------
+ 
+(1 row)
+
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['a', 'v7', 'w60', 'e', 'new']) AS codes;
+      codes       
+------------------
+ {0,17,124,4,125}
+(1 row)
+
+SELECT c AS code, sift._test_vstore_value('vr_t_url_sift_values', c) AS value FROM unnest(array[0, 4, 12, 124, 125]) c;
+ code | value 
+------+-------
+    0 | a
+    4 | e
+   12 | w4
+  124 | w60
+  125 | new
+(5 rows)
+
+-- a rewrite of the relation keeps the pages, so the runs are still there
+VACUUM FULL vr_t_url_sift_values;
+SELECT sift._test_vstore_forget();
+ _test_vstore_forget 
+---------------------
+ 
+(1 row)
+
+SELECT sift._test_vstore_intern('vr_t_url_sift_values', array['a', 'v7', 'w60', 'e', 'new']) AS codes;
+      codes       
+------------------
+ {0,17,124,4,125}
+(1 row)
+
+SELECT view_values FROM sift._test_vstore_info('vr_t_url_sift_values');
+ view_values 
+-------------
+         126
+(1 row)
+
+DROP TABLE vr_t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -41,6 +41,8 @@ kind_name(uint8 kind)
 			return "sealed buffer";
 		case SIFT_SEG_TOMB:
 			return "tombstones";
+		case SIFT_SEG_VALRUN:
+			return "value run";
 	}
 	return "unknown";
 }
