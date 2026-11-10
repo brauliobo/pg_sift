@@ -164,11 +164,15 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
 -- the option off (blocks for the dictionaries that pay, without the order) and the compact form (the setting 13): the same answers, the dictionaries are parsed
 CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = off);
+NOTICE:  sift_col index "ds_off" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_off": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_off');
 SET sift.col_format_minor = 13;
 CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
+NOTICE:  sift_col index "ds_13" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_13');
@@ -544,30 +548,44 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 -- the default (auto) stores the order of the strings of a leaf that a lookup structure reads (set_columns, point_columns, return_columns) and of no other; on stores every one, off none
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+NOTICE:  sift_col index "ds_on" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_on": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_on');
 CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = off);
+NOTICE:  sift_col index "ds_off2" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_off2": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_off2');
 CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off');
+NOTICE:  sift_col index "ds_auto" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_auto": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto');
 CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', key_columns = 's');
+NOTICE:  sift_col index "ds_auto_set" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_auto_set": 1 advice (track_changes), 2 limits (key_columns)
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: key_columns = s; limit: key_columns = s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_set');
 CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 'u');
+NOTICE:  sift_col index "ds_auto_point" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_auto_point": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_point');
 CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', return_columns = 's, v');
+NOTICE:  sift_col index "ds_auto_ret" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_auto_ret": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_ret');
 CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's, u', dict_lookup = off);
+NOTICE:  sift_col index "ds_auto_off" stores columns s, u, v, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_auto_off": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_auto_off');
@@ -610,6 +628,8 @@ CREATE INDEX ds_bad ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_
 ERROR:  invalid value for enum option "dict_lookup": sometimes
 DETAIL:  Valid values are "auto", "on" and "off".
 CREATE INDEX ds_bool ON ds USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = true);
+NOTICE:  sift_col index "ds_bool" stores columns s, id of index "ds_new", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ds_bool": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_bool');
@@ -626,6 +646,8 @@ DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dw_i');
 SET sift.col_format_minor = 13;
 CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
+NOTICE:  sift_col index "dw_13" stores columns id, u, w of index "dw_i", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "dw_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dw_13');

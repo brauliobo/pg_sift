@@ -88,6 +88,8 @@ SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11 ORDER BY small LIMI
 
 -- the same table with the classes named: the same plans, the same rows
 CREATE INDEX dc_typed ON dc USING sift_col (id sift.col_int4_ops, big sift.col_int8_ops, t sift.col_text_ops, u sift.col_uuid_ops);
+NOTICE:  sift_col index "dc_typed" stores columns id, big, t, u of index "dc_plain", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "dc_typed": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_typed');

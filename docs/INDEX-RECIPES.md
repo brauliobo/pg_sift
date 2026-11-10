@@ -64,6 +64,49 @@ When the heap follows a time or key column, the index needs less for that column
 - **The other columns pay.** A column that followed the old order loses its runs: here the group and the integer followed the id, and the index grew 58 % (8.7 to 13.8 MB); with only the timestamp ordered it shrank 28 % (7.5 to 5.4 MB). Sort by the column the queries window or order by, and only when the others do not follow the old order.
 - **`key_cut` for key-shaped columns** cuts the units by the key at build, promotion and merge, so each row is written once in its unit: 96,000 inserted rows and 9,600 updates wrote 36 % fewer pages and 24 % less WAL, the file grew 45 % less and the segments fell from 11 to 6, and a window aggregate dropped from 12.4 M to 0.61 M instructions. The trade-off is `ORDER BY .. LIMIT` of another column: the key-cut index has no order array for it, so `ORDER BY ts DESC LIMIT 20` costs 0.70 M instead of 0.375 M on a fresh index and each ordered overlay of an index that took writes adds 0.35 to 0.6 M (an overlay that keeps an order array adds 12 to 15 k). Leave the cut automatic, and set `key_cut = 'off'` on an index whose queries also order or range by another column.
 
+## Several indexes over the same columns
+
+A second index over columns another index already lists stores their leaves again. What it adds depends on the layout, the key order, the cut, the roll-ups and the order arrays that the build makes of the rows (`key_order`, `key_cut`, `rollup_columns`, `order_array_columns`, `order_array_group`, `order_layout`) and on the predicate.
+
+The figures below are the instructions of one backend (`perf stat`, warm, no workers) and the buffers of `EXPLAIN (ANALYZE, BUFFERS)`, on a generated table `events (id, dim_a_id, tenant_id, created_at, kind, status, value_num, qty, label, country, score)` of 800,000 rows (200,000 in the second column of each table), `track_changes = off`, one index at a time; sizes are the bytes of the segments (`sift.col_index_info`). They are not the store dataset of the page above.
+
+**The same layout: one wider index.** A narrow index `(dim_a_id, created_at, kind, value_num)` and a wide one with five more columns, both `key_order = 'dim_a_id, created_at'`, hold the same order arrays, runs and key lists: the narrow one is only a smaller copy of the wide one.
+
+| | 800,000 rows | 200,000 rows |
+|---|---|---|
+| narrow + wide, two indexes | 32.4 MB | 8.0 MB |
+| the wide index alone | 18.5 MB (-43%) | 4.6 MB (-43%) |
+| an aggregate by `dim_a_id` on the narrow / the wide index | 0.61 M, 18 blocks / 0.64 M, 19 | 0.56 M, 19 / 0.58 M, 19 |
+| the same over a month of `created_at` | 1.09 M, 34 / 1.13 M, 36 | 1.01 M, 34 / 1.04 M, 34 |
+
+The queries of the narrow index cost the same on the wide one, so drop the narrow one. `CREATE INDEX` and `REINDEX` say so in a NOTICE when another `sift_col` index of the table has the same predicate and layout and lists some of the same columns; it is advice, the index is built as written, and `SET client_min_messages = warning` hides it. Two indexes whose automatic choices differ (the build gave each its own `rollup_columns`) have different layouts and are not named: write the options of one as the other has them, or keep both.
+
+**Different layouts, one index.** Two keys read in different ways (the rows of one `dim_a_id`, the rows of one `tenant_id`) want two key orders; a second index gives each its own cut, and the units of the one that is not cut by the key are read whole. The order arrays hold a second order over the same leaves, so a second key's top-N needs no second cut:
+
+```sql
+CREATE INDEX events_col ON events USING sift_col (dim_a_id, tenant_id, created_at, kind, status, value_num, qty)
+  WITH (key_order = 'dim_a_id, created_at', order_array_group = 'tenant_id');
+```
+
+| | 800,000 rows | 200,000 rows |
+|---|---|---|
+| one index cut by `dim_a_id` + one cut by `tenant_id` | 13.2 + 11.8 = 25.0 MB | 3.4 + 3.0 = 6.4 MB |
+| one index cut by `dim_a_id`, grouped by `tenant_id` | 12.0 MB (-52%) | 2.9 MB (-54%) |
+
+| query (instructions, buffers) | cut by `dim_a_id` | cut by `tenant_id` | one index, grouped by `tenant_id` |
+|---|---|---|---|
+| `dim_a_id = X`, group by `kind` | 0.63 M, 20 | 10.12 M, 610 | 0.63 M, 20 |
+| `dim_a_id` range and a month | 1.12 M, 36 | 24.36 M, 1131 | 1.12 M, 37 |
+| `tenant_id = Y`, group by `kind` | 8.25 M, 509 | 1.24 M, 19 | 8.25 M, 509 |
+| `tenant_id = Y` and a month | 10.02 M, 1028 | 1.09 M, 34 | 10.02 M, 1027 |
+| `tenant_id = Y`, a filter, group by `qty` | 8.24 M, 524 | 1.15 M, 19 | 8.24 M, 524 |
+| `tenant_id = Y ORDER BY created_at DESC LIMIT 20` | 17.10 M, 624 | 0.60 M, 48 | 0.61 M, 51 |
+| group by `kind`, no condition | 33.17 M, 397 | 33.13 M, 392 | 33.17 M, 397 |
+
+- **The top-N and the list of the second key are as cheap as on its own index** (0.61 M against 0.60 M instructions), and everything of the first key is unchanged.
+- **The aggregates of the second key are dearer, and grow with the rows.** The scan reads every unit that holds a row of the tenant: 6.7 to 9.2 times the instructions of an index cut by the tenant at 800,000 rows (2.7 to 3.1 times at 200,000), where that index reads 19 buffers at both sizes. Use the one index when the second key is read for its latest rows, its top-N or a rare aggregate; keep two indexes when its aggregates are frequent or the table is large.
+- The columns of the second key are in the index once, for both.
+
 ## What writes cost
 
 100,000 rows against the 1,000,000-row table with its three btrees, the first set having no `sift_col` index (time and WAL, minimum of three runs):

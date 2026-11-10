@@ -55,10 +55,14 @@ SELECT sw_check('lz4');
 -- the off switch keeps zstd and says nothing; the explicit algorithm and none are the user's
 SET client_min_messages = notice;
 CREATE INDEX sw_zstd ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'auto; txt=zstd');
+NOTICE:  sift_col index "sw_zstd" stores columns id, txt of index "sw_idx", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "sw_zstd": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_zstd');
 CREATE INDEX sw_lz4 ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'lz4');
+NOTICE:  sift_col index "sw_lz4" stores columns id, txt of index "sw_idx", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "sw_lz4": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sw_lz4');

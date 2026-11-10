@@ -176,6 +176,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 -- the setting silences the advice
 SET sift.cluster_advice = off;
 CREATE INDEX kf_quiet ON kf USING sift_col (tenant_id);
+NOTICE:  sift_col index "kf_quiet" stores columns tenant_id of index "kf_few", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "kf_quiet": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kf_quiet');

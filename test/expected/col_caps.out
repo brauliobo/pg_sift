@@ -17,16 +17,22 @@ DETAIL:  advice: track_changes = the table has no one-column primary key; limit:
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_a');
 -- the same for a column of 3,000 keys, alone
 CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (key_columns = 'wide', point_tid_columns = 'off', order_array_columns = 'off');
+NOTICE:  sift_col index "caps_b" stores columns id, few, wide of index "caps_a", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_b": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_b');
 -- the caps hold: nothing to tell (the 7 keys of few are a bitmap)
 CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', key_columns = 'few', point_tid_columns = 'off', order_array_columns = 'off');
+NOTICE:  sift_col index "caps_c" stores columns id, few, many of index "caps_a", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_c": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_c');
 -- the default spec asks for no dim by name, and no set: silent
 CREATE INDEX caps_d ON caps USING sift_col (id, few, many, mid) WITH (point_tid_columns = 'off', order_array_columns = 'off');
+NOTICE:  sift_col index "caps_d" stores columns id, few, many of index "caps_a", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_d": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_d');
@@ -56,6 +62,8 @@ rollup_columns = c2, c9
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_cal_all');
 -- the default is the same list
 CREATE INDEX caps_cal_default ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
+NOTICE:  sift_col index "caps_cal_default" stores columns c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2 of index "caps_cal_all", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_cal_default": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "c15", "c16", "d1", "d2";
 rollup_columns = c2, c9
@@ -78,6 +86,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 -- off says nothing
 ALTER INDEX caps_a SET (key_columns = 'off');
 REINDEX INDEX caps_a;
+NOTICE:  sift_col index "caps_a" stores columns id, few, wide of index "caps_b", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "caps_a": 1 advice (track_changes), 1 limit (cube)
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = many
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('caps_a');

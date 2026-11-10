@@ -410,6 +410,8 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
 SET sift.col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
+NOTICE:  sift_col index "pt_r" stores columns k, s, u, id of index "pt_t", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pt_r": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_r');

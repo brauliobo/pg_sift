@@ -32,7 +32,11 @@ DETAIL:  the extension is not updated to the release that has sift.col_track_old
 HINT:  WITH (track_changes = 'off') builds the index without it: reads of the index check the heap.
 ROLLBACK TO named;
 CREATE INDEX a_off ON a USING sift_col (id, g, v) WITH (track_changes = 'off');
+NOTICE:  sift_col index "a_off" stores columns id, g, v of index "a_auto", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 REINDEX INDEX a_auto;
+NOTICE:  sift_col index "a_auto" stores columns id, g, v of index "a_off", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "a_auto": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the extension is not updated yet
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('a_auto');

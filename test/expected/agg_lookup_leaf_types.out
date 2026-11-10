@@ -21,6 +21,8 @@ NOTICE:  sift_col index "pf_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pf_col');
 CREATE INDEX pf_u ON pf USING sift_col (id, f8, u);
+NOTICE:  sift_col index "pf_u" stores columns id, f8 of index "pf_col", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pf_u": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pf_u');

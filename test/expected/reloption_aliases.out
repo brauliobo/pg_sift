@@ -13,6 +13,8 @@ NOTICE:  sift_col index "ra_old": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ra_old');
 CREATE INDEX ra_new ON ra USING sift_col (id, g, h, v, items) WITH (paths = 'items[]{kind text}', rollup_leaves = 'items[].kind', rollup_columns = 'g, h: v');
+NOTICE:  sift_col index "ra_new" stores columns id, g, h, v, items of index "ra_old", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ra_new": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ra_new');

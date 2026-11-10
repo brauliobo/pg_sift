@@ -202,10 +202,14 @@ NOTICE:  sift_col index "t_1": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_1');
 CREATE INDEX t_2 ON t USING sift_col (id, v, pad);
+NOTICE:  sift_col index "t_2" stores columns id, v of index "t_1", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "t_2": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_2');
 CREATE INDEX t_3 ON t USING sift_col (id, g);
+NOTICE:  sift_col index "t_3" stores columns id, g of index "t_1", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "t_3": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_3');

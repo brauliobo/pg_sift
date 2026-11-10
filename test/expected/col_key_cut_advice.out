@@ -106,6 +106,8 @@ SELECT reason ~ 'key_cut = ' AS names_key_cut FROM sift.cluster_advice('kt_arriv
 -- an index that names no key: the hint says how to choose one
 SET sift.col_format_minor = 14;
 CREATE INDEX kt_plain_col ON kt_refilled USING sift_col (id, tenant_id, day);
+NOTICE:  sift_col index "kt_plain_col" stores columns id, tenant_id, day of index "kt_refilled_col", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "kt_plain_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kt_plain_col');

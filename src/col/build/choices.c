@@ -7,6 +7,7 @@
  * command that turns each choice off from the table docs/messages.tsv generates (choices_gen.h), so a text is written once, there.
  */
 #include "postgres.h"
+#include "access/genam.h"
 #include "access/table.h"
 #include "catalog/pg_constraint.h"
 #include "funcapi.h"
@@ -713,6 +714,73 @@ kind_count(List *found, int bit)
 	return n;
 }
 
+static bool
+same_option(const char *a, const char *b)
+{
+	return a == b || (a != NULL && b != NULL && strcmp(a, b) == 0);
+}
+
+/* Do two indexes cut, order and roll up their rows the same way? Then the structures that follow from the rows (order arrays, key lists, pre-aggregates) are the same bytes in both */
+static bool
+same_layout(Relation a, Relation b)
+{
+	return same_option(sift_col_options_key_order(a), sift_col_options_key_order(b)) && same_option(sift_col_options_key_cut(a), sift_col_options_key_cut(b)) &&
+		same_option(sift_col_options_rollup_columns(a), sift_col_options_rollup_columns(b)) &&
+		same_option(sift_col_options_order_array_columns(a), sift_col_options_order_array_columns(b)) &&
+		same_option(sift_col_options_order_array_group(a), sift_col_options_order_array_group(b)) &&
+		same_option(sift_col_options_order_layout(a), sift_col_options_order_layout(b));
+}
+
+/* The columns both indexes list, as "a, b, c" (NULL when none) */
+static char *
+shared_columns(Relation heap, Relation a, Relation b)
+{
+	StringInfoData names;
+
+	initStringInfo(&names);
+	for (int i = 0; i < a->rd_index->indnatts; i++)
+	{
+		AttrNumber	att = a->rd_index->indkey.values[i];
+		bool		listed = false;
+
+		for (int j = 0; att > 0 && j < b->rd_index->indnatts; j++)
+			listed |= b->rd_index->indkey.values[j] == att;
+		if (listed)
+			appendStringInfo(&names, "%s%s", names.len ? ", " : "", quote_identifier(get_attname(RelationGetRelid(heap), att, false)));
+	}
+	return names.len ? names.data : NULL;
+}
+
+/*
+ * The same structures twice: another sift_col index of the table with the same layout and the same predicate that lists some of the columns of this one stores their leaves
+ * again, and one index over both lists reads each column at the cost it has in either. Said once for a build (the first such index), advice only.
+ */
+static void
+say_same_layout(Relation heap, Relation index)
+{
+	const char *name = sift_col_final_name(index);
+
+	foreach_oid(oid, RelationGetIndexList(heap))
+	{
+		Relation	other;
+		char	   *cols = NULL;
+
+		if (oid == RelationGetRelid(index))
+			continue;
+		other = index_open(oid, AccessShareLock);
+		if (other->rd_rel->relam == index->rd_rel->relam && other->rd_index->indisvalid && strcmp(sift_col_final_name(other), name) != 0 &&
+			equal(RelationGetIndexPredicate(other), RelationGetIndexPredicate(index)) && same_layout(other, index))
+			cols = shared_columns(heap, other, index);
+		if (cols != NULL)
+			ereport(NOTICE,
+					(errmsg("sift_col index \"%s\" stores columns %s of index \"%s\", which has the same layout", name, cols, RelationGetRelationName(other)),
+					 errhint("One index over the union of their columns is smaller at the same read cost: create it, drop both.")));
+		index_close(other, AccessShareLock);
+		if (cols != NULL)
+			return;
+	}
+}
+
 /*
  * The one NOTICE of a statement: "6 automatic choices (names) and 1 advice (names)", the values on at most two lines, and where the rest is read. client_min_messages = warning
  * hides it; the choices are made either way. A format that an older library cannot read, and a log that is not complete, are said apart and short.
@@ -743,6 +811,8 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 	};
 	const char *name = sift_col_final_name(index);
 
+	if (build)
+		say_same_layout(heap, index);
 	foreach(lc, found)
 		total += kind_bit(((Found *) lfirst(lc))->row->kind) != SIFT_CHOICE_ACTION;
 	if (total == 0)

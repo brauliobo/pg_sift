@@ -25,6 +25,8 @@ NOTICE:  sift_col index "mi_amount": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mi_amount');
 CREATE INDEX mi_doc ON mi USING sift_col (id, grp, doc) WITH (paths = 'doc.n float8, doc.kind text');
+NOTICE:  sift_col index "mi_doc" stores columns id, grp of index "mi_amount", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "mi_doc": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('mi_doc');

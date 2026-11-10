@@ -112,6 +112,8 @@ NOTICE:  sift_col index "pd_k": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_k');
 CREATE INDEX pd_n ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index "pd_n" stores columns k, v, id of index "pd_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pd_n": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_n');
@@ -183,6 +185,8 @@ DROP INDEX pd_n;
 -- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
 CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
 	WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 'k, s, u, v');
+NOTICE:  sift_col index "pd_all" stores columns k, v, id of index "pd_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pd_all": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_all');
@@ -250,6 +254,8 @@ FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849
 
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 's, u, k');
+NOTICE:  sift_col index "pd_one" stores columns k, id of index "pd_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pd_one": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_one');
@@ -599,6 +605,8 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
 -- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
 SET sift.col_format_minor = 13;
 CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_columns = 'k, v');
+NOTICE:  sift_col index "pd_13" stores columns k, v, id of index "pd_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pd_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_13');
@@ -726,6 +734,8 @@ NOTICE:  sift_col index "ph_k": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_k');
 CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's');
+NOTICE:  sift_col index "ph_s" stores columns id of index "ph_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "ph_s": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ph_s');
@@ -816,6 +826,8 @@ NOTICE:  sift_col index "pw_k": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pw_k');
 CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
+NOTICE:  sift_col index "pw_n" stores columns k, id of index "pw_k", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pw_n": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pw_n');

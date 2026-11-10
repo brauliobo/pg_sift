@@ -90,6 +90,8 @@ SELECT pa_option('pa_hand');
 (1 row)
 
 CREATE INDEX pa_none ON pa USING sift_col (id, doc) WITH (paths = 'auto');
+NOTICE:  sift_col index "pa_none" stores columns id, doc of index "pa_hand", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pa_none": 1 automatic choice (paths), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key;
 paths = doc.count int4, doc.meta.lang text, and 3 more

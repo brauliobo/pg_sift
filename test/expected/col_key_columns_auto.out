@@ -96,6 +96,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096, key_columns = 'plain_none');
 ERROR:  invalid key_columns option: unknown column
 CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, plain, val) WITH (key_cut = 'off', write_buffer_limit = 4096, key_columns = 'plain');
+NOTICE:  sift_col index "au_named" stores columns id, parent_id, set_id, sparse_fk, region_id, val of index "au_off", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "au_named": 1 automatic choice (track_changes), 1 advice (foreign_keys)
 DETAIL:  advice: foreign_keys = ext_fk, wide_fk; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('au_named');
@@ -108,6 +110,8 @@ SELECT au_option('au_off') AS off_option, au_minors('au_off') AS off_minors, au_
 -- 'auto' by name decides again at the next build, and an index of an older release (no option) does at its REINDEX
 ALTER INDEX au_named SET (key_columns = 'auto');
 REINDEX INDEX au_named;
+NOTICE:  sift_col index "au_named" stores columns id, parent_id, set_id, sparse_fk, region_id, val of index "au_off", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "au_named": 2 automatic choices, 1 advice
 DETAIL:  advice: foreign_keys = ext_fk, wide_fk; key_columns = parent_id, set_id, sparse_fk, region_id;
 track_changes = id
@@ -126,6 +130,8 @@ SELECT au_option('au_off') AS before_reindex;
 (1 row)
 
 REINDEX INDEX au_off;
+NOTICE:  sift_col index "au_off" stores columns id, parent_id, set_id, sparse_fk, region_id, val of index "au_named", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "au_off": 2 automatic choices (key_columns, track_changes), 1 advice (foreign_keys)
 DETAIL:  advice: foreign_keys = ext_fk, wide_fk; key_columns = parent_id, set_id, sparse_fk, region_id;
 track_changes = id
@@ -190,6 +196,8 @@ RESET parallel_setup_cost;
 CREATE INDEX CONCURRENTLY au_conc ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
 NOTICE:  sift_col index "au_conc": track_changes log is not complete after a concurrent build
 HINT:  The next VACUUM completes the log; REINDEX INDEX au_conc without CONCURRENTLY does it now.
+NOTICE:  sift_col index "au_conc" stores columns id, parent_id, set_id, region_id, val of index "au_par", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "au_conc": 2 automatic choices (key_columns, track_changes), 1 advice (foreign_keys)
 DETAIL:  advice: foreign_keys = sparse_fk, ext_fk, wide_fk; key_columns = parent_id, set_id, region_id;
 track_changes = id

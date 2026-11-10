@@ -42,6 +42,8 @@ FROM sift.col_segments('rb_ser');
 
 SET max_parallel_maintenance_workers = 2;
 CREATE INDEX rb_par ON rb USING sift_col (id, g, rb_norm(doc)) WITH (paths = 'rb_norm.parts[]{c text, score float8}');
+NOTICE:  sift_col index "rb_par" stores columns id, g of index "rb_ser", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "rb_par": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rb_par');

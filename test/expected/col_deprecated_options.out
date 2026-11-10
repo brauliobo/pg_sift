@@ -18,6 +18,7 @@ SET sift.test_col_legacy_options = off;
 CREATE INDEX dp_rows ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 64);
 NOTICE:  sift_col index "dp_rows": 2 advice (track_changes, key_cut_rows)
 CREATE INDEX dp_plain ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id');
+NOTICE:  sift_col index "dp_plain" stores columns id, tenant_id, pad of index "dp_rows", which has the same layout
 NOTICE:  sift_col index "dp_plain": 1 advice (track_changes)
 SELECT dp_units('dp_rows') = dp_units('dp_plain') AS same_units_as_without;
  same_units_as_without 
@@ -39,6 +40,7 @@ SELECT dp_choice('dp_plain', 'key_cut_rows') IS NULL AS no_advice_without;
 
 SET sift.test_col_legacy_options = on;
 CREATE INDEX dp_legacy ON dp USING sift_col (id, tenant_id, pad) WITH (key_cut = 'tenant_id', key_cut_rows = 64);
+NOTICE:  sift_col index "dp_legacy" stores columns id, tenant_id, pad of index "dp_rows", which has the same layout
 NOTICE:  sift_col index "dp_legacy": 1 advice (track_changes)
 SELECT dp_units('dp_legacy') > 10 * dp_units('dp_plain') AS legacy_cuts_small_units;
  legacy_cuts_small_units 
@@ -67,6 +69,7 @@ SELECT count(*), sum(id) FROM dp WHERE tenant_id = 42;
 (1 row)
 
 REINDEX INDEX dp_legacy;
+NOTICE:  sift_col index "dp_legacy" stores columns id, tenant_id, pad of index "dp_rows", which has the same layout
 NOTICE:  sift_col index "dp_legacy": 2 advice (track_changes, key_cut_rows)
 SELECT dp_units('dp_legacy') = dp_units('dp_plain') AS reindex_ignores_it;
  reindex_ignores_it 
@@ -95,9 +98,11 @@ SELECT dp_choice('dq_rows', 'point_columns') IS NULL AS legacy_says_nothing;
 
 SET sift.test_col_legacy_options = off;
 CREATE INDEX dq_addr ON dq USING sift_col (id, uid, pad) WITH (point_columns = 'uid', key_cut = 'off');
+NOTICE:  sift_col index "dq_addr" stores columns id, uid, pad of index "dq_rows", which has the same layout
 NOTICE:  sift_col index "dq_addr": 2 advice (track_changes, point_columns)
 NOTICE:  sift_col index "dq_addr" is column format minor 33, which a library before 3.7 cannot read
 CREATE INDEX dq_tid ON dq USING sift_col (id, uid, pad) WITH (point_tid_columns = 'uid', key_cut = 'off');
+NOTICE:  sift_col index "dq_tid" stores columns id, uid, pad of index "dq_rows", which has the same layout
 NOTICE:  sift_col index "dq_tid": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "dq_tid" is column format minor 33, which a library before 3.7 cannot read
 SELECT i AS idx, c.units > 0 AS reads_units, c.rows_scanned
@@ -173,11 +178,13 @@ SELECT dp_choice('dr_runs', 'order_columns') IS NULL AS legacy_says_nothing;
 
 SET sift.test_col_legacy_options = off;
 CREATE INDEX dr_off ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', key_cut = 'off');
+NOTICE:  sift_col index "dr_off" stores columns id, ts, pad of index "dr_runs", which has the same layout
 NOTICE:  sift_col index "dr_off": 2 advice (track_changes, order_columns)
 CREATE INDEX dr_arrays ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', order_array_columns = 'ts', key_cut = 'off');
 NOTICE:  sift_col index "dr_arrays": 1 automatic choice, 2 advice
 NOTICE:  sift_col index "dr_arrays" is column format minor 44, which a library before 4.3 cannot read
 CREATE INDEX dr_list ON dr USING sift_col (id, ts, pad) WITH (order_array_columns = 'ts', key_cut = 'off');
+NOTICE:  sift_col index "dr_list" stores columns id, ts, pad of index "dr_arrays", which has the same layout
 NOTICE:  sift_col index "dr_list": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "dr_list" is column format minor 44, which a library before 4.3 cannot read
 SELECT i AS idx, dr_runs(i::regclass) AS runs, (SELECT count(*) FROM sift.col_sections(i::regclass) WHERE section LIKE 'order%' OR section LIKE 'gorder%') > 0 AS has_array
@@ -209,6 +216,7 @@ SELECT dr_top(20), sift.col_verify('dr_runs');
 (1 row)
 
 REINDEX INDEX dr_runs;
+NOTICE:  sift_col index "dr_runs" stores columns id, ts, pad of index "dr_off", which has the same layout
 NOTICE:  sift_col index "dr_runs": 2 advice (track_changes, order_columns)
 SELECT dr_runs('dr_runs') AS runs_after_reindex, dr_top(20), sift.col_verify('dr_runs');
  runs_after_reindex | dr_top | col_verify 

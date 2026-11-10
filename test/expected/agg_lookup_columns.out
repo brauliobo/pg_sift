@@ -37,6 +37,8 @@ DETAIL:  rollup_columns = t, b; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dp_k_t_vc_d_ts_tz_i2_i8_b_n_grp_idx');
 INSERT INTO dp SELECT * FROM dm WHERE n IS NULL OR n <> 'NaN';
 CREATE INDEX dp_col ON dp USING sift_col (k, t, vc, d, ts, tz, i2, i8, b, n, grp);
+NOTICE:  sift_col index "dp_col" stores columns k, t, vc, d, ts, tz, i2, i8, b, n, grp of index "dp_k_t_vc_d_ts_tz_i2_i8_b_n_grp_idx", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "dp_col": 2 automatic choices (rollup_columns, track_changes)
 DETAIL:  rollup_columns = t, b; track_changes = k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dp_col');
