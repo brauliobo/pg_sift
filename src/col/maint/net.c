@@ -14,21 +14,21 @@
 typedef struct NetStep
 {
 	const SiftSegEntry *entry;
+	StringInfo	net;
 	uint64		written;		/* pages */
 } NetStep;
 
 /*
- * The sidecar of seg as it is now, written after the segment's own stream (the old sidecar's pages are left out and released with the old header page), and the header page that
+ * The sidecar of seg (net, made by sift_cseg_net_build from its dirty units), written after the segment's own stream (the old sidecar's pages are left out and released with the old header page), and the header page that
  * lists the extents, switched in for the old one by sift_wt_publish. Returns the pages written (the sidecar's and the header's); 0 with *nextents set to the extents the header
  * would need, when it cannot list that many: the stream is written, nothing is published, and the caller aborts the write or raises the error. The caller closes seg.
  */
 uint64
-sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, int *nextents)
+sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, StringInfo net, int *nextents)
 {
 	const SiftSegHeaderData *old = seg->hdr;
 	uint64		at;
 	uint32		keep_pages = seg->sr.npages - sift_cseg_net_pages(seg, &at);
-	StringInfo	net = sift_cseg_net_build(seg);
 	SiftStreamWriter *sw;
 	SiftExtent *add,
 			   *list,
@@ -87,7 +87,7 @@ net_write(Relation index, SiftWriteTarget *wt, const void *arg)
 	SiftColSegment *seg = sift_cseg_open(index, st->entry, CurrentMemoryContext);
 	int			nextents;
 
-	st->written = sift_col_net_write(wt, seg, st->entry, &nextents);
+	st->written = sift_col_net_write(wt, seg, st->entry, st->net, &nextents);
 	if (st->written == 0)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the net pre-aggregates need %d extents, the header holds %d", nextents, (int) SIFT_MAX_EXTENTS),
 						errhint("Merge the segments first (sift.col_merge) so that the segment is written in fewer extents.")));
@@ -118,7 +118,6 @@ maint_net_refresh(Relation index)
 	{
 		NetStep		st = {.entry = &snap->segs[i]};
 		SiftColSegment *seg;
-		bool		due;
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_DIRTY))
 			continue;
@@ -126,9 +125,9 @@ maint_net_refresh(Relation index)
 		if (maint_is_overlay(snap->segs[i].ndocs, largest))
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
-		due = sift_cseg_net_due(seg);
+		st.net = sift_cseg_net_due(seg) ? sift_cseg_net_build(seg) : NULL;
 		sift_cseg_close(seg);
-		if (due)
+		if (st.net != NULL)
 		{
 			TimestampTz start = GetCurrentTimestamp();
 

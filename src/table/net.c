@@ -17,12 +17,12 @@
 
 /* The segment's own stream, then the sidecar's pages; the old sidecar's are released with the old header page */
 static uint64
-net_write(Relation rel, const SiftSegEntry *entry)
+net_write(Relation rel, const SiftSegEntry *entry, StringInfo net)
 {
 	SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_SHARED);
 	SiftColSegment *seg = sift_cseg_open(rel, entry, CurrentMemoryContext);
 	int			nextents;
-	uint64		pages = sift_col_net_write(wt, seg, entry, &nextents);
+	uint64		pages = sift_col_net_write(wt, seg, entry, net, &nextents);
 
 	/* the segment is written in too many extents for the header to list the sidecar: it stays as it is (a rewrite writes it in fewer) */
 	if (pages == 0)
@@ -49,17 +49,17 @@ sift_tbl_net_refresh(Relation rel, SiftTblRel *st)
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;
-		bool		due;
+		StringInfo	net;
 
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || !(snap->segs[i].flags & SIFT_SEG_DIRTY))
 			continue;
 		seg = sift_cseg_open(rel, &snap->segs[i], CurrentMemoryContext);
-		due = sift_cseg_net_due(seg);
+		net = sift_cseg_net_due(seg) ? sift_cseg_net_build(seg) : NULL;
 		sift_cseg_close(seg);
-		if (due)
+		if (net != NULL)
 		{
 			TimestampTz start = GetCurrentTimestamp();
-			uint64		written = net_write(rel, &snap->segs[i]);
+			uint64		written = net_write(rel, &snap->segs[i], net);
 
 			if (written > 0)
 				sift_log_maint(rel, "wrote the net pre-aggregates of", start, snap->segs[i].ndocs, written * BLCKSZ);

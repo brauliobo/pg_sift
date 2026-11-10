@@ -202,6 +202,16 @@ put_agg(NetAgg *x, const SiftCAgg *a)
 	x->sumsq[1] = (uint64) ((unsigned __int128) a->sumsq >> 64);
 }
 
+/* The rollups of the elements of a list are not made net of dead rows: a segment with a leaf inside a list has no unit that could have a sidecar */
+static bool
+net_schema_ok(const SiftColSchema *sc)
+{
+	for (int c = 0; c < sc->ncols; c++)
+		if (sc->cols[c].parent >= 0)
+			return false;
+	return true;
+}
+
 /* The dead rows of unit u now, and its liveness bits (nw words) */
 static uint32
 unit_dead(SiftColSegment *seg, uint32 u, uint64 *live)
@@ -239,8 +249,6 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 	uint32	   *dead = palloc((ndead + 1) * sizeof(uint32));
 	bool		ok = clen + elen > 0 && sift_cseg_xcube(seg, u, &xlen) == NULL;
 
-	for (int c = 0; ok && c < sc->ncols; c++)
-		ok = sc->cols[c].parent < 0;
 	if (!ok)
 		return false;
 	if (!sift_cunit_parse(rec, len, sc, &v) || v.nrows != r->nrows)
@@ -340,20 +348,26 @@ sift_cseg_net_uncovered(SiftColSegment *seg)
 	return d;
 }
 
-/* Whether a dirty unit has dead rows the sidecar does not know: a new sidecar is worth its pages */
+/* Whether a dirty unit has dead rows the sidecar does not know and a unit of the segment can have net pre-aggregates: a new sidecar is worth its pages */
 bool
 sift_cseg_net_due(SiftColSegment *seg)
 {
-	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+	uint64	   *live;
 	bool		due = false;
 
+	if (!net_schema_ok(seg->schema))
+		return false;
+	live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 	for (uint32 u = 0; u < seg->nsb && !due; u++)
 		due = sift_cseg_net_stale(seg, u, unit_dead(seg, u, live));
 	pfree(live);
 	return due;
 }
 
-/* The sidecar of the segment as it is now: a net unit for each dirty unit that can have one, the others noted with their dead rows so that they are not tried again */
+/*
+ * The sidecar of the segment as it is now: a net unit for each dirty unit that can have one, the others noted with their dead rows so that they are not tried again.
+ * NULL when no unit can have one: a sidecar of notes alone answers nothing and costs its pages at each VACUUM.
+ */
 StringInfo
 sift_cseg_net_build(SiftColSegment *seg)
 {
@@ -368,8 +382,9 @@ sift_cseg_net_build(SiftColSegment *seg)
 				cube,
 				ecube;
 	NetHeader	h = {.magic = NET_MAGIC,.nsb = nsb,.ncols = sc->ncols,.units_off = sizeof(NetHeader)};
-	StringInfo	out = makeStringInfo();
+	StringInfo	out = NULL;
 
+	Assert(net_schema_ok(sc));
 	initStringInfo(&blobs);
 	initStringInfo(&cube);
 	initStringInfo(&ecube);
@@ -404,10 +419,14 @@ sift_cseg_net_build(SiftColSegment *seg)
 	h.agg_off = h.units_off + (uint64) nsb * sizeof(NetUnit);
 	h.blob_off = h.agg_off + (uint64) sc->ncols * nsb * sizeof(NetAgg);
 	h.len = h.blob_off + blobs.len;
-	appendBinaryStringInfo(out, (char *) &h, sizeof(h));
-	appendBinaryStringInfo(out, (char *) unit, (Size) nsb * sizeof(NetUnit));
-	appendBinaryStringInfo(out, (char *) agg, (Size) sc->ncols * nsb * sizeof(NetAgg));
-	appendBinaryStringInfo(out, blobs.data, blobs.len);
+	if (blobs.len > 0)
+	{
+		out = makeStringInfo();
+		appendBinaryStringInfo(out, (char *) &h, sizeof(h));
+		appendBinaryStringInfo(out, (char *) unit, (Size) nsb * sizeof(NetUnit));
+		appendBinaryStringInfo(out, (char *) agg, (Size) sc->ncols * nsb * sizeof(NetAgg));
+		appendBinaryStringInfo(out, blobs.data, blobs.len);
+	}
 	MemoryContextDelete(cx);
 	pfree(unit);
 	pfree(agg);

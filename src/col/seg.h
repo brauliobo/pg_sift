@@ -479,8 +479,8 @@ extern bool sift_cseg_dirty_any(SiftColSegment *seg, uint32 first, uint32 n);	/*
 
 /*
  * The pre-aggregates of a dirty unit net of its dead rows (col/seg/net.c): sift_cseg_net_has says the unit has them for exactly ndead dead rows (its cube, rollups and sums
- * are then those of its live rows), sift_cseg_net_stale that the unit has more dead rows than the sidecar knows. sift_cseg_net_build is the sidecar of the segment as it is
- * now, sift_cseg_net_finish ends it for the stream, whose pages start at at; sift_cseg_net_pages is how many the segment's own sidecar takes and where it starts.
+ * are then those of its live rows), sift_cseg_net_stale that the unit has more dead rows than the sidecar knows. sift_cseg_net_due says a new sidecar is worth writing, sift_cseg_net_build is the sidecar of the segment as it is
+ * now (NULL when no unit has net pre-aggregates: nothing to write), sift_cseg_net_finish ends it for the stream, whose pages start at at; sift_cseg_net_pages is how many the segment's own sidecar takes and where it starts.
  */
 extern bool sift_cseg_net_has(SiftColSegment *seg, uint32 u, uint32 ndead);
 extern bool sift_cseg_net_stale(SiftColSegment *seg, uint32 u, uint32 ndead);
@@ -492,7 +492,7 @@ extern bool sift_cseg_net_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *
 extern StringInfo sift_cseg_net_build(SiftColSegment *seg);
 extern void sift_cseg_net_finish(StringInfo net, uint64 at);
 extern uint32 sift_cseg_net_pages(SiftColSegment *seg, uint64 *at);
-extern uint64 sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, int *nextents);
+extern uint64 sift_col_net_write(SiftWriteTarget *wt, SiftColSegment *seg, const SiftSegEntry *entry, StringInfo net, int *nextents);
 extern void sift_cseg_net_verify(SiftColSegment *seg);
 extern void sift_cseg_live(SiftColSegment *seg, uint32 u, uint64 *bits);
 extern bool sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey **dead, uint32 *ndead, uint32 *room);

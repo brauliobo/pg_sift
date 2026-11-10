@@ -1,0 +1,97 @@
+-- The sidecar of VACUUM (docs/COL-PREAGG.md section 13) is written for a segment only when one of its dirty units can have net pre-aggregates. The elements of a list (a jsonb
+-- array of objects, read through paths) have none, so a segment with such a leaf got a sidecar of notes that answered nothing and was written again by each VACUUM that cleared a bit.
+-- The answers never change: from the units' pre-aggregates, from their rows (sift.agg_preagg off) and with the scan planner off they are the same, with or without the list leaf.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+
+-- the same rows twice: ne has a list leaf (doc.parts[]), nf does not
+CREATE TABLE ne (id int, grp int, qty int, amount numeric(12,2), doc jsonb, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ne SELECT g, g % 7, g % 100 - 30, (g % 997) * 1.07 - 40,
+       jsonb_build_object('lang', 'l' || g % 4, 'parts', jsonb_build_array(jsonb_build_object('k', g % 5, 'v', g % 50))), repeat('x', 1000)
+FROM generate_series(1, 20000) g;
+CREATE TABLE nf AS SELECT id, grp, qty, amount, pad FROM ne;
+ALTER TABLE nf SET (autovacuum_enabled = false);
+CREATE INDEX ne_col ON ne USING sift_col (id, grp, qty, amount, doc);
+CREATE INDEX nf_col ON nf USING sift_col (id, grp, qty, amount);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ne;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) nf;
+SELECT count(*) AS ne_list_leaves FROM sift.col_leaves('ne_col') WHERE kind = 'group';
+
+CREATE FUNCTION ne_net(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '(\d+) net of dead rows' THEN n := substring(l from '(\d+) net of dead rows')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION ne_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text;
+BEGIN
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
+	SET LOCAL sift.agg_preagg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
+	SET LOCAL sift.agg_preagg = on;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
+	RETURN a IS NOT DISTINCT FROM b AND b IS NOT DISTINCT FROM c;
+END $$;
+
+-- the same aggregates over the same rows: counts, sums, minima and maxima, whole and by group
+CREATE TABLE ne_q (n int, q text);
+INSERT INTO ne_q VALUES
+	(1, 'SELECT count(*), count(qty), sum(qty), sum(amount), min(qty), max(qty), min(amount), max(amount) FROM %1$s'),
+	(2, 'SELECT grp, count(*), sum(qty), sum(amount), min(qty), max(qty), min(amount), max(amount) FROM %1$s GROUP BY grp'),
+	(3, 'SELECT grp, count(*), sum(amount) FROM %1$s WHERE qty > 10 GROUP BY grp'),
+	(4, 'SELECT count(*), sum(amount) FROM %1$s WHERE grp = 3');
+
+-- two rounds of churn, deletes in every unit and a VACUUM each
+DELETE FROM ne WHERE id % 29 = 1;
+DELETE FROM nf WHERE id % 29 = 1;
+VACUUM (DISABLE_PAGE_SKIPPING) ne;
+VACUUM (DISABLE_PAGE_SKIPPING) nf;
+SELECT sift.col_verify('ne_col', true);
+SELECT sift.col_verify('nf_col', true);
+SELECT t.n, ne_same(format(t.q, 'ne')) AS same_ne, ne_same(format(t.q, 'nf')) AS same_nf FROM ne_q t ORDER BY n;
+-- the sidecar of the segment with the list leaf has no pages, the other has; the units of nf answer from it
+SELECT 'ne' AS tbl, count(*) FILTER (WHERE bytes > 0) AS net_sections FROM sift.col_sections('ne_col') WHERE section = 'net'
+UNION ALL SELECT 'nf', count(*) FILTER (WHERE bytes > 0) FROM sift.col_sections('nf_col') WHERE section = 'net' ORDER BY 1;
+SELECT ne_net('SELECT grp, count(*), min(qty), max(qty) FROM nf GROUP BY grp') > 0 AS nf_net;
+
+DELETE FROM ne WHERE id % 37 = 2;
+DELETE FROM nf WHERE id % 37 = 2;
+VACUUM (DISABLE_PAGE_SKIPPING) ne;
+VACUUM (DISABLE_PAGE_SKIPPING) nf;
+SELECT sift.col_verify('ne_col', true);
+SELECT sift.col_verify('nf_col', true);
+SELECT t.n, ne_same(format(t.q, 'ne')) AS same_ne, ne_same(format(t.q, 'nf')) AS same_nf FROM ne_q t ORDER BY n;
+SELECT 'ne' AS tbl, count(*) FILTER (WHERE bytes > 0) AS net_sections FROM sift.col_sections('ne_col') WHERE section = 'net'
+UNION ALL SELECT 'nf', count(*) FILTER (WHERE bytes > 0) FROM sift.col_sections('nf_col') WHERE section = 'net' ORDER BY 1;
+SELECT ne_net('SELECT grp, count(*), min(qty), max(qty) FROM nf GROUP BY grp') > 0 AS nf_net;
+-- the same rows give the same answers with or without the list leaf
+SELECT (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT grp, count(*), sum(qty), min(amount), max(amount) FROM ne GROUP BY grp) x) =
+       (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT grp, count(*), sum(qty), min(amount), max(amount) FROM nf GROUP BY grp) x) AS tables_agree;
+-- sections still add up to the file
+SELECT sum(bytes) = pg_relation_size('ne_col') AS ne_sections_add_up FROM sift.col_sections('ne_col');
+
+-- no sidecar either where every dirty unit has exceptions (a stamp that is NULL in nearly every row, docs/COL-PREAGG.md section 11): none of them can be net, and the units are read as before
+CREATE TABLE nx (id int, grp int, qty int, stamp timestamptz, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO nx SELECT g, g % 7, g % 100, CASE WHEN g % 500 = 0 THEN now() END, repeat('x', 200) FROM generate_series(1, 20000) g;
+CREATE INDEX nx_col ON nx USING sift_col (id, grp, qty, stamp);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) nx;
+DELETE FROM nx WHERE id % 997 = 1;
+VACUUM (DISABLE_PAGE_SKIPPING) nx;
+SELECT sift.col_verify('nx_col', true);
+SELECT dead_rows > 0 AS has_dead_rows FROM sift.col_segments('nx_col');
+SELECT count(*) FILTER (WHERE bytes > 0) AS net_sections FROM sift.col_sections('nx_col') WHERE section = 'net';
+SELECT ne_same('SELECT grp, count(*), sum(qty), min(qty), max(qty) FROM nx GROUP BY grp') AS same_all,
+       ne_same('SELECT grp, count(*), sum(qty), min(qty), max(qty) FROM nx WHERE stamp IS NULL GROUP BY grp') AS same_unstamped;
+
+DROP FUNCTION ne_net(text), ne_same(text);
+DROP TABLE ne, nf, nx, ne_q;
+DROP EXTENSION pg_sift;

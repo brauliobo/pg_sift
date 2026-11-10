@@ -247,7 +247,8 @@ The segment is not rewritten for that any more: the VACUUM that cleared the bits
   exact, a minimum, a maximum and a float sum (added in the order of the live rows, as a rewrite would) included. A unit with other dead rows, or without a sidecar, goes on to section 12.
 - **What it does not give.** Everything that is a list of the values of the unit rather than a summary of it: `count(DISTINCT)` of a key, the sketches (`approx_count_distinct`), the key lists and presence sets, sorted runs, point directories
   and superunits still describe the dead rows too; a query that needs them reads the unit by its rows, as before. A unit with exceptions, a leaf with overflow values, an element leaf (rollups of lists), an inline
-  string leaf has no sidecar (the pass notes its dead rows and does not try it again) and keeps section 12.
+  string leaf has no sidecar (the pass notes its dead rows and does not try it again) and keeps section 12. A segment of an index with a leaf inside a list (a jsonb array of objects read through `paths`) has no unit that could have one,
+  and a segment whose dirty units all lack one has nothing to note but their dead rows: VACUUM writes no sidecar for either (notes alone answer nothing and cost their pages at each VACUUM that clears a bit; the units are read as section 12 reads them).
 - **What writes it.** VACUUM, before the merges it decides (`vacuum_net`): a segment with a unit whose dead rows the sidecar does not know gets a new one, one pass over the leaves of its dirty units, the cost of a
   verification of them; the segment keeps its generation, a new header page lists the extents of the stream and of the new sidecar, and the old header and sidecar pages are released with the directory switch (the
   relocation of a segment does the same). A crash after the pages and before the switch leaves unreferenced pages, which the orphan sweep returns.
