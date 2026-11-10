@@ -97,7 +97,7 @@ SELECT g.gen IN (SELECT gen FROM sift._test_col_scope_entries('events_col')) AS 
  scope_segment | has_point_directory 
 ---------------+---------------------
  f             | t
- t             | t
+ t             | f
 (2 rows)
 
 -- the scope stamps are written with every segment (a scope relation has no journal in this round: lineage 0, the horizon of the snapshot the pairs were read under)
