@@ -21,6 +21,7 @@
 #include "bm25/analyze.h"
 #include "col/am.h"
 #include "col/pg.h"
+#include "col/vstore/vstore.h"
 #include "core/ops.h"
 #include "core/store.h"
 
@@ -153,12 +154,13 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 {
 	HeapTuple	tuple;
 	ArrayType  *before = NULL;
-	bool		ours = false;
+	bool		ours = false,
+				table = false;
 
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
-		sift_col_track_dropping(objectId);
+		sift_col_track_dropping(objectId), sift_vstore_note_drop(objectId);
 	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
 		return;
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
@@ -166,11 +168,14 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 	{
 		Form_pg_class cls = (Form_pg_class) GETSTRUCT(tuple);
 
+		table = cls->relkind == RELKIND_RELATION;
 		ours = cls->relkind == RELKIND_INDEX && (cls->relam == sift_catalog()->am || cls->relam == sift_col_am_oid());
 		if (ours)
 			before = index_reloptions_copy(tuple);
 		ReleaseSysCache(tuple);
 	}
+	if (table)
+		sift_vstore_follow_owner(objectId);
 	if (!ours)
 		return;
 	CommandCounterIncrement();
@@ -204,4 +209,5 @@ sift_ops_init(void)
 	prev_object_access_hook = object_access_hook;
 	object_access_hook = sift_object_access;
 	sift_col_track_init();
+	sift_vstore_init();
 }

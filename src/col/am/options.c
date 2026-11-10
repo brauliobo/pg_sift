@@ -461,6 +461,8 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_point_unrooted",
 							 "Testing: the header and records of the point directories precede the tables (as before column format minor 37), not follow them.",
 							 NULL, &sift_test_col_point_unrooted, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.test_vstore_columns", "testing: columns whose values the indexes built next share through a value store",
+							NULL, &sift_test_vstore_columns, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
