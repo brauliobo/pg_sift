@@ -518,7 +518,7 @@ sift_col_init(void)
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_order",
-						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_array_columns and point_tid_columns on it, for 'group, key' for order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut and order_array_columns on it, for 'group, key' for order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
 						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
 						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
@@ -596,8 +596,8 @@ static const relopt_parse_elt col_relopt_tab[] = {
 
 /*
  * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
- * group and a key (the group of the order arrays; the point directory is left out and key_cut to the build, which cuts by the group where the units read by an equality on it are many), 'a' is
- * a key (key_cut, order_columns, order_array_columns and point_tid_columns). The columns are trimmed: 'a,b' and 'a , b' are the same option.
+ * group and a key (the group of the order arrays; key_cut is left to the build, which cuts by the group where the units read by an equality on it are many), 'a' is
+ * a key (key_cut and order_array_columns; the point directory is left out, it makes the index 71 to 95% larger for lists of the key alone). The columns are trimmed: 'a,b' and 'a , b' are the same option.
  */
 static void
 key_order_expand(SiftColOptions **op)
@@ -758,7 +758,7 @@ COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
 COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-COL_OPT_STR_KO(sift_col_options_point_tid_columns, point_tid_columns, ko_key)
+COL_OPT_STR(sift_col_options_point_tid_columns, point_tid_columns, "")
 
 COL_OPT_STR(sift_col_options_key_order, key_order, "")
 

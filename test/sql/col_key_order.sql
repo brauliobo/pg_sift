@@ -1,4 +1,4 @@
--- key_order stands for key_cut, order_columns, order_array_columns and point_tid_columns on one column, for 'group, key' for order_columns and order_array_columns
+-- key_order stands for key_cut, order_columns and order_array_columns on one column (not point_tid_columns: its directory makes the index 71 to 95% larger), for 'group, key' for order_columns and order_array_columns
 -- on the key and order_array_group on the group, while those are not set: the index is the one the options written out build, an option the user wrote wins,
 -- ALTER INDEX SET and RESET change it for the segments written from now on, REINDEX keeps the effective values, and the answers are the heap's.
 CREATE EXTENSION pg_sift;
@@ -20,7 +20,8 @@ SET client_min_messages = notice;
 CREATE INDEX ko_one ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts');
 CREATE INDEX ko_two ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ent , ts');
 SET client_min_messages = warning;
-CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts', point_tid_columns = 'ts');
+CREATE INDEX ko_hand ON ko USING sift_col (id, ent, ts, v) WITH (key_cut = 'ts', order_columns = 'ts', order_array_columns = 'ts');
+CREATE INDEX ko_point ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', point_tid_columns = 'ts');
 CREATE INDEX ko_hand2 ON ko USING sift_col (id, ent, ts, v) WITH (order_columns = 'ts', order_array_columns = 'ts', order_array_group = 'ent');
 -- an option the user wrote wins over what key_order stands for
 CREATE INDEX ko_win ON ko USING sift_col (id, ent, ts, v) WITH (key_order = 'ts', key_cut = 'off', point_tid_columns = 'id');
@@ -31,7 +32,8 @@ CREATE FUNCTION ko_shape(i regclass) RETURNS text LANGUAGE sql AS
 $$ SELECT format('%s bytes, format %s, %s units', (SELECT bytes FROM sift.col_index_info(i)), (SELECT string_agg(DISTINCT format::text, ',') FROM sift.col_segments(i)),
 				 (SELECT units FROM sift.col_index_info(i))) $$;
 SELECT ko_shape('ko_one') = ko_shape('ko_hand') AS one_is_hand, ko_shape('ko_two') = ko_shape('ko_hand2') AS two_is_hand,
-	   ko_shape('ko_win') = ko_shape('ko_win_hand') AS the_option_written_wins, ko_shape('ko_win') <> ko_shape('ko_one') AS and_differs_from_key_order;
+	   ko_shape('ko_win') = ko_shape('ko_win_hand') AS the_option_written_wins, ko_shape('ko_win') <> ko_shape('ko_one') AS and_differs_from_key_order,
+	   ko_shape('ko_point') <> ko_shape('ko_one') AS the_directory_is_the_users;
 
 -- an answer is right when the rows are the heap's, in order; 'array' says the scan read an order array
 CREATE FUNCTION ko_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -54,7 +56,7 @@ $$ SELECT ko_chk(format(q, w, d, l)), 1::bigint
 		unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20, 300]) l $$;
 SELECT 'the heap''s answers' AS what, bool_and(result IN ('array', 'units')) AS ok, count(*) FROM ko_all();
 
-DROP INDEX ko_hand, ko_hand2, ko_win_hand, ko_win, ko_one;
+DROP INDEX ko_hand, ko_hand2, ko_win_hand, ko_win, ko_point, ko_one;
 ANALYZE ko;
 SELECT result, count(*) FROM ko_all() GROUP BY 1 ORDER BY 1;
 -- latest-N of an entity reads the entries of the entity, not the units
