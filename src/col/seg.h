@@ -143,6 +143,20 @@ extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
 extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
 
+#ifndef SIFT_SEG_SCOPE
+#define SIFT_SEG_SCOPE	0x0008	/* col/scope.h: a scope segment. Defined by core/page.h once the declaration lane lands; delete this fallback then */
+#endif
+
+/* A scope segment holds the fact rows replicated once per scope key (col/scope.h): the readers of the rows of the index never see it */
+static inline bool
+sift_seg_is_scope(const SiftSegEntry *e)
+{
+	return e->kind == SIFT_SEG_IMMUTABLE && (e->flags & SIFT_SEG_SCOPE) != 0;
+}
+
+/* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
+extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
+
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);
 

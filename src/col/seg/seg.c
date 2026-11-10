@@ -678,6 +678,18 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 	return units;
 }
 
+void
+sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
+{
+	int			n = 0;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (scope ? sift_seg_is_scope(&snap->segs[i]) : !sift_seg_is_scope(&snap->segs[i]))
+			snap->segs[n++] = snap->segs[i];
+	snap->nsegs = n;
+}
+
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
 bool

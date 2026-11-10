@@ -563,7 +563,7 @@ sift_col_auto_keys_report(Relation index)
 	StringInfoData kept,
 				left;
 
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		SiftColSegment *seg;

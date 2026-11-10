@@ -295,7 +295,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
 	if (dir == NULL)
 	{
-		sift_dir_read(index, &own);
+		sift_col_dir_read(index, &own, false);
 		dir = &own;
 	}
 	for (int i = 0; i < dir->nsegs; i++)
@@ -352,7 +352,7 @@ sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_onl
 	double		n = 0;
 
 	(void) sift_col_rel_private(index, cx);	/* opening segments reads catalogs and reloads the cached state */
-	sift_dir_read(index, &dir);
+	sift_col_dir_read(index, &dir, false);
 	for (int i = 0; i < dir.nsegs; i++)
 		if (dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -375,7 +375,7 @@ sift_col_pre_stats(Relation index)
 		SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
 
-		sift_dir_read(index, dir);
+		sift_col_dir_read(index, dir, false);
 		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .pre = pre}, true, NULL);
 		e->pre = pre;
 		pfree(dir);
@@ -407,7 +407,7 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 				clean;
 
 	*m = *d;
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *e = &snap->segs[i];
@@ -503,7 +503,7 @@ sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
 	SiftColZones *zs[2];
 	bool		same;
 
-	sift_dir_read(index, dir);
+	sift_col_dir_read(index, dir, false);
 	for (int k = 0; k < 2; k++)
 	{
 		st[k] = MemoryContextAllocZero(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));

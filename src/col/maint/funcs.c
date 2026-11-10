@@ -124,7 +124,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	int			nwbuf = 0;
 	SiftDirSnapshot *plain = palloc(sizeof(SiftDirSnapshot));
 
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	fs = sift_store_free_stats(index);
 	plain->nsegs = 0;
 	for (int i = 0; i < snap->nsegs; i++)

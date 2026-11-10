@@ -220,7 +220,7 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("width_pct must be between 0 and 100")));
 	sc = sift_col_rel(index)->schema;
 	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, dir);
+	sift_col_dir_read(index, dir, false);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			seg[nseg++] = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
@@ -318,7 +318,7 @@ sift_col_key_cut_note(Relation index)
 	sc = rel->schema;
 	dir = palloc(sizeof(SiftDirSnapshot));
 	seg = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftColSegment *));
-	sift_dir_read(index, dir);
+	sift_col_dir_read(index, dir, false);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
