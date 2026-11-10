@@ -119,7 +119,10 @@ static Arena *
 arena_get(void)
 {
 	if (arena == NULL)
+	{
+		Assert(CritSectionCount == 0);	/* the join allocates */
 		arena = sift_dsm_join(ARENA_NAME, sizeof(Arena), arena_init);
+	}
 	return arena;
 }
 
@@ -445,6 +448,7 @@ wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, Transacti
 	Size		off;
 	ArenaPut	res;
 
+	Assert(CritSectionCount == 0);	/* a put may map or make a segment of shared memory, which allocates */
 	if (a->slots_max == 0 || need > ARENA_PAGE)
 		return not_stored(a);
 	for (;;)
@@ -539,11 +543,16 @@ wbuf_arena_read(Relation index, uint64 gen, RefRow *rows, int n, StringInfo pay)
 	bool		got = false;
 	Size		start = pay->len;
 
-	if (n == 0 || (s = slot_enter(a, index, gen, false)) == NULL)
+	if (n == 0)
 		return;
+	src = palloc(n * sizeof(char *));	/* before the spinlock: no allocation under it */
+	if ((s = slot_enter(a, index, gen, false)) == NULL)
+	{
+		pfree(src);
+		return;
+	}
 	s->tick = ++a->tick;
 	epoch = s->epoch;
-	src = palloc(n * sizeof(char *));
 	for (int i = 0; i < n; i++)
 	{
 		uint32	   *at;

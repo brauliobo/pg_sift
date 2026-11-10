@@ -169,25 +169,32 @@ check_slots_in_use(Relation index, const char *rows, Size total)
 }
 #endif
 
-/* The head of the pending row at cur: its TID and flags; returns the stored payload length */
-static Size
-pend_head(const char *cur, ItemPointerData *tid, uint16 *flags)
+/* A pending row as the record it is written as: its values go to the arena of the buffer the row is written to (a row the arena has no room for loses REF) */
+typedef struct PendRec
 {
+	ItemPointerData tid;
+	uint16		flags;
+	Size		stored;			/* bytes the row takes in the pending buffer after its head */
+	Size		len;			/* bytes of the payload of its record */
+	const char *payload;
+} PendRec;
+
+/* The record of the pending row at cur. Puts to the arena, which may make a segment of shared memory: never inside the critical section of a page edit */
+static PendRec
+pend_rec(Relation index, const SiftCWbufHint *h, const char *cur, bool *crossed)
+{
+	PendRec		r = {.payload = cur + PEND_HEAD};
 	uint32		stored;
 
-	memcpy(tid, cur, sizeof(*tid));
-	memcpy(&stored, cur + sizeof(*tid), sizeof(stored));
-	*flags = pend_flags(stored);
-	return stored & ~PEND_FLAGS;
+	memcpy(&r.tid, cur, sizeof(r.tid));
+	memcpy(&stored, cur + sizeof(r.tid), sizeof(stored));
+	r.flags = pend_flags(stored);
+	r.stored = r.len = stored & ~PEND_FLAGS;
+	*crossed |= wbuf_ref_to_arena(index, h->gen, &r.tid, r.payload, &r.len, &r.flags);
+	return r;
 }
 
-/* The payload the record of the pending row holds: a REF record keeps the xid alone, its values go to the arena of the buffer the row is written to (*flags: a row the arena has no room for loses REF) */
-static Size
-pend_record_len(Relation index, const SiftCWbufHint *h, const char *cur, const ItemPointerData *tid, uint16 *flags, Size stored, bool *crossed)
-{
-	*crossed |= wbuf_ref_to_arena(index, h->gen, tid, cur + PEND_HEAD, &stored, flags);
-	return stored;
-}
+#define PEND_BATCH	(BLCKSZ / sizeof(SiftColRecHead))	/* records of a page at most */
 
 /* Writes the rows of a slot to the lanes of the index and frees the slot; true when a row crossed write_buffer_limit */
 static bool
@@ -200,6 +207,9 @@ pend_flush(Relation index, PendIndex *p)
 	const char *cur = rows;
 	bool		crossed = false;
 	bool		ref = p->ref;
+	PendRec    *batch = palloc(PEND_BATCH * sizeof(PendRec));
+	PendRec		next;
+	uint64		next_gen = 0;
 
 	memcpy(rows, p->buf.data, total);
 #ifdef USE_ASSERT_CHECKING
@@ -211,11 +221,8 @@ pend_flush(Relation index, PendIndex *p)
 	{
 		Buffer		tailbuf;
 		int			lane;
-		ItemPointerData tid;
-		uint16		flags;
-		Size		stored,
-					len,
-					room;
+		Size		room;
+		int			n = 1;
 
 		for (;;)
 		{
@@ -227,40 +234,51 @@ pend_flush(Relation index, PendIndex *p)
 				break;
 			h.gen = 0;
 		}
-		stored = pend_head(cur, &tid, &flags);
-		len = pend_record_len(index, &h, cur, &tid, &flags, stored, &crossed);
+		batch[0] = next_gen == h.gen ? next : pend_rec(index, &h, cur, &crossed);
+		next_gen = 0;
 		room = TYPEALIGN_DOWN(4, SiftLaneRoom(BufferGetPage(tailbuf)));
-		if (RECSIZE(len) > room)
+		if (RECSIZE(batch[0].len) > room)
 		{
 			BlockNumber tail;
 
 			/* a record that does not fit what is left of the tail page: as a row that goes in at once (a new page, pieces) */
-			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &tid, flags, cur + PEND_HEAD, len, &tail);
+			crossed |= wbuf_write_row(index, &h, lane, tailbuf, &batch[0].tid, batch[0].flags, batch[0].payload, batch[0].len, &tail);
 			h.tail[lane] = tail;
-			cur += PEND_HEAD + stored;
+			cur += PEND_HEAD + batch[0].stored;
 		}
 		else
 		{
 			SiftPageEdit ed;
+			const char *end = cur + PEND_HEAD + batch[0].stored;
 
-			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
-			do
+			room -= RECSIZE(batch[0].len);
+			/* the records that fit the page are made before the edit, whose critical section allows no allocation */
+			while (end < rows + total)
 			{
-				wbuf_put_piece(ed.page, &tid, flags, cur + PEND_HEAD, len);
-				room -= RECSIZE(len);
-				cur += PEND_HEAD + stored;
-				if (cur >= rows + total)
+				PendRec		r = pend_rec(index, &h, end, &crossed);
+
+				if (RECSIZE(r.len) > room)
+				{
+					next = r;
+					next_gen = h.gen;
 					break;
-				stored = pend_head(cur, &tid, &flags);
-				len = pend_record_len(index, &h, cur, &tid, &flags, stored, &crossed);
-			} while (RECSIZE(len) <= room);
+				}
+				batch[n++] = r;
+				room -= RECSIZE(r.len);
+				end += PEND_HEAD + r.stored;
+			}
+			sift_page_edit_begin(&ed, tailbuf, SIFT_PAGE_DATA_OFFSET + HDRSIZE);
+			for (int i = 0; i < n; i++)
+				wbuf_put_piece(ed.page, &batch[i].tid, batch[i].flags, batch[i].payload, batch[i].len);
 			sift_page_edit_end(index, &ed, 1);
 			h.tail[lane] = BufferGetBlockNumber(tailbuf);
 			UnlockReleaseBuffer(tailbuf);
+			cur = end;
 		}
 	}
 	/* the reads above can reload the relcache entry: keep the hint in the entry as it is now */
 	sift_col_rel(index)->hint = h;
+	pfree(batch);
 	pfree(rows);
 	return crossed;
 }
