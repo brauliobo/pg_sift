@@ -99,9 +99,9 @@ typedef struct Probe
 	bool		anti;
 } Probe;
 
-/* does a valid btree without a predicate start with column att of the table? */
+/* does a valid btree whose predicate (none, or implied by the quals the sub-select takes, of the table as entry rti) start with column att of the table? */
 static bool
-btree_on(Oid relid, AttrNumber att)
+btree_on(Oid relid, AttrNumber att, Index rti, List *quals)
 {
 	Relation	rel = relation_open(relid, NoLock);
 	bool		found = false;
@@ -110,8 +110,14 @@ btree_on(Oid relid, AttrNumber att)
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
 
-		found = idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			idx->rd_index->indkey.values[0] == att;
+		found = idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && idx->rd_index->indkey.values[0] == att;
+		if (found && !heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL))
+		{
+			List	   *pred = copyObject(RelationGetIndexPredicate(idx));
+
+			ChangeVarNodes((Node *) pred, 1, rti, 0);
+			found = quals != NIL && predicate_implied_by(pred, quals, false);
+		}
 		index_close(idx, AccessShareLock);
 		if (found)
 			break;
@@ -130,7 +136,7 @@ tie_column(Query *sub, Node *col, Node *other, Oid opno)
 		col = (Node *) ((RelabelType *) col)->arg;
 	return IsA(col, Var) && ((Var *) col)->varlevelsup == 0 && ((Var *) col)->varno == 1 && ((Var *) col)->varattno > 0 &&
 		op_mergejoinable(opno, exprType(col)) && !contain_vars_of_level(other, 0) && contain_vars_of_level(other, 1) &&
-		btree_on(rte->relid, ((Var *) col)->varattno);
+		btree_on(rte->relid, ((Var *) col)->varattno, 1, NIL);
 }
 
 /* does the WHERE of the sub-select tie its table to the query around it by an equality on a column a btree starts with? */
@@ -573,9 +579,9 @@ output_vars(Node *n, ProbeJoin *c)
 	return expression_tree_mutator(n, output_vars, c);
 }
 
-/* `column = expr` of the table over the other side: a btree starts with the column */
+/* `column = expr` of the table over the other side: a btree starts with the column, whose predicate the quals of the child imply */
 static bool
-join_tie(RangeTblEntry *rte, Index rti, Node *a)
+join_tie(RangeTblEntry *rte, Index rti, Node *a, List *child)
 {
 	OpExpr	   *op = (OpExpr *) a;
 
@@ -589,7 +595,7 @@ join_tie(RangeTblEntry *rte, Index rti, Node *a)
 		while (IsA(col, RelabelType))
 			col = (Node *) ((RelabelType *) col)->arg;
 		if (IsA(col, Var) && ((Var *) col)->varlevelsup == 0 && ((Var *) col)->varno == rti && ((Var *) col)->varattno > 0 && !o.table && !o.outer && o.other &&
-			btree_on(rte->relid, ((Var *) col)->varattno))
+			btree_on(rte->relid, ((Var *) col)->varattno, rti, child))
 			return true;
 	}
 	return false;
@@ -711,16 +717,19 @@ join_split(Query *q, ProbeJoin *c, JoinType type)
 
 		if (r.outer || checkExprHasSubLink(a) || contain_volatile_functions(a) || contain_agg_clause(a))
 			return false;
-		if (r.table && join_tie(rte, c->rti, a))
+		if (r.table || type == JOIN_LEFT)
+			c->child = lappend(c->child, a);
+		else
+			c->rest = lappend(c->rest, a);
+	}
+	foreach_ptr(Node, a, c->child)
+	{
+		if (refs(a, c->rti).table && join_tie(rte, c->rti, a, c->child))
 		{
 			tie = true;
 			partners_walker(a, &partners);
 			partners = bms_del_member(partners, c->rti);
 		}
-		if (r.table || type == JOIN_LEFT)
-			c->child = lappend(c->child, a);
-		else
-			c->rest = lappend(c->rest, a);
 	}
 	if (!tie)
 		return false;

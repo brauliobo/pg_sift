@@ -841,3 +841,9 @@ select t.id, count(*) from events v left join lateral (select tenants.* from ten
 with ents as (select a.id, t.id as set_id from dim_a a left join lateral (select tenants.* from tenants where exists (select 1 from dim_b b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = a.id)) t on true where a.id in (select dim_a_id from dim_b where set_id = 4)) select ents.set_id, count(*), sum(v.amount) from events v join ents on ents.id = v.dim_a_id group by 1;
 -- @case bridge_group_lateral_array | join | an ARRAY of the links in the lateral sub-select stays with the normal plan
 select t.id, count(*) from events v left join lateral (select tenants.* from tenants where tenants.id = any (array(select b.set_id from dim_b b where b.dim_a_id = v.dim_a_id))) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+-- @case partial_probe_join | join | a join to a table whose only btree on the join column is partial (live links), the join's own condition implies its predicate: a probe of it for each key
+select b.grp, count(*), sum(v.amount) from events v join link_live b on b.dim_a_id = v.dim_a_id and b.deleted_at is null where v.dim_a_id between 1 and 40 group by 1;
+-- @case partial_probe_left | join | the same through a LEFT JOIN
+select b.grp, count(*), sum(v.amount), count(b.grp) from events v left join link_live b on b.dim_a_id = v.dim_a_id and b.deleted_at is null where v.dim_a_id between 1 and 40 group by 1;
+-- @case partial_probe_not_implied | join | the join's conditions do not imply the predicate of the index: the table is read whole
+select b.grp, count(*), sum(v.amount) from events v join link_live b on b.dim_a_id = v.dim_a_id where v.dim_a_id between 1 and 40 group by 1;
