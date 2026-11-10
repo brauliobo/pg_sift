@@ -38,9 +38,12 @@ BEGIN
 	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE scope_id = %s) GROUP BY kind) t', k) INTO j;
 	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
 END $$;
-CREATE FUNCTION state(label text) RETURNS TABLE (edit text, copy_rows bigint, differing bigint, keys_differing bigint) LANGUAGE sql AS $$
+-- replicas_off: the copy's rows minus the copies the histogram of sift.scope_replicas counts; multi_differing: problems of a check over a set of keys
+CREATE FUNCTION state(label text) RETURNS TABLE (edit text, copy_rows bigint, differing bigint, keys_differing bigint, replicas_off bigint, multi_differing bigint) LANGUAGE sql AS $$
 	SELECT label, (SELECT count(*) FROM facts_by_scope), (SELECT count(*) FROM sift.scope_verify('facts_by_scope')),
-		   (SELECT count(*) FROM generate_series(1, 8) k WHERE answers('facts_by_scope', k) <> 'same') $$;
+		   (SELECT count(*) FROM generate_series(1, 8) k WHERE answers('facts_by_scope', k) <> 'same'),
+		   (SELECT count(*) FROM facts_by_scope) - COALESCE((SELECT sum(copies_per_fact * facts) FROM sift.scope_replicas('facts_by_scope')), 0),
+		   (SELECT count(*) FROM sift.scope_verify('facts_by_scope', ARRAY[1, 2, 3, 5, 7])) $$;
 
 CREATE TABLE edits (n serial, label text, stmt text);
 INSERT INTO edits (label, stmt) VALUES
@@ -66,7 +69,7 @@ INSERT INTO edits (label, stmt) VALUES
 	('truncate the pairs', 'TRUNCATE pairs'),
 	('the pairs return', 'INSERT INTO pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 1 + e % 4) k'),
 	('truncate the facts', 'TRUNCATE facts');
-CREATE FUNCTION run_edits() RETURNS TABLE (edit text, copy_rows bigint, differing bigint, keys_differing bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION run_edits() RETURNS TABLE (edit text, copy_rows bigint, differing bigint, keys_differing bigint, replicas_off bigint, multi_differing bigint) LANGUAGE plpgsql AS $$
 DECLARE e record;
 BEGIN
 	RETURN QUERY SELECT * FROM state('start');
@@ -89,6 +92,75 @@ SELECT (SELECT count(*) FROM facts_by_scope WHERE scope_id IN (1, 2)) AS copy_in
 -- GROUP BY the key counts a fact in each of its keys
 SELECT scope_id, count(*) FROM facts_by_scope GROUP BY scope_id ORDER BY scope_id;
 
+-- the exact read over several keys: a fact counts under the first requested key that holds its member (sift.scope_read_keys); same answers as the member path, any order, 2 or 3 keys
+CREATE FUNCTION read_answers(ks bigint[]) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE c text; j text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts_by_scope WHERE %s GROUP BY kind) t',
+				   sift.scope_read_keys('facts_by_scope', ks)) INTO c;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE scope_id = ANY ($1)) GROUP BY kind) t'
+		INTO j USING ks;
+	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+CREATE FUNCTION read_rows(ks bigint[]) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM facts_by_scope WHERE %s', sift.scope_read_keys('facts_by_scope', ks)) INTO n;
+	RETURN n;
+END $$;
+CREATE TABLE read_sets (n serial, keys bigint[]);
+INSERT INTO read_sets (keys) VALUES (ARRAY[1]), (ARRAY[1, 2]), (ARRAY[2, 1]), (ARRAY[3, 4]), (ARRAY[1, 2, 3]), (ARRAY[3, 2, 1]), (ARRAY[2, 4, 1]), (ARRAY[4, 9, 3]), (ARRAY[2, 2, 1]), (ARRAY[9]),
+	(ARRAY[]::bigint[]);
+SELECT r.keys, read_answers(r.keys) AS answers,
+	   (SELECT count(*) FROM facts_by_scope WHERE scope_id = ANY (r.keys)) AS copy_in,
+	   read_rows(r.keys) AS exact_rows,
+	   (SELECT count(*) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE scope_id = ANY (r.keys))) AS member_path
+FROM read_sets r ORDER BY r.n;
+SELECT sift.scope_read_keys('facts_by_scope', ARRAY[3, 1, 3, 2]) AS condition;
+SELECT sift.scope_read_keys('facts_by_scope', ARRAY[1, 2], 'f') AS aliased;
+SELECT sift.scope_read_keys('facts', ARRAY[1]);
+
+-- how many copies the facts have: the facts by the number of keys of their member (0: no copy)
+SELECT * FROM sift.scope_replicas('facts_by_scope');
+SELECT sift.scope_replicas('facts');
+
+-- sift.scope_verify over a set of keys checks those keys and the facts a read over the set sees once each
+CREATE TABLE key_sets (n serial, label text, keys bigint[]);
+INSERT INTO key_sets (label, keys) VALUES ('one key', ARRAY[1]), ('two keys', ARRAY[1, 2]), ('keys 1 to 4', ARRAY[1, 2, 3, 4]), ('a key no pair has', ARRAY[9]),
+	('keys with and without pairs', ARRAY[3, 9]), ('no key', ARRAY[]::bigint[]);
+SELECT k.label, (SELECT count(*) FROM sift.scope_verify('facts_by_scope', k.keys)) AS problems FROM key_sets k ORDER BY k.n;
+-- a copy damaged with the triggers off: each case names its problems for the keys it checks (the damage is undone after each)
+CREATE FUNCTION damaged(stmt text, keys bigint[]) RETURNS TABLE (problem text, n bigint) LANGUAGE plpgsql AS $$
+DECLARE found jsonb;
+BEGIN
+	BEGIN
+		SET LOCAL session_replication_role = replica;
+		EXECUTE stmt;
+		SELECT COALESCE(jsonb_object_agg(v.problem, v.n), '{}') INTO found FROM (SELECT p.problem, count(*) n FROM sift.scope_verify('facts_by_scope', keys) p GROUP BY 1) v;
+		RAISE EXCEPTION '%', found;
+	EXCEPTION WHEN raise_exception THEN
+		found := SQLERRM::jsonb;
+	END;
+	RETURN QUERY SELECT e.key, e.value::bigint FROM jsonb_each_text(found) e ORDER BY 1;
+END $$;
+-- the fact 100401 belongs to the member with the keys 1, 2 and 3
+CREATE TABLE damage (n serial, label text, stmt text, keys bigint[]);
+INSERT INTO damage (label, stmt, keys) VALUES
+	('a fact lost from every key', 'DELETE FROM facts_by_scope WHERE id = 100401', ARRAY[1, 2, 3]),
+	('a replica lost in the first requested key', 'DELETE FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[1, 2]),
+	('a replica lost in the second requested key', 'DELETE FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[2, 1]),
+	('a replica lost, the set is that key', 'DELETE FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[1]),
+	('a replica lost in a key outside the set', 'DELETE FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[2, 3]),
+	('a copy in a key the member does not have', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[4]),
+	('the same, a key of the member is requested first', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[1, 4]),
+	('the same, the key of the copy is requested first', 'INSERT INTO facts_by_scope SELECT 4, id, dim_a_id, created_at, kind, amount, note FROM facts WHERE id = 100401', ARRAY[4, 1]),
+	('a fact twice in a key', 'DROP INDEX facts_by_scope_maint; INSERT INTO facts_by_scope SELECT * FROM facts_by_scope WHERE id = 100401 AND scope_id = 1', ARRAY[1]),
+	('a stale amount', 'UPDATE facts_by_scope SET amount = amount + 1 WHERE id = 100401 AND scope_id = 2', ARRAY[2]),
+	('a stale amount in a key outside the set', 'UPDATE facts_by_scope SET amount = amount + 1 WHERE id = 100401 AND scope_id = 2', ARRAY[1]),
+	('a fact lost, every key checked', 'DELETE FROM facts_by_scope WHERE id = 100401', NULL);
+SELECT d.label, COALESCE(v.problem, '(none)') AS problem, v.n FROM damage d LEFT JOIN LATERAL damaged(d.stmt, d.keys) v ON true ORDER BY d.n, v.problem;
+SELECT count(*) AS problems_after FROM sift.scope_verify('facts_by_scope', ARRAY[1, 2, 3, 4]);
+
 -- the copy is read by its sift index, with the answers of the normal plan
 CREATE EXTENSION pg_sift_helpers;
 VACUUM (FREEZE, ANALYZE) facts_by_scope;
@@ -100,7 +172,7 @@ SELECT sift.scope_drop('facts_by_scope');
 SELECT count(*) AS leftover_triggers FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN ('facts'::regclass, 'pairs'::regclass);
 SELECT count(*) AS copies FROM sift.scope_copies;
 SELECT sift.scope_drop('facts_by_scope');
-DROP FUNCTION run_edits(), state(text), answers(regclass, int);
-DROP TABLE edits, facts, pairs;
+DROP FUNCTION run_edits(), state(text), answers(regclass, int), damaged(text, bigint[]), read_answers(bigint[]), read_rows(bigint[]);
+DROP TABLE edits, key_sets, damage, read_sets, facts, pairs;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

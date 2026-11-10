@@ -128,13 +128,22 @@ SELECT sift.scope_drop('facts_by_tenant');
 ### The contract of a read
 
 - A copy is read **one key at a time**: `WHERE tenant_id = $1`. A fact is in the copy once for each key of its member (ids in no key are in none).
-- `WHERE tenant_id IN (1, 2)` counts a fact of both keys twice; `count(DISTINCT id)` counts it once, as does the member path (`dim_a_id IN (SELECT dim_a_id FROM scope_pairs WHERE tenant_id IN (1, 2))`). A reader of two keys reads through the member path or deduplicates on the primary key.
+- `WHERE tenant_id IN (1, 2)` counts a fact of a member in both keys twice (the rows, counts and averages are wrong by the share of such facts). The exact read over several keys counts a fact under the **first requested key that holds its member**; `sift.scope_read_keys(copy, keys)` returns that condition (`alias` names the copy in your query), so nobody writes it by hand:
+
+```sql
+SELECT sift.scope_read_keys('facts_by_tenant', ARRAY[38, 1]);
+-- (public.facts_by_tenant.tenant_id = 38) OR (public.facts_by_tenant.tenant_id = 1 AND NOT EXISTS
+--   (SELECT 1 FROM public.scope_pairs scope_p WHERE scope_p.dim_a_id = public.facts_by_tenant.dim_a_id AND scope_p.tenant_id = ANY ('{38}'::bigint[])))
+SELECT kind, count(*), sum(amount) FROM facts_by_tenant WHERE <that condition> GROUP BY kind;   -- the same answer as the member path, in any key order
+```
+
+  The member path (`dim_a_id IN (SELECT dim_a_id FROM scope_pairs WHERE tenant_id IN (1, 2))`) and a `DISTINCT` on the primary key are the other exact forms. A key listed twice counts once; no key reads no row.
 - `GROUP BY tenant_id` counts a fact in each of its keys.
 - A fact delete or update changes all of its copies; a pair that appears, goes or moves changes the rows of its member in the keys concerned.
 
 ### Exactness
 
-The copy equals the join while its triggers are enabled and the tables are not written by a logical-replication apply worker (`sift.scope_create` refuses a subscription target: the apply worker fires no statement trigger). `ALTER TABLE .. DISABLE TRIGGER` and `COPY` with triggers off leave the copy behind; `sift.scope_verify(copy)` lists the rows that are `missing` from the copy, are `extra` in it or `differs` in a carried column. The roles that write the fact table or the scope relation need the privileges of the copy (the triggers run as the writer).
+The copy equals the join while its triggers are enabled and the tables are not written by a logical-replication apply worker (`sift.scope_create` refuses a subscription target: the apply worker fires no statement trigger). `ALTER TABLE .. DISABLE TRIGGER` and `COPY` with triggers off leave the copy behind; `sift.scope_verify(copy)` lists the rows that are `missing` from the copy, are `extra` in it, `differs` in a carried column or are a `duplicate` (a fact twice in a key). `sift.scope_verify(copy, keys)` checks only those keys and also the contract of a read over them: the facts `sift.scope_read_keys` reads, each once, are the facts of the members of the keys (`multi_key_missing`, `multi_key_extra`). `sift.scope_replicas(copy)` is the histogram of the copies each fact has (`copies_per_fact`, `facts`; 0 for a fact that reaches no key), the multiplicity the cap below limits. The roles that write the fact table or the scope relation need the privileges of the copy (the triggers run as the writer).
 
 ### The multiplicity cap
 
