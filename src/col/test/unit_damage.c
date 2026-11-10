@@ -19,6 +19,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
 
 PG_FUNCTION_INFO_V1(sift_test_leaf_fold);
+PG_FUNCTION_INFO_V1(sift_test_col_pre_folds);
 
 typedef enum DamageSection
 {
@@ -324,6 +325,16 @@ sift_test_leaf_fold(PG_FUNCTION_ARGS)
 	bool		nulls[3] = {false};
 
 	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift._test_col_pre_folds(): the pre-aggregate counts this backend folded from the segments and took from the shared ring: a plan that prices no pre-aggregate answer asks for none */
+Datum
+sift_test_col_pre_folds(PG_FUNCTION_ARGS)
+{
+	Datum		v[2] = {Int64GetDatum(sift_col_pre_folds[0]), Int64GetDatum(sift_col_pre_folds[1])};
+	bool		nulls[2] = {false};
+
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 #endif							/* SIFT_TESTING */

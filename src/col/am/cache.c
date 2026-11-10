@@ -42,6 +42,10 @@ typedef struct LeafEntry
 
 static HTAB *leaf_cache;
 
+#ifdef SIFT_TESTING
+int64		sift_col_pre_folds[2];
+#endif
+
 static void
 zones_free(SiftColZones *zs)
 {
@@ -257,6 +261,10 @@ fold(Relation index, const SiftDirSnapshot *dir, const Fold *f, bool shared, int
 		if (shared)
 			fold_write(f, index->rd_locator.relNumber, fs[nimm], ncols);
 	}
+#ifdef SIFT_TESTING
+	if (f->kind == LSHM_PRE)
+		sift_col_pre_folds[whole]++;
+#endif
 	if (f->kind == LSHM_LEAF)
 	{
 		leaf_dir_flags(d, dir, f->st);

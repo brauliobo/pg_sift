@@ -49,6 +49,8 @@ extern const SiftColPreStats *sift_col_pre_stats(Relation index);
 #ifdef SIFT_TESTING
 /* folds the statistics with the shared ring (*incremental: the segments opened) and without it (*full), and tells whether they are the same bytes */
 extern bool sift_col_leaf_fold_check(Relation index, int *incremental, int *full);
+/* the pre-aggregate counts this backend folded from the segments [0] and took from the shared ring [1] (sift._test_col_pre_folds) */
+extern int64 sift_col_pre_folds[2];
 #endif
 /* What the planner takes of an index with its meta (sift_col_index_meta): the memos of the two functions above for the directory it read */
 typedef struct SiftColLeafMemo
