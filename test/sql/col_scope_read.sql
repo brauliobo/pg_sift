@@ -108,11 +108,31 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 SELECT * FROM phase();
 SELECT sift.col_verify('events_col', true);
 
+-- keys of a few rows share units of the scope segment (col/order.c): a key's rows are told from the other keys' by the test of the derived key, and the units of the other keys are still skipped
+CREATE TABLE small_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
+INSERT INTO small_scope SELECT m, 1 + (m * 7) % 150 FROM generate_series(1, 1500) m;
+INSERT INTO small_scope SELECT m, 1 + (m * 7 + 11) % 150 FROM generate_series(1, 1500) m WHERE m % 10 = 0 ON CONFLICT DO NOTHING;
+CREATE INDEX small_scope_journal ON small_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE small_events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int) WITH (autovacuum_enabled = false);
+INSERT INTO small_events SELECT i, 1 + (i * 13) % 1600, timestamptz '2026-01-01' + (i % 200) * interval '1 day', i % 10 FROM generate_series(1, 6000) i;
+CREATE INDEX small_col ON small_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> small_scope(dim_a_id, tenant_id)');
+REINDEX INDEX small_col;
+VACUUM (FREEZE, ANALYZE) small_events;
+SELECT sift.col_verify('small_col', true);
+SELECT count(DISTINCT (gen, unit)) < count(DISTINCT key) AS units_shared FROM sift._test_col_scope_entries('small_col');
+SELECT n, r.same, r.stored, r.why, r.units_skipped > 0 AS fewer_units
+FROM (VALUES (1, 1), (2, 77), (3, 150), (4, 151)) k(n, t),
+	LATERAL scope_run(
+		'SELECT v, count(*), sum(id), max(created_at) FROM small_events e WHERE sift.in_scope(''small_col''::regclass, ''tenant_id'', e.dim_a_id, ' || k.t || ') GROUP BY v ORDER BY v',
+		'SELECT v, count(*), sum(id), max(created_at) FROM small_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM small_scope WHERE tenant_id = ' || k.t || ') GROUP BY v ORDER BY v') r
+ORDER BY n;
+
 -- the journal of the scope relation vouches for the stamp; pairs deleted and added are read through the entity path for their members (docs/COL-CONNECT.md "The rule"), a top-N reads the entity rows (col_scope_maint and col_scope_patch have the refill and the other shapes)
 DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id % 5 = 0;
 INSERT INTO tenant_scope VALUES (1, 3), (2, 3), (301, 3) ON CONFLICT DO NOTHING;
 SELECT * FROM phase();
 
+DROP TABLE small_events, small_scope;
 DROP TABLE shapes, events, tenant_scope;
 DROP FUNCTION phase(), scope_run(text, text);
 DROP EXTENSION pg_sift_test;

@@ -5,7 +5,8 @@
  * handed to a build of its own for each scope: a key-cut build whose units are cut by the derived key and then by time, that writes its segments flagged SIFT_SEG_SCOPE. A fact row
  * is in the segments of the entities once and in those of a scope once for each key of its member; a row with no pair is in none of them.
  *
- * A unit of a scope segment holds a single scope key (col/order.c): a fact whose member is in two keys has two entries with one address, and a unit lists an address once.
+ * A unit of a scope segment holds the rows of one scope key, or the whole runs of several small keys that share no fact (col/order.c): a fact whose member is in two keys has two
+ * entries with one address, and a unit lists an address once.
  */
 #include "postgres.h"
 

@@ -282,14 +282,62 @@ key_start(const OrderCtx *ctx, const RowRef *refs, uint64 end)
 	return lo;
 }
 
-/*
- * The units of a scope segment hold one scope key each (the first leaf of the order is the derived key): the rows of a fact are replicated once per key, so a unit that held two keys
- * could hold a row twice, and a unit lists each address once.
- */
+/* The first leaf of the order is the derived key of a scope: the segment is a scope segment */
 static inline bool
-key_pure(const OrderCtx *c)
+scope_order(const OrderCtx *c)
 {
 	return c->nleaf > 0 && (c->schema->cols[c->leaf[0]].flags & SIFT_COLD_SCOPE) != 0;
+}
+
+/* Puts an address in the open-addressing set seen (a power of two entries, 0 is empty); true when it was there */
+static bool
+scope_seen(uint64 *seen, uint64 hsize, SiftKey tid)
+{
+	uint64		x = (uint64) tid + 1;
+	uint64		h = (x * UINT64CONST(0x9E3779B97F4A7C15)) >> 32;
+
+	for (h &= hsize - 1; seen[h] != 0; h = (h + 1) & (hsize - 1))
+		if (seen[h] == x)
+			return true;
+	seen[h] = x;
+	return false;
+}
+
+/*
+ * The rows of a fact are replicated once for each scope key of its member, and a unit lists an address once. A unit of a scope segment holds the rows of one scope key, or, for a key
+ * of fewer than SIFT_COLK_SCOPE_FLOOR rows, the whole runs of the keys after it that fit in that many rows together and have no address in common: a unit costs the same bytes
+ * whatever its rows, and most keys are small. The zone of the derived key still names the keys of the unit, and a read of one key tests the key of each row (at most the floor in
+ * rows). refs[0, avail) are in the order of the key, the unit's rows are refs[0, end) at most, and avail < want when refs ends with the rows of the build (a run that reaches the
+ * end of refs is whole only then).
+ */
+static uint64
+scope_cut(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 end, uint64 want)
+{
+	uint64		limit = Min(end, SIFT_COLK_SCOPE_FLOOR),
+				n = key_run(ctx, refs, end),
+				hsize = 16,
+			   *seen;
+
+	if (n >= limit)
+		return n;
+	while (hsize < 2 * limit)
+		hsize *= 2;
+	seen = palloc0(hsize * sizeof(uint64));
+	for (uint64 i = 0; i < n; i++)
+		scope_seen(seen, hsize, refs[i].b->keys[refs[i].r]);
+	while (n < limit)
+	{
+		uint64		run = key_run(ctx, refs + n, avail - n);
+		bool		clash = n + run > limit || (n + run == avail && avail >= want);
+
+		for (uint64 i = 0; i < run && !clash; i++)
+			clash = scope_seen(seen, hsize, refs[n + i].b->keys[refs[n + i].r]);
+		if (clash)
+			break;
+		n += run;
+	}
+	pfree(seen);
+	return n;
 }
 
 /*
@@ -316,8 +364,8 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
 		}
 	}
 	*split = false;
-	if (key_pure(ctx))
-		return Min(end, key_run(ctx, refs, end));
+	if (scope_order(ctx))
+		return scope_cut(ctx, refs, avail, end, unit_rows + slack + 1);
 	if (end < avail && ctx->nleaf > 0)
 	{
 		uint64		best = 0;

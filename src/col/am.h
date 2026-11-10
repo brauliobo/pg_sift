@@ -294,6 +294,8 @@ extern uint32 sift_colk_unit_rows(uint32 aim);
 extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
 /* the rows of a unit of a key that fills at least two such units and is sorted by a second leaf (below ~2,000 the per-unit bytes outgrow what a narrower zone saves) */
 #define SIFT_COLK_SECOND_ROWS	4096
+/* the rows below which a scope key shares its unit with the keys after it (col/order.c): the most rows a read of one small key tests */
+#define SIFT_COLK_SCOPE_FLOOR	2048
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
 /* Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one) */
