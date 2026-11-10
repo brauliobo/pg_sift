@@ -15,6 +15,11 @@ FROM generate_series(1, 6000) g;
 UPDATE cf SET p = 'b' WHERE k = 7 AND p = 'a';
 UPDATE cf SET p = 'c' WHERE k = 8 AND p = 'a';
 UPDATE cf SET x = NULL, n = NULL, i = NULL WHERE k = 9 AND p = 'a';
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE cf_rows AS SELECT * FROM cf ORDER BY ctid;
+TRUNCATE cf;
+INSERT INTO cf SELECT * FROM cf_rows;
+DROP TABLE cf_rows;
 CREATE INDEX cf_col ON cf USING sift_col (id, k, p, x, n, i, b, m) WITH (key_cut = k);
 VACUUM ANALYZE cf;
 CREATE TABLE shapes (ord serial, name text, q text);

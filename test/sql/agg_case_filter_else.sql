@@ -20,6 +20,11 @@ UPDATE cfe SET p = 'b' WHERE k = 7 AND p = 'a';
 UPDATE cfe SET p = 'a' WHERE k = 8 AND p IS DISTINCT FROM 'a';
 UPDATE cfe SET x = NULL, n = NULL, i = NULL, b = NULL, m = NULL, s = NULL, f4 = NULL WHERE k = 9 AND p = 'a';
 UPDATE cfe SET i = abs(i) + 1, b = abs(b) + 1, s = abs(s) + 1 WHERE k = 10;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE cfe_rows AS SELECT * FROM cfe ORDER BY ctid;
+TRUNCATE cfe;
+INSERT INTO cfe SELECT * FROM cfe_rows;
+DROP TABLE cfe_rows;
 CREATE INDEX cfe_col ON cfe USING sift_col (id, k, p, x, n, i, b, m, s, t, f4) WITH (key_cut = k);
 VACUUM ANALYZE cfe;
 

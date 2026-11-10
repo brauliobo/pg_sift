@@ -30,6 +30,11 @@ UPDATE d_t SET doc = 'null' WHERE id % 100 = 4;
 -- values the leaves cannot store that SQL reads: a numeric string, a number in a text path, a boolean in a text path, a string for a boolean and an integer
 UPDATE d_t SET doc = '{"parts": [{"c": "a", "n": "5", "t": 12, "score": "8.5", "ok": "yes"}, {"c": "b", "n": 7, "t": true, "score": " 9 ", "ok": "f"}]}'
 WHERE id % 100 = 5;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE d_t_rows AS SELECT * FROM d_t ORDER BY ctid;
+TRUNCATE d_t;
+INSERT INTO d_t SELECT * FROM d_t_rows;
+DROP TABLE d_t_rows;
 CREATE INDEX d_t_col ON d_t USING sift_col (id, grp, doc) WITH (paths = 'doc.parts[]{c text, n int4, t text, score float8, ok bool}');
 NOTICE:  sift_col index "d_t_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id

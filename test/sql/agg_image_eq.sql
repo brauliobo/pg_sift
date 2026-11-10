@@ -21,6 +21,11 @@ SELECT n,
        ARRAY[md5((n % 5)::text)::uuid]
 FROM generate_series(1, 4000) n;
 UPDATE im SET u = md5('late')::uuid WHERE id = 3999;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE im_rows AS SELECT * FROM im ORDER BY ctid;
+TRUNCATE im;
+INSERT INTO im SELECT * FROM im_rows;
+DROP TABLE im_rows;
 CREATE INDEX im_col ON im USING sift_col (id, u, b, i, c, m, m8, bt, vb, ar);
 VACUUM (FREEZE, ANALYZE) im;
 INSERT INTO im SELECT 5000 + n, md5((n % 3)::text)::uuid, '\x01'::bytea, '203.0.113.1'::inet, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) n;

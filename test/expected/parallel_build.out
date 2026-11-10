@@ -11,6 +11,11 @@ FROM generate_series(1, 30000) i;
 UPDATE pb SET body = NULL WHERE id % 1000 = 0;
 DELETE FROM pb WHERE id % 13 = 0;
 SET max_parallel_maintenance_workers = 0;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE pb_rows AS SELECT * FROM pb ORDER BY ctid;
+TRUNCATE pb;
+INSERT INTO pb SELECT * FROM pb_rows;
+DROP TABLE pb_rows;
 CREATE INDEX pb_ser ON pb USING sift (body);
 CREATE TABLE ranked_ser AS
 	SELECT id, row_number() OVER () AS pos FROM

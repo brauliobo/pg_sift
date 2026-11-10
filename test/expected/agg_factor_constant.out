@@ -12,6 +12,11 @@ INSERT INTO events SELECT g, 1 + (g * 7919) % 400, 1 + g % 5, CASE WHEN g % 13 =
        CASE WHEN g % 997 = 0 THEN 'NaN'::numeric WHEN g % 7 = 0 THEN NULL ELSE (g % 300) / 7.0 END, g % 9 FROM generate_series(1, 60000) g;
 -- the groups of status 5 have no value at all
 UPDATE events SET value_num = NULL WHERE status = 5;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE events_rows AS SELECT * FROM events ORDER BY ctid;
+TRUNCATE events;
+INSERT INTO events SELECT * FROM events_rows;
+DROP TABLE events_rows;
 CREATE INDEX events_col ON events USING sift_col (id, tenant_id, status, value_num, loose, qty) WITH (key_cut = tenant_id);
 VACUUM (FREEZE, ANALYZE) events, kinds;
 CREATE TABLE factor_q (n int, label text, q text);

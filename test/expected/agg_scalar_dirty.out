@@ -28,6 +28,11 @@ UPDATE s_t SET doc = '[1, 2]' WHERE id % 100 = 1;
 UPDATE s_t SET doc = '"text"' WHERE id % 100 = 2;
 UPDATE s_t SET doc = '7' WHERE id % 100 = 3;
 UPDATE s_t SET doc = jsonb_set(doc, '{v}', 'null') WHERE id % 100 = 4;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE s_t_rows AS SELECT * FROM s_t ORDER BY ctid;
+TRUNCATE s_t;
+INSERT INTO s_t SELECT * FROM s_t_rows;
+DROP TABLE s_t_rows;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.ok bool, doc.t text, doc.w int8');
 NOTICE:  sift_col index "s_t_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id

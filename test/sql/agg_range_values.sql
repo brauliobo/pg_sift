@@ -44,6 +44,11 @@ CREATE TABLE rgf AS TABLE rg;
 ALTER TABLE rgf ADD PRIMARY KEY (id);
 UPDATE rgf SET i8 = int8range(id, id + 4, '[]') WHERE id % 20 IN (6, 7, 8);
 UPDATE rgf SET ts = tsrange(timestamp '2025-02-01' + id * interval '1 hour', timestamp '2025-02-02' + id * interval '1 hour') WHERE id % 20 IN (6, 7, 8);
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE rgf_rows AS SELECT * FROM rgf ORDER BY ctid;
+TRUNCATE rgf;
+INSERT INTO rgf SELECT * FROM rgf_rows;
+DROP TABLE rgf_rows;
 CREATE INDEX rgf_col ON rgf USING sift_col (id, i4, i8, d, ts, tz);
 VACUUM (FREEZE, ANALYZE) rgf;
 

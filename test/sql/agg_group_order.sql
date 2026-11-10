@@ -171,6 +171,11 @@ UPDATE o2 SET d = NULL WHERE id % 19 = 0;
 UPDATE o2 SET t = NULL WHERE id % 37 = 0;
 UPDATE o2 SET b = NULL WHERE id % 41 = 0;
 UPDATE o2 SET i8 = NULL WHERE id % 43 = 0;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE o2_rows AS SELECT * FROM o2 ORDER BY ctid;
+TRUNCATE o2;
+INSERT INTO o2 SELECT * FROM o2_rows;
+DROP TABLE o2_rows;
 CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
 VACUUM ANALYZE o2;
 
@@ -210,6 +215,11 @@ SELECT i, (ARRAY['1.0', '1.00', '2', '2.000', '0', '0.0', '-0.0', '3.10', '3.1']
        (ARRAY['a', 'A', 'b', 'B', 'á', 'Á', 'c'])[1 + i % 7], i % 3
 FROM generate_series(1, 20000) i;
 UPDATE o3 SET n = NULL WHERE id % 13 = 0;
+-- no dead version is left for the index build (a session of another test with an older snapshot makes the planner leave the index out: indcheckxmin)
+CREATE TEMP TABLE o3_rows AS SELECT * FROM o3 ORDER BY ctid;
+TRUNCATE o3;
+INSERT INTO o3 SELECT * FROM o3_rows;
+DROP TABLE o3_rows;
 CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
 VACUUM ANALYZE o3;
 
