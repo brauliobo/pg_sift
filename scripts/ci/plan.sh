@@ -84,6 +84,15 @@ if [[ $MODE == full ]]; then
 		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
 		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-400 --stop-after 3
 	fi
+	# the copies of sift.scope_create against the join of the facts with the scope pairs, after every step of random edit scripts (statements, data-modifying CTEs, transactions
+	# with savepoints) on a plain and a partitioned copy (test/fuzz/scope_fuzz.py): a seed is about 12 s, the seeds are fixed
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
+		scope=1-16; (( PG_MAJOR < 18 )) || scope=17-32
+		job difftest-scope difftest-scope 1 python3 "$REPO/test/fuzz/scope_fuzz.py" --seeds $scope --stop-after 2
+	elif (( PG_MAJOR >= 18 )); then
+		job difftest-scope-1 difftest-scope 1 python3 "$REPO/test/fuzz/scope_fuzz.py" --seeds 33-64 --stop-after 3
+		job difftest-scope-2 difftest-scope 1 python3 "$REPO/test/fuzz/scope_fuzz.py" --seeds 65-96 --stop-after 3
+	fi
 	# BM25 queries (phrase, plain, boolean) in subplans, LATERAL joins and cursors, each plan in a new backend, the heap plan against the index and the parallel plan (test/fuzz/bm25_fuzz.py)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
@@ -169,6 +178,7 @@ else
 	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-3 --queries 40 --rows 3000 --leader-on
 	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
 	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
+	job difftest-scope difftest-scope 1 python3 "$REPO/test/fuzz/scope_fuzz.py" --seeds 1-4,9 --steps 30 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
