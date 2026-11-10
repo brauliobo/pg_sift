@@ -457,7 +457,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 ColBuild *
 sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots)
 {
-	int			nscope = shared ? 0 : sift_col_rel(index)->nscope;
+	int			nscope = sift_col_rel(index)->nscope;
 	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, maxsegs / (1 + nscope), segs, shared, nslots, -1);
 
 	b->fill = sift_conn_fill_begin(index, b->cxt, b->share);
