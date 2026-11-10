@@ -63,8 +63,8 @@ CREATE TRIGGER membership_touch AFTER INSERT OR UPDATE OR DELETE ON membership F
 CREATE TABLE probes (n int, keys int8[], pairs boolean);
 INSERT INTO probes VALUES (1, '{3}', false), (2, '{12}', false), (3, '{7,9,11}', false), (4, '{1,2,3,4,5,6}', false), (5, '{2,9}', false), (6, '{99}', false),
 	(7, '{3,5}', true), (8, '{1,2,3,4,5,6}', true), (9, '{5}', true), (10, '{12,6}', true), (11, '{2,7}', true), (12, '{4,10}', true);
-CREATE FUNCTION probe() RETURNS TABLE (n int, same boolean, stored boolean, why text, patched_keys int, patched_rows_read boolean) LANGUAGE sql AS $$
-	SELECT p.n, r.same, r.stored, r.why, r.patched_keys, r.patched_rows > 0
+CREATE FUNCTION probe() RETURNS TABLE (n int, verdict text, stored boolean, why text, patched_keys int, patched_rows_read boolean) LANGUAGE sql AS $$
+	SELECT p.n, CASE r.same WHEN true THEN 'same' WHEN false THEN 'DIFFERENT' ELSE 'needs the join' END, r.stored, r.why, r.patched_keys, r.patched_rows > 0
 	FROM probes p, LATERAL scope_run(
 		format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', p.keys),
 		CASE WHEN p.pairs THEN format('SELECT count(*), sum(v), min(id), max(id) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY (%L::int8[])', p.keys)

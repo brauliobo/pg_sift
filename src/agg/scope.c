@@ -10,6 +10,7 @@
  * segments) the scan is the one of the entity rows, and the conjunct is the test of the member key against the members the scope relation lists for the keys under the snapshot:
  * the plan that was always exact, as a conjunct of the scan.
  */
+/* check-memory: allow-allocs the arrays follow the keys of one scope conjunct and the members the caps of the statement allow, not the rows of the table */
 #include "postgres.h"
 
 #include "utils/lsyscache.h"
@@ -221,7 +222,8 @@ scope_filter(AggExec *ex, int *total, List **add)
 	}
 	/* one row for each pair of a member in several keys is what only the join of the scope relation gives: the planner keeps it as the fallback of such a scope */
 	if (!sc->once && sc->nkeys > 1)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why)));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
+						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));
 	members = sift_scope_members(ex->heap, ex->index, sc->key_name, ex->snap, sc->keys, sc->nkeys, &n);
 	ex->scope_members = n;
 	ex->scope_preds = 1;
