@@ -395,3 +395,6 @@ bridge_group_lateral_array	-	single:f:join_condition
 partial_probe_join	SiftAgg	single:t
 partial_probe_left	SiftAgg	single:t
 partial_probe_not_implied	SiftAgg	single:t
+pair_group_lateral_exists	SiftAgg	single:t
+pair_group_lateral_inner	SiftAgg	single:t
+pair_group_lateral_filter	SiftAgg	single:t

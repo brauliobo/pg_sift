@@ -8,7 +8,7 @@ set client_min_messages = warning;
 select setseed(0.42);
 select :n_events / 4 as n_orders, :n_events / 2 as n_ledger, :n_events * 3 / 4 as n_web, :n_events * 2 / 5 as n_edges, :n_events / 500 + 1 as n_reads, 50000 as n_big \gset
 set sift.col_auto_merge = off;
-drop table if exists events, dim_a, kinds, dim_b, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide cascade;
+drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide cascade;
 
 create table tenants (id int primary key, plan text);
 create table dim_a (id int primary key, tenant_id int not null, type text not null, region text not null);
@@ -39,6 +39,10 @@ insert into links_a select g, 1 from generate_series(1, :n_entities) g where g %
 insert into links_a select g, 2 from generate_series(1, :n_entities) g where g % 10 = 7;
 insert into links_a select g, 3 from generate_series(1, :n_entities) g where g % 10 <> 7;
 insert into links_a select g, s from generate_series(1, :n_entities) g, generate_series(4, 8) s;
+
+-- the same links once for each (set, entity) pair, under a unique index
+create table dim_b_pairs as select distinct on (set_id, dim_a_id) set_id, dim_a_id, deleted_at from dim_b order by set_id, dim_a_id, deleted_at nulls first;
+create unique index dim_b_pairs_key on dim_b_pairs (set_id, dim_a_id);
 
 -- dim_a_id is Zipf-like (a few busy entities); rows are inserted in random order (scattered heap)
 insert into events (tenant_id, dim_a_id, kind_id, status, region, amount, qty, score, created_at, d, note, label, attrs, tags, payload)
@@ -174,6 +178,6 @@ order by random();
 create index wide_col on wide using sift_col (id, tenant_id, kind_id, status, created_at, deleted_at, m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12,
   n01, n02, n03, n04, n05, n06, n07, n08, n09, n10, n11, n12);
 
-vacuum (analyze) tenants, dim_a, kinds, dim_b, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide;
+vacuum (analyze) tenants, dim_a, kinds, dim_b, dim_b_pairs, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide;
 select relname, reltuples::bigint, pg_size_pretty(pg_total_relation_size(oid)) from pg_class where relname in ('events','orders','order_items','readings','weblog','ledger','eav','edges','events_p_2025','lookup_big') order by 1;
 select indexrelid::regclass, pg_size_pretty(pg_relation_size(indexrelid)) from pg_index where indexrelid::regclass::text like '%\_col' or indexrelid::regclass::text like '%\_col%' order by 1;

@@ -847,3 +847,9 @@ select b.grp, count(*), sum(v.amount) from events v join link_live b on b.dim_a_
 select b.grp, count(*), sum(v.amount), count(b.grp) from events v left join link_live b on b.dim_a_id = v.dim_a_id and b.deleted_at is null where v.dim_a_id between 1 and 40 group by 1;
 -- @case partial_probe_not_implied | join | the join's conditions do not imply the predicate of the index: the table is read whole
 select b.grp, count(*), sum(v.amount) from events v join link_live b on b.dim_a_id = v.dim_a_id where v.dim_a_id between 1 and 40 group by 1;
+-- @case pair_group_lateral_exists | join | the sets of the row's entity as a lateral EXISTS over a link table with a unique (set, entity) pair: the sets are joined once
+select t.id, count(*), sum(v.amount) from events v left join lateral (select tenants.* from tenants where exists (select 1 from dim_b_pairs b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 4) group by 1;
+-- @case pair_group_lateral_inner | join | the same as an inner lateral join
+select t.id, count(*), sum(v.amount) from events v join lateral (select tenants.* from tenants where exists (select 1 from dim_b_pairs b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+-- @case pair_group_lateral_filter | join | a condition on the group table inside the lateral sub-select
+select t.id, count(*) from events v left join lateral (select tenants.* from tenants where tenants.plan = 'pro' and exists (select 1 from dim_b_pairs b where b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
