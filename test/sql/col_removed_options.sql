@@ -1,4 +1,4 @@
--- key_cut_rows, point_columns and order_columns, the options that 4.3 deprecated, were removed in 4.4. They stay accepted and are ignored, so that an index that stores
+-- key_cut_rows, point_columns and order_columns, the options that 4.3 deprecated, were removed in 5.0. They stay accepted and are ignored, so that an index that stores
 -- one, a dump that names one and an ALTER INDEX of another option of such an index keep working: the layout is the one of an index without the option, a NOTICE says
 -- so where it is written, and RESET drops it.
 CREATE EXTENSION pg_sift;

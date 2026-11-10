@@ -1201,7 +1201,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. A build of an index writes none since 4.4; segments already written keep them.
+- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. A build of an index writes none since 5.0; segments already written keep them.
 - **Gain:** ORDER BY k LIMIT 10 0.128 to 0.051 ms (800,000 rows; b-tree 0.010), executor 645k to 245k instructions; LIMIT above 32 or a filtered LIMIT gain nothing
 - **Gain and cost:** 2.63x fewer instructions (400k saved a query), index +0.6%, build +0.0%, automatic
 - **Impact:** index size: +0.60% (94,044,160 against 93,478,912 bytes, three order columns, 800,000 rows); +2.4% (narrow index, 353,029 rows); build, merge and writes: Build 1.61 against 1.63 s (800,000 rows), promotion of 100,000 rows 0.052 against 0.052 s, merge of 500,000 rows 0.74 against 0.66 s (noise +-10%); other: format minor 18; Index +0.6% to +2.4% (0.24 B a row at units of 4,096 rows or more); build, promotion and merge within noise. Needs a sorted run; none for a unit under 128 rows, a leaf with NULL or overflow, or a key_cut segment. A 3.3 library cannot read minor 18.
@@ -1388,7 +1388,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** A top-N over a sift_table or an index written by 4.3 or earlier with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. A build of an index writes no run since 4.4; segments already written keep them.
+- **What it does:** A top-N over a sift_table or an index written by 4.3 or earlier with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. A build of an index writes no run since 5.0; segments already written keep them.
 - **Gain:** 40 scans ORDER BY a key column LIMIT 10..49, 1,000,000 orders: 48 to 24.8 ms; ORDER BY rnd LIMIT 10, 800,000 rows: 113 to 82 us a scan; LIMIT 1000: 1.23 to 1.05 ms
 - **Impact:** index size: -; build, merge and writes: -; other: Nothing stored: the segment format does not change, no index growth or write cost.
 - **When:** A top-N scan whose first key is a leaf with a run (a sift_table, or an index written by 4.3 or earlier with order_columns) and a unit of at least 2 x (limit + 1) rows passing.
@@ -2694,7 +2694,7 @@ all · deprecated · since 3.3 · default ''
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** removed in 4.4, still accepted and ignored: the columns whose rows the segment lists by value; point_tid_columns lists the heap addresses of the rows of a column, which answers an equality or a short IN list with no unit read
+- **What it does:** removed in 5.0, still accepted and ignored: the columns whose rows the segment lists by value; point_tid_columns lists the heap addresses of the rows of a column, which answers an equality or a short IN list with no unit read
 - **Gain:** integer equality 0.119 to 0.020 ms, IN of 5 keys 0.193 to 0.028 ms (200,000 rows; a b-tree 0.006 and 0.009)
 - **Impact:** index size: index 29.1 to 93.7 MB (+222%) for five leaves at 1,000,000 rows, 170 MB for six b-trees; 4 bytes a row for repeating keys, 4.2 MB for a unique key (200,000 rows); build, merge and writes: build 66 to 94 ms (+42.7%); insert of 20,000 rows 24 to 23 ms and update of 10% of the rows 53 to 52 ms: within noise (100,000 rows); other: none: ignored; the directory of rows it wrote took 4 bytes a row for keys that repeat (0.8 MB for 200,000 rows), 4.2 MB for a unique key; a leaf with overflow values or inline strings gets no table
 - **When:** An index that carries the option, from 3.3 to 4.3; the segments already written are read as before, and a promotion, merge or REINDEX writes the directory the build chooses (point_tid_columns lists the heap addresses of its columns).
@@ -2707,7 +2707,7 @@ all · deprecated · since 3.3 · default ''
 
 all · deprecated · since 3.4 · default 0
 
-- **What it does:** removed in 4.4, still accepted and ignored: the rows a key-cut unit aims at; the build uses the rows of an average superblock, whatever the option says
+- **What it does:** removed in 5.0, still accepted and ignored: the rows a key-cut unit aims at; the build uses the rows of an average superblock, whatever the option says
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: none: ignored
 - **When:** An index that carries the option, from 3.4 to 4.2.x; the units already written are read as before and the next build, promotion or merge cuts them by superblock.
@@ -2720,7 +2720,7 @@ all · deprecated · since 3.4 · default 0
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** removed in 4.4, still accepted and ignored: a sorted run of the rows of each unit; the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
+- **What it does:** removed in 5.0, still accepted and ignored: a sorted run of the rows of each unit; the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
 - **Gain:** ORDER BY an integer LIMIT 100 37.9 ms normal plan, 3.5 without runs, 1.4 with (1,000,000 rows); LIMIT 10 0.128 to 0.051 ms with heads (800,000)
 - **Impact:** index size: 2 bytes a row per unordered leaf (+50.8% of a 10-column index with 8 unordered leaves, 1,000,000 rows); heads add 0.6% to 2.4% (three order columns); build, merge and writes: with heads (not the runs themselves): build 1.61 against 1.63 s, promotion of 100,000 rows 0.052 s, merge of 500,000 rows 0.74 against 0.66 s; other: none: ignored; the runs it wrote took the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units)
 - **When:** An index that carries the option, from 3.3 to 4.3; the segments already written keep their runs and heads and are read as before, and a promotion, merge or REINDEX writes none.

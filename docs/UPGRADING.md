@@ -203,7 +203,7 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
 
 - Update as in section 2: install, restart (a standby too), `ALTER EXTENSION pg_sift UPDATE` in each database, then `scripts/upgrade-check.sh` (it warns for the three removed options below; nothing blocks). **Update the standbys and every node that reads the index before the primary**, or set `sift.col_wbuf_ref = off` and `sift.col_auto_connect = off` (and `sift.col_format_minor = 14` for the other sections of minor 44) on the primary until they are updated.
 - `REINDEX INDEX CONCURRENTLY` is worth it for an index with a serial id, for an index whose table is read by `WHERE col = x ORDER BY ts LIMIT n` through a b-tree you want to drop, and for a child table whose foreign key you want connected; not for the rest. Reset the three deprecated options first (below). A `REINDEX` after `ALTER INDEX x SET (connect = 'off')` leaves an index unconnected.
-- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 4.4 (still accepted and ignored, with a `NOTICE`): [What 4.3 deprecates and 4.4 removes](#what-43-deprecates-and-44-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
+- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 5.0 (still accepted and ignored, with a `NOTICE`): [What 4.3 deprecates and 4.4 removes](#what-43-deprecates-and-50-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
 
 ### Going back to 4.2
 
@@ -236,9 +236,9 @@ psql -d app -c "SELECT sift.col_verify('events_col', true)"
 
 ## What 4.3 deprecates and 5.0 removes
 
-Three `sift_col` options are accepted and ignored by 4.3 and removed in 4.4, which keeps accepting and ignoring them so that nothing breaks: an index that stores one opens, takes `REINDEX` and `ALTER INDEX` of another option, and a dump that names one restores. A `CREATE INDEX` or `ALTER INDEX` that names one says so in a `NOTICE` (`reloption-removed`; so does the restore of a dump), `REINDEX` of an index that stores one is silent, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
+Three `sift_col` options are accepted and ignored by 4.3 and removed in 5.0, which keeps accepting and ignoring them so that nothing breaks: an index that stores one opens, takes `REINDEX` and `ALTER INDEX` of another option, and a dump that names one restores. A `CREATE INDEX` or `ALTER INDEX` that names one says so in a `NOTICE` (`reloption-removed`; so does the restore of a dump), `REINDEX` of an index that stores one is silent, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
 
-| Option | What 4.3 and 4.4 do | What to do |
+| Option | What 4.3 and 5.0 do | What to do |
 |---|---|---|
 | `order_columns` | writes no sorted run; the order arrays (`order_array_columns`, chosen by the build) answer a top-N, a range and an `OFFSET` | `ALTER INDEX .. RESET (order_columns)`; keep `order_array_columns` if you set it |
 | `point_columns` | lists its columns as heap addresses, as `point_tid_columns` does | set `point_tid_columns` to the same columns and reset `point_columns` |

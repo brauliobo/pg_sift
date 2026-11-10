@@ -148,14 +148,14 @@ BEGIN
 			RETURN NEXT;
 		END IF;
 
-		-- 4.4 removed these: they are still accepted, stored and ignored; RESET drops them
+		-- 5.0 removed these: they are still accepted, stored and ignored; RESET drops them
 		FOR dep IN SELECT * FROM (VALUES ('key_cut_rows', 'the units aim at the rows of an average superblock'),
 									   ('point_columns', 'name its columns in point_tid_columns to list their heap addresses'),
 									   ('order_columns', 'no sorted run is written; the order arrays, order_array_columns, answer what it did')) v(opt, what)
 		LOOP
 			CONTINUE WHEN NOT EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE dep.opt || '=%');
 			kind := 'option'; detected := dep.opt; status := 'warn';
-			advice := format('removed in 4.4 and ignored (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
+			advice := format('removed in 5.0 and ignored (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
 			RETURN NEXT;
 		END LOOP;
 	END LOOP;

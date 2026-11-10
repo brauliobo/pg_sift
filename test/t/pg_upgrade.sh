@@ -66,7 +66,7 @@ if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"
 # the options of this tree's column index; a released library has none of them (cube_minmax and key_columns are 3.3's, hll_columns 3.4's)
 FACTS_OPTS="WITH (cube_minmax = true, key_columns = 'g', hll_columns = 'id')"
 [[ -z $OLD_REF ]] || FACTS_OPTS=
-# 4.3 still honors the three options that 4.4 removed and keeps accepting: an index that stores them must come through pg_upgrade
+# 4.3 still honors the three options that 5.0 removed and keeps accepting: an index that stores them must come through pg_upgrade
 [[ ! ${OLD_REF#v} =~ ^4\.3\. ]] || FACTS_OPTS="WITH (key_cut_rows = 500, point_columns = 'id', order_columns = 'ts')"
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'

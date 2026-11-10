@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# key_cut_rows, point_columns and order_columns, deprecated in 4.3, are removed in 4.4 and stay accepted and ignored: an index that the released 4.3.0
-# library wrote with each of them stored opens in this tree, answers as the heap, takes ALTER INDEX of another option, REINDEX and REINDEX CONCURRENTLY, survives
+# key_cut_rows, point_columns and order_columns, deprecated in 4.3, are removed in 5.0 and stay accepted and ignored: an index that the released 4.3.0
+# library wrote with each of them kept opens in this tree, answers as the heap, takes ALTER INDEX of another option, REINDEX and REINDEX CONCURRENTLY, survives
 # ALTER EXTENSION UPDATE, and the dump of the old database restores into this tree. RESET drops them.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -23,9 +23,9 @@ sql us "CREATE EXTENSION pg_sift" "CREATE TABLE ev (id int, ts timestamp, g int,
 	"CREATE INDEX ev_oc ON ev USING sift_col (id, ts, g, v) WITH (order_columns = 'ts')" \
 	"CREATE INDEX ev_all ON ev USING sift_col (id, ts, g, v) WITH (key_cut_rows = 300, point_columns = 'id', order_columns = 'ts')" \
 	"VACUUM (FREEZE, ANALYZE) ev" >/dev/null 2>&1 || bail "the release cannot be set up"
-stored() { sql us "SELECT string_agg(relname || '=' || array_to_string(reloptions, ','), ' ' ORDER BY relname) FROM pg_class WHERE relname IN ('ev_kcr','ev_pc','ev_oc','ev_all')"; }
-before=$(stored)
-check "the release $ref stored the options of the four indexes" test "$(grep -o -E 'key_cut_rows|point_columns|order_columns' <<<"$before" | sort | uniq -c | tr -s ' \n' ' ')" == " 2 key_cut_rows 2 order_columns 2 point_columns "
+kept() { sql us "SELECT string_agg(relname || '=' || array_to_string(reloptions, ','), ' ' ORDER BY relname) FROM pg_class WHERE relname IN ('ev_kcr','ev_pc','ev_oc','ev_all')"; }
+before=$(kept)
+check "the release $ref kept the options of the four indexes" test "$(grep -o -E 'key_cut_rows|point_columns|order_columns' <<<"$before" | sort | uniq -c | tr -s ' \n' ' ')" == " 2 key_cut_rows 2 order_columns 2 point_columns "
 # the answer through one index: the others are marked invalid inside a transaction that rolls back
 Q="SELECT g, count(*), sum(v) FROM ev WHERE id BETWEEN 1000 AND 9000 GROUP BY g ORDER BY g"
 ans() { sql us "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = $1" "SELECT md5(string_agg(x::text, ',')) FROM ($Q) x" | tail -n 1; }
@@ -42,16 +42,16 @@ node_start us || bail "cannot start this tree on $ref data"
 check "this library on the old extension: each index answers as the heap" \
 	test "$(for ix in $IXS; do ans_ix "$ix"; done | sort -u | tr '\n' ' ')" == "$want "
 check "... and sift.col_verify finds nothing wrong" test -z "$(for ix in $IXS; do sql us "SELECT sift.col_verify('$ix'::regclass, true)" 2>&1; done)"
-check "ALTER INDEX of another option on an index that stores the removed ones" \
+check "ALTER INDEX of another option on an index that holds the removed ones" \
 	test "$(sql us "ALTER INDEX ev_all SET (cube_minmax = true)" "ALTER INDEX ev_kcr SET (cube_minmax = true)" 2>&1 | grep -c ERROR)" == 0
 out=$(for ix in $IXS; do sql us "SET client_min_messages = notice" "REINDEX INDEX $ix" 2>&1; done)
-check "REINDEX of each index: no error, no NOTICE, the options stay stored" \
-	test "$(grep -c -E 'ERROR|removed in 4.4' <<<"$out")|$(stored | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l)" == "0|6"
-check "REINDEX INDEX CONCURRENTLY of an index that stores them" test "$(sql us "REINDEX INDEX CONCURRENTLY ev_pc" 2>&1 | grep -c ERROR)" == 0
+check "REINDEX of each index: no error, no NOTICE, the options stay kept" \
+	test "$(grep -c -E 'ERROR|removed in 5.0' <<<"$out")|$(kept | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l)" == "0|6"
+check "REINDEX INDEX CONCURRENTLY of an index that holds them" test "$(sql us "REINDEX INDEX CONCURRENTLY ev_pc" 2>&1 | grep -c ERROR)" == 0
 check "each index answers as the heap after the REINDEX" test "$(for ix in $IXS; do ans_ix "$ix"; done | sort -u | tr '\n' ' ')" == "$want "
 dump=$TAPDIR/dump.sql
 pg_dump -h "$(dir us)/sock" -p "$(port us)" -U postgres -d postgres >"$dump"
-check "the dump names the options as stored" test "$(grep -c -E 'key_cut_rows|point_columns|order_columns' "$dump")" -ge 4
+check "the dump names the options as kept" test "$(grep -c -E 'key_cut_rows|point_columns|order_columns' "$dump")" -ge 4
 
 sql us "ALTER EXTENSION pg_sift UPDATE" >/dev/null 2>"$TAPDIR/upd.err"
 check "ALTER EXTENSION UPDATE from $ref (to $(sql us "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"))" \
@@ -66,7 +66,7 @@ check "... and the four indexes are there with their options" \
 	test "$(sql us "SELECT 1" >/dev/null; psql -X -At -h "$(dir us)/sock" -p "$(port us)" -U postgres -d r43 -c "SELECT count(*) FROM pg_class WHERE relname IN ('ev_kcr','ev_pc','ev_oc','ev_all') AND reloptions IS NOT NULL")" == 4
 
 sql us "ALTER INDEX ev_all RESET (key_cut_rows, point_columns, order_columns)" "ALTER INDEX ev_kcr RESET (key_cut_rows)" "ALTER INDEX ev_pc RESET (point_columns)" "ALTER INDEX ev_oc RESET (order_columns)" >/dev/null 2>&1
-check "RESET drops them" test "$(stored | grep -c -E 'key_cut_rows|point_columns|order_columns')" == 0
+check "RESET drops them" test "$(kept | grep -c -E 'key_cut_rows|point_columns|order_columns')" == 0
 check "a CREATE INDEX that names one is accepted and says so" \
-	test "$(sql us "SET client_min_messages = notice" "CREATE INDEX ev_new ON ev USING sift_col (id, ts) WITH (point_columns = 'id')" 2>&1 | grep -c 'was removed in 4.4 and is ignored')" == 1
+	test "$(sql us "SET client_min_messages = notice" "CREATE INDEX ev_new ON ev USING sift_col (id, ts) WITH (point_columns = 'id')" 2>&1 | grep -c 'was removed in 5.0 and is ignored')" == 1
 finish
