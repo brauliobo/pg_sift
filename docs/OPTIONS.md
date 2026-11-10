@@ -1748,16 +1748,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 4.4 · default ''
 
-- **What it does:** EXPERIMENTAL: declares a derived key of the rows of this index, the scope key that a table of (member, scope) pairs gives each row through its member key (the column fk of this index); the index depends on the unique btree of that table. This release makes the declaration, the leaf of the derived key (NULL in every row of the entity segments) and the column format minor; the scope segments and the reads that use them come with the scope index itself
-- **Gain:** n/a: this release adds the declaration; the scope segments and their reads are not in it
-- **Impact:** index size: n/a: the leaf of the derived key is a constant NULL; build, merge and writes: n/a: no row is written for it; other: format minor 45; one int8 leaf of the derived key for each scope in every segment (constant NULL: a few bytes a unit); no scope segment is written yet
+- **What it does:** EXPERIMENTAL: declares a derived key of the rows of this index, the scope key that a table of (member, scope) pairs gives each row through its member key (the column fk of this index); the index depends on the unique btree of that table, and the table must carry a sift_col index with track_changes = 'ctid' and the member first (its journal: which members changed since the scope segments were written). The build, a promotion, a merge and a rewrite write the scope segments, key-cut segments of the rows replicated once for each scope key; a scan of a scope key reads the units of that key less the changed members, whose entity rows it reads besides. An optional cols(a, b) after the relation keeps only those columns in the scope segments
+- **Gain:** a read of one tenant: 0.7 to 1.0 million instructions against 2.6 to 3.4 on the entity rows of its members (100,000 events, 5,000 entities, 40 tenants; two tenants 4.3 against 4.5, three 5.9 against 5.4: no gain for several keys at this size)
+- **Impact:** index size: index size +107% on the 100,000-row fixture (one 5-column index, 0.93 entries a row); cols(..) of 2 of 5 columns is smaller; build, merge and writes: index build 0.99 s and 7.8 MB of WAL against 0.22 s and 2.4 MB for the entity-only index (100,000 events, two scopes); writes not measured; other: format minor 45; the scope segments: one entry for each fact row and scope key of its member (0.93 to 1.1 entries a row on tenants and groups; the NOTICE after the build says the figure and the growth: +107% on a 100,000-row index of 5 columns, narrower with cols(..)); one 32-byte journal record for each pair an UPDATE or DELETE ends and each pair inserted into the relation of pairs
 - **When:** A heap table of pairs that is not the indexed table, not partitioned and not a view; integer keys only (map a text key through a dictionary table).
 - **Default:** '' — Not on by default: a scope names a table of pairs, so only the user can say it.
 - **Why not the default:** the history does not say
 - **Turn off:** ALTER INDEX i SET (scope = 'off') or RESET (scope): the dependency goes; REINDEX drops the leaf and the format minor goes back.
-- **Upgrade from 4.3:** A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the leaf.
-- **Advice:** Declare it on the index of a fact table whose member key (an integer column of the index) is listed with the scope key in a table of pairs that has a unique btree on exactly those two columns (a primary key, a unique index) and both columns NOT NULL. An unqualified relation name is in the schema of this index's table. DROP INDEX of that btree needs CASCADE while the declaration exists. Remove it with ALTER INDEX .. SET (scope = 'off').
-- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+- **Upgrade from 4.3:** A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments.
+- **Advice:** Declare it on the index of a fact table whose member key (an integer column of the index) is listed with the scope key in a table of pairs that has a unique btree on exactly those two columns (a primary key, a unique index), both NOT NULL, and a sift_col journal index (CREATE INDEX .. USING sift_col (member, scope_key) WITH (track_changes = 'ctid')). An unqualified relation name is in the schema of this index's table. The first scope index of a relation starts its journal at the end of its build: REINDEX it once to take the stamps. DROP INDEX of the btree needs CASCADE while the declaration exists. Remove it with ALTER INDEX .. SET (scope = 'off').
+- **Sources:** benchmark `test:col_scope_read`; [FORMATS](FORMATS.md)
 
 ### diagnostic
 
@@ -2313,28 +2313,28 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · diagnostic · since 4.4 · default on
 
 - **What it does:** the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index
-- **Gain:** n/a: the planner recognises no scope form yet
+- **Gain:** a read of one tenant from the units: 0.7 to 1.0 million instructions against 2.6 to 3.4 on the entity rows of its members (100,000 events, 40 tenants); several tenants about the same as the entity rows
 - **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting
-- **When:** Statements that join, or IN or EXISTS over, the scope relation of an index with a scope.
+- **When:** Statements that carry a scope conjunct (the testing marker; the planner's recognition of the join forms is separate) over an index with a scope.
 - **Default:** on — On: a scope is declared by the user, and the setting only gates what the declaration buys.
 - **Turn off:** SET sift.agg_scope = off (session, role, database or postgresql.conf): the joins are the ordinary ones. No REINDEX.
 - **Upgrade from 4.3:** New in 4.4.
-- **Advice:** Leave on. Off keeps the join as written; it applies to the scans of an index that declares a scope.
-- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+- **Advice:** Leave on. Off keeps the statement as written; it applies to the scans of an index that declares a scope.
+- **Sources:** benchmark `test:col_scope_read`; [FORMATS](FORMATS.md)
 
 #### sift.scope_patch_keys
 
 `sift_col` · diagnostic · since 4.4 · default 4096
 
 - **What it does:** the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole
-- **Gain:** n/a: the reader of the scope segments is not in this release
+- **Gain:** n/a: a bound on a fallback, not a speed choice
 - **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; each patched key is a probe of the entity path
 - **When:** Reads of a scope key after the scope relation changed.
 - **Default:** 4096 — 4,096: the most keys a statement patches before the entity path is cheaper (the cap of the found flag of 4.3 is 16,384 keys of one parent).
 - **Turn off:** SET sift.scope_patch_keys = 1 patches one key and falls back to the join for more. No REINDEX.
 - **Upgrade from 4.3:** New in 4.4.
-- **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to fall back to the join earlier.
-- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+- **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to read the entity rows of all the members earlier.
+- **Sources:** benchmark `test:col_scope_patch`; [FORMATS](FORMATS.md)
 
 #### sift.scope_max_multiplicity
 
@@ -2749,7 +2749,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
-| `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the leaf. |
+| `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 4.4. |
 | `sift.scope_patch_keys` | new | 4096 |  | New in 4.4. |
 | `sift.scope_max_multiplicity` | new | 8 |  | New in 4.4. |
