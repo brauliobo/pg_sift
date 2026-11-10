@@ -3,11 +3,17 @@
 # transaction, VACUUMs queue behind a held maintenance lock while the writers close write buffers and the holder promotes (the order in which a VACUUM that had
 # waited for the lock acted on a list of segments it had read before it, and old versions of updated rows were live again), and after every round the rows of the
 # two must be the same through every plan, in a long snapshot and in a fresh one. Quick tier: seeds 2 and 3 of 8 s with the lock held in every round, about a
-# minute; full: 24 seeds of 80 s. A seed that fails on the code before the fix is a probability, see the header of the script. SIFT_FUZZ_SEEDS / SIFT_FUZZ_SECONDS override.
+# minute; full: 24 seeds of 80 s, as three jobs of 8 (this file: seeds 1-8; tbl_twin_fuzz_b.sh: 9-16 and tbl_twin_fuzz_c.sh: 17-24, full tier only): a seed takes about
+# 125 s (the 80 s of rounds, then the drain and the checks), so 24 seeds ran past the 1800 s of a hosted job and 12 would still leave it a few minutes. A seed that fails on the code before the fix is a probability, see the header of the script. SIFT_FUZZ_SEEDS / SIFT_FUZZ_SECONDS override.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-SEEDS=$(knob SIFT_FUZZ_SEEDS 1-24 2-3)
+case ${SIFT_FUZZ_SHARD:-a} in
+	a) SEEDS=$(knob SIFT_FUZZ_SEEDS 1-8 2-3) ;;
+	b) SEEDS=$(knob SIFT_FUZZ_SEEDS 9-16 '') ;;
+	c) SEEDS=$(knob SIFT_FUZZ_SEEDS 17-24 '') ;;
+esac
+[[ -n $SEEDS ]] || { echo '1..0 # SKIP the seeds of this job run in the full tier only'; exit 0; }
 SECONDS_PER_SEED=$(knob SIFT_FUZZ_SECONDS 80 8)
 HOLD=$(knob SIFT_FUZZ_HOLD 0.5 1)
 
