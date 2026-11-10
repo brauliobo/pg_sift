@@ -171,6 +171,38 @@ CREATE FUNCTION sift.scope_trigger_name(copy text, kind text) RETURNS name LANGU
 
 COMMENT ON FUNCTION sift.scope_trigger_name(text, text) IS 'Internal: the name of one trigger of a scope copy';
 
+-- An option of the table's sift_col index that names columns is restricted to the columns a scope copy carries: _scope_split cuts a list outside braces, parentheses and quotes, _scope_lead is
+-- the column a name starts with (doc.a, items[].k, "Q"), _scope_restrict gives NULL when nothing is left and keeps a word (auto, off, all) and an option that names no column.
+CREATE FUNCTION sift._scope_split(val text, sep text) RETURNS text[] LANGUAGE sql IMMUTABLE STRICT AS $$
+	SELECT array_agg(trim(e)) FROM regexp_split_to_table(val, sep || '(?=(?:[^"]*"[^"]*")*[^"]*$)(?![^{(]*[})])') e $$;
+CREATE FUNCTION sift._scope_lead(entry text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT COALESCE(replace(m[1], '""', '"'), m[2]) FROM regexp_match(ltrim(entry, '+ '), '^(?:"((?:[^"]|"")*)"|([^.\[ :=>-]*))') m $$;
+CREATE FUNCTION sift._scope_restrict_rollup(entry text, cols name[]) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	WITH p AS (SELECT sift._scope_split(split_part(entry, ':', 1), ',') dims, NULLIF(trim(substr(entry, NULLIF(strpos(entry, ':'), 0) + 1)), '') meas),
+		 m AS (SELECT array_to_string(array_agg(e) FILTER (WHERE sift._scope_lead(e) = ANY (cols)), ', ') kept FROM p, unnest(sift._scope_split(p.meas, ',')) e)
+	SELECT CASE WHEN EXISTS (SELECT 1 FROM p, unnest(p.dims) d WHERE sift._scope_lead(d) <> ALL (cols)) THEN NULL WHEN (SELECT meas FROM p) IS NULL THEN entry
+				ELSE (SELECT array_to_string(dims, ', ') || ': ' || kept FROM p, m) END $$;
+CREATE FUNCTION sift._scope_restrict(opt text, val text, cols name[]) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE
+		WHEN lower(trim(val)) IN ('', 'auto', 'off', 'on', 'all', 'none', 'default') OR (opt = 'preagg' AND val !~ '^\s*cube\s*\(') OR opt <> ALL (ARRAY['paths', 'compression', 'preagg', 'rollup', 'rollup_leaves', 'rollup_columns', 'calendar_columns', 'hll_columns', 'return_columns']) THEN val
+		WHEN opt = 'compression' THEN (SELECT string_agg(e, '; ') FROM unnest(sift._scope_split(val, ';')) e WHERE strpos(e, '=') = 0 OR sift._scope_lead(split_part(e, '=', 1)) = ANY (cols))
+		WHEN opt = 'rollup_columns' THEN sift._scope_restrict_rollup(val, cols)
+		WHEN opt = 'preagg' THEN (SELECT 'cube(' || string_agg(r, '; ') || ')' FROM unnest(sift._scope_split(regexp_replace(val, '^\s*cube\s*\((.*)\)\s*$', '\1'), ';')) e,
+								  LATERAL (SELECT sift._scope_restrict_rollup(e, cols) r) x WHERE r IS NOT NULL)
+		ELSE (SELECT string_agg(e, ', ') FROM unnest(sift._scope_split(val, ',')) e WHERE sift._scope_lead(e) = ANY (cols)) END $$;
+-- The options a copy's index inherits from the index of its table as 'name = value, ..': those the caller did not name, restricted to the carried columns; one with nothing left is
+-- not inherited and a NOTICE lists it. A value that starts with 'auto:' is what the build read from the documents: the copy reads its own; those keyed on the table's own key are derived again.
+CREATE FUNCTION sift._scope_inherit(fidx oid, cols name[], named text[]) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE kept text; dropped text;
+BEGIN
+	SELECT string_agg(format('%s = %L', o.n, q.r), ', ' ORDER BY i) FILTER (WHERE q.r IS NOT NULL), string_agg(o.n, ', ' ORDER BY i) FILTER (WHERE q.r IS NULL) INTO kept, dropped
+		FROM pg_class c, unnest(c.reloptions) WITH ORDINALITY u(x, i), LATERAL (SELECT split_part(x, '=', 1) n, substr(x, strpos(x, '=') + 1) v) o, LATERAL (SELECT sift._scope_restrict(o.n, o.v, cols) r) q
+		WHERE c.oid = fidx AND x !~ '^[^=]*=auto:' AND o.n <> ALL (named) AND o.n = ANY (string_to_array('paths,compression,preagg,rollup,rollup_dims,rollup_leaves,rollup_columns,rollup_on_demand,calendar_columns,cluster_advice,cube_minmax,dict_lookup,array_lengths,hll_columns,return_columns,superunit,write_buffer_limit,dead_rewrite_pct,vacuum_truncate', ','));
+	IF dropped IS NOT NULL THEN RAISE NOTICE 'scope_create: % of the index of the table name columns the copy does not carry and are not inherited', dropped
+		USING DETAIL = 'The copy chooses them again from its own columns.', HINT = 'Carry the columns with columns => ARRAY[..], or give the option in options.'; END IF;
+	RETURN kept;
+END $$;
+
 CREATE FUNCTION sift.scope_create(copy text, source regclass, fk name, scope_relation regclass, scope_key name, columns name[] DEFAULT NULL,
 								  partition boolean DEFAULT false, member name DEFAULT NULL, order_column name DEFAULT NULL,
 								  options text DEFAULT NULL, max_copies numeric DEFAULT 1.8) RETURNS bigint
@@ -196,15 +228,9 @@ DECLARE
 	mb        numeric;
 	kept      text;
 	named     text[] := ARRAY(SELECT m[1] FROM regexp_matches(regexp_replace(COALESCE(options, ''), '''([^'']|'''')*''', '', 'g'), '([a-z_]+)\s*=', 'g') m);
-	-- the options of a sift_col index that describe its columns; those keyed on the table's own key (key_*, order_*, point_*, count_columns, track_changes, connect) are derived again for the scope key
-	inherit   CONSTANT text[] := ARRAY['paths', 'compression', 'preagg', 'rollup', 'rollup_dims', 'rollup_leaves', 'rollup_columns', 'rollup_on_demand', 'calendar_columns',
-									   'cluster_advice', 'cube_minmax', 'dict_lookup', 'array_lengths', 'hll_columns', 'return_columns', 'superunit',
-									   'write_buffer_limit', 'dead_rewrite_pct', 'vacuum_truncate'];
 BEGIN
 	member := COALESCE(member, fk);
-	IF max_copies IS NULL OR max_copies < 1 THEN
-		RAISE EXCEPTION 'scope_create: max_copies must be 1 or more, not %', COALESCE(max_copies::text, 'NULL') USING ERRCODE = 'invalid_parameter_value';
-	END IF;
+	IF max_copies IS NULL OR max_copies < 1 THEN RAISE EXCEPTION 'scope_create: max_copies must be 1 or more, not %', COALESCE(max_copies::text, 'NULL') USING ERRCODE = 'invalid_parameter_value'; END IF;
 	IF to_regclass(copy) IS NOT NULL THEN
 		RAISE EXCEPTION 'scope_create: relation "%" already exists', copy USING ERRCODE = 'duplicate_table';
 	END IF;
@@ -242,9 +268,6 @@ BEGIN
 	IF fidx IS NOT NULL THEN
 		columns := COALESCE(columns, ARRAY(SELECT a.attname FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY k(n, o)
 										  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.n WHERE i.indexrelid = fidx ORDER BY k.o));
-		-- a value that starts with 'auto:' is what the build read from the documents: the copy reads its own
-		SELECT string_agg(format('%s = %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') INTO kept FROM pg_class c, unnest(c.reloptions) o
-			WHERE c.oid = fidx AND split_part(o, '=', 1) = ANY (inherit) AND split_part(o, '=', 1) <> ALL (named) AND o !~ '^[^=]*=auto:';
 	END IF;
 	-- carried columns: the primary key and the foreign key always, the rest as asked (default the columns of the table's sift_col index, else all)
 	SELECT array_agg(a.attname ORDER BY a.attnum) INTO cols FROM pg_attribute a
@@ -258,6 +281,7 @@ BEGIN
 	IF columns IS NOT NULL AND EXISTS (SELECT 1 FROM unnest(columns) c WHERE c <> ALL (cols)) THEN
 		RAISE EXCEPTION 'scope_create: table "%" has no column "%"', src, (SELECT c FROM unnest(columns) c WHERE c <> ALL (cols) LIMIT 1) USING ERRCODE = 'undefined_column';
 	END IF;
+	kept := sift._scope_inherit(fidx, cols, named);
 	IF ord IS NULL THEN
 		SELECT a.attname INTO ord FROM pg_attribute a WHERE a.attrelid = source AND a.attname = ANY (cols) AND a.atttypid IN ('timestamptz'::regtype, 'timestamp'::regtype, 'date'::regtype)
 			ORDER BY a.attnum LIMIT 1;
@@ -276,7 +300,7 @@ BEGIN
 		RAISE EXCEPTION 'scope_create: a row of "%" would have % copies on average, above max_copies %', src, round(mult::numeric, 2), max_copies
 			USING DETAIL = format('The copy would hold that many times the rows of the table that reach a scope key: about %s MB, +%s%% over the table and its indexes.',
 								  round((est / 1048576)::numeric), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r))),
-				  HINT = format('A copy suits a multiplicity close to 1: above it use the scope option of the sift_col index (a derived-key scope index) or by-reference scope units, key the copy by a scope relation whose members belong to fewer keys, read the table through the join, or pass max_copies => %s to build it anyway.', ceil(mult * 10) / 10), ERRCODE = 'feature_not_supported';
+				  HINT = format('A copy suits a multiplicity close to 1: above it the join answers, or use the scope option of the sift_col index (a derived-key scope index, COL-SCOPE.md) or the count and sum cube recipe of INDEX-RECIPES.md, key the copy by a scope relation whose members belong to fewer keys, or pass max_copies => %s to build it anyway.', ceil(mult * 10) / 10), ERRCODE = 'feature_not_supported';
 	END IF;
 
 	-- the copy
@@ -321,7 +345,7 @@ BEGIN
 	SELECT sum(pg_total_relation_size(r)) INTO est FROM sift.scope_relations(to_regclass(cname)) r;
 	RAISE NOTICE 'scope copy %: % rows, % copies per row of "%" that reaches a key', cname, rows, round(mult::numeric, 2), src
 		USING DETAIL = format('%s of those rows have 2 or more copies, at most %s; the copy takes %s MB with its indexes, +%s%% over the table and its indexes.',
-							  round(multi * 100) || '%', maxk, round((est / 1048576.0)::numeric, 1), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r)));
+							  round(COALESCE(multi, 0) * 100) || '%', maxk, round((est / 1048576.0)::numeric, 1), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r)));
 	IF fidx IS NULL AND columns IS NULL THEN
 		SELECT round(sum(pg_relation_size(r)) / 1048576.0, 1) INTO mb FROM sift.scope_relations(to_regclass(cname)) r;
 		RAISE NOTICE 'scope copy %: no sift_col index on "%", all % columns carried, table of % MB', cname, src, cardinality(cols), mb
