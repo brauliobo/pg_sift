@@ -9,162 +9,12 @@
 #include "core/hash.h"
 #include "col/scan/gmem.h"
 
-/* The chunk of leaf col of the unit of view v, its slots decoded (the NULL ones 0); NULL when the unit has none (every row is NULL) */
-static int64 *
-unit_leaf(const SiftCUnitView *v, int col, SiftCChunk *c)
-{
-	int64	   *vals;
-
-	if (v->chunk_len[col] == 0 || !sift_cunit_chunk(v, col, c))
-		return NULL;
-	vals = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
-	sift_cchunk_decode(c, vals);
-	return vals;
-}
-
-/* The rows of the segments without an order block of an integer leaf, made once for the scan from the chunks of their units and split by the value of the group leaf the scan pins */
-#define GFREE_HASH	64			/* places for the 16 values a scan pins at most: a quarter full */
-
-typedef struct GOrdSlot
-{
-	GOrdPair   *pv;				/* the entries with a value, nv of capv */
-	uint32		nv,
-				capv;
-	GOrdPair   *pn;				/* those without one */
-	uint32		nn,
-				capn;
-} GOrdSlot;
-
-typedef struct GOrdFree
-{
-	int			leaf,
-				gleaf,
-				n;				/* slots: one for each pinned value (one for a scan that pins none) */
-	int64		vals[SIFT_GORD_PIN_MAX];
-	uint8		hash[GFREE_HASH];	/* open addressing of the pinned values: the slot + 1 of a value, 0 for a free place */
-	GOrdSlot	slot[SIFT_GORD_PIN_MAX];
-	MemoryContext cx;
-} GOrdFree;
-
-static inline uint32
-gfree_home(int64 g)
-{
-	return (uint32) (((uint64) g * UINT64CONST(0x9E3779B97F4A7C15)) >> 58);
-}
-
-static void
-gfree_pins(GOrdFree *f, const int64 *pins, int n)
-{
-	f->n = n;
-	memcpy(f->vals, pins, n * sizeof(int64));
-	for (int i = 0; i < n; i++)
-	{
-		uint32		h = gfree_home(pins[i]);
-
-		while (f->hash[h] != 0)
-			h = (h + 1) % GFREE_HASH;
-		f->hash[h] = i + 1;
-		/* never NULL: the slot is copied out whole */
-		f->slot[i].pv = MemoryContextAlloc(f->cx, sizeof(GOrdPair));
-		f->slot[i].pn = MemoryContextAlloc(f->cx, sizeof(GOrdPair));
-		f->slot[i].capv = f->slot[i].capn = 1;
-	}
-}
-
-/* The slot of group value g, -1 when the scan pins none such */
-static inline int
-gfree_slot(const GOrdFree *f, int64 g)
-{
-	for (uint32 h = gfree_home(g); f->hash[h] != 0; h = (h + 1) % GFREE_HASH)
-		if (f->vals[f->hash[h] - 1] == g)
-			return f->hash[h] - 1;
-	return -1;
-}
-
-static void
-slot_grow(GOrdPair **a, uint32 *cap)
-{
-	*cap = Max(*cap * 2, 256);
-	*a = repalloc(*a, *cap * sizeof(GOrdPair));
-}
-
 /*
- * The live rows of unit u of a segment without an order block, for an integer leaf (and the group leaf gleaf, when >= 0), put in the slot of their group value as gord_collect puts those
- * of a write buffer: the chunks of the two leaves decode in bulk and no batch is made (65 instructions a row, where a batch costs 360). False when a row holds an overflow value of
- * a leaf or an address a block of the global order cannot name.
- */
-static bool
-gord_load_unit(SiftColSegment *seg, uint32 u, GOrdFree *f)
-{
-	const SiftColSBRef *ref = &seg->sbdir[u];
-	SiftCUnitView view;
-	SiftCChunk	c = {0},
-				gc = {0};
-	int64	   *val,
-			   *gvals = NULL;
-	SiftKey    *keys = palloc(Max(ref->nrows, 1) * sizeof(SiftKey));
-	uint64	   *live = palloc(SIFT_COL_NWORDS(ref->nrows) * sizeof(uint64));
-	bool		ok = true;
-
-	if (!sift_cseg_unit_view(seg, u, &view))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("invalid column unit: unit %u of a segment does not parse", u)));
-	for (int col = 0; col < seg->schema->ncols; col++)
-		if ((col == f->leaf || col == f->gleaf) && view.chunk_len[col] > 0)
-			sift_cseg_unit_fill(seg, u, view.chunk_off[col], view.chunk_len[col]);
-	val = unit_leaf(&view, f->leaf, &c);
-	if (f->gleaf >= 0)
-		gvals = unit_leaf(&view, f->gleaf, &gc);
-	sift_cunit_keys(&view, ref->id, keys);
-	sift_cseg_live(seg, u, live);
-	for (uint32 r = 0; r < ref->nrows && ok; r++)
-	{
-		GOrdSlot   *sl = f->slot;
-		GOrdPair	p;
-
-		if (!sift_col_bit_test(live, r))
-			continue;
-		if (sift_col_bit_test(c.ovf, r) || (keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || sift_col_bit_test(gc.ovf, r))
-		{
-			ok = false;
-			continue;
-		}
-		if (f->gleaf >= 0)
-		{
-			int			at;
-
-			if (gvals == NULL || sift_col_bit_test(gc.nulls, r) || (at = gfree_slot(f, gvals[r])) < 0)
-				continue;
-			sl += at;
-		}
-		p = (GOrdPair) {val ? val[r] : 0, (uint64) keys[r]};
-		if (val == NULL || sift_col_bit_test(c.nulls, r))
-		{
-			if (sl->nn == sl->capn)
-				slot_grow(&sl->pn, &sl->capn);
-			sl->pn[sl->nn++] = p;
-		}
-		else
-		{
-			if (sl->nv == sl->capv)
-				slot_grow(&sl->pv, &sl->capv);
-			sl->pv[sl->nv++] = p;
-		}
-	}
-	pfree(keys);
-	pfree(live);
-	if (val)
-		pfree(val);
-	if (gvals)
-		pfree(gvals);
-	return ok;
-}
-
-/*
- * The rows [cov[i], nrows) of the batches of the write buffers (all of them for NULL), and those of the units of the segments without an order block that the scan loaded for its value number slot (none for slot < 0), as the pairs of a numeric key (pv, nv) and the addresses of the rows with no value (pn, nn), the
+ * The rows [cov[i], nrows) of the batches of the write buffers (all of them for NULL), as the pairs of a numeric key (pv, nv) and the addresses of the rows with no value (pn, nn), the
  * rows of a group leaf's value gval only when gleaf >= 0; false when one holds an overflow value of the leaf or an address a block of the global order cannot name
  */
 static bool
-gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, int slot, const uint32 *cov, GOrdPair *pv, uint32 *nv, GOrdPair *pn, uint32 *nn)
+gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, const uint32 *cov, GOrdPair *pv, uint32 *nv, GOrdPair *pn, uint32 *nn)
 {
 	*nv = *nn = 0;
 	for (int i = 0; i < src->nmem + src->ngb; i++)
@@ -195,93 +45,22 @@ gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, int slot, cons
 				pv[(*nv)++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
 		}
 	}
-	if (src->gdrows > 0 && slot >= 0)
-	{
-		const GOrdSlot *sl = &src->gd->slot[slot];
-
-		memcpy(pv + *nv, sl->pv, sl->nv * sizeof(GOrdPair));
-		memcpy(pn + *nn, sl->pn, sl->nn * sizeof(GOrdPair));
-		*nv += sl->nv;
-		*nn += sl->nn;
-	}
 	return true;
 }
 
 uint64
 gord_mem_rows(const SiftColSource *src)
 {
-	uint64		n = src->gdrows;
+	uint64		n = 0;
 
 	for (int i = 0; i < src->nmem + src->ngb; i++)
 		n += gord_mem_batch(src, i)->nrows;
 	return n;
 }
 
-/* The rows loaded for the scan are those of leaf, gleaf and the values it pins now */
-static bool
-gord_free_loaded(const SiftColSource *src, int leaf, int gleaf)
-{
-	const GOrdFree *f = src->gd;
-
-	return src->gdrows > 0 && f->leaf == leaf && f->gleaf == gleaf && (gleaf < 0 || (f->n == src->gpin_n && memcmp(f->vals, src->gpin_vals, f->n * sizeof(int64)) == 0));
-}
-
-bool
-gord_mem_load(SiftColSource *src, int leaf, int gleaf, uint64 rows, uint32 collid)
-{
-	MemoryContext cx = gorder_cx(src);
-	bool		want[SIFT_COL_MAX_COLS] = {false};
-	uint64		free_rows = 0;
-	uint32		units = 0;
-	bool		direct = src->schema->cols[leaf].store == SIFT_COLS_INT && (gleaf < 0 || src->schema->cols[gleaf].store == SIFT_COLS_INT);
-
-	if (direct ? gord_free_loaded(src, leaf, gleaf) : (src->ngb > 0 && src->gb_leaf == leaf && src->gb_gleaf == gleaf))
-		return true;
-	for (int i = 0; i < src->nseg; i++)
-		if (src->seg[i].gfree)
-		{
-			free_rows += src->seg[i].seg->entry.ndocs;
-			units += src->seg[i].seg->nsb;
-		}
-	if (free_rows > SIFT_CGORD_FREE_CAP(src->schema->cols[leaf].store != SIFT_COLS_INT) || free_rows + gord_mem_rows(src) > SIFT_CGORD_MEM_CAP(collid != 0 && !sift_collate_is_c(collid), rows))
-		return false;
-	src->gb_leaf = leaf;
-	src->gb_gleaf = gleaf;
-	src->ngb = 0;
-	src->gdrows = 0;
-	/* the rows of an integer leaf are made straight from the chunks of the units, once for all the groups of the scan (gord_load_unit); those of a text leaf come with their strings in the batches of a decode */
-	if (direct)
-	{
-		GOrdFree   *f = MemoryContextAllocZero(cx, sizeof(GOrdFree));
-
-		f->leaf = leaf;
-		f->gleaf = gleaf;
-		f->cx = cx;
-		gfree_pins(f, src->gpin_vals, src->gpin_n);
-		for (int i = 0; i < src->nseg; i++)
-			for (uint32 u = 0; src->seg[i].gfree && u < src->seg[i].seg->nsb; u++)
-				if (!gord_load_unit(src->seg[i].seg, u, f))
-					return false;
-		src->gd = f;
-		src->gdrows = free_rows;
-		return true;
-	}
-	want[leaf] = true;
-	if (gleaf >= 0)
-		want[gleaf] = true;
-	src->gb = MemoryContextAlloc(cx, (units + 1) * sizeof(SiftColBatch *));
-	for (int i = 0; i < src->nseg; i++)
-		for (uint32 u = 0; src->seg[i].gfree && u < src->seg[i].seg->nsb; u++)
-		{
-			src->gb[src->ngb] = sift_cbatch_create(cx, src->seg[i].seg->schema);
-			sift_cseg_decode_unit_leaves(src->seg[i].seg, u, want, src->gb[src->ngb++]);
-		}
-	return true;
-}
-
-/* The order of the entries pv (nv, with a value) and pn (nn, without one) of the write buffers, in mc as value v of the scan; pv is freed, pn left to the caller */
-static void
-gord_mem_make(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryContext mc, GOrdPair *pv, uint32 nv, GOrdPair *pn, uint32 nn)
+/* The order of the entries pv (nv, with a value) and pn (nn, without one), in mc; pv is freed, pn left to the caller */
+ColGOrdMem *
+gord_mem_make(int leaf, int gleaf, int64 gval, MemoryContext mc, GOrdPair *pv, uint32 nv, GOrdPair *pn, uint32 nn)
 {
 	ColGOrdMem *g;
 
@@ -300,7 +79,7 @@ gord_mem_make(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, Memory
 		g->key[nv + i] = 0;
 		g->tid[nv + i] = pn[i].tid;
 	}
-	src->gmem[v] = g;
+	return g;
 }
 
 /* The rows of the write buffers sorted like a segment's entries, in mc; false when collect refuses a row */
@@ -315,9 +94,9 @@ gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryC
 
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(GOrdPair));
-	if (!gord_collect(src, leaf, gleaf, gval, v, NULL, pv, &nv, pn, &nn))
+	if (!gord_collect(src, leaf, gleaf, gval, NULL, pv, &nv, pn, &nn))
 		return false;
-	gord_mem_make(src, leaf, gleaf, gval, v, mc, pv, nv, pn, nn);
+	src->gmem[v] = gord_mem_make(leaf, gleaf, gval, mc, pv, nv, pn, nn);
 	pfree(pn);
 	return true;
 }
@@ -328,14 +107,11 @@ gord_mem_num(SiftColSource *src, int leaf, int gleaf, int64 gval, int v, MemoryC
  * and so is the order, named by the state of the sets it was made from (SiftCWbufToken): the same sets with the same rows give the same order, and a set that gained rows (appended
  * since) gives the order extended with them, when their keys fall in its ranges. A scan that holds an order (refs) keeps it alive; an order that left the cache goes with the last scan.
  */
-#define GKEPT_N			4
+#define GKEPT_N			8
 
 #ifdef SIFT_TESTING
 uint64		sift_col_gkept_stat[4];
 bool		sift_test_col_gkept_fail = false;
-#define GKEPT_STAT(i)	(sift_col_gkept_stat[i]++)
-#else
-#define GKEPT_STAT(i)	((void) 0)
 #endif
 
 /* An order bigger than this is made for its scan and not kept (the bound of a kept set of batches) */
@@ -357,6 +133,8 @@ typedef struct GOrdKept
 	const SiftColBatch **cb;
 	uint32	   *cn;
 	uint32		nbuilt;			/* the rows when g was made from the batches, not extended: the ranges were cut for that many */
+	int			nfree;			/* a kept order of the segments read in memory, not of the write buffers: the segments it was made from (gen, live rows) */
+	GFreeTok   *ftok;
 	uint64		used;
 	int			refs;
 	bool		kept;
@@ -389,9 +167,9 @@ gkept_release(void *arg)
 		MemoryContextDelete(k->cx);
 }
 
-/* The scan holds k's order as its value v from now on */
-static void
-gkept_use(SiftColSource *src, GOrdKept *k, int v)
+/* The scan holds k's order from now on */
+ColGOrdMem *
+gkept_use(SiftColSource *src, GOrdKept *k)
 {
 	MemoryContext gcx = gorder_cx(src);
 	MemoryContextCallback *cb = MemoryContextAlloc(gcx, sizeof(MemoryContextCallback));
@@ -400,7 +178,7 @@ gkept_use(SiftColSource *src, GOrdKept *k, int v)
 	MemoryContextRegisterResetCallback(gcx, cb);
 	k->refs++;
 	k->used = ++gkept_clock;
-	src->gmem[v] = k->g;
+	return k->g;
 }
 
 /* Whether the batches of the scan come from kept sets, so that their state names them */
@@ -408,7 +186,7 @@ static bool
 gkept_named(const SiftColSource *src)
 {
 	/* the segments read in memory are not named by a state: an order made from them is made for its scan */
-	return src->wtok != NULL && src->nwtok > 0 && src->nmem > 0 && src->ngb == 0 && src->gdrows == 0;
+	return src->wtok != NULL && src->nwtok > 0 && src->nmem > 0 && src->ngb == 0;
 }
 
 static GOrdKept *
@@ -421,7 +199,7 @@ gkept_find(const SiftColSource *src, int leaf, int gleaf, int64 gval, uint32 col
 		GOrdKept   *k = gkept[i];
 		int			t;
 
-		if (k == NULL || k->db != src->index->rd_locator.dbOid || k->rel != src->index->rd_locator.relNumber || k->leaf != leaf || k->gleaf != gleaf ||
+		if (k == NULL || k->nfree > 0 || k->db != src->index->rd_locator.dbOid || k->rel != src->index->rd_locator.relNumber || k->leaf != leaf || k->gleaf != gleaf ||
 			(gleaf >= 0 && k->gval != gval) || k->collid != collid || k->ntok != src->nwtok)
 			continue;
 		for (t = 0; t < k->ntok && k->tok[t].serial == src->wtok[t].serial; t++)
@@ -480,7 +258,7 @@ gkept_extend(SiftColSource *src, GOrdKept *k)
 		return fresh == 0;
 	pv = palloc((fresh + 1) * sizeof(GOrdPair));
 	pn = palloc((fresh + 1) * sizeof(GOrdPair));
-	if (!gord_collect(src, k->leaf, k->gleaf, k->gval, -1, cov, pv, &nv, pn, &nn))
+	if (!gord_collect(src, k->leaf, k->gleaf, k->gval, cov, pv, &nv, pn, &nn))
 		return false;
 	add = palloc0(((Size) g->nb + 1) * sizeof(uint32));
 	for (uint32 i = 0; i < nv; i++)
@@ -592,43 +370,18 @@ gkept_current(SiftColSource *src, int leaf, int gleaf, int64 gval, uint32 collid
 	return NULL;
 }
 
-/* The order just made in cx, as value v of the scan, kept for the next scan when it is not too big */
+/* k's order is kept by the backend, in place of the one of the same key it replaces (made from sets that are gone) and of the one used least */
 static void
-gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gval, uint32 collid, int v)
+gkept_keep(GOrdKept *k)
 {
-	GOrdKept   *k;
 	int			slot = 0;
 
-	if (!gkept_named(src) || MemoryContextMemAllocated(cx, true) > GKEPT_BYTES)
-		return;
-	k = MemoryContextAllocZero(cx, sizeof(GOrdKept));
-	k->cx = cx;
-	k->db = src->index->rd_locator.dbOid;
-	k->rel = src->index->rd_locator.relNumber;
-	k->ntok = src->nwtok;
-	k->tok = MemoryContextAlloc(cx, src->nwtok * sizeof(SiftCWbufToken));
-	memcpy(k->tok, src->wtok, src->nwtok * sizeof(SiftCWbufToken));
-	k->leaf = leaf;
-	k->gleaf = gleaf;
-	k->gval = gval;
-	k->collid = collid;
-	k->g = src->gmem[v];
-	k->ncov = src->nmem;
-	k->cb = MemoryContextAlloc(cx, src->nmem * sizeof(SiftColBatch *));
-	k->cn = MemoryContextAlloc(cx, src->nmem * sizeof(uint32));
-	k->nbuilt = k->g->n;
-	for (int i = 0; i < src->nmem; i++)
-	{
-		k->cb[i] = src->mem[i].b;
-		k->cn[i] = src->mem[i].b->nrows;
-	}
 	if (gkept_cxt == NULL)
 		gkept_cxt = AllocSetContextCreate(TopMemoryContext, "sift cache write buffer orders", ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSetParent(cx, gkept_cxt);
-	/* the order this one replaces (the same key of the same index, made from sets that are gone) */
+	MemoryContextSetParent(k->cx, gkept_cxt);
 	for (int i = 0; i < GKEPT_N; i++)
-		if (gkept[i] && gkept[i]->db == k->db && gkept[i]->rel == k->rel && gkept[i]->leaf == leaf && gkept[i]->gleaf == gleaf &&
-			(gleaf < 0 || gkept[i]->gval == gval) && gkept[i]->collid == collid)
+		if (gkept[i] && gkept[i]->db == k->db && gkept[i]->rel == k->rel && gkept[i]->leaf == k->leaf && gkept[i]->gleaf == k->gleaf &&
+			(k->gleaf < 0 || gkept[i]->gval == k->gval) && gkept[i]->collid == k->collid && (gkept[i]->nfree > 0) == (k->nfree > 0))
 			gkept_drop(gkept[i]);
 	for (int i = 0; i < GKEPT_N; i++)
 		if (gkept[i] == NULL)
@@ -642,7 +395,81 @@ gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gva
 		gkept_drop(gkept[slot]);
 	gkept[slot] = k;
 	k->kept = true;
-	gkept_use(src, k, v);
+}
+
+static GOrdKept *
+gkept_new(const SiftColSource *src, MemoryContext cx, ColGOrdMem *g, int leaf, int gleaf, int64 gval, uint32 collid)
+{
+	GOrdKept   *k = MemoryContextAllocZero(cx, sizeof(GOrdKept));
+
+	k->cx = cx;
+	k->db = src->index->rd_locator.dbOid;
+	k->rel = src->index->rd_locator.relNumber;
+	k->leaf = leaf;
+	k->gleaf = gleaf;
+	k->gval = gval;
+	k->collid = collid;
+	k->g = g;
+	k->nbuilt = g->n;
+	return k;
+}
+
+/* The order just made in cx, as value v of the scan, kept for the next scan when it is not too big */
+static void
+gkept_store(SiftColSource *src, MemoryContext cx, int leaf, int gleaf, int64 gval, uint32 collid, int v)
+{
+	GOrdKept   *k;
+
+	if (!gkept_named(src) || MemoryContextMemAllocated(cx, true) > GKEPT_BYTES)
+		return;
+	k = gkept_new(src, cx, src->gmem[v], leaf, gleaf, gval, collid);
+	k->ntok = src->nwtok;
+	k->tok = MemoryContextAlloc(cx, src->nwtok * sizeof(SiftCWbufToken));
+	memcpy(k->tok, src->wtok, src->nwtok * sizeof(SiftCWbufToken));
+	k->ncov = src->nmem;
+	k->cb = MemoryContextAlloc(cx, src->nmem * sizeof(SiftColBatch *));
+	k->cn = MemoryContextAlloc(cx, src->nmem * sizeof(uint32));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		k->cb[i] = src->mem[i].b;
+		k->cn[i] = src->mem[i].b->nrows;
+	}
+	gkept_keep(k);
+	src->gmem[v] = gkept_use(src, k);
+}
+
+/* The order of the segments read in memory (value gval of the group) that an earlier scan kept, when they are the same segments with the same live rows */
+struct GOrdKept *
+gkept_find_free(const SiftColSource *src, int leaf, int gleaf, int64 gval, const GFreeTok *tok, int n)
+{
+	for (int i = 0; i < GKEPT_N; i++)
+	{
+		GOrdKept   *k = gkept[i];
+
+		if (k != NULL && k->nfree == n && k->db == src->index->rd_locator.dbOid && k->rel == src->index->rd_locator.relNumber && k->leaf == leaf && k->gleaf == gleaf &&
+			(gleaf < 0 || k->gval == gval) && memcmp(k->ftok, tok, n * sizeof(GFreeTok)) == 0)
+			return k;
+	}
+	return NULL;
+}
+
+/* The order g of the segments made in cx as value v of the scan, kept for the next scan when it is not too big */
+void
+gkept_store_free(SiftColSource *src, MemoryContext cx, ColGOrdMem *g, int leaf, int gleaf, int64 gval, const GFreeTok *tok, int n, int v)
+{
+	GOrdKept   *k;
+
+	if (MemoryContextMemAllocated(cx, true) > GKEPT_BYTES)
+	{
+		src->gfmem[v] = g;
+		return;
+	}
+	k = gkept_new(src, cx, g, leaf, gleaf, gval, 0);
+	k->nfree = n;
+	k->ftok = MemoryContextAlloc(cx, n * sizeof(GFreeTok));
+	memcpy(k->ftok, tok, n * sizeof(GFreeTok));
+	gkept_keep(k);
+	src->gfmem[v] = gkept_use(src, k);
 }
 
 /*
@@ -836,7 +663,7 @@ gord_mem_part(SiftColSource *src, const GOrdPart *p, int leaf, int gleaf, int64 
 		memcpy(pv, p->pv + p->vs[g], nv * sizeof(GOrdPair));
 	if (nn > 0)
 		memcpy(pn, p->pn + p->ns[g], nn * sizeof(GOrdPair));
-	gord_mem_make(src, leaf, gleaf, gval, v, mc, pv, nv, pn, nn);
+	src->gmem[v] = gord_mem_make(leaf, gleaf, gval, mc, pv, nv, pn, nn);
 	pfree(pn);
 }
 
@@ -860,7 +687,7 @@ gord_mem(SiftColSource *src, int leaf, uint64 rows, int gleaf, int64 gval, int v
 		return true;
 	if ((k = gkept_current(src, leaf, gleaf, gval, collid)) != NULL)
 	{
-		gkept_use(src, k, v);
+		src->gmem[v] = gkept_use(src, k);
 		return true;
 	}
 	if (g != NULL && g->own != NULL)

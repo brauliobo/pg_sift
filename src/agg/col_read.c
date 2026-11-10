@@ -283,8 +283,12 @@ col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols)
 	{
 		int			gi = ls[j].gord_gcol;
 
-		if (ls[j].gord_grp_rows > 0 && gi >= 0 && gi < ncols && gi < SIFT_COLSRC_MAX_LEAVES && ls[gi].nnull == 0 && ls[j].gord_grp_rows >= 0.999 * ls[gi].nvals)
+		if (ls[j].gord_grp_rows > 0 && gi >= 0 && gi < ncols && gi < SIFT_COLSRC_MAX_LEAVES && ls[gi].nnull == 0 && ls[j].gord_grp_rows + ls[j].gord_free_rows >= 0.999 * ls[gi].nvals)
+		{
 			st->gord_bygroup[gi] = true;
+			/* the segments without the second order are read in memory (sift_col_gorder_open): the planner prices their rows as the walk of the group leaf's own array would */
+			st->gord_free[gi] = Max(st->gord_free[gi], ls[j].gord_free_rows);
+		}
 	}
 }
 

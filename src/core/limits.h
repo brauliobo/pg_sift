@@ -86,7 +86,7 @@
 	  "rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted)", \
 	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
 	X(gord_free_rows, "SIFT_CGORD_FREE_MAX", "col/gorder.h", SIFT_CGORD_FREE_MAX, "rows", \
-	  "rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory for each scan", \
+	  "rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory once for the backend (the first scan; the next find the order kept)", \
 	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
 	X(blob_bytes, "BLOB_CHUNK_BYTES", "agg/blob/dump.c", 268435456, "bytes", \
 	  "the partial result a worker of a parallel aggregate sends in one message: the groups of its table go in messages of about this many bytes (a pair of a count(DISTINCT) takes 8); a group that alone takes more than four times this (1 GB at most) ends the scan", \

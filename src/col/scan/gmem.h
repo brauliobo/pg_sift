@@ -20,6 +20,20 @@ typedef struct GOrdText
 	uint64		tid;
 } GOrdText;
 
+/* A segment read in memory is named by its generation and its live rows: rows only die, so the same two numbers are the same rows */
+typedef struct GFreeTok
+{
+	uint64		gen;
+	uint64		live;
+} GFreeTok;
+
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT uint64 sift_col_gkept_stat[4];
+#define GKEPT_STAT(i)	(sift_col_gkept_stat[i]++)
+#else
+#define GKEPT_STAT(i)	((void) 0)
+#endif
+
 typedef struct ColGOrdMem
 {
 	int			leaf;
@@ -61,8 +75,17 @@ gord_mem_batch(const SiftColSource *src, int i)
 	return i < src->nmem ? src->mem[i].b : src->gb[i - src->nmem];
 }
 
+/* The kept orders (gmem.c) and the order of a set of entries, for the segments without a block (gfree.c) */
+struct GOrdKept;
+extern ColGOrdMem *gord_mem_make(int leaf, int gleaf, int64 gval, MemoryContext mc, GOrdPair *pv, uint32 nv, GOrdPair *pn, uint32 nn);
+extern ColGOrdMem *gkept_use(SiftColSource *src, struct GOrdKept *k);
+extern struct GOrdKept *gkept_find_free(const SiftColSource *src, int leaf, int gleaf, int64 gval, const GFreeTok *tok, int n);
+extern void gkept_store_free(SiftColSource *src, MemoryContext cx, ColGOrdMem *g, int leaf, int gleaf, int64 gval, const GFreeTok *tok, int n, int v);
+
 /* The rows of those batches */
 extern uint64 gord_mem_rows(const SiftColSource *src);
+/* The values of group leaf gcol of the live rows of a segment without an order block, appended to vals (room for its rows); false when one has no value or an overflow one */
+extern bool gord_free_group_values(SiftColSegment *seg, int gcol, int64 *vals, uint64 *n);
 /* Reads the live rows of the segments that keep no order block of leaf (and of gleaf, when >= 0) into src->gb; false when they are more than the memory source may hold */
 extern bool gord_mem_load(SiftColSource *src, int leaf, int gleaf, uint64 rows, uint32 collid);
 /* Makes the sorted rows of the write buffers and the unordered segments for value v of the scan, or finds them kept by the backend (gmem.c): false when they are more than the cap of a read of `rows` rows */

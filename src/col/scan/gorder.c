@@ -283,6 +283,13 @@ gorder_src(const SiftColSource *src, int i, int *v)
 	return i % src->gper;
 }
 
+/* The rows of source j (after the stored segments) sorted in memory for value v of the group: those of the segments without a block when they are a source, else the write buffers' */
+static inline ColGOrdMem *
+gorder_mem(const SiftColSource *src, int j, int v)
+{
+	return src->gfsrc && j == src->nseg ? src->gfmem[v] : src->gmem[v];
+}
+
 /* The slot of the block of leaf col that segment j is read through: the one sorted by group when the scan pinned a group, else the plain one */
 static int
 gorder_slot(SiftColSource *src, int j, int col)
@@ -401,20 +408,29 @@ gorder_by_group(SiftColSource *src, int col)
 {
 	int			found = -1;
 
-	if (src->nseg == 0)
-		return -1;
+	/* a segment without any block of the leaf (a small overlay) is read in memory, as the write buffers are: at least one segment must have it */
 	for (int a = 0; a < src->schema->ncols && found < 0; a++)
-		if (a != col && sift_cseg_gorder_grouped_by(src->seg[0].seg, a, col))
-			found = a;
-	for (int i = 0; i < src->nseg && found >= 0; i++)
 	{
-		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, found, true);
-		uint32		entries,
-					values;
+		bool		all = false;
 
-		if (slot < 0 || !sift_cseg_gorder_grouped_by(src->seg[i].seg, found, col) || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) ||
-			entries != (uint32) src->seg[i].seg->entry.ndocs)
-			found = -1;
+		if (a == col)
+			continue;
+		for (int i = 0; i < src->nseg; i++)
+		{
+			int			slot;
+			uint32		entries,
+						values;
+
+			if (!sift_cseg_gorder_has(src->seg[i].seg, a))
+				continue;
+			slot = sift_cseg_gorder_slot(src->seg[i].seg, a, true);
+			all = slot >= 0 && sift_cseg_gorder_grouped_by(src->seg[i].seg, a, col) && sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) &&
+				entries == (uint32) src->seg[i].seg->entry.ndocs;
+			if (!all)
+				break;
+		}
+		if (all)
+			found = a;
 	}
 	return found;
 }
@@ -454,6 +470,9 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 		src->galeaf1 = a + 1;
 		nv = 0;
 		gleaf = -1;
+		nfree = 0;
+		for (int i = 0; i < src->nseg; i++)
+			nfree += src->seg[i].gfree = !sift_cseg_gorder_has(src->seg[i].seg, a);
 	}
 	src->gpin_leaf = gleaf;
 	src->gpin_n = Max(nv, 1);
@@ -467,10 +486,10 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
 	if (nfree == 0)
-		src->ngb = src->gdrows = 0;
+		src->ngb = src->gfsrc = 0;
 	else if (!gord_mem_load(src, col, gleaf, rows, collid))
 		return -1;
-	src->gper = src->nseg + (gord_mem_rows(src) > 0 || src->nmem > 0);
+	src->gper = src->nseg + src->gfsrc + (gord_mem_rows(src) > 0 || src->nmem > 0);
 	if (gord_mem_rows(src) > 0 || src->nmem > 0)
 		for (int v = 0; v < src->gpin_n; v++)
 			if (!gord_mem(src, col, rows, gleaf, src->gpin_vals[v], v, collid))
@@ -486,8 +505,8 @@ sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len)
 
 	if (j < src->nseg)
 		return sift_cseg_gorder_str(src->seg[j].seg, gorder_slot(src, j, col), (uint32) key, len);
-	*len = src->gmem[v]->len[key];
-	return src->gmem[v]->str[key];
+	*len = gorder_mem(src, j, v)->len[key];
+	return gorder_mem(src, j, v)->str[key];
 }
 
 uint32
@@ -495,7 +514,7 @@ sift_col_gorder_strrank(SiftColSource *src, int i, int col, const char *s, uint3
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	ColGOrdMem *g = src->gmem[v];
+	ColGOrdMem *g = gorder_mem(src, j, v);
 	int64		pk;
 	uint64		d;
 	uint32		lo,
@@ -565,8 +584,8 @@ sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32
 	}
 	if (j < src->nseg)
 		return sift_cseg_gorder(src->seg[j].seg, gorder_slot(src, j, col), entries, values);
-	*entries = src->gmem[v]->n;
-	*values = src->gmem[v]->nvals;
+	*entries = gorder_mem(src, j, v)->n;
+	*values = gorder_mem(src, j, v)->nvals;
 	return true;
 }
 
@@ -588,8 +607,8 @@ sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve
 	else
 	{
 		*vs = 0;
-		*ve = *ns = src->gmem[v]->nvals;
-		*ne = src->gmem[v]->n;
+		*ve = *ns = gorder_mem(src, j, v)->nvals;
+		*ne = gorder_mem(src, j, v)->n;
 	}
 }
 
@@ -620,7 +639,7 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	ColGOrdMem *g = src->gmem[v];
+	ColGOrdMem *g = gorder_mem(src, j, v);
 	uint32		lo = vs,
 				hi = ve;
 
@@ -643,7 +662,7 @@ sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve,
 {
 	int			vv,
 				j = gorder_src(src, i, &vv);
-	ColGOrdMem *g = src->gmem[vv];
+	ColGOrdMem *g = gorder_mem(src, j, vv);
 	uint32		lo = vs,
 				hi = ve;
 
@@ -666,7 +685,7 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 {
 	int			v,
 				j = gorder_src(src, i, &v);
-	ColGOrdMem *g = src->gmem[v];
+	ColGOrdMem *g = gorder_mem(src, j, v);
 
 	buf->stored = j < src->nseg;
 	if (j < src->nseg)

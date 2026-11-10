@@ -269,10 +269,14 @@ struct SiftColSource
 	bool		mem_loaded;
 	SiftColBatch **gb;			/* the rows of the segments without an order block of leaf gb_leaf (and of group leaf gb_gleaf), one batch for each unit, in gcx */
 	int			ngb;
-	struct GOrdFree *gd;		/* ... or, for an integer leaf, the gdrows rows of those segments, made straight from their units once for the scan and split by the group it pins (gord_mem_load) */
-	uint64		gdrows;
 	int			gb_leaf,
 				gb_gleaf;
+	bool		gfsrc;			/* the segments without an order block of an integer leaf are one source of the global order, between the stored segments and the write buffers: gfmem[v] for value v of the group (gord_mem_load) */
+	int			gf_leaf,
+				gf_gleaf,
+				gf_n;
+	int64		gf_vals[SIFT_GORD_PIN_MAX];
+	struct ColGOrdMem *gfmem[SIFT_GORD_PIN_MAX];
 	int			gdirect;		/* the orders of one group of the write buffers made by reading all their rows (col/scan/gmem.c): past a few, the rows are put in groups once */
 	struct SiftCWbufToken *wtok;	/* the state of each kept batch set the write buffer batches came from, in the order of the segments; NULL when some batch came from elsewhere (sift_col_add_batches) */
 	int			nwtok;
@@ -302,7 +306,7 @@ struct SiftColSource
 	int			galeaf1;		/* 1 + the leaf whose second order the scan reads group after group in place of the order of a group leaf that has none (sift_col_gorder_open), 0: none */
 	int			gpin_n;			/* the values of the group the scan reads (an IN list reads each in turn), in gpin_vals */
 	int64		gpin_vals[SIFT_GORD_PIN_MAX];
-	int			gper;			/* the sources of one value: the stored segments, then the write buffers when they hold rows (value v of source i is i / gper) */
+	int			gper;			/* the sources of one value: the stored segments, then the segments without the block when they are one source, then the write buffers when they hold rows (value v of source i is i / gper) */
 	struct ColGOrdMem *gmem[SIFT_GORD_PIN_MAX];	/* the rows of the write buffers sorted for the global order, one for each value of the group (sift_col_gorder_open), in mcxt */
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */

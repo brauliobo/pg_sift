@@ -4,6 +4,7 @@
 #include "postgres.h"
 #include "core/cmp.h"
 #include "col/scan_int.h"
+#include "col/scan/gmem.h"
 
 /* a stored segment: the groups of its table, read one by one from `at` in the direction of the scan (the table is not held, whatever its size) */
 typedef struct GroupSeg
@@ -49,7 +50,9 @@ SiftColGroups *
 sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 *only, bool desc, MemoryContext cxt)
 {
 	SiftColGroups *c;
-	uint64		memrows = 0;
+	uint64		memrows = 0,
+				freerows = 0;
+	int			nfree = 0;
 
 	for (int j = 0; j < src->nseg; j++)
 	{
@@ -57,11 +60,21 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 		uint32		entries,
 					values;
 
+		/* a segment without a block of the leaf (a small overlay) gives its groups from its units, as the write buffers do */
+		if (!sift_cseg_gorder_has(src->seg[j].seg, kcol))
+		{
+			nfree++;
+			freerows += src->seg[j].seg->entry.ndocs;
+			continue;
+		}
 		if (slot < 0 || sift_cseg_gorder_group(src->seg[j].seg, slot) != gcol || !sift_cseg_gorder(src->seg[j].seg, slot, &entries, &values) || entries != (uint32) src->seg[j].seg->entry.ndocs)
 			return NULL;
 	}
+	if (nfree == src->nseg || freerows > SIFT_CGORD_FREE_CAP(false))
+		return NULL;
 	if (!src->mem_loaded)
 		scan_load_wbuf(src);
+	memrows = freerows;
 	for (int i = 0; i < src->nmem; i++)
 	{
 		const SiftColBatch *b = src->mem[i].b;
@@ -86,6 +99,8 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 	{
 		GroupSeg   *s = &c->seg[j];
 
+		if (!sift_cseg_gorder_has(src->seg[j].seg, kcol))
+			continue;
 		s->slot = sift_cseg_gorder_slot(src->seg[j].seg, kcol, true);
 		s->ngroups = sift_cseg_gorder_ngroups(src->seg[j].seg, s->slot);
 		s->at = desc ? (int64) s->ngroups - 1 : 0;
@@ -103,6 +118,9 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 			for (uint32 r = 0; r < b->nrows; r++)
 				c->mem[m++] = b->col[gcol].key[r];
 		}
+		for (int j = 0; j < src->nseg; j++)
+			if (!sift_cseg_gorder_has(src->seg[j].seg, kcol) && !gord_free_group_values(src->seg[j].seg, gcol, c->mem, &m))
+				return NULL;
 		qsort(c->mem, m, sizeof(int64), sift_cmp_i64);
 		for (uint64 i = 0; i < m; i++)
 			if (c->nmem == 0 || c->mem[c->nmem - 1] != c->mem[i])
