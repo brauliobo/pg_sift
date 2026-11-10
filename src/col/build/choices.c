@@ -17,6 +17,7 @@
 #include "col/build/build_int.h"
 #include "col/build/choices_gen.h"
 #include "agg/refuse.h"
+#include "col/scope.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
 #define DETAIL_LINE		112		/* ... and of a line of its values (two lines) */
@@ -105,7 +106,7 @@ after_auto(const char *opt)
 static const char *
 minor_lib(int minor)
 {
-	return minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
+	return minor >= SIFT_COL_FORMAT_SCOPE ? "4.4" : minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
 }
 
 static void
@@ -644,6 +645,8 @@ derive(Relation heap, Relation index, int kinds, bool build, int *minor)
 		if (!ran)
 			derive_fn[i].fn(&d);
 	}
+	if (sift_scope_specs(index) != NULL)
+		need_minor(&d, SIFT_COL_FORMAT_SCOPE);
 	if (minor)
 		*minor = d.minor;
 	return d.out;
@@ -870,7 +873,11 @@ sift_col_choices_say(Relation heap, Relation index, int kinds, bool build)
 			(errmsg("sift_col index \"%s\": %s", name, head.data),
 			 errdetail_internal("%s", detail.data),
 			 errhint("Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('%s');", name)));
-	if (minor > 0 && (kinds & SIFT_CHOICE_AUTO))
+	if (minor >= SIFT_COL_FORMAT_SCOPE && (kinds & SIFT_CHOICE_AUTO))
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\" has a scope: column format minor %d, which a library before %s cannot read", name, minor, minor_lib(minor)),
+				 errhint("The scope option needs this format: build the index without it for the older library.")));
+	else if (minor > 0 && (kinds & SIFT_CHOICE_AUTO))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\" is column format minor %d, which a library before %s cannot read", name, minor, minor_lib(minor)),
 				 errhint("SET sift.col_format_minor = 14 before the build to write a format the older library reads.")));

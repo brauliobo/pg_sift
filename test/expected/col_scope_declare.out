@@ -148,6 +148,8 @@ NOTICE:  scope "tenant_id": 3,432 entries for 3,000 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS edges;
                  edges                  
 ----------------------------------------
@@ -259,6 +261,8 @@ NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS after_restore;
              after_restore              
 ----------------------------------------
@@ -277,6 +281,8 @@ NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS after_reindex;
              after_reindex              
 ----------------------------------------
@@ -290,6 +296,8 @@ HINT:  The next VACUUM completes the log; REINDEX INDEX events_col without CONCU
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_col') AS after_reindex_concurrently, (SELECT count(*) FROM pg_class WHERE relname LIKE 'events_col%') AS indexes;
        after_reindex_concurrently       | indexes 
 ----------------------------------------+---------
@@ -315,6 +323,8 @@ NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
  format |   kind    
 --------+-----------
@@ -441,6 +451,8 @@ NOTICE:  scope "Region Key": 3,100 entries for 3,100 rows (1.00 per row)
 NOTICE:  sift_col index "events_two": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_two');
+NOTICE:  sift_col index "events_two" has a scope: column format minor 45, which a library before 4.4 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT edges('events_two') AS edges;
                                                          edges                                                         
 -----------------------------------------------------------------------------------------------------------------------
