@@ -121,6 +121,11 @@ BEGIN
 	END IF;
 END $$;
 
+-- The storage of a copy: the table itself, or its partitions (pg_partition_tree has no row for a table that is not partitioned)
+CREATE FUNCTION sift.scope_relations(copy regclass) RETURNS SETOF oid LANGUAGE sql STABLE
+	AS $$ SELECT copy::oid UNION SELECT relid FROM pg_partition_tree(copy) WHERE isleaf $$;
+
+COMMENT ON FUNCTION sift.scope_relations(regclass) IS 'Internal: the relations that store a scope copy (the table, or its partitions)';
 COMMENT ON FUNCTION sift.scope_partition(text, bigint) IS 'Internal: the partition of a scope key in a partitioned scope copy, created when it is missing';
 
 -- A name for the triggers of a copy: stable text, not the oid, so a restore keeps it
@@ -130,7 +135,8 @@ CREATE FUNCTION sift.scope_trigger_name(copy text, kind text) RETURNS name LANGU
 COMMENT ON FUNCTION sift.scope_trigger_name(text, text) IS 'Internal: the name of one trigger of a scope copy';
 
 CREATE FUNCTION sift.scope_create(copy text, source regclass, fk name, scope_relation regclass, scope_key name, columns name[] DEFAULT NULL,
-								  partition boolean DEFAULT false, member name DEFAULT NULL, order_column name DEFAULT NULL) RETURNS bigint
+								  partition boolean DEFAULT false, member name DEFAULT NULL, order_column name DEFAULT NULL,
+								  options text DEFAULT NULL) RETURNS bigint
 	LANGUAGE plpgsql AS $$
 DECLARE
 	cap       CONSTANT float8 := 3.0;
@@ -147,6 +153,14 @@ DECLARE
 	rows      bigint;
 	base      text;
 	opts      text;
+	fidx      oid;
+	mb        numeric;
+	kept      text;
+	named     text[] := ARRAY(SELECT m[1] FROM regexp_matches(regexp_replace(COALESCE(options, ''), '''([^'']|'''')*''', '', 'g'), '([a-z_]+)\s*=', 'g') m);
+	-- the options of a sift_col index that describe its columns; those keyed on the table's own key (key_*, order_*, point_*, count_columns, track_changes, connect) are derived again for the scope key
+	inherit   CONSTANT text[] := ARRAY['paths', 'compression', 'preagg', 'rollup', 'rollup_dims', 'rollup_leaves', 'rollup_columns', 'rollup_on_demand', 'calendar_columns',
+									   'cluster_advice', 'cube_minmax', 'dict_lookup', 'array_lengths', 'hll_columns', 'return_columns', 'superunit',
+									   'write_buffer_limit', 'dead_rewrite_pct', 'vacuum_truncate'];
 BEGIN
 	member := COALESCE(member, fk);
 	IF to_regclass(copy) IS NOT NULL THEN
@@ -180,7 +194,17 @@ BEGIN
 			   AND a.atttypid <> b.atttypid) THEN
 		RAISE EXCEPTION 'scope_create: "%" of "%" and "%" of "%" differ in type', fk, src, member, rel USING ERRCODE = 'datatype_mismatch';
 	END IF;
-	-- carried columns: the primary key and the foreign key always, the rest as asked (default all)
+	-- the sift_col index of the table gives the copy its columns and its options
+	SELECT i.indexrelid INTO fidx FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam
+		WHERE i.indrelid = source AND am.amname = 'sift_col' AND i.indisvalid ORDER BY i.indpred IS NOT NULL, i.indexrelid LIMIT 1;
+	IF fidx IS NOT NULL THEN
+		columns := COALESCE(columns, ARRAY(SELECT a.attname FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY k(n, o)
+										  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.n WHERE i.indexrelid = fidx ORDER BY k.o));
+		-- a value that starts with 'auto:' is what the build read from the documents: the copy reads its own
+		SELECT string_agg(format('%s = %L', split_part(o, '=', 1), substr(o, strpos(o, '=') + 1)), ', ') INTO kept FROM pg_class c, unnest(c.reloptions) o
+			WHERE c.oid = fidx AND split_part(o, '=', 1) = ANY (inherit) AND split_part(o, '=', 1) <> ALL (named) AND o !~ '^[^=]*=auto:';
+	END IF;
+	-- carried columns: the primary key and the foreign key always, the rest as asked (default the columns of the table's sift_col index, else all)
 	SELECT array_agg(a.attname ORDER BY a.attnum) INTO cols FROM pg_attribute a
 		WHERE a.attrelid = source AND a.attnum > 0 AND NOT a.attisdropped AND (columns IS NULL OR a.attname = ANY (columns) OR a.attname = ANY (pk) OR a.attname = fk);
 	IF scope_key = ANY (cols) THEN
@@ -220,13 +244,18 @@ BEGIN
 				   scope_key, sift.scope_list(cols, 'f'), src, rel, member, fk, scope_key, CASE WHEN ord IS NULL THEN '' ELSE format(', f.%I', ord) END);
 	GET DIAGNOSTICS rows = ROW_COUNT;
 
-	opts := CASE WHEN partition THEN CASE WHEN ord IS NULL THEN '' ELSE format('key_order = %L', ord) END ELSE format('key_order = %L', concat_ws(', ', scope_key, ord)) END;
+	opts := CASE WHEN 'key_order' = ANY (named) THEN '' WHEN partition THEN CASE WHEN ord IS NULL THEN '' ELSE format('key_order = %L', ord) END
+				 ELSE format('key_order = %L', concat_ws(', ', scope_key, ord)) END;
+	opts := concat_ws(', ', NULLIF(opts, ''), kept, NULLIF(options, ''));
 	SELECT relname INTO base FROM pg_class WHERE oid = to_regclass(cname);
 	EXECUTE format('CREATE INDEX %I ON %s USING sift_col (%I, %s)%s', left(base, 55) || '_col', cname, scope_key, sift.scope_list(cols, '')::text, CASE WHEN opts = '' THEN '' ELSE ' WITH (' || opts || ')' END);
 	-- what a change of a fact looks up in the copy (all its copies share the primary key) and the insert checks for a copy a change of the other table made in the same statement;
 	-- a pair that goes is found by the sift index on (scope key, foreign key)
 	EXECUTE format('CREATE INDEX %I ON %s (%s)', left(base, 54) || '_maint', cname,
 				   array_to_string(ARRAY(SELECT format('%I', k) FROM unnest(pk) k), ', '));
+
+	-- ANALYZE may run in a function, VACUUM may not: the pages of the copy are all-visible only after the caller's VACUUM
+	EXECUTE format('ANALYZE %s', cname);
 
 	INSERT INTO sift.scope_copies VALUES (cname, src, fk, rel, member, scope_key, pk, cols, partition);
 	FOR tr IN SELECT unnest(ARRAY['ins', 'upd', 'del']) LOOP
@@ -242,6 +271,15 @@ BEGIN
 	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_truncate_trg(%L)', sift.scope_trigger_name(cname, 'ft'), src, cname);
 	EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION sift.scope_truncate_trg(%L)', sift.scope_trigger_name(cname, 'pt'), rel, cname);
 	RAISE NOTICE 'scope copy %: % rows, % copies per row of "%" that reaches a key', cname, rows, round(mult::numeric, 2), src;
+	IF fidx IS NULL AND columns IS NULL THEN
+		SELECT round(sum(pg_relation_size(r)) / 1048576.0, 1) INTO mb FROM sift.scope_relations(to_regclass(cname)) r;
+		RAISE NOTICE 'scope copy %: no sift_col index on "%", all % columns carried, table of % MB', cname, src, cardinality(cols), mb
+			USING DETAIL = 'A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.',
+				  HINT = 'Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.';
+	END IF;
+	RAISE NOTICE 'scope copy %: run VACUUM % now', cname, cname
+		USING DETAIL = 'VACUUM cannot run inside a function. A copy that is not vacuumed has an empty visibility map: a read checks every row it keeps in the heap.',
+			  HINT = 'sift.scope_status shows whether a copy was vacuumed.';
 	RETURN rows;
 END $$;
 
@@ -324,6 +362,14 @@ COMMENT ON FUNCTION sift.scope_read_keys(text, bigint[], text) IS 'The WHERE con
 COMMENT ON FUNCTION sift.scope_replicas(text) IS 'The facts of a scope copy by how many copies each has (the number of scope keys of its foreign key; 0: none): the multiplicity of the copy';
 COMMENT ON FUNCTION sift.scope_verify(text, bigint[]) IS 'The rows of a scope copy that differ from the join of its table with the scope relation (missing, extra, differs or duplicate); no rows: the copy is exact. With keys, only those keys, and the facts a read over them through sift.scope_read_keys returns against the facts of their members (multi_key_missing, multi_key_extra)';
 
+-- Whether the copies were vacuumed: the pages of a leaf of a copy that the last VACUUM or ANALYZE found all-visible, over its pages; none of them means never vacuumed
+CREATE VIEW sift.scope_status AS
+	SELECT s.copy, sum(c.relpages)::bigint AS pages, sum(c.relallvisible)::bigint AS all_visible_pages, sum(c.relallvisible) > 0 AS vacuumed
+	FROM sift.scope_copies s CROSS JOIN LATERAL sift.scope_relations(to_regclass(s.copy)) r JOIN pg_class c ON c.oid = r
+	GROUP BY s.copy;
+
+COMMENT ON VIEW sift.scope_status IS 'One row for each scope copy: its pages, its all-visible pages and whether it was vacuumed (not vacuumed: a read checks the rows in the heap, run VACUUM on the copy)';
+
 -- Drops the triggers and the copy
 CREATE FUNCTION sift.scope_drop(copy text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -345,7 +391,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION sift.scope_drop(text) IS 'Drops a scope copy with its triggers on the table and on the scope relation';
-COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index keyed by the scope key and triggers that keep it exact; returns the rows of the copy';
+COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name, text) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index by the scope key and triggers that keep it exact; returns the rows. It takes the columns and the column options (paths, ..) of the table''s sift_col index; options adds or replaces some. VACUUM it afterwards: sift.scope_status tells. See INDEX-RECIPES';
 
 -- Pairs kept from a view: the scope relation of a copy (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
 -- source tables (assignments, group membership). sift.scope_refresh_pairs recomputes the pairs of named member ids or scope keys from the view and applies the difference;
