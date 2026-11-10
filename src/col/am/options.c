@@ -399,6 +399,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_scope_pairs",
 							 "Testing: the marker sift.in_scope(index, name, fk, keys) of a scan reads a row once for each pair of its member with the keys, as the join to the scope relation does, not once.",
 							 NULL, &sift_test_scope_pairs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_scope_unit_kind",
+							"Testing: the unit kind (bits 8..15 of the stamp) the scope segments of an index are read as having: a segment of a later release, which this build refuses.",
+							NULL, &sift_test_scope_unit_kind, 0, 0, 255, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

@@ -113,4 +113,9 @@ typedef struct SiftConnStamp
 	uint32		xmin;			/* X, the horizon (xmin of the snapshot the value was derived under; a TransactionId) */
 	uint32		reserved;		/* zero or SIFT_CONN_STAMP_CLEAN */
 } SiftConnStamp;
+/*
+ * The stamp of a scope (col/scope.h) keeps the kind of the units of its segment in bits 8..15 of reserved: 0, the values of the leaves replicated by scope key (all that 4.4 writes); 1, positions in the
+ * entity segments (by reference, reserved: SIFT_SEG_SCOPE_REF); 2..255 reserved. A library that reads a kind it does not know refuses the segment (sift_cseg_open).
+ */
+#define SIFT_SCOPE_KIND(reserved)	(((reserved) >> 8) & 0xFF)
 #define SIFT_CONN_STAMP_CLEAN	2	/* every row of the segment has a NULL key or a parent row under the stamp: a parent row inserted since cannot change a flag */

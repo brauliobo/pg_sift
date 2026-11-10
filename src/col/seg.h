@@ -147,7 +147,7 @@ extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
 static inline bool
 sift_seg_is_scope(const SiftSegEntry *e)
 {
-	return e->kind == SIFT_SEG_IMMUTABLE && (e->flags & SIFT_SEG_SCOPE) != 0;
+	return e->kind == SIFT_SEG_IMMUTABLE && (e->flags & (SIFT_SEG_SCOPE | SIFT_SEG_SCOPE_REF)) != 0;
 }
 
 /* The scope (its ordinal among those the index declares) a scope segment holds the entries of; the entries of one segment are all of one scope */

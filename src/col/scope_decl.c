@@ -35,6 +35,7 @@ double		sift_scope_max_multiplicity = 8.0;
 bool		sift_test_scope_trust = false;
 bool		sift_test_scope_need_journal = false;
 bool		sift_test_scope_pairs = false;
+int			sift_test_scope_unit_kind = 0;
 #endif
 
 static bool

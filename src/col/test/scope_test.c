@@ -25,6 +25,7 @@
 
 PG_FUNCTION_INFO_V1(sift_test_scope_expand);
 PG_FUNCTION_INFO_V1(sift_test_col_scope_entries);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_mark);
 
 /*
  * sift._test_scope_expand(rel, btree, member, key, fks): the scope entries the fill gives for the member keys of fks (NULLs kept), one row (ordinal, key) per entry; the
@@ -381,4 +382,26 @@ sift_test_scope_changed(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+
+static void
+mark_scope_ref(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	bool		ref = *(bool *) arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].flags & (SIFT_SEG_SCOPE | SIFT_SEG_SCOPE_REF))
+			dir->segs[i].flags = ref ? dir->segs[i].flags | SIFT_SEG_SCOPE_REF : dir->segs[i].flags & ~SIFT_SEG_SCOPE_REF;
+}
+
+/* sift._test_col_scope_mark(index, ref): sets or clears the by-reference flag (SIFT_SEG_SCOPE_REF) in the directory entry of every scope segment, as a later release would write it */
+Datum
+sift_test_col_scope_mark(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	bool		ref = PG_GETARG_BOOL(1);
+
+	sift_dir_update(index, &(SiftDirChange) {.fn = mark_scope_ref,.arg = &ref,.extra = InvalidBuffer});
+	index_close(index, NoLock);
+	PG_RETURN_VOID();
+}
 #endif							/* SIFT_TESTING */

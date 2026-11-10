@@ -144,6 +144,7 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 #ifdef SIFT_TESTING
 /* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
+extern PGDLLIMPORT int sift_test_scope_unit_kind;	/* the unit kind the stamps of the scope segments are read as having, ORed into the one they hold (0: none): what a segment of a later release says */
 extern PGDLLIMPORT bool sift_test_scope_trust;	/* a scope without a journal is read as if it vouched (the proof of concept) */
 extern PGDLLIMPORT bool sift_test_scope_need_journal;	/* a scope whose relation has no journal index is refused at CREATE INDEX (a release always does) */
 extern PGDLLIMPORT bool sift_test_scope_pairs;	/* the marker sift.in_scope reads a row once for each pair, as a join does, not once */

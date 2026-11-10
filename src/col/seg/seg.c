@@ -5,6 +5,7 @@
  */
 #include "core/cmp.h"
 #include "col/seg_int.h"
+#include "col/scope.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -128,6 +129,17 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	return hd;
 }
 
+/* The units of a scope segment are of a kind this build does not read (by reference, written by a later release that reads them): the refusal of a newer format minor */
+static void
+scope_refuse(Relation index, const SiftSegEntry *entry)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("index \"%s\" has a scope segment of a unit kind that this build, which reads column format 1.%d, does not read", RelationGetRelationName(index), SIFT_COL_FORMAT_SCOPE),
+			 errdetail("Segment %llu of the scope was written by a later release.", ULL(entry->gen)),
+			 errhint("Use a newer pg_sift, or REINDEX.")));
+}
+
 SiftColSegment *
 sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 {
@@ -146,6 +158,8 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	seg->priv = pv;
 	if (entry->kind != SIFT_SEG_IMMUTABLE)
 		SIFT_SEG_CORRUPT(index, entry->gen, "The segment is not immutable.");
+	if (entry->flags & SIFT_SEG_SCOPE_REF)
+		scope_refuse(index, entry);
 	if (entry->format < SIFT_COL_FORMAT_MIN_READ || entry->format > SIFT_COL_FORMAT_MAX_READ)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -187,6 +201,15 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	memcpy(seg->conn, head->conn, sizeof(seg->conn));
 	seg->nscope = head->nscope;
 	memcpy(seg->scope, head->scope, sizeof(seg->scope));
+	for (int i = 0; i < seg->nscope; i++)
+	{
+#ifdef SIFT_TESTING
+		if (entry->flags & SIFT_SEG_SCOPE)
+			seg->scope[i].reserved |= (uint32) sift_test_scope_unit_kind << 8;
+#endif
+		if (SIFT_SCOPE_KIND(seg->scope[i].reserved) != 0)
+			scope_refuse(index, entry);
+	}
 	seg->nsb = h->dictroot_n;
 	seg->sbdir = head->sbdir;
 	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);
