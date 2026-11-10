@@ -124,6 +124,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	Relation	pgclass = table_open(RelationRelationId, RowExclusiveLock);
 	HeapTuple	tuple,
 				newtuple;
+	ItemPointerData otid;
 	Datum		old,
 				newopts,
 				values[Natts_pg_class] = {0};
@@ -139,7 +140,8 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	 * The lock an update of an index's pg_class row expects (checked in assert builds) is the tuple lock of the row, not a lock on its table: ShareUpdateExclusiveLock on the table waits for
 	 * the ShareLock of every other build of an index of it, and two builds that wait for each other are a deadlock (a parallel restore).
 	 */
-	LockTuple(pgclass, &tuple->t_self, InplaceUpdateTupleLock);
+	otid = tuple->t_self;
+	LockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 	old = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
 	newopts = transformRelOptions(isnull ? (Datum) 0 : old, def, NULL, NULL, false, value == NULL);
 	(void) index_reloptions(index->rd_indam->amoptions, newopts, true);
@@ -148,6 +150,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	repl[Anum_pg_class_reloptions - 1] = true;
 	newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass), values, nulls, repl);
 	CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
+	UnlockTuple(pgclass, &otid, InplaceUpdateTupleLock);
 	heap_freetuple(newtuple);
 	ReleaseSysCache(tuple);
 	table_close(pgclass, RowExclusiveLock);
