@@ -25,7 +25,7 @@ TESTS=("$@")
 	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_swap slot_owner)
 TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
 # the shell TAP tests (they skip themselves on a server without what they need): DROP TABLE beside a worker stopped by injection points
-SHTAPS=(${SIFT_ASSERT_SHTAP-maint_lock_order col_lock_order bm25_cold_stems})
+SHTAPS=(${SIFT_ASSERT_SHTAP-maint_lock_order col_lock_order bm25_cold_stems lookup_shared_claim})
 # the logs of the servers (TAP nodes included) must be clean of what the tests do not check
 BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request|missing lock for relation'
 
