@@ -49,7 +49,8 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once)
 {
 	SiftDirSnapshot *dir;
 	const char *why = NULL;
-	bool		filled = false;
+	uint64		first_scope = UINT64_MAX,
+				last_entity = 0;
 
 	if (!sift_agg_scope)
 		return "disabled";
@@ -67,7 +68,10 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once)
 		uint64		rows,
 					pages;
 
-		filled |= sift_seg_is_scope(&dir->segs[i]);
+		if (sift_seg_is_scope(&dir->segs[i]))
+			first_scope = Min(first_scope, dir->segs[i].gen);
+		else if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			last_entity = Max(last_entity, dir->segs[i].gen);
 		if (!sift_seg_is_wbuf(&dir->segs[i]))
 			continue;
 		sift_cwbuf_summary(index, &dir->segs[i], &rows, &pages);
@@ -75,7 +79,15 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once)
 			why = "write buffer";
 	}
 	pfree(dir);
-	return why != NULL ? why : filled ? NULL : "unfilled";
+	if (why != NULL)
+		return why;
+	if (first_scope == UINT64_MAX)
+		return "unfilled";
+	/*
+	 * The build writes the scope segments after the entity segments, so a later entity segment (a promotion, a merge) holds rows, or the same rows under a new
+	 * generation, that no scope entry describes: the stored read would miss them. Exact and simple until the promotion and the merge fill the scope family.
+	 */
+	return last_entity > first_scope ? "scope segments do not cover the rows" : NULL;
 }
 
 static int
