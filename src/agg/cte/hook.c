@@ -348,6 +348,18 @@ flat_pair_wanted(Query *parse)
 	return sift_enable_agg && parse->commandType == CMD_SELECT && (query_nests(parse) || sift_agg_probe_joins(parse, false) || sift_agg_eager_candidate(parse) || sift_agg_distinct_split_candidate(parse) || sift_agg_partial_candidate(parse) || sift_agg_pct_array_candidate(parse) || sift_agg_having_candidate(parse) || sift_agg_invert_parents(parse, false)) && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse);
 }
 
+/* does the plan, its cost scaled by margin and charged extra, beat the other as PostgreSQL ranks plans: fewer disabled nodes first, then the cost (the same on every major) */
+static bool
+plan_beats(const Plan *plan, double margin, double extra, const Plan *other)
+{
+	double		cost,
+				other_cost;
+	int			nodes = sift_plan_disabled(plan, &cost),
+				other_nodes = sift_plan_disabled(other, &other_cost);
+
+	return nodes != other_nodes ? nodes < other_nodes : cost * margin + extra < other_cost;
+}
+
 /*
  * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat/): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
@@ -453,7 +465,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 	plain = plan_grouped(SIFT_PLANNER_ARGS(parse), &plain_cx, quiet);
 	planning_second = false;
 	/* keys looked up before the groups are made win by what they leave unread, in the scan or out of it: the margin is the one the estimate of the keys' groups is trusted for */
-	if (flatplan != NULL && sift_agg_flat_any && flatplan->planTree->total_cost * (sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN) < plain->planTree->total_cost)
+	if (flatplan != NULL && sift_agg_flat_any && plan_beats(flatplan->planTree, sift_agg_flat_margin > 0 ? sift_agg_flat_margin : FLAT_KEYS_MARGIN, 0, plain->planTree))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
@@ -479,7 +491,8 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
 		((flat_inlined && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
-		 flatplan->planTree->total_cost * (sift_agg_probe_applied && !sift_agg_probe_mixed ? FLAT_PROBE_MARGIN : 1.0) + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
+		 plan_beats(flatplan->planTree, sift_agg_probe_applied && !sift_agg_probe_mixed ? FLAT_PROBE_MARGIN : 1.0,
+					function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost, plain->planTree)))
 	{
 		discard_plan(plain_cx);
 		if (quiet)
@@ -515,13 +528,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	if (first == NULL)
 		return stmt;
 	top = plan_grouped(SIFT_PLANNER_ARGS(first), &cx, true);
-	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) &&
-#if PG_VERSION_NUM >= 180000
-		(top->planTree->disabled_nodes < stmt->planTree->disabled_nodes ||
-		 (top->planTree->disabled_nodes == stmt->planTree->disabled_nodes && top->planTree->total_cost < stmt->planTree->total_cost)))
-#else
-		top->planTree->total_cost < stmt->planTree->total_cost)
-#endif
+	if ((uses_sift_agg(top->planTree) || any_sift_agg(top->subplans)) && plan_beats(top->planTree, 1.0, 0, stmt->planTree))
 		return top;
 	discard_plan(cx);
 	return stmt;

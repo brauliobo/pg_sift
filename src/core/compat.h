@@ -11,6 +11,7 @@
 #include "access/tableam.h"
 #include "nodes/miscnodes.h"
 #include "nodes/pathnodes.h"
+#include "nodes/plannodes.h"
 #include "nodes/tidbitmap.h"
 #include "pgtime.h"
 #include "storage/spin.h"
@@ -71,6 +72,24 @@ sift_path_disable(Path *p, int nodes)
 	}
 }
 #endif
+
+/*
+ * The nodes of a plan that an enable_ setting disabled, and its cost without their penalty, so that plans are ranked alike on every major: 18 counts the nodes apart
+ * from the cost, 17 has disable_cost in total_cost once for each.
+ */
+static inline int
+sift_plan_disabled(const Plan *plan, double *cost)
+{
+#if PG_VERSION_NUM >= 180000
+	*cost = plan->total_cost;
+	return plan->disabled_nodes;
+#else
+	int			nodes = (int) (plan->total_cost / disable_cost);
+
+	*cost = plan->total_cost - nodes * disable_cost;
+	return nodes;
+#endif
+}
 
 /* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
 #if PG_VERSION_NUM >= 190000
