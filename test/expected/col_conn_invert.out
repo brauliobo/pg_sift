@@ -7,7 +7,7 @@ SET jit = off;
 SET sift.agg_force = on;
 SET sift.agg_lookup_cache_kb = 0;
 SET sift.agg_lookup_shared_kb = 0;
--- the answer under the agg scan and under the normal plan, and whether the child was counted by its keys
+-- the answer under the agg scan and under the normal plan, and whether the child was counted by its keys (the distinct keys of the children, or, for the parents that lack a child, the scan of the children that keeps the parents nothing matched)
 CREATE FUNCTION invert_run(q text, OUT same boolean, OUT inverted boolean)
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -22,7 +22,7 @@ BEGIN
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	inverted := p LIKE '%count(DISTINCT%' OR p LIKE '%"o (subquery) (left)%';
+	inverted := p LIKE '%count(DISTINCT%' OR p LIKE '%"o (subquery) (left)%' OR (p LIKE '%(preserved)%' AND p LIKE '%IS NULL%');
 END $$;
 CREATE TABLE accounts (id int PRIMARY KEY, region int, name text) WITH (autovacuum_enabled = false);
 INSERT INTO accounts SELECT i, i % 7, 'a' || i FROM generate_series(1, 3000) i;
