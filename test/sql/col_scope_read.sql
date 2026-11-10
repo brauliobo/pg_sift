@@ -54,7 +54,8 @@ FROM (VALUES
 	(3, 3, 'SELECT count(*), sum(v) FROM events e WHERE @ AND created_at >= timestamptz ''2026-03-01'' AND created_at < timestamptz ''2026-04-01'''),
 	(4, 11, 'SELECT count(*), avg(v) FROM events e WHERE v > 4 AND @'),
 	(5, 99, 'SELECT count(*), sum(v) FROM events e WHERE @'),
-	(6, 5, 'SELECT date_trunc(''month'', created_at) m, count(*) FROM events e WHERE @ GROUP BY 1 ORDER BY 1')) s(n, k, q),
+	(6, 5, 'SELECT date_trunc(''month'', created_at) m, count(*) FROM events e WHERE @ GROUP BY 1 ORDER BY 1'),
+	(7, 3, 'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20')) s(n, k, q),
 	LATERAL (SELECT q AS plain) p;
 CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean, stored boolean, why text, fewer_units boolean) LANGUAGE sql AS $$
 	SELECT s.n, r.same, r.stored, r.why, r.units_skipped > 0 FROM shapes s, LATERAL scope_run(s.q, s.plain) r ORDER BY s.n
