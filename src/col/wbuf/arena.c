@@ -8,10 +8,10 @@
  * A buffer takes what it needs: the arena is a pool of ARENA_PAGE byte pages, the segments of the DSM registry that hold them (ARENA_SEG_PAGES pages, 1 MB) are made when the pool is empty, up to
  * ARENA_SEGS of them (the ceiling of the arena in the server, 128 MB, 28 buffers of the default write_buffer_limit), and nothing is allocated at postmaster start. A slot is the buffer of one
  * generation: a directory of the offsets of its rows (open addressing, pages that double with the rows) and a bump area of the encoded rows, in pages it takes one by one. A buffer of 500 rows
- * holds 64 kB. It is the buffer's from its first row to its promotion (sift_cwbuf_arena_drop), and is never taken from a buffer that is in use: a row that finds no slot or no page, or a slot
- * that is full, is written as a record that holds its values, as a buffer without the setting does. A slot of an index that was dropped or rebuilt is given back, and when none is free (or
- * the pool is at its ceiling) the buffer written longest ago is asked back, by sealing it, which promotes it as any other (sift_cwbuf_arena_gc). A slot is full when it holds
- * write_buffer_limit bytes: the seal of the buffer follows (sift_cwbuf_seal), so the limit counts the rows a buffer holds, not the pages of its records.
+ * holds 64 kB. It is the buffer's from its first row to its promotion (sift_cwbuf_arena_drop), and is not taken from a buffer of this database that is in use: a row that finds no slot or no page,
+ * or a slot that is full, is written as a record that holds its values, as a buffer without the setting does. A slot of an index that was dropped or rebuilt, or of a database that was dropped, is given back, and when
+ * none is free (or the pool is at its ceiling) the buffer of the database written longest ago is asked back, by sealing it, which promotes it as any other, or when the database has none the slot of a buffer of another one is taken
+ * (sift_cwbuf_arena_gc). A slot is full when it holds write_buffer_limit bytes: the seal of the buffer follows (sift_cwbuf_seal), so the limit counts the rows a buffer holds, not the pages of its records.
  * An entry is written once and never changed until its slot is given back (the epoch of the slot moves), so a reader copies it outside the spinlock and checks the epoch after. Every backend that
  * touches the arena has mapped all the segments made so far (arena_sync), so the pages a spinlock section reaches are mapped.
  */
@@ -28,6 +28,7 @@
 #include "storage/proc.h"
 #include "storage/spin.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "utils/wait_event.h"
 
 #include "col/am.h"
@@ -670,21 +671,51 @@ sift_cwbuf_arena_gc_wanted(void)
 	return arena != NULL && arena->gc_wanted && gc_statement != GetCurrentStatementStartTimestamp();
 }
 
+/* Does the buffer of the slot still exist? Its index is of this database (the catalog of another one cannot be read) */
+static bool
+slot_buffer_alive(const ArenaSlot *c)
+{
+	Relation	index;
+	SiftDirSnapshot *snap;
+	bool		alive = false;
+
+	if ((index = try_relation_open(c->indexoid, AccessShareLock)) == NULL)
+		return false;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	if (index->rd_locator.relNumber == c->rel)
+	{
+		sift_dir_read(index, snap);
+		for (int j = 0; j < snap->nsegs; j++)
+			alive |= snap->segs[j].gen == c->gen && (snap->segs[j].kind == SIFT_SEG_WBUF_OPEN || snap->segs[j].kind == SIFT_SEG_WBUF_SEALED);
+	}
+	pfree(snap);
+	relation_close(index, AccessShareLock);
+	return alive;
+}
+
+typedef struct ArenaVictim
+{
+	int			slot;
+	uint64		tick;
+	uint64		epoch;
+	Oid			indexoid;
+} ArenaVictim;
+
 /*
- * The slots of this database are looked at once a row found none: the slot of an index that is gone, rebuilt or without that buffer is given back, and when none was, the buffer that was
- * written longest ago is asked back (its seal), which promotes it as any other. Called with no lock held.
+ * The slots are looked at once a row found none: the slot of a buffer that is gone (an index that is dropped or rebuilt, a buffer without that generation, a database that is dropped) is given
+ * back. When none was and the arena is squeezed, the buffer of this database that was written longest ago is asked back (its seal, which promotes it as any other); when this database has none,
+ * the slot of the buffer of another database that was written longest ago is given back as it is, as the entries of a slot are a cache that the reader makes again from the heap. Called with
+ * no lock held.
  */
 void
 sift_cwbuf_arena_gc(void)
 {
 	Arena	   *a = arena_get();
-	int			victim = -1;
-	uint64		victim_tick = PG_UINT64_MAX;
-	Oid			victim_oid = InvalidOid;
+	ArenaVictim own = {.slot = -1,.tick = PG_UINT64_MAX};
+	ArenaVictim other = own;
 	bool		freed = false;
-	Relation	index;
-
 	bool		squeezed;
+	Relation	index;
 
 	gc_statement = GetCurrentStatementStartTimestamp();
 	SpinLockAcquire(&a->mutex);
@@ -695,27 +726,13 @@ sift_cwbuf_arena_gc(void)
 	for (int i = 0; i < ARENA_SLOTS; i++)
 	{
 		ArenaSlot	c;
-		bool		alive = false;
 
 		SpinLockAcquire(&a->mutex);
 		c = a->slot[i];
 		SpinLockRelease(&a->mutex);
-		if (!c.used || c.db != MyDatabaseId)
+		if (!c.used)
 			continue;
-		if ((index = try_relation_open(c.indexoid, AccessShareLock)) != NULL)
-		{
-			SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-
-			if (index->rd_locator.relNumber == c.rel)
-			{
-				sift_dir_read(index, snap);
-				for (int j = 0; j < snap->nsegs; j++)
-					alive |= snap->segs[j].gen == c.gen && (snap->segs[j].kind == SIFT_SEG_WBUF_OPEN || snap->segs[j].kind == SIFT_SEG_WBUF_SEALED);
-			}
-			pfree(snap);
-			relation_close(index, AccessShareLock);
-		}
-		if (!alive)
+		if (c.db == MyDatabaseId ? !slot_buffer_alive(&c) : !SearchSysCacheExists1(DATABASEOID, ObjectIdGetDatum(c.db)))
 		{
 			SpinLockAcquire(&a->mutex);
 			if (a->slot[i].used && a->slot[i].epoch == c.epoch)
@@ -725,23 +742,21 @@ sift_cwbuf_arena_gc(void)
 			}
 			SpinLockRelease(&a->mutex);
 		}
-		else if (!c.seal_wanted && c.tick < victim_tick)
-		{
-			victim = i;
-			victim_tick = c.tick;
-			victim_oid = c.indexoid;
-		}
+		else if (!c.seal_wanted && c.rebuilder < 0 && c.tick < (c.db == MyDatabaseId ? own : other).tick)
+			*(c.db == MyDatabaseId ? &own : &other) = (ArenaVictim) {i, c.tick, c.epoch, c.indexoid};
 	}
-	if (freed || victim < 0 || !squeezed)
+	if (freed || !squeezed)
 		return;
 	SpinLockAcquire(&a->mutex);
-	if (a->slot[victim].used && a->slot[victim].indexoid == victim_oid)
+	if (own.slot >= 0 && a->slot[own.slot].used && a->slot[own.slot].epoch == own.epoch)
 	{
-		a->slot[victim].seal_wanted = true;
+		a->slot[own.slot].seal_wanted = true;
 		a->seals_forced++;
 	}
+	else if (own.slot < 0 && other.slot >= 0 && a->slot[other.slot].used && a->slot[other.slot].epoch == other.epoch)
+		slot_release(a, other.slot);
 	SpinLockRelease(&a->mutex);
-	if ((index = try_relation_open(victim_oid, RowExclusiveLock)) != NULL)
+	if (own.slot >= 0 && (index = try_relation_open(own.indexoid, RowExclusiveLock)) != NULL)
 	{
 		sift_col_maint_after_seal(index);
 		relation_close(index, RowExclusiveLock);
