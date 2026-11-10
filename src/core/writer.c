@@ -568,13 +568,16 @@ run_cap(const SiftStreamWriter *sw)
 /*
  * The shortest run worth taking off the free list. With the size of the stream known, anything that
  * keeps its extents within EXTENT_TARGET, so fragmented space left by merged segments is reused
- * instead of extending the file; unknown, a quarter of the run wanted.
+ * instead of extending the file; unknown, a quarter of the run wanted. A stream expected to fit in fewer blocks than a run
+ * takes what is left of them, so that the unused end it gives back (shorter than RUN_MIN) is taken by the next small stream.
  */
 static uint32
 run_min(const SiftStreamWriter *sw)
 {
 	if (sw->wt->expect == 0)
 		return Max(RUN_MIN, sw->grow / 4);
+	if (sw->wt->expect < RUN_MIN)
+		return sw->wt->expect > sw->blocks ? sw->wt->expect - sw->blocks : 1;
 	return Max(RUN_MIN, Min(sw->grow, sw->wt->expect / EXTENT_TARGET));
 }
 
