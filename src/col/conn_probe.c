@@ -15,6 +15,7 @@
 #include "catalog/pg_opfamily_d.h"
 #include "catalog/pg_type_d.h"
 #include "executor/tuptable.h"
+#include "storage/lmgr.h"
 #include "utils/fmgroids.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
@@ -55,8 +56,14 @@ sift_conn_probe_begin(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 {
 	SiftConnProbe *p = MemoryContextAllocZero(cx, sizeof(SiftConnProbe));
 
+	Relation	idx;
+
+	/* the lock on the parent table is the one fill_begin took; the btree is locked here, and both are held to the end of the transaction (a batch opens them with NoLock) */
+	Assert(CheckRelationLockedByMe(parent, AccessShareLock, true));
 	p->parent = RelationGetRelid(parent);
 	p->index = sift_col_row_key_unique(parent, key);
+	idx = index_open(p->index, AccessShareLock);
+	index_close(idx, NoLock);
 	p->keytype = TupleDescAttr(RelationGetDescr(parent), key - 1)->atttypid;
 	p->snap = snap;
 	p->cx = cx;
@@ -90,6 +97,8 @@ sift_conn_probe_batch(SiftConnProbe *p, const int64 *keys, const uint64 *nulls, 
 {
 	Relation	heap = table_open(p->parent, NoLock);
 	Relation	idx = index_open(p->index, NoLock);
+
+	Assert(CheckRelationLockedByMe(heap, AccessShareLock, true) && CheckRelationLockedByMe(idx, AccessShareLock, true));
 	IndexScanDesc scan = sift_index_beginscan(heap, idx, p->snap, 1);
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
 
