@@ -238,6 +238,9 @@ extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats 
 extern void sift_cseg_verify_lst(SiftColSegment *seg);
 /* The mirror of the header page, when the segment has one, is what the stream holds (corruption error otherwise) */
 extern void sift_cseg_verify_mirror(SiftColSegment *seg);
+#ifdef SIFT_TESTING
+extern bool sift_cseg_mirror_range(const SiftColSegment *seg, uint32 i, uint64 *off, uint32 *len, uint32 *block);
+#endif
 /* The mirror a header page that lists nextents extents keeps for the segment (the stream does not change when its header page is written again), NULL with *len 0: none */
 extern const void *sift_cseg_mirror_for(const SiftColSegment *seg, uint32 nextents, uint32 *len);
 /* The zones of the segment's units (INT scalar leaves) into the sample, thinned to keep SIFT_COL_ZONE_SAMPLE units over the segments added; the caller allocates the arrays of the leaves that are sampled (lo[col] not NULL) */

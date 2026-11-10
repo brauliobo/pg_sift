@@ -159,3 +159,21 @@ sift_cseg_mirror_for(const SiftColSegment *seg, uint32 nextents, uint32 *len)
 	}
 	return pv->mirror;
 }
+
+#ifdef SIFT_TESTING
+/* tests: range i of the mirror (stream offset and length), and the bytes of the whole block; false past the last range or without a mirror */
+bool
+sift_cseg_mirror_range(const SiftColSegment *seg, uint32 i, uint64 *off, uint32 *len, uint32 *block)
+{
+	const SegPriv *pv = PRIV(seg);
+	MirrorRange r;
+
+	if (pv->mirror == NULL || i >= mirror_header(pv).nranges)
+		return false;
+	r = mirror_range(pv, i);
+	*off = r.off;
+	*len = r.len;
+	*block = (uint32) mirror_header(pv).len;
+	return true;
+}
+#endif

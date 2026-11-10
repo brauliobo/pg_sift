@@ -246,6 +246,12 @@ CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, de
 	AS 'MODULE_PATHNAME', 'sift_test_col_types' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4, OUT lstats bool, OUT roots bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_formats' LANGUAGE C STRICT;
+-- the ranges of the stream that the mirror of each segment keeps, and its bytes (src/col/seg/mirror.c); a byte of the stream read as itself xor a mask
+CREATE FUNCTION sift._test_col_mirror(index regclass, OUT gen int8, OUT range int4, OUT off int8, OUT len int4, OUT block int4)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_mirror' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_seg_flip(off int8, mask int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_seg_flip' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_dict_tsig(index regclass, leaf int4, needle text, OUT gen int8, OUT signed bool, OUT blocks_passed int4, OUT blocks int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_tsig' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_dict_count(index regclass, leaf int4, op text, val text, OUT gen int8, OUT counted bool, OUT rows int8) RETURNS SETOF record

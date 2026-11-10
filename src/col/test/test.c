@@ -25,6 +25,10 @@ PG_FUNCTION_INFO_V1(sift_test_col_unit_of_block);
 
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 
+PG_FUNCTION_INFO_V1(sift_test_col_mirror);
+
+PG_FUNCTION_INFO_V1(sift_test_seg_flip);
+
 PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 
 PG_FUNCTION_INFO_V1(sift_test_eq_sel);
@@ -69,6 +73,50 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* sift._test_col_mirror(index): the ranges of the stream that the mirror in the header page of each immutable segment keeps, and the bytes of the whole block */
+Datum
+sift_test_col_mirror(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		off;
+		uint32		len,
+					block;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (uint32 r = 0; sift_cseg_mirror_range(seg, r, &off, &len, &block); r++)
+		{
+			Datum		v[5] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(r), Int64GetDatum(off), Int32GetDatum(len), Int32GetDatum(block)};
+			bool		nulls[5] = {false};
+
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_seg_flip(off, mask): the byte at that offset of every stream this backend reads is read as itself xor the mask (a negative offset: none) */
+Datum
+sift_test_seg_flip(PG_FUNCTION_ARGS)
+{
+	int64		off = PG_GETARG_INT64(0);
+
+	sift_test_seg_flip_at = off < 0 ? UINT64_MAX : (uint64) off;
+	sift_test_seg_flip_mask = (uint8) PG_GETARG_INT32(1);
+	PG_RETURN_VOID();
 }
 
 /* sift._test_col_dict_tsig(index, leaf, needle): for each immutable segment whether the dictionary of the leaf has trigram signatures, and how many of its blocks a substring test of needle reads */

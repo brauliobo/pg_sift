@@ -16,10 +16,8 @@ CREATE INDEX mr_plain ON mr USING sift_col (id, grp, label, amount) WITH (write_
 RESET sift.test_limits;
 
 -- the header page of the segment is longer by the mirror, and both are sound
-SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
-SELECT header AS pl_hdr FROM sift._test_segments('mr_plain') \gset
-SELECT (SELECT lower FROM sift._test_page('mr_idx', :mr_hdr)) > (SELECT lower FROM sift._test_page('mr_plain', :pl_hdr)) AS mirror_in_header;
-SELECT (SELECT lower FROM sift._test_page('mr_plain', :pl_hdr)) AS plain_lower \gset
+SELECT count(*) > 0 AS mirror_in_header FROM sift._test_col_mirror('mr_idx');
+SELECT count(*) = 0 AS none_without_it FROM sift._test_col_mirror('mr_plain');
 SELECT sift.col_verify('mr_idx'::regclass);
 SELECT sift.col_verify('mr_plain'::regclass);
 
@@ -40,49 +38,59 @@ SELECT sift.col_promote('mm_idx'::regclass) IS NOT NULL AS promoted_b;
 SELECT count(*) > 1 AS two_segments FROM sift.col_segments('mm_idx'::regclass);
 SELECT sift.col_merge('mm_idx'::regclass, true) > 0 AS merged;
 SELECT count(*) AS one_segment FROM sift.col_segments('mm_idx'::regclass) WHERE kind = 'immutable';
-SELECT b AS mm_hdr FROM generate_series(0, pg_relation_size('mm_idx') / 8192 - 1) b,
-       LATERAL sift._test_page('mm_idx', b) p, sift.col_segments('mm_idx'::regclass) s
-WHERE p.type = 3 AND p.gen = s.gen AND s.kind = 'immutable' \gset
-SELECT (SELECT lower FROM sift._test_page('mm_idx', :mm_hdr)) > :plain_lower AS merged_keeps_mirror;
+SELECT count(*) > 0 AS merged_keeps_mirror FROM sift._test_col_mirror('mm_idx');
 SELECT sift.col_verify('mm_idx'::regclass);
 
--- the damage of the mirror is refused when the segment is opened or checked: its sum, the head of it, one range of it
-\set mirror_end :plain_lower
-SELECT lower - 8 AS tail FROM sift._test_page('mr_idx', :mr_hdr) \gset
-SELECT sift._test_poke('mr_idx', :mr_hdr, :tail, 255, 1);
-SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
-SELECT sift.col_verify('mr_idx'::regclass);
+-- the damage of the mirror is refused when the segment is opened or checked: its sum, its ranges, its length. The offsets are read from the page and from
+-- the mirror itself: the stream of a build with other compression libraries is another length
+CREATE FUNCTION mirror_error(idx regclass, flip int8 DEFAULT -1) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE d text;
+BEGIN
+	PERFORM sift._test_seg_flip(flip, 255);
+	PERFORM sift.col_verify(idx);
+	PERFORM sift._test_seg_flip(-1, 0);
+	RETURN 'sound';
+EXCEPTION WHEN OTHERS THEN
+	PERFORM sift._test_seg_flip(-1, 0);
+	GET STACKED DIAGNOSTICS d = PG_EXCEPTION_DETAIL;
+	RETURN regexp_replace(d, '[0-9]+', 'N', 'g');
+END $$;
+CREATE FUNCTION mirror_poke(idx regclass, at_end int, width int, val int8) RETURNS void LANGUAGE sql AS $$
+	SELECT sift._test_poke(idx, h.header, p.lower - (SELECT max(block) FROM sift._test_col_mirror(idx)) + at_end, val, width)
+	FROM sift._test_segments(idx) h, LATERAL sift._test_page(idx, h.header) p
+$$;
+-- the mirror starts with {magic, nranges, len, sum}: at 8 the length, at 16 the sum, and its last byte is in the sum
+SELECT mirror_poke('mr_idx', 8, 1, 255);
+SELECT mirror_error('mr_idx');
 REINDEX INDEX mr_idx;
-SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
-SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 8, 255, 1);
-SELECT sift.col_verify('mr_idx'::regclass);
+SELECT mirror_poke('mr_idx', 16, 4, 4000000000);
+SELECT mirror_error('mr_idx');
 REINDEX INDEX mr_idx;
-SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
-SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end + 16, 4000000000, 4);
-SELECT sift.col_verify('mr_idx'::regclass);
+SELECT mirror_poke('mr_idx', (SELECT max(block) FROM sift._test_col_mirror('mr_idx')) - 8, 1, 255);
+SELECT mirror_error('mr_idx');
 
--- a mirror that no longer says what the stream says (here the stream under its first range) is refused by the check
+-- a mirror that no longer says what the stream says is refused by the check: the first and the last byte of each range, read as another value
 REINDEX INDEX mr_idx;
-SELECT sift._test_poke('mr_idx', 3, 4132, 255, 1);
-SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
-SELECT sift.col_verify('mr_idx'::regclass);
+-- (a byte in the schema, the unit directory or a pre-aggregate header is refused by its own parser first: the stream is read, not the mirror)
+SELECT count(*) > 1 AS flips, count(*) FILTER (WHERE e1 = 'sound' OR e2 = 'sound') AS accepted,
+       count(*) FILTER (WHERE e1 ~ 'mirror of the header page differs' OR e2 ~ 'mirror of the header page differs') > 0 AS refused_by_the_mirror
+FROM (SELECT mirror_error('mr_idx', off) AS e1, mirror_error('mr_idx', off + len - 1) AS e2 FROM sift._test_col_mirror('mr_idx')) f;
+SELECT mirror_error('mr_idx') AS unflipped;
 
--- the zone arrays of the leaves are in the mirror as well: the same range reaches past its directory
-REINDEX INDEX mr_idx;
-SELECT sift._test_poke('mr_idx', 3, 4132 + 300, 255, 1);
-SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
-SELECT sift.col_verify('mr_idx'::regclass);
+-- the mirror keeps the zone arrays of the leaves: a range of at least their size
+SELECT max(len) > 4 * 8 * 2 AS zone_arrays_kept FROM sift._test_col_mirror('mr_idx');
 
 -- a header page whose mirror has no magic (an older segment) is read from its stream
 REINDEX INDEX mr_idx;
-SELECT header AS mr_hdr FROM sift._test_segments('mr_idx') \gset
-SELECT sift._test_poke('mr_idx', :mr_hdr, :mirror_end, 0, 4);
+SELECT mirror_poke('mr_idx', 0, 4, 0);
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
-SELECT sift.col_verify('mr_idx'::regclass);
+SELECT mirror_error('mr_idx');
+SELECT count(*) = 0 AS no_mirror FROM sift._test_col_mirror('mr_idx');
 SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*), sum(amount), min(label), max(id) FROM mr WHERE grp = 7;
 RESET enable_seqscan; RESET enable_bitmapscan;
 
+DROP FUNCTION mirror_error(regclass, int8), mirror_poke(regclass, int, int, int8);
 DROP TABLE mr, mm;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
