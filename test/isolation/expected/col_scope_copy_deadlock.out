@@ -1,0 +1,45 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s2_begin s1_fact s2_fact s1_pair s2_pair s1_commit s2_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_fact: INSERT INTO iso_dl_facts VALUES (101, 4, 1, 10);
+step s2_fact: INSERT INTO iso_dl_facts VALUES (102, 2, 1, 20);
+step s1_pair: INSERT INTO iso_dl_pairs VALUES (4, 2); <waiting ...>
+step s2_pair: INSERT INTO iso_dl_pairs VALUES (2, 2); <waiting ...>
+step s1_pair: <... completed>
+step s1_commit: COMMIT;
+step s2_pair: <... completed>
+ERROR:  deadlock detected
+step s2_commit: COMMIT;
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_dl_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
+
+starting permutation: s1_begin s2_begin s1_pair s2_pair s1_fact s1_commit s2_fact s2_commit s3_verify
+count
+-----
+    1
+(1 row)
+
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_pair: INSERT INTO iso_dl_pairs VALUES (4, 2);
+step s2_pair: INSERT INTO iso_dl_pairs VALUES (2, 2); <waiting ...>
+step s1_fact: INSERT INTO iso_dl_facts VALUES (101, 4, 1, 10);
+step s1_commit: COMMIT;
+step s2_pair: <... completed>
+step s2_fact: INSERT INTO iso_dl_facts VALUES (102, 2, 1, 20);
+step s2_commit: COMMIT;
+step s3_verify: SELECT problem, scope_key, row_key FROM sift.scope_verify('iso_dl_copy');
+problem|scope_key|row_key
+-------+---------+-------
+(0 rows)
+
