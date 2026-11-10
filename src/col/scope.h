@@ -57,10 +57,17 @@ struct SiftScopeFill;
 extern struct SiftScopeFill *sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows);
 extern void sift_scope_fill_end(struct SiftScopeFill *f);
 extern SiftConnStamp sift_scope_fill_stamp(const struct SiftScopeFill *f, int scope);
+/* The leaf of the fact index that holds the member key of the scope */
+extern int	sift_scope_fill_fk_leaf(const struct SiftScopeFill *f, int scope);
+/* The fill the writers of segments of the index are given: its stamps are those of the connections (conn, nconn of them: NULL and 0 for none, whose fill it also fills and ends) and then those of the scopes */
+struct SiftColFill;
+extern struct SiftColFill *sift_scope_fill_hook(struct SiftScopeFill *f, struct SiftColFill *conn, int nconn);
 /* The scope entries of the first nrows fk values (nulls: bit set = NULL): fills row[] (index of the fact row in the batch) and key[] with the pairs, returns their number; *cap is grown through repalloc */
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
 #ifdef SIFT_TESTING
+/* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
+extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 extern PGDLLIMPORT bool sift_test_scope_trust;	/* a scope without a journal is read as if it vouched (the proof of concept) */
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
