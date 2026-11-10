@@ -384,6 +384,7 @@ prune_init(AggExec *ex)
 	ex->skip = NULL;
 	for (int i = 0; i < ex->spec->npred; i++)
 		tests = zone_tests(ex, ex->spec->pred[i], tests);
+	tests = scope_prune(ex, tests);
 	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
 	foreach_ptr(SiftSrcPrune, z, tests)
 		if (z->nkids == 0)

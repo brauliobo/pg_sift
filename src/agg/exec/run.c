@@ -598,6 +598,15 @@ engine_open_rest(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* The source of a scope read: the scope segments, and with members to patch the entity rows of the index beside them */
+static SiftSrcSource *
+scope_source(AggExec *ex, Snapshot snapshot)
+{
+	if (ex->scope_rd->npatch > 0)
+		return sift_aggpart_open_scope(ex->heap, RelationGetRelid(ex->index), snapshot, ex->cxt, ex->view);
+	return sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+}
+
 /* The scan engine on the relations of the spec: shared by the node and by a parallel worker */
 void
 engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
@@ -612,7 +621,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view);
 	else
 		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view) :
-			scope_open(ex, snapshot) ? sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view, ex->scope_rd->npatch > 0) :
+			scope_open(ex, snapshot) ? scope_source(ex, snapshot) :
 			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);

@@ -22,6 +22,31 @@
  */
 
 
+/* The prune entries of the source i of a scope pair: those of no source in particular and its own, cut once for the array the scan passes to every begin */
+static const SiftSrcPrune *
+prune_of(PartSource *ps, int i, int *n)
+{
+	if (!ps->scope_pair)
+	{
+		*n = ps->nprune;
+		return ps->prune;
+	}
+	if (ps->split_for != ps->prune)
+	{
+		for (int s = 0; s < 2; s++)
+		{
+			ps->split[s] = MemoryContextAlloc(ps->mcxt, Max(ps->nprune, 1) * sizeof(SiftSrcPrune));
+			ps->nsplit[s] = 0;
+			for (int k = 0; k < ps->nprune; k++)
+				if (ps->prune[k].fam == SSF_ANY || ps->prune[k].fam == (s == 0 ? SSF_SCOPE : SSF_ENTITY))
+					ps->split[s][ps->nsplit[s]++] = ps->prune[k];
+		}
+		ps->split_for = ps->prune;
+	}
+	*n = ps->nsplit[i];
+	return ps->split[i];
+}
+
 /* Starts the next partition that has superblocks in [lo, hi); false when there is none */
 static bool
 start_next(PartSource *ps)
@@ -30,6 +55,8 @@ start_next(PartSource *ps)
 	{
 		uint32		from = Max(ps->lo, ps->off[i]),
 					to = Min(ps->hi, ps->off[i + 1]);
+		const SiftSrcPrune *prune;
+		int			nprune;
 
 		if (from >= to)
 			continue;
@@ -39,7 +66,8 @@ start_next(PartSource *ps)
 		open_part(ps, i);
 		ps->cur = i;
 		ps->next = i + 1;
-		sift_colsrc_begin(ps->src[i], from - ps->off[i], to - ps->off[i], ps->prune, ps->nprune);
+		prune = prune_of(ps, i, &nprune);
+		sift_colsrc_begin(ps->src[i], from - ps->off[i], to - ps->off[i], prune, nprune);
 		return true;
 	}
 	ps->next = ps->n;

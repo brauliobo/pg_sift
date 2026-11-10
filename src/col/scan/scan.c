@@ -790,8 +790,6 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	{
 		cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
 		src->cnt.rows_scanned += cu->v.nrows;
-		if ((src->flags & SIFT_COLO_SCOPE_ENTITY) && !mem && !sift_seg_is_scope(&best->seg->entry))
-			src->cnt.entity_rows += cu->v.nrows;
 	}
 	src->cnt.units += Max(cu->nsu, 1);
 	unit->src = src;

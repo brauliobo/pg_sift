@@ -40,7 +40,8 @@ open_part(PartSource *ps, int i)
 		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
 	if (OidIsValid(ps->indexoid[i]))
 		ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
-	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt, ps->view[i]);
+	ps->src[i] = ps->scope_pair && i == 0 ? sift_colsrc_open_scope(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt, ps->view[i]) :
+		sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt, ps->view[i]);
 }
 
 /* the sources of the partitions the scan reads: opened at the first use (the pruned ones are not opened at all) */
@@ -101,8 +102,8 @@ slice_views(PartSource *ps, const char *view)
 	}
 }
 
-SiftSrcSource *
-sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view)
+static SiftSrcSource *
+part_new(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view, bool scope_pair)
 {
 	PartSource *ps = MemoryContextAllocZero(mcxt, sizeof(PartSource));
 	SiftSrcSource *out = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
@@ -111,6 +112,7 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 				   (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS));
 	check_access(parent);
 	ps->n = n;
+	ps->scope_pair = scope_pair;
 	ps->parent = parent;
 	ps->snapshot = RegisterSnapshot(snapshot);	/* once for all the sources: the partitions' own registrations are held by this one (SIFT_COLO_SNAP_HELD) */
 	ps->mcxt = mcxt;
@@ -130,6 +132,21 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	out->prov = &part_provider;
 	out->impl = ps;
 	return out;
+}
+
+SiftSrcSource *
+sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view)
+{
+	return part_new(parent, n, heaps, indexes, snapshot, mcxt, view, false);
+}
+
+SiftSrcSource *
+sift_aggpart_open_scope(Relation heap, Oid index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+{
+	Oid			heaps[2] = {RelationGetRelid(heap), RelationGetRelid(heap)},
+				indexes[2] = {index, index};
+
+	return part_new(heap, 2, heaps, indexes, snapshot, mcxt, view, true);
 }
 
 void

@@ -14,6 +14,7 @@
 
 #include "utils/lsyscache.h"
 
+#include "core/cmp.h"
 #include "col/scope.h"
 #include "agg/agg_int.h"
 
@@ -158,6 +159,48 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 		*add = lappend(*add, root);
 		ex->scope_preds++;
 	}
+}
+
+/* the entry that prunes the units of one source of a scope read to the values (a range, and the set when it is short enough for the source's directory) */
+static SiftSrcPrune *
+values_prune(int leaf, int fam, const int64 *vals, uint32 n)
+{
+	SiftSrcPrune *z = palloc0(sizeof(SiftSrcPrune));
+	int64	   *set = palloc(Max(n, 1) * sizeof(int64));
+	uint32		k = 0;
+
+	memcpy(set, vals, n * sizeof(int64));
+	sift_sort_i64(set, n);
+	for (uint32 i = 0; i < n; i++)
+		if (k == 0 || set[i] != set[k - 1])
+			set[k++] = set[i];
+	n = k;
+	z->leaf = leaf;
+	z->fam = fam;
+	z->lo = n > 0 ? set[0] : PG_INT64_MAX;
+	z->hi = n > 0 ? set[n - 1] : PG_INT64_MIN;
+	if (n > 0 && n <= ZONE_SET_CAP)
+	{
+		z->vals = set;
+		z->nvals = n;
+	}
+	return z;
+}
+
+/*
+ * What the two sources of a read that patches prune by: the scope units are those of the keys, the entity rows are those of the members to patch, each against its own source (the OR
+ * of the conjunct tells the rows of a unit, which one source's entry must not refuse for the other's)
+ */
+List *
+scope_prune(AggExec *ex, List *tests)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? scope_leaf(ex, sc->key_name) : -1;
+
+	if (sleaf < 0 || ex->scope_rd->npatch == 0)
+		return tests;
+	tests = lappend(tests, values_prune(sleaf, SSF_SCOPE, sc->keys, sc->nkeys));
+	return lappend(tests, values_prune(sc->fk, SSF_ENTITY, ex->scope_rd->patch, ex->scope_rd->npatch));
 }
 
 /* The conjunct that keeps the rows of the scope: added to the spec after its own, as the key conjuncts of the joins are (join_filters) */

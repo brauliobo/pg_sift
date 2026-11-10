@@ -39,6 +39,10 @@ typedef struct PartSource
 				hi;				/* the superblocks of the begin */
 	const SiftSrcPrune *prune;
 	int			nprune;
+	bool		scope_pair;		/* two sources of one index, not partitions: [0] its scope segments, [1] its entity rows (sift_aggpart_open_scope) */
+	const SiftSrcPrune *split_for;	/* the prune array the entries below were cut from */
+	SiftSrcPrune *split[2];
+	int			nsplit[2];
 	SiftSrcUnit cunit;			/* the unit as the partition returned it */
 	int			nleaves;
 	PartId	   *id;

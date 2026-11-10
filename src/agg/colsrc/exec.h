@@ -110,7 +110,11 @@ typedef struct SiftSrcPrune
 	int			nkids;
 	const struct SiftSrcPrune *kids;
 	int			nulltest;		/* SSN_ISNULL / SSN_NOTNULL: the entry tests the NULLs of the unit's zone (a unit with none, or with only NULLs, is skipped); lo and hi are unused */
+	int			fam;			/* SSF_ANY, or the one of the two sources of a scope read (agg/part.h sift_aggpart_open_scope) the entry prunes: the other source does not see it */
 } SiftSrcPrune;
+#define SSF_ANY			0
+#define SSF_SCOPE		1
+#define SSF_ENTITY		2
 #define SSN_ISNULL		1
 #define SSN_NOTNULL		2
 

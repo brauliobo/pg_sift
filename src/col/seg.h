@@ -164,17 +164,8 @@ sift_seg_is_scoped(const SiftSegEntry *e)
 	return e->kind == SIFT_SEG_IMMUTABLE && (e->flags & SIFT_SEG_SCOPED) != 0;
 }
 
-/*
- * sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), the scope segments alone (no write buffer, no log),
- * or both (the scan of a scope read that patches the units of the scope with entity rows: its predicate tells the rows of each by the derived key, NULL in the entity rows)
- */
-typedef enum SiftDirFamily
-{
-	SIFT_DIR_ENTITY = 0,
-	SIFT_DIR_SCOPE,
-	SIFT_DIR_BOTH
-} SiftDirFamily;
-extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, SiftDirFamily family);
+/* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
+extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
 
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);

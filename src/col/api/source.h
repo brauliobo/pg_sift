@@ -133,7 +133,6 @@ typedef struct SiftColZone
 #define SIFT_COLO_POINT_ROWS	0x0040	/* ... and a unit comes narrowed to the rows the directory lists (sift_col_point_narrow): the caller tests every predicate again on them, as it does on the rows of a unit */
 #define SIFT_COLO_POINT_LAZY	0x0080	/* ... and with SIFT_COLO_POINT_TIDS, the addresses of a lookup are handed over as the caller asks for them (sift_col_point_next), not all at the begin: a scan that stops after a few rows decodes a few */
 #define SIFT_COLO_SCOPE		0x0100	/* the source reads the scope segments of the index (col/scope.h) and nothing else: no entity segment, no write buffer; without it the source never sees a scope segment */
-#define SIFT_COLO_SCOPE_ENTITY	0x0200	/* with SIFT_COLO_SCOPE: the entity segments and the write buffers are read as well (the units of the scope and the rows that patch them); the derived key tells them apart: it is NULL in the rows of the entity */
 #define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment, whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
@@ -142,7 +141,6 @@ typedef struct SiftColCounters
 {
 	int64		segments;		/* immutable segments in the directory snapshot */
 	int64		wbuf_rows;	/* rows read from write buffers */
-	int64		entity_rows;	/* rows of the units of the entity segments of a scan that also reads scope segments (SIFT_COLO_SCOPE_ENTITY) */
 	int64		dirty_rows;	/* rows of the units with a dead row that were read as units (sift_col_vacuum_tick prices the rewrite by them) */
 	int64		units;			/* candidate units visited */
 	int64		units_pruned;	/* skipped by their zone maps or small-set summaries */
