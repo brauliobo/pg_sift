@@ -2,6 +2,7 @@
 -- among the dead rows of its unit is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
 -- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

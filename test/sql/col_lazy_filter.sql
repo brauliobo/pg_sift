@@ -6,6 +6,7 @@
 -- About 12 s, for 93 shapes x 3 plans x the ways of a sort: the build state runs every way (4 limits, both NULLS orders for a column that has NULLs), the two
 -- states after writes run the limits 20 and 6000, since what they change is the rows of the runs and not the way the limit cuts.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

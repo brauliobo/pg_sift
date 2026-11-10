@@ -3,6 +3,7 @@
 -- when the units and segments a request for a key would no longer open, times the requests the index has had, come to half of the rewrite of their rows. The largest
 -- segment is not rewritten, an index nobody reads is not merged, and a promotion of a write buffer made of many small ones ends in few segments.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

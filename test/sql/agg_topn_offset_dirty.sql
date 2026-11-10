@@ -3,6 +3,7 @@
 -- The rows are the plan's without the extension after deleted, updated (HOT and not), rolled back and vacuumed rows, and for a cursor opened before the update.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

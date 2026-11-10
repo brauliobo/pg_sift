@@ -3,6 +3,7 @@
 -- the fetch of each row of the page at a random page's price: a page of 5,000 rows of a table of 300,000 rows (10% passing) was the normal plan (16 ms) against the scan (8.7 ms).
 -- With the mask priced at what it reads, and a fetch at the page-visit price, the scan is the plan; its price follows the page: more rows cost more.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE feed (id int, ts timestamptz, q10 int, pad text) WITH (autovacuum_enabled = false);

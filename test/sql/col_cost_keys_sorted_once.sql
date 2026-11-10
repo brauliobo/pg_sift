@@ -2,6 +2,7 @@
 -- (and however many times the planner hook plans the statement): a list of thousands costs more to sort than the rest of the estimate. sift._test_key_sorts counts the sorts.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_col_legacy_options = on;
 
 CREATE TABLE ks_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ks_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;

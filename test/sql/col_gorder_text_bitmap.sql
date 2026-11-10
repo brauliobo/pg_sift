@@ -3,6 +3,7 @@
 -- Then 105,000 rows of 10 to a heap page (the late blocks are past 10,000), in segments cut by superblock and cut by a key, an integer and a text column with an array and a second
 -- condition on another column: the bitmap scan returns the rows of the seq scan over many ranges, the late blocks included.
 CREATE EXTENSION pg_sift CASCADE;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

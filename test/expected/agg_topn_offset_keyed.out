@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -14,7 +15,7 @@ ALTER TABLE ok ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ok (id, c, n, s) SELECT i, (i * 7919) % 37, (i * 104729) % 100003, 'k' || lpad(((i::bigint * 7919) % 100003)::text, 6, '0') FROM generate_series(1, 12000) i;
 CREATE INDEX ok_i ON ok USING sift_col (id sift.col_int4_ops, c sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops)
 	WITH (key_cut = 'c', order_columns = 'id, n', order_array_columns = 'id, n, s', track_changes = 'off');
-NOTICE:  sift_col index "ok_i": 1 automatic choice (order_array_columns)
+NOTICE:  sift_col index "ok_i": 1 automatic choice (order_array_columns), 1 advice (order_columns)
 NOTICE:  sift_col index "ok_i" is column format minor 47, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ok;
 SET sift.test_topn_heads = off;

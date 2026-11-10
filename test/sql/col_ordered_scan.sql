@@ -2,6 +2,7 @@
 -- merged with the write buffer, the heap saying what a row holds when its page is not all-visible. The rows must be the heap's, in order, NULL rows last (first for DESC), after
 -- deletes, updates, rows in the write buffer, a transaction's own changes, and for an index whose segments have no order array (the rows are sorted by the scan).
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET timezone = 'UTC';
 

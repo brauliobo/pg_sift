@@ -2,6 +2,7 @@
 -- equality in a tenth of the bytes of the directory, for about the same instructions and fewer cold blocks. A key scattered over the heap keeps the directory (its array is as large and reads 2.5 times the instructions),
 -- and an index with no array of the build's ('off', a table under 100,000 rows) keeps the directory for the ordered key too. An array the user lists is the user's: whole, and the directory is not added to it.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

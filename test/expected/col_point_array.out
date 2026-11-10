@@ -3,6 +3,7 @@
 -- and an index with no array of the build's ('off', a table under 100,000 rows) keeps the directory for the ordered key too. An array the user lists is the user's: whole, and the directory is not added to it.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

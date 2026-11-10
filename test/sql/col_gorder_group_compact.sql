@@ -4,6 +4,7 @@
 -- group, in a table of groups of all sizes (one that fills chunks, 150 rows, 2 rows: more groups to a chunk than a chunk can note, which stays whole), a group of equal keys, NULL keys and a
 -- group that is not there; then a write buffer, a promotion, deleted and updated rows, a merge and a REINDEX with the layout whole and auto.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

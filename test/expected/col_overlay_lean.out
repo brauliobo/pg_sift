@@ -3,6 +3,7 @@
 -- A merge that makes a large segment of it writes the full set again, and the answers are the same all along.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.col_auto_merge = off;

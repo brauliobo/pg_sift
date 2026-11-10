@@ -5,6 +5,7 @@
 -- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

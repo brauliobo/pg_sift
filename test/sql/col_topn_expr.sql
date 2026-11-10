@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tc (id int PRIMARY KEY, g int, a int, b bigint, c smallint, d date, t timestamp, z timestamptz, s text, v varchar(12));

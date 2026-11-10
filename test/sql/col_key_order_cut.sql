@@ -3,6 +3,7 @@
 -- sift.key_cut_decision says the same; a key_cut of the user's, 'off' too, wins; so does an order_columns of the user's, which the cut is not made with; a group stored together
 -- is not cut. The zones of the other leaves (an arrival timestamp) are not weighed against the layout the user named. The answers are the table's.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

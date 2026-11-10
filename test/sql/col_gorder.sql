@@ -2,6 +2,7 @@
 -- address sorted, in chunks. The array is the table sorted by (key, address) with the rows that have no value last, for every type it covers, over NULLs and ties, in a
 -- segment written by a build, a promotion and a merge; col_verify checks it; an index without the option, or with segments written before it, has none.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_col_legacy_options = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = notice;

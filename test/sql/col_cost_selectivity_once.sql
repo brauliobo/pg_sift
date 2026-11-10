@@ -3,6 +3,7 @@
 -- The operator sift.=== (int4 = float4, pg_sift_test) counts the calls of its estimator: scalararraysel makes one for each element each time it estimates the clause.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_col_legacy_options = on;
 
 CREATE TABLE sel_fact (id int, k int, v int, w text DEFAULT 'x') WITH (autovacuum_enabled = false);
 INSERT INTO sel_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;

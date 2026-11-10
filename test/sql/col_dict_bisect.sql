@@ -4,6 +4,7 @@
 -- before and after a promotion, a merge, a VACUUM, a delete and a REINDEX, all in one backend.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_col_legacy_options = on;
 
 CREATE TABLE bs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO bs SELECT g, 'key ' || md5(g::text) FROM generate_series(1, 30000) g;

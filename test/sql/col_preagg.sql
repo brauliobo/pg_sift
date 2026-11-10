@@ -2,6 +2,7 @@
 -- checked against direct SQL aggregates over the same rows after a build, DML, VACUUM, merge and a parallel build. Only units that are the
 -- single unit of their superblock and exact (clean, every page all-visible) are compared: the rule under which a consumer may use them.
 CREATE EXTENSION pg_sift;
+SET sift.test_col_legacy_options = on;
 SET sift.test_limits = 'par_build_rows=1';
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
