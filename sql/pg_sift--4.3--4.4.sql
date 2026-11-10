@@ -322,7 +322,8 @@ BEGIN
 END $$;
 
 -- The rows of a copy that differ from the join of the table with the scope relation: 'missing' (the join has it, the copy does not), 'extra' (the copy has a row the join does not),
--- 'differs' (the carried columns are not those of the table) and 'duplicate' (the copy holds a fact twice in one key). No row: the copy is exact.
+-- 'differs' (the carried columns are not those of the table), 'duplicate' (the copy holds a fact twice in one key) and 'logical replication target' (the table or the scope
+-- relation is the target of a subscription, which keeps the copy behind). No row: the copy is exact.
 -- With keys, only those keys are checked, and so is the contract of a read over several keys (sift.scope_read_keys): the facts it reads, each once, are the facts of the members
 -- of the keys ('multi_key_missing' for a fact it does not read, 'multi_key_extra' for a fact it reads that the members do not have, or reads twice; scope_key is null there).
 CREATE FUNCTION sift.scope_verify(copy text, keys bigint[] DEFAULT NULL) RETURNS TABLE (problem text, scope_key bigint, row_key jsonb) LANGUAGE plpgsql STABLE AS $$
@@ -334,6 +335,10 @@ BEGIN
 	IF NOT FOUND THEN
 		RAISE EXCEPTION 'scope_verify: "%" is not a scope copy', scope_verify.copy USING ERRCODE = 'undefined_table';
 	END IF;
+	-- an apply worker fires no trigger: a subscription made after the copy leaves it behind, and the rows below are its symptom
+	RETURN QUERY SELECT 'logical replication target', NULL::bigint, jsonb_build_object('table', sift.scope_qualified(r.srrelid),
+		'detail', 'apply workers do not fire the copy triggers; rebuild the copy with sift.scope_drop and sift.scope_create')
+		FROM pg_subscription_rel r WHERE r.srrelid IN (c.source::regclass, c.scope_relation::regclass) ORDER BY 3;
 	row_of := (SELECT string_agg(format('%L, COALESCE(a.%I, e.%I)', k, k, k), ', ') FROM unnest(c.key_columns) k);
 	RETURN QUERY EXECUTE format($q$
 		SELECT CASE WHEN a.%1$I IS NULL THEN 'missing' WHEN e.%1$I IS NULL THEN 'extra' ELSE 'differs' END, COALESCE(a.%1$I, e.%1$I)::bigint, jsonb_build_object(%4$s)
@@ -360,7 +365,7 @@ END $$;
 COMMENT ON FUNCTION sift.scope_replica_counts(text, name, text, name) IS 'Internal: the facts of a table by the number of scope keys their foreign key has in a scope relation';
 COMMENT ON FUNCTION sift.scope_read_keys(text, bigint[], text) IS 'The WHERE condition that reads a scope copy over several keys with each fact once: a fact counts under the first requested key that holds its member';
 COMMENT ON FUNCTION sift.scope_replicas(text) IS 'The facts of a scope copy by how many copies each has (the number of scope keys of its foreign key; 0: none): the multiplicity of the copy';
-COMMENT ON FUNCTION sift.scope_verify(text, bigint[]) IS 'The rows of a scope copy that differ from the join of its table with the scope relation (missing, extra, differs or duplicate); no rows: the copy is exact. With keys, only those keys, and the facts a read over them through sift.scope_read_keys returns against the facts of their members (multi_key_missing, multi_key_extra)';
+COMMENT ON FUNCTION sift.scope_verify(text, bigint[]) IS 'The rows of a scope copy that differ from the join of its table with the scope relation (missing, extra, differs or duplicate), and a row for each of its tables that a logical replication subscription writes (its apply worker fires no trigger); no rows: the copy is exact. With keys, only those keys, and the facts a read over them through sift.scope_read_keys returns against the facts of their members (multi_key_missing, multi_key_extra)';
 
 -- Whether the copies were vacuumed: the pages of a leaf of a copy that the last VACUUM or ANALYZE found all-visible, over its pages; none of them means never vacuumed
 CREATE VIEW sift.scope_status AS

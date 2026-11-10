@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # The apply worker of a logical subscriber changes rows without firing statement triggers, so a scope copy of a table it writes would miss the changes: sift.scope_create refuses a
 # fact table or a scope relation that is the target of a subscription, and builds the copy once the subscription is gone. Tables that only the publisher has a subscription for
-# are no target: the copy of the publisher's tables is made and exact there.
+# are no target: the copy of the publisher's tables is made and exact there. A subscription created after the copy leaves it behind (the apply worker fires no trigger):
+# sift.scope_verify names the cause.
 . "$(dirname "$0")/lib.bash"
 . "$(dirname "$0")/lib_scope.bash"
 
-plan 7
+plan 10
 node_init p 53 "wal_level = logical
 max_wal_senders = 5
 max_replication_slots = 5
@@ -48,4 +49,14 @@ sql p "SELECT sift.scope_create('c', 'facts', 'dim_a_id', 'pairs', 'scope_id')" 
 sql p "INSERT INTO facts VALUES (900001, 2, now(), 1, 1, 'x')" "INSERT INTO pairs VALUES (2, 7)" "UPDATE facts SET amount = amount + 1 WHERE id % 5 = 0" >/dev/null
 check "the publisher's copy of published tables stays exact" test "$(sql p "SELECT count(*) FROM sift.scope_verify('c')")" == 0
 check "the subscriber's catalog has no subscription left" test "$(sql s "SELECT count(*) FROM pg_subscription_rel")" == 0
+
+# a subscription made after the copy: the apply worker inserts a fact and the copy misses it
+sql s "CREATE SUBSCRIPTION sl CONNECTION '$(conninfo p)' PUBLICATION pf WITH (copy_data = false)" >/dev/null || bail "subscribe failed"
+sql p "INSERT INTO facts VALUES (900100, 2, now(), 1, 1, 'x')" >/dev/null
+wait_for '[[ $(sql s "SELECT count(*) FROM facts WHERE id = 900100") == 1 ]]' 120
+verify() { sql s "SELECT problem || ' ' || coalesce(row_key->>'table', row_key::text) FROM sift.scope_verify('c') ORDER BY 1"; }
+check "scope_verify names a subscription created after the copy as the cause" test "$(verify | grep -c '^logical replication target public.facts$')" == 1
+check "... and the copy misses the fact the apply worker inserted" test "$(verify | grep -c '^missing ')" -ge 1
+sql s "DROP SUBSCRIPTION sl" >/dev/null
+check "without the subscription scope_verify names no cause" test "$(verify | grep -c '^logical replication target')" == 0
 finish
