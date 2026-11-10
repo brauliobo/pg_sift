@@ -106,8 +106,8 @@ add_segment(Relation rel, SiftColSegment *seg, const SiftColSchema *sc, int64 *c
  * unit_dir, point_dir, order_arrays, dict_other (what is left of the dictionary section), zones, preagg, net (the pre-aggregates net of the dead rows, when the segments have them), sbdir_schema, page_overhead, headers, free, other (the metapage, directory, free list pages and the
  * segments that are not column segments: the write buffer, tombstones). The bytes of all rows add up to pg_relation_size(rel).
  */
-Datum
-sift_col_sections(PG_FUNCTION_ARGS)
+static Datum
+sections(FunctionCallInfo fcinfo, int64 only_gen)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
@@ -135,7 +135,7 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	{
 		SiftColSegment *seg;
 
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE || (only_gen != 0 && snap->segs[i].gen != only_gen))
 			continue;
 		seg = sift_cseg_open(rel, &snap->segs[i], CurrentMemoryContext);
 		if (sc == NULL)
@@ -172,6 +172,11 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	put_row(&r, "sbdir_schema", NULL, s.sbdir_schema);
 	put_row(&r, "page_overhead", NULL, s.page_overhead);
 	put_row(&r, "headers", NULL, s.headers);
+	if (only_gen != 0)
+	{
+		relation_close(rel, AccessShareLock);
+		return (Datum) 0;
+	}
 	fs = sift_store_free_stats(rel);
 	put_row(&r, "free", NULL, fs.blocks * BLCKSZ);
 	size = (int64) RelationGetNumberOfBlocks(rel) * BLCKSZ;
@@ -179,3 +184,20 @@ sift_col_sections(PG_FUNCTION_ARGS)
 	relation_close(rel, AccessShareLock);
 	return (Datum) 0;
 }
+
+Datum
+sift_col_sections(PG_FUNCTION_ARGS)
+{
+	return sections(fcinfo, 0);
+}
+
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_col_sections);
+
+/* sift._test_col_sections(index, gen): the sections of the segment of that generation alone, without the free and other rows */
+Datum
+sift_test_col_sections(PG_FUNCTION_ARGS)
+{
+	return sections(fcinfo, PG_GETARG_INT64(1));
+}
+#endif

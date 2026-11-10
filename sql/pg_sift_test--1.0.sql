@@ -620,3 +620,6 @@ CREATE FUNCTION sift.in_scope_pairs(index regclass, key_name text, fk anyelement
 	AS 'MODULE_PATHNAME', 'sift_test_in_scope' LANGUAGE C STABLE PARALLEL SAFE;
 CREATE FUNCTION sift.in_scope_pairs(index regclass, key_name text, fk anyelement, keys int8[]) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_in_scope_set' LANGUAGE C STABLE PARALLEL SAFE;
+
+CREATE FUNCTION sift._test_col_sections(index regclass, gen int8, OUT section text, OUT leaf text, OUT bytes int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_sections' LANGUAGE C STRICT;
