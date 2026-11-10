@@ -29,6 +29,7 @@ typedef struct GCur
 	uint32		gs;
 	uint32		ge;
 	bool		ends;			/* the source is the ends of a segment's order (cuts says where they stop being its own) */
+	bool		lazy;			/* the end of [vs, ve) the scan comes to last is not sought (it is the end of the segment's values): the scan stops at the first entry past SiftGOrd.far */
 	bool		gm;				/* the source lists its rows group after group, from the second order of another leaf: the key of an entry is its group (cur_next_g) */
 	bool		gnull;			/* ... the NULL-key entries [ns, ne) of the group have been (or are being) read */
 	uint32		ngrp;
@@ -55,6 +56,7 @@ struct SiftGOrd
 	bool		nulls_first;
 	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
 	bool		bounded;		/* a range of the key: the rows with no value are not in it */
+	int64		far;			/* the bound of the key at the end of the scan (the upper one ascending, the lower one descending), where a cursor with lazy set stops */
 	uint32		head;			/* the entries of a chunk decoded when the scan enters it (the rows asked for, shared by the sources, at least GORD_HEAD_MIN) */
 	int			ncur;
 	GCur	  **cur;

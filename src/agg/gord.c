@@ -82,6 +82,12 @@ cur_group(SiftGOrd *g, GCur *c)
 	if (c->ge <= c->vs)
 		return false;
 	cur_at(g, c, c->ge - 1, &k, &a);
+	if (c->lazy && k < g->far)
+	{
+		c->vs = c->ge;
+		c->lazy = false;
+		return false;
+	}
 	c->gs = c->ge - 1;
 	while (c->gs > c->vs)
 	{
@@ -166,6 +172,13 @@ cur_next(SiftGOrd *g, GCur *c)
 		if (c->pos < c->end)
 		{
 			cur_at(g, c, c->pos++, &k, &a);
+			if (unlikely(c->lazy) && !nulls && !g->desc && k > g->far)
+			{
+				/* the first entry past the upper bound: where the seek that was not made would have ended the range */
+				c->end = c->ve = --c->pos;
+				c->lazy = false;
+				continue;
+			}
 			c->have = true;
 			c->cls = nulls ? (g->nulls_first ? 0 : 2) : 1;
 			c->k = nulls ? 0 : k;
@@ -240,7 +253,8 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 	g->nulls_first = nulls_first;
 	g->collid = collid;
 	g->bounded = b != NULL && (b->has_lo || b->has_hi);
-	g->cur = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
+	g->far = b == NULL ? 0 : desc ? b->lo : b->hi;
+	g->cur =MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
 	g->release.func = gord_release;
 	g->release.arg = g;
 	MemoryContextRegisterResetCallback(cxt, &g->release);
@@ -278,8 +292,10 @@ sift_gord_open_from(SiftGOrd *prev, SiftSrcSource *src, int leaf, int rows, bool
 		}
 		else
 		{
-			c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
-			c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
+			/* the end of the range the scan comes to last is found when the scan gets there (cur_next, cur_group): a LIMIT stops long before it, and the seek reads a chunk of every segment */
+			c->lazy = !c->ends && g->bounded && (desc ? b->has_lo : b->has_hi);
+			c->vs = g->bounded && b->has_lo && !(c->lazy && desc) ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
+			c->ve = g->bounded && b->has_hi && !(c->lazy && !desc) ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
 		}
 		if ((g->bounded && collid == 0 && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
 		{
@@ -349,6 +365,24 @@ bool
 sift_gord_repeated(const SiftGOrd *g)
 {
 	return g->repeat;
+}
+
+/* The cut of an OFFSET counts the entries of the whole range: the ends the cursors did not seek are sought now */
+static void
+gord_seek_far(SiftGOrd *g)
+{
+	for (int i = 0; i < g->ncur; i++)
+	{
+		GCur	   *c = g->cur[i];
+
+		if (!c->lazy)
+			continue;
+		c->lazy = false;
+		if (g->desc)
+			c->vs = sift_colsrc_gorder_seek(g->src, c->src, g->leaf, c->vs, c->ve, g->far, false, NULL);
+		else
+			c->ve = sift_colsrc_gorder_seek(g->src, c->src, g->leaf, c->vs, c->ve, g->far, true, NULL);
+	}
 }
 
 /* The sum over the cursors of how many of their entries possibly come before v in the scan: the entries a scan that skips the n first cannot reach all of if this is at most n */
@@ -554,6 +588,7 @@ sift_gord_skip(SiftGOrd *g, uint32 k)
 	for (int i = 0; i < g->ncur; i++)
 		if (g->cur[i]->sk != 0 || (g->nulls_first && g->cur[i]->ne > g->cur[i]->ns && !g->bounded))
 			return 0;
+	gord_seek_far(g);
 	clo = palloc(g->ncur * sizeof(uint32));
 	done = palloc0(g->ncur * sizeof(uint32));
 	/*
