@@ -315,6 +315,7 @@ extern void sift_cseg_verify_super(SiftColSegment *seg);
 #ifdef SIFT_TESTING
 /* tests: one byte of the stream is read as its value xor the mask (sift_test_seg_flip_at UINT64_MAX: none); the span of the superunit block in the stream */
 extern uint64 sift_test_seg_flip_at;
+extern PGDLLIMPORT int sift_test_scope_unit_kind;	/* the unit kind the stamps of the scope segments are read as having, ORed into the one they hold (0: none): what a segment of a later release says */
 extern uint8 sift_test_seg_flip_mask;
 extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
 extern bool sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);

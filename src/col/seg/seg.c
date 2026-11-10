@@ -5,7 +5,6 @@
  */
 #include "core/cmp.h"
 #include "col/seg_int.h"
-#include "col/scope.h"
 
 #ifdef SIFT_TESTING
 /*

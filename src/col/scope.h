@@ -144,7 +144,6 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 #ifdef SIFT_TESTING
 /* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
-extern PGDLLIMPORT int sift_test_scope_unit_kind;	/* the unit kind the stamps of the scope segments are read as having, ORed into the one they hold (0: none): what a segment of a later release says */
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
 extern PGDLLIMPORT int sift_scope_patch_keys;
