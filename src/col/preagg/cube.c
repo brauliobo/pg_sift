@@ -365,7 +365,8 @@ cpagg_build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCP
 			build_cal(s, &spec->dim[d], cols, nrows, &sc, &left, cal_budget > 0, &db[d]);
 			continue;
 		}
-		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]);
+		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]) &&
+			(uint64) db[d].ngroups * spec->dim_rows <= nrows;
 	}
 	pfree(sc.gid);
 	pfree(sc.perm);

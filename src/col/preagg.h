@@ -44,6 +44,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
 #define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
+#define SIFT_PAGG_SCOPE_DIM_ROWS	8			/* the units of a scope segment are small (a scope key holds a few of them): a histogram of groups of fewer rows costs as much as the rows it stands for */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	400			/* default: the dims of a unit's cube take at most this share of its encoded bytes, counted as built (on disk the index holds about a quarter of that for dims of few groups, more for many) */
 #define SIFT_PAGG_ROLLUP_PERMILLE	20			/* the rollups of one list of elements take at most this share of the unit's bytes */
@@ -143,6 +144,7 @@ typedef struct SiftCPaggSpec
 	SiftCPaggRollup rollup[SIFT_PAGG_MAX_ROLLUPS];
 	uint32		max_groups;
 	uint32		permille;				/* default: of the unit's bytes; 0 = no budget */
+	uint8		dim_rows;				/* a dim has a histogram in a unit only when each of its groups stands for this many rows or more on average; 0: any number of groups up to the cap */
 } SiftCPaggSpec;
 
 /*

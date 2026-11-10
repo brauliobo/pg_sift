@@ -240,6 +240,10 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 /*
  * The units of a key-cut segment are not block ranges, so a heap address does not name its unit: its point directories list the rows of the segment
  *, whatever point_tid_columns says, and a lookup reads the unit of each row.
+ *
+ * A scope segment (cut by a derived scope key) holds a unit for each scope key, most of them small, and is read by key: what a unit costs outside its rows is cut. No superunit
+ * (its units are of different keys, so a group of them answers no read of one key), no histogram of groups of a few rows, no point directory (the entity segments have them
+ * and find a row by its value; the orders of the leaves stay).
  */
 void
 sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
@@ -251,6 +255,13 @@ sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
 	if (w->pt)
 		for (int c = 0; c < w->schema->ncols; c++)
 			w->pt[c].tids = false;
+	if (keycol >= 0 && (w->schema->cols[keycol].flags & SIFT_COLD_SCOPE))
+	{
+		w->pagg.super = 0;
+		w->pagg.dim_rows = SIFT_PAGG_SCOPE_DIM_ROWS;
+		for (int c = 0; w->pt && c < w->schema->ncols; c++)
+			w->pt[c].want = false;
+	}
 }
 
 /* the element of a list of strings (not a map): its directory lists the rows that own the value, so that an element test finds them without reading the units */
