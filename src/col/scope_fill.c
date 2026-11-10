@@ -19,6 +19,29 @@
 
 typedef struct SiftScopeFill SiftScopeFill;
 
+static bool
+is_time(const SiftColDef *d)
+{
+	return d->parent < 0 && d->lane == 0 && !(d->flags & SIFT_COLD_DERIVED) &&
+		(d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ);
+}
+
+/* The cut of the units of a scope (cut[], SIFT_COL_CUT_MAX leaves at most): its derived key, then the first date or timestamp column of the index, else none */
+int
+sift_scope_cut(const SiftColRel *r, int scope, int *cut)
+{
+	int			time = -1,
+				n = 0;
+
+	for (int id = 0; id < r->schema->ncols && time < 0; id++)
+		if (is_time(&r->schema->cols[id]))
+			time = id;
+	cut[n++] = r->scope_leaf[scope];
+	if (time >= 0)
+		cut[n++] = time;
+	return n;
+}
+
 /* The members asked are remembered up to this many (or this many of their keys), then forgotten at the next batch */
 #define SEEN_MAX	(1 << 18)
 #define POOL_MAX	((uint64) 1 << 22)
@@ -141,9 +164,14 @@ fill_new(MemoryContext mcxt, int n)
 	f->cx = mcxt;
 	f->n = n;
 	f->hook = (SiftColFill) {.batch = hook_batch,.stamp = hook_stamp,.end = hook_end};
-	/* in parallel mode no snapshot can be taken: the statement's own */
-	f->snap = IsInParallelMode() ? GetActiveSnapshot() : RegisterSnapshot(GetTransactionSnapshot());
 	return f;
+}
+
+/* in parallel mode no snapshot can be taken: the statement's own */
+static void
+fill_snapshot(SiftScopeFill *f)
+{
+	f->snap = IsInParallelMode() ? GetActiveSnapshot() : RegisterSnapshot(GetTransactionSnapshot());
 }
 
 /* The maps are made: a fill whose maps all hold their pairs gives the snapshot back, one that probes keeps it until the end call */
@@ -174,6 +202,7 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 	r = sift_col_rel_private(index, mcxt);
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	f = fill_new(mcxt, specs->n);
+	fill_snapshot(f);
 	for (int i = 0; i < f->n; i++)
 	{
 		Relation	rel;
@@ -200,11 +229,35 @@ sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumbe
 {
 	SiftScopeFill *f = fill_new(mcxt, 1);
 
+	fill_snapshot(f);
 	map_begin(f, &f->m[0], rel, btree, member, key, f->snap, rows, (SiftConnStamp) {.xmin = f->snap->xmin});
 	fill_done(f);
 	return f;
 }
 #endif
+
+/* A fill that expands nothing and stamps the scopes as it is told: what the merge of segments writes, whose entries are copies of the inputs' */
+SiftScopeFill *
+sift_scope_fill_carry(MemoryContext mcxt, int n, const SiftConnStamp *stamp)
+{
+	SiftScopeFill *f = fill_new(mcxt, n);
+
+	for (int i = 0; i < n; i++)
+		f->m[i].stamp = stamp[i];
+	return f;
+}
+
+/*
+ * The stamp of a merge of segments stamped a and b: the older one, which every member the relation changed since either is in the changes of (col/conn.h); the stamps of
+ * two lineages, and a stamp that was not taken (no xmin), leave none (all zero: the segment says nothing).
+ */
+SiftConnStamp
+sift_scope_stamp_older(SiftConnStamp a, SiftConnStamp b)
+{
+	if (a.lineage != b.lineage || !TransactionIdIsNormal(a.xmin) || !TransactionIdIsNormal(b.xmin))
+		return (SiftConnStamp) {0};
+	return TransactionIdPrecedes(a.xmin, b.xmin) ? a : b;
+}
 
 void
 sift_scope_fill_end(SiftScopeFill *f)

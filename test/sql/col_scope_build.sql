@@ -72,17 +72,17 @@ SELECT sift.col_verify('events_col', true);
 SELECT count(*) > 0 AS stamped, count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
 	FROM sift._test_col_conn_stamps('events_col');
 
--- the maintenance of the entities leaves the scope segments alone: a promotion and a merge
-CREATE TEMP TABLE before AS SELECT DISTINCT gen FROM sift._test_col_scope_entries('events_col');
+-- a promotion writes the scope segments of its rows beside its entity segment, and the merge of everything joins them: the entries stay those of the join (col_scope_maint has the rest)
 INSERT INTO events SELECT i, 1 + i % 1500, timestamptz '2026-06-01' + i * interval '7 minutes', i % 7, i % 1000 FROM generate_series(9001, 9400) i;
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
+SELECT entries_md5() = join_md5() AS entries_are_the_join_promoted;
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
-SELECT (SELECT array_agg(gen ORDER BY gen) FROM before) = (SELECT array_agg(DISTINCT gen ORDER BY gen) FROM sift._test_col_scope_entries('events_col')) AS scope_segments_kept;
+SELECT entries_md5() = join_md5() AS entries_are_the_join_merged;
 SELECT (shape()).entity_rows = (SELECT count(*) FROM events) AS entity_rows_once, (shape()).mixed_units AS mixed_units;
 SELECT sift.col_verify('events_col', true);
 
 -- a fact that is deleted or updated has no live entry in any of its keys after VACUUM, the entries of the others are untouched (the entries are by address: an update writes a new address)
-SELECT entries_md5() = (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.id <= 9000) AS entries_before_edits;
+SELECT entries_md5() = join_md5() AS entries_before_edits;
 CREATE TEMP TABLE gone AS SELECT ctid AS tid, id FROM events WHERE id % 5 = 0 OR id % 7 = 1;
 DELETE FROM events WHERE id % 5 = 0;
 UPDATE events SET value_num = value_num + 1 WHERE id % 7 = 1;

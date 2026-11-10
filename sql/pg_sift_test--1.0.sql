@@ -596,6 +596,15 @@ CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8
 CREATE FUNCTION sift._test_slot_owner(in_node_cxt bool) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_slot_owner' LANGUAGE C STRICT;
 
+-- The stamp each segment of a scope index holds for each scope (generation, family, covered, scope of the segment, scope of the stamp, lineage, horizon); whether the scope segments cover the rows
+-- of the entity segments of the scope key_name; and the flag of every entity segment that says so (set or cleared)
+CREATE FUNCTION sift._test_col_scope_stamps(index regclass, OUT gen int8, OUT family text, OUT covered bool, OUT seg_scope int4, OUT scope int4, OUT lineage int8, OUT horizon int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_scope_stamps' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_scope_covered(index regclass, key_name text) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_col_scope_covered' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_scope_flag(index regclass, scoped bool) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_col_scope_flag' LANGUAGE C STRICT;
+
 -- Scope index (src/col/test/scope_test.c): the marker of a scope read. A scan of the index takes it as its scope conjunct (agg/plan_scope.c); a statement the scan does not
 -- take evaluates it as written: true when the scope relation of the scope key_name of the index has the pair (fk, key) in the snapshot of the statement.
 CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, key int8) RETURNS bool

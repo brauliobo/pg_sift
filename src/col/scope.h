@@ -47,6 +47,10 @@ extern void sift_scope_alter(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
+/* The cut of the units of the segments of a scope: cut[] (SIFT_COL_CUT_MAX leaves) gets its derived key and the time column of the index if it has one; returns their number */
+struct SiftColRel;
+extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
+
 /*
  * The journal of the scope relation (col/scope_journal.c, INTERFACE.md section 5): a sift_col index of the relation with track_changes = 'ctid' whose first column is the member key and
  * that holds the scope key (the journal index; the lowest oid that qualifies). Its tombstone log keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended
@@ -82,6 +86,9 @@ extern void sift_scope_stale_end(SiftScopeStale *st);
 struct SiftScopeFill;
 extern struct SiftScopeFill *sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows);
 extern void sift_scope_fill_end(struct SiftScopeFill *f);
+/* A fill that expands nothing and gives the n scopes the stamps it is told (the writers of a merge); sift_scope_stamp_older: the stamp of a merge of segments stamped a and b */
+extern struct SiftScopeFill *sift_scope_fill_carry(MemoryContext mcxt, int n, const SiftConnStamp *stamp);
+extern SiftConnStamp sift_scope_stamp_older(SiftConnStamp a, SiftConnStamp b);
 extern SiftConnStamp sift_scope_fill_stamp(const struct SiftScopeFill *f, int scope);
 /* The leaf of the fact index that holds the member key of the scope */
 extern int	sift_scope_fill_fk_leaf(const struct SiftScopeFill *f, int scope);
@@ -95,6 +102,8 @@ extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const i
  * The reader (col/scan/scope.c): NULL when a scan that has a scope conjunct of nkeys keys of the scope key_name reads the scope segments of the index, else the word for
  * "Scope Fallback" (it then reads the entity rows of the members); and the member keys that have a pair with one of the keys under the snapshot, ascending, each once.
  */
+/* Does every entity segment of the directory have its scope entries in the scope segments (SIFT_SEG_SCOPED; rows of a write buffer are the reader's: it reads them through the entity path) */
+extern bool sift_scope_covered(Relation index, int scope);
 extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 

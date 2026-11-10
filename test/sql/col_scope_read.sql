@@ -85,7 +85,7 @@ SELECT sift.col_verify('events_col', true);
 INSERT INTO events SELECT 30000 + i, 1 + i % 300, timestamptz '2026-02-01', 1, 'y' FROM generate_series(1, 200) i;
 SELECT * FROM phase();
 
--- promoted: the rows of the buffer are an entity segment of a later generation, which no scope entry describes: the entity rows are read, and the same after a merge
+-- promoted: the rows of the buffer are an entity segment and scope segments of the same switch of the directory, so the scope units are read again; and the same after a merge (col_scope_maint has the states of the maintenance)
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
 SELECT * FROM phase();
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;

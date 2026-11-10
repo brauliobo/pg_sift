@@ -17,6 +17,7 @@
 #include "executor/tuptable.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
 #include "col/seg.h"
 #include "col/scope.h"
 #include "col/wbuf.h"
@@ -95,6 +96,26 @@ scope_verdict(Relation index, const SiftDirSnapshot *dir, int scope, Snapshot sn
 }
 
 /*
+ * Do the scope segments of the index cover its rows? Every entity segment of the directory says its rows have their entries in them (SIFT_SEG_SCOPED), which the writers keep
+ * true: the build and a promotion write the entity segment and the scope segments of its rows together, in one switch of the directory; a merge of entity segments keeps the
+ * addresses, so the entries stay valid, and its output has the flag only if all its inputs had it; a merge of scope segments loses none; VACUUM ends the entries of a dead
+ * address in every segment. A row not in an entity segment is in a write buffer, which the reader reads through the entity path. The flag is of the index (all its scopes are filled
+ * together), the argument checks the ordinal.
+ */
+bool
+sift_scope_covered(Relation index, int scope)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	bool		covered = scope >= 0 && scope < sift_col_rel(index)->nscope;
+
+	sift_dir_read(index, dir);
+	for (int i = 0; i < dir->nsegs && covered; i++)
+		covered = dir->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&dir->segs[i]) || sift_seg_is_scoped(&dir->segs[i]);
+	pfree(dir);
+	return covered;
+}
+
+/*
  * NULL: the scope units of the keys are read; else why the statement reads the entity rows (the word EXPLAIN prints after "Scope Fallback"). The reasons come in the
  * order of the contract (INTERFACE section 6): the setting, the declaration, the shape of the request, then the verdict on the segments.
  */
@@ -104,8 +125,7 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snaps
 	SiftDirSnapshot *dir;
 	const char *why = NULL;
 	int			scope = scope_ordinal(sift_scope_specs(index), key_name);
-	uint64		first_scope = UINT64_MAX,
-				last_entity = 0;
+	bool		any_scope = false;
 
 	if (!sift_agg_scope)
 		return "disabled";
@@ -123,24 +143,15 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snaps
 		uint64		rows,
 					pages;
 
-		if (sift_seg_is_scope(&dir->segs[i]))
-			first_scope = Min(first_scope, dir->segs[i].gen);
-		else if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			last_entity = Max(last_entity, dir->segs[i].gen);
+		any_scope |= sift_seg_is_scope(&dir->segs[i]);
 		if (!sift_seg_is_wbuf(&dir->segs[i]))
 			continue;
 		sift_cwbuf_summary(index, &dir->segs[i], &rows, &pages);
 		if (rows > 0)
 			why = "write buffer";
 	}
-	if (why == NULL && first_scope == UINT64_MAX)
-		why = "unfilled";
-	/*
-	 * The build writes the scope segments after the entity segments, so a later entity segment (a promotion, a merge) holds rows, or the same rows under a new
-	 * generation, that no scope entry describes: the stored read would miss them. Exact and simple until the promotion and the merge fill the scope family.
-	 */
-	if (why == NULL && last_entity > first_scope)
-		why = "scope segments do not cover the rows";
+	if (why == NULL && !sift_scope_covered(index, scope))
+		why = any_scope ? "scope segments do not cover the rows" : "unfilled";
 	if (why == NULL && !scope_trusted(index, scope))
 		why = scope_verdict(index, dir, scope, snap);
 	pfree(dir);

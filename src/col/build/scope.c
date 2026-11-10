@@ -14,26 +14,11 @@
 
 #define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
 
-static bool
-is_time(const SiftColDef *d)
-{
-	return d->parent < 0 && d->lane == 0 && !(d->flags & SIFT_COLD_DERIVED) &&
-		(d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ);
-}
-
-/* The cut of the units of a scope: its derived key, then the first date or timestamp column of the index, else none */
+/* The cut of the units of a scope */
 void
 colb_scope_cut(SiftColRel *r, int scope)
 {
-	int			time = -1;
-
-	for (int id = 0; id < r->schema->ncols && time < 0; id++)
-		if (is_time(&r->schema->cols[id]))
-			time = id;
-	r->cut[0] = r->scope_leaf[scope];
-	r->ncut = 1;
-	if (time >= 0)
-		r->cut[r->ncut++] = time;
+	r->ncut = sift_scope_cut(r, scope, r->cut);
 }
 
 /* The builds of the scopes: segs has room for room segments of each. The fill of the entities (b->fill) becomes the one that also stamps the scopes */
@@ -131,10 +116,12 @@ scope_report(const ColBuild *b, int s)
 		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row)", what, count_text(entries), count_text(rows), per_row)));
 }
 
-/* The segments of the scopes follow those of the entities in b->segs, flagged */
+/* The segments of the scopes follow those of the entities in b->segs, flagged; the entities say that their rows have their entries */
 void
 colb_scope_gather(ColBuild *b)
 {
+	for (int i = 0; b->nscope > 0 && i < b->nsegs; i++)
+		b->segs[i].flags |= SIFT_SEG_SCOPED;
 	for (int s = 0; s < b->nscope; s++)
 		scope_report(b, s);
 	for (int s = 0; s < b->nscope; s++)
@@ -143,7 +130,10 @@ colb_scope_gather(ColBuild *b)
 
 		memmove(b->segs + b->nsegs, sb->segs, sb->nsegs * sizeof(SiftSegEntry));
 		for (int i = 0; i < sb->nsegs; i++)
+		{
 			b->segs[b->nsegs + i].flags |= SIFT_SEG_SCOPE;
+			b->segs[b->nsegs + i].pad = s;
+		}
 		b->nsegs += sb->nsegs;
 	}
 }

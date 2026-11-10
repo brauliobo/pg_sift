@@ -72,7 +72,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	int			nb;
 	SiftWriteTarget *wt = NULL;
 	SiftColSegWriter *w = NULL;
-	SiftSegEntry neu;
+	SiftSegEntry neu[1 + SIFT_SCOPE_MAX];
+	int			nneu = 1;
 	SiftExtent *pages;
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
@@ -87,6 +88,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		int			format = sift_col_format_minor;
 		uint32		unit = maint_floor_rows(index);
 		SiftColFill *fill;
+		struct SiftScopeFill *sf;
 		uint64		nbrows = 0,
 					largest = 0,
 					idx_rows;
@@ -100,7 +102,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
-		fill = sift_conn_fill_begin(index, cx, nbrows);
+		fill = maint_scope_fill_begin(index, cx, nbrows, &sf);
 		sift_colw_set_fill(w, fill);
 		idx_rows = nbrows;
 		for (int i = 0; i < nin; i++)
@@ -131,15 +133,23 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 			for (int i = 0; i < nb; i++)
 				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
-		sift_colw_finish(w, &neu);
-		sift_conn_fill_end(fill);
-		neu.flags |= sealed->flags & SIFT_SEG_ROOTS;
+		sift_colw_finish(w, &neu[0]);
+		neu[0].flags |= sealed->flags & SIFT_SEG_ROOTS;
 		if (r->track)
-			sift_seg_set_xstamp(&neu, xstamp);
+			sift_seg_set_xstamp(&neu[0], xstamp);
+		/* the rows go to the scope segments in the same switch of the directory as their entity segment */
+		if (sf != NULL)
+		{
+			neu[0].flags |= SIFT_SEG_SCOPED;
+			nneu += maint_scope_write(index, wt, sf, fill, batches, nb, idx_rows, format, cx, neu + 1);
+			for (int i = 1; i < nneu; i++)
+				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;
+		}
+		sift_conn_fill_end(fill);
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
-	sift_maint_replace(index, &sealed->gen, 1, nb > 0 ? &neu : NULL, pages, npages, "promoted a sealed column segment of", start, rows);
+	sift_maint_replace_n(index, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -160,7 +170,7 @@ maint_promote_next(Relation index, bool propagate, uint64 *busy)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	const SiftSegEntry *s;
 
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	if ((s = first_sealed(snap)) != NULL)
 	{
 		int			nin;

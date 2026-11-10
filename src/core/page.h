@@ -98,6 +98,7 @@ typedef enum SiftSegKind
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
+#define SIFT_SEG_SCOPED	0x0020	/* an entity segment of a sift_col index with scopes whose rows all have their scope entries in the scope segments of the directory (written together with the segment, in one switch of the directory, and never lost by a merge of the entities, which keep the addresses): a merge of segments that do not all have it does not, and the stored read of a scope is exact only while every entity segment has it (col/scope.h). */
 #define SIFT_SEG_SCOPE	0x0008	/* a scope segment of a sift_col index with the reloption scope (col/scope.h): a key-cut segment whose rows are the fact rows replicated once per scope key; the entity readers skip it. Column format minor 45, so that an older library refuses the index */
 extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
 extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
@@ -119,7 +120,7 @@ typedef struct SiftSegEntry
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
 	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
-	uint32		pad;			/* always 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page */
+	uint32		pad;			/* 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page; a scope segment (SIFT_SEG_SCOPE) holds the ordinal of its scope */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;

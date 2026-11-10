@@ -152,7 +152,7 @@ SELECT * FROM phase();
  7 | t    | f      | write buffer | f
 (7 rows)
 
--- promoted: the rows of the buffer are an entity segment of a later generation, which no scope entry describes: the entity rows are read, and the same after a merge
+-- promoted: the rows of the buffer are an entity segment and scope segments of the same switch of the directory, so the scope units are read again; and the same after a merge (col_scope_maint has the states of the maintenance)
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
  promoted 
 ----------
@@ -160,15 +160,15 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM phase();
- n | same | stored |                 why                  | fewer_units 
----+------+--------+--------------------------------------+-------------
- 1 | t    | f      | scope segments do not cover the rows | f
- 2 | t    | f      | scope segments do not cover the rows | f
- 3 | t    | f      | scope segments do not cover the rows | f
- 4 | t    | f      | scope segments do not cover the rows | f
- 5 | t    | f      | scope segments do not cover the rows | f
- 6 | t    | f      | scope segments do not cover the rows | f
- 7 | t    | f      | scope segments do not cover the rows | f
+ n | same | stored | why | fewer_units 
+---+------+--------+-----+-------------
+ 1 | t    | t      |     | t
+ 2 | t    | t      |     | t
+ 3 | t    | t      |     | t
+ 4 | t    | t      |     | t
+ 5 | t    | t      |     | t
+ 6 | t    | t      |     | t
+ 7 | t    | t      |     | t
 (7 rows)
 
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
@@ -178,15 +178,15 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM phase();
- n | same | stored |                 why                  | fewer_units 
----+------+--------+--------------------------------------+-------------
- 1 | t    | f      | scope segments do not cover the rows | f
- 2 | t    | f      | scope segments do not cover the rows | f
- 3 | t    | f      | scope segments do not cover the rows | f
- 4 | t    | f      | scope segments do not cover the rows | f
- 5 | t    | f      | scope segments do not cover the rows | f
- 6 | t    | f      | scope segments do not cover the rows | f
- 7 | t    | f      | scope segments do not cover the rows | f
+ n | same | stored | why | fewer_units 
+---+------+--------+-----+-------------
+ 1 | t    | t      |     | t
+ 2 | t    | t      |     | t
+ 3 | t    | t      |     | t
+ 4 | t    | t      |     | t
+ 5 | t    | t      |     | t
+ 6 | t    | t      |     | t
+ 7 | t    | t      |     | t
 (7 rows)
 
 SELECT sift.col_verify('events_col', true);

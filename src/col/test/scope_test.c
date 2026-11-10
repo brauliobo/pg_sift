@@ -18,6 +18,7 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
+#include "bm25/maint.h"
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/test/test_int.h"
@@ -121,6 +122,86 @@ sift_test_col_scope_entries(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_col_scope_stamps);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_covered);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_flag);
+
+/*
+ * sift._test_col_scope_stamps(index): the stamp each segment holds for each scope of the index: (generation, family 'entities' or 'scope', the segment says its rows are
+ * covered, the scope of a scope segment (-1 for the entities), the scope of the stamp, lineage, xmin)
+ */
+Datum
+sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, dir);
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		const SiftSegEntry *e = &dir->segs[i];
+		SiftColSegment *seg;
+
+		if (e->kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, e, CurrentMemoryContext);
+		for (int s = 0; s < seg->nscope; s++)
+		{
+			Datum		v[7] = {Int64GetDatum(e->gen), CStringGetTextDatum(sift_seg_is_scope(e) ? "scope" : "entities"), BoolGetDatum(sift_seg_is_scoped(e)),
+			Int32GetDatum(sift_seg_is_scope(e) ? sift_seg_scope_ordinal(e) : -1), Int32GetDatum(s), Int64GetDatum((int64) seg->scope[s].lineage),
+			Int64GetDatum(seg->scope[s].xmin)};
+			bool		nulls[7] = {false};
+
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_scope_covered(index, key_name): sift_scope_covered of the scope */
+Datum
+sift_test_col_scope_covered(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftScopeSpecs *sp = sift_scope_specs(index);
+	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	bool		covered = false;
+
+	for (int i = 0; sp != NULL && i < sp->n; i++)
+		if (strcmp(sp->s[i]->key_name, name) == 0)
+			covered = sift_scope_covered(index, i);
+	index_close(index, AccessShareLock);
+	PG_RETURN_BOOL(covered);
+}
+
+static void
+flag_entities(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	bool		on = *(bool *) arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !(dir->segs[i].flags & SIFT_SEG_SCOPE))
+			dir->segs[i].flags = on ? dir->segs[i].flags | SIFT_SEG_SCOPED : dir->segs[i].flags & ~SIFT_SEG_SCOPED;
+}
+
+/* sift._test_col_scope_flag(index, scoped): sets or clears the flag of every entity segment (a segment that was merged with an uncovered one has none) */
+Datum
+sift_test_col_scope_flag(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	bool		on = PG_GETARG_BOOL(1);
+
+	sift_maint_lock(index, true);
+	sift_dir_update(index, &(SiftDirChange) {.fn = flag_entities,.arg = &on,.extra = InvalidBuffer});
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
 }
 
 PG_FUNCTION_INFO_V1(sift_test_in_scope);

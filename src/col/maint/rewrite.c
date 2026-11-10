@@ -117,7 +117,7 @@ maint_read_due(Relation index, double owed)
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	uint64		rows = 0;
 
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			rows += snap->segs[i].ndocs;
@@ -252,7 +252,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	maint_overlay_asked = false;
 	maint_redecided = false;
 	maint_overlay_steps = automatic ? 1 : SIFT_MAX_SEGMENTS;
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	maint_use_partitions(index, snap);
 	partitioned = maint_part_kb > 0;
 	v = maint_view_open(index, snap, cx);
@@ -323,8 +323,10 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	}
 	else if (maint_read_asked && dirty > 0)
 		why = "dirty units";
-	else if (stale)
+	else if (stale || maint_scope_refill_due(index))
 		why = "stale connection";
+	else if (sift_col_rel(index)->nscope > 0 && maint_scope_merge_due(index, maint_after_build))
+		why = "scope segments";
 	buffer_due = buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered);
 	if (why == NULL && buffer_due)
 		why = WHY_BUFFER;
@@ -419,7 +421,7 @@ sift_col_rewrite_tick(Relation index, double owed)
 		return false;
 	snap = palloc(sizeof(SiftDirSnapshot));
 	peers = palloc(sizeof(SiftDirSnapshot));
-	sift_dir_read(index, snap);
+	sift_col_dir_read(index, snap, false);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			large = Max(large, snap->segs[i].bytes);

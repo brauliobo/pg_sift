@@ -7,6 +7,7 @@
 
 #include "col/build.h"
 #include "col/conn.h"
+#include "col/scope.h"
 #include "bm25/maint.h"
 
 /*
@@ -100,6 +101,16 @@ extern int	maint_overlay_steps;
 
 extern void	maint_throttle(SiftWriteTarget *wt);
 
+/* col/maint/scope.c: the fill and the scope segments of a promotion */
+struct SiftScopeFill;
+extern SiftColFill *maint_scope_fill_begin(Relation index, MemoryContext cx, uint64 rows, struct SiftScopeFill **sf);
+extern int	maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf, SiftColFill *fill, SiftColBatch *const *batches, int nb,
+							  uint64 index_rows, int format, MemoryContext cx, SiftSegEntry *out);
+
+extern bool maint_scope_refill(Relation index);
+extern bool maint_scope_refill_due(Relation index);
+extern bool maint_scope_merge_due(Relation index, bool force);
+
 extern uint32	maint_floor_rows(Relation index);
 
 extern bool	maint_rows_sparse(uint64 rows, uint64 sbs, uint32 unit);
@@ -115,6 +126,7 @@ extern void	maint_net_refresh(Relation index);
 extern RewriteView *	maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx);
 extern void	maint_mark_key_overlap(Relation index, RewriteView *v);
 extern bool	maint_key_meets(const RewriteView *v, int i);
+extern void	maint_seg_key_range(SiftColSegment *seg, int leaf, int64 *lo, int64 *hi);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);
 

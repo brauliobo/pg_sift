@@ -231,7 +231,8 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
      45 | immutable
      45 | immutable
      45 | immutable
-(3 rows)
+     45 | immutable
+(4 rows)
 
 SELECT sift.col_verify('events_col', true);
  col_verify 
