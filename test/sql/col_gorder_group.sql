@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
+SET sift.test_col_legacy_options = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = notice;
@@ -19,7 +20,7 @@ FROM generate_series(1, 12000) i;
 INSERT INTO gg (id, g, k, t) SELECT 20000 + i, 100, NULL, NULL FROM generate_series(1, 30) i;
 INSERT INTO gg (id, g, k, t) VALUES (20100, 101, 5, TIMESTAMP '2001-01-01');
 CREATE INDEX gg_i ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops, t sift.col_timestamp_ops)
-	WITH (order_columns = 'k, t', order_array_columns = 'k, t', order_array_group = 'g');
+	WITH (order_array_columns = 'k, t', order_array_group = 'g');
 SELECT sift.col_verify('gg_i');
 ANALYZE gg;
 
@@ -132,14 +133,14 @@ END $$;
 
 -- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
 DROP INDEX gg_i;
-CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k');
+CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k');
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;
 DROP INDEX gg_p;
 
 -- the option is validated: one column, an integer, date or timestamp, not an array column
-CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'k');
-CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'g, id');
-CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'pad');
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'k');
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'g, id');
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k', order_array_group = 'pad');
 
 DROP TABLE gg CASCADE;
 DROP FUNCTION gg_chk(text), gg_all(), gg_mm(text), gg_mm_all();

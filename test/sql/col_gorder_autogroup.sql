@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
+SET sift.test_col_legacy_options = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
 SET sift.test_limits = 'gord_seek_pct=0';
 SET max_parallel_maintenance_workers = 0;
@@ -61,13 +62,12 @@ ALTER INDEX ag_i SET (order_array_group = 'off');
 REINDEX INDEX ag_i;
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS off_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS off_plain;
-ALTER INDEX ag_i SET (order_array_group = 'v', order_array_columns = 'ts', order_columns = 'ts');
+ALTER INDEX ag_i SET (order_array_group = 'v', order_array_columns = 'ts');
 REINDEX INDEX ag_i;
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 SELECT ag_chk('SELECT id, ts FROM ag WHERE v = 2 ORDER BY ts, id LIMIT 20') AS user_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS user_plain;
 ALTER INDEX ag_i RESET (order_array_group);
 ALTER INDEX ag_i RESET (order_array_columns);
-ALTER INDEX ag_i RESET (order_columns);
 REINDEX INDEX ag_i;
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 
