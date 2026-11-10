@@ -1,0 +1,193 @@
+-- The columns a scope keeps: WITH (scope = 'key: fk -> relation(member, scope_key) cols(a, b, c)'). The scope segments of that scope hold the derived key, the listed columns, the member key,
+-- the column the units are cut by (the first date or timestamp column) and the address of the row: the other columns have no chunk, summary or directory in them. A scan reads the scope units
+-- only when every column it reads is one of those, else it reads the entity rows and EXPLAIN says which column; either way the rows are those of the join. A later release may write units
+-- by reference: a scope segment of a kind this build does not read is refused (the entity rows still answer).
+-- PoC: the segments are read as vouched under sift.test_scope_trust (INTERFACE section 5).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.agg_force = on;
+SET sift.test_scope_trust = on;
+
+CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
+   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
+
+-- the same rows as the plain join, whether the scope units answered or why not, and the columns of the index the scope keeps
+CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT kept text)
+LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
+	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	kept := jsonb_path_query_first(p, '$.**."Scope Columns"') #>> '{}';
+END $$;
+
+-- 5 tenants, 4 groups; 200 entities, each in one or two of each; events in a heap order that is not the key order
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 3) % 5 FROM generate_series(1, 200) m, generate_series(0, m % 2) j ON CONFLICT DO NOTHING;
+CREATE TABLE group_scope (dim_a_id int NOT NULL, group_id int NOT NULL, PRIMARY KEY (dim_a_id, group_id));
+INSERT INTO group_scope SELECT m, 1 + (m * 3 + j) % 4 FROM generate_series(1, 200) m, generate_series(0, m % 2) j ON CONFLICT DO NOTHING;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, label text, value_num int NOT NULL, tags int[], pad text)
+	WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 hour', i % 7, 'l' || i % 13, i % 1000, ARRAY[i % 5, i % 3], repeat('x', 40)
+	FROM generate_series(1, 6000) i;
+VACUUM (FREEZE, ANALYZE) events;
+
+-- what is wrong with cols(..): each case is an error with a hint, none leaves an index behind
+CREATE TEMP TABLE bad_cols (n serial, why text, opt text);
+INSERT INTO bad_cols (why, opt) VALUES
+	('not closed', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind'),
+	('empty', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols()'),
+	('no comma', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind value_num)'),
+	('trailing comma', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind,)'),
+	('text after', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind) kind'),
+	('twice', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind) cols(label)'),
+	('unknown column', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, nothing)'),
+	('column of the table not in the index', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(pad)'),
+	('duplicate', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, label, kind)'),
+	('error of the second scope', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind); group_id: dim_a_id -> group_scope(dim_a_id, group_id) cols(nothing)');
+SELECT n, why, try(format('CREATE INDEX bad ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags) WITH (scope = %L)', opt)) AS result
+	FROM bad_cols ORDER BY n;
+SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
+
+-- the member key, the derived key and a column twice named by the cut are allowed: they are kept anyway
+SELECT try('CREATE INDEX events_named ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
+	WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(dim_a_id, tenant_id, created_at, kind)'')') AS named;
+DROP INDEX events_named;
+
+-- one index that keeps all the columns, one that keeps a subset: the scope units of the subset are smaller
+CREATE INDEX events_all ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_sub ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num)');
+CREATE INDEX events_min ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(created_at)');
+SELECT sift.col_verify(i, true) FROM (VALUES ('events_all'), ('events_sub'), ('events_min')) v(i);
+CREATE FUNCTION scope_bytes(idx regclass) RETURNS bigint LANGUAGE sql AS
+$$ SELECT sum(bytes) FROM sift.col_segments(idx) s WHERE kind = 'immutable' AND gen IN (SELECT gen FROM sift._test_col_scope_entries(idx)) $$;
+SELECT scope_bytes('events_sub') < scope_bytes('events_all') AS subset_smaller, scope_bytes('events_min') < scope_bytes('events_sub') AS minimum_smaller;
+-- the scope segments hold the same entries whatever they keep of them
+SELECT (SELECT count(*) FROM sift._test_col_scope_entries('events_all')) = (SELECT count(*) FROM sift._test_col_scope_entries('events_sub')) AND
+	   (SELECT count(*) FROM sift._test_col_scope_entries('events_all')) = (SELECT count(*) FROM sift._test_col_scope_entries('events_min')) AS same_entries;
+
+SELECT scope_bytes('events_sub') AS sub_bytes \gset
+DROP INDEX events_all, events_sub, events_min;
+
+-- the statements: the columns they read decide whether the scope units answer; the rows are those of the join either way. One index at a time: the scan is of the index the marker names
+CREATE TABLE shapes (n int, q text);
+INSERT INTO shapes VALUES
+	(1, 'SELECT count(*) FROM events e WHERE #S#'),
+	(2, 'SELECT kind, count(*), sum(value_num) FROM events e WHERE #S# GROUP BY kind ORDER BY kind'),
+	(3, 'SELECT kind, count(*) FROM events e WHERE #S# AND value_num > 500 GROUP BY kind ORDER BY kind'),
+	(4, 'SELECT min(created_at), max(created_at), count(*) FROM events e WHERE #S# AND created_at >= timestamptz ''2026-01-05'' AND created_at < timestamptz ''2026-01-09'''),
+	(5, 'SELECT count(*), count(DISTINCT dim_a_id) FROM events e WHERE #S# AND kind = 3'),
+	(6, 'SELECT label, count(*) FROM events e WHERE #S# GROUP BY label ORDER BY label'),
+	(7, 'SELECT count(*) FROM events e WHERE #S# AND label = ''l4'''),
+	(8, 'SELECT id, kind FROM events e WHERE #S# ORDER BY created_at DESC, id LIMIT 7'),
+	(9, 'SELECT sum(id) FROM events e WHERE #S#'),
+	(10, 'SELECT count(*) FROM events e WHERE #S# AND tags @> ARRAY[2]'),
+	(11, 'SELECT kind, sum(value_num) FROM events e WHERE #S# AND kind IN (1, 2) GROUP BY kind ORDER BY kind'),
+	(12, 'SELECT date_trunc(''day'', created_at), count(*) FROM events e WHERE #S# GROUP BY 1 ORDER BY 1');
+CREATE FUNCTION variants() RETURNS TABLE (n int, idx text, same boolean, stored boolean, why text, kept text) LANGUAGE plpgsql AS
+$$ DECLARE v record; s record; r record;
+BEGIN
+	FOR v IN SELECT * FROM (VALUES ('events_all', ''), ('events_sub', ' cols(kind, value_num)'), ('events_min', ' cols(created_at)')) x(idx, cols) LOOP
+		EXECUTE format('CREATE INDEX %I ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags) WITH (scope = %L)', v.idx,
+					   'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)' || v.cols);
+		FOR s IN SELECT * FROM shapes ORDER BY shapes.n LOOP
+			SELECT * INTO r FROM scope_run(replace(s.q, '#S#', format('sift.in_scope(%L::regclass, ''tenant_id'', e.dim_a_id, 3)', v.idx)),
+										   replace(s.q, '#S#', 'e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)'));
+			n := s.n; idx := v.idx; same := r.same; stored := r.stored; why := r.why; kept := r.kept;
+			RETURN NEXT;
+		END LOOP;
+		EXECUTE format('DROP INDEX %I', v.idx);
+	END LOOP;
+END $$;
+SELECT * FROM variants() ORDER BY n, idx;
+DROP FUNCTION variants();
+DROP TABLE shapes;
+
+-- two scopes, each with columns of its own: a statement on a scope is judged against that scope's columns
+CREATE INDEX events_two ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num); group_id: dim_a_id -> group_scope(dim_a_id, group_id) cols(label)');
+SELECT sift.col_verify('events_two', true);
+CREATE TABLE shapes (n int, q text, plain text);
+INSERT INTO shapes VALUES
+	(1, 'SELECT kind, sum(value_num) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''tenant_id'', e.dim_a_id, 2) GROUP BY kind ORDER BY kind',
+		'SELECT kind, sum(value_num) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) GROUP BY kind ORDER BY kind'),
+	(2, 'SELECT label, count(*) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''tenant_id'', e.dim_a_id, 2) GROUP BY label ORDER BY label',
+		'SELECT label, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) GROUP BY label ORDER BY label'),
+	(3, 'SELECT label, count(*) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''group_id'', e.dim_a_id, 2) GROUP BY label ORDER BY label',
+		'SELECT label, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM group_scope WHERE group_id = 2) GROUP BY label ORDER BY label'),
+	(4, 'SELECT kind, count(*) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''group_id'', e.dim_a_id, 2) GROUP BY kind ORDER BY kind',
+		'SELECT kind, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM group_scope WHERE group_id = 2) GROUP BY kind ORDER BY kind'),
+	(5, 'SELECT count(*) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''group_id'', e.dim_a_id, 2)',
+		'SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM group_scope WHERE group_id = 2)');
+SELECT n, (r).same, (r).stored, (r).why, (r).kept FROM (SELECT n, scope_run(q, plain) r FROM shapes) t ORDER BY n;
+DROP TABLE shapes;
+DROP INDEX events_two;
+
+-- the entity rows of every index are the table's, whatever the scope keeps
+SELECT (SELECT count(*) FROM events WHERE kind = 3 AND label = 'l4') AS plain_rows;
+SET sift.enable_agg = off;
+SELECT count(*) AS table_rows FROM events WHERE kind = 3 AND label = 'l4';
+RESET sift.enable_agg;
+
+-- the text is the record: the dump carries the columns and a restore makes the same index
+CREATE INDEX events_sub ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num)');
+SELECT regexp_replace(pg_get_indexdef('events_sub'::regclass), '^.* WITH', 'WITH') AS definition;
+SELECT pg_get_indexdef('events_sub'::regclass) AS ddl \gset
+DROP INDEX events_sub;
+SELECT :'ddl' AS restore \gexec
+SELECT (r).same, (r).stored, (r).why, (r).kept
+FROM (SELECT scope_run('SELECT kind, sum(value_num) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3) GROUP BY kind ORDER BY kind',
+					   'SELECT kind, sum(value_num) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind ORDER BY kind') r) t;
+-- REINDEX writes the segments again with the same columns; ALTER INDEX changes the columns and the next REINDEX keeps them
+REINDEX INDEX events_sub;
+SELECT scope_bytes('events_sub') BETWEEN :sub_bytes * 0.9 AND :sub_bytes * 1.1 AS same_size_after_reindex;
+ALTER INDEX events_sub SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num, label)');
+REINDEX INDEX events_sub;
+SELECT (r).same, (r).stored, (r).why, (r).kept
+FROM (SELECT scope_run('SELECT label, count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3) GROUP BY label ORDER BY label',
+					   'SELECT label, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY label ORDER BY label') r) t;
+SELECT sift.col_verify('events_sub', true);
+
+-- a scope segment of a kind this build does not read (a later release writes units by reference): its stamp says so, or its directory entry has the flag. The scope read and verify
+-- refuse it with the format error; the entity rows answer
+SET sift.enable_agg = on;
+SELECT sift._test_col_scope_mark('events_sub', true);
+SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS scope_read;
+SELECT try('SELECT sift.col_verify(''events_sub'', true)') AS verify;
+SELECT count(*) AS entity_rows FROM events WHERE kind = 3 AND dim_a_id < 50;
+SELECT sift._test_col_scope_mark('events_sub', false);
+SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS after_clear;
+SET sift.test_scope_unit_kind = 1;
+SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS kind_1;
+SET sift.test_scope_unit_kind = 255;
+SELECT try('SELECT sift.col_verify(''events_sub'', true)') AS kind_255_verify;
+SELECT count(*) AS entity_rows_kind FROM events WHERE kind = 3 AND dim_a_id < 50;
+RESET sift.test_scope_unit_kind;
+SELECT sift.col_verify('events_sub', true);
+
+DROP TABLE events;
+DROP TABLE tenant_scope;
+DROP TABLE group_scope;
+DROP FUNCTION try(text);
+DROP FUNCTION scope_run(text, text);
+DROP FUNCTION scope_bytes(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
