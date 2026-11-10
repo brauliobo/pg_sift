@@ -64,7 +64,7 @@ extern bool maint_redecided;
 
 extern const SiftMaintOps maint_col_ops;
 
-#define MAINT_MEM_RATIO	3.0	/* the memory a writer keeps for each byte of segment, usually: a partition is a third of maintenance_work_mem */
+#define MAINT_MEM_RATIO	2.1	/* the memory a writer estimates (sift_colw_memory) for each byte of segment, usually: a partition is under half of the memory a writer may estimate */
 extern void	maint_use_partitions(Relation index, const SiftDirSnapshot *snap);
 extern int	maint_part_kb_for(uint64 bytes, double mem_ratio);
 

@@ -421,7 +421,7 @@ typedef struct MergeOut
 	MemoryContext cx;
 	uint64		index_rows;		/* the rows of the index */
 	uint64		expect;			/* the bytes of one partition, for the throttle */
-	uint64		cut;			/* the bytes of units from which a partition is done */
+	uint64		units_left;		/* the bytes of units the partitions still to be written hold: the partition in hand is done at its share of them */
 	int			parts;
 	int			maxout;			/* the most segments the merge may write: the directory holds the ones it replaces and the room besides */
 	Size		budget;			/* the memory a segment writer may hold (sift_colw_full); grows when the segments left would not hold the rows left */
@@ -515,11 +515,16 @@ out_next(void *arg, SiftColSegWriter *w)
 		out_begin(o);
 		return o->w;
 	}
-	/* a partition is done at its share of the bytes; any segment, when its writer holds its budget of memory or SIFT_CPOINT_BUILD_ROWS rows */
-	if (o->nneu + 1 < o->maxout && ((o->nneu + 1 < o->parts && sift_colw_bytes(w) >= o->cut) || sift_colw_full(w, o->budget - Min(o->held, o->budget / 2))))
+	/*
+	 * a partition is done at its share of the bytes still to write (a unit is the least it grows by: the shares of the rest make up for the overshoot, and the
+	 * last one is no short one); any segment, when its writer holds its budget of memory or SIFT_CPOINT_BUILD_ROWS rows
+	 */
+	if (o->nneu + 1 < o->maxout && ((o->nneu + 1 < o->parts && sift_colw_bytes(w) >= o->units_left / (o->parts - o->nneu)) ||
+									sift_colw_full(w, o->budget - Min(o->held, o->budget / 2))))
 	{
 		uint64		rows = sift_colw_rows(w);
 
+		o->units_left -= Min(sift_colw_bytes(w), o->units_left);
 		o->rows_done += rows;
 		out_finish(o);
 		o->budget = sift_colw_fit_budget(o->budget, rows, o->live_rows - o->rows_done, o->maxout - o->nneu);
@@ -624,10 +629,10 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	o.maxout = slice ? 1 : Min(MAX_PARTS, Max(max_parts, n));
 	o.parts = Max(o.parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) o.maxout));
 	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and in what the partitions the directory allows need besides */
-	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024);
+	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
 	if (part_bytes > 0)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
-	o.cut = live_units / o.parts;
+	o.units_left = live_units;
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
 	if (!exact)
 		format = Min(format, SIFT_COL_FORMAT_TAGS);

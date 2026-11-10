@@ -437,24 +437,19 @@ sift_colw_full(const SiftColSegWriter *w, Size budget)
 }
 
 /*
- * The memory a participant that writes segments within `mem` bytes may let its writer estimate (sift_colw_memory): it resides at 1.4 times that (the batches, the blobs of
- * the end of the segment, the allocator's) and takes 30 MB besides (a fit of the peaks of 5,000,000 rows at 64 and 256 MB: 1.4 times and 29 MB), and at least a segment worth
- * writing: below it the participants overshoot, a writer that estimates nothing would cut a segment at every batch.
+ * The memory a participant that writes segments within `mem` bytes may let its writer estimate (sift_colw_memory), when the writer resides at resident_pct percent of
+ * its estimate and the participant takes base bytes besides, and at least a segment worth writing: below it the participants overshoot, a writer that estimates nothing
+ * would cut a segment at every batch. A build resides at 140% and 30 MB (the batches of the scan, the blobs of the end of the segment, the allocator's; a fit of the peaks
+ * of 5,000,000 rows at 64 and 256 MB), a merge at 100% and 36 MB (it streams its inputs: the arrays it holds count in the estimate; a fit of the peaks of its partitions of
+ * 417,000 to 2,500,000 rows: 77 to 90 bytes a row for an estimate of 83).
  */
 Size
-sift_colw_budget(Size mem)
+sift_colw_budget(Size mem, int resident_pct, Size base)
 {
-	return Max(mem > SIFT_COLW_BASE ? (mem - SIFT_COLW_BASE) * 10 / 14 : 0, SIFT_COLW_MIN_BUDGET);
+	return Max(mem > base ? (mem - base) * 100 / resident_pct : 0, SIFT_COLW_MIN_BUDGET);
 }
 
-/* The resident bytes the rows of a segment may take in a writer within mem: what sift_colw_row_memory counts per row, for the partitions of a merge */
-Size
-sift_colw_resident(Size mem)
-{
-	return sift_colw_budget(mem) * 14 / 10;
-}
-
-/* The resident bytes of a row of a segment: what sift_colw_memory counts for it, at its peak, and what the writer takes beyond what it counts */
+/* The bytes of a row of a segment that sift_colw_memory counts for it, at its peak */
 Size
 sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 {
@@ -467,7 +462,7 @@ sift_colw_row_memory(const SiftCPaggSpec *spec, int ncols)
 		ords += spec->gorder[c] != 0;
 	}
 	/* a leaf keeps a key and a row or address (16 bytes), a grouped order the group and its flag (9) besides; the end builds one leaf at a time: 24 bytes an entry of an order, 32 of a directory */
-	return leaves ? ((Size) leaves * 16 + (spec->gorder_group > 0 ? (Size) ords * 9 : 0) + 24 + 32) * 14 / 10 : 0;
+	return leaves ? ((Size) leaves * 16 + (spec->gorder_group > 0 ? (Size) ords * 9 : 0) + 24 + 32) : 0;
 }
 
 Size

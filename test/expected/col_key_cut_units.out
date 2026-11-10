@@ -134,7 +134,7 @@ SELECT (SELECT sum(amt) FROM nk) = (SELECT sum(amt) FROM nu) AS sum_same,
 SELECT nunits('SELECT sum(amt) FROM nk') AS sum_units_after;
                     sum_units_after                    
 -------------------------------------------------------
-  Units: 34 read, 34 from pre-aggregates, 7 superunits
+  Units: 34 read, 34 from pre-aggregates, 6 superunits
 (1 row)
 
 DROP FUNCTION nunits(text);

@@ -63,7 +63,7 @@ sift_colb_budget(int nslots)
 Size
 colb_writer_budget(int nslots)
 {
-	return sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots);
+	return sift_colw_budget((Size) maintenance_work_mem * 1024 / nslots, SIFT_COLW_BUILD_PCT, SIFT_COLW_BUILD_BASE);
 }
 
 /* The most memory the rows of a run may take: the references the sort makes of them are a third of their bytes, the writer and the rest are what a participant keeps besides */
