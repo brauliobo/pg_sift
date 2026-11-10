@@ -7,6 +7,7 @@
 
 #include "optimizer/cost.h"
 
+#include "col/scope.h"
 #include "agg/wide.h"
 #include "agg/rows.h"
 #include "agg/stats.h"
@@ -382,11 +383,15 @@ explain_scope(AggExec *ex, ExplainState *es)
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftExplainLine ln;
 	SiftSrcCounters cc;
+	int			kept,
+				all;
 
 	if (sc == NULL)
 		return;
 	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
 	ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
+	sift_scope_columns(ex->index, sc->key_name, &kept, &all);
+	ExplainPropertyText("Scope Columns", psprintf("%d of %d", kept, all), es);
 	ExplainPropertyText("Scope Semantics", sc->once ? "once" : "per pair", es);
 	if (!es->analyze || !ex->started)
 		return;

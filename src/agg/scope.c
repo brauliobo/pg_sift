@@ -48,7 +48,8 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
-	ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL);
+	ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL,
+									   ex->spec->leaves, ex->spec->nleaves);
 	ex->scope_why = ex->scope_rd->why;
 	return ex->scope_why == NULL;
 }

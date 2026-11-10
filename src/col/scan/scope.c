@@ -52,6 +52,42 @@ scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
 	return -1;
 }
 
+/* The first leaf among leaves[0..n) the scope segments keep no values of, as the name of its column or path; NULL when they keep all (leaves beyond the index's are the scan's own) */
+static const char *
+unit_missing(Relation index, int scope, const int *leaves, int n)
+{
+	const SiftColRel *r = sift_col_rel(index);
+
+	for (int i = 0; i < n; i++)
+	{
+		const SiftColDef *d;
+
+		if (leaves[i] >= r->schema->ncols || r->scope_cols[scope][leaves[i]])
+			continue;
+		d = &r->schema->cols[leaves[i]];
+		return d->path[0] ? d->path : NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname);
+	}
+	return NULL;
+}
+
+void
+sift_scope_columns(Relation index, const char *key_name, int *kept, int *all)
+{
+	const SiftColRel *r = sift_col_rel(index);
+	int			scope = scope_ordinal(sift_scope_specs(index), key_name);
+	int			natts = RelationGetNumberOfAttributes(index);
+
+	*all = natts;
+	*kept = 0;
+	for (int a = 1; a <= natts; a++)
+		for (int i = 0; i < r->schema->ncols; i++)
+			if (r->schema->cols[i].attno == a && !(r->schema->cols[i].flags & SIFT_COLD_DERIVED) && r->scope_cols[scope][i])
+			{
+				(*kept)++;
+				break;
+			}
+}
+
 static int
 cmp_i64(const void *a, const void *b)
 {
@@ -486,18 +522,21 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 }
 
 SiftScopeRead *
-sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn)
+sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves)
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
 	int64	   *sorted;
 	uint32		nk;
 	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
+	const char *missing;
 
 	if (!sift_agg_scope)
 		rd->why = "disabled";
 	else if (ord < 0)
 		rd->why = "no scope index";
+	else if ((missing = unit_missing(index, ord, leaves, nleaves)) != NULL)
+		rd->why = psprintf("column %s not in the scope units", missing);
 	if (rd->why != NULL)
 		return rd;
 	sorted = palloc(Max(nkeys, 1) * sizeof(int64));

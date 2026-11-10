@@ -113,7 +113,7 @@ extern bool sift_scope_covered(Relation index, int scope);
  * members of patch (those of except that have a pair with a key now) are read besides, through the entity path, so that the aggregates see one stream. With once and several keys,
  * the row of a member that has a pair with several of the keys counts in the units of the least of them only: drop[i] lists, for the key drop[i].key, the members whose rows
  * of that key's units are not counted. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys (sift_scope_members) instead; the word
- * is what EXPLAIN prints after "Scope Fallback". topn: the scan is a top-N, which does not read the units of both families as one.
+ * is what EXPLAIN prints after "Scope Fallback". A leaf the scan reads (leaves[0..nleaves)) that the scope segments keep no values of (cols(..) of the scope) is a fallback. topn: the scan is a top-N, which does not read the units of both families as one.
  */
 typedef struct SiftScopeDrop
 {
@@ -134,8 +134,11 @@ typedef struct SiftScopeRead
 	int			ndrop;
 } SiftScopeRead;
 
-extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn);
+extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
+								   const int *leaves, int nleaves);
 /* The member keys that have a pair with one of the keys under the snapshot, ascending, each once */
+/* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
+extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 
 #ifdef SIFT_TESTING
