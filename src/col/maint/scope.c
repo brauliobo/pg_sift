@@ -78,10 +78,13 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 bool
 maint_scope_refill_due(Relation index)
 {
-	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftDirSnapshot *dir;
 	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
 	bool		due = false;
 
+	if (st == NULL)
+		return false;
+	dir = palloc(sizeof(SiftDirSnapshot));
 	for (int s = 0; s < sift_col_rel(index)->nscope && !due; s++)
 		due = !sift_scope_covered(index, s);
 	sift_dir_read(index, dir);
