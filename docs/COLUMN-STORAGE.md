@@ -41,23 +41,22 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 
 `ORDER BY .. LIMIT n`, with or without a filter, an offset or a range.
 
-- **`order_columns`** (opt-in).
-  - **What**: each unit keeps a sorted run of the column, so `ORDER BY col LIMIT n` reads the first rows of each unit only, and a `LIMIT` of up to 32 over clean, all-visible units reads no unit.
-  - **Default**: off. An `ORDER BY` a date `LIMIT 100` reads 18.3 M instructions without the runs and 16.9 M with them (1.08x), for +8.3% of the index and +2.5% of the build.
-  - **Off**: `ALTER INDEX .. RESET (order_columns)`; new units get no run. `sift.col_format_minor <= 12` writes no runs, 13 to 14 writes runs without heads.
-  - **Measured**: `ORDER BY` an integer `LIMIT 100` on 1,000,000 rows, 37.9 ms by the normal plan, 3.5 ms without runs, 1.4 ms with them; case `topn_sorted_runs`.
+- **`order_columns`** (deprecated in 4.3, removed in 4.4).
+  - **What**: each unit kept a sorted run of the column, so `ORDER BY col LIMIT n` read the first rows of each unit only. It is accepted and ignored: a build writes no run, and the order arrays (`order_array_columns`) answer a top-N, a range and an `OFFSET` over any number of units. The runs already written, and their heads, are read as before.
+  - **Why**: the runs hold the same bytes as the order array of the column (2.08 against 2.27 bytes a row for a timestamp at 5,000,000 rows) and read 4 to 6 times the instructions beyond a top-N of 32 (`OFFSET` 4.42 M, a range 16.0 M, an `IN` list of two groups 47.8 M against 0.4 to 1.4 M with the array); a top-N of 32 or fewer reads 0.38 M with the heads and 0.46 M with the array.
+  - **Off**: `ALTER INDEX .. RESET (order_columns)`. `CREATE INDEX` and `REINDEX` say so once (`order-columns-deprecated`).
 - **`sift.topn_runs`** (setting, on).
   - **What**: lets the top-N scan read the stored runs.
-  - **Default**: on; it costs nothing without `order_columns`.
+  - **Default**: on; it reads the runs that segments written before 4.3 hold, and costs nothing without them.
   - **Off**: `SET sift.topn_runs = off` (session, role, database or `postgresql.conf`): whole units are read, the stored runs stay.
   - **Measured**: `ORDER BY k LIMIT 100` with `order_columns`, 1,000,000 rows, 3.5 ms off and 1.4 ms on; case `topn_sorted_runs`.
-- **Heads of the runs** (automatic with `order_columns`, column format minor 18).
+- **Heads of the runs** (written with the deprecated `order_columns`, column format minor 18).
   - **What**: the first and last keys of a run (up to 32 at each end, with the heap addresses of their rows) answer `ORDER BY .. LIMIT n` (n at most 32, one sort key, no condition, join or aggregate) without reading the unit.
-  - **Default**: on with `order_columns`: 2 to 3 times faster on an unfiltered `LIMIT` up to 32, for 0.6% to 2.4% of the index and write cost inside noise.
+  - **Default**: on with `order_columns`, which a build ignores since 4.3: 2 to 3 times faster on an unfiltered `LIMIT` up to 32, for 0.6% to 2.4% of the index and write cost inside noise.
   - **Off**: `sift.col_format_minor = 14` writes runs without heads, or `sift.topn_runs = off` / `sift.enable_topn = off`.
   - **Measured**: `ORDER BY k LIMIT 10` 0.128 to 0.051 ms on 800,000 rows (a b-tree 0.010 ms).
 - **Top-N run probes** (automatic).
-  - **What**: a top-N over a table with `order_columns` reads the sort key of a unit's rows only for the rows it keeps, and sizes its candidate buffers by the unit.
+  - **What**: a top-N over a table with sorted runs (`order_columns` of 4.2 and older) reads the sort key of a unit's rows only for the rows it keeps, and sizes its candidate buffers by the unit.
   - **Default**: on; the same rows and units are read with less work a scan. No format change, no growth.
   - **Off**: `SET sift.topn_runs = off`, or `SET sift.enable_topn = off`.
   - **Measured**: 40 scans `ORDER BY` a key column `LIMIT 10..49` on 1,000,000 orders, 48 to 24.8 ms; case `topn_run_probes`.

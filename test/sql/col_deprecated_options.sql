@@ -56,6 +56,39 @@ SELECT count(*), min(id) FROM dq WHERE uid = 7919;
 RESET enable_seqscan; RESET enable_bitmapscan;
 DROP TABLE dq;
 
+-- order_columns: no sorted run is written; the order arrays answer the top-N, and an index that has runs keeps reading them
+CREATE TABLE dr (id int, ts timestamp, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dr SELECT i, timestamp '2026-01-01' + (i::bigint * 7919 % 40009) * interval '1 minute', md5(i::text) FROM generate_series(1, 40000) i;
+VACUUM (FREEZE, ANALYZE) dr;
+CREATE FUNCTION dr_runs(ix regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift.col_sections(ix) WHERE section = 'runs' $$;
+CREATE FUNCTION dr_top(n int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+	SELECT string_agg(id::text, ',') INTO a FROM (SELECT id FROM dr ORDER BY ts DESC, id LIMIT n) x;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	SELECT string_agg(id::text, ',') INTO b FROM (SELECT id FROM dr ORDER BY ts DESC, id LIMIT n) x;
+	RETURN CASE WHEN a = b THEN 'same' ELSE 'different' END;
+END $$;
+SET sift.test_col_legacy_options = on;
+CREATE INDEX dr_runs ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', key_cut = 'off');
+SELECT dr_runs('dr_runs') > 0 AS legacy_writes_runs;
+SELECT dp_choice('dr_runs', 'order_columns') IS NULL AS legacy_says_nothing;
+SET sift.test_col_legacy_options = off;
+CREATE INDEX dr_off ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', key_cut = 'off');
+CREATE INDEX dr_arrays ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', order_array_columns = 'ts', key_cut = 'off');
+CREATE INDEX dr_list ON dr USING sift_col (id, ts, pad) WITH (order_array_columns = 'ts', key_cut = 'off');
+SELECT i AS idx, dr_runs(i::regclass) AS runs, (SELECT count(*) FROM sift.col_sections(i::regclass) WHERE section LIKE 'order%' OR section LIKE 'gorder%') > 0 AS has_array
+FROM unnest(ARRAY['dr_off', 'dr_arrays', 'dr_list']) i ORDER BY 1;
+SELECT dp_choice('dr_off', 'order_columns');
+SELECT dp_choice('dr_list', 'order_columns') IS NULL AS no_advice_without;
+-- the index built with runs answers as before while the option is ignored, and its next build writes none
+SELECT dr_top(20), sift.col_verify('dr_runs');
+REINDEX INDEX dr_runs;
+SELECT dr_runs('dr_runs') AS runs_after_reindex, dr_top(20), sift.col_verify('dr_runs');
+DROP TABLE dr;
+DROP FUNCTION dr_runs(regclass), dr_top(int);
+
 DROP TABLE dp CASCADE;
 DROP FUNCTION dp_units(regclass), dp_choice(regclass, text);
 DROP EXTENSION pg_sift_helpers;

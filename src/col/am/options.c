@@ -512,13 +512,13 @@ sift_col_init(void)
 					  "Deprecated, ignored and removed in 4.4: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
-						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
+						 "Deprecated, ignored and removed in 4.4: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
-						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
+						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_order",
-						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_columns, order_array_columns and point_tid_columns on it, for 'group, key' for order_columns and order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
+						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut, order_array_columns and point_tid_columns on it, for 'group, key' for order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
 						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
 						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
@@ -779,13 +779,22 @@ sift_col_options_key_cut_rows_set(Relation index)
 	return sift_col_options(index)->key_cut_rows != 0;
 }
 
+/* the option order_columns is set: a deprecated one, honored only under sift.test_col_legacy_options */
+bool
+sift_col_options_order_columns_option(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_columns && *((const char *) o + o->order_columns);
+}
+
 /* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool
 sift_col_options_order_columns_set(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return (o->order_columns && *((const char *) o + o->order_columns)) || (o->ko_last && !o->ko_auto);
+	return (sift_col_legacy_options && sift_col_options_order_columns_option(index)) || (o->ko_last && !o->ko_auto);
 }
 
 /* the group of a key_order of the user's, 'group, key', with no order_columns of their own (NULL for any other): the column a build with no key_cut cuts the units by */
@@ -794,7 +803,7 @@ sift_col_options_key_order_group(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	if (o->ko_group == 0 || o->ko_auto || (o->order_columns && *((const char *) o + o->order_columns)))
+	if (o->ko_group == 0 || o->ko_auto || (sift_col_legacy_options && sift_col_options_order_columns_option(index)))
 		return NULL;
 	return (const char *) o + o->ko_group;
 }

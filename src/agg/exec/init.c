@@ -180,7 +180,7 @@ sift_agg_init(void)
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	DefineCustomBoolVariable("sift.topn_runs",
-							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
+							 "Lets a top-N scan read a unit through the sorted run of its first sort column (segments written with the deprecated option order_columns) instead of testing every row of the unit.",
 							 NULL, &sift_topn_runs, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",

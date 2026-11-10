@@ -179,6 +179,7 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
 extern bool sift_col_options_key_cut_rows_set(Relation index);
+extern bool sift_col_options_order_columns_option(Relation index);
 extern bool sift_col_options_order_columns_set(Relation index);
 extern bool sift_col_options_key_order_auto(Relation index);
 extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);

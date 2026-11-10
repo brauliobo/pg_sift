@@ -147,21 +147,7 @@ Both pairs were measured side by side (400,000 rows, a table of an `int4` id spr
 | index size (5 columns) | 5.14 MB | 7.39 MB (+43.9%) | 7.50 MB (+45.9%) |
 | `CREATE INDEX`, instructions | 1.45 G | 1.60 G (+10.5%) | 1.63 G (+12.4%) |
 
-**`order_columns` and `order_array_columns`** (sorted runs and the global order). They are layers, not alternatives: the global order extends the sorted run of a column, so a list of `order_array_columns` names columns of `order_columns` (`auto` builds both for the columns it picks, and is the default). The run alone answers `ORDER BY .. LIMIT` and narrow ranges 1.8 to 10 times cheaper than the units; the array on top is 1.1 to 8 times cheaper again, for 44% to 47% more index.
-
-| Statement | none | runs (`order_columns`) | runs and array (`auto`) |
-|---|---|---|---|
-| `ORDER BY ts LIMIT 10` | 3.36 M | 334 k | 298 k |
-| `ORDER BY ts DESC LIMIT 100` | 7.88 M | 1.54 M | 587 k |
-| `ORDER BY n LIMIT 20` | 2.33 M | 273 k | 195 k |
-| `WHERE n > k ORDER BY n LIMIT 20` | 4.68 M | 1.62 M | 309 k |
-| `WHERE ts > k ORDER BY ts LIMIT 50` | 11.5 M | 2.34 M | 634 k |
-| `count(*)` of a range of 800 `n` / 3,600 s of `ts` | 3.04 M / 9.83 M | 1.71 M / 2.60 M | 285 k / 318 k |
-| rows of a range of 3,600 s of `ts` | 8.94 M | 1.70 M | 271 k |
-| index size (4 columns, 2 of them ordered) | 4.17 MB | 5.82 MB (+39.5%) | 8.40 to 8.58 MB (+102% to +106%) |
-| `CREATE INDEX`, instructions | 1.29 G | 1.46 G (+13.3%) | 1.99 G to 2.13 G (+54% to +65%) |
-
-Name `order_columns` alone, with `order_array_columns = 'off'`, only when the size of the index is the limit; otherwise leave both on their defaults.
+**`order_array_columns`** (the global order of a column). The build chooses the columns (`auto`, the default) and the arrays answer `ORDER BY .. LIMIT`, an `OFFSET`, a range and an `IN` list over any number of units. `order_columns`, the sorted run of each unit that earlier releases wrote beside the array, is deprecated (4.3): a build ignores it, the runs already written are read as before, and 4.4 removes it. The run alone read 4 to 6 times the instructions of the array beyond a top-N of 32 for the same bytes.
 
 ## The words that mean several things
 
@@ -183,7 +169,7 @@ Name `order_columns` alone, with `order_array_columns = 'off'`, only when the si
 | `order_layout` | `auto` | yes | no | `whole`, `compact` |
 | `compression` | `auto` | yes | no | `none`, `lz4`, `zstd` |
 | `point_columns`, `point_tid_columns` | none | yes | yes | |
-| `order_columns`, `hll_columns`, `return_columns`, `key_order` | none | no | yes | |
+| `hll_columns`, `return_columns`, `key_order` | none | no | yes | |
 | `array_lengths`, `dict_lookup` (enums) | not allowed | yes | yes | `on` |
 
 ## Which function to call
