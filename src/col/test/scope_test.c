@@ -238,4 +238,66 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 	}
 	return in_scope(fcinfo, keys, n);
 }
+
+PG_FUNCTION_INFO_V1(sift_test_scope_take);
+PG_FUNCTION_INFO_V1(sift_test_scope_changed);
+PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
+
+/* sift._test_scope_take(index, scope): the stamp of the journal of the scope relation of scope (from 0) under the snapshot of the statement: lineage, horizon, why not */
+Datum
+sift_test_scope_take(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftConnStamp st;
+	SiftConnWhy why = sift_scope_take(index, PG_GETARG_INT32(1), GetTransactionSnapshot(), &st);
+	TupleDesc	desc;
+	Datum		v[3] = {Int64GetDatum((int64) st.lineage), TransactionIdGetDatum(st.xmin), CStringGetTextDatum(sift_conn_why_name(why))};
+	bool		nulls[3] = {why != SIFT_CONN_OK, why != SIFT_CONN_OK, false};
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	index_close(index, NoLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
+/* sift._test_scope_vouch(index, scope, lineage, horizon): may a derivation stamped so be read by the snapshot of the statement: 'ok' or why not */
+Datum
+sift_test_scope_vouch(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(2),.xmin = PG_GETARG_TRANSACTIONID(3)};
+	SiftConnWhy why = sift_scope_vouch(index, PG_GETARG_INT32(1), &st, GetTransactionSnapshot());
+
+	index_close(index, NoLock);
+	PG_RETURN_TEXT_P(cstring_to_text(sift_conn_why_name(why)));
+}
+
+/* sift._test_scope_changed(index, scope, lineage, horizon, cap): why not (one row, key NULL) or 'ok' with the members whose pairs changed since the stamp */
+Datum
+sift_test_scope_changed(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(2),.xmin = PG_GETARG_TRANSACTIONID(3)};
+	SiftConnKeys keys;
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SiftConnWhy why;
+	Datum		v[2];
+	bool		nulls[2] = {false, true};
+
+	InitMaterializedSRF(fcinfo, 0);
+	why = sift_scope_changed(index, PG_GETARG_INT32(1), &st, GetTransactionSnapshot(), PG_GETARG_INT32(4), &keys);
+	v[0] = CStringGetTextDatum(sift_conn_why_name(why));
+	if (why != SIFT_CONN_OK || keys.n == 0)
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	for (uint32 i = 0; i < keys.n; i++)
+	{
+		v[1] = Int64GetDatum(keys.keys[i]);
+		nulls[1] = false;
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	sift_conn_keys_free(&keys);
+	index_close(index, NoLock);
+	return (Datum) 0;
+}
+
 #endif							/* SIFT_TESTING */

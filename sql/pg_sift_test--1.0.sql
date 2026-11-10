@@ -543,6 +543,14 @@ CREATE FUNCTION sift._test_scope_expand(rel regclass, btree regclass, member tex
 CREATE FUNCTION sift._test_col_scope_entries(index regclass, OUT gen int8, OUT unit int4, OUT tid tid, OUT scope int4, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_scope_entries' LANGUAGE C STRICT;
 
+-- the journal of the scope relation of a scope (ordinal from 0) of a scope index: the stamp a derivation takes now, whether a stamp may be read by the snapshot, and the members whose pairs changed since it
+CREATE FUNCTION sift._test_scope_take(index regclass, scope int, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_take' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_scope_vouch' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_scope_changed(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_changed' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
 
