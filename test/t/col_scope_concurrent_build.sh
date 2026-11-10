@@ -5,7 +5,7 @@
 # which two builds that hold ShareLock cannot both get (PostgreSQL takes that lock for CREATE TRIGGER). Both indexes are made, verify, and read as the join does.
 . "$(dirname "$0")/lib.bash"
 
-plan 4
+plan 6
 node_init scb 52 "autovacuum = off"
 node_start scb || bail "start failed"
 D=$(dir scb)
@@ -35,4 +35,20 @@ check "both verify" test -z "$(sql scb "SELECT sift.col_verify('events_a', true)
 sql scb "REINDEX INDEX events_a" "SET sift.agg_force = on" >/dev/null
 check "a read through the scope is the join" test "$(sql scb "SET sift.agg_force = on" "SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_a'::regclass, 'tenant_id', e.dim_a_id, 5)")" == \
 	"$(sql scb "SET sift.enable_agg = off" "SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5)")"
+
+# the same without the barrier, with the default change tracking: the log of each index installs two triggers on the table at the end of its build (CREATE TRIGGER takes ShareRowExclusiveLock),
+# so two builds that run at the same time were each waiting for the other's ShareLock. The statement takes the lock first now (an event trigger before CREATE INDEX of a sift_col index).
+race() { # NAME
+	psql "${S[@]}" -d postgres -c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" >"$D/$1.out" 2>&1
+}
+race events_c &
+A=$!
+race events_d &
+B=$!
+wait "$A"; RA=$?
+wait "$B"; RB=$?
+check "two concurrent builds that track changes: no error, no deadlock" test "$RA" == 0 -a "$RB" == 0
+diag "$(cat "$D/events_c.out" "$D/events_d.out" | grep -i "error\|deadlock\|waits" | head -4)"
+check "both verify, and the log of each is complete" test -z "$(sql scb "SELECT sift.col_verify('events_c', true)" "SELECT sift.col_verify('events_d', true)" 2>&1)" -a \
+	"$(sql scb "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'events'::regclass AND tgname LIKE 'sift%'")" -ge 4
 finish
