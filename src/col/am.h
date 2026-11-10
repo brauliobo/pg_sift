@@ -200,6 +200,7 @@ extern void sift_col_auto_rows(Relation heap, Relation index);
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index, bool layout);
+extern const char *sift_col_group_reason(Relation heap, Relation index, const char *name);
 extern void sift_col_auto_point(Relation heap, Relation index);
 extern bool sift_col_list_has(const char *list, const char *name);	/* an option list of column names ('a, b' or 'auto: a, b') names the column */
 extern void sift_col_set_option(Relation index, const char *name, const char *value);

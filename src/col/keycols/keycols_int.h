@@ -53,6 +53,7 @@ extern double	keycols_col_nullfrac(Relation heap, AttrNumber hatt);
 extern bool	keycols_point_key(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d, double *corr);
 extern bool	keycols_col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32 *width);
 extern bool	keycols_is_entity(Relation heap, AttrNumber hatt, const char *name);
+extern Oid	keycols_group_btree(Relation heap, Relation index, AttrNumber hatt);
 extern const char *	keycols_leaf_name(Relation index, const SiftColDef *d);
 extern double	keycols_est_index_bytes(Relation heap, Relation index);
 extern void	keycols_analyze_if_unknown(Relation heap, Relation index);

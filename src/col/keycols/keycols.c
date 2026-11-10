@@ -13,6 +13,7 @@
 #include "access/reloptions.h"
 #include "access/table.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_statistic.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
@@ -21,6 +22,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/keycols/keycols_int.h"
 #include "col/ktab.h"
 #include "col/setsum.h"
@@ -75,6 +77,44 @@ bool
 keycols_is_entity(Relation heap, AttrNumber hatt, const char *name)
 {
 	return is_fk_column(heap, hatt) || ends_in_id(name);
+}
+
+/*
+ * The b-tree of the table that the shape of the second order already runs on: WHERE col = x ORDER BY key, a non-unique b-tree whose first two key columns are col and a
+ * date or timestamp column of the index (the key of its order arrays), in either order (a partial one too: a predicate narrows the rows, not the shape). A key column that
+ * only INCLUDEs the second is no order, and a unique b-tree is there for its constraint. Returns its oid, InvalidOid where there is none.
+ */
+Oid
+keycols_group_btree(Relation heap, Relation index, AttrNumber hatt)
+{
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);
+	Bitmapset  *orders = NULL;
+	Oid			found = InvalidOid;
+	ListCell   *lc;
+
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	att = keycols_heap_attno(index, d);
+
+		if (d->parent < 0 && att != 0 && sift_cgord_leaf_ok(rel->schema, d) && sift_cgord_leaf_time(d))
+			orders = bms_add_member(orders, att);
+	}
+	foreach(lc, RelationGetIndexList(heap))
+	{
+		HeapTuple	t = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(lfirst_oid(lc)));
+		Form_pg_index ix;
+
+		if (!HeapTupleIsValid(t))
+			continue;
+		ix = (Form_pg_index) GETSTRUCT(t);
+		if (!OidIsValid(found) && ix->indisvalid && !ix->indisunique && ix->indnkeyatts >= 2 && get_rel_relam(ix->indexrelid) == BTREE_AM_OID &&
+			((ix->indkey.values[0] == hatt && bms_is_member(ix->indkey.values[1], orders)) || (ix->indkey.values[1] == hatt && bms_is_member(ix->indkey.values[0], orders))))
+			found = ix->indexrelid;
+		ReleaseSysCache(t);
+	}
+	bms_free(orders);
+	return found;
 }
 
 /* The option name of index set to value (NULL: reset); visible to the relcache entry at once */

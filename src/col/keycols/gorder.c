@@ -5,6 +5,7 @@
 
 #include <math.h>
 
+#include "utils/lsyscache.h"
 #include "utils/varlena.h"
 #include "col/am.h"
 #include "col/keycols/keycols_int.h"
@@ -57,6 +58,28 @@ group_named(const char *gopt, const char *name)
 	while (n > 0 && p[n - 1] == ' ')
 		n--;
 	return autolist && n == strlen(name) && strncmp(p, name, n) == 0;
+}
+
+/* what chose the group column that order_array_group names (the NOTICE of the build and sift.index_choices say it): the b-tree that runs the shape, the entity, or the hint */
+const char *
+sift_col_group_reason(Relation heap, Relation index, const char *name)
+{
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);
+
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	hatt = keycols_heap_attno(index, d);
+		Oid			btree;
+
+		if (hatt == 0 || strcmp(keycols_leaf_name(index, d), name) != 0)
+			continue;
+		btree = keycols_group_btree(heap, index, hatt);
+		if (OidIsValid(btree))
+			return psprintf("b-tree %s", get_rel_name(btree));
+		return keycols_is_entity(heap, hatt, name) ? "entity" : "hint";
+	}
+	return "hint";
 }
 
 static int
@@ -214,7 +237,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		timepick |= cand[i].grouped && (fit[i] || cand[i].time);
 	}
 	/*
-	 * the arrays of a date, timestamp or integer column are grouped by the entity column that has the most values (a foreign key or a column named *_id: an integer that names none is a guess at what a query filters by, 3.7 bytes a row of it, and is the user's to name): WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
+	 * the arrays of a date, timestamp or integer column are grouped by the column the table is read by: the one a non-unique b-tree runs the shape of (it and a date or timestamp of the index are its first two key columns) or the user's hint, else the entity column that has the most values (a foreign key or a column named *_id: an integer with none of these is a guess at what a query filters by, 3.5 bytes a row of it): WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
 	 * order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then. A date or timestamp that
 	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group
 	 */
@@ -227,17 +250,21 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 		int32		width;
 		bool		cut = false;
 		double		depth;
+		bool		asked;
 
-		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d) ||
-			!(keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)) || group_named(gopt, keycols_leaf_name(index, d))))
+		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
 		if (cut || !keycols_col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || keycols_heap_rows(heap) / ndistinct < GORD_GROUP_DEPTH)
 			continue;
+		/* the option's hint or a b-tree that runs the shape is what the table is read by, an entity is a guess at it: they win over the entity of more values */
+		asked = group_named(gopt, keycols_leaf_name(index, d)) || OidIsValid(keycols_group_btree(heap, index, hatt));
+		if (!asked && !keycols_is_entity(heap, hatt, keycols_leaf_name(index, d)))
+			continue;
 		depth = keycols_heap_rows(heap) / ndistinct;
-		if (group_named(gopt, keycols_leaf_name(index, d)))
-			ndistinct += keycols_heap_rows(heap);	/* the column the option names wins over the entity of more values */
+		if (asked)
+			ndistinct += keycols_heap_rows(heap);
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;

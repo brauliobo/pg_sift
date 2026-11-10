@@ -330,7 +330,10 @@ d_order_arrays(Derive *d)
 	{
 		const char *end = strpbrk(glist, ",;");
 
-		appendStringInfo(&names, " (second order by %.*s)", end ? (int) (end - glist) : (int) strlen(glist), glist);
+		int			len = end ? (int) (end - glist) : (int) strlen(glist);
+
+		appendStringInfo(&names, " (second order by %.*s: %s)", len, glist,
+						 d->heap ? sift_col_group_reason(d->heap, d->index, pnstrdup(glist, len)) : "hint");
 	}
 	add(d, autolist ? "order-array-auto" : "order-array-listed", names.data,
 		n > 0 ? psprintf("%.1f bytes a row, %.1f MB together", bytes / rows, bytes / (1024.0 * 1024.0)) : NULL);
