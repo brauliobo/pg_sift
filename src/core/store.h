@@ -187,6 +187,9 @@ extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 /* Reserves a fresh segment generation (logged, P6) */
 extern uint64 sift_store_new_gen(Relation index);
 
+/* True where this backend cannot assign a transaction id: the leader of a parallel VACUUM runs the cleanup of the indexes that have no parallel pass in parallel mode */
+extern bool sift_xid_unassignable(void);
+
 /* Is xid older than every snapshot (the heap's GlobalVis horizon)? */
 extern bool sift_store_removable(Relation index, FullTransactionId xid);
 

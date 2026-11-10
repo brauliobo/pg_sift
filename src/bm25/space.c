@@ -346,8 +346,8 @@ sift_maint_truncate(Relation index, int elevel)
 	BlockNumber tail;
 	BlockNumber freed;
 
-	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
-	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+	/* The lock is WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
 		return;
 	if (online_cut_wanted(index))
 	{
@@ -895,8 +895,8 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 {
 	BlockNumber nblocks;
 
-	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
-	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
+	/* The lock is WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
 		return 0;
 	space_copied = 0;
 	cut_busy = false;
