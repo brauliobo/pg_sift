@@ -18,6 +18,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 | a newer pg_sift from 4.1 to 4.2 | seven changes of files, plans, a setting and one new SQL function | [what 4.2 changes](#what-42-changes) |
 | 4.2.0 to 4.2.1 | the library and one function, `sift.col_track_convert()`: the extension SQL goes from 4.2 to 4.2.1, no format changes; `DROP INDEX CONCURRENTLY` of a `sift_col` index with `track_changes` works (the index depends on its two triggers, where they depended on it) | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database: it converts the indexes of the database (it takes `SHARE UPDATE EXCLUSIVE` on each table that has a tracked index, which waits for a `DROP INDEX`, `REINDEX` or `VACUUM` of the table that is running and lets the writers go on), no DDL on a tracked `sift_col` index needs to wait for it (a `CREATE INDEX`, `REINDEX`, `ALTER INDEX` or `DROP INDEX` before the update behaves as after it), only the `DROP INDEX CONCURRENTLY` of an index made by 4.2.0 or earlier does, and until it runs the concurrent drop of an index made by 4.2.0 or earlier still fails (its triggers are found, so reads, writes, `REINDEX`, `ALTER INDEX` and a plain `DROP INDEX` work as before; an index made before the update is dropped with its triggers); no `REINDEX` is needed to drop; going back to the 4.2.0 library after the update leaves such an index with triggers that library does not find (`REINDEX` there makes them again), and `ALTER EXTENSION pg_sift UPDATE TO '4.2'` does not undo the conversion (its script is empty: the index keeps depending on its triggers, and a plain `DROP INDEX` with the 4.2.0 library then leaves the triggers behind, which fail the writes of the table: drop them with `DROP TRIGGER` after the index) |
 | 4.2.1 to 4.2.2 | the library and one function, `sift.table_find_stale_versions()`: the extension SQL goes from 4.2.1 to 4.2.2, no format changes; a `VACUUM` of a `sift_table` that waited for the maintenance lock no longer makes old versions of updated rows, or deleted rows, visible again (4.0.0 to 4.2.1) | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX`; the update does not repair rows that already came back: run `sift.table_find_stale_versions('<table>')` on each updated `sift_table` and follow the notes; a database at 4.2 goes through 4.2.1 by itself; going back to 4.2.1: install its files, restart, `ALTER EXTENSION pg_sift UPDATE TO '4.2.1'` (the function stays, the cause returns) ([notes](releases/v4.2.2.md)) |
+| 4.2 to 4.3 (also from 4.2.1 and 4.2.2) | a new minor: the library, the planner, connected indexes, a write buffer of references, seekable order chunks (column format minor 44, which 4.2 and older refuse), three deprecated options and new functions: the extension SQL goes from 4.2 to 4.3 | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX` is needed; update every node that reads an index (the standbys first) before the primary writes one; going back needs a setting, `REINDEX` and the 4.2 files: [4.2 to 4.3](#42-to-43) ([notes](releases/v4.3.0.md)) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -177,6 +178,61 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
     an index that carries the old name keeps it in `pg_class.reloptions`, `pg_dump` writes it as it is, and `pg_upgrade` and `ALTER EXTENSION UPDATE` need nothing. The build writes the new name where it decides a value itself (`rollup_columns = 'auto: a, b'`). The messages, the
     choices of `sift.index_choices` and the errors name the new spelling (`invalid rollup_columns option: ..`). `sift.upgrade_commands()` matches both spellings, so an index with either gets the same advice; a script or a view of yours that matches the text of `pg_class.reloptions` for `rollup_dims`
     should match `rollup_columns` too. `sift.index_choices` reports the choice as `rollup_columns`. The limit ids of `sift.stats()` keep their names (`limit.rollup_dims`). *Files, `REINDEX`:* no (the files hold no option names). *Off:* not applicable; the old names go away in 5.0.
+
+## 4.2 to 4.3
+
+`ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--4.2--4.3.sql` (4.3 is `default_version = '4.3'`); a database at 4.2.1 or 4.2.2 first runs the empty script back to 4.2 that every patch release ships, then that one. The script adds the functions and the view of connected indexes (`sift.col_connection_state()`, `sift.col_connection_list()`, `sift.col_connection_fill()`, `sift.col_connections`) and `sift.col_arena_status()`, and replaces `sift.workers`, `sift.col_index_status` and `sift.upgrade_commands()` (a view or a function of yours that reads them keeps working); it drops nothing. The new library reads every index and table that 4.2 and older wrote, and nothing asks for a `REINDEX`. Four things are worth reading before the update.
+
+1. **Column format minor 44, which a library before 4.3 refuses.** A segment is stamped with the lowest minor that describes what it holds. A 4.3 build writes minor 44 for each of the following, and the defaults of 4.3 turn each of them on:
+
+   | Written when | By default | Switch |
+   |---|---|---|
+   | an order chunk that is seekable, a positional chunk of the second order by a group, or the packed table of groups: every index with order arrays chosen by the build | yes, under `sift.col_format_minor` 15 or more | `SET sift.col_format_minor = 14` before the build |
+   | the tombstone log of a parent index that has a connected child (the key journal), and the segments of a connected child (a found flag for each connection) | when an index is connected (below) | `sift.col_auto_connect = off`, `connect = 'off'` |
+   | a write buffer that holds a record that is a reference to a heap tuple (`sift.col_wbuf_ref`) | yes, for a heap table whose index tracks changes | `sift.col_wbuf_ref = off` (records already written stay references until the buffer is promoted) |
+
+   A 4.2 library that reads such a segment fails with `sift_col index "x" has a segment of column format 1.44, this build reads 1.3 to 1.43` and the hint to `REINDEX` (a scan, `VACUUM`, `sift.col_verify` and `sift.col_segments`); it refuses the merge and the promotion of a connected index, and appends tombstones to the log of a parent without the journal records, so a database must not be written by 4.2 once a connected child exists. No answer is wrong: the tests found no wrong row. `scripts/upgrade-check.sh --to 4.2` lists each such index as a blocker. An index written by a pre-release build of 4.3 (which stamped minors 45 to 47) is refused by the release with `this build reads 1.3 to 1.44` and needs a `REINDEX`; no released version is concerned.
+
+2. **What happens to an index that exists.** Nothing, until a write or a rebuild: a merge makes the choices of the build again for the segments it writes, and `REINDEX` for all of them, and the old and the new segments answer the same queries meanwhile. So an index of 4.2 gets, from its next merge or `REINDEX`: a serial id as an order array and no point directory (5,000,000 rows: 63.3 MB to 49.1 MB), the second order by a group column chosen from a b-tree of the table or from a foreign key, seekable order chunks (minor 44), and, at `REINDEX`, the automatic connection. The choices are named in the `NOTICE` of `CREATE INDEX` and `REINDEX` and listed by `sift.index_choices('index')`: `sift_col index "x" is column format minor 44, which a library before 4.3 cannot read`.
+
+3. **`sift.col_format_minor` is kept.** It is the switch for a rollback: `SET sift.col_format_minor = 14` before a build writes a format that an older library reads (the hint of that `NOTICE`), and the build then says `does not track changes: sift.col_format_minor is below 15` for an index that would track them. It is a superuser setting, and the background worker that rewrites an index follows the server and database settings only, so use `ALTER SYSTEM` or `ALTER DATABASE` when no write may go beyond 4.2 (the same rule as for 3.2 below).
+
+4. **A new write path and two new plans.** (a) `sift.col_wbuf_ref` (on): the rows of a write buffer of a heap table with a tracked index are 16-byte references and their values live in a shared arena of up to 128 MB for the server; the first read of a buffer after a restart, on a standby or on a promoted standby reads the heap once (about 11,900 instructions a row). (b) `CREATE INDEX` and `REINDEX` of a `sift_col` index connect it to the `sift_col` index of the table that each validated single-column integer foreign key references (`sift.col_auto_connect`, on), and say so in a `NOTICE`; a `REINDEX` of an index of 4.2 can therefore connect it, and the first child of a parent holds the writers of the parent table out from the end of its scan to the end of the transaction. (c) The planner takes the child-first plan and the found-flag answer where they cost less (`sift.agg_child_first`, `sift.agg_connect_found`; `sift.enable_agg = off` plans as PostgreSQL does). Only (a) and (b) change files: they are the minor above; (c) changes plans only.
+
+**What to do.**
+
+- Update as in section 2: install, restart (a standby too), `ALTER EXTENSION pg_sift UPDATE` in each database, then `scripts/upgrade-check.sh` (it warns for the three deprecated options below and for the test setting `sift.test_col_legacy_options`; nothing blocks). **Update the standbys and every node that reads the index before the primary**, or set `sift.col_wbuf_ref = off` and `sift.col_auto_connect = off` (and `sift.col_format_minor = 14` for the other sections of minor 44) on the primary until they are updated.
+- `REINDEX INDEX CONCURRENTLY` is worth it for an index with a serial id, for an index whose table is read by `WHERE col = x ORDER BY ts LIMIT n` through a b-tree you want to drop, and for a child table whose foreign key you want connected; not for the rest. Reset the three deprecated options first (below). A `REINDEX` after `ALTER INDEX x SET (connect = 'off')` leaves an index unconnected.
+- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 4.4: [What 4.3 deprecates and 4.4 removes](#what-43-deprecates-and-44-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
+
+### Going back to 4.2
+
+Run this on the 4.3 database while the 4.3 library still runs. There is no script from 4.3 to 4.2: `ALTER EXTENSION pg_sift UPDATE TO '4.2'` fails with `extension "pg_sift" has no update path from version "4.3" to version "4.2"`, the catalog stays at 4.3, and what 4.3 added to it (the functions of connected indexes and `sift.col_arena_status()`) is unusable with the 4.2 library, as in the section "After the downgrade" below.
+
+```
+# 1. what 4.2 cannot read: one row for each index, with the advice
+scripts/upgrade-check.sh --to 4.2 app
+
+# 2. every write from now on is readable by 4.2 (superuser; new sessions pick it up)
+psql -d postgres -c "ALTER SYSTEM SET sift.col_wbuf_ref = off" -c "ALTER SYSTEM SET sift.col_auto_connect = off" \
+     -c "ALTER SYSTEM SET sift.col_format_minor = 14" -c "SELECT pg_reload_conf()"
+
+# 3. connected indexes: switch the connection off (child and parent), then rebuild every index of step 1
+psql -d app -c "ALTER INDEX public.events_col SET (connect = 'off')"
+psql -d app -c "REINDEX INDEX CONCURRENTLY public.events_col"
+psql -d app -c "REINDEX INDEX CONCURRENTLY public.dim_a_col"
+
+# 4. nothing blocks any more (exit status 0; the warnings that the settings are below the default are the point)
+scripts/upgrade-check.sh --to 4.2 app
+
+# 5. stop the server, install the 4.2 files, start it; then check
+psql -d app -c "SELECT sift.col_verify('events_col', true)"
+```
+
+- The `REINDEX` under `sift.col_format_minor = 14` writes no seekable chunk and no section of minors 15 and above (so no minor 44), and an index built so does not track changes (its `NOTICE` says it), so its reads check the heap. After the 4.2 files run, `ALTER SYSTEM RESET sift.col_format_minor` and `REINDEX` the index again to log its changes again; keep `sift.col_format_minor = 14` while any 4.3 library still writes.
+- `ALTER INDEX x SET (connect = 'off')` drops the dependency on the parent index, and the parent keeps its journal (minor 44) until its own `REINDEX`, which is why step 3 rebuilds the parent too. `sift.col_wbuf_ref = off` does not turn a buffer that holds references into one that does not: the `REINDEX` of step 3 does, or its promotion.
+- A standby that stays on 4.2 needs steps 2 and 3 on its primary before anything is written, and `sift.col_format_minor` set there for every later write.
+- Settings the 4.3 library accepts and 4.2 does not know (`sift.col_wbuf_ref`, `sift.col_auto_connect`, `sift.agg_child_first`, `sift.agg_connect_found`, `sift.agg_dimmap_kb`, `sift.col_connect_refresh_pct`): remove them from `postgresql.conf` and from role and database settings when the 4.2 files are installed, as for any setting a release does not define.
 
 ## What 4.3 deprecates and 4.4 removes
 
@@ -369,6 +425,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 40 | 4.0; 3.7 and older refuse the segments; a list in `order_array_columns` keeps complete arrays |
 | column format 41 (a compact chunk in an order array; `order_layout` auto, the default, writes it for spread keys such as a timestamp) | 4.0; 3.7 and older refuse the segments; `order_layout = 'whole'` and a REINDEX, or `sift.col_format_minor` 14, write what they read |
 | column format 42 (the order array of a text column names its strings by dictionary code) | 4.0; 3.7 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read |
+| column format 44 (the key journal of a connected parent index and the found flags of a connected child, a write buffer of references to heap tuples, seekable and positional order chunks and the packed table of groups of the second order) | 4.3; 4.2 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read, with `connect = 'off'` and `sift.col_wbuf_ref = off` for the connection and the references |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 
