@@ -383,6 +383,24 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 	}
 }
 
+/* A leaf with no chunk in the unit (a scope segment keeps values of the columns of cols(..) only) is NULL in all its n values, and its zone says so; pcol is that, for the checks of the cubes */
+static void
+absent_leaf(SiftColSegment *seg, int c, uint32 u, uint64 n, SiftCPaggCol *pcol)
+{
+	SiftCZone	z;
+	Size		words = (n + 63) / 64;
+	int64	   *vals = palloc0((Size) n * sizeof(int64) + SIFT_COL_PAD + words * sizeof(uint64));
+	uint64	   *nulls = (uint64 *) ((char *) vals + (Size) n * sizeof(int64) + SIFT_COL_PAD);
+
+	sift_cseg_zone(seg, c, u, &z);
+	if (z.nvals != n || z.nnull != n)
+		corrupt(seg, "Unit %u has no chunk for leaf %d, whose zone says %u values, %u of them NULL, of %llu.", u, c, z.nvals, z.nnull, ULL(n));
+	memset(nulls, 0xFF, words * sizeof(uint64));
+	if (n % 64 != 0)
+		nulls[words - 1] = (UINT64CONST(1) << (n % 64)) - 1;
+	*pcol = (SiftCPaggCol) {vals, nulls, NULL, n, true};
+}
+
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
 verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCKtab *kt, uint32 **crows)
@@ -420,7 +438,11 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 		int64	   *vals;
 
 		if (!sift_cunit_chunk(&v, c, &ch))
-			corrupt(seg, "Unit %u has no chunk for leaf %d.", u, c);
+		{
+			absent_leaf(seg, c, u, def->parent < 0 ? r->nrows : group_elems[def->parent], &pcol[c]);
+			kept[c] = (int64 *) pcol[c].key;
+			continue;
+		}
 		if (((ch.flags & SIFT_COLC_TAGS) != 0) != (seg->entry.format >= SIFT_COL_FORMAT_TAGS && ch.ovf != NULL))
 			corrupt(seg, "The chunk of leaf %d in the unit of SB %u %s the types of its overflow values (segment of column format 1.%d).", c, r->id,
 					ch.flags & SIFT_COLC_TAGS ? "has" : "lacks", seg->entry.format);

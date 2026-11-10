@@ -24,6 +24,7 @@ typedef struct SiftScopeSpec
 	char	   *rel_name;
 	char	   *member;				/* columns of the scope relation */
 	char	   *scope_key;
+	List	   *cols;				/* cols(a, b, c): the columns of the index its scope segments keep (with the member key and the time column of the cut); NIL: all of them */
 } SiftScopeSpec;
 
 typedef struct SiftScopeSpecs
@@ -36,8 +37,13 @@ typedef struct SiftScopeSpecs
 extern SiftScopeSpecs *sift_scope_parse(const char *text, const char **err);
 /* The scopes an index declares (ERROR for text that does not parse), NULL when it declares none */
 extern SiftScopeSpecs *sift_scope_specs(Relation index);
-/* The leaves a scope index adds after its own and the connection leaves: one "<key_name>#scope" per scope. Appended to defs from n; returns the new count, leaf[] the leaf of each scope */
-extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope);
+/*
+ * The leaves a scope index adds after its own and the connection leaves: one "<key_name>#scope" per scope. Appended to defs from n; returns the new count, leaf[] the leaf of each scope,
+ * kept[s][leaf]: the leaves the scope segments of scope s store values of (the others are empty in them: no chunk, no directory, no summary)
+ */
+extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope, bool (*kept)[SIFT_COL_MAX_COLS]);
+/* The leaf the units of a scope are cut by after its key: the first date, timestamp or timestamptz column of the index, -1 when there is none */
+extern int	sift_scope_time_leaf(const SiftColDef *defs, int n);
 /* The scope relation and its unique btree on (member, scope_key) of a declared scope (ERROR with a hint when the relation does not qualify); the relation is left open in *rel, AccessShare */
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
 /* CREATE INDEX, REINDEX and ALTER INDEX: resolves the declaration, writes the dependency on the unique btree, or removes it */

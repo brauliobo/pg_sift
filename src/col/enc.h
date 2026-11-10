@@ -284,8 +284,8 @@ extern void sift_cbatch_add(SiftColBatch *b, const SiftColRow *row);
 extern void sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 cmin);
 /* Appends row r of src (same schema) re-interning its strings; same key rules */
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
-/* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted */
-extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key);
+/* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted; the leaves of kept (NULL: all) that are not set are NULL in the copy */
+extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */
 extern void sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc);
 /*
@@ -470,8 +470,9 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
  * (SIFT_COLENC_CC); without it the chunk is the plain FOR or PACK form (in-memory units that are only scanned).
  * tabfirst: a key-cut unit has its chunk table before the arrays of its directory (column format minor 34), so that the head of the unit read for a scan ends with the table.
  * tags: every chunk with overflow values gets SIFT_COLC_TAGS and every chunk with kinds SIFT_COLC_KINDS (column format minor 4); without it the chunk is what minor 3 writes.
+ * absent[col] (NULL array: none): the leaf has no chunk in this unit (its length is 0, which reads as all NULL) and its zone says all NULL, whatever the batch holds.
  */
-extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, bool tabfirst, StringInfo out,
+extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, bool tabfirst, const bool *absent, StringInfo out,
 							  Size *start, SiftCZone *zones);
 
 /* The bytes of the row directory of the sorted keys of a unit: of superblock sb, or of a key-cut unit (keyed); *pages is the number of heap pages the keys fall in */

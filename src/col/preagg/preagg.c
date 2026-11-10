@@ -106,6 +106,57 @@ cpagg_has_ovf(const SiftCPaggCol *c)
 }
 
 void
+sift_cpagg_spec_keep(SiftCPaggSpec *spec, const SiftColSchema *s, const bool *kept)
+{
+	int			nd = 0,
+				nr = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+		if (!kept[c])
+		{
+			spec->absent[c] = true;
+			spec->set[c] = spec->pres[c] = spec->run[c] = spec->hll[c] = spec->gorder[c] = spec->gorder_only[c] = spec->gorder_with[c] = false;
+			spec->count[c] = spec->point[c] = spec->point_tid[c] = false;
+		}
+	if (spec->gorder_group > 0 && !kept[spec->gorder_group - 1])
+		spec->gorder_group = 0;
+	for (int d = 0; d < spec->ndims; d++)
+	{
+		SiftCPaggDim *dim = &spec->dim[d];
+		int			nm = 0;
+
+		if (!kept[dim->leaf])
+			continue;
+		for (int m = 0; m < dim->nmeas; m++)
+			if (kept[dim->meas[m]])
+				dim->meas[nm++] = dim->meas[m];
+		dim->nmeas = nm;
+		spec->dim[nd++] = *dim;
+	}
+	spec->ndims = nd;
+	for (int r = 0; r < spec->nrollups; r++)
+	{
+		SiftCPaggRollup *ru = &spec->rollup[r];
+		int			ndim = 0,
+					nm = 0;
+
+		if (ru->list >= 0 && !kept[ru->list])
+			continue;
+		for (int d = 0; d < ru->ndims; d++)
+			if (kept[ru->dim[d]])
+				ru->dim[ndim++] = ru->dim[d];
+		for (int m = 0; m < ru->nmeas; m++)
+			if (kept[ru->meas[m]])
+				ru->meas[nm++] = ru->meas[m];
+		ru->ndims = ndim;
+		ru->nmeas = nm;
+		if (ndim > 0)
+			spec->rollup[nr++] = *ru;
+	}
+	spec->nrollups = nr;
+}
+
+void
 sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 				StringInfo out, StringInfo eout)
 {

@@ -638,9 +638,9 @@ copy_slot(SiftColBatch *dst, const SiftColBatch *src, int id, uint32 slot)
 	}
 }
 
-/* Row r of src to dst, leaf by leaf, the elements of its arrays after their group; scope_leaf >= 0: that leaf holds scope_key in the copy, whatever src has in it */
+/* Row r of src to dst, leaf by leaf, the elements of its arrays after their group; scope_leaf >= 0: that leaf holds scope_key in the copy, whatever src has in it; kept (NULL: all): the leaves that are NULL in the copy when not set */
 static void
-batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key)
+batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept)
 {
 	const SiftColSchema *s = dst->schema;
 	uint32		xmin = src->hasver ? src->xmin[r] : 0;
@@ -655,6 +655,13 @@ batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_l
 			continue;
 		if (id == scope_leaf)
 			vals_put(dst->mcxt, &dst->col[id], scope_key, false, false, SIFT_COLTAG_UNKNOWN);
+		else if (kept != NULL && !kept[id])
+		{
+			put_value(dst, id, &(SiftColValue) {.isnull = true});
+			if (s->cols[id].kind == SIFT_COLK_GROUP)
+				batch_group_end(dst, id, 0);
+			continue;
+		}
 		else
 			copy_slot(dst, src, id, r);
 		if (s->cols[id].kind != SIFT_COLK_GROUP)
@@ -675,13 +682,13 @@ batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_l
 void
 sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 {
-	batch_copy_row(dst, src, r, -1, 0);
+	batch_copy_row(dst, src, r, -1, 0, NULL);
 }
 
 void
-sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key)
+sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept)
 {
-	batch_copy_row(dst, src, r, scope_leaf, scope_key);
+	batch_copy_row(dst, src, r, scope_leaf, scope_key, kept);
 }
 
 /* len rows of src from row r to dst, a leaf at a time: a schema of plain integer leaves (no group, no string) */
@@ -770,7 +777,7 @@ sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc)
 				continue;
 			}
 		}
-		batch_copy_row(dst, src[first], pos[first], -1, 0);
+		batch_copy_row(dst, src[first], pos[first], -1, 0, NULL);
 		for (int i = 0; i < nsrc; i++)
 			if (pos[i] < src[i]->nrows && src[i]->keys[pos[i]] == min)
 				pos[i]++;

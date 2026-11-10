@@ -621,7 +621,7 @@ sift_cunit_directory_bytes(const SiftKey *keys, uint32 nrows, bool keyed, uint32
 }
 
 void
-sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, bool tabfirst, StringInfo out,
+sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, bool tabfirst, const bool *absent, StringInfo out,
 				  Size *start, SiftCZone *zones)
 {
 	const SiftColSchema *s = b->schema;
@@ -654,6 +654,13 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl
 
 		bool		inline_str = inl && inl[col] && v->n > 0;	/* a leaf without values (a group without elements) has the empty chunk */
 
+		/* the offset and length of the chunk stay the zeros the table was written with */
+		if (absent && absent[col])
+		{
+			if (zones)
+				zones[col] = (SiftCZone) {.nvals = v->n,.nnull = v->n};
+			continue;
+		}
 		if (dictmap != NULL && dictmap[col] != NULL && !inline_str)
 		{
 			mapped = palloc(Max(v->n, 1) * sizeof(int64));

@@ -103,7 +103,33 @@ parse_one(const char **pp, const char **err)
 		*err = "expected ')' after the scope key column: a scope is a member column and a scope key column";
 		return NULL;
 	}
-	*pp = sift_conn_skip_ws(p + 1);
+	p = sift_conn_skip_ws(p + 1);
+	if (strncmp(p, "cols", 4) == 0 && *sift_conn_skip_ws(p + 4) == '(')
+	{
+		p = sift_conn_skip_ws(p + 4) + 1;
+		for (;;)
+		{
+			char	   *col;
+
+			if ((p = sift_conn_read_name(sift_conn_skip_ws(p), &col, err)) == NULL)
+				return NULL;
+			s->cols = lappend(s->cols, col);
+			p = sift_conn_skip_ws(p);
+			if (*p == ',')
+			{
+				p++;
+				continue;
+			}
+			if (*p++ != ')')
+			{
+				*err = "expected ',' or ')' in cols(..), the list of the columns the scope segments keep";
+				return NULL;
+			}
+			break;
+		}
+		p = sift_conn_skip_ws(p);
+	}
+	*pp = p;
 	return s;
 }
 
@@ -178,6 +204,35 @@ relation_column(Relation rel, const SiftScopeSpec *s, const char *name)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is nullable", s->key_name, name, s->rel_name),
 						errhint("Declare the member and scope key columns NOT NULL: a pair has both keys.")));
 	return att;
+}
+
+/* The attribute of the index named name, InvalidAttrNumber when none */
+static AttrNumber
+index_attribute(Relation index, const char *name)
+{
+	for (int a = 1; a <= RelationGetNumberOfAttributes(index); a++)
+		if (strcmp(NameStr(TupleDescAttr(RelationGetDescr(index), a - 1)->attname), name) == 0)
+			return a;
+	return InvalidAttrNumber;
+}
+
+/* cols(..): each name is a column of the index, once. The member key and the derived key are kept whether or not they are named, so naming them is not an error */
+static void
+check_cols(Relation index, const SiftScopeSpec *s)
+{
+	foreach_ptr(char, name, s->cols)
+	{
+		if (strcmp(name, s->key_name) == 0)
+			continue;
+		if (index_attribute(index, name) == InvalidAttrNumber)
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": cols(..) names \"%s\", which is not a column of this index", s->key_name, name),
+							errhint("Name columns of the index: the scope segments keep those, the member key and the column the units are cut by.")));
+	}
+	for (int i = 0; i < list_length(s->cols); i++)
+		for (int j = 0; j < i; j++)
+			if (strcmp(list_nth(s->cols, i), list_nth(s->cols, j)) == 0)
+				ereport(ERROR, (errcode(ERRCODE_DUPLICATE_COLUMN), errmsg("scope \"%s\": cols(..) names \"%s\" twice", s->key_name, (char *) list_nth(s->cols, i)),
+								errhint("Name each column once.")));
 }
 
 /* The unique btree of the relation on exactly the two columns, in either order; the lowest oid when several do */
@@ -255,6 +310,7 @@ sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s,
 	if ((*rel)->rd_rel->relkind != RELKIND_RELATION || (*rel)->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is not a plain heap table", s->key_name, s->rel_name),
 						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
+	check_cols(index, s);
 	*member = relation_column(*rel, s, s->member);
 	*scope_key = relation_column(*rel, s, s->scope_key);
 	if (*member == *scope_key)
@@ -376,9 +432,41 @@ sift_scope_alter(Relation index)
 }
 
 int
-sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope)
+sift_scope_time_leaf(const SiftColDef *defs, int n)
+{
+	for (int id = 0; id < n; id++)
+		if (defs[id].parent < 0 && defs[id].lane == 0 && !(defs[id].flags & SIFT_COLD_DERIVED) &&
+			(defs[id].type == SIFT_COLT_DATE || defs[id].type == SIFT_COLT_TIMESTAMP || defs[id].type == SIFT_COLT_TIMESTAMPTZ))
+			return id;
+	return -1;
+}
+
+/*
+ * The leaves the scope segments of scope c keep values of: all of them without cols(..); else the derived key, the leaves of the listed columns and of the member key (a leaf of
+ * a column is every leaf its attribute has, and the found flag of a connection follows its key's column), and the leaf the units are cut by after the key, whose values order them.
+ */
+static void
+scope_kept(Relation index, const SiftScopeSpec *s, int own, int time, const SiftColDef *defs, int n, bool *kept)
+{
+	List	   *atts = NIL;
+
+	for (int id = 0; id < n; id++)
+		kept[id] = s->cols == NIL;
+	if (s->cols == NIL)
+		return;
+	atts = lappend_int(atts, sift_conn_index_column(index, get_attnum(index->rd_index->indrelid, s->fk)));
+	foreach_ptr(char, name, s->cols)
+		atts = lappend_int(atts, index_attribute(index, name));
+	for (int id = 0; id < n; id++)
+		kept[id] = (defs[id].flags & SIFT_COLD_SCOPE) ? id == own : id == time || list_member_int(atts, defs[id].attno);
+}
+
+int
+sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope, bool (*kept)[SIFT_COL_MAX_COLS])
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
+	int			first = n,
+				time;
 
 	*nscope = 0;
 	for (int c = 0; specs != NULL && c < specs->n; c++)
@@ -395,6 +483,9 @@ sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscop
 		n++;
 		(*nscope)++;
 	}
+	time = sift_scope_time_leaf(defs, first);
+	for (int c = 0; c < *nscope; c++)
+		scope_kept(index, specs->s[c], leaf[c], time, defs, n, kept[c]);
 	return n;
 }
 

@@ -112,7 +112,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	r->conn_first = n;
 	n = sift_conn_leaves(index, defs, n, r->conn_found, &r->nconn);
 	r->scope_first = n;
-	n = sift_scope_leaves(index, defs, n, r->scope_leaf, &r->nscope);
+	n = sift_scope_leaves(index, defs, n, r->scope_leaf, &r->nscope, r->scope_cols);
 	r->ret = palloc0((natts + 1) * sizeof(bool));
 	{
 		const char *err = am_return_walk(sift_col_options_return_columns(index), r, desc);

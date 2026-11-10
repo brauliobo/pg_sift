@@ -34,6 +34,9 @@ typedef struct RowHash
 	uint64		tags;
 	bool		known;
 	bool		strovf;
+	uint64		khash[SIFT_SCOPE_MAX];	/* a row of the entities: hash and rest over the leaves the scope segments of each scope with cols(..) keep, and strovf of them as bits */
+	uint64		krest[SIFT_SCOPE_MAX];
+	uint8		kovf;
 	int			sleaf;			/* an entry of a scope segment: the derived key leaf that holds its scope key, and the key (a row of the entities: -1) */
 	int64		skey;
 } RowHash;
@@ -80,7 +83,7 @@ value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 
 /* The hashes of a row, whether it comes from the heap (the index tuple formed again) or from the index (decoded) */
 static RowHash
-row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
+row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key, const bool *kept)
 {
 	RowHash		rh = {.key = key,.known = true,.sleaf = -1};
 
@@ -88,7 +91,7 @@ row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 	{
 		const SiftColDef *def = &sc->cols[c];
 
-		if (def->flags & SIFT_COLD_DERIVED)	/* as of the stamp of the segment, not of the heap row */
+		if ((def->flags & SIFT_COLD_DERIVED) || (kept != NULL && !kept[c]))	/* derived: as of the stamp of the segment, not of the heap row */
 			continue;
 		if (def->parent < 0)
 			value_hashes(&rh, def, &row->val[c]);
@@ -179,12 +182,54 @@ scope_leaf_of(Relation index, const SiftColSchema *sc, const SiftColBatch *b, ui
 	return leaf;
 }
 
-static void
-collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftColBatch *b, bool scope)
+/* Does the scope s keep values of some of the leaves only (cols(..))? */
+static bool
+scope_partial(const SiftColRel *r, int s)
 {
+	for (int c = 0; c < r->schema->ncols; c++)
+		if (!r->scope_cols[s][c])
+			return true;
+	return false;
+}
+
+/* The hashes of a row of the entities, and of its copy in each scope with cols(..): the leaves that scope keeps */
+static RowHash
+entity_hash(const SiftColRel *r, const SiftColRow *row, SiftKey key)
+{
+	RowHash		rh = row_hash(r->schema, row, key, NULL);
+
+	for (int s = 0; s < r->nscope; s++)
+		if (scope_partial(r, s))
+		{
+			RowHash		k = row_hash(r->schema, row, key, r->scope_cols[s]);
+
+			rh.khash[s] = k.hash;
+			rh.krest[s] = k.rest;
+			rh.kovf |= k.strovf << s;
+		}
+	return rh;
+}
+
+/* Does the entry of a scope segment hold the values its row of the entities has, in the leaves the scope keeps */
+static bool
+scope_same(const SiftColRel *r, const RowHash *e, const RowHash *s)
+{
+	int			so = 0;
+
+	while (r->scope_leaf[so] != s->sleaf)
+		so++;
+	if (!scope_partial(r, so))
+		return e->strovf ? e->rest == s->rest : e->hash == s->hash;
+	return (e->kovf >> so & 1) ? e->krest[so] == s->rest : e->khash[so] == s->hash;
+}
+
+static void
+collect_batch(Relation index, Collect *cl, const SiftColRel *rel, const SiftColBatch *b, bool scope)
+{
+	const SiftColSchema *sc = rel->schema;
 	SiftColRow	row = {0};
 
-	for (uint32 r = 0; r < b->nrows; r++)
+	for (uint32 r_ = 0; r_ < b->nrows; r_++)
 	{
 		if (cl->n == cl->cap)
 		{
@@ -192,14 +237,21 @@ collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftCo
 			cl->rows = cl->rows ? repalloc_huge(cl->rows, cl->cap * sizeof(RowHash)) :
 				MemoryContextAllocHuge(CurrentMemoryContext, cl->cap * sizeof(RowHash));
 		}
-		sift_cbatch_row(b, r, &row);
+		sift_cbatch_row(b, r_, &row);
 		check_wide(index, sc, &row);
-		cl->rows[cl->n] = row_hash(sc, &row, b->keys[r]);
 		if (scope)
 		{
-			cl->rows[cl->n].sleaf = scope_leaf_of(index, sc, b, r);
-			cl->rows[cl->n].skey = b->col[cl->rows[cl->n].sleaf].key[r];
+			int			leaf = scope_leaf_of(index, sc, b, r_);
+			int			s = 0;
+
+			while (rel->scope_leaf[s] != leaf)
+				s++;
+			cl->rows[cl->n] = row_hash(sc, &row, b->keys[r_], rel->scope_cols[s]);
+			cl->rows[cl->n].sleaf = leaf;
+			cl->rows[cl->n].skey = b->col[leaf].key[r_];
 		}
+		else
+			cl->rows[cl->n] = entity_hash(rel, &row, b->keys[r_]);
 		cl->n++;
 	}
 }
@@ -263,7 +315,7 @@ heap_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive
 	if (found == NULL)
 		corrupt(hc->index, "Heap tuple (%u,%u) is not in the index.", ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
 	sift_col_make_row(hc->r, tid, values, isnull, &row, hc->tmp);
-	heap = row_hash(hc->r->schema, &row, key.key);
+	heap = row_hash(hc->r->schema, &row, key.key, NULL);
 	if (found->strovf ? found->rest != heap.rest : found->hash != heap.hash)
 		corrupt(hc->index, "The values of heap tuple (%u,%u) differ from the index's.", ItemPointerGetBlockNumber(tid),
 				ItemPointerGetOffsetNumber(tid));
@@ -317,7 +369,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			for (uint32 u = 0; u < seg->nsb; u++)
 			{
 				sift_cseg_decode_unit(seg, u, batch);
-				collect_batch(index, scope ? &sl : &cl, r->schema, batch, scope);
+				collect_batch(index, scope ? &sl : &cl, r, batch, scope);
 			}
 			sift_cseg_close(seg);
 		}
@@ -329,7 +381,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			sift_cwbuf_verify(index, e, r->schema);
 			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n, NULL);
 			for (int j = 0; j < n; j++)
-				collect_batch(index, &cl, r->schema, bs[j], false);
+				collect_batch(index, &cl, r, bs[j], false);
 		}
 	}
 	if (ndocs != snap->meta.ndocs)
@@ -351,7 +403,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			corrupt(index, "Row (%u,%u) is live twice in the scope segments under the scope key " INT64_FORMAT ".", sift_key_block(s->key), (uint32) (s->key & 0xFFFF), s->skey);
 		if (e == NULL)
 			corrupt(index, "Row (%u,%u) of the scope segments is not in the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
-		if (e->strovf ? e->rest != s->rest : e->hash != s->hash)
+		if (!scope_same(r, e, s))
 			corrupt(index, "The values of row (%u,%u) in the scope segments differ from those of the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
 	}
 	if (heapallindexed)

@@ -260,7 +260,7 @@ segw_elem_point(const SiftColSegWriter *w, int c)
 	const SiftColSchema *s = w->schema;
 	const SiftColDef *d = &s->cols[c];
 
-	return w->setting >= SIFT_COL_FORMAT_PRESENCE && d->parent >= 0 && d->kind == SIFT_COLK_SCALAR &&
+	return w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->pagg.absent[c] && d->parent >= 0 && d->kind == SIFT_COLK_SCALAR &&
 		(d->store == SIFT_COLS_STR || d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_INT8) &&
 		s->cols[d->parent].kind == SIFT_COLK_GROUP && strstr(s->cols[d->parent].path, ".*") == NULL && strstr(d->path, "#key") == NULL;
 }
@@ -351,7 +351,7 @@ colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	map_dicts(w, b, w->inl);
 	count_rows(w, b);
 	resetStringInfo(&w->buf);
-	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= SIFT_COL_FORMAT_TAGS, w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
+	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= SIFT_COL_FORMAT_TAGS, w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, w->pagg.absent, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	segw_add_preagg(w, b, w->buf.len - start);
 	if (b->keyed)
 	{

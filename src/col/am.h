@@ -54,6 +54,7 @@ typedef struct SiftColRel
 	int			scope_first;	/* the leaves from this id on are the derived keys of the scopes (SIFT_COLD_SCOPE); none when it is ncols */
 	int			nscope;			/* scopes of the index (col/scope.h) and the leaf of each */
 	int			scope_leaf[SIFT_SCOPE_MAX];	/* the leaf of the derived key of each scope */
+	bool		scope_cols[SIFT_SCOPE_MAX][SIFT_COL_MAX_COLS];	/* the leaves the scope segments of each scope keep values of (cols(..) of its declaration); the others have no chunk in them */
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */

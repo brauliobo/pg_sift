@@ -268,7 +268,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b0, const SiftColRow *row
 	tabfirst = kb.keyed && RAND(t, 2) == 0;
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "x");	/* the record starts after a pad: encode aligns it */
-	sift_cunit_encode(b, dictmap, inl, pol, tags, tabfirst, &buf, &start, zones);
+	sift_cunit_encode(b, dictmap, inl, pol, tags, tabfirst, NULL, &buf, &start, zones);
 	{
 		static const char zero[SIFT_COL_PAD];
 

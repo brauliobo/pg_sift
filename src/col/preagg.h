@@ -133,6 +133,7 @@ typedef struct SiftCPaggSpec
 	bool		gorder_only[SIFT_COL_MAX_COLS];	/* ... and these arrays keep the second order only, no plain order beside it ('auto: g, a, b': a time column the units are cut by or that follows the heap order) */
 	bool		gorder_listed;		/* ... 'auto: g, a, b; c, d': only the arrays named (a, b: second order only; c, d: beside their plain order) are grouped, the others keep the plain order alone; without the ';' every array is grouped */
 	bool		gorder_with[SIFT_COL_MAX_COLS];
+	bool		absent[SIFT_COL_MAX_COLS];	/* the leaves a family of segments keeps no values of (the scope segments of a scope with cols(..), col/scope.h): no chunk, summary, directory or order in any unit; their zones say all NULL */
 	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write/seg_write.c) */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
@@ -186,6 +187,8 @@ extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 extern const char *sift_cpagg_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
 /* Cheap syntax check for the reloption validator (no schema yet) */
 extern const char *sift_cpagg_syntax(const char *opt);
+/* Makes spec a spec of segments that keep values of the leaves with kept[] set only: what asks for anything of another leaf is taken out */
+extern void sift_cpagg_spec_keep(SiftCPaggSpec *spec, const SiftColSchema *s, const bool *kept);
 /*
  * The `rollup` option: "off", or "leaf, leaf, ..." the dims of the rollups (leaves of array elements or map values, as the names of paths; the
  * rollup of each list is these exactly, its measures are the numeric leaves of the list). Replaces the rollups of spec, which preagg built.

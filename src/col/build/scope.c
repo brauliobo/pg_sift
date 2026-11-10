@@ -54,7 +54,7 @@ colb_scope_feed(ColBuild *b, const SiftColBatch *src)
 		/* the entries of a fact are not in the order of its address, nor are those of one batch the rows of one superblock: the run sorts them */
 		sb->batch->keyed = sb->batch->unsorted = true;
 		for (uint32 i = 0; i < n; i++)
-			sift_cbatch_add_scoped(sb->batch, src, b->srow[i], sb->scope_leaf, b->skey[i]);
+			sift_cbatch_add_scoped(sb->batch, src, b->srow[i], sb->scope_leaf, b->skey[i], sb->r->scope_cols[s]);
 		colb_flush_batch(sb);
 	}
 }

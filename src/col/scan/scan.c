@@ -641,7 +641,7 @@ load_memory(ColUnit *cu, const ColMem *m)
 
 		im = palloc(sizeof(SiftColImage));
 		im->zones = palloc(b->schema->ncols * sizeof(SiftCZone));
-		sift_cunit_encode(b, NULL, NULL, NULL, true, false, buf, &start, im->zones);
+		sift_cunit_encode(b, NULL, NULL, NULL, true, false, NULL, buf, &start, im->zones);
 		im->buf = buf->data;
 		im->off = start;
 		im->len = buf->len - start;

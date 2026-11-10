@@ -19,23 +19,13 @@
 
 typedef struct SiftScopeFill SiftScopeFill;
 
-static bool
-is_time(const SiftColDef *d)
-{
-	return d->parent < 0 && d->lane == 0 && !(d->flags & SIFT_COLD_DERIVED) &&
-		(d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ);
-}
-
 /* The cut of the units of a scope (cut[], SIFT_COL_CUT_MAX leaves at most): its derived key, then the first date or timestamp column of the index, else none */
 int
 sift_scope_cut(const SiftColRel *r, int scope, int *cut)
 {
-	int			time = -1,
+	int			time = sift_scope_time_leaf(r->schema->cols, r->schema->ncols),
 				n = 0;
 
-	for (int id = 0; id < r->schema->ncols && time < 0; id++)
-		if (is_time(&r->schema->cols[id]))
-			time = id;
 	cut[n++] = r->scope_leaf[scope];
 	if (time >= 0)
 		cut[n++] = time;

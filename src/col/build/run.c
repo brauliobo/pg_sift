@@ -414,6 +414,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSe
 	if (scope >= 0)
 	{
 		colb_scope_cut(b->r, scope);
+		sift_cpagg_spec_keep(&b->r->pagg, b->r->schema, b->r->scope_cols[scope]);
 		b->scope_leaf = b->r->scope_leaf[scope];
 	}
 	b->cxt = cxt;
