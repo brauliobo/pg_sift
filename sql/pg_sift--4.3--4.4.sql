@@ -38,6 +38,7 @@ CREATE FUNCTION sift.scope_fact_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	c        sift.scope_copies;
 	same     text;
+	k        bigint;
 BEGIN
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
@@ -50,6 +51,12 @@ BEGIN
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
 		same := CASE WHEN TG_OP = 'UPDATE' THEN format(' AND NOT EXISTS (SELECT 1 FROM old_rows o WHERE %s AND %s)',
 			sift.scope_cmp(c.key_columns, 'o', 'n', '=', ' AND '), sift.scope_cmp(c.columns, 'o', 'n', 'IS NOT DISTINCT FROM', ' AND ')) ELSE '' END;
+		-- a statement that changes the facts and the pairs fires this trigger first, on pairs whose partition their own trigger has not made yet
+		IF c.partitioned THEN
+			FOR k IN EXECUTE format('SELECT DISTINCT s.%I FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s', c.scope_key, c.scope_relation, c.member, c.fk, same) LOOP
+				PERFORM sift.scope_partition(c.copy, k);
+			END LOOP;
+		END IF;
 		EXECUTE format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM new_rows n JOIN %s s ON s.%I = n.%I WHERE true%s ON CONFLICT DO NOTHING', c.copy, c.scope_key,
 			sift.scope_list(c.columns, '')::text, c.scope_key, sift.scope_list(c.columns, 'n'), c.scope_relation, c.member, c.fk, same);
 	END IF;
@@ -195,7 +202,7 @@ BEGIN
 				   scope_key, sift.scope_list(cols, 'f'), src, rel, member, fk, scope_key, CASE WHEN ord IS NULL THEN '' ELSE format(', f.%I', ord) END);
 	GET DIAGNOSTICS rows = ROW_COUNT;
 
-	opts := CASE WHEN partition THEN COALESCE(format('key_order = %L', ord), '') ELSE format('key_order = %L', concat_ws(', ', scope_key, ord)) END;
+	opts := CASE WHEN partition THEN CASE WHEN ord IS NULL THEN '' ELSE format('key_order = %L', ord) END ELSE format('key_order = %L', concat_ws(', ', scope_key, ord)) END;
 	SELECT relname INTO base FROM pg_class WHERE oid = to_regclass(cname);
 	EXECUTE format('CREATE INDEX %I ON %s USING sift_col (%I, %s)%s', left(base, 55) || '_col', cname, scope_key, sift.scope_list(cols, '')::text, CASE WHEN opts = '' THEN '' ELSE ' WITH (' || opts || ')' END);
 	-- what a change of the facts or of the pairs looks up in the copy: the foreign key and the primary key identify its rows
