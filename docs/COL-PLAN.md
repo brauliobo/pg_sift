@@ -236,9 +236,10 @@ Every label that `src/` raises is named in a document. The ones not described wh
 | `Scope Index` | `SiftAgg` | the scope of the index the scan reads, `index (key_name)` (col/scope.h): the rows whose member key has a pair with the scope keys; shown by `EXPLAIN` too |
 | `Scope Keys` | `SiftAgg` | the scope keys of the conjunct |
 | `Scope Semantics` | `SiftAgg` | `once` (a row counts once whichever of the keys it has: `IN`, `EXISTS`) or `per pair` (once for each pair, as a join and `GROUP BY` the key count it) |
-| `Scope Fallback` | `SiftAgg` | why the scan read the entity rows of the members the scope relation lists (`disabled`, `no scope index`, `several keys, row counted once`, `no journal`, `write buffer`, `unfilled`) instead of the scope segments; absent when it read them |
+| `Scope Fallback` | `SiftAgg` | why the scan read the entity rows of the members the scope relation lists (`disabled`, `no scope index`, `no journal`, `write buffer`, `unfilled`, `top-n over several keys`) instead of the scope segments; absent when it read them |
 | `Scope Members Listed` | `SiftAgg` | with a fallback: the member keys the scope relation lists for the scope keys under the snapshot |
 | `Scope Units`, `Scope Units Read`, `Scope Units Skipped` | `SiftAgg` | when the scope segments were read: their units read and skipped by the zones of the scope key and of the time column |
+| `Scope Dedupe` | `SiftAgg` | a read for several scope keys: the rows of the other keys count only for the members whose first key it is, so a fact counts once |
 | `Scope Entries Read` | `SiftAgg` | when the scope segments were read: the entries (one for each pair of a fact row and a scope key) of the units read |
 | `Sets Summed From One` | `SiftAgg` | grouping sets whose groups were added from the finest set's at the end of the scan (the sets all lie inside one of them and every aggregate adds exactly: counts, integer and numeric sums and averages, min, max); absent when each set had its own pass |
 | `Sort Method`, `Distinct Values`, `Sort Memory` | `SiftSort` (`ANALYZE`) | how the sort ran: `rank` (the keys replaced by the ranks of their distinct values: the number of distinct values of each key, and the kB the ranks held) or `tuplesort (reason)` when the ranks did not pay |

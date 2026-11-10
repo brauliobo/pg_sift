@@ -8,6 +8,8 @@
  * address in every segment. The entity segments that have their entries say so (SIFT_SEG_SCOPED): the stored read of a scope is exact only while every one does.
  */
 #include "postgres.h"
+#include "datatype/timestamp.h"
+#include "utils/timestamp.h"
 #include "core/ops.h"
 #include "bm25/merge.h"
 #include "col/maint/maint_int.h"
