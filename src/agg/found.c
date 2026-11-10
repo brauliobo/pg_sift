@@ -138,7 +138,7 @@ parent_present(AggExec *ex, Relation parent, AttrNumber key, const SiftConnKeys 
 	return true;
 }
 
-static SiftAggPred *
+SiftAggPred *
 pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, int op, int nchild, const char *desc)
 {
 	SiftAggPred *p = palloc0(sizeof(SiftAggPred));
@@ -157,7 +157,7 @@ pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, int op, int n
 }
 
 /* leaf IN (keys), or NOT IN: the keys of the leaf's type only */
-static SiftAggPred *
+SiftAggPred *
 pred_in(AggExec *ex, int *total, int leaf, bool not_in, const int64 *keys, uint32 n, const char *desc)
 {
 	SiftAggPred *p = pred_node(ex, SAP_IN, total, leaf, not_in, 0, desc);

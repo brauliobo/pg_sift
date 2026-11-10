@@ -105,6 +105,24 @@ pk_i64(Codec *c, int64 *v)
 }
 
 static void
+codec_scope(Codec *c, SiftAggScope **sc)
+{
+	int			has = !c->rd && *sc != NULL;
+
+	pk_int(c, &has);
+	if (!has)
+		return;
+	if (c->rd)
+		*sc = palloc0(sizeof(SiftAggScope));
+	PKS((c), (*sc)->key_name);
+	PK(c, (*sc)->fk);
+	PK_COUNT(c, (*sc)->nkeys, (*sc)->keys);
+	for (int i = 0; i < (*sc)->nkeys; i++)
+		pk_i64(c, &(*sc)->keys[i]);
+	PK(c, (*sc)->once);
+}
+
+static void
 codec_num(Codec *c, SiftAggNum *n)
 {
 	PK(c, n->n);
@@ -569,6 +587,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	PKS_OPT(c, s->serial);
 	PKS(c, s->desc_quals);
 	PKN(c, s->search);
+	codec_scope(c, &s->scope);
 	PKN(c, s->topn);
 	PKS(c, s->desc_topn);
 	PK(c, s->gtopn_k);

@@ -20,6 +20,8 @@ typedef struct SiftSrcProvider
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);
 	/* view: what view_export wrote for another source of the statement (a parallel worker opens on the directory of its leader), NULL: read the directory now */
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	/* Optional (NULL: the provider has no scope indexes, col/scope.h): open for a scan that reads the scope segments of the index and nothing else */
+	void	   *(*open_scope) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the source reads no directory it could share): the bytes of the directory the source read, and their number; the participants of a parallel scan number the units of its items by one copy */

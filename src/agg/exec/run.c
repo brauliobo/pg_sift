@@ -612,6 +612,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view);
 	else
 		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view) :
+			scope_open(ex) ? sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view) :
 			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);

@@ -71,7 +71,7 @@ leaf_vtype(const SiftColDef *def)
 static bool
 leaf_hidden(const SiftColDef *def)
 {
-	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_DERIVED);
+	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_FOUND);
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -156,6 +156,8 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 		l->lossy |= def->store == SIFT_COLS_VAR;
 		if (def->parent < 0 && !(def->flags & SIFT_COLD_DERIVED))
 			l->path = path_below(def->path, att);
+		else if (def->flags & SIFT_COLD_SCOPE)
+			l->path = list_make1(makeString(pstrdup(def->path)));	/* "<key_name>#scope": no jsonb key of the member's column is read by it */
 		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
 	}
 }
@@ -296,7 +298,7 @@ col_stamp(Relation index, SiftSrcStamp *st)
 	table_close(heap, AccessShareLock);
 }
 
-static void *
+void *
 col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
@@ -885,6 +887,7 @@ static const SiftSrcProvider col_provider = {
 	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
+	.open_scope = sift_col_open_scope,
 	.view_size = col_view_size,
 	.view_export = col_view_export,
 	.conn_proof = sift_col_conn_proof,

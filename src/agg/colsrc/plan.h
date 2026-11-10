@@ -28,6 +28,8 @@ extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
  * (sift_colsrc_view_export), NULL to read it now.
  */
 extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+/* ... for a scan of the scope segments of an index that declares a scope (col/scope.h, agg/scope.c): the rows replicated by scope key, no entity row, no write buffer */
+extern SiftSrcSource *sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 /* The bytes of the directory the source read, 0 when the provider has none to share; the participants of a parallel scan open on the leader's copy, whose superblocks and units all number the same */
 extern Size sift_colsrc_view_size(SiftSrcSource *src);
 extern void sift_colsrc_view_export(SiftSrcSource *src, void *buf);

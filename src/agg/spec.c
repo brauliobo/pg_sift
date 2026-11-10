@@ -868,6 +868,8 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 	const char *why;
 
 	*agg = -1;
+	if (s->scope)
+		return "a scope read is decided once, by the leader";
 	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */
 	for (int i = 0; i < s->njoin; i++)
 		if (sift_aggjoin_preserves(s->join[i].kind) && s->narms > 0)

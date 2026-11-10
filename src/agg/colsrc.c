@@ -112,6 +112,18 @@ sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext
 	return src;
 }
 
+SiftSrcSource *
+sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+{
+	const SiftSrcProvider *prov = provider_of_rel(index);
+	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
+
+	SIFT_INVARIANT(prov->open_scope != NULL, "sift: the source of this index has no scope segments");
+	src->prov = prov;
+	src->impl = prov->open_scope(heap, index, snapshot, mcxt, view);
+	return src;
+}
+
 bool
 sift_colsrc_can_part(Oid relam, bool index)
 {

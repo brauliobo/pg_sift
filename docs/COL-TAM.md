@@ -482,5 +482,6 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | ORDER BY group, key from the second order (`order_array_group`) | works | missing | the top-N walks the table of groups of a second order group after group when the group column has no order of its own, and an `OFFSET` is cut by whole groups |
 | A second scan of the same statement | works | missing | a nested loop that probes the aggregate scan again makes the source ready without opening it again; a table opens it again for each probe |
 | Row counts of one element of a list (point directory of a segment) | works | missing | `count(*)` of an equality on an element of a text or integer array of an index is the length of the list of the value in the point directory of each segment whose units are all clean and all-visible; a table writes no point directory of elements |
+| Scope index reads | works | missing | a scan of a `sift_col` index that declares a scope reads the scope segments of the index, the rows replicated by scope key (col/scope.h); the `sift_table` access method has no scope |
 
 <!-- /gen:parity -->

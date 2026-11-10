@@ -63,6 +63,13 @@ extern struct SiftColFill *sift_scope_fill_hook(struct SiftScopeFill *f, struct 
 /* The scope entries of the first nrows fk values (nulls: bit set = NULL): fills row[] (index of the fact row in the batch) and key[] with the pairs, returns their number; *cap is grown through repalloc */
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
+/*
+ * The reader (col/scan/scope.c): NULL when a scan that has a scope conjunct of nkeys keys of the scope key_name reads the scope segments of the index, else the word for
+ * "Scope Fallback" (it then reads the entity rows of the members); and the member keys that have a pair with one of the keys under the snapshot, ascending, each once.
+ */
+extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once);
+extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+
 #ifdef SIFT_TESTING
 /* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);

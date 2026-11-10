@@ -374,6 +374,35 @@ explain_topn(AggExec *ex, ExplainState *es)
 	sift_explain_end(&ln);
 }
 
+/* The scope conjunct (agg/scope.c): the scope it reads, and in a run the units it read of the scope segments or why it read the entity rows */
+static void
+explain_scope(AggExec *ex, ExplainState *es)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	SiftExplainLine ln;
+	SiftSrcCounters cc;
+
+	if (sc == NULL)
+		return;
+	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
+	ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
+	ExplainPropertyText("Scope Semantics", sc->once ? "once" : "per pair", es);
+	if (!es->analyze || !ex->started)
+		return;
+	run_counters(ex, &cc);
+	if (ex->scope_why != NULL)
+	{
+		ExplainPropertyText("Scope Fallback", ex->scope_why, es);
+		ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
+		return;
+	}
+	sift_explain_begin(&ln, es, "Scope Units");
+	sift_explain_int(&ln, "Scope Units Read", NULL, "read", ex->n_units, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Scope Units Skipped", NULL, "skipped", cc.units_pruned, SIFT_XI_KEEP);
+	sift_explain_end(&ln);
+	ExplainPropertyInteger("Scope Entries Read", NULL, ex->n_rows, es);
+}
+
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */
 static void
 explain_run(AggExec *ex, ExplainState *es)
@@ -404,6 +433,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	SiftAggSpec *s = ex->spec;
 
 	explain_source(s, es);
+	explain_scope(ex, es);
 	explain_keys(s, es);
 	for (int i = 0; i < s->njoin; i++)
 		if (s->join[i].subplan > 0)

@@ -257,6 +257,9 @@ typedef struct AggExec
 	int			nfound;			/* the joins answered from the flag of a connected index (join_found) */
 	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */
 	const char *found_why;		/* why a join of a connected index was not (the first of them) */
+	bool		scope_stored;	/* the scan reads the scope segments of its index (scope_open) */
+	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
+	uint64		scope_members;	/* ... and how many members it listed */
 	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */

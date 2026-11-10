@@ -397,6 +397,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 	List	   *seen = NIL;
 	int			total = s->npreds_total;
 
+	if (s->scope)
+		scope_filter(ex, &total, &add);
 	/* the joins of a top-N are only these filters: whatever the setting says */
 	if (!sift_agg_join_filter && !s->topn)
 		goto done;

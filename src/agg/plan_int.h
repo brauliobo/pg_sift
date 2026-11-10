@@ -564,6 +564,7 @@ extern void sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 
 extern bool agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs);
 extern SiftAggSpec *agg_spec_new(AggCtx *c);
+extern SiftAggScope *sift_agg_scope_extract(AggCtx *c, List **quals);
 extern bool agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern bool spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys);
 extern void agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel,
