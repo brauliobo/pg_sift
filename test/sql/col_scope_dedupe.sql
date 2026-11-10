@@ -1,6 +1,6 @@
 -- A fact read for several scope keys at once with the meaning of IN / EXISTS counts once, though its member has pairs with several of the keys: the scope units of each key hold it, and the
 -- units of all but the least key of the member leave its facts out (a list of members for each key that has them: Scope Dedupe Keys), so the answer is the plain join's (md5) and a naive IN over
--- the replicated units would count the members of two keys twice. A top-N over several keys reads the same units, and a join to another
+-- the units replicated by key would count the members of two keys twice. A top-N over several keys reads the same units, and a join to another
 -- relation per fact (GROUP BY the key of another scope) goes on top of the scan of the scope units of one key: the scope units expose the same rows as the entity scan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -62,7 +62,7 @@ CREATE FUNCTION once_phase() RETURNS TABLE (n int, class text, same boolean, sto
 $$;
 SELECT * FROM once_phase();
 
--- a naive read of the replicated units counts the members of two keys twice: what the dedupe leaves out
+-- a naive read of the units replicated by key counts the members of two keys twice: what the dedupe leaves out
 SELECT (SELECT count(*) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id WHERE t.tenant_id IN (2, 9)) AS naive_count,
 	   (SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 9))) AS once_count;
 SELECT count(*) AS scope_read_count FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, '{2,9}'::int8[]);
