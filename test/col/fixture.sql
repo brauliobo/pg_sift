@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_coal, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS t_partial, t_partial_hidden, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_coal, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -366,6 +366,12 @@ FROM generate_series(1, 20000) i;
 CREATE TABLE t_partial (id integer PRIMARY KEY, grp integer NOT NULL, day date NOT NULL, deleted_at timestamp, amount numeric(10,2), tag text);
 INSERT INTO t_partial SELECT i, 1 + i % 8, date '2026-01-01' + i % 60, CASE WHEN i % 9 = 0 THEN timestamp '2026-03-01' END,
 	CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 1000) / 4.0 END, CASE WHEN i % 13 = 0 THEN NULL ELSE 't' || (i % 40) END
+FROM generate_series(1, 20000) i;
+
+-- a partial column index that does not hold the column of its predicate (WHERE status = 'open'): the conditions that imply the predicate are not tested (pi_hidden_*)
+CREATE TABLE t_partial_hidden (id integer PRIMARY KEY, grp integer NOT NULL, status text, amount numeric(10,2), flag boolean NOT NULL);
+INSERT INTO t_partial_hidden SELECT i, 1 + i % 8, CASE WHEN i % 11 = 0 THEN NULL ELSE (ARRAY['new', 'open', 'held', 'closed'])[1 + i % 4] END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE (i % 1000) / 4.0 END, i % 3 = 0
 FROM generate_series(1, 20000) i;
 
 -- the same orders with objects that are not numbers among the metrics, items and notes that are not objects (the shredder's overflow cases)
