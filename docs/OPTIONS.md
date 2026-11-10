@@ -35,10 +35,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 39 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
-| [deprecated](#deprecated) | 5 | an older spelling that is still accepted |
+| [deprecated](#deprecated) | 6 | an older spelling that is still accepted |
 
 ### default
 
@@ -1547,22 +1547,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
 - **Sources:** benchmark `options-evidence`; [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query)
 
-#### sift_col(point_columns)
-
-`sift_col` · opt-in · since 3.3 · default ''
-
-- **What it does:** an equality, IN list or short range on a column of many distinct keys reads only the units that hold the rows, which the heap then checks again: integer equality 0.119 to 0.020 ms (200,000 rows; a b-tree 0.006)
-- **Gain:** integer equality 0.119 to 0.020 ms, IN of 5 keys 0.193 to 0.028 ms (200,000 rows; a b-tree 0.006 and 0.009)
-- **Gain and cost:** 2.03x fewer instructions (804k saved a query), index +58.0%, build +3.4%, opt-in (fails: cost)
-- **Impact:** index size: index 29.1 to 93.7 MB (+222%) for five leaves at 1,000,000 rows, 170 MB for six b-trees; 4 bytes a row for repeating keys, 4.2 MB for a unique key (200,000 rows); build, merge and writes: build 66 to 94 ms (+42.7%); insert of 20,000 rows 24 to 23 ms and update of 10% of the rows 53 to 52 ms: within noise (100,000 rows); other: format minor 14; 4 bytes a row for keys that repeat (0.8 MB for 200,000 rows), 4.2 MB for a unique key; a leaf with overflow values or inline strings gets no table
-- **When:** Equality, IN list (up to 65,536 keys; over 64 only under a sixteenth of the rows) or range of up to 64 keys on integer, text, uuid columns, in access-method and aggregate scans. Overflow values: no directory.
-- **Default:** '' — Opt-in: an equality on a unique id reads 1.58 M instructions with the key filter and 0.78 M with the directory (2.03x), for +58% of the index and +3.4% of the build: the gain does not pay for that growth, which is over a quarter of the index. A lookup stays 3x slower than a b-tree (0.020 against 0.006 ms).
-- **Why not the default:** the index grows over 25%, the gain does not pay for the growth and the build
-- **Turn off:** RESET (point_columns): new segments get no directory; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 13 writes none. No directory, no format change to undo.
-- **Upgrade from 4.2:** unchanged
-- **Advice:** Opt-in: set it only where the b-tree on the column can go and a lookup 3x slower is fine. Prefer point_tid_columns, which reads no unit. Larger index; REINDEX to apply.
-- **Sources:** benchmark `point_in_100`; [COLUMN-STORAGE](COLUMN-STORAGE.md#point-lookups)
-
 #### sift_col(point_tid_columns)
 
 `sift_col` · opt-in · since 3.3 · default ''
@@ -2648,6 +2632,19 @@ all · deprecated · since 3.3 · default ''
 - **Turn off:** ALTER INDEX .. RESET (rollup_dims) and SET (rollup_columns = ..); the build writes the new name. No REINDEX.
 - **Upgrade from 4.2:** unchanged
 - **Advice:** Old spelling of rollup_columns, still accepted through 4.x (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use rollup_columns; scripts/upgrade-check.sh needs nothing.
+
+#### sift_col(point_columns)
+
+all · deprecated · since 3.3 · default ''
+
+- **What it does:** deprecated in 4.3, removed in 4.4: its columns are listed in the directory of heap addresses of point_tid_columns, which answers an equality or a short IN list with no unit read
+- **Gain:** integer equality 0.119 to 0.020 ms, IN of 5 keys 0.193 to 0.028 ms (200,000 rows; a b-tree 0.006 and 0.009)
+- **Impact:** index size: index 29.1 to 93.7 MB (+222%) for five leaves at 1,000,000 rows, 170 MB for six b-trees; 4 bytes a row for repeating keys, 4.2 MB for a unique key (200,000 rows); build, merge and writes: build 66 to 94 ms (+42.7%); insert of 20,000 rows 24 to 23 ms and update of 10% of the rows 53 to 52 ms: within noise (100,000 rows); other: none: the same as point_tid_columns; the directory of rows it replaced took 4 bytes a row for keys that repeat (0.8 MB for 200,000 rows), 4.2 MB for a unique key; a leaf with overflow values or inline strings gets no table
+- **When:** An index that carries the option, from 3.3 to 4.2.x; the segments already written are read as before, and a promotion, merge or REINDEX writes the directory of heap addresses (a library before 3.7 cannot read it).
+- **Default:** '' — Accepted so that dumps and scripts restore; the directory of heap addresses is within 3% of the size of the directory of rows and reads no unit for an equality.
+- **Turn off:** ALTER INDEX .. RESET (point_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the directory of rows until 4.4.
+- **Upgrade from 4.2:** unchanged
+- **Advice:** Name the columns in point_tid_columns. A CREATE INDEX or REINDEX that finds point_columns says so in the one NOTICE of the build (point-columns-deprecated); an index that carries it keeps reading, and its next build lists the columns as heap addresses. RESET (point_columns) drops it.
 
 #### sift_col(key_cut_rows)
 

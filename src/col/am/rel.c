@@ -238,6 +238,13 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
+		/* point_columns is deprecated: its leaves get the directory of heap addresses, which answers the same lookups with no unit read */
+		for (int i = 0; i < n && !sift_col_legacy_options; i++)
+			if (r->pagg.point[i])
+			{
+				r->pagg.point_tid[i] = true;
+				r->pagg.point[i] = false;
+			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)

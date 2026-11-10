@@ -14,16 +14,15 @@ Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the 
 
 An equality, an `IN` list or a short range on a column of many distinct values.
 
-- **`point_columns`** (opt-in).
-  - **What**: an equality, `IN` list or short range on a column of many distinct keys reads only the units that hold the rows, which the heap then checks again.
-  - **Default**: off. An equality on a unique id reads 1.58 M instructions with the key filter and 0.78 M with the directory (2.03x), for +58% of the index and +3.4% of the build; that growth, over a quarter of the index, is more than the gain.
-  - **Off**: `ALTER INDEX .. RESET (point_columns)`; new segments get no directory, older ones keep theirs until a merge or `REINDEX`.
-  - **Measured**: integer equality 0.119 to 0.020 ms on 200,000 rows (a b-tree 0.006 ms), case `point_in_100`.
-  - **Message**: `point-tid-key-cut`.
+- **`point_columns`** (deprecated in 4.3, removed in 4.4).
+  - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. A build now lists the columns it names in the directory of heap addresses (`point_tid_columns`), which reads no unit; the segments already written are read as before.
+  - **Why**: the directory of addresses is within 3% of its size and reads fewer instructions in every shape measured (integer equality 0.119 to 0.020 ms on 200,000 rows with the rows form, 0.013 ms with addresses; a b-tree 0.006 ms), case `point_in_100`.
+  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX` and `REINDEX` say so once (`point-columns-deprecated`).
+  - **Message**: `point-columns-deprecated`, `point-tid-key-cut`.
 - **`point_tid_columns`** (opt-in; chosen by the default formula, below).
   - **What**: the same lookup, with the directory listing the heap addresses of the rows, so no unit is read.
   - **Default**: off. An equality on a unique id reads 1.67 M instructions with the key filter and 0.66 M with the addresses (2.51x), for +57.6% of the index and +3.6% of the build. Its segments are column format minor 37 or more, which only 3.7 and later read.
-  - **Off**: `ALTER INDEX .. RESET (point_tid_columns)`; a column kept in `point_columns` then has the rows form. `sift.col_format_minor <= 14` writes no addresses.
+  - **Off**: `ALTER INDEX .. RESET (point_tid_columns)`; `sift.col_format_minor <= 14` writes no addresses, and the directory has the rows form.
   - **Measured**: integer equality 0.013 ms, flat from 26,700 to 1,000,000 rows (a b-tree 0.006 ms); a 100-id `IN` 45.7 to 0.25 ms on 1,000,000 rows; case `point_in_100`.
   - **Message**: `point-directory-auto`, `point-tid-explicit`, `point-tid-key-cut`.
 - **Point directory by the default formula** (automatic).

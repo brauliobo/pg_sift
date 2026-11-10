@@ -134,7 +134,7 @@ The same four questions have three sets of settings. They are different mechanis
 
 Both pairs were measured side by side (400,000 rows, a table of an `int4` id spread over the heap, an `int4` of 100 rows a key, a timestamp and an `int4` spread over the heap; instructions of one backend a statement, user space, the mean of 30 statements with other constants; the other automatic choices off so that only the pair differs).
 
-**`point_columns` or `point_tid_columns`** (directories of the rows of a key). Leave `point_tid_columns` on `auto`: it is the better one in every shape measured, and `point_columns` is for an index that a release before 3.7 must read (the heap addresses are column format minor 33 and above, read from 3.7) or where every byte counts.
+**`point_tid_columns`** (the directory of the rows of a key). Leave it on `auto`: it is the better one in every shape measured. `point_columns`, the directory of rows it is compared with below, is deprecated (4.3) and lists its columns as heap addresses too; they are column format minor 33 and above, read from 3.7.
 
 | Statement | no directory | `point_columns` | `point_tid_columns` |
 |---|---|---|---|
