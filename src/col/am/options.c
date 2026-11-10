@@ -383,8 +383,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	/* RELEASE-TODO(4.4): goes away with the journal and the patch reader of the scope index */
 	DefineCustomBoolVariable("sift.test_scope_trust",
-							 "Testing: a scope whose relation has no journal is read as if it vouched for the stamp of its scope segments (the proof of concept of the scope index).",
+							 "Testing: a scope whose relation has no journal is read as if it vouched for the stamp of its scope segments (the proof of concept of the scope index); reads are wrong after writes.",
 							 NULL, &sift_test_scope_trust, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",

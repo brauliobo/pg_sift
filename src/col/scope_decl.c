@@ -29,6 +29,7 @@
 bool		sift_agg_scope = true;
 int			sift_scope_patch_keys = 4096;
 #ifdef SIFT_TESTING
+/* RELEASE-TODO(4.4): goes away with the journal and the patch reader of the scope index */
 bool		sift_test_scope_trust = false;
 #endif
 
