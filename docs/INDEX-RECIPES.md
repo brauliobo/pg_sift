@@ -399,6 +399,93 @@ The same fixture. Each row is one statement in a transaction that is rolled back
 
 The refresh of the pair table costs a plan of its statement (about 4 M instructions and 4 ms for one id; the statement is planned on each call) and a read of the ids' or keys' pairs and of the view for them, so it follows the size of the edit and, for a key, the size of the key: 1,000 ids cost 80 to 125 M instructions and 0.2 to 0.7 MB of WAL. The copy is what the edit costs once the facts of the ids are rewritten: about 60,000 instructions and 240 B of WAL records for each copy row inserted (900 B with the full-page images of the first change of each page), 12,600 instructions and 50 B of records for each row deleted by the id that leaves and 62,000 instructions for each row deleted by the key that leaves (a pair that goes is found by the `sift_col` index of the copy; the full-page images of a checkpoint's first touch are 5 to 28 MB of the WAL columns of the rolled-back runs). An edit that changes the ids of a tenant in bulk is the one to batch in one statement; a copy on the pairs is worth it where the reads it serves (above) outnumber such edits.
 
+## Totals per key and month: a cube table
+
+When a key above the fact table (a tenant, a group) is only asked for totals (count and sum by kind, by month, in a month, filtered on a declared dimension), a *cube table* answers it without reading a fact row: one row per `(scope key, bucket, dimension)` holding the count and the sums, a `sift_col` index on it, and statement triggers that fold each change of the facts or of the pairs into it as a delta. It is a recipe, not an index kind: nothing in the engine knows about it, and it is the right form only when the reads below are all the key is asked for.
+
+```sql
+-- facts(id, dim_a_id, created_at, kind, amount, quantity); scope_pairs(dim_a_id, tenant_id) unique
+CREATE TABLE facts_cube AS
+SELECT p.tenant_id, date_trunc('month', f.created_at) AS bucket, f.kind,
+       count(*) AS cnt, sum(f.amount) AS sum_amount, sum(f.quantity)::bigint AS sum_quantity
+FROM facts f JOIN scope_pairs p USING (dim_a_id) GROUP BY 1, 2, 3;
+ALTER TABLE facts_cube ADD PRIMARY KEY (tenant_id, bucket, kind);
+CREATE INDEX facts_cube_col ON facts_cube USING sift_col (tenant_id, bucket, kind, cnt, sum_amount, sum_quantity);
+
+CREATE FUNCTION facts_cube_fold() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	CREATE TEMP TABLE IF NOT EXISTS facts_cube_delta (tenant_id int, bucket timestamptz, kind smallint, c bigint, a numeric, q bigint)
+		ON COMMIT DELETE ROWS;
+	IF TG_OP IN ('DELETE', 'UPDATE') THEN   -- the old rows leave the cells of their tenants
+		INSERT INTO facts_cube_delta SELECT p.tenant_id, date_trunc('month', o.created_at), o.kind, -count(*), -sum(o.amount), -sum(o.quantity)
+		FROM oldt o JOIN scope_pairs p USING (dim_a_id) GROUP BY 1, 2, 3;
+	END IF;
+	IF TG_OP IN ('INSERT', 'UPDATE') THEN   -- the new rows enter them
+		INSERT INTO facts_cube_delta SELECT p.tenant_id, date_trunc('month', n.created_at), n.kind, count(*), sum(n.amount), sum(n.quantity)
+		FROM newt n JOIN scope_pairs p USING (dim_a_id) GROUP BY 1, 2, 3;
+	END IF;
+	INSERT INTO facts_cube SELECT tenant_id, bucket, kind, sum(c), sum(a), sum(q) FROM facts_cube_delta GROUP BY 1, 2, 3
+	ON CONFLICT (tenant_id, bucket, kind) DO UPDATE SET cnt = facts_cube.cnt + EXCLUDED.cnt,
+		sum_amount = facts_cube.sum_amount + EXCLUDED.sum_amount, sum_quantity = facts_cube.sum_quantity + EXCLUDED.sum_quantity;
+	DELETE FROM facts_cube WHERE cnt = 0;
+	TRUNCATE facts_cube_delta;
+	RETURN NULL;
+END $$;
+CREATE TRIGGER facts_cube_ins AFTER INSERT ON facts REFERENCING NEW TABLE AS newt FOR EACH STATEMENT EXECUTE FUNCTION facts_cube_fold();
+CREATE TRIGGER facts_cube_del AFTER DELETE ON facts REFERENCING OLD TABLE AS oldt FOR EACH STATEMENT EXECUTE FUNCTION facts_cube_fold();
+CREATE TRIGGER facts_cube_upd AFTER UPDATE ON facts REFERENCING OLD TABLE AS oldt NEW TABLE AS newt FOR EACH STATEMENT EXECUTE FUNCTION facts_cube_fold();
+
+SELECT kind, sum(cnt), sum(sum_amount) FROM facts_cube WHERE tenant_id = 38 GROUP BY kind;
+```
+
+A change of the pairs folds the same way with the signs of the pair that comes or goes, taking the facts of its member from `facts` instead of from a transition table (three more triggers on `scope_pairs`, `INSERT` with `+` and `DELETE` with `-`). The cube is exact while the triggers are on: compare it with the aggregation it replaces (`SELECT * FROM facts_cube EXCEPT SELECT .. FROM facts JOIN scope_pairs ..`, and the same the other way round) after a bulk load that disabled them.
+
+### What it answers, and what it does not
+
+- **Answers:** `count`, `sum` and (with the average as `sum / count`) `avg` of the declared measures, grouped by the key, by the bucket and by the declared dimension columns, on a window that is a whole number of buckets. Each added dimension multiplies the cells by its cardinality, so declare only low-cardinality ones.
+- **Does not answer:** `count(DISTINCT)`, a top N or a latest N by a column that is not a dimension, a filter on a measure (`amount > 500`), a window that cuts a bucket (June 10 to 20 on a month cube; a week cube answers a week, not a month), and any statement that needs a row.
+- **`min` and `max` are not invertible.** A delete or an update that removes the minimum of a cell must read the facts of the cell again, so the cube keeps a cell's `min` and `max` only with a recompute of the cells whose extreme leaves: 10,000 facts deleted or updated cost 12 to 16 G instructions (below) against 1 to 2 G for count and sum. Insert alone folds `min` and `max` for free (`least`, `greatest`). Keep them only for a table that is appended to, or leave them out.
+- **A pair that comes or goes** reads the facts of its member (about 4 M instructions per pair added or removed, 100 pairs: 0.4 G).
+
+### What it measures
+
+Fixture: 500,000 and 2,000,000 facts of 20,000 members, 60 tenants of skewed size, pairs of 2.7 and 5.4 per member, 10 kinds and 12 months (PostgreSQL 18.6, one backend, serial; every answer equals the join's). The tenants are the ones nearest 3% and 6% of the table.
+
+| | 500,000 facts, 2.7 | 500,000, 5.4 | 2,000,000, 2.7 | 2,000,000, 5.4 |
+|---|---|---|---|---|
+| table's `sift_col` index | 12.4 MB | 12.4 MB | 53 MB | 53 MB |
+| scope index (replicated): growth, build | +254% (+31 MB), 8.9 s | +489% (+60 MB), 17.7 s | +255% (+136 MB), 27.7 s | +482% (+256 MB), 36.9 s |
+| month cube: 7,200 cells, `sift_col` index + heap, build | 0.15 + 1.0 MB, 0.2 s | 0.15 + 1.0 MB, 0.2 s | 0.13 + 1.0 MB, 0.8 s | 0.13 + 1.0 MB, 0.8 s |
+| week cube: 31,800 cells | 0.64 + 3.7 MB | 0.63 + 3.7 MB | 0.60 + 3.7 MB | 0.59 + 3.7 MB |
+| day cube: about 215,000 cells | 4.9 + 21 MB | 5.2 + 22 MB | 5.2 + 22 MB | 5.1 + 22 MB |
+
+The cube follows its cells (keys x buckets x dimensions): the same size at 2.7 and 5.4 pairs per member and at 500,000 and 2,000,000 facts. Reads of a tenant of 3%, warm M instructions / blocks read from storage by a cold first run:
+
+| statement | join, 500,000 | scope index | month cube | join, 2,000,000 | scope index | month cube |
+|---|---|---|---|---|---|---|
+| `kind, count, sum` | 8.4 / 365 | 0.85 / 29 | 0.80 / 8 | 29.8 / 1,464 | 1.3 / 97 | 0.84 / 8 |
+| the same in one month | 3.4 / 81 | 1.3 / 61 | 0.83 / 8 | 7.2 / 240 | 2.6 / 205 | 0.88 / 8 |
+| `count, min, max, sum` | 9.1 / 378 | 0.82 / 25 | 1.1 / 15 | 32.5 / 1,545 | 1.1 / 80 | 1.2 / 14 |
+| `count, sum WHERE kind = 3` | 7.8 / 366 | 0.87 / 39 | 0.66 / 8 | 27.2 / 1,452 | 1.4 / 138 | 0.70 / 8 |
+| `GROUP BY` month | 13.5 / 684 | 2.7 / 39 | 1.3 / 8 | 48.1 / 2,573 | 7.2 / 129 | 1.4 / 8 |
+
+The cube reads the same 0.7 to 1.4 M instructions and 8 to 15 blocks at both table sizes and both multiplicities. The scope index reads 1 to 7 M instructions at 2,000,000 facts, and its month-window reads grow with the pairs per member (up to 393 blocks at 5.4). A week cube answers the week-aligned reads in 1.0 to 3.3 M instructions and a day cube costs 13 to 34 M for a read over every day: the month is the granularity that pays.
+
+What a change costs, 10,000 facts (or 100 pairs) on 500,000 facts at 2.7 pairs per member, M instructions of the backend / WAL MB:
+
+| statement | table's index only | scope index | cube, count and sum | cube, with `min` and `max` |
+|---|---|---|---|---|
+| insert 10,000 facts | 538 / 2.4 | 539 / 2.4 | 1,075 / 4.7 | 1,049 / 4.8 |
+| update 10,000 facts | 1,021 / 3.1 | 1,022 / 3.1 | 1,731 / 5.2 | 12,024 / 7.2 |
+| delete 10,000 facts | 493 / 0.92 | 493 / 0.92 | 988 / 2.9 | 12,714 / 2.7 |
+| add 100 pairs | 7 / 0.03 | 8 / 0.04 | 393 / 0.11 | 404 / 0.10 |
+| remove 100 pairs | 2.5 / 0.006 | 3.1 / 0.013 | 382 / 0.04 | 3,063 / 0.04 |
+| promotion of the index | 74 / 0.31 | 470 / 1.11 | | |
+
+At 5.4 pairs per member the count and sum cube costs 1,257 / 4.9 (insert), 2,081 / 5.5 (update) and 1,191 / 3.2 (delete), and the `min` and `max` cube 16.3 G instructions for the update and the delete. After every step the cube equals a fresh aggregation in all cells. The cube roughly doubles the instructions of a fact insert or delete and adds 0.7 G to an update; the scope index costs nothing more than the index of the table, except in its promotion (6 times), and answers the statements the cube cannot.
+
+Choose the scope index when the key is asked for rows, distinct counts, top N, latest N or filters on measures; the cube when the key is only asked for totals on whole months, the facts are inserted far more than they are updated or deleted, and the multiplicity makes the scope index large.
+
 ## What an index of this kind does not answer yet
 
 A text group key or filter on the columns of a joined parent (`GROUP BY customers.country`) loads the parent rows one by one, so the join may be faster in the normal plan; `EXPLAIN (VERBOSE)` says why a table is read from the heap (`Lookup Heap Reason`). [AGG.md](AGG.md) lists the joins the scan answers and the ones it leaves to the normal plan.
