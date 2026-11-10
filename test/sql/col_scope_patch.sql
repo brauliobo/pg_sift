@@ -115,6 +115,50 @@ SELECT * FROM probe();
 ROLLBACK;
 SELECT * FROM probe();
 
+-- random rounds of pair edits (members in 0 to 6 keys) and fact writes, each committed, each followed by a read of random keys, once and per pair: every read is md5 equal to the join (or says why it is not read as stored)
+SELECT setseed(0.42);
+CREATE TABLE fuzz_result (reads int, stored int, mismatches int, errors int);
+DO $$
+DECLARE
+	reads int := 0;
+	stored int := 0;
+	mism int := 0;
+	errs int := 0;
+	keys int8[];
+	pairs boolean;
+	r record;
+BEGIN
+	FOR i IN 1..60 LOOP
+		CASE floor(random() * 7)::int
+			WHEN 0 THEN INSERT INTO membership SELECT 1 + floor(random() * 330)::int, 1 + floor(random() * 12)::int FROM generate_series(1, 1 + floor(random() * 6)::int) ON CONFLICT DO NOTHING;
+			WHEN 1 THEN DELETE FROM membership WHERE dim_a_id = 1 + floor(random() * 330)::int;
+			WHEN 2 THEN DELETE FROM membership WHERE group_id = 1 + floor(random() * 12)::int AND dim_a_id % 5 = floor(random() * 5)::int;
+			WHEN 3 THEN WITH d AS (DELETE FROM membership WHERE dim_a_id % 13 = floor(random() * 13)::int RETURNING dim_a_id, group_id)
+				INSERT INTO membership SELECT dim_a_id, 1 + (group_id + floor(random() * 11)::int) % 12 FROM d ON CONFLICT DO NOTHING;
+			WHEN 4 THEN INSERT INTO facts SELECT 100000 + i * 100 + j, 1 + floor(random() * 330)::int, timestamptz '2026-03-01', j % 7, 'f' FROM generate_series(1, 20) j;
+			WHEN 5 THEN UPDATE facts SET v = v + 1 WHERE id % 97 = floor(random() * 97)::int;
+			ELSE DELETE FROM facts WHERE id % 101 = floor(random() * 101)::int;
+		END CASE;
+		COMMIT;
+		SELECT array_agg(DISTINCT 1 + floor(random() * 12)::int8) INTO keys FROM generate_series(1, 1 + floor(random() * 6)::int);
+		FOREACH pairs IN ARRAY ARRAY[false, true] LOOP
+			SELECT * INTO r FROM scope_run(
+				format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', keys),
+				CASE WHEN pairs THEN format('SELECT count(*), sum(v), min(id), max(id) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY (%L::int8[])', keys)
+					ELSE format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY (%L::int8[]))', keys) END,
+				pairs);
+			reads := reads + 1;
+			stored := stored + r.stored::int;
+			errs := errs + (r.same IS NULL)::int;
+			mism := mism + (r.same IS NOT NULL AND NOT r.same)::int;
+		END LOOP;
+	END LOOP;
+	INSERT INTO fuzz_result VALUES (reads, stored, mism, errs);
+	COMMIT;
+END $$;
+SELECT reads, stored >= reads / 2 AS mostly_stored, mismatches, errors > 0 AS per_pair_needs_join FROM fuzz_result;
+SELECT sift.col_verify('facts_col', true);
+
 -- more changed members than sift.scope_patch_keys: the entity rows of the members of the keys are read
 SET sift.scope_patch_keys = 3;
 SELECT * FROM probe();
@@ -125,7 +169,7 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 SELECT * FROM probe();
 SELECT sift.col_verify('facts_col', true);
 
-DROP TABLE probes, facts, membership, touched;
+DROP TABLE fuzz_result, probes, facts, membership, touched;
 DROP FUNCTION probe(), scope_run(text, text, boolean), touch();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
