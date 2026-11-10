@@ -64,6 +64,13 @@ SELECT sift.col_verify('cap_i', true);
  
 (1 row)
 
+-- the merges after the build end when one writes the segments it read: 68 segments of the participants and a few merges, not a generation for every pass up to the limit
+SELECT max(gen) < 100 AS merges_end FROM sift.col_segments('cap_i');
+ merges_end 
+------------
+ t
+(1 row)
+
 -- a third of the rows are one value of the key (the key_cut of the user's): the segments are those of an even key, in the same arrays, and the rows are the heap's (a segment is cut at the memory of its writer, so the last one holds what is left: up to 25% over the mean)
 DROP TABLE cap;
 SET max_parallel_maintenance_workers = 0;

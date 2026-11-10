@@ -118,6 +118,15 @@ part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
 	return key_cut ? (live_bytes + share - 1) / share : (live_bytes + part_bytes / 2) / part_bytes;
 }
 
+/* The index whose last merge wrote as many segments as it read: a merge of the same segments writes them again (the cuts of its writer are the same), so they are its end state */
+static Oid	settled_index = InvalidOid;
+
+static void
+merge_settles(Relation index, int nin, int nout)
+{
+	settled_index = nout >= nin ? RelationGetRelid(index) : InvalidOid;
+}
+
 /*
  * Force means merge to the minimum count of segments, so that a second force is a no-op: segments that are all partitions (from half the size to one and a half of
  * it: a merge cuts its partitions within that), clean, and no more of them than the partitions their bytes make are the minimum, and writing them again would give
@@ -346,7 +355,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 			sel[nsel++] = v->imm[i];
 			refresh |= v->stale[i];
 		}
-	/* without partitions the end state of a key-cut index over the input a merge by workers starts from is also segments no dead row and no unit in common keep apart: its slices */
+	/* without partitions the end state of a key-cut index is segments no dead row and no unit in common keep apart that a merge writes again as they are: the slices of a merge by workers, the cuts of a writer */
 	if (keyed && maint_part_kb == 0 && nsel > 1 && nsel == v->n)
 	{
 		uint64		bytes = 0;
@@ -354,7 +363,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 
 		for (int i = 0; i < nsel; i++)
 			bytes += sel[i].bytes;
-		apart = bytes >= merge_par_bytes();
+		apart = settled_index == RelationGetRelid(index) || bytes >= merge_par_bytes();
 		for (int i = 0; i < v->n && apart; i++)
 			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
 		for (int i = 0; i < v->n && apart; i++)
@@ -752,6 +761,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			docs += o.neu[i].ndocs;
 		sift_maint_replace_n(index, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
+		merge_settles(index, n, o.nneu);
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -792,6 +802,7 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
 	sift_maint_replace_n(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
+	merge_settles(index, n, nout);
 }
 
 /*
