@@ -17,6 +17,8 @@
 #include "col/conn.h"
 #include "core/ops.h"
 
+bool		sift_col_legacy_options = false;
+
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
  * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
@@ -318,6 +320,9 @@ sift_col_init(void)
 							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 46. "
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_legacy_options",
+							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 4.4.",
+							 NULL, &sift_col_legacy_options, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -504,7 +509,7 @@ sift_col_init(void)
 						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
-					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
+					  "Deprecated, ignored and removed in 4.4: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
@@ -767,6 +772,12 @@ sift_col_options_key_order_auto(Relation index)
 COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
 
 COL_OPT_STR(sift_col_options_connect, connect, "")
+
+bool
+sift_col_options_key_cut_rows_set(Relation index)
+{
+	return sift_col_options(index)->key_cut_rows != 0;
+}
 
 /* whether the user set order_columns, by the option or by a key_order of their own: what the build chose with key_cut ('auto: a, b' in key_order) is decided again with it */
 bool

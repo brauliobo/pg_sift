@@ -117,11 +117,10 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
   - **Off**: `ALTER INDEX .. SET (key_cut = 'off')` and `REINDEX` (or `CREATE INDEX .. WITH (key_cut = 'off')`).
   - **Measured**: `count/sum` of one key 5.06 to 0.35 ms on 1,500,000 rows, 419 units; case `keycut_customer_agg`.
   - **Message**: `key-cut-chosen`, `key-cut-advised`, `key-order`.
-- **`key_cut_rows`** (a size, default 0).
-  - **What**: the rows a key-cut unit aims at; 0 is the rows of an average superblock.
-  - **Default**: 0, which keeps the number of units and the planner's per-unit costs; at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain.
-  - **Off**: not a switch; `RESET (key_cut_rows)` returns to superblock-sized units.
-  - **Measured**: a key range of 40 values 0.20 ms with 256 rows and with the default, 100,000 rows; case `keycut_customer_agg`.
+- **`key_cut_rows`** (deprecated in 4.3, removed in 4.4).
+  - **What**: the rows a key-cut unit aims at. It is accepted and ignored: the units aim at the rows of an average superblock, which keeps the number of units and the planner's per-unit costs.
+  - **Why**: at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain; case `keycut_customer_agg`.
+  - **Off**: `RESET (key_cut_rows)`. `CREATE INDEX` and `REINDEX` say so once (`key-cut-rows-deprecated`).
 - **Second key of the cut** (automatic).
   - **What**: when the cut is chosen by default and the index has a date or timestamp leaf, the rows of a key are sorted by that leaf too, so a window of dates on the key skips the units outside it.
   - **Default**: on; the index shrinks by 20.9% and the build pays 11% more.

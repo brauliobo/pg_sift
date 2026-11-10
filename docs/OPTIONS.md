@@ -34,11 +34,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 102 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 39 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
-| [deprecated](#deprecated) | 4 | an older spelling that is still accepted |
+| [deprecated](#deprecated) | 5 | an older spelling that is still accepted |
 
 ### default
 
@@ -426,20 +426,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') then REINDEX (or CREATE INDEX .. WITH (key_cut = 'off')); the choice is written as 'auto: col' and the NOTICE names it. ALTER INDEX .. RESET (key_cut) and a REINDEX decide again.
 - **Upgrade from 4.2:** unchanged
 - **Advice:** Leave it automatic: CREATE INDEX writes key_cut = 'auto: col' and says what it measured and predicted; where it would grow the index it prints the command instead. sift.key_cut_decision(index) says what a REINDEX would decide. Set key_cut = 'off' on an index that also sorts or ranges by another column without the key (an unkeyed ORDER BY .. LIMIT 0.30 against 0.91 ms at 200,000 rows), or name the columns yourself. Segments are format minor 17; RESET and REINDEX roll back. The segments of a key_cut build hold at most twice the rows of an even split over its 128 segments (3,200,000 rows, 5,000 keys: 47,360 rows), also when one value holds a third of the rows: the build reads that value back in runs of the memory of one, and the rewrite orders them. The automatic rule leaves a key alone when its statistics (the first of the most common values, else the sample) say one value holds more rows than a segment (2^26 rows) and the NOTICE names it; key_cut = 'column' of your own is built.
-- **Sources:** benchmark `keycut_customer_agg`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
-
-#### sift_col(key_cut_rows)
-
-`sift_col` · default · since 3.4 · default 0
-
-- **What it does:** the rows a key-cut unit aims at; the default is the rows of an average superblock (1,024 when the table was not analyzed), which keeps the number of units and the planner's per-unit costs
-- **Gain:** none at 100,000 rows: a key range of 40 values 0.20 ms with 256 rows and with the default, 0.22 against 0.23 ms with 4,096
-- **Impact:** index size: +69.0% of the index at 256 rows, -9.4% at 4,096 (100,000 rows, default 0); build, merge and writes: build +6.8% at 256, -0.5% at 4,096; insert of 20,000 rows and update of 10% within noise (100,000 rows); other: format minor 17; fewer rows, more units; more rows, a coarser range per unit
-- **When:** Read only with key_cut: the rows a key-cut unit aims at in a build, promotion or merge. 0 is the rows of an average superblock (reltuples / relpages * 256, 1,024 when never analyzed); 64 to 32,768.
-- **Default:** 0 — 0 keeps the number of units and the planner's per-unit costs of the superblock cut; at 100,000 rows 256 rows is +69.0% of the index, 4,096 -9.4%, with no query gain (0.20 against 0.22 ms).
-- **Turn off:** n/a: a size, not a switch. RESET (key_cut_rows) or 0 returns to superblock-sized units; it has no effect without key_cut. Applies to units written afterwards.
-- **Upgrade from 4.2:** unchanged
-- **Advice:** Leave at 0: units aim at the rows of an average superblock. Fewer rows make more units, more rows a coarser key range per unit. Only used with key_cut.
 - **Sources:** benchmark `keycut_customer_agg`; [COLUMN-STORAGE](COLUMN-STORAGE.md#cutting-the-units-by-a-key)
 
 #### sift_col(order_array_columns)
@@ -2662,6 +2648,19 @@ all · deprecated · since 3.3 · default ''
 - **Turn off:** ALTER INDEX .. RESET (rollup_dims) and SET (rollup_columns = ..); the build writes the new name. No REINDEX.
 - **Upgrade from 4.2:** unchanged
 - **Advice:** Old spelling of rollup_columns, still accepted through 4.x (the new name wins when both are set); CREATE INDEX and ALTER INDEX say so in a NOTICE. Use rollup_columns; scripts/upgrade-check.sh needs nothing.
+
+#### sift_col(key_cut_rows)
+
+all · deprecated · since 3.4 · default 0
+
+- **What it does:** deprecated in 4.3, removed in 4.4: the rows a key-cut unit aims at; the build now uses the rows of an average superblock, whatever the option says
+- **Gain:** -
+- **Impact:** index size: -; build, merge and writes: -; other: none: ignored
+- **When:** An index that carries the option, from 3.4 to 4.2.x; the units already written are read as before and the next build, promotion or merge cuts them by superblock.
+- **Default:** 0 — Accepted so that dumps and scripts restore; ignored because no query gained from it at 100,000 rows and it only moved the index size and the number of units.
+- **Turn off:** ALTER INDEX .. RESET (key_cut_rows). The setting sift.test_col_legacy_options (testing only) makes a build honor it until 4.4.
+- **Upgrade from 4.2:** unchanged
+- **Advice:** Leave it out. A CREATE INDEX or REINDEX that finds it says so in the one NOTICE of the build (key-cut-rows-deprecated); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
 
 #### sift.agg_lookup_max_rows
 
