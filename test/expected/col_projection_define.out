@@ -1,0 +1,299 @@
+-- Named projections (sift.projection_create, sift.projection_index): a definition of what a sift_col index stores, written once, checked on an empty copy of the table,
+-- and turned into the indexes by one call that builds the index or says that an existing one already holds it. The names are listed in the index option projection,
+-- the definitions are a configuration table with a guard: a definition that an index lists cannot be deleted, nor change its table, columns or filter.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind int, qty int, status text, created_at timestamptz);
+INSERT INTO events SELECT i, i % 40, i % 5, i % 13, (ARRAY['new', 'open', 'held'])[1 + i % 3], timestamptz '2026-01-01' + i * interval '1 minute' FROM generate_series(1, 3000) i;
+CREATE VIEW events_view AS SELECT * FROM events;
+VACUUM (FREEZE, ANALYZE) events;
+-- a definition is refused when the empty copy cannot take it, or when it sets what belongs to the index
+SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
+  ('ok',               $$SELECT sift.projection_create('by_dim', 'events', ARRAY['dim_a_id', 'kind', '(qty / 10)'])$$),
+  ('same name',        $$SELECT sift.projection_create('by_dim', 'events', ARRAY['kind'])$$),
+  ('bad name',         $$SELECT sift.projection_create('By Dim', 'events', ARRAY['kind'])$$),
+  ('a view',           $$SELECT sift.projection_create('on_view', 'events_view', ARRAY['kind'])$$),
+  ('no columns',       $$SELECT sift.projection_create('empty', 'events', ARRAY[]::text[])$$),
+  ('unknown column',   $$SELECT sift.projection_create('bad_column', 'events', ARRAY['nope'])$$),
+  ('volatile column',  $$SELECT sift.projection_create('volatile', 'events', ARRAY['(random())'])$$),
+  ('bad filter',       $$SELECT sift.projection_create('bad_filter', 'events', ARRAY['kind'], filter => 'nope = 1')$$),
+  ('bad rollups',      $$SELECT sift.projection_create('bad_rollup', 'events', ARRAY['kind'], rollups => 'nope')$$),
+  ('layout option',    $$SELECT sift.projection_create('layout', 'events', ARRAY['kind'], options => '{"key_order": "kind"}')$$),
+  ('rollup option',    $$SELECT sift.projection_create('rollup', 'events', ARRAY['kind'], options => '{"rollup_columns": "kind"}')$$),
+  ('unknown option',   $$SELECT sift.projection_create('unknown', 'events', ARRAY['kind'], options => '{"nope": "1"}')$$)
+) t(label, stmt);
+      label      |                                                   outcome                                                    
+-----------------+--------------------------------------------------------------------------------------------------------------
+ ok              | ok
+ same name       | 23505 duplicate key value violates unique constraint "projections_pkey"
+ bad name        | 23514 new row for relation "projections" violates check constraint "projections_name_check"
+ a view          | 42809 projection_create: "public.events_view" is not a table
+ no columns      | 22023 projection_create: a projection needs at least one column
+ unknown column  | 42703 column "nope" does not exist
+ volatile column | 42P17 functions in index expression must be marked IMMUTABLE
+ bad filter      | 42703 column "nope" does not exist
+ bad rollups     | 22023 invalid rollup_columns option "nope": rollup_columns needs at least two columns (the cube answers one)
+ layout option   | 22023 projection_create: the options key_order belong to the index or to the rollups argument
+ rollup option   | 22023 projection_create: the options rollup_columns belong to the index or to the rollups argument
+ unknown option  | 22023 unrecognized parameter "nope"
+(12 rows)
+
+SELECT name, source, leaves, rollups, filter, options, canonical, canonical_filter FROM sift.projections ORDER BY name;
+  name  |    source     |            leaves            | rollups | filter | options |          canonical           | canonical_filter 
+--------+---------------+------------------------------+---------+--------+---------+------------------------------+------------------
+ by_dim | public.events | {dim_a_id,kind,"(qty / 10)"} |         |        | {}      | {dim_a_id,kind,"(qty / 10)"} | 
+(1 row)
+
+SELECT sift.projection_create('by_dim_open', 'events', ARRAY['dim_a_id', 'kind', 'qty', 'status'], rollups => 'dim_a_id, kind', filter => $$status = 'open'$$);
+ projection_create 
+-------------------
+ 
+(1 row)
+
+SELECT sift.projection_create('by_status', 'events', ARRAY['status', 'created_at'], options => '{"superunit": 8}');
+ projection_create 
+-------------------
+ 
+(1 row)
+
+SELECT sift.projection_create('by_dim_open_a', 'events', ARRAY['dim_a_id', 'kind', 'created_at'], rollups => 'dim_a_id, kind', filter => $$status = 'open'$$);
+ projection_create 
+-------------------
+ 
+(1 row)
+
+-- projection_index refuses what it cannot make
+SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
+  ('no name',        $$SELECT sift.projection_index('i', ARRAY[]::text[])$$),
+  ('not defined',    $$SELECT sift.projection_index('i', ARRAY['nope'])$$),
+  ('differ',         $$SELECT sift.projection_index('i', ARRAY['by_dim', 'by_status'])$$),
+  ('layout rollups', $$SELECT sift.projection_index('i', ARRAY['by_dim'], '{"rollup_columns": "kind"}')$$),
+  ('layout name',    $$SELECT sift.projection_index('i', ARRAY['by_dim'], '{"projection": "x"}')$$),
+  ('bad layout',     $$SELECT sift.projection_index('i', ARRAY['by_dim'], '{"key_order": "status"}')$$)
+) t(label, stmt);
+     label      |                                                outcome                                                 
+----------------+--------------------------------------------------------------------------------------------------------
+ no name        | 22023 projection_index: no projection is named
+ not defined    | 42704 projection_index: the projection "nope" is not defined
+ differ         | 22023 projection_index: the projections {by_dim,by_status} differ in table, filter, rollups or options
+ layout rollups | 22023 projection_index: the layout cannot set projection or rollup_columns
+ layout name    | 22023 projection_index: the layout cannot set projection or rollup_columns
+ bad layout     | 22023 invalid key_order option: column "status" is not a column of the index
+(6 rows)
+
+-- the index of a projection lists it, in the order of the names; its columns are the union of the projections' columns without repeats; a second call is the same index
+SELECT sift.projection_index('events_dim', ARRAY['by_dim'], '{"key_order": "dim_a_id", "track_changes": "off"}');
+ projection_index 
+------------------
+ events_dim
+(1 row)
+
+SELECT sift.projection_index('events_dim', ARRAY['by_dim'], '{"key_order": "dim_a_id", "track_changes": "off"}');
+ projection_index 
+------------------
+ events_dim
+(1 row)
+
+SELECT sift.projection_index('events_open', ARRAY['by_dim_open', 'by_dim_open_a'], '{"track_changes": "off"}');
+ projection_index 
+------------------
+ events_open
+(1 row)
+
+SELECT sift.projection_index('events_status', ARRAY['by_status']);
+ projection_index 
+------------------
+ events_status
+(1 row)
+
+SELECT i.relname, ARRAY(SELECT pg_get_indexdef(i.oid, k, true) FROM generate_series(1, i.relnatts) k) AS leaves, sift.projection_option(i.oid, 'projection') AS projection,
+       sift.projection_option(i.oid, 'rollup_columns') AS rollup, sift.projection_option(i.oid, 'superunit') AS superunit
+FROM pg_class i WHERE i.relname IN ('events_dim', 'events_open', 'events_status') ORDER BY i.relname;
+    relname    |                leaves                 |         projection         |     rollup     | superunit 
+---------------+---------------------------------------+----------------------------+----------------+-----------
+ events_dim    | {dim_a_id,kind,"(qty / 10)"}          | by_dim                     |                | 
+ events_open   | {dim_a_id,kind,qty,status,created_at} | by_dim_open, by_dim_open_a | dim_a_id, kind | 
+ events_status | {status,created_at}                   | by_status                  |                | 8
+(3 rows)
+
+SELECT projection, index, state, reason, shared FROM sift.projection_status ORDER BY projection, index;
+  projection   |     index     | state | reason | shared 
+---------------+---------------+-------+--------+--------
+ by_dim        | events_dim    | ok    |        |      1
+ by_dim_open   | events_open   | ok    |        |      2
+ by_dim_open_a | events_open   | ok    |        |      2
+ by_status     | events_status | ok    |        |      1
+(4 rows)
+
+SELECT p.name, array_agg(i::regclass::text) AS indexes FROM sift.projections p, sift.projection_indexes(p.name) i GROUP BY p.name ORDER BY p.name;
+     name      |     indexes     
+---------------+-----------------
+ by_dim        | {events_dim}
+ by_dim_open   | {events_open}
+ by_dim_open_a | {events_open}
+ by_status     | {events_status}
+(4 rows)
+
+-- the option names are read by sift.projection_status, not by CREATE INDEX: a name nobody defined is a broken projection, a name of another shape is an error
+CREATE INDEX events_unknown ON events USING sift_col (kind, qty) WITH (projection = 'not_defined', track_changes = off);
+SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
+  ('upper case', $$ALTER INDEX events_unknown SET (projection = 'By_Dim')$$),
+  ('empty name', $$ALTER INDEX events_unknown SET (projection = 'a,,b')$$),
+  ('a digit',    $$ALTER INDEX events_unknown SET (projection = '1a')$$),
+  ('a list',     $$ALTER INDEX events_unknown SET (projection = 'a, b')$$)
+) t(label, stmt);
+   label    |                                                            outcome                                                             
+------------+--------------------------------------------------------------------------------------------------------------------------------
+ upper case | 22023 invalid projection option "By_Dim": a list of projection names (lower case letters, digits, _ and $) separated by commas
+ empty name | 22023 invalid projection option "a,,b": a list of projection names (lower case letters, digits, _ and $) separated by commas
+ a digit    | 22023 invalid projection option "1a": a list of projection names (lower case letters, digits, _ and $) separated by commas
+ a list     | ok
+(4 rows)
+
+SELECT projection, source, index, state, reason FROM sift.projection_status WHERE index = 'events_unknown' ORDER BY projection;
+ projection | source |     index      | state  |            reason             
+------------+--------+----------------+--------+-------------------------------
+ a          |        | events_unknown | broken | the projection is not defined
+ b          |        | events_unknown | broken | the projection is not defined
+(2 rows)
+
+DROP INDEX events_unknown;
+-- a held definition keeps its table, columns and filter; its rollups and options can change
+SET client_min_messages = notice;
+SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
+  ('delete',           $$DELETE FROM sift.projections WHERE name = 'by_dim'$$),
+  ('drop',             $$SELECT sift.projection_drop('by_dim')$$),
+  ('drop unknown',     $$SELECT sift.projection_drop('nope')$$),
+  ('truncate',         $$TRUNCATE sift.projections$$),
+  ('rename',           $$UPDATE sift.projections SET name = 'by_dim2' WHERE name = 'by_dim'$$),
+  ('columns',          $$UPDATE sift.projections SET leaves = ARRAY['kind'] WHERE name = 'by_dim'$$),
+  ('filter',           $$UPDATE sift.projections SET filter = 'kind = 1' WHERE name = 'by_dim'$$),
+  ('replace columns',  $$SELECT sift.projection_replace('by_dim', ARRAY['dim_a_id', 'kind'])$$),
+  ('replace filter',   $$SELECT sift.projection_replace('by_dim', ARRAY['dim_a_id', 'kind', '(qty / 10)'], filter => 'kind = 1')$$),
+  ('replace unknown',  $$SELECT sift.projection_replace('nope', ARRAY['kind'])$$),
+  ('same definition',  $$SELECT sift.projection_replace('by_dim', ARRAY['dim_a_id', 'kind', '(qty / 10)'])$$)
+) t(label, stmt);
+      label      |                            outcome                             
+-----------------+----------------------------------------------------------------
+ delete          | 2BP01 the projection "by_dim" is held by events_dim
+ drop            | 2BP01 the projection "by_dim" is held by events_dim
+ drop unknown    | 42704 projection_drop: the projection "nope" is not defined
+ truncate        | 2BP01 the projection "by_dim" is held by events_dim
+ rename          | 2BP01 the projection "by_dim" is held by events_dim
+ columns         | 2BP01 the projection "by_dim" is held by events_dim
+ filter          | 2BP01 the projection "by_dim" is held by events_dim
+ replace columns | 2BP01 the projection "by_dim" is held by events_dim
+ replace filter  | 2BP01 the projection "by_dim" is held by events_dim
+ replace unknown | 42704 projection_replace: the projection "nope" is not defined
+ same definition | ok
+(11 rows)
+
+SELECT sift_helpers.statement_outcome($$SELECT sift.projection_replace('by_dim_open', ARRAY['dim_a_id', 'kind', 'qty', 'status'], rollups => 'dim_a_id', filter => 'status = ''open''')$$) AS bad_rollup;
+                                                    bad_rollup                                                    
+------------------------------------------------------------------------------------------------------------------
+ 22023 invalid rollup_columns option "dim_a_id": rollup_columns needs at least two columns (the cube answers one)
+(1 row)
+
+-- new rollups and options reach an index that lists only this projection (it needs REINDEX); an index that lists others too is left as it is, and the status compares it
+\set VERBOSITY default
+SELECT sift.projection_replace('by_status', ARRAY['status', 'created_at'], options => '{"superunit": 4}');
+NOTICE:  index "events_status" holds the projection "by_status": REINDEX INDEX events_status writes it with the new rollups and options
+ projection_replace 
+--------------------
+ 
+(1 row)
+
+\set VERBOSITY terse
+SELECT sift.projection_replace('by_dim_open', ARRAY['dim_a_id', 'kind', 'qty', 'status'], rollups => 'dim_a_id, kind: qty', filter => $$status = 'open'$$);
+NOTICE:  index "events_open" holds other projections too: its options stay, sift.projection_status checks "by_dim_open"
+ projection_replace 
+--------------------
+ 
+(1 row)
+
+SET client_min_messages = warning;
+SELECT projection, index, state, reason FROM sift.projection_status ORDER BY projection, index;
+  projection   |     index     | state  |                     reason                     
+---------------+---------------+--------+------------------------------------------------
+ by_dim        | events_dim    | ok     | 
+ by_dim_open   | events_open   | broken | the index does not roll up dim_a_id, kind: qty
+ by_dim_open_a | events_open   | ok     | 
+ by_status     | events_status | ok     | 
+(4 rows)
+
+SELECT sift.projection_option(oid, 'superunit') AS superunit, sift.projection_option(oid, 'rollup_columns') AS rollup FROM pg_class WHERE relname IN ('events_status', 'events_open') ORDER BY relname;
+ superunit |     rollup     
+-----------+----------------
+           | dim_a_id, kind
+ 4         | 
+(2 rows)
+
+-- an index that no longer lists the projection frees it
+ALTER INDEX events_dim RESET (projection);
+SELECT sift_helpers.statement_outcome($$SELECT sift.projection_replace('by_dim', ARRAY['dim_a_id', 'kind'])$$) AS replace_free;
+ replace_free 
+--------------
+ ok
+(1 row)
+
+SELECT projection, index, state, reason FROM sift.projection_status WHERE projection = 'by_dim';
+ projection | index | state  |      reason       
+------------+-------+--------+-------------------
+ by_dim     |       | broken | no index lists it
+(1 row)
+
+-- the statements of the recipe: CREATE INDEX CONCURRENTLY for an index of another layout, the ALTER INDEX when an existing index serves the projection
+SELECT sift.projection_index_sql('events_dim_kind', ARRAY['by_dim'], '{"key_order": "kind", "track_changes": "off"}') AS ddl \gset
+SELECT :'ddl' AS concurrently;
+                                                                            concurrently                                                                            
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ CREATE INDEX CONCURRENTLY events_dim_kind ON public.events USING sift_col (dim_a_id, kind) WITH (projection = 'by_dim', key_order = 'kind', track_changes = 'off')
+(1 row)
+
+:ddl ;
+SELECT sift.projection_index_sql('events_dim_plain', ARRAY['by_dim'], '{"track_changes": "off"}', false) AS plain;
+                                                               plain                                                                
+------------------------------------------------------------------------------------------------------------------------------------
+ CREATE INDEX events_dim_plain ON public.events USING sift_col (dim_a_id, kind) WITH (projection = 'by_dim', track_changes = 'off')
+(1 row)
+
+SELECT sift.projection_index_sql('events_dim2', ARRAY['by_dim'], '{"key_order": "dim_a_id", "track_changes": "off"}') AS served;
+                       served                       
+----------------------------------------------------
+ ALTER INDEX events_dim SET (projection = 'by_dim')
+(1 row)
+
+SELECT sift_helpers.statement_outcome($$SELECT sift.projection_index_sql('events_dim', ARRAY['by_dim_open'])$$) AS name_taken;
+                                           name_taken                                           
+------------------------------------------------------------------------------------------------
+ 42P07 projection_index: relation "events_dim" already exists and does not hold the projections
+(1 row)
+
+SELECT projection, index, state FROM sift.projection_status WHERE projection = 'by_dim';
+ projection |      index      | state 
+------------+-----------------+-------
+ by_dim     | events_dim_kind | ok
+(1 row)
+
+-- the guard lets go when the last index is gone
+DROP INDEX events_open, events_status, events_dim, events_dim_kind;
+SELECT sift.projection_drop(name) FROM sift.projections ORDER BY name;
+ projection_drop 
+-----------------
+ 
+ 
+ 
+ 
+(4 rows)
+
+SELECT count(*) AS definitions FROM sift.projections;
+ definitions 
+-------------
+           0
+(1 row)
+
+DROP TABLE events CASCADE;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

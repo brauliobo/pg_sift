@@ -185,6 +185,22 @@ scope_syntax(const char *value)
 }
 
 SYNTAX_VALIDATOR(scope, scope_syntax(value))
+/* 'name, name': the projections of sift.projection_index; the names are resolved by sift.projection_status, not here: a restore creates the index before the data of the definitions is there (pg_upgrade never has it) */
+static const char *
+projection_syntax(const char *value)
+{
+	for (const char *p = value; *p; p += strspn(p, " "))
+	{
+		size_t		n = strspn(p, "abcdefghijklmnopqrstuvwxyz0123456789_$");
+
+		if (n == 0 || isdigit((unsigned char) *p) || (p[n] != '\0' && p[n] != ','))
+			return "a list of projection names (lower case letters, digits, _ and $) separated by commas";
+		p += n + (p[n] == ',');
+	}
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(projection, projection_syntax(value))
 
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
@@ -577,6 +593,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "scope",
 						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key)' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a unique btree covers; several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 4.4 and later read; default none)",
 						 "", sift_col_validate_scope, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "projection",
+						 "the named projections (sift.projection_create) this index holds or serves: 'name, name'. sift.projection_index writes it; sift.projection_status says whether the index still holds the columns, the filter and the rollups of each. Only a record: it changes nothing in the segments, ALTER INDEX .. SET (projection = ..) takes effect at once and a definition that is replaced is compared with the index again (default none)",
+						 "", sift_col_validate_projection, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -626,6 +645,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
 	{"connect", RELOPT_TYPE_STRING, offsetof(SiftColOptions, connect)},
 	{"scope", RELOPT_TYPE_STRING, offsetof(SiftColOptions, scope)},
+	{"projection", RELOPT_TYPE_STRING, offsetof(SiftColOptions, projection)},
 };
 
 /*

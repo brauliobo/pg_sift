@@ -48,7 +48,7 @@ else
 	build_old "$OLDCFG" "$OV/oldroot" || { (($? == 77)) && exit 0; tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
 	overlay "$OLDCFG" "$OV/old" "$OV/oldroot"
 fi
-plan $((28 + (${#OLD_REF} ? 3 : 0)))
+plan $((30 + (${#OLD_REF} ? 3 : 0)))
 OLDB=$OV/old$("$OLDCFG" --bindir)
 NEWB=$OV/new$("$NEWCFG" --bindir)
 PATH=$NEWB:$PATH
@@ -84,6 +84,14 @@ CREATE INDEX cdim2_c ON cdim2 USING sift_col (id, zone);
 CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, dim2_id, v)
   WITH (connect = 'dim_id -> cdim(id); dim2_id -> cdim2(id)');
 UPDATE cdim SET cat = cat + 1 WHERE id % 50 = 0;"
+# named projections (4.4's): two definitions, one index that serves both; the indexes are created by pg_upgrade before the data of sift.projections is there
+PROJSQL=
+[[ -n $OLD_REF ]] || PROJSQL="CREATE TABLE pev (id int PRIMARY KEY, a int, k int, q int, s text) WITH (autovacuum_enabled = false);
+INSERT INTO pev SELECT g, g % 40, g % 5, g % 97, (ARRAY['new', 'open', 'held'])[1 + g % 3] FROM generate_series(1, 3000) g;
+SELECT sift.projection_create('pwide', 'pev', ARRAY['a', 'k', '(q / 10)', 's'], rollups => 'a, k');
+SELECT sift.projection_create('pnarrow', 'pev', ARRAY['a', 'k']);
+SELECT sift.projection_index('pev_wide', ARRAY['pwide'], '{\"track_changes\": \"off\"}');
+SELECT sift.projection_index('pev_again', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}');"
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
 CREATE EXTENSION pg_sift;
@@ -120,6 +128,7 @@ CREATE TABLE trk_late (id int PRIMARY KEY, g int NOT NULL);
 INSERT INTO trk_late SELECT g, g % 3 FROM generate_series(1, 300) g;
 CREATE INDEX trk_late_z ON trk_late USING sift_col (id, g);
 $CONNSQL
+$PROJSQL
 CREATE FUNCTION trkq() RETURNS text LANGUAGE sql RETURN (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT g, count(*) c, sum(v) s FROM trk GROUP BY g) x);
 CREATE FUNCTION trkq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN trkq();
 CREATE FUNCTION trkq_off() RETURNS text LANGUAGE sql SET sift.enable_agg = off RETURN trkq();
@@ -245,6 +254,12 @@ if [[ -z $OLD_REF ]]; then
 	check "REINDEX of the parent indexes makes their journals again: both stamps vouch and the indexes verify" test "$(q new postgres "SELECT string_agg(stamp, ',' ORDER BY ordinal) FROM sift.col_connections")" == ok,ok \
 		-a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('cdim_c', true), sift.col_verify('cdim2_c', true), sift.col_verify('cfact_c', true)) v")" == 1
 else skip 3 "an index of a release has no connection"; fi
+
+# the projections: the definitions came with the files, the indexes with the option that names them
+if [[ -z $OLD_REF ]]; then
+	check "the projections are as before: both listed by the one index, every status ok" test "$(q new postgres "SELECT string_agg(projection || ':' || index || ':' || state, ',' ORDER BY projection) FROM sift.projection_status")" == "pnarrow:pev_wide:ok,pwide:pev_wide:ok"
+	check "the guard and the one call work after pg_upgrade" test "$(q new postgres "DELETE FROM sift.projections WHERE name = 'pwide'" 2>&1 | grep -c 'is held by pev_wide')$(q new postgres "SELECT sift.projection_index('pev_other', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}')")" == 1pev_wide
+else skip 2 "a release has no projections"; fi
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \

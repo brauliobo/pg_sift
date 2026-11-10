@@ -1,0 +1,44 @@
+-- A value derived once, as a stored generated column of the table, is an ordinary column to a sift_col index: the aggregate scan reads it as a leaf (group by, filter, sums), an
+-- index-only scan returns it, a projection names it like any column, and the rows follow the updates of the column it derives from. A query that repeats the expression instead
+-- of naming the column does not use that leaf.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, qty int, status text, bucket int GENERATED ALWAYS AS (qty / 10) STORED, tag text GENERATED ALWAYS AS (lower(status) || ':' || (qty / 10)) STORED);
+INSERT INTO events SELECT i, i % 40, i % 97, (ARRAY['New', 'Open', 'Held'])[1 + i % 3] FROM generate_series(1, 6000) i;
+SELECT sift.projection_create('by_bucket', 'events', ARRAY['dim_a_id', 'bucket', 'tag']);
+SELECT sift.projection_index('events_bucket', ARRAY['by_bucket'], '{"track_changes": "off"}');
+SELECT sift.projection_index('events_bucket_again', ARRAY['by_bucket'], '{"track_changes": "off"}');
+VACUUM (FREEZE, ANALYZE) events;
+SELECT projection, index, state FROM sift.projection_status;
+CREATE TABLE classes (label text, stmt text);
+INSERT INTO classes VALUES
+  ('group by',        'SELECT bucket, count(*) FROM events WHERE dim_a_id < 20 GROUP BY bucket'),
+  ('group by text',   'SELECT tag, count(*) FROM events WHERE dim_a_id = 7 GROUP BY tag'),
+  ('filter',          'SELECT dim_a_id, count(*) FROM events WHERE bucket = 3 GROUP BY dim_a_id'),
+  ('sum',             'SELECT dim_a_id, sum(bucket), min(bucket), max(bucket) FROM events WHERE dim_a_id < 10 GROUP BY dim_a_id'),
+  ('expression',      'SELECT qty / 10, count(*) FROM events WHERE dim_a_id < 20 GROUP BY 1');
+SELECT c.label, sift_helpers.agg_index_used(c.stmt) AS read_by, sift_helpers.differences_agg(c.stmt) AS differences FROM classes c ORDER BY c.label;
+-- an index-only scan returns the column from the index
+SET sift.enable_agg = off;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT dim_a_id, bucket FROM events WHERE dim_a_id = 7 AND bucket = 3;
+SELECT count(*) AS rows, sum(bucket) AS sum FROM events WHERE dim_a_id = 7 AND bucket = 3;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET sift.enable_agg;
+-- the derived value follows an update of the column it derives from, new rows and deleted rows
+UPDATE events SET qty = qty + 25 WHERE id % 6 = 0;
+INSERT INTO events SELECT 6000 + i, i % 40, i % 97, 'Open' FROM generate_series(1, 500) i;
+DELETE FROM events WHERE id % 17 = 0;
+SELECT c.label, sift_helpers.differences_agg(c.stmt) AS differences FROM classes c ORDER BY c.label;
+SELECT count(*) AS stale_values FROM events WHERE bucket <> qty / 10;
+DROP TABLE events, classes;
+TRUNCATE sift.projections;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

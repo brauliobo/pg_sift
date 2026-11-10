@@ -260,6 +260,7 @@ extern void sift_col_validate_point_tid_columns(const char *value);
 extern void sift_col_validate_track_changes(const char *value);
 extern void sift_col_validate_connect(const char *value);
 extern void sift_col_validate_scope(const char *value);
+extern void sift_col_validate_projection(const char *value);
 extern void sift_col_validate_key_order(const char *value);
 extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);

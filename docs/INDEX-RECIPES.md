@@ -107,6 +107,42 @@ CREATE INDEX events_col ON events USING sift_col (dim_a_id, tenant_id, created_a
 - **The aggregates of the second key are dearer, and grow with the rows.** The scan reads every unit that holds a row of the tenant: 6.7 to 9.2 times the instructions of an index cut by the tenant at 800,000 rows (2.7 to 3.1 times at 200,000), where that index reads 19 buffers at both sizes. Use the one index when the second key is read for its latest rows, its top-N or a rare aggregate; keep two indexes when its aggregates are frequent or the table is large.
 - The columns of the second key are in the index once, for both.
 
+## Named projections: the columns of an index, defined once
+
+An index is what it stores: columns, derived expressions, a filter (a partial index), the roll-ups and a few options. When several indexes of a table repeat that list, a change reaches some of them and not the others. A projection is that list under a name, kept in a table of the extension (`sift.projections`, dumped with the database), and `sift.projection_index` makes the index from it, or finds that an index already holds it and builds none.
+
+```sql
+SELECT sift.projection_create('event_dims', 'events', ARRAY['dim_a_id', 'tenant_id', 'created_at', 'kind', 'status', '(qty / 10)', 'value_num'],
+                              rollups => 'dim_a_id, kind');
+SELECT sift.projection_create('event_kinds', 'events', ARRAY['dim_a_id', 'kind', '(qty / 10)']);
+SELECT sift.projection_index('events_col', ARRAY['event_dims'], '{"key_order": "dim_a_id, created_at"}');   -- builds events_col
+SELECT sift.projection_index('events_kinds', ARRAY['event_kinds'], '{"key_order": "dim_a_id, created_at"}'); -- builds nothing: events_col holds it
+SELECT * FROM sift.projection_status;
+```
+
+`sift.projection_create(name, table, columns, rollups, filter, options)` checks the definition on an empty copy of the table (a column that does not exist, an expression that is not immutable, a bad filter or roll-up is refused there). `sift.projection_index(index, projections, layout)` takes one projection or several of one table, with the same filter, roll-ups and options (the index holds the union of their columns, once each), and the layout of this index: the options that cut and order its rows (`key_order`, `key_cut`, `order_array_group`, ...) and the others that belong to one index (`track_changes`). It returns the index it made or found. The index lists the names in its option `projection`, which `pg_dump` writes with the index; `sift.projection_index_sql` returns the statement instead, for `CREATE INDEX CONCURRENTLY`.
+
+**One index serves a projection** when it is a `sift_col` index of the table that is valid, lists every column and expression of the projection, keeps every row of its filter (the filter implies the predicate of the index) and either keeps no other row or lists the columns the filter reads, rolls up the same columns and names the measures the projection names, has the options the projection sets, and cuts and orders its rows as the layout says. Nothing is stored for the second projection: the planner reads the index for its queries as it does for any index that holds the columns, so the answers and the cost are those of an index of its own.
+
+| 1,000,000 rows, 12 columns | an index of its own | served by the wide index |
+|---|---|---|
+| size of the second index | 11.1 MB | none (the pair 30.4 MB, the wide one alone 19.3 MB: -36%) |
+| build of the second index | 6,613 M instructions | none (the call that finds the wide index 10.7 M) |
+| one entity, group by `qty / 10` | 1.67 M instructions, 302 buffer hits (no SiftAgg plan) | 0.70 M, 25 |
+| an entity range | 3.98 M, 57 | 4.01 M, 60 |
+| one tenant | 10.23 M, 622 | 10.25 M, 616 |
+| no condition | 41.36 M, 487 | 41.38 M, 476 |
+
+**Different layouts share the declaration, not the data.** An index cut by another key reads its own queries 8 to 19 times cheaper than a shared store would (the table of the previous section): `sift.projection_index` with another `key_order` builds a second index from the same definition, and the definition is the one place to change.
+
+**Replacing and dropping.** A projection that an index lists cannot be deleted, renamed or change its table, columns or filter (`sift.projections` has a trigger, so a direct `DELETE` or `UPDATE` is refused too): define the changed one under another name, make its indexes with `sift.projection_index_sql`, then drop the old indexes and the old definition (or `ALTER INDEX .. RESET (projection)` first). New roll-ups and options (`sift.projection_replace`) are set on the indexes that list only that projection, and a NOTICE says to `REINDEX` them; an index that lists other projections too is left as it is.
+
+**What the status says.** `sift.projection_status` lists each projection with the indexes that list it: `ok`, or `broken` with the reason: the index lost a column, its predicate no longer covers the filter, the roll-up or an option changed, the index is not valid, a name that nobody defined, or no index at all. A broken projection changes no answer: the queries take the plan they would without the index, with the same rows (the aggregate scan proves what it reads against the index it reads).
+
+**Dump, restore and pg_upgrade.** The definitions are extension configuration, dumped as data, and every index keeps its names in its options. A restore (a plain dump through psql, `pg_restore`, serial or `-j`) creates the indexes with or without the definitions there yet and a `pg_upgrade` creates them before the data is back: the names are checked by the status and never by `CREATE INDEX`, so none of them fails, and the status is `ok` once the data of the definitions is restored. A restore of 1,100,000 rows with two indexes of one definition took 4.9 s with the projections and 4.7 s without (the index builds are the time); the definitions are 873 bytes of the dump.
+
+**A value derived once.** An expression in the key list (`(qty / 10)`) is computed again in every index that lists it: 185 instructions a row for an integer, 920 for a text value, in each build. A stored generated column computes it once, at the write, and every index lists the column: `ALTER TABLE events ADD COLUMN bucket int GENERATED ALWAYS AS (qty / 10) STORED`, then `... (dim_a_id, bucket)`. The aggregate scan reads the column as any other leaf (group by, filter, sums) and an index-only scan returns it, as the same query on an expression leaf; queries must name the column, a repeated expression does not use it. It pays when many indexes or a b-tree or the queries share the value: 100,000 inserts cost 1,800 more instructions a row for an integer column (+14%, heap +8.4% at 1,000,000 rows) and 3,000 for a text one (+22%, WAL +4.6%, heap +13.7%). For one or two indexes the expression leaf is cheaper.
+
 ## What writes cost
 
 100,000 rows against the 1,000,000-row table with its three btrees, the first set having no `sift_col` index (time and WAL, minimum of three runs):

@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 42 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
@@ -1744,6 +1744,22 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Set it on the index of a table that joins a dimension table by an integer key, once the dimension table has a sift_col index that holds its key (the primary key) and the columns the queries read. An unqualified parent name is in the schema of this index's table. DROP INDEX of the parent index needs CASCADE while the connection exists. Remove it with ALTER INDEX .. SET (connect = 'off').
 - **Sources:** benchmark `test:col_conn_declare`; [COL-CONNECT](COL-CONNECT.md)
 
+#### sift_col(projection)
+
+`sift_col` · opt-in · since 4.4 · default ''
+
+- **What it does:** records the named projections (sift.projection_create: columns, expressions, filter, roll-ups) that this index holds or serves, so that sift.projection_status can say whether it still keeps the columns, the filter and the roll-ups of each. sift.projection_index writes it: it makes the index from the definitions, or, when an index of the table with the same layout already holds them, builds nothing and adds the names to that index. Only a record: the segments and the format do not change
+- **Gain:** an index serves a narrow projection at the cost of an index of its own (1,000,000 rows, 12 columns: 0.70 M against 1.67 M instructions for one entity, 4.01 M against 3.98 M for a range, 10.25 M against 10.23 M for a tenant, 41.38 M against 41.36 M for no condition; the buffers within 5% and the plan names the wide index); the option itself reads nothing
+- **Gain and cost:** 1.00x fewer instructions (0k saved a query), index +0.0%, build +0.0%, opt-in (fails: gain)
+- **Impact:** index size: one index fewer where an index serves a projection: 30.4 MB for the narrow and the wide index against 19.3 MB (-36%, 1,000,000 rows); none where each projection needs its own layout; build, merge and writes: the build of the second index is not done (6,613 M instructions saved at 1,000,000 rows; the call that finds the serving index costs 10.7 M, 0.16% of it); 100,000 inserted rows write 1.6 MB less WAL with one index fewer (-7%); a restore of 1,100,000 rows with two indexes of one definition 4.9 s against 4.7 s without the option; other: none in the index: a few bytes of reloptions; the definitions are one row each in sift.projections (873 bytes for two indexes of one definition in a dump); sift.projection_status compares each listed index with its definition (4 to 9 ms for three listings of two indexes, 1,100,000 rows)
+- **When:** A table that has several sift_col indexes with columns, expressions, a filter or roll-ups in common: the definitions are written once and an index with the same layout that holds them is found instead of built. Not a different layout (it is another index over the same definition, with its own data) and not a table of another database.
+- **Default:** '' — Not on by default: a projection is a name only the user can give, and the option only records it (the reads of an index are those of the index, so there is no gain to weigh).
+- **Why not the default:** the speedup is under 1.05, or saves under 100k instructions a query
+- **Turn off:** ALTER INDEX i RESET (projection): the index stops listing the names, nothing stored changes, no REINDEX; sift.projection_status then says no index lists the projection
+- **Upgrade from 4.3:** A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX.
+- **Advice:** Define the columns of the indexes of a table with sift.projection_create and make the indexes with sift.projection_index, which builds one only when none holds the projection; read sift.projection_status after a change of an index. Do not write the option by hand unless the index lists the columns of the definitions: the status says broken otherwise. A definition that an index lists cannot change its columns or its filter; make the changed one under another name and its indexes with sift.projection_index_sql.
+- **Sources:** benchmark `test:col_projection_served`; [INDEX-RECIPES](INDEX-RECIPES.md#named-projections-the-columns-of-an-index-defined-once)
+
 #### sift_col(scope)
 
 `sift_col` · opt-in · since 4.4 · default ''
@@ -2733,7 +2749,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`.
 
 | Option | 4.3 | 4.4 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2747,6 +2763,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift.tomb_log_limit` | 8388608 kB | 8388608 kB |  | A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
+| `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |

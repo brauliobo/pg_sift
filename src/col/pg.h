@@ -175,6 +175,7 @@ typedef struct SiftColOptions
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
 	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/conn.h), 0 = none */
 	int			scope;			/* offset of the "scope" string (the derived keys of the index, col/scope.h), 0 = none */
+	int			projection;		/* offset of the "projection" string (the named projections the index holds or serves, sift.projection_index), 0 = none */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */

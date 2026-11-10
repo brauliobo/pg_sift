@@ -983,3 +983,15 @@ BEGIN
 	EXECUTE format('SELECT string_agg(g || '':'' || id, '','' ORDER BY g, ord) FROM generate_series(1, 3) g, (SELECT row_number() OVER () AS ord, * FROM (%s) r) x', q) INTO b;
 	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERS ' || q END;
 END $$;
+
+-- statement_outcome: 'ok' when the statement runs, else its SQLSTATE and message (tests col_projection_define, col_projection_served)
+CREATE FUNCTION sift_helpers.statement_outcome(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN EXECUTE stmt; RETURN 'ok'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM; END $$;
+-- agg_index_used: the index the aggregate scan reads for the query ('Index: name') or native (tests col_projection_served, col_projection_generated)
+CREATE FUNCTION sift_helpers.agg_index_used(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ '^\s*Index: ' THEN RETURN btrim(l); END IF; END LOOP;
+	RETURN 'native';
+END $$;
