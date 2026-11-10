@@ -117,6 +117,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->contain |= sift_col_def_shape(&defs[i]) != 0;
 		s->kinds |= sift_col_def_has_kinds(&defs[i]);
 		s->connected |= (defs[i].flags & SIFT_COLD_FOUND) != 0;
+		s->scoped |= (defs[i].flags & SIFT_COLD_SCOPE) != 0;
 	}
 	s->hash = schema_hash(defs, n);
 	return s;

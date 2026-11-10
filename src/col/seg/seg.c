@@ -87,6 +87,8 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 		corrupt(seg, "The schema has wide leaves, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->connected && seg->entry.format < SIFT_COL_FORMAT_CONN)
 		corrupt(seg, "The schema has connection flags, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (hd->schema->scoped && seg->entry.format < SIFT_COL_FORMAT_SCOPE)
+		corrupt(seg, "The schema has a derived scope key, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->connected)

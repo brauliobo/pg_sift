@@ -1,5 +1,5 @@
 # FILE, the literal, why: places that name a column format by number. Checked by scripts/check-format-literals.sh against src/col/api/format.h (pin below).
-# pin	b6df571e3db07330ec0a76246a313db7f853139b031ca6900d9a18e346e87532
+# pin	e23ab24de4bcbf0fe9c8e1a25911f777d423a332d397dbb4c2060e130835ee83
 test/sql/col_gorder_ends.sql	40	the ends block is column format 40 by definition (has_ends)
 test/sql/col_key_cut.sql	17	the first minor of key_cut, under the setting that writes no later one
 test/t/col_key_cut_merge.sh	34	the table-first unit of a key-cut merge; a later minor must be read here from the constant

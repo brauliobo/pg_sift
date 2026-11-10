@@ -71,7 +71,7 @@ leaf_vtype(const SiftColDef *def)
 static bool
 leaf_hidden(const SiftColDef *def)
 {
-	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_FOUND);
+	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_DERIVED);
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -154,7 +154,7 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 		l->kind = SCL_SCALAR;
 		l->vtype = def->store == SIFT_COLS_VAR || (def->lane > 0 && i >= def->lane && sift_col_def_shape(&cols[i - def->lane])) ? SCV_I64 : leaf_vtype(def);	/* the lanes of a range or network are 64-bit positions whatever the head's type */
 		l->lossy |= def->store == SIFT_COLS_VAR;
-		if (def->parent < 0 && !(def->flags & SIFT_COLD_FOUND))
+		if (def->parent < 0 && !(def->flags & SIFT_COLD_DERIVED))
 			l->path = path_below(def->path, att);
 		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
 	}

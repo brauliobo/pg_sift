@@ -62,7 +62,7 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 }
 
 /*
- * The found flags of a connected index (SIFT_COLD_FOUND, the leaves from first on) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
+ * The found flags of a connected index (SIFT_COLD_FOUND, the leaves from first to end) are filled by the writer of a segment from the parent tables (col/conn.h), not by the rows
  * that come to it: a view of a batch has storage of its own for them, empty, and shares the rest, so that the batch a caller keeps (the write buffer's) is not changed.
  */
 static void put_value(SiftColBatch *b, int id, const SiftColValue *v);
@@ -70,6 +70,7 @@ static void put_value(SiftColBatch *b, int id, const SiftColValue *v);
 struct SiftColFoundView
 {
 	int			first;
+	int			end;			/* the derived scope leaves after the flags stay the batch's: NULL in every row */
 	SiftColBatch *own;			/* the storage of the flags */
 	SiftColBatch view;
 	SiftCVals  *vcol;
@@ -80,15 +81,20 @@ SiftColFoundView *
 sift_cfound_create(MemoryContext mcxt, const SiftColSchema *schema)
 {
 	SiftColFoundView *c;
-	int			first = schema->ncols;
+	int			first = schema->ncols,
+				end = 0;
 
-	for (int i = 0; i < schema->ncols && first == schema->ncols; i++)
+	for (int i = 0; i < schema->ncols; i++)
 		if (schema->cols[i].flags & SIFT_COLD_FOUND)
-			first = i;
-	if (first == schema->ncols)
+		{
+			first = Min(first, i);
+			end = i + 1;
+		}
+	if (end == 0)
 		return NULL;
 	c = MemoryContextAllocZero(mcxt, sizeof(SiftColFoundView));
 	c->first = first;
+	c->end = end;
 	c->own = sift_cbatch_create(mcxt, schema);
 	c->vcol = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCVals));
 	c->vdict = MemoryContextAlloc(mcxt, schema->ncols * sizeof(SiftCDict *));
@@ -107,7 +113,7 @@ sift_cfound_view(SiftColFoundView *c, const SiftColBatch *src)
 	memcpy(c->vdict, src->dict, ncols * sizeof(SiftCDict *));
 	c->view.col = c->vcol;
 	c->view.dict = c->vdict;
-	for (int i = c->first; i < ncols; i++)
+	for (int i = c->first; i < c->end; i++)
 	{
 		SiftCVals  *v = &c->own->col[i];
 
@@ -138,7 +144,7 @@ sift_cfound_put(SiftColBatch *view, int leaf, const SiftColValue *v)
 void
 sift_cfound_done(SiftColFoundView *c)
 {
-	for (int i = c->first; i < c->view.schema->ncols; i++)
+	for (int i = c->first; i < c->end; i++)
 		c->own->col[i] = c->vcol[i];
 }
 

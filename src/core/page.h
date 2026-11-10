@@ -98,6 +98,7 @@ typedef enum SiftSegKind
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
+#define SIFT_SEG_SCOPE	0x0008	/* a scope segment of a sift_col index with the reloption scope (col/scope.h): a key-cut segment whose rows are the fact rows replicated once per scope key; the entity readers skip it. Column format minor 45, so that an older library refuses the index */
 extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
 extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
 #define SIFT_SEG_ROOTS_NOW (sift_test_no_roots ? 0 : SIFT_SEG_ROOTS)
