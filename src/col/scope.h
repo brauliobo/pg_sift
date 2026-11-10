@@ -105,6 +105,7 @@ extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const i
 /* Does every entity segment of the directory have its scope entries in the scope segments (SIFT_SEG_SCOPED; rows of a write buffer are the reader's: it reads them through the entity path) */
 extern bool sift_scope_covered(Relation index, int scope);
 extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap);
+extern int64 **sift_scope_first_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 **counts);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 
 #ifdef SIFT_TESTING

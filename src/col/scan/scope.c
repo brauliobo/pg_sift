@@ -131,8 +131,6 @@ sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snaps
 		return "disabled";
 	if (scope < 0)
 		return "no scope index";
-	if (once && nkeys > 1)
-		return "several keys, row counted once";
 	if (!scope_trusted(index, scope) && !sift_scope_has_journal(index, scope))
 		return "no journal";
 	(void) sift_cwbuf_flush(index);
@@ -180,12 +178,26 @@ slot_key(TupleTableSlot *slot, AttrNumber att, bool *isnull)
 	}
 }
 
-/*
- * The member keys that have a pair with one of the scope keys in the scope relation, as the snapshot sees it: ascending, each once. The relation is read whole: the
- * unique btree of the declaration leads with the member, and the members of a scope key are what it cannot list.
- */
-int64 *
-sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+typedef struct MemberRank
+{
+	int64		member;
+	int			rank;			/* the position of the pair's key among the keys asked for */
+} MemberRank;
+
+static int
+cmp_member_rank(const void *a, const void *b)
+{
+	const MemberRank *x = a,
+			   *y = b;
+
+	if (x->member != y->member)
+		return x->member < y->member ? -1 : 1;
+	return x->rank - y->rank;
+}
+
+/* The pairs of the scope relation, as the snapshot sees it, whose key is one of the nkeys sorted keys: (member, position of the key), by member and then position. The relation is read whole: the unique btree of the declaration leads with the member, and the members of a scope key are what it cannot list. */
+static MemberRank *
+scope_pairs(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *sorted, int nkeys, uint32 *n)
 {
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	Relation	rel;
@@ -193,13 +205,9 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot
 				skey;
 	TupleTableSlot *slot;
 	TableScanDesc scan;
-	int64	   *sorted = palloc(Max(nkeys, 1) * sizeof(int64)),
-			   *out = palloc(64 * sizeof(int64));
-	uint32		cap = 64,
-				uniq = 0;
+	MemberRank *out = palloc(64 * sizeof(MemberRank));
+	uint32		cap = 64;
 
-	memcpy(sorted, keys, nkeys * sizeof(int64));
-	qsort(sorted, nkeys, sizeof(int64), cmp_i64);
 	(void) sift_scope_relation_index(heap, index, sp->s[scope_ordinal(sp, key_name)], &rel, &member, &skey);
 	slot = table_slot_create(rel, NULL);
 	scan = sift_table_beginscan(rel, snap, 0, NULL);
@@ -210,23 +218,64 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot
 					mn;
 		int64		k = slot_key(slot, skey, &kn),
 					m = slot_key(slot, member, &mn);
+		const int64 *at;
 
-		if (kn || mn || bsearch(&k, sorted, nkeys, sizeof(int64), cmp_i64) == NULL)
+		if (kn || mn || (at = bsearch(&k, sorted, nkeys, sizeof(int64), cmp_i64)) == NULL)
 			continue;
 		if (*n == cap)
-			out = repalloc(out, (cap *= 2) * sizeof(int64));
-		out[(*n)++] = m;
+			out = repalloc(out, (cap *= 2) * sizeof(MemberRank));
+		out[(*n)++] = (MemberRank) {m, (int) (at - sorted)};
 	}
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
-	qsort(out, *n, sizeof(int64), cmp_i64);
-	for (uint32 i = 0, k = 0; i < *n; i++)
-		if (k == 0 || out[i] != out[k - 1])
-		{
-			out[k++] = out[i];
-			uniq = k;
-		}
-	*n = uniq;
+	qsort(out, *n, sizeof(MemberRank), cmp_member_rank);
 	return out;
+}
+
+/*
+ * The member keys that have a pair with one of the scope keys in the scope relation, as the snapshot sees it: ascending, each once.
+ */
+int64 *
+sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+{
+	int64	   *sorted = palloc(Max(nkeys, 1) * sizeof(int64));
+	uint32		pairs;
+	MemberRank *pr;
+	int64	   *out;
+
+	memcpy(sorted, keys, nkeys * sizeof(int64));
+	qsort(sorted, nkeys, sizeof(int64), cmp_i64);
+	pr = scope_pairs(heap, index, key_name, snap, sorted, nkeys, &pairs);
+	out = palloc(Max(pairs, 1) * sizeof(int64));
+	*n = 0;
+	for (uint32 i = 0; i < pairs; i++)
+		if (i == 0 || pr[i].member != pr[i - 1].member)
+			out[(*n)++] = pr[i].member;
+	return out;
+}
+
+/*
+ * The members of each of the nkeys ascending keys that no earlier key of them has: set[i] (counts[i] members, ascending) are the members whose first key is keys[i]. A fact counted once for several keys is
+ * the one of the unit of the first of its member's keys: the entries of the other units are the replicas to leave out (INTERFACE section 6b).
+ */
+int64 **
+sift_scope_first_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 **counts)
+{
+	uint32		pairs;
+	MemberRank *pr = scope_pairs(heap, index, key_name, snap, keys, nkeys, &pairs);
+	int64	  **set = palloc(nkeys * sizeof(int64 *));
+
+	*counts = palloc0(nkeys * sizeof(uint32));
+	for (uint32 i = 0; i < pairs; i++)
+		(*counts)[pr[i].rank] += i == 0 || pr[i].member != pr[i - 1].member;
+	for (int k = 0; k < nkeys; k++)
+	{
+		set[k] = palloc(Max((*counts)[k], 1) * sizeof(int64));
+		(*counts)[k] = 0;
+	}
+	for (uint32 i = 0; i < pairs; i++)
+		if (i == 0 || pr[i].member != pr[i - 1].member)
+			set[pr[i].rank][(*counts)[pr[i].rank]++] = pr[i].member;
+	return set;
 }

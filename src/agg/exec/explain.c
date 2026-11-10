@@ -401,6 +401,8 @@ explain_scope(AggExec *ex, ExplainState *es)
 	sift_explain_int(&ln, "Scope Units Skipped", NULL, "skipped", cc.units_pruned, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
 	ExplainPropertyInteger("Scope Entries Read", NULL, ex->n_rows, es);
+	if (ex->scope_dedupe)
+		ExplainPropertyText("Scope Dedupe", "the unit of the first key of the member counts", es);
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */

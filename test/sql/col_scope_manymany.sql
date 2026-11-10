@@ -1,6 +1,6 @@
 -- An entity is in several scope keys (a membership table of (entity, group) pairs): a fact row has one to six scope entries. A read of one key sees each fact of a member that has the
 -- pair once; a read of several keys that means "a pair with any of them" (IN, EXISTS) counts a fact once; a join counts it once for each pair. Every state is md5 equal to the plain
--- join (INTERFACE section 6b). PoC: several keys are read through the entity rows (Scope Fallback: several keys, row counted once); PHASE 2 dedupes the facts of the scope units by heap address.
+-- join (INTERFACE section 6b). Several keys are read from the scope units, the entry of the unit of the first key of the member counting (col_scope_dedupe measures it).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;

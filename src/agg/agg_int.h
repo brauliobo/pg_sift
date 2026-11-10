@@ -259,6 +259,7 @@ typedef struct AggExec
 	const char *found_why;		/* why a join of a connected index was not (the first of them) */
 	bool		scope_stored;	/* the scan reads the scope segments of its index (scope_open) */
 	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
+	bool		scope_dedupe;	/* ... one entry of each fact counts for several keys: that of the first key of its member (INTERFACE section 6b) */
 	uint64		scope_members;	/* ... and how many members it listed */
 	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */

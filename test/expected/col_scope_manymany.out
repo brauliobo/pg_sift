@@ -1,6 +1,6 @@
 -- An entity is in several scope keys (a membership table of (entity, group) pairs): a fact row has one to six scope entries. A read of one key sees each fact of a member that has the
 -- pair once; a read of several keys that means "a pair with any of them" (IN, EXISTS) counts a fact once; a join counts it once for each pair. Every state is md5 equal to the plain
--- join (INTERFACE section 6b). PoC: several keys are read through the entity rows (Scope Fallback: several keys, row counted once); PHASE 2 dedupes the facts of the scope units by heap address.
+-- join (INTERFACE section 6b). Several keys are read from the scope units, the entry of the unit of the first key of the member counting (col_scope_dedupe measures it).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -78,14 +78,14 @@ FROM sets s, LATERAL scope_run(
 	format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', s.keys),
 	format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY (%L::int8[]))', s.keys)) r
 ORDER BY s.n;
- n |     keys      | same | stored |              why               | semantics 
----+---------------+------+--------+--------------------------------+-----------
- 1 | {2,9}         | t    | f      | several keys, row counted once | once
- 2 | {1,2,3,4,5,6} | t    | f      | several keys, row counted once | once
- 3 | {7,9,11}      | t    | f      | several keys, row counted once | once
- 4 | {12,13}       | t    | f      | several keys, row counted once | once
- 5 | {5}           | t    | t      |                                | once
- 6 | {}            | t    | t      |                                | once
+ n |     keys      | same | stored | why | semantics 
+---+---------------+------+--------+-----+-----------
+ 1 | {2,9}         | t    | t      |     | once
+ 2 | {1,2,3,4,5,6} | t    | t      |     | once
+ 3 | {7,9,11}      | t    | t      |     | once
+ 4 | {12,13}       | t    | t      |     | once
+ 5 | {5}           | t    | t      |     | once
+ 6 | {}            | t    | t      |     | once
 (6 rows)
 
 -- ... which is not the join: it counts a fact once for each pair, and the count of the join is the sum of the counts of the keys
