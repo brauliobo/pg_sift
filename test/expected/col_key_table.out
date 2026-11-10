@@ -321,12 +321,15 @@ SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
  t
 (1 row)
 
+-- the rows of the three segments, with the dictionary of the pad, are over what a merge may hold in memory at the default 64 MB: it would cut a short second segment
+SET maintenance_work_mem = '128MB';
 SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
  merged 
 --------
  t
 (1 row)
 
+RESET maintenance_work_mem;
 SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
  minors | segments 
 --------+----------
