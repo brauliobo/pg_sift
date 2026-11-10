@@ -222,3 +222,28 @@ sift_cgord_seek_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const i
 	pfree(dv);
 	return ok;
 }
+
+uint32
+sift_cgord_grp_pack(StringInfo out, const SiftCGOrdGrp *gs, uint32 ng, uint32 nvals)
+{
+	uint64		range = (uint64) gs[ng - 1].group - (uint64) gs[0].group;
+	uint32		gbits = bitlen(range),
+				sbits = bitlen(nvals);
+	uint8	   *p;
+
+	if (ng < SIFT_CGORD_GRP_PACK_MIN || range > UINT32_MAX)
+		return 0;
+	for (uint32 i = 0; i < ng; i++)
+		if (gs[i].ncount != 0 || gs[i].vcount == 0)
+			return 0;
+	p = put_zeros(out, (16 + (((uint64) ng * (gbits + sbits) + 7) >> 3) + 7) & ~(uint64) 7);
+	memcpy(p, &gs[0].group, sizeof(int64));
+	for (uint32 i = 0; i < ng; i++)
+	{
+		uint64		bit = 64 + (uint64) i * (gbits + sbits);
+
+		bits_put(p, bit, (uint64) gs[i].group - (uint64) gs[0].group, gbits);
+		bits_put(p, bit + gbits, gs[i].vstart, sbits);
+	}
+	return SIFT_CGORD_GRP_PACKED | gbits << 17 | sbits << 23;
+}

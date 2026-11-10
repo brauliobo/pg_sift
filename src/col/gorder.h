@@ -90,6 +90,8 @@
 #define SIFT_CGORD_STR_BLK	16
 #define SIFT_CGORD_STR_MAX	256		/* bytes of the buffer for a string of a text block (SIFT_COL_DICT_MAX_ENTRY + 1) */
 #define SIFT_CGORD_GRPENT	24
+#define SIFT_CGORD_GRP_PACKED	(1u << 16)	/* word 7 of a group block: its table of groups is packed (sift_cgord_grp_pack); bits 17..22 are the bits of a group's distance from the first group, 23..28 of its first entry */
+#define SIFT_CGORD_GRP_PACK_MIN	1024		/* the groups from which the table is packed: below it the table is a few pages and is read as it is */
 #define SIFT_CGORD_ENDS_LEAVES	8			/* the date, timestamp and integer columns the build chooses to keep the ends of (the text columns it chooses keep the whole order, at most 2) */
 #define SIFT_CGORD_PAY_BLOCK	65536		/* the bytes of index one avoided cold block of a query is worth (sift_cgord_pay): the one rule of the default formulas */
 #define SIFT_CGORD_ENDS		4096		/* the entries kept at each end of a block of the ends only, and of the NULL rows: a top-N of up to this many rows reads them */
@@ -148,6 +150,8 @@ typedef struct SiftCGOrdHdr
 	uint32		vtotal;			/* ... and the values the segment has in all; 0: the block is complete */
 	uint32		quant;			/* version 4: the buckets per mean gap the writer chose; else 0 */
 	bool		strperm;		/* version 5: the section after the chunks holds the dictionary code of each rank, not the strings */
+	uint8		gbits;			/* version 2 with a packed table of groups (SIFT_CGORD_GRP_PACKED): the bits of a group and of the start of its entries; else 0 */
+	uint8		sbits;
 } SiftCGOrdHdr;
 
 /* What a scan wants of the blocks (sift_col_gorder_open): a block of the ends only answers a scan of few rows that starts at an end of it */
@@ -312,6 +316,11 @@ typedef struct SiftCGOrdGrpRun
 #define SIFT_CGORD_GRPRUN(h)	((SiftCGOrdGrpRun) {0, (h)->values, 0, false})
 /* The n groups e that follow those checked: false when they are out of the block, not ascending, or do not tile the entries; _done: after the last group, that they tile all of them */
 extern bool sift_cgord_groups_check(const SiftCGOrdHdr *h, SiftCGOrdGrpRun *st, const SiftCGOrdGrp *e, uint32 n);
+/* The bytes of the table of groups of a block whose header was parsed */
+extern uint64 sift_cgord_grp_bytes(const SiftCGOrdHdr *h);
+/* The bytes of a packed table to read for n groups from i on (and the one after them): where, and how many; then unpack them from win into out with first, the group the table starts with */
+extern void sift_cgord_grp_span(const SiftCGOrdHdr *h, uint32 i, uint32 n, uint64 *off, uint32 *len);
+extern void sift_cgord_grp_unpack(const SiftCGOrdHdr *h, int64 first, uint32 i, uint32 n, const uint8 *win, SiftCGOrdGrp *out);
 extern bool sift_cgord_groups_done(const SiftCGOrdHdr *h, const SiftCGOrdGrpRun *st);
 
 /* The directory entry ent (SIFT_CGORD_DIRENT bytes) of chunk c of a block whose header was parsed, false when the entry is out of the block or its offsets are */
@@ -330,6 +339,12 @@ extern uint32 sift_cgord_addr_codes(const int64 *av, uint32 m, int64 *dv);
 extern bool sift_cgord_seek_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *kv, const int64 *av, uint32 m);
 /* ... and the chunk of the m positions pv as a positional one (d keeps its first key and offset) */
 extern void sift_cgord_pos_chunk(StringInfo body, SiftCGOrdDir *d, const int64 *pv, uint32 m);
+/*
+ * The table of the ng groups gs of a group block of nvals entries, none of them a NULL key, as the bits of the group's distance from the first group and of the start of its entries
+ * (the count of a group is where the next starts) behind the first group, for a table of at least SIFT_CGORD_GRP_PACK_MIN groups whose distances fit 32 bits: the flags for word 7 of the block, 0 when
+ * it is not packed (out is left as it was).
+ */
+extern uint32 sift_cgord_grp_pack(StringInfo out, const SiftCGOrdGrp *gs, uint32 ng, uint32 nvals);
 
 /*
  * Decodes the first w entries (all m when w >= m) of a chunk of m from its two blobs (kb, klen) and (ab, alen) into key[0..w) and addr[0..w) (heap addresses); both need

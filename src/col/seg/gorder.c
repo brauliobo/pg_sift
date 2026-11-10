@@ -387,7 +387,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		if (g->grps != NULL)
 			e = g->grps[mid];
 		else
-			seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) mid * SIFT_CGORD_GRPENT, sizeof(e), &e);
+			seg_gord_grp_read(seg, g, col, mid, 1, &e);
 		if (e.group < group)
 			lo = mid + 1;
 		else
@@ -400,7 +400,7 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 		if (g->grps != NULL)
 			e = g->grps[lo];
 		else
-			seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) lo * SIFT_CGORD_GRPENT, sizeof(e), &e);
+			seg_gord_grp_read(seg, g, col, lo, 1, &e);
 		if (e.group == group)
 		{
 			if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
@@ -427,17 +427,45 @@ sift_cseg_gorder_ngroups(SiftColSegment *seg, int col)
 	return g->hdr.gcol < 0 ? 1 : g->hdr.ngroups;
 }
 
-/* The group table of a block in memory, for a table of at most SIFT_CGORD_GRP_EAGER bytes (the callers ask): a larger one is read entry by entry through the buffers, whatever its groups */
+/* The groups [i, i + n) of a block's table into out, packed or not */
+void
+seg_gord_grp_read(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 i, uint32 n, SiftCGOrdGrp *out)
+{
+	uint64		at = g->at + seg_gord_gat(seg, g, col),
+				off;
+	uint32		len;
+	uint8		small[64],
+			   *win;
+
+	if (g->hdr.gbits == 0)
+	{
+		seg_read(seg, at + (uint64) i * SIFT_CGORD_GRPENT, (Size) n * SIFT_CGORD_GRPENT, out);
+		return;
+	}
+	if (!g->gfirst_ok)
+	{
+		seg_read(seg, at, sizeof(int64), &g->gfirst);
+		g->gfirst_ok = true;
+	}
+	sift_cgord_grp_span(&g->hdr, i, n, &off, &len);
+	win = len <= sizeof(small) ? small : palloc(len);
+	seg_read(seg, at + off, len, win);
+	sift_cgord_grp_unpack(&g->hdr, g->gfirst, i, n, win, out);
+	if (win != small)
+		pfree(win);
+}
+
+/* The group table of a block in memory, for a table of at most SIFT_CGORD_GRP_EAGER bytes (the callers ask): a larger one is read entry by entry through the buffers, whatever its groups, and so is a packed one (decoding it whole costs more than the probes of a statement) */
 static void
 gord_group_table(SiftColSegment *seg, int col)
 {
 	GOrdLeaf   *g = seg_gord_leaf(seg, col);
 
-	if (g == NULL || g->hdr.gcol < 0 || g->grps != NULL || g->hdr.ngroups == 0)
+	if (g == NULL || g->hdr.gcol < 0 || g->grps != NULL || g->hdr.ngroups == 0 || g->hdr.gbits != 0)
 		return;
 	Assert((uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT <= SIFT_CGORD_GRP_EAGER);
 	g->grps = MemoryContextAlloc(seg->mcxt, (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT);
-	seg_read(seg, g->at + seg_gord_gat(seg, g, col), (Size) g->hdr.ngroups * SIFT_CGORD_GRPENT, g->grps);
+	seg_gord_grp_read(seg, g, col, 0, g->hdr.ngroups, g->grps);
 }
 
 /* The group at place gi in the order of the groups of a grouped block, and its entries as sift_cseg_gorder_range gives them */
@@ -454,7 +482,7 @@ sift_cseg_gorder_group_at(SiftColSegment *seg, int col, uint32 gi, int64 *group,
 	if (g->grps != NULL)
 		e = g->grps[gi];
 	else
-		seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) gi * SIFT_CGORD_GRPENT, sizeof(e), &e);
+		seg_gord_grp_read(seg, g, col, gi, 1, &e);
 	if ((uint64) e.vstart + e.vcount > g->hdr.values || e.nstart < g->hdr.values || (uint64) e.nstart + e.ncount > g->hdr.entries)
 		corrupt(seg, "The global order of leaf %d has a malformed group.", col);
 	*group = e.group;

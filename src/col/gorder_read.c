@@ -91,6 +91,33 @@ sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint32 idx, char
 	return true;
 }
 
+/* word 7 of a group block: the bits of a group and of the start of its entries in a packed table (0: the table is not packed) */
+static inline uint32
+grp_gbits(uint32 w7)
+{
+	return w7 & SIFT_CGORD_GRP_PACKED ? (w7 >> 17) & 63 : 0;
+}
+
+static inline uint32
+grp_sbits(uint32 w7)
+{
+	return w7 & SIFT_CGORD_GRP_PACKED ? (w7 >> 23) & 63 : 0;
+}
+
+/* a block that is not packed has no widths, a packed one has widths of 1 to 32 bits */
+static inline bool
+grp_flags_bad(uint32 w7)
+{
+	return (w7 & SIFT_CGORD_GRP_PACKED) ? (grp_gbits(w7) == 0 || grp_gbits(w7) > 32 || grp_sbits(w7) == 0 || grp_sbits(w7) > 32) : (w7 >> 17) != 0;
+}
+
+/* the first group, the bits of ng groups, and 8 bytes after them that bits_get may read past the last, to a multiple of 8 */
+static inline uint64
+grp_bytes(uint32 ng, uint32 gbits, uint32 sbits)
+{
+	return gbits == 0 ? (uint64) ng * SIFT_CGORD_GRPENT : (16 + (((uint64) ng * (gbits + sbits) + 7) >> 3) + 7) & ~(uint64) 7;
+}
+
 bool
 sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 {
@@ -112,11 +139,11 @@ sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h)
 		return true;
 	}
 	if (w[0] != SIFT_CGORD_MAGIC || (w[1] != SIFT_CGORD_VERSION && !grouped && !text) || w[3] > w[2] || (w[5] != SIFT_CGORD_ROWS && w[5] != SIFT_CGORD_ROWS_FINE) ||
-		(grouped ? (w[6] == 0 || w[7] == 0 || w[7] > SIFT_COL_MAX_COLS) : text ? (w[7] == 0 || w[7] % 8 != 0) : (w[7] == 0 ? w[6] != 0 : (w[6] > w[3] || w[7] <= w[3] || w[3] - w[6] > SIFT_CGORD_ENDS || w[6] > SIFT_CGORD_ENDS || w[2] - w[3] > SIFT_CGORD_ENDS))) ||
+		(grouped ? (w[6] == 0 || (w[7] & 0xFFFF) == 0 || (w[7] & 0xFFFF) > SIFT_COL_MAX_COLS || (w[7] >> 29) != 0 || grp_flags_bad(w[7])) : text ? (w[7] == 0 || w[7] % 8 != 0) : (w[7] == 0 ? w[6] != 0 : (w[6] > w[3] || w[7] <= w[3] || w[3] - w[6] > SIFT_CGORD_ENDS || w[6] > SIFT_CGORD_ENDS || w[2] - w[3] > SIFT_CGORD_ENDS))) ||
 		w[4] != (uint32) (((uint64) w[2] + w[5] - 1) / w[5]) ||
-		SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT + (uint64) (text ? w[7] : grouped ? (uint64) w[6] * SIFT_CGORD_GRPENT : 0) > len)
+		SIFT_CGORD_HDR + (uint64) w[4] * SIFT_CGORD_DIRENT + (uint64) (text ? w[7] : grouped ? grp_bytes(w[6], grp_gbits(w[7]), grp_sbits(w[7])) : 0) > len)
 		return false;
-	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) w[7] - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, w[1] == SIFT_CGORD_VERSION_GROUPQ ? SIFT_GQ_Q : 0, w[1] == SIFT_CGORD_VERSION_TEXTPERM};
+	*h = (SiftCGOrdHdr) {w[2], w[3], w[4], w[5], grouped ? w[6] : 0, grouped ? (int) (w[7] & 0xFFFF) - 1 : -1, text ? w[6] : 0, text ? w[7] : 0, !grouped && !text ? w[6] : 0, !grouped && !text ? w[7] : 0, w[1] == SIFT_CGORD_VERSION_GROUPQ ? SIFT_GQ_Q : 0, w[1] == SIFT_CGORD_VERSION_TEXTPERM, grouped ? grp_gbits(w[7]) : 0, grouped ? grp_sbits(w[7]) : 0};
 	return true;
 }
 
@@ -181,6 +208,38 @@ bits_get(const uint8 *p, uint64 bit, uint32 w)
 		return bits_get(p, bit, 32) | bits_get(p, bit + 32, w - 32) << 32;
 	memcpy(&v, p + (bit >> 3), sizeof(v));
 	return (v >> (bit & 7)) & ((UINT64CONST(1) << w) - 1);
+}
+
+uint64
+sift_cgord_grp_bytes(const SiftCGOrdHdr *h)
+{
+	return grp_bytes(h->ngroups, h->gbits, h->sbits);
+}
+
+void
+sift_cgord_grp_span(const SiftCGOrdHdr *h, uint32 i, uint32 n, uint64 *off, uint32 *len)
+{
+	uint32		w = h->gbits + h->sbits;
+	uint32		last = i + n < h->ngroups ? i + n : i + n - 1;
+
+	*off = 8 + (((uint64) i * w) >> 3);
+	*len = (uint32) ((((uint64) last * w) >> 3) - (((uint64) i * w) >> 3)) + 8;
+}
+
+void
+sift_cgord_grp_unpack(const SiftCGOrdHdr *h, int64 first, uint32 i, uint32 n, const uint8 *win, SiftCGOrdGrp *out)
+{
+	uint32		w = h->gbits + h->sbits;
+	uint64		bit = ((uint64) i * w) & 7;
+	uint32		start = (uint32) bits_get(win, bit + h->gbits, h->sbits);
+
+	for (uint32 k = 0; k < n; k++, bit += w)
+	{
+		uint32		next = i + k + 1 < h->ngroups ? (uint32) bits_get(win, bit + w + h->gbits, h->sbits) : h->values;
+
+		out[k] = (SiftCGOrdGrp) {first + (int64) bits_get(win, bit, h->gbits), start, next - start, h->values, 0};
+		start = next;
+	}
 }
 
 static inline int64

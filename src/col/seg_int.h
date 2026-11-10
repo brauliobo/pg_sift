@@ -396,6 +396,8 @@ typedef struct GOrdLeaf
 	SiftCGOrdGrp *grps;			/* the group table of a grouped block, read whole by the second probe of the segment (NULL: not yet), and the probes counted until then */
 	uint32		gprobes;
 	uint32		ghint;			/* the group the last probe found: a scan that goes through the groups in order finds the next one beside it */
+	int64		gfirst;			/* a packed table of groups: the first group (read with gfirst_ok) */
+	bool		gfirst_ok;
 	struct SegGOrdHead *head;	/* the backend's copy of the header, which also keeps where the chunks end once it is known */
 	GOrdPlainCache *pcache;		/* a plain block: the chunk the positional chunks of the block grouped beside it read last (NULL: none yet) */
 } GOrdLeaf;
@@ -621,6 +623,7 @@ extern void	seg_tid_slot_read(TidAcc *a, uint64 slot);
 extern void	seg_gord_dir_read(SiftColSegment *seg, GOrdLeaf *g, int col);
 extern SiftCGOrdDir	seg_gord_dirent(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 c);
 extern uint64	seg_gord_gat(SiftColSegment *seg, GOrdLeaf *g, int col);
+extern void	seg_gord_grp_read(SiftColSegment *seg, GOrdLeaf *g, int col, uint32 i, uint32 n, SiftCGOrdGrp *out);
 
 /* The first key of chunk c of a directory read whole (seg_gord_dir_read): a bisection compares these, and the entry it ends at is the one that is checked (seg_gord_dirent) */
 static inline int64

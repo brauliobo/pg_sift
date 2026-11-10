@@ -514,7 +514,8 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	int64	   *kv = palloc(SIFT_CGORD_CAP * sizeof(int64)),
 			   *av = palloc(SIFT_CGORD_CAP * sizeof(int64)),
 			   *pv = NULL;
-	StringInfoData body;
+	StringInfoData body,
+				gtab = {0};
 	SiftCGOrdDir *dir = palloc0((nchunks + 1) * sizeof(SiftCGOrdDir));
 	SiftCGOrdGrp *gv = NULL,
 			   *gn = NULL,
@@ -584,6 +585,9 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 		hdr[1] = SIFT_CGORD_VERSION_GROUP;
 		hdr[6] = ng;
 		hdr[7] = (uint32) gcol + 1;
+		initStringInfo(&gtab);
+		if (nnull == 0)
+			hdr[7] |= sift_cgord_grp_pack(&gtab, gs, ng, nvals);
 		/* the positions of a group are about as many entries apart as the segment has groups: with many more than the writer keeps them for no chunk will be positional */
 		if (plain != NULL && ng <= 4 * (uint64) sift_limit(gord_pos_gap, SIFT_CGORD_POS_MAX_GAP))
 			pv = entry_positions(plain, ent, n);
@@ -636,7 +640,11 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, boo
 	}
 	if (grouped)
 	{
-		appendBinaryStringInfo(out, (const char *) gs, ng * sizeof(SiftCGOrdGrp));
+		if (gtab.len > 0)
+			appendBinaryStringInfo(out, gtab.data, gtab.len);
+		else
+			appendBinaryStringInfo(out, (const char *) gs, ng * sizeof(SiftCGOrdGrp));
+		pfree(gtab.data);
 		pfree(gv);
 		pfree(gn);
 		pfree(gs);

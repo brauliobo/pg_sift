@@ -75,7 +75,7 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 			{
 				wat = r / 2;
 				wn = Min(VERIFY_GROUPS, g->hdr.ngroups - wat);
-				seg_read(seg, g->at + seg_gord_gat(seg, g, col) + (uint64) wat * SIFT_CGORD_GRPENT, (Size) wn * SIFT_CGORD_GRPENT, win);
+				seg_gord_grp_read(seg, g, col, wat, wn, win);
 				if (!sift_cgord_groups_check(&g->hdr, &run, win, wn))
 					corrupt(seg, "The global order of leaf %d has malformed groups.", col);
 			}

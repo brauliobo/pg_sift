@@ -69,7 +69,7 @@ seg_gord_gat(SiftColSegment *seg, GOrdLeaf *g, int col)
 
 			gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen) + SIFT_CGORD_ANCHOR_BYTES(SIFT_CGORD_ANCHORS(last.pad));
 		}
-		if (gat + (g->hdr.strbytes != 0 ? (uint64) g->hdr.strbytes : (uint64) g->hdr.ngroups * SIFT_CGORD_GRPENT) != g->bytes)
+		if (gat + (g->hdr.strbytes != 0 ? (uint64) g->hdr.strbytes : sift_cgord_grp_bytes(&g->hdr)) != g->bytes)
 			corrupt(seg, "The global order of leaf %d ends at %llu of %llu.", col, (unsigned long long) gat, (unsigned long long) g->bytes);
 		g->gat = gat;
 		g->head->gat = gat;
