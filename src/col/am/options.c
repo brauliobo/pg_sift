@@ -295,9 +295,10 @@ sift_col_init(void)
 							&sift_scope_patch_keys, 4096, 1, 1048576, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.scope_max_multiplicity",
 							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts.",
-							 "The scope segments hold a row once for each scope key of its member, so they are this many times the rows of the table in the worst case; a scope above the limit is refused with the figure "
-							 "(a member that is in many scope keys is better read through the join).",
-							 &sift_scope_max_multiplicity, 8.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "The scope segments hold a row once for each scope key of its member, so the index grows by about 17 percent of the table and its indexes for each entry a row has (its writes cost about 16 percent more for each) "
+							 "while a read gains 2 to 9 times (a total up to 22 times) over the join: past about 3 entries a row the growth costs more than the reads gain. A scope above the limit is refused with the figure, "
+							 "and the join answers it.",
+							 &sift_scope_max_multiplicity, 3.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "

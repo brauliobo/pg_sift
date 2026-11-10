@@ -12,7 +12,8 @@
 
 ITERS=$(knob SIFT_CRASHMX_ITERS 40 14)
 FULL=$(knob SIFT_CRASHMX_FULL 1 "")
-node_init scc 48 "wal_consistency_checking = 'generic'
+node_init scc 48 "sift.scope_max_multiplicity = 8
+wal_consistency_checking = 'generic'
 autovacuum = off
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0

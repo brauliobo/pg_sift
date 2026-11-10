@@ -10,7 +10,8 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 14
-node_init scp 49 "wal_level = replica
+node_init scp 49 "sift.scope_max_multiplicity = 8
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off"

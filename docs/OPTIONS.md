@@ -2354,17 +2354,17 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift.scope_max_multiplicity
 
-`sift_col` · diagnostic · since 4.4 · default 8
+`sift_col` · diagnostic · since 4.4 · default 3
 
-- **What it does:** the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept
-- **Gain:** n/a: a refusal limit, not a speed choice
-- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; the figure is measured from the entries the build wrote and said in a NOTICE with the growth of the index
+- **What it does:** the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept; a scope above it is refused with its size and growth and the join answers it
+- **Gain:** a refusal that keeps the units where they pay: they read 2 to 9 times cheaper than the join (a total up to 22 times, 100,000 to 2,000,000 events) for an index 17% larger of the table and its indexes for each entry a row has
+- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; the figure is measured from the entries the build wrote, said in a NOTICE with the growth of the index, and in the refusal
 - **When:** CREATE INDEX and REINDEX of an index that declares a scope.
-- **Default:** 8 — 8: a row is replicated at most 8 times on average, so the scope segments are at most 8 times the entity segments; measured multiplicities are 1.0 to 1.1 for tenants and groups.
+- **Default:** 3 — 3: the units break even with the join at 2.5 entries a row (500,000 events) to 3.0 (2,000,000), and lose above: at 5.4 entries a row the index is 489% larger and the table with its indexes 92%, a fact write costs 107% more, for the same reads; the measured multiplicities of a tenant or a group are 1.0 to 1.1
 - **Turn off:** SET sift.scope_max_multiplicity = 1000000 accepts any figure. No REINDEX.
 - **Upgrade from 4.3:** New in 4.4.
-- **Advice:** Leave at 8. Raise it for a scope whose members are in many scope keys and that you want replicated all the same; the NOTICE after the build says the figure and the growth of the index.
-- **Sources:** benchmark `test:col_scope_journal`; [FORMATS](FORMATS.md)
+- **Advice:** Leave at 3. Raise it for a scope whose members are in many scope keys and whose reads are worth the growth the refusal states; the join answers the reads of a scope that is refused, and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md).
+- **Sources:** benchmark `test:col_scope_multiplicity`; [FORMATS](FORMATS.md)
 
 ### safety
 
@@ -2769,7 +2769,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 4.4. |
 | `sift.scope_patch_keys` | new | 4096 |  | New in 4.4. |
-| `sift.scope_max_multiplicity` | new | 8 |  | New in 4.4. |
+| `sift.scope_max_multiplicity` | new | 3 |  | New in 4.4. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts

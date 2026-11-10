@@ -6,7 +6,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 11
-node_init scd 51 "autovacuum = off"
+node_init scd 51 "sift.scope_max_multiplicity = 8
+autovacuum = off"
 node_start scd || bail "start failed"
 D=$(dir scd)
 S=("-h" "$D/sock" "-p" "$(port scd)" "-U" "postgres")

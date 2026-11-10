@@ -57,7 +57,28 @@ leader (the verdict, the changed members and the patch are made from the snapsho
 |---|---|---|---|---|---|
 | `sift.agg_scope` | on | a read of one key from the units: 0.7 to 1.0 million instructions where the entity rows of the members cost 2.6 to 3.4 (100,000 events, 5,000 entities, 40 tenants, the largest tenant); two keys 1.9 million against 2.0 to 3.1 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
 | `sift.scope_patch_keys` | 4096 | the changed members are read through the entity path for a few keys, not by a rewrite | each patched key is a probe of the entity path | a few hundred changed keys cost less than a rewrite of the units | `SET sift.scope_patch_keys = 1`: more than one changed key reads the entity rows; no `REINDEX` |
-| `sift.scope_max_multiplicity` | 8 | `CREATE INDEX` refuses a scope whose members are in so many keys that the units would be a multiple of the table | none | the measured multiplicity of a tenant or a group is 1.0 to 1.1 | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
+| `sift.scope_max_multiplicity` | 3 | `CREATE INDEX` refuses a scope whose members are in more keys than this on average, with the size and growth it would have had; the join answers the reads (see Break-even) | none | the units break even with the join at 2.5 (500,000 events) to 3.0 (2,000,000) entries a row | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
+
+## Break-even: the multiplicity limit
+
+A scope entry is a copy of the row in the index, so the scope segments grow with the average number of keys of a member (the entries a row has). The weighted formula of the program prices it for the classes
+of a tenant read (sum by kind, one month, distinct by month, top 20, filter, latest 20; instructions of the backend, 100,000 to 2,000,000 events, 3 to 6 keys a member; measured by the lab of the by-address
+study, 500,000 events: heap 42.2 MB, primary key 11.3 MB, entity index 12.4 MB; 2,000,000 events: 267 MB in all):
+
+| | 100,000 events | 500,000 events | 2,000,000 events |
+|---|---|---|---|
+| benefit B (mean over the 6 classes, R = 1 each; S = join / units instructions) | 22.4 (S 2.1 to 4.1) | 26.7 at 2.7 entries a row, 24.4 at 5.4 (S 1.5 to 10.5) | 31.8 at 2.7 (S 1.8 to 22) |
+| growth G of the table and its indexes | | +47% at 2.7, +92% at 5.4 | +51% at 2.7, +96% at 5.4 |
+| growth of the index alone | | +254% at 2.7, +489% at 5.4 | +255% at 2.7, +482% at 5.4 |
+| write W (10,000 inserts and their promotion, instructions) | | +65% at 2.7, +107% at 5.4 | |
+
+G is 17 to 19% of the footprint and W 23% plus 16% for each entry a row has: the cost is C = G/3 + W/5 = 9.0 m + 4.6 (the complexity of the code is already paid). The benefit does not depend on the entries
+a row has (the reads follow the rows of a key) and grows with the table (the join is linear in it): B = C at m = 2.0 (100,000 events), 2.5 (500,000) and 3.0 (2,000,000), and above those the index loses
+(500,000 events at 2.7: B 26.7 against C 28.7; at 5.4: 24.4 against 52). So CREATE INDEX and REINDEX refuse above 3 entries a row, the break-even of a table where the join starts to cost,
+and the refusal says the entries, the rows, and the size and growth the index would have had; `sift.scope_max_multiplicity` is the override for the members that are in many keys and whose reads are worth it.
+Above the limit the join answers (the entity path), and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A scope copy flips at 1.84 copies a fact because it carries
+the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity, and a table of 100,000,000 events moves the break-even
+up (the join is linear in the table), which this limit does not price: raise it for such a table, from the figures of the NOTICE.
 
 ## What it costs
 

@@ -105,7 +105,7 @@ The diagnostic options (generated from [options.tsv](options.tsv)):
 | `sift.eval_methods` | sift_col | selects the developer evaluation method named: penalty_maintenance prices the VACUUM that reads ask for |
 | `sift.agg_scope` | sift_col | the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index |
 | `sift.scope_patch_keys` | sift_col | the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole |
-| `sift.scope_max_multiplicity` | sift_col | the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept |
+| `sift.scope_max_multiplicity` | sift_col | the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept; a scope above it is refused with its size and growth and the join answers it |
 <!-- sift-diagnostics:end -->
 
 ## Same word, three places

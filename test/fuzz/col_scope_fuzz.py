@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT, sqlstr
 
 HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scope_helpers.sql')
-FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off;"
+FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 8;"
 
 LIB = r"""
 DROP TABLE IF EXISTS sf_q, sf_res;
