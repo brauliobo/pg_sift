@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.2.2 - 2026-11-09
+
 - Fixed: pg_sift: a `VACUUM` of a `sift_table` that waited for the table's maintenance lock went on with the segments it had read before the wait. When the holder promoted or merged write buffers meanwhile, the `VACUUM` did not mark the dead rows of the new column groups as removed and then dropped the records of their deletion, so the old versions of updated rows, and rows that had been deleted, were visible again to every snapshot (a manual `VACUUM`, autovacuum, the background worker of `sift.table_auto_defrag` or two `VACUUM`s of one table; 4.0.0 to 4.2.1, `sift_table` only). Every maintenance entry now takes the lock and reads the segments in one step. The error `sift index "..." is corrupted ... expected page type/generation` that `VACUUM` or `sift.table_maintain()` raised in the same race aborts that call and left the tables examined consistent (a few cases); it does not by itself mean that rows reappeared. The update does not repair rows that came back: see the notes of 4.2.2.
 - Added: pg_sift: `sift.table_find_stale_versions(tbl regclass, sample integer DEFAULT 10)` returns the number of primary key values that are on more than one row of a `sift_table` and up to `sample` of them (one sequential scan, `ACCESS SHARE`, no writes). It cannot see deleted rows that came back.
 - Fixed: pg_sift: assert builds stop where the segment switch of a merge of a `sift` index finds none of the segments it replaces in the directory.
