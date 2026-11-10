@@ -155,7 +155,7 @@ s2_lateral_count	SiftAgg	-
 s2_lateral_jsonb_each	-	single:f:unnest_leaf
 s2_unnest_array_group	SiftAgg	single:t
 s2_join_self_entities	SiftAgg	single:t
-s2_exists_two_levels	-	single:f:no_source
+s2_exists_two_levels	SiftAgg	distinct:f:distinct_set,single:t
 s2_in_subselect_agg	SiftAgg	-
 s2_cte_two_aggs_join	SiftAgg	-
 s2_cross_join_gs	SiftAgg	single:t
@@ -208,11 +208,11 @@ c2_cal_week_gapfill	SiftAgg	-
 c2_cal_month_gapfill_sum	SiftAgg	-
 c2_cal_quarter_kind	SiftAgg	single:t
 c2_cal_dow_hour	SiftAgg	single:t
-c2_cal_cross_join_days	SiftAgg	single:t
+c2_cal_cross_join_days	SiftAgg	-
 c2_cohort_first_month	SiftAgg	-
 c2_retention_cohort_activity	SiftAgg	-
 c2_returning_two_months	SiftAgg,SiftSort	-
-c2_anti_orders_no_items	SiftAgg	single:t
+c2_anti_orders_no_items	SiftAgg	-
 c2_semi_exists_set	SiftAgg	single:t
 c2_semi_in_country	-	single:f:cost
 c2_union_arms_filters	SiftAgg	-
@@ -237,7 +237,7 @@ c2_group_limit_offset	SiftAgg	single:t
 c2_group_count_page	SiftAgg	single:t
 c2_distinct_on_latest_kind	SiftAgg	distinct:t
 c2_distinct_on_entity_status	SiftAgg	distinct:t
-c2_cross_values_status	SiftAgg	single:t
+c2_cross_values_status	SiftAgg	-
 c2_filter_lower_label	SiftAgg	single:t
 c2_filter_date_trunc_eq	SiftAgg	single:t
 c2_filter_cast_date	SiftAgg	single:t
