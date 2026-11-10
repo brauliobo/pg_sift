@@ -16,12 +16,22 @@ SELECT attname, round(max(f)::numeric, 2) AS hottest FROM pg_stats s, unnest(s.m
 
 -- CREATE INDEX stores the count of rows it saw in reltuples (PostgreSQL 17 does): the estimate of a large table is set again before the build and before the decision
 CREATE TEMP TABLE hv_est (n bigint);
+-- sets the estimate and checks that the planner, which reads the relcache entry the build and the decision read, sees it: an estimate that did not arrive fails here, not as another decision
+CREATE FUNCTION hv_set_est() RETURNS void LANGUAGE plpgsql AS
+$$ DECLARE want bigint := (SELECT max(n) FROM hv_est); plan json; BEGIN
+	IF want IS NULL THEN RETURN; END IF;
+	UPDATE pg_class SET reltuples = want WHERE relname = 'hv';
+	EXECUTE 'EXPLAIN (FORMAT JSON) SELECT * FROM hv' INTO plan;
+	IF abs((plan->0->'Plan'->>'Plan Rows')::bigint - want) > want / 100 THEN
+		RAISE EXCEPTION 'the planner sees % rows of hv, % were set', plan->0->'Plan'->>'Plan Rows', want;
+	END IF;
+END $$;
 -- the cut the build wrote, and what sift.key_cut_decision says of it under the segment bound given
 CREATE FUNCTION hv_cut(cols text, opts text, array_kb int DEFAULT NULL) RETURNS TABLE (built text, decision text, why text) LANGUAGE plpgsql AS
 $$ BEGIN
-	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
+	PERFORM hv_set_est();
 	EXECUTE format('CREATE INDEX hv_i ON hv USING sift_col (%s) WITH (%s)', cols, opts);
-	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
+	PERFORM hv_set_est();
 	IF array_kb IS NOT NULL THEN
 		PERFORM set_config('sift.test_limits', 'array_bytes=' || array_kb * 1024, true);
 	END IF;
@@ -71,9 +81,9 @@ SELECT * FROM hv_cut('id, tenant_id', 'key_cut = auto');
 -- the build says it (the NOTICE and sift.index_choices), for the group of a key_order that would imply a cut as for a key of its own
 CREATE FUNCTION hv_say(cols text, opts text) RETURNS TABLE (choice text, value text) LANGUAGE plpgsql AS
 $$ BEGIN
-	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
+	PERFORM hv_set_est();
 	EXECUTE format('CREATE INDEX hv_i ON hv USING sift_col (%s) WITH (%s)', cols, opts);
-	UPDATE pg_class SET reltuples = coalesce((SELECT max(n) FROM hv_est), reltuples) WHERE relname = 'hv';
+	PERFORM hv_set_est();
 	RETURN QUERY SELECT c.choice, regexp_replace(c.value, '[0-9]+', 'N', 'g') FROM sift.index_choices('hv_i') c WHERE c.choice = 'key_cut';
 	DROP INDEX hv_i;
 END $$;
@@ -103,5 +113,5 @@ SELECT * FROM hv_cut('id, grp_id, day', 'key_cut = ''grp_id''');
 (1 row)
 
 DROP TABLE hv;
-DROP FUNCTION hv_cut(text, text, int), hv_say(text, text);
+DROP FUNCTION hv_cut(text, text, int), hv_say(text, text), hv_set_est();
 DROP EXTENSION pg_sift;
