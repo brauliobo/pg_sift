@@ -16,6 +16,9 @@ SELECT g, k, k::bigint * 1000003, (ARRAY['a', 'b', 'c', 'd'])[1 + g % 4], timest
 FROM (SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 53 = 0 THEN 60000 + g % 1000 WHEN g % 11 = 0 THEN 1 + g % 5 ELSE 1 + (g::bigint * 7919) % 45000 END AS k FROM generate_series(1, 1000000) g) c;
 CREATE INDEX jp_parent_col ON jp_parent USING sift_col (id, big, grp, state, rank);
 CREATE INDEX jp_child_col ON jp_child USING sift_col (id, parent_id, parent_big, kind, at, amount);
+-- ANALYZE samples 30,000 of the 1,000,000 rows and estimates between 41,100 and 42,000 of the 46,000 keys; the plan of the bigint key flips at about 42,000,
+-- so the real count is stated for the plans to be the same on every run
+ALTER TABLE jp_child ALTER COLUMN parent_big SET (n_distinct = 46000);
 VACUUM (FREEZE, ANALYZE) jp_parent, jp_child;
 
 CREATE TABLE jp_q (slug text, sql text);
