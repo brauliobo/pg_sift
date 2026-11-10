@@ -2701,7 +2701,7 @@ all · deprecated · since 3.3 · default ''
 - **Default:** '' — Accepted so that dumps and scripts restore; the directory of heap addresses (point_tid_columns) is within 3% of the size of the directory of rows and reads no unit for an equality.
 - **Turn off:** ALTER INDEX .. RESET (point_columns).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Name the columns in point_tid_columns. CREATE INDEX, ALTER INDEX and REINDEX say so in a NOTICE (reloption-removed); an index that carries the option keeps reading, and its next build lists no column for it. RESET (point_columns) drops it.
+- **Advice:** Name the columns in point_tid_columns. CREATE INDEX and ALTER INDEX say so in a NOTICE (reloption-removed); an index that carries the option keeps reading, and its next build lists no column for it. RESET (point_columns) drops it.
 
 #### sift_col(key_cut_rows)
 
@@ -2714,7 +2714,7 @@ all · deprecated · since 3.4 · default 0
 - **Default:** 0 — Accepted so that dumps and scripts restore; ignored because no query gained from it at 100,000 rows and it only moved the index size and the number of units.
 - **Turn off:** ALTER INDEX .. RESET (key_cut_rows).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave it out. CREATE INDEX, ALTER INDEX and REINDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
+- **Advice:** Leave it out. CREATE INDEX and ALTER INDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
 
 #### sift_col(order_columns)
 
@@ -2727,7 +2727,7 @@ all · deprecated · since 3.3 · default ''
 - **Default:** '' — Accepted so that dumps and scripts restore; the runs hold the same bytes as the order array of the column and read 4 to 6 times the instructions beyond a top-N of 32, so no class needs them.
 - **Turn off:** ALTER INDEX .. RESET (order_columns).
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). CREATE INDEX, ALTER INDEX and REINDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
+- **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). CREATE INDEX and ALTER INDEX say so in a NOTICE (reloption-removed); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
 
 #### sift.agg_lookup_max_rows
 

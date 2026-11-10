@@ -19,7 +19,7 @@ use_root legacy "$oldroot"
 node_start legacy || bail "cannot start $ref"
 sql legacy "CREATE EXTENSION pg_sift" "SELECT setseed(0.42)" "CREATE TABLE orders (id int, ts timestamp, qty bigint)" \
 	"INSERT INTO orders SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', i FROM generate_series(1, 30000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (id, ts, qty) WITH (write_buffer_limit = 4096, order_array_columns = 'ts')" \
+	"CREATE INDEX o_col ON orders USING sift_col (id, ts, qty) WITH (write_buffer_limit = 4096, order_columns = 'ts', order_array_columns = 'ts')" \
 	"INSERT INTO orders SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', i FROM generate_series(30001, 34000) i" \
 	"SELECT sift.col_promote('o_col')" "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) orders" \
 	"CREATE TABLE names (id int, name text)" "INSERT INTO names SELECT i, md5(i::text) FROM generate_series(1, 20000) i" \

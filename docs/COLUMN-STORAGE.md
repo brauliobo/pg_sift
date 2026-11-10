@@ -17,7 +17,7 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 - **`point_columns`** (removed in 4.4, still accepted).
   - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. It is accepted and ignored; `point_tid_columns` lists the heap addresses of the rows of its columns, which reads no unit; the segments already written are read as before.
   - **Why**: the directory of addresses is within 3% of its size and reads fewer instructions in every shape measured (integer equality 0.119 to 0.020 ms on 200,000 rows with the rows form, 0.013 ms with addresses; a b-tree 0.006 ms), case `point_in_100`.
-  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX`, `ALTER INDEX` and `REINDEX` say so in a `NOTICE` (`reloption-removed`).
+  - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX` and `ALTER INDEX` say so in a `NOTICE` (`reloption-removed`).
   - **Message**: `reloption-removed`, `point-tid-key-cut`.
 - **`point_tid_columns`** (opt-in; chosen by the default formula, below).
   - **What**: the same lookup, with the directory listing the heap addresses of the rows, so no unit is read.
@@ -44,7 +44,7 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 - **`order_columns`** (removed in 4.4, still accepted).
   - **What**: each unit kept a sorted run of the column, so `ORDER BY col LIMIT n` read the first rows of each unit only. It is accepted and ignored: a build writes no run, and the order arrays (`order_array_columns`) answer a top-N, a range and an `OFFSET` over any number of units. The runs already written, and their heads, are read as before.
   - **Why**: the runs hold the same bytes as the order array of the column (2.08 against 2.27 bytes a row for a timestamp at 5,000,000 rows) and read 4 to 6 times the instructions beyond a top-N of 32 (`OFFSET` 4.42 M, a range 16.0 M, an `IN` list of two groups 47.8 M against 0.4 to 1.4 M with the array); a top-N of 32 or fewer reads 0.38 M with the heads and 0.46 M with the array.
-  - **Off**: `ALTER INDEX .. RESET (order_columns)`. `CREATE INDEX`, `ALTER INDEX` and `REINDEX` say so in a `NOTICE` (`reloption-removed`).
+  - **Off**: `ALTER INDEX .. RESET (order_columns)`. `CREATE INDEX` and `ALTER INDEX` say so in a `NOTICE` (`reloption-removed`).
 - **`sift.topn_runs`** (setting, on).
   - **What**: lets the top-N scan read the stored runs.
   - **Default**: on; it reads the runs that segments written before 4.3 hold, and costs nothing without them.
@@ -118,7 +118,7 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
 - **`key_cut_rows`** (removed in 4.4, still accepted).
   - **What**: the rows a key-cut unit aims at. It is accepted and ignored: the units aim at the rows of an average superblock, which keeps the number of units and the planner's per-unit costs.
   - **Why**: at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain; case `keycut_customer_agg`.
-  - **Off**: `RESET (key_cut_rows)`. `CREATE INDEX`, `ALTER INDEX` and `REINDEX` say so in a `NOTICE` (`reloption-removed`).
+  - **Off**: `RESET (key_cut_rows)`. `CREATE INDEX` and `ALTER INDEX` say so in a `NOTICE` (`reloption-removed`).
 - **Second key of the cut** (automatic).
   - **What**: when the cut is chosen by default and the index has a date or timestamp leaf, the rows of a key are sorted by that leaf too, so a window of dates on the key skips the units outside it.
   - **Default**: on; the index shrinks by 20.9% and the build pays 11% more.

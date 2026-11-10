@@ -236,7 +236,7 @@ psql -d app -c "SELECT sift.col_verify('events_col', true)"
 
 ## What 4.3 deprecates and 5.0 removes
 
-Three `sift_col` options are accepted and ignored by 4.3 and removed in 4.4, which keeps accepting and ignoring them so that nothing breaks: an index that stores one opens, takes `REINDEX` and `ALTER INDEX` of another option, and a dump that names one restores. A `CREATE INDEX`, `ALTER INDEX` or `REINDEX` that names or stores one says so in a `NOTICE` (`reloption-removed`), and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
+Three `sift_col` options are accepted and ignored by 4.3 and removed in 4.4, which keeps accepting and ignoring them so that nothing breaks: an index that stores one opens, takes `REINDEX` and `ALTER INDEX` of another option, and a dump that names one restores. A `CREATE INDEX` or `ALTER INDEX` that names one says so in a `NOTICE` (`reloption-removed`; so does the restore of a dump), `REINDEX` of an index that stores one is silent, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
 
 | Option | What 4.3 and 4.4 do | What to do |
 |---|---|---|
