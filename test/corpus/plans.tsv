@@ -212,7 +212,7 @@ c2_cal_cross_join_days	SiftAgg	-
 c2_cohort_first_month	SiftAgg	-
 c2_retention_cohort_activity	SiftAgg	-
 c2_returning_two_months	SiftAgg,SiftSort	-
-c2_anti_orders_no_items	SiftAgg	-
+c2_anti_orders_no_items	SiftAgg	single:t
 c2_semi_exists_set	SiftAgg	single:t
 c2_semi_in_country	-	single:f:cost
 c2_union_arms_filters	SiftAgg	-
