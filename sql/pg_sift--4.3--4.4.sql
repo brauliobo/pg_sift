@@ -33,6 +33,16 @@ CREATE FUNCTION sift.scope_qualified(rel regclass) RETURNS text LANGUAGE sql STA
 
 COMMENT ON FUNCTION sift.scope_qualified(regclass) IS 'Internal: the schema-qualified, quoted name of a relation';
 
+-- A copy is exact only for writers that see every committed row when their statement starts: the snapshot of a REPEATABLE READ or SERIALIZABLE transaction misses the pairs
+-- and facts that others committed after it began, so the triggers refuse to run there.
+CREATE FUNCTION sift.scope_refuse_isolation(copy text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	RAISE EXCEPTION 'scope copies need READ COMMITTED writers' USING ERRCODE = 'feature_not_supported',
+		DETAIL = format('The scope copy "%s" is kept by statement triggers that read the snapshot of the transaction, which is %s.', copy, current_setting('transaction_isolation')),
+		HINT = 'run the change in a READ COMMITTED transaction, or drop the copy with sift.scope_drop';
+END $$;
+COMMENT ON FUNCTION sift.scope_refuse_isolation(text) IS 'Internal: the error of a scope copy trigger that runs in a REPEATABLE READ or SERIALIZABLE transaction';
+
 -- The statements that keep a copy exact. A partitioned copy gets the partition of a scope key that appears in the scope relation when the pair is inserted.
 CREATE FUNCTION sift.scope_fact_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -40,6 +50,7 @@ DECLARE
 	same     text;
 	k        bigint;
 BEGIN
+	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	-- a transaction does not see the uncommitted rows of the other table's: the writers of the facts share a lock that the writers of the pairs take alone
 	PERFORM pg_advisory_xact_lock_shared(hashtext('sift.scope_copy'), hashtext(c.copy));
@@ -72,6 +83,7 @@ DECLARE
 	same     text;
 	k        bigint;
 BEGIN
+	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
@@ -94,6 +106,7 @@ END $$;
 
 CREATE FUNCTION sift.scope_truncate_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	EXECUTE format('TRUNCATE %s', TG_ARGV[0]);
 	RETURN NULL;
 END $$;
@@ -334,10 +347,6 @@ END $$;
 COMMENT ON FUNCTION sift.scope_drop(text) IS 'Drops a scope copy with its triggers on the table and on the scope relation';
 COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index keyed by the scope key and triggers that keep it exact; returns the rows of the copy';
 
-COMMENT ON FUNCTION sift.scope_fact_trg() IS 'Internal: the statement trigger of the table of a scope copy; applies the inserted, updated and deleted rows to the copy';
-COMMENT ON FUNCTION sift.scope_pairs_trg() IS 'Internal: the statement trigger of the scope relation of a scope copy; applies the inserted, updated and deleted pairs to the copy';
-COMMENT ON FUNCTION sift.scope_truncate_trg() IS 'Internal: the TRUNCATE trigger of the table and of the scope relation of a scope copy; empties the copy';
-
 -- Pairs kept from a view: the scope relation of a copy (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
 -- source tables (assignments, group membership). sift.scope_refresh_pairs recomputes the pairs of named member ids or scope keys from the view and applies the difference;
 -- sift.scope_follow_pairs puts statement triggers on the source tables that call it for the member ids or scope keys a change names, in the transaction of the change,
@@ -499,3 +508,6 @@ COMMENT ON FUNCTION sift.scope_follow_pairs(regclass, regclass, source regclass,
 COMMENT ON FUNCTION sift.scope_expire_pairs(regclass, interval) IS 'Applies the expiries by date that happened with no write to the source tables of followed pairs: refreshes the member ids or scope keys of the rows whose expires column passed since the last call; returns the counts';
 COMMENT ON FUNCTION sift.scope_unfollow_pairs(regclass, regclass) IS 'Drops the triggers that keep a table of pairs equal to its view, of one source table or of all of them';
 COMMENT ON FUNCTION sift.scope_follow_trg() IS 'Internal: the statement trigger of a source table of followed pairs; refreshes the member ids or scope keys that the changed rows name';
+COMMENT ON FUNCTION sift.scope_fact_trg() IS 'Internal: the statement trigger of the table of a scope copy; applies the inserted, updated and deleted rows to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
+COMMENT ON FUNCTION sift.scope_pairs_trg() IS 'Internal: the statement trigger of the scope relation of a scope copy; applies the inserted, updated and deleted pairs to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
+COMMENT ON FUNCTION sift.scope_truncate_trg() IS 'Internal: the TRUNCATE trigger of the table and of the scope relation of a scope copy; empties the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
