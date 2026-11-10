@@ -328,7 +328,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
-	s->scope = sift_agg_scope_extract(c, &fs.quals);
+	sift_agg_scope_extract(c, s, &fs);
 	if (!agg_quals(c, s, &fs))
 		return;
 	if (s->npost > 0 || sift_aggspec_tid_range(s, &tlo, &thi))

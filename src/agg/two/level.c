@@ -49,6 +49,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	t.s = agg_spec_new(c);
 	foreach_ptr(Node, q, t.drop)
 		fs.quals = list_delete_ptr(fs.quals, q);
+	sift_agg_scope_declined(c, t.s, &fs, "two-level scan");
 	if (!agg_quals(c, t.s, &fs))
 		return;
 	if (!arm_gates(c, t.s, t.gates))

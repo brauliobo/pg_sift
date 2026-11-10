@@ -94,18 +94,18 @@ RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
--- the setting off: the marker is no conjunct of the scan, the statement is the one as written
+-- the setting off: the marker is no conjunct of the scan, the statement is the one as written, and the plan says so (Scope Fallback: disabled)
 SET sift.agg_scope = off;
 SELECT * FROM phase();
- n | same | stored | why | fewer_units 
----+------+--------+-----+-------------
- 1 | t    | f      |     | f
- 2 | t    | f      |     | f
- 3 | t    | f      |     | f
- 4 | t    | f      |     | f
- 5 | t    | f      |     | f
- 6 | t    | f      |     | f
- 7 | t    | f      |     | f
+ n | same | stored |   why    | fewer_units 
+---+------+--------+----------+-------------
+ 1 | t    | f      | disabled | f
+ 2 | t    | f      | disabled | f
+ 3 | t    | f      | disabled | f
+ 4 | t    | f      | disabled | f
+ 5 | t    | f      | disabled | f
+ 6 | t    | f      | disabled | f
+ 7 | t    | f      | disabled | f
 (7 rows)
 
 RESET sift.agg_scope;

@@ -90,7 +90,7 @@ group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_re
 				return;
 		}
 	}
-	s->scope = sift_agg_scope_extract(c, &fs.quals);
+	sift_agg_scope_extract(c, s, &fs);
 	if (!agg_quals(c, s, &fs))
 		return;
 

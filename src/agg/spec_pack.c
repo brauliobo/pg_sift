@@ -588,6 +588,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	PKS(c, s->desc_quals);
 	PKN(c, s->search);
 	codec_scope(c, &s->scope);
+	PKS_OPT(c, s->scope_why);
 	PKN(c, s->topn);
 	PKS(c, s->desc_topn);
 	PK(c, s->gtopn_k);

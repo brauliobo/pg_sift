@@ -383,14 +383,25 @@ explain_scope(AggExec *ex, ExplainState *es)
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftExplainLine ln;
 	SiftSrcCounters cc;
+	Relation	index;
 	int			kept,
 				all;
 
 	if (sc == NULL)
+	{
+		if (ex->spec->scope_why != NULL)
+			ExplainPropertyText("Scope Fallback", ex->spec->scope_why, es);
 		return;
+	}
+	if (ex->spec->scope_why != NULL)
+		ExplainPropertyText("Scope Filter Left", ex->spec->scope_why, es);
 	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
 	ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
-	sift_scope_columns(ex->index, sc->key_name, &kept, &all);
+	/* a plain EXPLAIN has not opened the index */
+	index = ex->index ? ex->index : index_open(ex->spec->indexoid, AccessShareLock);
+	sift_scope_columns(index, sc->key_name, &kept, &all);
+	if (index != ex->index)
+		index_close(index, NoLock);
 	ExplainPropertyText("Scope Columns", psprintf("%d of %d", kept, all), es);
 	ExplainPropertyText("Scope Semantics", sc->once ? "once" : "per pair", es);
 	if (!es->analyze || !ex->started)

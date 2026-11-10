@@ -87,6 +87,7 @@ typedef struct SiftAggSpec
 	const char *serial;			/* why the plan asks for none whatever the cost, for EXPLAIN VERBOSE (the planner's reasons; sift_aggspec_serial_reason has those of the spec); else NULL */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	SiftAggScope *scope;		/* a scope conjunct the scan reads from the scope segments of the index (agg/scope.c); NULL: none */
+	const char *scope_why;		/* why a scope conjunct stays an ordinary filter of the scan (EXPLAIN: Scope Fallback); NULL: none does */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (agg/topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */
 	char	   *desc_topn;		/* EXPLAIN: the sort columns */

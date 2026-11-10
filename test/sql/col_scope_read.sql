@@ -79,7 +79,7 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
 
--- the setting off: the marker is no conjunct of the scan, the statement is the one as written
+-- the setting off: the marker is no conjunct of the scan, the statement is the one as written, and the plan says so (Scope Fallback: disabled)
 SET sift.agg_scope = off;
 SELECT * FROM phase();
 RESET sift.agg_scope;
