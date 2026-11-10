@@ -83,7 +83,7 @@ extern bool rel_has_param_qual(RelOptInfo *rel);
 extern bool joins_counted(AggCtx *c);
 extern void cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k);
 
-extern const JoinCtx * dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc, int *key);
+extern const JoinCtx * dependent_join(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, int *key);
 extern double lookup_rows(AggCtx *c, const JoinCtx *jc);
 extern double lookup_sure(AggCtx *c, const JoinCtx *jc);
 extern bool lookup_guessed(AggCtx *c, const JoinCtx *jc);

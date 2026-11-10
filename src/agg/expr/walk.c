@@ -495,8 +495,13 @@ raising_walker(Node *n, void *context)
 		return false;
 	if (IsA(n, Query))
 		return query_tree_walker((Query *) n, raising_walker, context, 0);
-	/* a context: a sub-select, whose own sub-plans and init plans may raise too (more than one row) */
-	if (IsA(n, CoerceViaIO) || (context && (IsA(n, SubPlan) || IsA(n, SubLink) || (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC))))
+	/*
+	 * A context: a sub-plan or init plan may raise too (more than one row). A sub-select that is an EXISTS, an IN or an ARRAY has no row count
+	 * to raise on: it raises only through what it contains, which is walked.
+	 */
+	if (IsA(n, CoerceViaIO) || (context && (IsA(n, SubPlan) || (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC))))
+		return true;
+	if (context && IsA(n, SubLink) && (((SubLink *) n)->subLinkType == EXPR_SUBLINK || ((SubLink *) n)->subLinkType == ROWCOMPARE_SUBLINK))
 		return true;
 	if (IsA(n, FuncExpr))
 	{

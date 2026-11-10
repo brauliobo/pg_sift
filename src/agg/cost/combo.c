@@ -15,12 +15,14 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
+#include "agg/agg.h"
 #include "agg/cost/int.h"
 
 static bool real_cost_walker(Node *n, double *excess);
 static bool hashed_subplan_walker(Node *n, double *ops);
 static double combo_subplan_ops(const SiftAggCombo *cb);
 static bool calendar_cost_walker(Node *n, double *ops);
+static double reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, bool counted);
 
 double
 num_cost(const SiftAggNum *o)
@@ -65,6 +67,48 @@ pred_num_ops(const SiftAggPred *p)
 }
 
 /*
+ * The keys the inner and semi lookup joins of the query leave of a leaf (the join key filters, agg/init.c), narrowed by the join that is keyed by one of
+ * their columns (a scope list joined to the table's rows): the tuples that reach a combo hold no other value of it. A lookup PostgreSQL has no statistics
+ * for is its floor of one row whatever it holds (lookup_guessed), which bounds nothing. HUGE_VAL: no such join.
+ */
+static double
+filtered_keys(AggCtx *c, const SiftAggSpec *s, int leaf)
+{
+	double		keys = HUGE_VAL;
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		const SiftAggCombo *cb = &s->combo[jc->combo];
+		const SiftAggJoin *j = &s->join[cb->join];
+		int			dkey;
+		const JoinCtx *dj = dependent_join(c, s, jc, &dkey);
+
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0 || lookup_guessed(c, jc) || (dj && lookup_guessed(c, dj)))
+			continue;
+		for (int k = 0; k < j->nkey; k++)
+			if (j->keypos[k] >= 0 && cb->leaf[j->keypos[k]] == leaf)
+				keys = Min(keys, Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL));
+	}
+	return keys;
+}
+
+/* the rows of a lookup the tuples reach: those of the keys that reach it, the rows a key has (the table's, when it has no statistics or is a plan) */
+static double
+reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, bool counted)
+{
+	const SiftAggCombo *cb = &s->combo[jc->combo];
+	const SiftAggJoin *j = &s->join[cb->join];
+	RelOptInfo *rel = c->root->simple_rel_array[jc->rti];
+	double		rows = Max(rel->rows, 1.0),
+				rpk;
+
+	if (jc->cpath != NULL || j->params != NIL || j->nkey != 1 || j->tkey[0] != NULL || !OidIsValid(j->relid) ||
+		(rpk = sift_agg_rows_per_key(j->relid, j->keyatt[0], rel->tuples)) <= 0)
+		return rows;
+	return Min(rows, combo_entries(c, s, cb, tuples, counted) * rpk);
+}
+
+/*
  * distinct value combinations of the inputs of a combo among `tuples`: what the statistics say of the columns, the tuples when an input is
  * not one; a column of an earlier lookup has at most as many values as the lookup has rows. The combo of a lookup per element is not
  * evaluated for the tuples but for the combinations of the values of the elements (the index counts those of each leaf) and of the column
@@ -102,7 +146,7 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 						entries *= joined_distinct(c, jc, cb->refcol[p]);
 					else if (!bms_is_member(jc->combo, lookups))
 					{
-						double		rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
+						double		rows = reached_rows(c, s, jc, tuples, counted);
 
 						/* a correlated child gives its rows for each distinct input of its own combo */
 						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples, counted) : rows;
@@ -136,7 +180,7 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
 		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e, counted || !tested)) > 0)
-			entries *= nd;
+			entries *= Min(nd, filtered_keys(c, s, cb->leaf[p]));
 		else
 			exprs = lappend(exprs, e);
 	}

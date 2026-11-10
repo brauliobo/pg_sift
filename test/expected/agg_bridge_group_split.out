@@ -1,0 +1,133 @@
+-- Rows split by the groups of their entity: a link table between groups and entities (group_dim_a, many to many) joined to the facts and grouped by
+-- its group column, or a lateral sub-select that gives the groups of the row's entity (a group with an EXISTS or an IN over the link table). A fact row
+-- counts in each of its groups; a row whose entity has no link is dropped by an inner join and kept with a NULL group by a left join. The scan reads the
+-- link table as a lookup keyed by the join key, many rows for a key, and runs the lateral sub-select once for each distinct entity. Every query runs with
+-- and without the scan: the rows must be the same. The data has links soft-deleted, links twice, a NULL key, entities in no group, a group with no
+-- member, a group of deleted members and entities with two groups. The forms the scan does not read keep the normal plan and say why.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE dim_a (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dim_a SELECT i, 'a' || i FROM generate_series(0, 279) i;
+CREATE TABLE groups (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
+INSERT INTO groups SELECT i, 'g' || i FROM generate_series(1, 12) i;
+CREATE TABLE group_dim_a (group_id int, dim_a_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+-- every entity but each seventh is in a group, 1 in 8 in a second one; each ninth link is deleted; entities with 25 | i have the link twice; group 11 has deleted members
+INSERT INTO group_dim_a SELECT i % 10 + 1, i, CASE WHEN i % 9 = 0 THEN timestamptz '2026-01-01' END FROM generate_series(0, 279) i WHERE i % 7 <> 0;
+INSERT INTO group_dim_a SELECT (i + 3) % 10 + 1, i, NULL FROM generate_series(0, 279) i WHERE i % 8 = 0;
+INSERT INTO group_dim_a SELECT i % 10 + 1, i, NULL FROM generate_series(0, 279) i WHERE i % 25 = 0 AND i % 9 <> 0 AND i % 7 <> 0;
+INSERT INTO group_dim_a SELECT 11, i, timestamptz '2026-01-01' FROM generate_series(0, 279) i WHERE i % 50 = 0;
+INSERT INTO group_dim_a VALUES (3, NULL, NULL);
+CREATE INDEX group_dim_a_dim ON group_dim_a (dim_a_id);
+CREATE TABLE tenant_access (tenant_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_access SELECT 1, i, CASE WHEN i % 11 = 0 THEN timestamptz '2026-01-01' END FROM generate_series(0, 279) i WHERE i % 3 = 0;
+INSERT INTO tenant_access SELECT 3, i, NULL FROM generate_series(0, 279) i WHERE i % 40 < 12;
+-- the entities of tenant 4 have at most one live link each
+INSERT INTO tenant_access SELECT 4, i, NULL FROM generate_series(0, 279) i WHERE i % 16 IN (1, 2, 3) AND i % 25 <> 0;
+CREATE TABLE entity_keys (id int) WITH (autovacuum_enabled = false);
+INSERT INTO entity_keys SELECT i FROM generate_series(0, 279) i WHERE i % 5 = 1;
+-- events: a NULL entity, entities that are in no table
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind int, value_num numeric(8,2)) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 47 = 0 THEN NULL ELSE i % 300 END, date '2026-01-01' + i % 200, i % 5, i % 97 FROM generate_series(1, 6000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (key_columns = 'dim_a_id', key_order = 'dim_a_id, created_at');
+VACUUM (FREEZE, ANALYZE) dim_a, groups, group_dim_a, tenant_access, entity_keys, events;
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+-- the link table joined, grouped by its group column
+ ('join_all_links',      $q$SELECT g.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('join_live_in_on',     $q$SELECT g.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('join_live_in_where',  $q$SELECT g.group_id, count(*) AS n, count(DISTINCT e.id) AS ids FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id
+                           WHERE g.deleted_at IS NULL AND e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('join_entities_of_set', $q$SELECT g.group_id, count(*) AS n, count(DISTINCT e.dim_a_id) AS n_keys FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 1 AND deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('left_join_null_group', $q$SELECT g.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e LEFT JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('left_join_no_set',    $q$SELECT g.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e LEFT JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.kind = 2 GROUP BY g.group_id$q$),
+ ('join_group_table',    $q$SELECT gr.label, count(*) AS n FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL JOIN groups gr ON gr.id = g.group_id
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY gr.label$q$),
+ ('join_group_filter',   $q$SELECT gr.label, count(*) AS n FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL JOIN groups gr ON gr.id = g.group_id AND gr.id < 6
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY gr.label$q$),
+ ('set_as_array',        $q$SELECT g.group_id, count(*) AS n FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.dim_a_id = ANY (ARRAY(SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL)) GROUP BY g.group_id$q$),
+ ('set_as_keys_table',   $q$SELECT g.group_id, count(*) AS n FROM events e JOIN entity_keys k ON k.id = e.dim_a_id JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           GROUP BY g.group_id$q$),
+ ('set_as_exists',       $q$SELECT g.group_id, count(*) AS n FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE EXISTS (SELECT 1 FROM tenant_access t WHERE t.dim_a_id = e.dim_a_id AND t.tenant_id = 3 AND t.deleted_at IS NULL) GROUP BY g.group_id$q$),
+ ('set_empty',           $q$SELECT g.group_id, count(*) AS n FROM events e JOIN group_dim_a g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 2) GROUP BY g.group_id$q$),
+-- a lateral sub-select that gives the groups of the row's entity: one row for each group, whatever the number of links to it
+ ('lateral_exists_left', $q$SELECT g.id, count(*) AS n, sum(e.value_num) AS total FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('lateral_exists_inner', $q$SELECT g.id, count(*) AS n FROM events e JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('lateral_in_left',     $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id IN
+                           (SELECT x.group_id FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('lateral_group_filter', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id < 6 AND EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+ ('lateral_count_distinct', $q$SELECT g.id, count(DISTINCT e.id) AS ids, count(DISTINCT e.dim_a_id) AS n_keys FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$),
+-- the entities of the set with their groups as a CTE PostgreSQL inlines, the facts joined to it
+ ('entities_with_groups', $q$WITH ents AS (SELECT d.id, g.id AS group_id FROM dim_a d LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = d.id)) g ON true
+                           WHERE d.id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL))
+                           SELECT ents.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN ents ON ents.id = e.dim_a_id GROUP BY ents.group_id$q$),
+ ('entities_with_groups_fenced', $q$WITH ents AS MATERIALIZED (SELECT d.id, g.id AS group_id FROM dim_a d LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE EXISTS
+                           (SELECT 1 FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.group_id = groups.id AND x.dim_a_id = d.id)) g ON true
+                           WHERE d.id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL))
+                           SELECT ents.group_id, count(*) AS n, sum(e.value_num) AS total FROM events e JOIN ents ON ents.id = e.dim_a_id GROUP BY ents.group_id$q$);
+-- whether the scan answers each, and the rows it differs by from the plan without it (none)
+SELECT f.name, c.pushed, c.rows, c.differences FROM forms f, LATERAL sift_helpers.agg_pushed_and_differences(f.q) c ORDER BY f.name;
+            name             | pushed | rows | differences 
+-----------------------------+--------+------+-------------
+ entities_with_groups        | t      |   11 |           0
+ entities_with_groups_fenced | t      |   11 |           0
+ join_all_links              | t      |   11 |           0
+ join_entities_of_set        | t      |   10 |           0
+ join_group_filter           | t      |    5 |           0
+ join_group_table            | t      |   10 |           0
+ join_live_in_on             | t      |   10 |           0
+ join_live_in_where          | t      |   10 |           0
+ lateral_count_distinct      | t      |   11 |           0
+ lateral_exists_inner        | t      |   10 |           0
+ lateral_exists_left         | t      |   11 |           0
+ lateral_group_filter        | t      |    6 |           0
+ lateral_in_left             | t      |   11 |           0
+ left_join_no_set            | t      |    4 |           0
+ left_join_null_group        | t      |   11 |           0
+ set_as_array                | t      |   10 |           0
+ set_as_exists               | t      |   10 |           0
+ set_as_keys_table           | t      |    3 |           0
+ set_empty                   | t      |    0 |           0
+(19 rows)
+
+-- the forms that keep the normal plan, with the reason: a scalar sub-select in the lateral (it raises an error for an entity with two links, which the set of the
+-- query leaves out) and an ARRAY of links are no join condition the scan can look up
+CREATE TABLE refused (name text PRIMARY KEY, q text);
+INSERT INTO refused VALUES
+ ('lateral_scalar_sublink', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id =
+                           (SELECT x.group_id FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.dim_a_id = e.dim_a_id)) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 4) GROUP BY g.id$q$),
+ ('lateral_array_of_links', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id = ANY
+                           (ARRAY(SELECT x.group_id FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.dim_a_id = e.dim_a_id))) g ON true
+                           WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$);
+SELECT r.name, c.pushed, c.differences, w.slug FROM refused r, LATERAL sift_helpers.agg_pushed_and_differences(r.q) c, LATERAL sift.explain_why(r.q) w ORDER BY r.name;
+          name          | pushed | differences |      slug      
+------------------------+--------+-------------+----------------
+ lateral_array_of_links | f      |           0 | join_condition
+ lateral_scalar_sublink | f      |           0 | join_condition
+(2 rows)
+
+DROP TABLE forms, refused, events, entity_keys, tenant_access, group_dim_a, groups, dim_a;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

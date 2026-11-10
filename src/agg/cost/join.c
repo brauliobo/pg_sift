@@ -131,7 +131,7 @@ leaf_correlation(AggCtx *c, int leaf)
 
 /* the lookup join whose key is the earlier lookup's column `col` (a later inner or semi join: its rows are the only ones that complete a tuple); *key: that key of it */
 const JoinCtx *
-dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc, int *key)
+dependent_join(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, int *key)
 {
 	foreach_ptr(JoinCtx, dj, c->joins)
 	{
