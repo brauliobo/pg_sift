@@ -9,6 +9,7 @@
  */
 #include "postgres.h"
 #include "core/ops.h"
+#include "bm25/merge.h"
 #include "col/maint/maint_int.h"
 #include "col/scope.h"
 
@@ -229,4 +230,95 @@ maint_scope_refill(Relation index)
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return true;
+}
+
+/*
+ * Are the segments of scope s clean and does no key lie in two of them (the partitions of a merge, which a merge of all of them would write again as they are)? They are the end state of a
+ * merge of everything: it ends the steps of the rewrite after a build and of sift.col_merge.
+ */
+static bool
+scope_apart(Relation index, const SiftSegEntry *sel, int n, int s)
+{
+	int64		lo[SIFT_MAX_SEGMENTS],
+				hi[SIFT_MAX_SEGMENTS];
+	int			leaf = sift_col_rel(index)->scope_leaf[s];
+	bool		apart = true;
+
+	for (int i = 0; i < n && apart; i++)
+	{
+		SiftColSegment *seg;
+
+		apart = !(sel[i].flags & SIFT_SEG_DIRTY);
+		if (!apart)
+			break;
+		seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
+		maint_seg_key_range(seg, leaf, &lo[i], &hi[i]);
+		sift_cseg_close(seg);
+	}
+	for (int i = 0; i < n && apart; i++)
+		for (int j = i + 1; j < n && apart; j++)
+			apart = !((lo[i] < hi[j] && lo[j] < hi[i]) || (lo[i] == hi[i] && lo[j] == hi[j] && lo[i] == lo[j]));
+	return apart;
+}
+
+/* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers, or all of them (force) */
+static int
+scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSegEntry *sel)
+{
+	SiftDirSnapshot *fam = palloc(sizeof(SiftDirSnapshot));
+	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
+	int			n;
+
+	fam->nsegs = 0;
+	for (int i = 0; i < all->nsegs; i++)
+		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
+			fam->segs[fam->nsegs++] = all->segs[i];
+	maint_use_partitions(index, fam);
+	n = sift_merge_pick(index, &pol, fam, force, sel);
+	pfree(fam);
+	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
+}
+
+/*
+ * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
+ * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
+ * the output is the oldest of the inputs'. False: nothing to do.
+ */
+bool
+maint_scope_merge_step(Relation index, bool force)
+{
+	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
+	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	bool		done = false;
+
+	sift_dir_read(index, all);
+	for (int s = 0; s < r->nscope && !done; s++)
+	{
+		int			n = scope_pick(index, all, s, force, sel);
+
+		if (n == 0)
+			continue;
+		maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
+					   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1), NULL);
+		done = true;
+	}
+	pfree(all);
+	return done;
+}
+
+/* Would a step of the merge of the scope segments find something to do (the rewrite is due for it) */
+bool
+maint_scope_merge_due(Relation index, bool force)
+{
+	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
+	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
+	int			nscope = sift_col_rel(index)->nscope;
+	bool		due = false;
+
+	sift_dir_read(index, all);
+	for (int s = 0; s < nscope && !due; s++)
+		due = scope_pick(index, all, s, force, sel) > 0;
+	pfree(all);
+	return due;
 }

@@ -555,20 +555,12 @@ out_next(void *arg, SiftColSegWriter *w)
 	return o->w;
 }
 
-/* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
-typedef struct MergeSlice
-{
-	int			i;
-	int			nslices;
-	SiftSegEntry *out;
-} MergeSlice;
-
 /*
  * Merges the segments in[0..n) into one, or into partitions when part_bytes is set: the live bytes they hold are cut into as many segments of about
  * part_bytes each as fit max_parts (the new ones take the place of the first of the old ones, in one switch of the directory).
  */
-static void
-merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
+void
+maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 			   int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col merge", ALLOCSET_DEFAULT_SIZES);
@@ -798,7 +790,7 @@ sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftC
 		policy = r->policy;
 		pagg = &r->pagg;
 	}
-	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1, NULL);
+	maint_merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1, NULL);
 }
 
 /* One slice of the merge of in[0..n), made by a participant of the build; out: its segment, ndocs 0 when the slice holds no row */
@@ -807,7 +799,7 @@ sift_col_merge_slice(Relation index, const SiftSegEntry *in, int n, int i, int n
 {
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
-	merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
+	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {i, nslices, out});
 }
 
 /* The directory switch of a merge the participants made in slices: out[0..nout) replace in[0..n) */
@@ -878,97 +870,6 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, int r
 	sift_test_col_merge_slices = nslices;
 #endif
 	return sift_colp_merge(index, sel, n, workers, nslices, GetCurrentTimestamp());
-}
-
-/*
- * Are the segments of scope s clean and does no key lie in two of them (the partitions of a merge, which a merge of all of them would write again as they are)? They are the end state of a
- * merge of everything: it ends the steps of the rewrite after a build and of sift.col_merge.
- */
-static bool
-scope_apart(Relation index, const SiftSegEntry *sel, int n, int s)
-{
-	int64		lo[SIFT_MAX_SEGMENTS],
-				hi[SIFT_MAX_SEGMENTS];
-	int			leaf = sift_col_rel(index)->scope_leaf[s];
-	bool		apart = true;
-
-	for (int i = 0; i < n && apart; i++)
-	{
-		SiftColSegment *seg;
-
-		apart = !(sel[i].flags & SIFT_SEG_DIRTY);
-		if (!apart)
-			break;
-		seg = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
-		maint_seg_key_range(seg, leaf, &lo[i], &hi[i]);
-		sift_cseg_close(seg);
-	}
-	for (int i = 0; i < n && apart; i++)
-		for (int j = i + 1; j < n && apart; j++)
-			apart = !((lo[i] < hi[j] && lo[j] < hi[i]) || (lo[i] == hi[i] && lo[j] == hi[j] && lo[i] == lo[j]));
-	return apart;
-}
-
-/* The segments of scope s among those of the directory, and which of them the policy merges: by the tiers, or all of them (force) */
-static int
-scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSegEntry *sel)
-{
-	SiftDirSnapshot *fam = palloc(sizeof(SiftDirSnapshot));
-	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
-	int			n;
-
-	fam->nsegs = 0;
-	for (int i = 0; i < all->nsegs; i++)
-		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
-			fam->segs[fam->nsegs++] = all->segs[i];
-	maint_use_partitions(index, fam);
-	n = sift_merge_pick(index, &pol, fam, force, sel);
-	pfree(fam);
-	return force && n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
-}
-
-/*
- * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
- * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
- * the output is the oldest of the inputs'. False: nothing to do.
- */
-static bool
-scope_merge_step(Relation index, bool force)
-{
-	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
-	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
-	bool		done = false;
-
-	sift_dir_read(index, all);
-	for (int s = 0; s < r->nscope && !done; s++)
-	{
-		int			n = scope_pick(index, all, s, force, sel);
-
-		if (n == 0)
-			continue;
-		merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
-					   maint_part_kb > 0 ? (uint64) maint_part_kb * 1024 : 0, Max(SIFT_MAX_SEGMENTS - 16 - (all->nsegs - n), 1), NULL);
-		done = true;
-	}
-	pfree(all);
-	return done;
-}
-
-/* Would a step of the merge of the scope segments find something to do (the rewrite is due for it) */
-bool
-maint_scope_merge_due(Relation index, bool force)
-{
-	SiftDirSnapshot *all = palloc(sizeof(SiftDirSnapshot));
-	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
-	int			nscope = sift_col_rel(index)->nscope;
-	bool		due = false;
-
-	sift_dir_read(index, all);
-	for (int s = 0; s < nscope && !due; s++)
-		due = scope_pick(index, all, s, force, sel) > 0;
-	pfree(all);
-	return due;
 }
 
 SiftStepResult
@@ -1051,7 +952,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
 		if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
-			merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
+			maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 						   cut ? (uint64) maint_part_kb * 1024 : 0, Max(room, 1), NULL);
 		if (keyed)
 			sift_col_auto_keys_report(index);
@@ -1062,11 +963,11 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	if (n > 0)
 	{
 		if (force)
-			scope_merge_step(index, true);
+			maint_scope_merge_step(index, true);
 		return SIFT_STEP_DONE;
 	}
 	/* the entities have nothing more to do: the scope segments (a stale or uncovered set is made again first) */
 	if (goal == SIFT_GOAL_REWRITE && maint_scope_refill_due(index) && maint_scope_refill(index))
 		return SIFT_STEP_DONE;
-	return scope_merge_step(index, force || maint_after_build) ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
+	return maint_scope_merge_step(index, force || maint_after_build) ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }

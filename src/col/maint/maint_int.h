@@ -107,6 +107,17 @@ extern SiftColFill *maint_scope_fill_begin(Relation index, MemoryContext cx, uin
 extern int	maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf, SiftColFill *fill, SiftColBatch *const *batches, int nb,
 							  uint64 index_rows, int format, MemoryContext cx, SiftSegEntry *out);
 
+/* One slice of the key range of a merge that the participants of a parallel build share: the rows of slice i of nslices go to one segment, which is not put in the directory (*out; ndocs 0: none) */
+typedef struct MergeSlice
+{
+	int			i;
+	int			nslices;
+	SiftSegEntry *out;
+} MergeSlice;
+
+extern void maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
+								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice);
+extern bool maint_scope_merge_step(Relation index, bool force);
 extern bool maint_scope_refill(Relation index);
 extern bool maint_scope_refill_due(Relation index);
 extern bool maint_scope_merge_due(Relation index, bool force);
