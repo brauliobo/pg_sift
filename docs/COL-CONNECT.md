@@ -243,18 +243,19 @@ condition of the child that reads the parent, an OR, a parent key that is not un
 `SELECT p.attr, count(c.id), sum(c.v) FROM parent p LEFT JOIN child c ON c.fk = p.key GROUP BY p.attr` is planned also with the child grouped by `fk` first (`agg/flat/partial.c`, the rewrite of a left join of
 tables to one table): the groups are added up over the parents, a parent of no child counting 0 and summing NULL. The same switch turns it off. 1,000,000 child rows over 100,000 parents: 60 ms, 353 M instructions and 488 blocks against 540 ms, 1,633 M and 7,053 for the lookup join (bench case `child_first_left_join_groups`).
 
-What the second plan costs and where it pays. The planner hook plans the statement both ways and keeps the cheaper, so every statement of the shape pays the planning of the child-first plan whichever it keeps: the warm planning of
-`SELECT d, count(e.id) FROM <generated days> c LEFT JOIN events e ON e.d = c.d AND e.kind_id = 3 GROUP BY 1` is 1,277 k instructions against 759 k with `sift.agg_child_first = off` (+0.52 M, about 0.15 ms), and in a new backend
-the plan alone is +1.6 M instructions (6.9 against 5.3 M for a VALUES list, 7.4 against 5.8 M for the days), which is what a statement run once in its own session pays. The plan's own price does not see it (it is paid before the two are
+What the second plan costs and where it pays. The planner hook plans the statement both ways and keeps the cheaper, and the choice is kept for the next statement of the shape (the verdict cache), so a statement of the shape pays the lookup of its verdict whichever plan it keeps: the warm planning of
+`SELECT d, count(e.id) FROM <generated days> c LEFT JOIN events e ON e.d = c.d AND e.kind_id = 3 GROUP BY 1` is 977 k instructions against 760 k with `sift.agg_child_first = off` (+0.22 M, about 0.06 ms; 764 k against 577 k for a VALUES list), and in a new backend
+the plan alone is +1.2 M instructions (6.5 against 5.3 M for a VALUES list, 7.1 against 5.8 M for the days), which is what a statement run once in its own session pays (the first statement of a backend plans both ways in full). The same numbers at 20,000, 200,000 and 1,000,000 child rows to within 2%.
+Of the +0.52 M that the lookup cost before, 0.30 M was the key's hash of the planner settings, read one by one for each planning; only the settings that are not at their built-in default are read now. The plan's own price does not see the rest (it is paid before the two are
 compared), and the execution estimates hold at every size, so the choice is right from the size where the child plan saves more than that. Corpus lab (test flavour, perf stat of the backend, min of 5, sift.agg_child_first on against off):
 
 | child rows | VALUES list, warm run | days (one kind of 40), warm run | VALUES, new backend plan+run | days, new backend plan+run |
 |---|---|---|---|---|
-| 20,000 | 1.1 M against 2.7 M | 1.9 M against 1.5 M (a tie in ms: 0.15-0.3 against 0.16-0.23) | 6.9 M against 7.4 M | 8.1 M against 6.7 M |
-| 200,000 | 1.3 M against 20.7 M | 3.5 M against 4.7 M | 7.2 M against 25.5 M | 9.7 M against 9.8 M |
-| 1,000,000 | 1.6 M against 100.9 M | 9.2 M against 16.8 M | 7.6 M against 105.7 M | 15.6 M against 22.2 M |
+| 20,000 | 0.8 M against 2.7 M | 1.6 M against 1.5 M (a tie) | 6.6 M against 7.4 M | 7.8 M against 6.7 M |
+| 200,000 | 1.0 M against 20.7 M | 3.2 M against 4.7 M | 6.8 M against 25.5 M | 9.4 M against 9.8 M |
+| 1,000,000 | 1.3 M against 100.9 M | 8.9 M against 16.8 M | 7.2 M against 105.7 M | 15.3 M against 22.2 M |
 
-The plan is right from about 200,000 child rows for a shape that keeps few of them (the days above keep 2.5%) and from 20,000 for one that joins them all; below that the planning is the price of a tie, +0.5 M warm.
+The plan is right from about 200,000 child rows for a shape that keeps few of them (the days above keep 2.5%) and from 20,000 for one that joins them all; below that the planning is the price of a tie, +0.2 M warm.
 
 A record on the parent of the number of children of each key, written with the child's writes, was measured and discarded: the reading it would answer (a group by the foreign key of the leaf) has a ceiling of
 41 ms at 1,000,000 rows, where the joins it replaces cost 599 and 929 ms today, but every child write would become a write to the parent index (a new version of the parent leaf, a journal record) for a number that

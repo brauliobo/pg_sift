@@ -265,11 +265,28 @@ verdict_new_planning(void)
 
 /*
  * The settings a plan depends on: the planner's (methods, costs), the memory a plan may use and the extension's. Which settings those are is decided once
- * (get_guc_variables sorts the table of every setting: 0.5 M instructions); their values are read for each planning. A setting defined after the first planning of the
- * backend (another module's) is not in the key.
+ * (get_guc_variables sorts the table of every setting: 0.5 M instructions). A setting still at its built-in default (source PGC_S_DEFAULT) has the same value in
+ * every backend, so only the others are read, by name: reading the value of each of the 170 took 0.3 M instructions of every planning. A setting defined after the
+ * first planning of the backend (another module's) is not in the key.
  */
-static char **setting_names;
-static int	n_setting_names;
+static const struct config_generic **setting_vars;
+static int	n_setting_vars;
+
+static bool
+planner_setting(const struct config_generic *g)
+{
+	switch (g->group)
+	{
+		case QUERY_TUNING_METHOD:
+		case QUERY_TUNING_COST:
+		case QUERY_TUNING_GEQO:
+		case QUERY_TUNING_OTHER:
+			return true;
+		default:
+			return strncmp(g->name, "sift.", 5) == 0 || strcmp(g->name, "work_mem") == 0 || strcmp(g->name, "hash_mem_multiplier") == 0 ||
+				strcmp(g->name, "max_parallel_workers_per_gather") == 0;
+	}
+}
 
 static uint64
 settings_hash(void)
@@ -278,40 +295,27 @@ settings_hash(void)
 
 	if (settings_known)
 		return settings_memo;
-	if (setting_names == NULL)
+	if (setting_vars == NULL)
 	{
 		int			n;
 		struct config_generic **vars = get_guc_variables(&n);
 		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
 
-		setting_names = palloc(sizeof(char *) * n);
-		n_setting_names = 0;
+		setting_vars = palloc(sizeof(*setting_vars) * n);
 		for (int i = 0; i < n; i++)
-		{
-			const struct config_generic *g = vars[i];
-			bool		planner;
-
-			switch (g->group)
-			{
-				case QUERY_TUNING_METHOD:
-				case QUERY_TUNING_COST:
-				case QUERY_TUNING_GEQO:
-				case QUERY_TUNING_OTHER:
-					planner = true;
-					break;
-				default:
-					planner = strncmp(g->name, "sift.", 5) == 0 || strcmp(g->name, "work_mem") == 0 || strcmp(g->name, "hash_mem_multiplier") == 0 ||
-						strcmp(g->name, "max_parallel_workers_per_gather") == 0;
-			}
-			if (planner)
-				setting_names[n_setting_names++] = pstrdup(g->name);
-		}
+			if (planner_setting(vars[i]))
+				setting_vars[n_setting_vars++] = vars[i];
 		MemoryContextSwitchTo(old);
 	}
-	for (int i = 0; i < n_setting_names; i++)
+	for (int i = 0; i < n_setting_vars; i++)
 	{
-		const char *v = GetConfigOption(setting_names[i], false, false);
+		const char *name = setting_vars[i]->name;
+		const char *v;
 
+		if (setting_vars[i]->source == PGC_S_DEFAULT)
+			continue;
+		v = GetConfigOption(name, false, false);
+		h = hash_combine64(h, hash_bytes_extended((const unsigned char *) name, strlen(name), 0));
 		h = hash_combine64(h, hash_bytes_extended((const unsigned char *) v, strlen(v), 0));
 	}
 	settings_known = true;
