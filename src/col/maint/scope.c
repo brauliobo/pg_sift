@@ -34,21 +34,22 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 				  int format, MemoryContext cx, SiftSegEntry *out)
 {
 	const SiftColRel *r = sift_col_rel_private(index, cx);
-	SiftCPaggSpec pagg = r->pagg;
 	uint32		aim = sift_colk_aim_rows(index),
 				cap = 0;
 	uint32	   *row = NULL;
 	int64	   *key = NULL;
 	int			n = 0;
 
-	pagg.lean = true;
 	for (int s = 0; s < r->nscope; s++)
 	{
+		SiftCPaggSpec pagg = r->pagg;
 		SiftColBatch *rep = sift_cbatch_create(cx, r->schema);
 		SiftColSegWriter *w;
 		int			cut[SIFT_COL_CUT_MAX],
 					ncut = sift_scope_cut(r, s, cut);
 
+		pagg.lean = true;
+		sift_cpagg_spec_keep(&pagg, r->schema, r->scope_cols[s]);
 		rep->keyed = rep->unsorted = true;
 		for (int i = 0; i < nb; i++)
 		{
@@ -56,7 +57,7 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 			uint32		entries = sift_scope_fill_expand(sf, s, fk->key, fk->nulls, batches[i]->nrows, &row, &key, &cap);
 
 			for (uint32 e = 0; e < entries; e++)
-				sift_cbatch_add_scoped(rep, batches[i], row[e], r->scope_leaf[s], key[e]);
+				sift_cbatch_add_scoped(rep, batches[i], row[e], r->scope_leaf[s], key[e], r->scope_cols[s]);
 		}
 		if (rep->nrows == 0)
 			continue;
