@@ -421,7 +421,8 @@ VACUUM (FREEZE, ANALYZE) fk_members, fk_links, fk_assign, fk_map;
 -- @end
 
 -- the groups of an entity: facts with a column index keyed by the entity, a link table between groups and entities (soft-deleted links, a link twice, a NULL entity, entities in no group,
--- a group with no member, one with deleted members), the group table and the entities of four tenants
+-- a group with no member, one with deleted members), the same links once for each (group, entity) pair under a unique index (gs_pairs: the form the planner joins once),
+-- the group table and the entities of four tenants
 -- @heap
 CREATE TABLE gs_groups (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO gs_groups SELECT i, 'g' || i FROM generate_series(1, 12) i;
@@ -432,13 +433,16 @@ INSERT INTO gs_links SELECT group_id, dim_a_id, NULL FROM gs_links WHERE fz.h(di
 INSERT INTO gs_links SELECT 11, i, timestamptz '2026-01-01' FROM generate_series(0, 299) i WHERE i % 50 = 0;
 INSERT INTO gs_links VALUES (3, NULL, NULL);
 CREATE INDEX gs_links_entity ON gs_links (dim_a_id);
+CREATE TABLE gs_pairs (group_id int NOT NULL, dim_a_id int, deleted_at timestamptz, UNIQUE (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
+INSERT INTO gs_pairs SELECT DISTINCT ON (group_id, dim_a_id) group_id, dim_a_id, deleted_at FROM gs_links WHERE dim_a_id IS NOT NULL ORDER BY group_id, dim_a_id, deleted_at NULLS FIRST;
+CREATE INDEX gs_pairs_entity ON gs_pairs (dim_a_id);
 CREATE TABLE gs_tenant (tenant_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO gs_tenant SELECT t, i, CASE WHEN fz.h(i * 10 + t, 206) % 11 = 0 THEN timestamptz '2026-01-01' END FROM generate_series(1, 4) t, generate_series(0, 299) i WHERE fz.h(i * 10 + t, 207) % (t * 3) = 0;
 CREATE TABLE gs_ev (id int PRIMARY KEY, dim_a_id int, day date, kind int, amount numeric(8,2)) WITH (autovacuum_enabled = false);
 INSERT INTO gs_ev SELECT i, CASE WHEN fz.h(i, 208) % 40 = 0 THEN NULL ELSE fz.h(i, 209) % 310 END, date '2025-01-01' + fz.h(i, 210) % 400, fz.h(i, 211) % 5,
        CASE WHEN fz.h(i, 212) % 20 = 0 THEN NULL ELSE fz.h(i, 213) % 9700 / 100.0 END FROM generate_series(1, 6000) i;
 CREATE INDEX gs_ev_col ON gs_ev USING sift_col (id, dim_a_id, day, kind, amount) WITH (key_columns = 'dim_a_id', key_order = 'dim_a_id, day');
-VACUUM (FREEZE, ANALYZE) gs_groups, gs_links, gs_tenant, gs_ev;
+VACUUM (FREEZE, ANALYZE) gs_groups, gs_links, gs_pairs, gs_tenant, gs_ev;
 -- @end
 
 -- the key lists: facts with a column index and a btree, the entities of a scope listed in a links table (scopes of 0, 1, 5, 60, 200 and all 300 entities; one lists an entity twice and a NULL one),
