@@ -49,7 +49,8 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
-	bool		key_cut = sift_col_key_cut(sift_col_rel(index));
+	/* the segments of a scope index are numbered by the metapage, whether or not the units of its entities are cut by key: its scope segments are */
+	bool		key_cut = sift_col_key_cut(sift_col_rel(index)) || sift_col_rel(index)->nscope > 0;
 	SiftWriteTarget *wt;
 	ColBuild   *b;
 	int			nsegs;

@@ -16,8 +16,6 @@
 #include "col/col.h"
 #include "col/conn.h"
 
-#define SIFT_SCOPE_MAX		4		/* scopes of one index */
-
 typedef struct SiftScopeSpec
 {
 	char	   *key_name;			/* the name of the derived leaf, "<key_name>#scope" */

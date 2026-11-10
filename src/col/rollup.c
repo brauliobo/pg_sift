@@ -392,7 +392,7 @@ stale_segments(Relation index, uint64 *gens)
 					stale;
 
 		/* Below 15 a rewrite could drop newer features; at 15 the options preserve the features that stamp higher minors. */
-		if (e->kind != SIFT_SEG_IMMUTABLE || e->format > (sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_MAX_READ : sift_col_format_minor))
+		if (e->kind != SIFT_SEG_IMMUTABLE || (e->flags & SIFT_SEG_SCOPE) || e->format > (sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_MAX_READ : sift_col_format_minor))
 			continue;
 		SpinLockAcquire(&sh->lock);
 		done = is_done(sh, RelationGetRelid(index), e->gen, hash);

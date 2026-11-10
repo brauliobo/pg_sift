@@ -116,7 +116,8 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 			replaced |= dir->segs[i].gen == sw->old[k];
 		if (replaced && at < 0)
 			at = n;
-		if (replaced && dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		/* the entries of a scope segment (col/scope.h) are replicas of rows the other segments hold: the totals of the index count the rows once */
+		if (replaced && dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !(dir->segs[i].flags & SIFT_SEG_SCOPE))
 		{
 			meta->ndocs -= dir->segs[i].ndocs;
 			meta->sum_dl -= dir->segs[i].sum_dl;
@@ -141,7 +142,7 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 			const SiftSegEntry *e = j == 0 ? sw->neu : &sw->more[j - 1];
 
 			dir->segs[at + j] = *e;
-			if (e->kind == SIFT_SEG_IMMUTABLE)
+			if (e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & SIFT_SEG_SCOPE))
 			{
 				meta->ndocs += e->ndocs;
 				meta->sum_dl += e->sum_dl;

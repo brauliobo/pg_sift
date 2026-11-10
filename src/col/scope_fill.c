@@ -10,7 +10,6 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/xact.h"
-#include "utils/lsyscache.h"
 #include "miscadmin.h"
 #include "utils/hsearch.h"
 #include "utils/snapmgr.h"
@@ -180,7 +179,7 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 					key;
 		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
 
-		f->m[i].fk_leaf = r->first[sift_conn_index_column(index, get_attnum(RelationGetRelid(heap), specs->s[i]->fk))];
+		f->m[i].fk_leaf = r->first[r->schema->cols[r->scope_leaf[i]].attno];
 		map_begin(f, &f->m[i], rel, btree, member, key, f->snap, rows);
 		table_close(rel, NoLock);
 	}

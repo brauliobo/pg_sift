@@ -344,7 +344,8 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	uint32		gapn;
 	int			nmerge;
 
-	if (!build_pays(index, info))
+	/* the scope families are written by the serial build (col/build/scope.c) */
+	if (sift_col_rel(index)->nscope > 0 || !build_pays(index, info))
 		return NULL;
 	ldr = begin_parallel(heap, index, info);
 	if (ldr == NULL)

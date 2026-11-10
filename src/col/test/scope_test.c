@@ -6,6 +6,8 @@
 #include "access/table.h"
 #include "catalog/pg_type_d.h"
 #include "funcapi.h"
+#include "access/relation.h"
+#include "utils/builtins.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
@@ -15,6 +17,7 @@
 #include "col/test/test_int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_scope_expand);
+PG_FUNCTION_INFO_V1(sift_test_col_scope_entries);
 
 /*
  * sift._test_scope_expand(rel, btree, member, key, fks): the scope entries the fill gives for the member keys of fks (NULLs kept), one row (ordinal, key) per entry; the
@@ -59,6 +62,58 @@ sift_test_scope_expand(PG_FUNCTION_ARGS)
 	}
 	sift_scope_fill_end(f);
 	table_close(rel, NoLock);
+	return (Datum) 0;
+}
+
+/*
+ * sift._test_col_scope_entries(index): every live entry of the scope segments, (generation, unit, address of the fact row, scope leaf, scope key) in the order the units are
+ * stored; the scope leaf is the ordinal of its derived key among those of the schema
+ */
+Datum
+sift_test_col_scope_entries(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftColBatch *batch = sift_cbatch_create(CurrentMemoryContext, sift_col_rel(index)->schema);
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, dir);
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || !(dir->segs[i].flags & SIFT_SEG_SCOPE))
+			continue;
+		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			sift_cseg_decode_unit(seg, u, batch);
+			for (uint32 r = 0; r < batch->nrows; r++)
+				for (int c = 0, ord = 0; c < seg->schema->ncols; c++)
+				{
+					ItemPointerData tid;
+					Datum		v[5];
+					bool		nulls[5] = {false};
+
+					if (!(seg->schema->cols[c].flags & SIFT_COLD_SCOPE))
+						continue;
+					if (!sift_col_bit_test(batch->col[c].nulls, r))
+					{
+						sift_key_to_tid(batch->keys[r], &tid);
+						v[0] = Int64GetDatum(dir->segs[i].gen);
+						v[1] = Int32GetDatum((int32) u);
+						v[2] = ItemPointerGetDatum(&tid);
+						v[3] = Int32GetDatum(ord);
+						v[4] = Int64GetDatum(batch->col[c].key[r]);
+						tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+					}
+					ord++;
+				}
+		}
+		sift_cseg_close(seg);
+	}
+	index_close(index, AccessShareLock);
 	return (Datum) 0;
 }
 #endif

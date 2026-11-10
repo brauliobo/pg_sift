@@ -539,6 +539,10 @@ CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT record
 CREATE FUNCTION sift._test_scope_expand(rel regclass, btree regclass, member text, key text, fks int8[], OUT ordinal int4, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_expand' LANGUAGE C STRICT;
 
+-- the live entries of the scope segments of an index: (segment, unit, address of the fact row, ordinal of the scope, scope key)
+CREATE FUNCTION sift._test_col_scope_entries(index regclass, OUT gen int8, OUT unit int4, OUT tid tid, OUT scope int4, OUT key int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_scope_entries' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
 

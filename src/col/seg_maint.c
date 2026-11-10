@@ -197,6 +197,7 @@ int64
 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {
 	SegPriv    *pv = PRIV(seg);
+	bool		scope = (seg->entry.flags & SIFT_SEG_SCOPE) != 0;	/* its entries are replicas: the tuples of the index are those of the other segments */
 	uint64	   *dead = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(uint64));
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
@@ -225,7 +226,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 			if (cb(&tid, cbstate))
 				dead[nd++] = r->rank_base + i;
 			else
-				stats->num_index_tuples++;
+				stats->num_index_tuples += !scope;
 		}
 		if (nd == 0)
 			continue;
@@ -238,7 +239,7 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 	pfree(dead);
 	pfree(keys);
 	pfree(live);
-	stats->tuples_removed += removed;
+	stats->tuples_removed += scope ? 0 : removed;
 	return removed;
 }
 

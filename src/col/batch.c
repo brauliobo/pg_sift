@@ -638,9 +638,9 @@ copy_slot(SiftColBatch *dst, const SiftColBatch *src, int id, uint32 slot)
 	}
 }
 
-/* Row r of src to dst, leaf by leaf, the elements of its arrays after their group */
+/* Row r of src to dst, leaf by leaf, the elements of its arrays after their group; scope_leaf >= 0: that leaf holds scope_key in the copy, whatever src has in it */
 static void
-batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
+batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key)
 {
 	const SiftColSchema *s = dst->schema;
 	uint32		xmin = src->hasver ? src->xmin[r] : 0;
@@ -653,7 +653,10 @@ batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 
 		if (s->cols[id].parent >= 0)
 			continue;
-		copy_slot(dst, src, id, r);
+		if (id == scope_leaf)
+			vals_put(dst->mcxt, &dst->col[id], scope_key, false, false, SIFT_COLTAG_UNKNOWN);
+		else
+			copy_slot(dst, src, id, r);
 		if (s->cols[id].kind != SIFT_COLK_GROUP)
 			continue;
 		first = src->col[id].eoff[r];
@@ -672,7 +675,13 @@ batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 void
 sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 {
-	batch_copy_row(dst, src, r);
+	batch_copy_row(dst, src, r, -1, 0);
+}
+
+void
+sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key)
+{
+	batch_copy_row(dst, src, r, scope_leaf, scope_key);
 }
 
 /* len rows of src from row r to dst, a leaf at a time: a schema of plain integer leaves (no group, no string) */
@@ -761,7 +770,7 @@ sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc)
 				continue;
 			}
 		}
-		batch_copy_row(dst, src[first], pos[first]);
+		batch_copy_row(dst, src[first], pos[first], -1, 0);
 		for (int i = 0; i < nsrc; i++)
 			if (pos[i] < src[i]->nrows && src[i]->keys[pos[i]] == min)
 				pos[i]++;

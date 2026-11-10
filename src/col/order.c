@@ -283,6 +283,16 @@ key_start(const OrderCtx *ctx, const RowRef *refs, uint64 end)
 }
 
 /*
+ * The units of a scope segment hold one scope key each (the first leaf of the order is the derived key): the rows of a fact are replicated once per key, so a unit that held two keys
+ * could hold a row twice, and a unit lists each address once.
+ */
+static inline bool
+key_pure(const OrderCtx *c)
+{
+	return c->nleaf > 0 && (c->schema->cols[c->leaf[0]].flags & SIFT_COLD_SCOPE) != 0;
+}
+
+/*
  * Where a window of avail rows refs[0, avail) in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes
  * (within slack rows), so that one value of the leading leaf is in as few units as it can be. A key of at least 2 * SIFT_COLK_SECOND_ROWS rows is sorted by the second leaf
  * and cut into units of SIFT_COLK_SECOND_ROWS, the last one ending with the key (*split: the cut before this one was one of these), and starts its own unit: a unit of the
@@ -306,6 +316,8 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
 		}
 	}
 	*split = false;
+	if (key_pure(ctx))
+		return Min(end, key_run(ctx, refs, end));
 	if (end < avail && ctx->nleaf > 0)
 	{
 		uint64		best = 0;

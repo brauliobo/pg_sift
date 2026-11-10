@@ -283,7 +283,7 @@ segw_gorder_plain(const SiftColSegWriter *w, int c)
 void
 sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill)
 {
-	SIFT_INVARIANT(fill == NULL || w->found != NULL, "sift_col: a fill for a segment without connection flags");
+	SIFT_INVARIANT(fill == NULL || w->found != NULL || w->schema->scoped, "sift_col: a fill for a segment without connection flags or scopes");
 	w->fill = fill;
 }
 
@@ -292,7 +292,7 @@ static void colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 void
 sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 {
-	if (w->fill == NULL)
+	if (w->fill == NULL || w->found == NULL)
 	{
 		colw_add(w, b);
 		return;
@@ -590,13 +590,13 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
-	if (w->schema->connected)
+	if (w->schema->connected || w->schema->scoped)
 	{
-		/* the stamps of the connections follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
-		int			nconn = sift_cschema_nconn(w->schema);
-		uint32		tail[2] = {(uint32) nconn, SEG_STAMPS_MAGIC};
+		/* the stamps of the connections and then those of the scopes follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
+		int			nstamps = sift_cschema_nconn(w->schema) + sift_cschema_nscope(w->schema);
+		uint32		tail[2] = {(uint32) nstamps, SEG_STAMPS_MAGIC};
 
-		for (int i = 0; i < nconn; i++)
+		for (int i = 0; i < nstamps; i++)
 		{
 			SiftConnStamp st = w->fill ? w->fill->stamp(w->fill, i) : (SiftConnStamp) {0};
 

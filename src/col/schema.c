@@ -148,6 +148,17 @@ sift_cschema_nconn(const SiftColSchema *s)
 	return n;
 }
 
+/* ... and the scopes: one derived key leaf "<key_name>#scope" each (col/scope.h) */
+int
+sift_cschema_nscope(const SiftColSchema *s)
+{
+	int			n = 0;
+
+	for (int i = 0; i < s->ncols; i++)
+		n += (s->cols[i].flags & SIFT_COLD_SCOPE) != 0;
+	return n;
+}
+
 void
 sift_cschema_serialize(const SiftColSchema *s, StringInfo out)
 {

@@ -103,6 +103,8 @@ typedef struct SiftColSegment
 	void	   *priv;			/* zone arrays, dictionaries, liveness: loaded on demand */
 	int			nconn;			/* connections of the schema (col/conn.h) and the stamp of each (lineage 0: the segment holds no value of the parent for it) */
 	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];
+	int			nscope;			/* scopes of the schema (col/scope.h) and the stamp of each: the relation's snapshot the segment's entries were expanded under */
+	SiftConnStamp scope[SIFT_SCOPE_MAX];
 } SiftColSegment;
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */

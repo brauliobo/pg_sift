@@ -8,6 +8,7 @@
 #ifdef SIFT_TESTING
 #endif
 #include "col/build.h"
+#include "col/scope.h"
 
 typedef struct ColSpill ColSpill;
 
@@ -28,7 +29,7 @@ struct ColBuild
 	MemoryContext heldcxt;		/* the batches in held */
 	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
 	SiftColSegWriter *w;
-	SiftColFill *fill;				/* an index with connections: the found flags of every segment are filled from the parent tables (col/conn.h) */
+	SiftColFill *fill;				/* an index with connections or scopes: the found flags of every segment are filled from the parent tables (col/conn.h), and the stamps of the scopes written (col/scope.h) */
 	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
 	int			nrows;
@@ -51,9 +52,24 @@ struct ColBuild
 	uint64		total_rows;		/* the heap's estimate of the rows of the index */
 	double		indexed;
 	double		reported;
+	/* a scope index (col/build/scope.c): the build of the entities feeds the rows of each batch, replicated by the scope keys of their member, to a build of its own for each scope */
+	ColBuild   *scope[SIFT_SCOPE_MAX];
+	int			nscope;
+	struct SiftScopeFill *sfill;
+	uint32	   *srow;			/* the expansion of the batch in hand: the row of the batch and the scope key of each entry */
+	int64	   *skey;
+	uint32		scap;
+	int			scope_leaf;		/* a scope's build: the derived key leaf; -1 for the build of the entities */
+	bool		metagen;		/* the generations of the segments are the metapage's, as a key-cut build's, though the units of the entities are not cut by key */
 };
 
+extern ColBuild *colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope);
 extern uint64	colb_next_gen(ColBuild *b);
+extern void colb_scope_cut(SiftColRel *r, int scope);
+extern void colb_scope_begin(ColBuild *b, SiftSegEntry *segs, int room);
+extern void colb_scope_feed(ColBuild *b, const SiftColBatch *src);
+extern void colb_scope_gather(ColBuild *b);
+extern void colb_finish_runs(ColBuild *b);
 extern Size colb_run_budget(ColBuild *b, Size held);
 extern Size colb_writer_budget(int nslots);
 extern void colb_flush_batch(ColBuild *b);

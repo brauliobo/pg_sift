@@ -25,7 +25,7 @@ publish(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 	dir->nsegs = p->nsegs;
 	for (int i = 0; i < p->nsegs; i++)
 	{
-		meta->ndocs += p->segs[i].ndocs;
+		meta->ndocs += (p->segs[i].flags & SIFT_SEG_SCOPE) ? 0 : p->segs[i].ndocs;
 		meta->next_gen = Max(meta->next_gen, p->segs[i].gen + 1);
 	}
 }

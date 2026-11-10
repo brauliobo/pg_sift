@@ -551,7 +551,9 @@ typedef struct SegHead
 	SiftColSchema *schema;
 	SiftColSBRef *sbdir;		/* [hdr->dictroot_n] */
 	int			nconn;
-	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with connection flags */
+	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with connection flags, then those of its scopes */
+	int			nscope;
+	SiftConnStamp scope[SIFT_SCOPE_MAX];
 	bool		mirror_sound;	/* the checksum of the mirror of the header it was made under was checked: the backend does not again for each statement */
 } SegHead;
 

@@ -132,7 +132,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 		{
 			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 
-			rows += snap->segs[i].ndocs;
+			rows += (snap->segs[i].flags & SIFT_SEG_SCOPE) ? 0 : snap->segs[i].ndocs;
 			bytes += snap->segs[i].bytes;
 			pagg_bytes += sift_cseg_preagg_bytes(seg);
 			pagg_units += sift_cseg_preagg_units(seg);

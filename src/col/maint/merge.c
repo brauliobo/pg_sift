@@ -876,12 +876,12 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	sift_dir_read(index, snap);
 	int total = snap->nsegs;
 	for (int i = 0; i < total; i++)
-		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE;
-	if (!force)
+		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_SCOPE);
+	/* the merge and the rewrite are of the entity segments: a scope segment (col/scope.h) is cut by another key, and the two are never mixed */
 	{
 		int keep = 0;
 		for (int i = 0; i < total; i++)
-			if (!(snap->segs[i].flags & SIFT_SEG_UNIT))
+			if (!(snap->segs[i].flags & SIFT_SEG_SCOPE) && (force || !(snap->segs[i].flags & SIFT_SEG_UNIT)))
 				snap->segs[keep++] = snap->segs[i];
 		snap->nsegs = keep;
 	}

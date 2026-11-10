@@ -34,6 +34,8 @@ typedef struct RowHash
 	uint64		tags;
 	bool		known;
 	bool		strovf;
+	int			sleaf;			/* an entry of a scope segment: the derived key leaf that holds its scope key, and the key (a row of the entities: -1) */
+	int64		skey;
 } RowHash;
 
 typedef struct Collect
@@ -80,7 +82,7 @@ value_hashes(RowHash *rh, const SiftColDef *def, const SiftColValue *v)
 static RowHash
 row_hash(const SiftColSchema *sc, const SiftColRow *row, SiftKey key)
 {
-	RowHash		rh = {.key = key, .known = true};
+	RowHash		rh = {.key = key,.known = true,.sleaf = -1};
 
 	for (int c = 0; c < sc->ncols; c++)
 	{
@@ -159,8 +161,26 @@ check_wide(Relation index, const SiftColSchema *sc, const SiftColRow *row)
 	}
 }
 
+/* The derived key leaf a row of a scope segment holds a key in: exactly one of them (the scope the segment is of) */
+static int
+scope_leaf_of(Relation index, const SiftColSchema *sc, const SiftColBatch *b, uint32 r)
+{
+	int			leaf = -1;
+
+	for (int c = 0; c < sc->ncols; c++)
+		if ((sc->cols[c].flags & SIFT_COLD_SCOPE) && !sift_col_bit_test(b->col[c].nulls, r))
+		{
+			if (leaf >= 0)
+				corrupt(index, "Row (%u,%u) of a scope segment holds the keys of two scopes.", sift_key_block(b->keys[r]), (uint32) (b->keys[r] & 0xFFFF));
+			leaf = c;
+		}
+	if (leaf < 0)
+		corrupt(index, "Row (%u,%u) of a scope segment holds no scope key.", sift_key_block(b->keys[r]), (uint32) (b->keys[r] & 0xFFFF));
+	return leaf;
+}
+
 static void
-collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftColBatch *b)
+collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftColBatch *b, bool scope)
 {
 	SiftColRow	row = {0};
 
@@ -174,7 +194,13 @@ collect_batch(Relation index, Collect *cl, const SiftColSchema *sc, const SiftCo
 		}
 		sift_cbatch_row(b, r, &row);
 		check_wide(index, sc, &row);
-		cl->rows[cl->n++] = row_hash(sc, &row, b->keys[r]);
+		cl->rows[cl->n] = row_hash(sc, &row, b->keys[r]);
+		if (scope)
+		{
+			cl->rows[cl->n].sleaf = scope_leaf_of(index, sc, b, r);
+			cl->rows[cl->n].skey = b->col[cl->rows[cl->n].sleaf].key[r];
+		}
+		cl->n++;
 	}
 }
 
@@ -185,6 +211,20 @@ rowhash_cmp(const void *a, const void *b)
 				y = ((const RowHash *) b)->key;
 
 	return SIFT_CMP3(x, y);
+}
+
+/* The entries of the scope segments in the order of (address, scope leaf, scope key) */
+static int
+scope_cmp(const void *a, const void *b)
+{
+	const RowHash *x = a,
+			   *y = b;
+
+	if (x->key != y->key)
+		return SIFT_CMP3(x->key, y->key);
+	if (x->sleaf != y->sleaf)
+		return SIFT_CMP3(x->sleaf, y->sleaf);
+	return SIFT_CMP3(x->skey, y->skey);
 }
 
 #ifdef SIFT_TESTING
@@ -244,7 +284,8 @@ sift_col_verify(PG_FUNCTION_ARGS)
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col verify", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	Snapshot	snapshot = heapallindexed ? RegisterSnapshot(GetTransactionSnapshot()) : InvalidSnapshot;
-	Collect		cl = {0};
+	Collect		cl = {0},
+				sl = {0};		/* the live entries of the scope segments */
 	SiftColBatch *batch;
 	uint64		ndocs = 0;
 
@@ -268,11 +309,15 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			if (live != sift_cseg_live_rows(seg))
 				corrupt(index, "Segment %llu holds %llu live rows, its liveness says %llu.", (unsigned long long) e->gen,
 						(unsigned long long) live, (unsigned long long) sift_cseg_live_rows(seg));
-			ndocs += e->ndocs;
+			bool		scope = (e->flags & SIFT_SEG_SCOPE) != 0;
+
+			if (scope && !sift_cseg_keyed(e))
+				corrupt(index, "Scope segment %llu is not cut by key.", (unsigned long long) e->gen);
+			ndocs += scope ? 0 : e->ndocs;
 			for (uint32 u = 0; u < seg->nsb; u++)
 			{
 				sift_cseg_decode_unit(seg, u, batch);
-				collect_batch(index, &cl, r->schema, batch);
+				collect_batch(index, scope ? &sl : &cl, r->schema, batch, scope);
 			}
 			sift_cseg_close(seg);
 		}
@@ -284,7 +329,7 @@ sift_col_verify(PG_FUNCTION_ARGS)
 			sift_cwbuf_verify(index, e, r->schema);
 			bs = sift_cwbuf_batches(index, e, r->schema, cxt, &n, NULL);
 			for (int j = 0; j < n; j++)
-				collect_batch(index, &cl, r->schema, bs[j]);
+				collect_batch(index, &cl, r->schema, bs[j], false);
 		}
 	}
 	if (ndocs != snap->meta.ndocs)
@@ -294,6 +339,21 @@ sift_col_verify(PG_FUNCTION_ARGS)
 	for (int64 i = 1; i < cl.n; i++)
 		if (cl.rows[i].key == cl.rows[i - 1].key)
 			corrupt(index, "Row (%u,%u) is live in the index twice.", sift_key_block(cl.rows[i].key), (uint32) (cl.rows[i].key & 0xFFFF));
+	/* an entry of a scope segment is a copy of a row of the entities, once for each of its scope keys */
+	if (sl.n > 0)
+		qsort(sl.rows, sl.n, sizeof(RowHash), scope_cmp);
+	for (int64 i = 0; i < sl.n; i++)
+	{
+		const RowHash *s = &sl.rows[i],
+				   *e = bsearch(s, cl.rows, cl.n, sizeof(RowHash), rowhash_cmp);
+
+		if (i > 0 && scope_cmp(s, &sl.rows[i - 1]) == 0)
+			corrupt(index, "Row (%u,%u) is live twice in the scope segments under the scope key " INT64_FORMAT ".", sift_key_block(s->key), (uint32) (s->key & 0xFFFF), s->skey);
+		if (e == NULL)
+			corrupt(index, "Row (%u,%u) of the scope segments is not in the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
+		if (e->strovf ? e->rest != s->rest : e->hash != s->hash)
+			corrupt(index, "The values of row (%u,%u) in the scope segments differ from those of the segments of the entities.", sift_key_block(s->key), (uint32) (s->key & 0xFFFF));
+	}
 	if (heapallindexed)
 	{
 		Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);

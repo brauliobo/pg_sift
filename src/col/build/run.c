@@ -44,7 +44,7 @@ end_segment(ColBuild *b)
 uint64
 colb_next_gen(ColBuild *b)
 {
-	return b->shared || b->lvl ? sift_store_new_gen(b->index) : b->nsegs + 1;
+	return b->shared || b->lvl || b->metagen ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
 Size
@@ -240,6 +240,7 @@ colb_flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	colb_scope_feed(b, b->batch);
 	if (b->spill != NULL)
 	{
 		colb_spill_batch(b, b->batch);
@@ -399,8 +400,9 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 		report_rows(b);
 }
 
+/* A participant's build without its fills: the families of a scope index (col/build/scope.c) are begun like the build of the entities, with their own cut and share the fill of the entities */
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots)
+colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots, int scope)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -408,6 +410,12 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->index = index;
 	/* the index's own state is freed when its relcache entry is reloaded, which any lock taken during the scan may do: the build keeps a copy */
 	b->r = sift_col_rel_private(index, cxt);
+	b->scope_leaf = -1;
+	if (scope >= 0)
+	{
+		colb_scope_cut(b->r, scope);
+		b->scope_leaf = b->r->scope_leaf[scope];
+	}
 	b->cxt = cxt;
 	b->pagecxt = AllocSetContextCreate(cxt, "sift_col build page", ALLOCSET_DEFAULT_SIZES);
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
@@ -443,10 +451,21 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
-	b->fill = sift_conn_fill_begin(index, cxt, b->share);
-	if (!sift_col_key_cut(b->r) && b->share > (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS)
+	return b;
+}
+
+ColBuild *
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots)
+{
+	int			nscope = shared ? 0 : sift_col_rel(index)->nscope;
+	ColBuild   *b = colb_alloc(index, wt, nscope > 0 ? budget / (1 + nscope) : budget, maxsegs / (1 + nscope), segs, shared, nslots, -1);
+
+	b->fill = sift_conn_fill_begin(index, b->cxt, b->share);
+	if (nscope > 0)
+		colb_scope_begin(b, segs + b->maxsegs, maxsegs / (1 + nscope));
+	if (!sift_col_key_cut(b->r) && b->share > (uint64) b->maxsegs * SIFT_CPOINT_BUILD_ROWS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the heap has about " UINT64_FORMAT " rows for each process of the build: its %d segments hold " UINT64_FORMAT,
-							   b->share, maxsegs, (uint64) maxsegs * SIFT_CPOINT_BUILD_ROWS),
+							   b->share, b->maxsegs, (uint64) b->maxsegs * SIFT_CPOINT_BUILD_ROWS),
 						errhint("Set key_cut on a column to build by runs, or build on a partition of the table.")));
 	return b;
 }
@@ -487,17 +506,27 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	return tuples;
 }
 
-int
-sift_colb_end(ColBuild *b)
+/* The runs the build holds are written and its last segment ends */
+void
+colb_finish_runs(ColBuild *b)
 {
-	flush_page(b);
-	colb_flush_batch(b);
 	if (b->spill != NULL)
 		colb_spill_finish(b);
 	else if (b->held != NIL)
 		colb_write_run(b, true);
 	end_segment(b);
+}
+
+int
+sift_colb_end(ColBuild *b)
+{
+	flush_page(b);
+	colb_flush_batch(b);
+	colb_finish_runs(b);
+	for (int s = 0; s < b->nscope; s++)
+		colb_finish_runs(b->scope[s]);
 	sift_conn_fill_end(b->fill);
+	colb_scope_gather(b);
 	report_rows(b);
 	return b->nsegs;
 }
@@ -511,5 +540,7 @@ sift_colb_rows(const ColBuild *b)
 void
 sift_colb_free(ColBuild *b)
 {
+	for (int s = 0; s < b->nscope; s++)
+		MemoryContextDelete(b->scope[s]->cxt);
 	MemoryContextDelete(b->cxt);
 }

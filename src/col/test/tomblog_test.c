@@ -384,7 +384,7 @@ sift_test_conn_take(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
-/* sift._test_col_conn_stamps(index): for each immutable segment and connection, the stamp the segment was filled under (lineage 0: not filled) */
+/* sift._test_col_conn_stamps(index): for each immutable segment and connection (then scope), the stamp the segment was filled under (lineage 0: not filled) */
 Datum
 sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 {
@@ -401,10 +401,11 @@ sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
-		for (int c = 0; c < seg->nconn; c++)
+		for (int c = 0; c < seg->nconn + seg->nscope; c++)
 		{
-			Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(c), Int64GetDatum((int64) seg->conn[c].lineage),
-							TransactionIdGetDatum(seg->conn[c].xmin)};
+			const SiftConnStamp *st = c < seg->nconn ? &seg->conn[c] : &seg->scope[c - seg->nconn];
+			Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(c), Int64GetDatum((int64) st->lineage),
+							TransactionIdGetDatum(st->xmin)};
 			bool		nulls[4] = {false};
 
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);

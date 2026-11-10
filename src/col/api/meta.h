@@ -105,6 +105,7 @@ typedef struct SiftColIndexMeta
  * BEFORE the parent's entries are read, with the snapshot it was taken for.
  */
 #define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
+#define SIFT_SCOPE_MAX				4		/* scopes of one index (col/scope.h) */
 
 typedef struct SiftConnStamp
 {

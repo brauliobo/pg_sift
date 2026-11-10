@@ -37,6 +37,7 @@ extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *
 
 /* The SCHEMA section of a segment: magic 'COLS', ncols, hash, per leaf a fixed part and the path */
 extern int	sift_cschema_nconn(const SiftColSchema *s);
+extern int	sift_cschema_nscope(const SiftColSchema *s);
 extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
@@ -283,6 +284,8 @@ extern void sift_cbatch_add(SiftColBatch *b, const SiftColRow *row);
 extern void sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 cmin);
 /* Appends row r of src (same schema) re-interning its strings; same key rules */
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
+/* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted */
+extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */
 extern void sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc);
 /*
