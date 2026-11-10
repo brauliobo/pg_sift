@@ -2,7 +2,7 @@
 
 How to choose the columns of the `sift_col` indexes of an application's tables, what a wider index buys and costs, and which btrees to keep.
 
-Every figure on this page is measured on the store dataset of the benchmark ([bench/sql/store/gen.sql](../bench/sql/store/gen.sql): 1,000,000 orders of nine columns, a 104.2 MB heap) with its primary key and two btrees (`customer_id`, `created_at`), release 4.2.x, PostgreSQL 18.6, one host, warm cache, `EXPLAIN (ANALYZE)` minimum of five runs (writes: minimum of three, a checkpoint before each). The statements are those of [bench/sql/store/queries](../bench/sql/store/queries) plus the ones written out below; the LEFT JOIN section has a generator of its own. Absolute times depend on the host; read the ratios.
+Every figure on this page is measured on the store dataset of the benchmark ([bench/sql/store/gen.sql](../bench/sql/store/gen.sql): 1,000,000 orders of nine columns, a 104.2 MB heap) with its primary key and two btrees (`customer_id`, `created_at`), releases 4.2.x and 4.3, PostgreSQL 18.6, one host, warm cache, `EXPLAIN (ANALYZE)` minimum of five runs (writes: minimum of three, a checkpoint before each). The statements are those of [bench/sql/store/queries](../bench/sql/store/queries) plus the ones written out below; the LEFT JOIN section has a generator of its own. Absolute times depend on the host; read the ratios.
 
 ## The rule
 
@@ -50,10 +50,6 @@ The build decides two order structures from the statistics of the table; both ar
 - **An index that exists keeps its directory until its choices are made again.** A merge decides them again for the segments it writes (the options show `order_array_columns = 'auto: id, ts'` and the directory gone afterwards), a REINDEX for all of them; the old and the new segments answer the same queries meanwhile (1,000,000 rows of a tip-built index plus 100,000 rows: 9.0 MB, 11.3 MB after two promotions, 6.4 MB after REINDEX).
 - **The second order is grouped by the column the table is read by.** The build groups the date, timestamp and integer arrays by an integer of 100 or more values (3 rows a value at the least) that is the first or second key column of a non-unique b-tree of the table whose other key column is a date or timestamp of the index (a partial b-tree counts; a unique one, a b-tree on the column alone and an `INCLUDE` column do not), else by the foreign key or `*_id` column of most values; the b-tree wins over the entity. The b-tree is the table's own statement of the shape `WHERE col = x ORDER BY ts LIMIT n`, which the sift index replaces, and without the second order that statement reads the units (5,000,000 rows, 100 values, index `id, g, ts, amount`, one backend, no parallel workers, cold: a b-tree on `(amount, ts)` 0.33M instructions and 24 blocks; sift without the group 4.69M and 1,491; with it 0.89M and 44; the index 31.6 to 37.9 MB (+20%: the group names its entries by their position in the plain order, a chunk of them where the positions are close, and it was 50.4 MB, +60%, with their keys and heap addresses), the build 31.8 to 34.3 G instructions against the same group by keys and addresses (+7.7%); at 1,000 values +14% (+31%), at 93,000 values +65% (65.0 MB for 39.5 MB without the group; it was 102.7 MB, +160%, before the table of groups of 1,024 groups or more was packed to the 35 bits of a group, which cut the build to no more instructions and the statement from 8.2M instructions and 807 blocks to 0.91M and 214); 1,000,000 rows 7.22M and 526 to 0.50M and 33). A b-tree on the measure alone is not a signal: the units read 4.69M instructions and 1,491 blocks against its 3.48M and 1,933, so the index stays 17 MB smaller. A measure or a code with no such b-tree is not chosen (3.5 bytes a row at 100 values): name it with `order_array_group = 'auto: col'` and decide again: `ALTER INDEX orders_col SET (order_array_group = 'auto: amount'); REINDEX INDEX orders_col;` (the weighted formula still weighs it, and refuses it at 150,000 rows, where the statement reads 1.6M instructions). The NOTICE of `CREATE INDEX` and `sift.index_choices` say which one chose the group (`second order by amount: b-tree orders_amount_ts_idx`, `entity` or `hint`). An index of an earlier release keeps its arrays until `REINDEX`, which decides again; what the build wrote is the hint of the next `REINDEX`, so the group stays after the b-tree is dropped for the sift index (`ALTER INDEX .. RESET (order_array_group)` decides from the table again). Do not write `order_array_group = 'amount'`: that groups every array by the column and keeps no plain order, so `ORDER BY ts LIMIT`, `OFFSET`, a range and `IN` of another column read the units (1,000,000 rows: 0.46M to 6.5M, 0.44M to 14.8M, 0.80M to 9.7M and 1.81M to 11.2M instructions).
 
-## What writes cost
-
-100,000 rows against the 1,000,000-row table with its three btrees, the first set having no `sift_col` index (time and WAL, minimum of three runs):
-
 ## Loading in key order, and `key_cut`
 
 When the heap follows a time or key column, the index needs less for that column and a window of it reads far less. Measured on 1,000,000 rows and an index of four columns (an id, a 50-value group, a timestamp, an integer), the same rows loaded in id order (timestamp scattered) and loaded in timestamp order; instructions of one backend, minimum of five, blocks read cold:
@@ -68,7 +64,16 @@ When the heap follows a time or key column, the index needs less for that column
 - **The other columns pay.** A column that followed the old order loses its runs: here the group and the integer followed the id, and the index grew 58 % (8.7 to 13.8 MB); with only the timestamp ordered it shrank 28 % (7.5 to 5.4 MB). Sort by the column the queries window or order by, and only when the others do not follow the old order.
 - **`key_cut` for key-shaped columns** cuts the units by the key at build, promotion and merge, so each row is written once in its unit: 96,000 inserted rows and 9,600 updates wrote 36 % fewer pages and 24 % less WAL, the file grew 45 % less and the segments fell from 11 to 6, and a window aggregate dropped from 12.4 M to 0.61 M instructions. The trade-off is `ORDER BY .. LIMIT` of another column: the key-cut index has no order array for it, so `ORDER BY ts DESC LIMIT 20` costs 0.70 M instead of 0.375 M on a fresh index and each ordered overlay of an index that took writes adds 0.35 to 0.6 M (an overlay that keeps an order array adds 12 to 15 k). Leave the cut automatic, and set `key_cut = 'off'` on an index whose queries also order or range by another column.
 
-## When to add a btree
+## What writes cost
+
+100,000 rows against the 1,000,000-row table with its three btrees, the first set having no `sift_col` index (time and WAL, minimum of three runs):
+
+| statement | btrees only | lean | wide |
+|---|---|---|---|
+| insert 100,000 rows | 614 ms, 67.4 MB | 943 ms, 77.0 MB | 982 ms, 79.1 MB |
+| update `amount` of 100,000 rows | 2,822 ms, 97.8 MB | 3,886 ms, 110.9 MB | 3,745 ms, 117.2 MB |
+| update `title` of 100,000 rows | 2,438 ms, 105.1 MB | 2,466 ms, 117.9 MB | 3,166 ms, 122.7 MB |
+| delete 100,000 rows | 61 ms, 19.1 MB | 171 ms, 22.5 MB | 136 ms, 22.5 MB |
 
 The lean index adds 1.5 times the time and 1.14 times the WAL to an insert, and 1.1 to 1.2 times the WAL to an update. The update of a column the index does not hold (`title` against the lean index) takes the time of the table alone and writes 13 MB more WAL; the one that changes an indexed column also takes 1.4 times as long. Size and WAL grow with the number of columns, so each column is worth the queries that use it.
 
@@ -78,9 +83,9 @@ The lean index adds 1.5 times the time and 1.14 times the WAL to an insert, and 
 - **Do not create** a btree for a column the `sift_col` index holds to speed up a count, a group-by or a filter: the aggregate scan answers it from the index. The three btrees of the first set above left all seven queries on a sequential or bitmap scan.
 - **Drop** an older `sift_col` index whose columns the new one holds, once the queries run on the new one.
 
-## Known limit: a LEFT JOIN from a parent to its children when both tables are indexed
+## A LEFT JOIN from a parent to its children
 
-For `parent LEFT JOIN child ... GROUP BY` with an aggregate over the child's columns, the scan starts from the table on the left of the join. With a `sift_col` index on the child alone, the scan reads the child and takes the parent as its lookup table; with an index on **both** tables the planner does not try the child as the scan, and the statement runs as the normal plan or as a scan of the parent that loads the child as rows. Measured on 100,000 parents and 1,000,000 children, one backend without workers, minimum of five:
+For `parent LEFT JOIN child ... GROUP BY` with an aggregate over the child's columns, the scan reads the child and takes the parent as its lookup table, whether the parent has a `sift_col` index or not (4.2.x did not try the child as the scan when both tables were indexed: 491, 631, 191, 591 and 125 ms for the first five statements below). Measured on 100,000 parents and 1,000,000 children, release 4.3, one backend without workers, minimum of five (normal plan: three):
 
 ```sql
 CREATE TABLE parent (id int PRIMARY KEY, grp int, state text, rank int);
@@ -95,16 +100,16 @@ CREATE INDEX parent_col ON parent USING sift_col (id, grp, state, rank);        
 
 | statement (`parent p LEFT JOIN child c ON c.parent_id = p.id` unless said) | normal plan | child indexed alone | both indexed |
 |---|---|---|---|
-| `count(c.id)` per parent, ten largest | 1,030 ms | 75 ms, scan | 491 ms, scan of the parent |
-| `count(c.id)` per `p.grp` | 648 ms | 197 ms, scan | 631 ms, normal plan |
-| `sum(c.amount)` per `p.grp`, with `c.kind = 'a' AND c.at >= ..` in the `ON` | 214 ms | 30 ms, scan | 191 ms, normal plan |
-| `count(DISTINCT c.kind)` per `p.grp` | 893 ms | 87 ms, scan | 591 ms, scan of the parent |
-| `sum(c.amount)` per `p.state` with `WHERE p.rank < 5` | 131 ms | 159 ms, scan | 125 ms, normal plan |
-| `WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.amount > 990)` per `p.grp` | 87 ms | 92 ms | 88 ms |
+| `count(c.id)` per parent, ten largest | 548 ms | 84 ms | 60 ms |
+| `count(c.id)` per `p.grp` | 316 ms | 50 ms | 50 ms |
+| `sum(c.amount)` per `p.grp`, with `c.kind = 'a' AND c.at >= ..` in the `ON` | 117 ms | 17 ms | 14 ms |
+| `count(DISTINCT c.kind)` per `p.grp` | 734 ms | 42 ms | 43 ms |
+| `sum(c.amount)` per `p.state` with `WHERE p.rank < 5` | 69 ms | 43 ms | 53 ms |
+| `WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.amount > 990)` per `p.grp` | 58 ms | 57 ms | 72 ms |
 
-- **Advice.** Index the child. If the parent's columns are only filters and group keys, they can stay out of a parent index; add one when other statements need it, and check the statements above with `EXPLAIN`.
-- **A filter of the parent** (the fifth row) is the one shape where the scan of the child is slower than the normal plan (159 against 131 ms): check it with `EXPLAIN (ANALYZE)` and `SET sift.enable_agg = off`.
-- **`EXISTS`, `NOT EXISTS` and `IN` from the parent to a child with conditions** keep the normal plan in every set (87 to 92 ms).
+- **Advice.** Index the child. The parent needs an index only for the statements of its own that read its columns; check the statements above with `EXPLAIN`.
+- **A filter of the parent** (the fifth row) is the shape closest to the normal plan: check it with `EXPLAIN (ANALYZE)` and `SET sift.enable_agg = off`.
+- **`EXISTS` and `NOT EXISTS` from the parent to a child with conditions** keep the normal plan in every set (the differences of the last row are the noise of the host).
 
 ## What an index of this kind does not answer yet
 
