@@ -141,15 +141,15 @@ SELECT sift.col_verify('events_col', true);
 -- rows in a write buffer have no scope entries: the entity rows are read, with the members of the key
 INSERT INTO events SELECT 30000 + i, 1 + i % 300, timestamptz '2026-02-01', 1, 'y' FROM generate_series(1, 200) i;
 SELECT * FROM phase();
- n | same | stored |     why      | fewer_units 
----+------+--------+--------------+-------------
- 1 | t    | f      | write buffer | f
- 2 | t    | f      | write buffer | f
- 3 | t    | f      | write buffer | f
- 4 | t    | f      | write buffer | f
- 5 | t    | f      | write buffer | f
- 6 | t    | f      | write buffer | f
- 7 | t    | f      | write buffer | f
+ n | same | stored |          why           | fewer_units 
+---+------+--------+------------------------+-------------
+ 1 | t    | t      |                        | t
+ 2 | t    | t      |                        | t
+ 3 | t    | t      |                        | t
+ 4 | t    | t      |                        | t
+ 5 | t    | t      |                        | t
+ 6 | t    | t      |                        | t
+ 7 | t    | f      | top-n, changed members | f
 (7 rows)
 
 -- promoted: the rows of the buffer are an entity segment and scope segments of the same switch of the directory, so the scope units are read again; and the same after a merge (col_scope_maint has the states of the maintenance)

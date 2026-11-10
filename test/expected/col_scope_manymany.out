@@ -1,6 +1,7 @@
 -- An entity is in several scope keys (a membership table of (entity, group) pairs): a fact row has one to six scope entries. A read of one key sees each fact of a member that has the
 -- pair once; a read of several keys that means "a pair with any of them" (IN, EXISTS) counts a fact once; a join counts it once for each pair. Every state is md5 equal to the plain
--- join (INTERFACE section 6b). Several keys are read from the scope units, the entry of the unit of the first key of the member counting (col_scope_dedupe measures it).
+-- join (INTERFACE section 6b). Several keys are read from the units of each, the units of all but the least key of a member leave the member's facts out (so a fact counts once); the
+-- lists of those members are bounded by work_mem and by the keys that have one (Scope Fallback: dedupe over work_mem, dedupe keys), and the entity rows are read then.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -125,6 +126,24 @@ SELECT group_id, count(*) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a
 ----------+-------
 (0 rows)
 
+-- (d) a member moved between keys is read through the entity path (the patch, col_scope_patch), and (b) stays exact for it: the stand-in journal says which members changed
+UPDATE membership SET group_id = 1 + group_id % 12 WHERE dim_a_id % 7 = 0 AND NOT EXISTS (SELECT 1 FROM membership o WHERE o.dim_a_id = membership.dim_a_id AND o.group_id = 1 + membership.group_id % 12);
+SET sift.test_scope_changed = '7,14,21,28,35,42,49,56,63,70,77,84,91,98,105,112,119,126,133,140,147,154,161,168,175,182,189,196,203,210,217,224,231,238,245,252,259,266,273,280,287,294';
+SELECT s.n, s.keys, r.same, r.stored, r.why
+FROM sets s, LATERAL scope_run(
+	format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', s.keys),
+	format('SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY (%L::int8[]))', s.keys)) r
+ORDER BY s.n;
+ n |     keys      | same | stored | why 
+---+---------------+------+--------+-----
+ 1 | {2,9}         | t    | t      | 
+ 2 | {1,2,3,4,5,6} | t    | t      | 
+ 3 | {7,9,11}      | t    | t      | 
+ 4 | {12,13}       | t    | t      | 
+ 5 | {5}           | t    | t      | 
+ 6 | {}            | t    | t      | 
+(6 rows)
+
 -- (e) facts deleted: the entry of the fact ends in every key of its member; a fact updated is a write buffer row until its promotion
 DELETE FROM facts WHERE id % 11 = 0;
 SELECT k, r.same, r.stored, r.why
@@ -147,12 +166,12 @@ FROM generate_series(1, 12, 3) k, LATERAL scope_run(
 	format('SELECT count(*), sum(v) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k),
 	format('SELECT count(*), sum(v) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = %s', k)) r
 ORDER BY k;
- k  | same | stored |     why      
-----+------+--------+--------------
-  1 | t    | f      | write buffer
-  4 | t    | f      | write buffer
-  7 | t    | f      | write buffer
- 10 | t    | f      | write buffer
+ k  | same | stored |                 why                  
+----+------+--------+--------------------------------------
+  1 | t    | f      | scope segments do not cover the rows
+  4 | t    | f      | scope segments do not cover the rows
+  7 | t    | f      | scope segments do not cover the rows
+ 10 | t    | f      | scope segments do not cover the rows
 (4 rows)
 
 SELECT sift.col_verify('facts_col', true);
@@ -161,10 +180,69 @@ SELECT sift.col_verify('facts_col', true);
  
 (1 row)
 
--- PHASE 2: the journal vouches; (b) reads the units of each key and dedupes by heap address (a set bounded by work_mem, `Scope Fallback: dedupe over work_mem` past it); (d) a member moved
--- between keys (delete the pair (m, k1), insert (m, k2)) is in changed(S, X) once and read through the entity path for the keys that have the pair now, in every key it was in:
--- UPDATE membership SET group_id = 1 + group_id % 12 WHERE dim_a_id % 7 = 0;
--- <repeat (a) and (b)>
+RESET sift.test_scope_changed;
+-- two scopes of one index: a group filter and a region filter on the facts of the same member are an intersection, which the scan does not take as one: the statement is the join as written
+CREATE TABLE region_scope (dim_a_id int, region_id int, PRIMARY KEY (dim_a_id, region_id));
+INSERT INTO region_scope SELECT m, 1 + m % 4 FROM generate_series(1, 300) m;
+CREATE TABLE facts2 AS SELECT * FROM facts WHERE id <= 5000;
+CREATE INDEX facts2_col ON facts2 USING sift_col (id, dim_a_id, at, v)
+	WITH (scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id); region_id: dim_a_id -> region_scope(dim_a_id, region_id)');
+SELECT r.same, r.stored, r.why FROM scope_run(
+	'SELECT count(*), sum(v) FROM facts2 f WHERE sift.in_scope(''facts2_col''::regclass, ''group_id'', f.dim_a_id, 3) AND sift.in_scope(''facts2_col''::regclass, ''region_id'', f.dim_a_id, 2)',
+	'SELECT count(*), sum(v) FROM facts2 f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = 3) AND f.dim_a_id IN (SELECT dim_a_id FROM region_scope WHERE region_id = 2)') r;
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
+(1 row)
+
+SELECT r.same, r.stored, r.why FROM scope_run(
+	'SELECT count(*), sum(v) FROM facts2 f WHERE sift.in_scope(''facts2_col''::regclass, ''region_id'', f.dim_a_id, ''{1,3}''::int8[])',
+	'SELECT count(*), sum(v) FROM facts2 f WHERE f.dim_a_id IN (SELECT dim_a_id FROM region_scope WHERE region_id IN (1, 3))') r;
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
+(1 row)
+
+DROP TABLE facts2, region_scope;
+-- the lists of the members each key leaves out are bounded: past 64 keys that have one, or past work_mem, the entity rows of the members are read
+CREATE TABLE wide_pairs (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
+INSERT INTO wide_pairs SELECT m, 1 + m % 200 FROM generate_series(1, 400) m UNION SELECT m, 1 + (m + 7) % 200 FROM generate_series(1, 400) m;
+CREATE TABLE wide_facts AS SELECT i AS id, 1 + i % 400 AS dim_a_id, timestamptz '2026-01-01' + i * interval '1 hour' AS at, i % 10 AS v FROM generate_series(1, 3000) i;
+CREATE INDEX wide_col ON wide_facts USING sift_col (id, dim_a_id, at, v) WITH (scope = 'group_id: dim_a_id -> wide_pairs(dim_a_id, group_id)');
+SELECT n, r.same, r.stored, r.why FROM (VALUES (1, (SELECT array_agg(g)::int8[] FROM generate_series(1, 40) g)), (2, (SELECT array_agg(g)::int8[] FROM generate_series(1, 100) g))) k(n, keys),
+LATERAL scope_run(
+	format('SELECT count(*), sum(v) FROM wide_facts f WHERE sift.in_scope(''wide_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', k.keys),
+	format('SELECT count(*), sum(v) FROM wide_facts f WHERE EXISTS (SELECT 1 FROM wide_pairs m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY (%L::int8[]))', k.keys)) r ORDER BY n;
+ n | same | stored |     why     
+---+------+--------+-------------
+ 1 | t    | t      | 
+ 2 | t    | f      | dedupe keys
+(2 rows)
+
+DROP TABLE wide_facts, wide_pairs;
+CREATE TABLE heavy_pairs (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
+INSERT INTO heavy_pairs SELECT m, g FROM generate_series(1, 2000) m, generate_series(1, 3) g;
+CREATE TABLE heavy_facts AS SELECT i AS id, 1 + i % 2000 AS dim_a_id, timestamptz '2026-01-01' + i * interval '1 hour' AS at, i % 10 AS v FROM generate_series(1, 4000) i;
+CREATE INDEX heavy_col ON heavy_facts USING sift_col (id, dim_a_id, at, v) WITH (scope = 'group_id: dim_a_id -> heavy_pairs(dim_a_id, group_id)');
+SELECT r.same, r.stored, r.why FROM scope_run(
+	'SELECT count(*), sum(v) FROM heavy_facts f WHERE sift.in_scope(''heavy_col''::regclass, ''group_id'', f.dim_a_id, ''{1,2,3}''::int8[])',
+	'SELECT count(*), sum(v) FROM heavy_facts f WHERE EXISTS (SELECT 1 FROM heavy_pairs m WHERE m.dim_a_id = f.dim_a_id AND m.group_id IN (1, 2, 3))') r;
+ same | stored | why 
+------+--------+-----
+ t    | t      | 
+(1 row)
+
+SET work_mem = '64kB';
+SELECT r.same, r.stored, r.why FROM scope_run(
+	'SELECT count(*), sum(v) FROM heavy_facts f WHERE sift.in_scope(''heavy_col''::regclass, ''group_id'', f.dim_a_id, ''{1,2,3}''::int8[])',
+	'SELECT count(*), sum(v) FROM heavy_facts f WHERE EXISTS (SELECT 1 FROM heavy_pairs m WHERE m.dim_a_id = f.dim_a_id AND m.group_id IN (1, 2, 3))') r;
+ same | stored |         why          
+------+--------+----------------------
+ t    | f      | dedupe over work_mem
+(1 row)
+
+RESET work_mem;
+DROP TABLE heavy_facts, heavy_pairs;
 DROP TABLE sets, facts, membership;
 DROP FUNCTION scope_run(text, text);
 DROP EXTENSION pg_sift_test;
