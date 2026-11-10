@@ -94,7 +94,12 @@ relocation_reserve(FreeChain *free, const SiftSegEntry *entry, const SiftExtent 
 	return !immutable || plan->parts - plan->data_at <= SIFT_MAX_EXTENTS;
 }
 
-/* Whether the free blocks left after the plan, and the given back, cover publication's worst-case free-list page count. */
+/*
+ * Whether the free blocks left after the plan, and the given back, cover publication's worst-case free-list page count: ceil(n / SIFT_FREELIST_CAP) blocks for the n
+ * extents it frees, so that no accepted move extends the file. A move that uses up every free block is refused: a segment of N blocks above one free extent of exactly N
+ * and no other free block is not moved whole, one above a free extent of N + 1 is. The plan passes given_back = 0: the extents the move frees are not reusable until their transaction
+ * is past the horizon, so they cannot hold the pages that publish them.
+ */
 static bool
 relocation_leaves_spare(const FreeChain *free, int n, uint32 given_back)
 {
