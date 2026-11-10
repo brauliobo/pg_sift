@@ -752,7 +752,8 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		return SPW_ARMS;
 	if (s->nsets && (s->group < 0 || s->setpred || s->setaggs))
 		return SPW_SETS;
-	if (s->njoin)
+	/* the scope conjunct is the join to the scope relation taken out of the FROM list: the unit holds rows that fail it */
+	if (s->njoin || s->scope)
 		return SPW_JOIN;
 	if (s->ncombo)
 		return SPW_COMBO;

@@ -612,7 +612,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		if (!leaf_compared_only(s, s->leaves[i]))
 			k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
 				(leaf_filtered(s, s->leaves[i]) ? tested : sparse);
-	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(filter_tests(s) + nkeyfilters, 1) * tested;
+	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(filter_tests(s) + nkeyfilters + scope_tests(s), 1) * tested;
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->npred; i++)
 		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED) * tested;

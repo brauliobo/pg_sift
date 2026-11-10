@@ -16,6 +16,7 @@
 #define AGG_SPARSE_MAX		0.125	/* the share of the rows a unit keeps up to which its leaves are decoded at the kept rows only */
 #define AGG_SPARSE_LEAF		1.5		/* a leaf read at the kept rows costs this many times the share of the rows it reads (the positions are gathered) */
 #define AGG_FILTER_VALUE	0.5		/* a predicate on a value */
+#define AGG_SCOPE_ARM		7.0		/* the predicates a row of the scope units goes through for each key of an IN or EXISTS whose members the dedupe leaves out (scope_tests) */
 #define AGG_OP_NS			3.0		/* the nanoseconds an operator is counted at (AGG_SCAN_SPEED takes the share the scan really spends) */
 #define AGG_IN_TEST_BASE	1.0		/* the nanoseconds a row costs the test of a list in the cache, which AGG_FILTER_VALUE already counts */
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */

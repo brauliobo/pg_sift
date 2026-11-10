@@ -25,3 +25,14 @@ scope_share(AggCtx *c, const SiftAggSpec *s)
 	nd = column_distinct(c, t->fk, false);
 	return Min(t->pairs / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT), 1.0);
 }
+
+/*
+ * The tests a row of the scope units goes through besides the scan's own: its key, and for IN and EXISTS of several keys one arm for each key whose rows the dedupe thins
+ * (the keys of a member in two of them are left out of the units of all but the least: col/scan/scope.c), the OR of which is the conjunct. An arm costs a row AGG_SCOPE_ARM
+ * tests: 50 keys read 330,000 entries in 80 ms where the join takes 8, 20 keys in 16 where one key takes 2 (300,000 events, 5,000 entities, 50 tenants).
+ */
+double
+scope_tests(const SiftAggSpec *s)
+{
+	return s->scope == NULL ? 0.0 : s->scope->once ? 1.0 + (s->scope->nkeys - 1) * AGG_SCOPE_ARM : 1.0;
+}
