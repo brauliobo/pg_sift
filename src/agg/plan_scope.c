@@ -103,6 +103,9 @@ marker_scope(AggCtx *c, Node *q)
 		}
 	}
 	sc->once = true;
+#ifdef SIFT_TESTING
+	sc->once = !sift_test_scope_pairs;
+#endif
 	use_leaf(c, leaf);
 	return sc;
 }

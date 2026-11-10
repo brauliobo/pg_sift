@@ -1,26 +1,47 @@
 /*
  * col/scan/scope.c - what the reader of a scope index asks of the index and of its scope relation (col/scope.h)
  *
- * A scan that has a scope conjunct reads either the scope segments of the index (the rows replicated by scope key) or, when the verdict says it may not, the entity
- * rows of the members the scope relation lists for the keys: the verdict is made here, the members are read here. The stored read is exact only while the scope
- * segments describe the scope relation as the statement sees it (INTERFACE section 5: the journal of the relation says which members changed since the stamp);
- * until that lands the reader trusts them only under sift.test_scope_trust.
+ * A scan that has a scope conjunct reads the scope units of its keys, less the members that changed in the scope relation since the stamp of the units and the members that
+ * have a row in a write buffer (no scope entry describes it), plus the entity rows of those of them that have a pair with a key now (the patch): INTERFACE section 6,
+ * docs/COL-CONNECT.md "The rule". A fact of a member that has a pair with several of the keys counts once for IN and EXISTS (section 6b): the units of all but the least of its keys leave it out.
+ * Whenever the stored read is not exact the scan reads the entity rows of the members the scope relation lists for the keys, and says why.
  */
-/* check-memory: allow-allocs the arrays follow the keys of one scope conjunct and the pairs of the keys it names, not the rows of the table */
+/* check-memory: allow-allocs the arrays follow the keys of one scope conjunct, the pairs of the keys it names and the members the caps of the statement allow, not the rows of the table */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/table.h"
 #include "access/tableam.h"
-#include "catalog/pg_type_d.h"
+#include "access/transam.h"
 #include "common/int.h"
 #include "core/compat.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "col/am.h"
 #include "col/seg.h"
 #include "col/scope.h"
 #include "col/wbuf.h"
+
+/* a key whose units leave members out is one conjunct of the scan: the keys of an IN list that have them are at most this many */
+#define SCOPE_DROP_KEYS 64
+
+typedef struct ScopePair
+{
+	int64		member;
+	int64		key;
+} ScopePair;
+
+typedef struct ScopePairs
+{
+	ScopePair  *p;
+	uint32		n;
+	uint32		cap;
+	uint32		max;			/* the most pairs held (0: no limit); past it pairs are counted in n but not kept, and over is set */
+	bool		over;
+} ScopePairs;
 
 static int
 scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
@@ -31,26 +52,229 @@ scope_ordinal(const SiftScopeSpecs *sp, const char *key_name)
 	return -1;
 }
 
-/* A scope whose relation has no journal index is read as if it vouched under the test switch (the proof of concept); a release never does */
-static bool
-scope_trusted(Relation index, int scope)
+static int
+cmp_i64(const void *a, const void *b)
 {
-#ifdef SIFT_TESTING
-	return sift_test_scope_trust && !sift_scope_has_journal(index, scope);
-#else
-	return false;
-#endif
+	return pg_cmp_s64(*(const int64 *) a, *(const int64 *) b);
 }
 
+static int
+cmp_by_member(const void *a, const void *b)
+{
+	const ScopePair *x = a,
+			   *y = b;
+
+	return x->member != y->member ? pg_cmp_s64(x->member, y->member) : pg_cmp_s64(x->key, y->key);
+}
+
+static int
+cmp_by_key(const void *a, const void *b)
+{
+	const ScopePair *x = a,
+			   *y = b;
+
+	return x->key != y->key ? pg_cmp_s64(x->key, y->key) : pg_cmp_s64(x->member, y->member);
+}
+
+/* the distinct values of a, ascending: sorts in place and returns how many */
+static uint32
+sort_unique(int64 *a, uint32 n)
+{
+	uint32		k = 0;
+
+	if (n > 0)
+		qsort(a, n, sizeof(int64), cmp_i64);
+	for (uint32 i = 0; i < n; i++)
+		if (k == 0 || a[i] != a[k - 1])
+			a[k++] = a[i];
+	return k;
+}
+
+static bool
+has_i64(const int64 *a, uint32 n, int64 v)
+{
+	return n > 0 && bsearch(&v, a, n, sizeof(int64), cmp_i64) != NULL;
+}
+
+static int64 *
+union_i64(const int64 *a, uint32 na, const int64 *b, uint32 nb, uint32 *n)
+{
+	int64	   *u = palloc(Max(na + nb, 1) * sizeof(int64));
+
+	if (na > 0)
+		memcpy(u, a, na * sizeof(int64));
+	if (nb > 0)
+		memcpy(u + na, b, nb * sizeof(int64));
+	*n = sort_unique(u, na + nb);
+	return u;
+}
+
+static void
+pairs_add(ScopePairs *ps, int64 member, int64 key)
+{
+	if (ps->max > 0 && ps->n >= ps->max)
+	{
+		ps->over = true;
+		return;
+	}
+	if (ps->n == ps->cap)
+	{
+		ps->cap = ps->cap ? ps->cap * 2 : 64;
+		ps->p = ps->p ? repalloc(ps->p, ps->cap * sizeof(ScopePair)) : palloc(ps->cap * sizeof(ScopePair));
+	}
+	ps->p[ps->n++] = (ScopePair) {member, key};
+}
+
+/* ---- the pairs of the scope relation under the snapshot ---- */
+
+typedef struct PairScan
+{
+	Relation	rel;
+	Oid			btree;
+	AttrNumber	member;
+	AttrNumber	skey;
+	Snapshot	snap;
+	const int64 *keys;			/* the scope keys asked for, sorted and distinct */
+	uint32		nkeys;
+	ScopePairs	out;
+	int64		cur;			/* the key or the member a probe asks for */
+} PairScan;
+
+static bool
+btree_leads_with(Oid btree, AttrNumber att)
+{
+	Relation	idx = index_open(btree, AccessShareLock);
+	bool		leads = idx->rd_index->indkey.values[0] == att;
+
+	index_close(idx, NoLock);
+	return leads;
+}
+
+static void
+scan_pair(void *arg, int64 member, int64 key)
+{
+	PairScan   *ps = arg;
+
+	if (has_i64(ps->keys, ps->nkeys, key))
+		pairs_add(&ps->out, member, key);
+}
+
+static bool
+probe_of_key(void *arg, TupleTableSlot *slot)
+{
+	PairScan   *ps = arg;
+	int64		m;
+
+	if (sift_conn_slot_key(slot, ps->member, &m))
+		pairs_add(&ps->out, m, ps->cur);
+	return true;
+}
+
+static bool
+probe_of_member(void *arg, TupleTableSlot *slot)
+{
+	PairScan   *ps = arg;
+	int64		k;
+
+	if (sift_conn_slot_key(slot, ps->skey, &k) && has_i64(ps->keys, ps->nkeys, k))
+		pairs_add(&ps->out, ps->cur, k);
+	return true;
+}
+
+/* The btree asked for each value of the column it leads with (probe of key or of member), each hit handed to each */
+static void
+probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnProbeFn each)
+{
+	SiftConnProbe *p = sift_conn_probe_begin_on(CurrentMemoryContext, ps->rel, ps->btree, lead, ps->snap);
+	SiftConnProbeScan s;
+
+	sift_conn_probe_open(p, &s);
+	for (uint32 i = 0; i < n; i++)
+	{
+		ps->cur = vals[i];
+		sift_conn_probe_key(p, &s, ps->cur, each, ps);
+	}
+	sift_conn_probe_close(&s);
+}
+
+/* The pairs with one of the keys, ascending by member: the btree asked for each key when it leads with the scope key, else the relation read once */
+static void
+pairs_of_keys(PairScan *ps)
+{
+	if (btree_leads_with(ps->btree, ps->skey))
+		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
+	else
+		sift_conn_scan_keys(ps->rel, ps->member, ps->skey, ps->snap, scan_pair, ps);
+	if (ps->out.n > 0)
+		qsort(ps->out.p, ps->out.n, sizeof(ScopePair), cmp_by_member);
+}
+
+/* The pairs of the members with one of the keys: the btree asked for each member when it leads with the member (the members are few, the keys' may be many), else the pairs of the keys filtered */
+static void
+pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
+{
+	uint32		k = 0;
+
+	if (btree_leads_with(ps->btree, ps->member))
+	{
+		probe_all(ps, ps->member, members, n, probe_of_member);
+		if (ps->out.n > 0)
+			qsort(ps->out.p, ps->out.n, sizeof(ScopePair), cmp_by_member);
+		return;
+	}
+	pairs_of_keys(ps);
+	for (uint32 i = 0; i < ps->out.n; i++)
+		if (has_i64(members, n, ps->out.p[i].member))
+			ps->out.p[k++] = ps->out.p[i];
+	ps->out.n = k;
+}
+
+/* The scope relation and its btree of a declared scope; the relation is open (AccessShare) */
+static Oid
+scope_relation(Relation heap, Relation index, int ord, PairScan *ps, const int64 *keys, uint32 nkeys, Snapshot snap)
+{
+	SiftScopeSpecs *sp = sift_scope_specs(index);
+	Oid			btree = sift_scope_relation_index(heap, index, sp->s[ord], &ps->rel, &ps->member, &ps->skey);
+
+	ps->btree = btree;
+	ps->snap = snap;
+	ps->keys = keys;
+	ps->nkeys = nkeys;
+	return btree;
+}
+
+int64 *
+sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+{
+	int64	   *sorted = palloc(Max(nkeys, 1) * sizeof(int64)),
+			   *out;
+	PairScan	ps = {0};
+	uint32		nk;
+
+	memcpy(sorted, keys, nkeys * sizeof(int64));
+	nk = sort_unique(sorted, nkeys);
+	scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), &ps, sorted, nk, snap);
+	pairs_of_keys(&ps);
+	table_close(ps.rel, NoLock);
+	out = palloc(Max(ps.out.n, 1) * sizeof(int64));
+	for (uint32 i = 0; i < ps.out.n; i++)
+		out[i] = ps.out.p[i].member;
+	*n = sort_unique(out, ps.out.n);
+	return out;
+}
+
+/* ---- what the segments of the index say ---- */
+
 /*
- * The stamp the scope segments were filled under for the scope, the oldest when they differ in their horizon (changed(S, X) for the oldest covers the rest); NULL, with *why set, when a
- * segment was never filled (lineage 0) or two were filled under journals of two lineages.
+ * The stamp the scope segments of the scope were filled under, the oldest when they differ in the horizon (the keys that changed since it are the keys any of them may be wrong for), or the
+ * reason they cannot be read as one: none (unfilled), stamps of two journals.
  */
 static const char *
-scope_stamp(Relation index, const SiftDirSnapshot *dir, int scope, SiftConnStamp *oldest)
+segments_stamp(Relation index, const SiftDirSnapshot *dir, int ord, SiftConnStamp *oldest)
 {
 	bool		first = true;
 
+	*oldest = (SiftConnStamp) {0};
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		SiftColSegment *seg;
@@ -59,7 +283,7 @@ scope_stamp(Relation index, const SiftDirSnapshot *dir, int scope, SiftConnStamp
 		if (!sift_seg_is_scope(&dir->segs[i]))
 			continue;
 		seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
-		st = scope < seg->nscope ? seg->scope[scope] : (SiftConnStamp) {0};
+		st = ord < seg->nscope ? seg->scope[ord] : (SiftConnStamp) {0};
 		sift_cseg_close(seg);
 		if (st.lineage == 0)
 			return "unfilled";
@@ -69,30 +293,7 @@ scope_stamp(Relation index, const SiftDirSnapshot *dir, int scope, SiftConnStamp
 			*oldest = st;
 		first = false;
 	}
-	return NULL;
-}
-
-/*
- * The verdict of the journal of the scope relation on the scope segments for the snapshot (INTERFACE section 5): it vouches for their stamp, and no member changed in the relation since
- * it. A stored read is valid only for the members that did not change; until the patch reads those through the entity path, any change is a fallback.
- */
-static const char *
-scope_verdict(Relation index, const SiftDirSnapshot *dir, int scope, Snapshot snap)
-{
-	SiftConnStamp stamp;
-	SiftConnKeys keys;
-	SiftConnWhy why;
-	const char *no;
-
-	if ((no = scope_stamp(index, dir, scope, &stamp)) != NULL)
-		return no;
-	if ((why = sift_scope_vouch(index, scope, &stamp, snap)) != SIFT_CONN_OK)
-		return sift_conn_why_name(why);
-	if ((why = sift_scope_changed(index, scope, &stamp, snap, sift_scope_patch_keys, &keys)) != SIFT_CONN_OK)
-		return sift_conn_why_name(why);
-	no = keys.n > 0 ? "members changed" : NULL;
-	sift_conn_keys_free(&keys);
-	return no;
+	return first ? "unfilled" : NULL;
 }
 
 /*
@@ -115,167 +316,197 @@ sift_scope_covered(Relation index, int scope)
 	return covered;
 }
 
-/*
- * NULL: the scope units of the keys are read; else why the statement reads the entity rows (the word EXPLAIN prints after "Scope Fallback"). The reasons come in the
- * order of the contract (INTERFACE section 6): the setting, the declaration, the shape of the request, then the verdict on the segments.
- */
-const char *
-sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap)
+/* The distinct member keys of the live records of the write buffers, which no scope entry describes; false when they are more than cap */
+static bool
+wbuf_members(Relation index, const SiftDirSnapshot *dir, const SiftColSchema *schema, int fk_leaf, uint32 cap, int64 **out, uint32 *n)
 {
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope write buffer", ALLOCSET_DEFAULT_SIZES);
+	int64	   *m = palloc(64 * sizeof(int64));
+	uint32		nm = 0,
+				space = 64;
+	bool		ok = true;
+
+	for (int i = 0; i < dir->nsegs && ok; i++)
+	{
+		SiftCWbufReader *r;
+		SiftColRow	row;
+		bool		deleted;
+
+		if (!sift_seg_is_wbuf(&dir->segs[i]))
+			continue;
+		r = sift_cwbuf_open(index, &dir->segs[i], schema, cx);
+		while (ok && sift_cwbuf_next(r, &row, &deleted))
+		{
+			if (deleted || row.val[fk_leaf].isnull)
+				continue;
+			if (nm == space)
+			{
+				/* a bulk insert repeats its members: compact before growing, and count the distinct ones against the cap */
+				nm = sort_unique(m, nm);
+				if (nm > cap)
+					ok = false;
+				else if (nm * 2 > space)
+					m = repalloc(m, (space *= 2) * sizeof(int64));
+			}
+			m[nm++] = row.val[fk_leaf].v.i;
+			CHECK_FOR_INTERRUPTS();
+		}
+		sift_cwbuf_close(r);
+	}
+	MemoryContextDelete(cx);
+	*n = ok ? sort_unique(m, nm) : 0;
+	*out = m;
+	return ok && *n <= cap;
+}
+
+/*
+ * The facts of a member that has a pair with several of the keys are in the units of each of them, and count once: in those of its least key. The units of the others leave it out:
+ * rd->drop[i] lists, for a key, the members. The members of except are read through the entity path and are in no unit read. False: the lists take more than work_mem.
+ */
+static bool
+dedupe_drops(const ScopePairs *all, const int64 *except, uint32 nexcept, SiftScopeRead *rd)
+{
+	ScopePairs	drops = {0};
+	uint32		start = 0;
+
+	for (uint32 i = 1; i <= all->n; i++)
+	{
+		if (i < all->n && all->p[i].member == all->p[start].member)
+			continue;
+		if (i - start > 1 && !has_i64(except, nexcept, all->p[start].member))
+			for (uint32 j = start + 1; j < i; j++)
+				pairs_add(&drops, all->p[start].member, all->p[j].key);
+		start = i;
+	}
+	if ((Size) drops.n * sizeof(ScopePair) > (Size) work_mem * 1024)
+		return false;
+	if (drops.n > 0)
+		qsort(drops.p, drops.n, sizeof(ScopePair), cmp_by_key);
+	start = 0;
+	for (uint32 i = 1; i <= drops.n; i++)
+	{
+		SiftScopeDrop *d;
+
+		if (i < drops.n && drops.p[i].key == drops.p[start].key)
+			continue;
+		if (rd->ndrop == SCOPE_DROP_KEYS)
+		{
+			rd->why = "dedupe keys";
+			return true;
+		}
+		rd->drop = rd->drop ? repalloc(rd->drop, (rd->ndrop + 1) * sizeof(SiftScopeDrop)) : palloc(sizeof(SiftScopeDrop));
+		d = &rd->drop[rd->ndrop++];
+		d->key = drops.p[start].key;
+		d->n = i - start;
+		d->members = palloc(d->n * sizeof(int64));
+		for (uint32 j = 0; j < d->n; j++)
+			d->members[j] = drops.p[start + j].member;
+		start = i;
+	}
+	return true;
+}
+
+/* Does any member of the pairs (ascending by member) have a pair with two of the keys */
+static bool
+any_member_twice(const ScopePairs *ps)
+{
+	for (uint32 i = 1; i < ps->n; i++)
+		if (ps->p[i].member == ps->p[i - 1].member)
+			return true;
+	return false;
+}
+
+/*
+ * What the stored read of the scope needs besides the units of the keys, as the journal vouches (the rule above): the members to leave out (changed since the stamp, or in a write
+ * buffer), those of them with a pair now, and the drops of the facts in several keys. Sets rd->why when the stored read is not exact.
+ */
+static void
+stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, SiftScopeRead *rd)
+{
+	SiftConnStamp stamp;
+	SiftConnKeys changed = {0};
+	SiftConnWhy verdict;
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	int64	   *wbuf;
+	uint32		nwbuf;
+	PairScan	ps = {0};
+	ScopePairs	all;
+
+	if ((rd->why = segments_stamp(index, dir, ord, &stamp)) != NULL)
+		return;
+	if (!sift_scope_covered(index, ord))
+	{
+		rd->why = "scope segments do not cover the rows";
+		return;
+	}
+	if ((verdict = sift_scope_vouch(index, ord, &stamp, snap)) != SIFT_CONN_OK ||
+		(verdict = sift_scope_changed(index, ord, &stamp, snap, sift_scope_patch_keys, &changed)) != SIFT_CONN_OK)
+	{
+		rd->why = sift_conn_why_name(verdict);
+		return;
+	}
+	if (!wbuf_members(index, dir, r->schema, r->first[r->schema->cols[r->scope_leaf[ord]].attno], sift_scope_patch_keys, &wbuf, &nwbuf))
+	{
+		rd->why = "write buffer";
+		sift_conn_keys_free(&changed);
+		return;
+	}
+	rd->nchanged = changed.n;
+	rd->except = union_i64(changed.keys, changed.n, wbuf, nwbuf, &rd->nexcept);
+	sift_conn_keys_free(&changed);
+	if (rd->nexcept == 0 && !(once && nkeys > 1))
+		return;
+	scope_relation(heap, index, ord, &ps, keys, nkeys, snap);
+	if (once && nkeys > 1)
+	{
+		ps.out.max = (work_mem * 1024L) / sizeof(ScopePair);
+		pairs_of_keys(&ps);
+		all = ps.out;
+		if (all.over || !dedupe_drops(&all, rd->except, rd->nexcept, rd))
+			rd->why = "dedupe over work_mem";
+		ps.out = (ScopePairs) {0};
+		for (uint32 i = 0; rd->why == NULL && i < all.n; i++)
+			if (has_i64(rd->except, rd->nexcept, all.p[i].member))
+				pairs_add(&ps.out, all.p[i].member, all.p[i].key);
+	}
+	else
+		pairs_of_members(&ps, rd->except, rd->nexcept);
+	table_close(ps.rel, NoLock);
+	if (rd->why != NULL)
+		return;
+	rd->patch = palloc(Max(ps.out.n, 1) * sizeof(int64));
+	for (uint32 i = 0; i < ps.out.n; i++)
+		rd->patch[i] = ps.out.p[i].member;
+	rd->npatch = sort_unique(rd->patch, ps.out.n);
+	/* the entity rows of a member are one fact each: a row that counts once for each of the member's pairs with the keys can only come from the units */
+	if (rd->npatch > 0 && !once && any_member_twice(&ps.out))
+		rd->why = "per pair, changed members";
+	else if (rd->npatch > 0 && topn)
+		rd->why = "top-n, changed members";
+}
+
+SiftScopeRead *
+sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn)
+{
+	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
-	const char *why = NULL;
-	int			scope = scope_ordinal(sift_scope_specs(index), key_name);
-	bool		any_scope = false;
+	int64	   *sorted;
+	uint32		nk;
+	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
 
 	if (!sift_agg_scope)
-		return "disabled";
-	if (scope < 0)
-		return "no scope index";
-	if (!scope_trusted(index, scope) && !sift_scope_has_journal(index, scope))
-		return "no journal";
+		rd->why = "disabled";
+	else if (ord < 0)
+		rd->why = "no scope index";
+	if (rd->why != NULL)
+		return rd;
+	sorted = palloc(Max(nkeys, 1) * sizeof(int64));
+	memcpy(sorted, keys, nkeys * sizeof(int64));
+	nk = sort_unique(sorted, nkeys);
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
-	for (int i = 0; i < dir->nsegs; i++)
-	{
-		uint64		rows,
-					pages;
-
-		any_scope |= sift_seg_is_scope(&dir->segs[i]);
-		if (!sift_seg_is_wbuf(&dir->segs[i]))
-			continue;
-		sift_cwbuf_summary(index, &dir->segs[i], &rows, &pages);
-		if (rows > 0)
-			why = "write buffer";
-	}
-	if (why == NULL && !sift_scope_covered(index, scope))
-		why = any_scope ? "scope segments do not cover the rows" : "unfilled";
-	if (why == NULL && !scope_trusted(index, scope))
-		why = scope_verdict(index, dir, scope, snap);
+	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, rd);
 	pfree(dir);
-	return why;
-}
-
-static int
-cmp_i64(const void *a, const void *b)
-{
-	return pg_cmp_s64(*(const int64 *) a, *(const int64 *) b);
-}
-
-static int64
-slot_key(TupleTableSlot *slot, AttrNumber att, bool *isnull)
-{
-	Datum		d = slot_getattr(slot, att, isnull);
-
-	switch (TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid)
-	{
-		case INT2OID:
-			return DatumGetInt16(d);
-		case INT4OID:
-			return DatumGetInt32(d);
-		default:
-			return DatumGetInt64(d);
-	}
-}
-
-typedef struct MemberRank
-{
-	int64		member;
-	int			rank;			/* the position of the pair's key among the keys asked for */
-} MemberRank;
-
-static int
-cmp_member_rank(const void *a, const void *b)
-{
-	const MemberRank *x = a,
-			   *y = b;
-
-	if (x->member != y->member)
-		return x->member < y->member ? -1 : 1;
-	return x->rank - y->rank;
-}
-
-/* The pairs of the scope relation, as the snapshot sees it, whose key is one of the nkeys sorted keys: (member, position of the key), by member and then position. The relation is read whole: the unique btree of the declaration leads with the member, and the members of a scope key are what it cannot list. */
-static MemberRank *
-scope_pairs(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *sorted, int nkeys, uint32 *n)
-{
-	SiftScopeSpecs *sp = sift_scope_specs(index);
-	Relation	rel;
-	AttrNumber	member,
-				skey;
-	TupleTableSlot *slot;
-	TableScanDesc scan;
-	MemberRank *out = palloc(64 * sizeof(MemberRank));
-	uint32		cap = 64;
-
-	(void) sift_scope_relation_index(heap, index, sp->s[scope_ordinal(sp, key_name)], &rel, &member, &skey);
-	slot = table_slot_create(rel, NULL);
-	scan = sift_table_beginscan(rel, snap, 0, NULL);
-	*n = 0;
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-	{
-		bool		kn,
-					mn;
-		int64		k = slot_key(slot, skey, &kn),
-					m = slot_key(slot, member, &mn);
-		const int64 *at;
-
-		if (kn || mn || (at = bsearch(&k, sorted, nkeys, sizeof(int64), cmp_i64)) == NULL)
-			continue;
-		if (*n == cap)
-			out = repalloc(out, (cap *= 2) * sizeof(MemberRank));
-		out[(*n)++] = (MemberRank) {m, (int) (at - sorted)};
-	}
-	table_endscan(scan);
-	ExecDropSingleTupleTableSlot(slot);
-	table_close(rel, NoLock);
-	qsort(out, *n, sizeof(MemberRank), cmp_member_rank);
-	return out;
-}
-
-/*
- * The member keys that have a pair with one of the scope keys in the scope relation, as the snapshot sees it: ascending, each once.
- */
-int64 *
-sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
-{
-	int64	   *sorted = palloc(Max(nkeys, 1) * sizeof(int64));
-	uint32		pairs;
-	MemberRank *pr;
-	int64	   *out;
-
-	memcpy(sorted, keys, nkeys * sizeof(int64));
-	qsort(sorted, nkeys, sizeof(int64), cmp_i64);
-	pr = scope_pairs(heap, index, key_name, snap, sorted, nkeys, &pairs);
-	out = palloc(Max(pairs, 1) * sizeof(int64));
-	*n = 0;
-	for (uint32 i = 0; i < pairs; i++)
-		if (i == 0 || pr[i].member != pr[i - 1].member)
-			out[(*n)++] = pr[i].member;
-	return out;
-}
-
-/*
- * The members of each of the nkeys ascending keys that no earlier key of them has: set[i] (counts[i] members, ascending) are the members whose first key is keys[i]. A fact counted once for several keys is
- * the one of the unit of the first of its member's keys: the entries of the other units are the replicas to leave out (INTERFACE section 6b).
- */
-int64 **
-sift_scope_first_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 **counts)
-{
-	uint32		pairs;
-	MemberRank *pr = scope_pairs(heap, index, key_name, snap, keys, nkeys, &pairs);
-	int64	  **set = palloc(nkeys * sizeof(int64 *));
-
-	*counts = palloc0(nkeys * sizeof(uint32));
-	for (uint32 i = 0; i < pairs; i++)
-		(*counts)[pr[i].rank] += i == 0 || pr[i].member != pr[i - 1].member;
-	for (int k = 0; k < nkeys; k++)
-	{
-		set[k] = palloc(Max((*counts)[k], 1) * sizeof(int64));
-		(*counts)[k] = 0;
-	}
-	for (uint32 i = 0; i < pairs; i++)
-		if (i == 0 || pr[i].member != pr[i - 1].member)
-			set[pr[i].rank][(*counts)[pr[i].rank]++] = pr[i].member;
-	return set;
+	return rd;
 }

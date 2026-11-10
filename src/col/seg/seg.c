@@ -679,13 +679,15 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 }
 
 void
-sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
+sift_col_dir_read(Relation index, SiftDirSnapshot *snap, SiftDirFamily family)
 {
 	int			n = 0;
 
 	sift_dir_read(index, snap);
+	if (family == SIFT_DIR_BOTH)
+		return;
 	for (int i = 0; i < snap->nsegs; i++)
-		if (scope ? sift_seg_is_scope(&snap->segs[i]) : !sift_seg_is_scope(&snap->segs[i]))
+		if (sift_seg_is_scope(&snap->segs[i]) == (family == SIFT_DIR_SCOPE))
 			snap->segs[n++] = snap->segs[i];
 	snap->nsegs = n;
 }

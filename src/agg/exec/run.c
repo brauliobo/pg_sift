@@ -612,7 +612,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 		ex->src = ex->kept = sift_colsrc_open(ex->heap, ex->index, snapshot, AllocSetContextCreate(ex->css.ss.ps.state->es_query_cxt, "sift agg source", ALLOCSET_SMALL_SIZES), ex->view);
 	else
 		ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt, ex->view) :
-			scope_open(ex) ? sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view) :
+			scope_open(ex, snapshot) ? sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view, ex->scope_rd->npatch > 0) :
 			sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
 	if (ex->partoff)
 		sift_aggpart_set_offsets(ex->src, ex->partoff);
@@ -638,8 +638,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (!ex->open_deferred)
 		register_combos(ex);
 	join_filters(ex, old);
-	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok), and the scope conjunct is one more filter (two when a fact counted once for several keys is left to its first key) */
-	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin + (ex->spec->scope != NULL ? 1 + ex->scope_dedupe : 0), "sift: a join of a top-N is not a filter of the scan");
+	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok), and the scope conjunct is one more filter */
+	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin + ex->scope_preds, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
 	if (!ex->open_deferred)
 		prune_init(ex);

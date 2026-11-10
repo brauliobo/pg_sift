@@ -354,6 +354,8 @@ typedef struct SiftSrcCounters
 	int64		point_rows;		/* and the rows they were narrowed to */
 	int64		run_windows;	/* units whose range on a leaf with a sorted run was answered by the run */
 	int64		dirty_rows;	/* rows of the units with a dead row that were read as units: what a rewrite would spare the scan */
+	int64		rows_entity;	/* rows of the units of the entity segments a scope read took beside its scope units (it patches them in) */
+	int64		rows_wbuf;		/* rows of the write buffers it took the same way */
 } SiftSrcCounters;
 
 /*

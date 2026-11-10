@@ -34,6 +34,7 @@ double		sift_scope_max_multiplicity = 8.0;
 /* RELEASE-TODO(4.4): both go away with the patch reader of the scope index; a scope without a journal index is then always refused */
 bool		sift_test_scope_trust = false;
 bool		sift_test_scope_need_journal = false;
+bool		sift_test_scope_pairs = false;
 #endif
 
 static bool

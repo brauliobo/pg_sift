@@ -10,6 +10,7 @@
 #include "agg/wide.h"
 #include "agg/rows.h"
 #include "agg/stats.h"
+#include "col/scope.h"
 #include "core/explain.h"
 #include "agg/exec/int.h"
 
@@ -396,13 +397,19 @@ explain_scope(AggExec *ex, ExplainState *es)
 		ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
 		return;
 	}
+	if (ex->scope_rd->nexcept > 0 || ex->scope_rd->ndrop > 0)
+	{
+		ExplainPropertyInteger("Scope Changed Keys", NULL, ex->scope_rd->nchanged, es);
+		ExplainPropertyInteger("Scope Patched Keys", NULL, ex->scope_rd->npatch, es);
+		ExplainPropertyInteger("Scope Patched Rows", NULL, cc.rows_entity + cc.rows_wbuf, es);
+	}
+	if (ex->scope_rd->ndrop > 0)
+		ExplainPropertyInteger("Scope Dedupe Keys", NULL, ex->scope_rd->ndrop, es);
 	sift_explain_begin(&ln, es, "Scope Units");
 	sift_explain_int(&ln, "Scope Units Read", NULL, "read", ex->n_units, SIFT_XI_KEEP);
 	sift_explain_int(&ln, "Scope Units Skipped", NULL, "skipped", cc.units_pruned, SIFT_XI_KEEP);
 	sift_explain_end(&ln);
 	ExplainPropertyInteger("Scope Entries Read", NULL, ex->n_rows, es);
-	if (ex->scope_dedupe)
-		ExplainPropertyText("Scope Dedupe", "the unit of the first key of the member counts", es);
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */

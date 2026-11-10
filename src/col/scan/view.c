@@ -29,7 +29,7 @@ scan_view_load(SiftColSource *src, Relation heap, const void *view)
 	(void) sift_cwbuf_flush(src->index);
 	nblocks = RelationGetNumberOfBlocks(heap);
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
-	sift_col_dir_read(src->index, &src->dir, (src->flags & SIFT_COLO_SCOPE) != 0);
+	sift_col_dir_read(src->index, &src->dir, !(src->flags & SIFT_COLO_SCOPE) ? SIFT_DIR_ENTITY : (src->flags & SIFT_COLO_SCOPE_ENTITY) ? SIFT_DIR_BOTH : SIFT_DIR_SCOPE);
 }
 
 Size

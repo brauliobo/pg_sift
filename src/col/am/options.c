@@ -395,6 +395,10 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_scope_need_journal",
 							 "Testing: CREATE INDEX of a scope index refuses a scope relation that has no journal index (a release always does).",
 							 NULL, &sift_test_scope_need_journal, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	/* RELEASE-TODO(4.4): goes away with the planner recognition of the join forms */
+	DefineCustomBoolVariable("sift.test_scope_pairs",
+							 "Testing: the marker sift.in_scope(index, name, fk, keys) of a scan reads a row once for each pair of its member with the keys, as the join to the scope relation does, not once.",
+							 NULL, &sift_test_scope_pairs, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

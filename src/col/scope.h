@@ -98,14 +98,38 @@ extern struct SiftColFill *sift_scope_fill_hook(struct SiftScopeFill *f, struct 
 /* The scope entries of the first nrows fk values (nulls: bit set = NULL): fills row[] (index of the fact row in the batch) and key[] with the pairs, returns their number; *cap is grown through repalloc */
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
-/*
- * The reader (col/scan/scope.c): NULL when a scan that has a scope conjunct of nkeys keys of the scope key_name reads the scope segments of the index, else the word for
- * "Scope Fallback" (it then reads the entity rows of the members); and the member keys that have a pair with one of the keys under the snapshot, ascending, each once.
- */
 /* Does every entity segment of the directory have its scope entries in the scope segments (SIFT_SEG_SCOPED; rows of a write buffer are the reader's: it reads them through the entity path) */
 extern bool sift_scope_covered(Relation index, int scope);
-extern const char *sift_scope_why(Relation index, const char *key_name, int nkeys, bool once, Snapshot snap);
-extern int64 **sift_scope_first_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 **counts);
+
+/*
+ * The reader (col/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member
+ * is not in except (the members whose pairs changed since the stamp, and those that have a row in a write buffer, which no scope entry describes); the entity rows of the
+ * members of patch (those of except that have a pair with a key now) are read besides, through the entity path, so that the aggregates see one stream. With once and several keys,
+ * the row of a member that has a pair with several of the keys counts in the units of the least of them only: drop[i] lists, for the key drop[i].key, the members whose rows
+ * of that key's units are not counted. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys (sift_scope_members) instead; the word
+ * is what EXPLAIN prints after "Scope Fallback". topn: the scan is a top-N, which does not read the units of both families as one.
+ */
+typedef struct SiftScopeDrop
+{
+	int64		key;
+	int64	   *members;
+	uint32		n;
+} SiftScopeDrop;
+
+typedef struct SiftScopeRead
+{
+	const char *why;
+	int64	   *except;
+	uint32		nexcept;
+	int64	   *patch;
+	uint32		npatch;
+	uint32		nchanged;		/* the members whose pairs changed since the stamp, of except */
+	SiftScopeDrop *drop;
+	int			ndrop;
+} SiftScopeRead;
+
+extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn);
+/* The member keys that have a pair with one of the keys under the snapshot, ascending, each once */
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 
 #ifdef SIFT_TESTING
@@ -113,6 +137,7 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 extern PGDLLIMPORT bool sift_test_scope_trust;	/* a scope without a journal is read as if it vouched (the proof of concept) */
 extern PGDLLIMPORT bool sift_test_scope_need_journal;	/* a scope whose relation has no journal index is refused at CREATE INDEX (a release always does) */
+extern PGDLLIMPORT bool sift_test_scope_pairs;	/* the marker sift.in_scope reads a row once for each pair, as a join does, not once */
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
 extern PGDLLIMPORT int sift_scope_patch_keys;
