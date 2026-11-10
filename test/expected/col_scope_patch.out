@@ -83,98 +83,98 @@ SELECT * FROM probe();
 -- pairs inserted (members in several keys get one more; a member with facts and no pair gets its first)
 INSERT INTO membership VALUES (1, 12), (2, 12), (7, 12), (301, 12), (302, 3), (303, 5), (303, 3) ON CONFLICT DO NOTHING;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |            2 | t
-  2 | same           | t      |                                                                                                                 |            3 | t
-  3 | same           | t      |                                                                                                                 |            1 | t
-  4 | same           | t      |                                                                                                                 |            4 | t
-  5 | same           | t      |                                                                                                                 |            0 | f
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |            1 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | same           | t      |                                                                                                                 |            0 | f
- 12 | same           | t      |                                                                                                                 |            0 | f
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |            2 | t
+  2 | same           | t      |                                                                                                               |            3 | t
+  3 | same           | t      |                                                                                                               |            1 | t
+  4 | same           | t      |                                                                                                               |            4 | t
+  5 | same           | t      |                                                                                                               |            0 | f
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |            1 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | same           | t      |                                                                                                               |            0 | f
+ 12 | same           | t      |                                                                                                               |            0 | f
 (12 rows)
 
 -- pairs deleted
 DELETE FROM membership WHERE group_id = 3 AND dim_a_id % 5 = 0;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |            2 | t
-  2 | same           | t      |                                                                                                                 |           13 | t
-  3 | same           | t      |                                                                                                                 |           11 | t
-  4 | same           | t      |                                                                                                                 |           14 | t
-  5 | same           | t      |                                                                                                                 |            0 | f
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           11 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | same           | t      |                                                                                                                 |           10 | t
- 12 | same           | t      |                                                                                                                 |           10 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |            2 | t
+  2 | same           | t      |                                                                                                               |           13 | t
+  3 | same           | t      |                                                                                                               |           11 | t
+  4 | same           | t      |                                                                                                               |           14 | t
+  5 | same           | t      |                                                                                                               |            0 | f
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           11 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | same           | t      |                                                                                                               |           10 | t
+ 12 | same           | t      |                                                                                                               |           10 | t
 (12 rows)
 
 -- members moved between keys (the pair of a key deleted, the pair of another inserted)
 WITH d AS (DELETE FROM membership WHERE dim_a_id % 7 = 0 RETURNING dim_a_id, group_id)
 INSERT INTO membership SELECT dim_a_id, 1 + group_id % 12 FROM d ON CONFLICT DO NOTHING;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |            5 | t
-  2 | same           | t      |                                                                                                                 |           24 | t
-  3 | same           | t      |                                                                                                                 |           36 | t
-  4 | same           | t      |                                                                                                                 |           50 | t
-  5 | same           | t      |                                                                                                                 |           24 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           19 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |           20 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |            5 | t
+  2 | same           | t      |                                                                                                               |           24 | t
+  3 | same           | t      |                                                                                                               |           36 | t
+  4 | same           | t      |                                                                                                               |           50 | t
+  5 | same           | t      |                                                                                                               |           24 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           19 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |           20 | t
 (12 rows)
 
 -- facts inserted (write buffer rows have no scope entries), for members of any number of keys, of none, and of no member
 INSERT INTO facts SELECT 20000 + i, CASE WHEN i % 50 = 0 THEN NULL ELSE 1 + (i * 37) % 320 END, timestamptz '2026-02-01', 1, 'y' FROM generate_series(1, 400) i;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           38 | t
-  2 | same           | t      |                                                                                                                 |          119 | t
-  3 | same           | t      |                                                                                                                 |          230 | t
-  4 | same           | t      |                                                                                                                 |          244 | t
-  5 | same           | t      |                                                                                                                 |           63 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           94 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |          133 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           38 | t
+  2 | same           | t      |                                                                                                               |          119 | t
+  3 | same           | t      |                                                                                                               |          230 | t
+  4 | same           | t      |                                                                                                               |          244 | t
+  5 | same           | t      |                                                                                                               |           63 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           94 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |          133 | t
 (12 rows)
 
 -- facts updated (a new version in the buffer, the old one dead in its unit) and deleted
 UPDATE facts SET v = v + 100 WHERE id % 9 = 0 AND id <= 20000;
 DELETE FROM facts WHERE id % 11 = 0 AND id <= 20000;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           38 | t
-  2 | same           | t      |                                                                                                                 |          119 | t
-  3 | same           | t      |                                                                                                                 |          234 | t
-  4 | same           | t      |                                                                                                                 |          249 | t
-  5 | same           | t      |                                                                                                                 |           65 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           94 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |          137 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           38 | t
+  2 | same           | t      |                                                                                                               |          119 | t
+  3 | same           | t      |                                                                                                               |          234 | t
+  4 | same           | t      |                                                                                                               |          249 | t
+  5 | same           | t      |                                                                                                               |           65 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           94 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |          137 | t
 (12 rows)
 
 -- a writer that aborted: its pair edits and its facts are in no snapshot
@@ -184,20 +184,20 @@ DELETE FROM membership WHERE dim_a_id IN (8, 9, 10);
 INSERT INTO facts SELECT 30000 + i, 1 + i % 320, timestamptz '2026-02-01', 1, 'z' FROM generate_series(1, 50) i;
 ROLLBACK;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           38 | t
-  2 | same           | t      |                                                                                                                 |          119 | t
-  3 | same           | t      |                                                                                                                 |          234 | t
-  4 | same           | t      |                                                                                                                 |          249 | t
-  5 | same           | t      |                                                                                                                 |           65 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           94 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |          137 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           38 | t
+  2 | same           | t      |                                                                                                               |          119 | t
+  3 | same           | t      |                                                                                                               |          234 | t
+  4 | same           | t      |                                                                                                               |          249 | t
+  5 | same           | t      |                                                                                                               |           65 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           94 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |          137 | t
 (12 rows)
 
 -- this transaction's own changes are seen by its own reads
@@ -206,38 +206,38 @@ DELETE FROM membership WHERE dim_a_id IN (11, 12, 13);
 INSERT INTO membership VALUES (11, 1), (305, 2), (306, 1), (306, 2) ON CONFLICT DO NOTHING;
 INSERT INTO facts SELECT 40000 + i, CASE i % 4 WHEN 0 THEN 11 WHEN 1 THEN 305 WHEN 2 THEN 306 ELSE 12 END, timestamptz '2026-02-01', 2, 'w' FROM generate_series(1, 40) i;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           37 | t
-  2 | same           | t      |                                                                                                                 |          118 | t
-  3 | same           | t      |                                                                                                                 |          233 | t
-  4 | same           | t      |                                                                                                                 |          249 | t
-  5 | same           | t      |                                                                                                                 |           67 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           93 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |          136 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           37 | t
+  2 | same           | t      |                                                                                                               |          118 | t
+  3 | same           | t      |                                                                                                               |          233 | t
+  4 | same           | t      |                                                                                                               |          249 | t
+  5 | same           | t      |                                                                                                               |           67 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           93 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |          136 | t
 (12 rows)
 
 ROLLBACK;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           38 | t
-  2 | same           | t      |                                                                                                                 |          119 | t
-  3 | same           | t      |                                                                                                                 |          234 | t
-  4 | same           | t      |                                                                                                                 |          249 | t
-  5 | same           | t      |                                                                                                                 |           65 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           94 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | same           | t      |                                                                                                                 |          137 | t
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           38 | t
+  2 | same           | t      |                                                                                                               |          119 | t
+  3 | same           | t      |                                                                                                               |          234 | t
+  4 | same           | t      |                                                                                                               |          249 | t
+  5 | same           | t      |                                                                                                               |           65 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           94 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | same           | t      |                                                                                                               |          137 | t
 (12 rows)
 
 -- random rounds of pair edits (members in 0 to 6 keys) and fact writes, each committed, each followed by a read of random keys, once and per pair: every read is md5 equal to the join (or says why it is not read as stored)
@@ -326,20 +326,20 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                       why                                                       | patched_keys | patched_rows_read 
-----+----------------+--------+-----------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | t      |                                                                                                                 |           61 | t
-  2 | same           | t      |                                                                                                                 |           71 | t
-  3 | same           | t      |                                                                                                                 |          140 | t
-  4 | same           | t      |                                                                                                                 |          216 | t
-  5 | same           | t      |                                                                                                                 |           76 | t
-  6 | same           | t      |                                                                                                                 |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
-  9 | same           | t      |                                                                                                                 |           63 | t
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
- 12 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed members" |              | 
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | t      |                                                                                                               |           61 | t
+  2 | same           | t      |                                                                                                               |           71 | t
+  3 | same           | t      |                                                                                                               |          140 | t
+  4 | same           | t      |                                                                                                               |          216 | t
+  5 | same           | t      |                                                                                                               |           76 | t
+  6 | same           | t      |                                                                                                               |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | t      |                                                                                                               |           63 | t
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
 (12 rows)
 
 SELECT sift.col_verify('facts_col', true);

@@ -35,18 +35,18 @@ $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 -- a scope relation with no journal index: refused
 SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS no_journal_index;
-                                                                                                                                          no_journal_index                                                                                                                                          
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "tenant_scope" has no sift_col index that journals its changes [CREATE INDEX ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which members changed since the scope segments were written.]
+                                                                                                                                         no_journal_index                                                                                                                                         
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "tenant_scope" has no sift_col index that journals its changes [CREATE INDEX ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
 (1 row)
 
 -- the journal index leads with the member, tracks by ctid and holds the scope key: these do not qualify
 CREATE INDEX tenant_scope_wrong_order ON tenant_scope USING sift_col (tenant_id, dim_a_id) WITH (track_changes = 'ctid');
 CREATE INDEX tenant_scope_no_key ON tenant_scope USING sift_col (dim_a_id) WITH (track_changes = 'ctid');
 SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS not_qualifying;
-                                                                                                                                           not_qualifying                                                                                                                                           
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "tenant_scope" has no sift_col index that journals its changes [CREATE INDEX ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which members changed since the scope segments were written.]
+                                                                                                                                          not_qualifying                                                                                                                                          
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "tenant_scope" has no sift_col index that journals its changes [CREATE INDEX ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
 (1 row)
 
 DROP INDEX tenant_scope_wrong_order, tenant_scope_no_key;
@@ -180,16 +180,16 @@ SELECT why, key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'h
 (4 rows)
 
 SELECT * FROM verdict();
- all_same | stored |        reasons         
-----------+--------+------------------------
- t        |      3 | top-n, changed members
+ all_same | stored |       reasons        
+----------+--------+----------------------
+ t        |      3 | top-n, changed pairs
 (1 row)
 
 VACUUM tenant_scope;
 SELECT * FROM verdict();
- all_same | stored |        reasons         
-----------+--------+------------------------
- t        |      3 | top-n, changed members
+ all_same | stored |       reasons        
+----------+--------+----------------------
+ t        |      3 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX events_col;
@@ -266,9 +266,9 @@ SELECT * FROM verdict();
 
 INSERT INTO tenant_scope VALUES (3, 3), (5, 4) ON CONFLICT (dim_a_id, tenant_id) DO UPDATE SET tenant_id = 13;
 SELECT * FROM verdict();
- all_same | stored |        reasons         
-----------+--------+------------------------
- t        |      3 | top-n, changed members
+ all_same | stored |       reasons        
+----------+--------+----------------------
+ t        |      3 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX events_col;
@@ -356,16 +356,16 @@ ROLLBACK;
 DELETE FROM events WHERE id % 13 = 0;
 UPDATE events SET v = v + 1 WHERE id % 17 = 0;
 SELECT * FROM verdict();
- all_same | stored |        reasons         
-----------+--------+------------------------
- t        |      3 | top-n, changed members
+ all_same | stored |       reasons        
+----------+--------+----------------------
+ t        |      3 | top-n, changed pairs
 (1 row)
 
 VACUUM events;
 SELECT * FROM verdict();
- all_same | stored |        reasons         
-----------+--------+------------------------
- t        |      3 | top-n, changed members
+ all_same | stored |       reasons        
+----------+--------+----------------------
+ t        |      3 | top-n, changed pairs
 (1 row)
 
 -- TRUNCATE of the scope relation and REINDEX of its journal index make another journal: the stamp names the old one

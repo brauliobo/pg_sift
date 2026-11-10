@@ -37,7 +37,7 @@ INSERT INTO shapes (name, setting, opts) VALUES
 	('key set',             'sift.test_conn_fill = 1',       ''),
 	('probe',               'sift.test_conn_fill = 2',       ''),
 	('many runs',           'sift.test_col_segment_kb = 64', ''),
-	('entities cut by key', 'sift.test_conn_fill = 0',       ', key_cut = ''created_at, kind'''),
+	('dim_a cut by key', 'sift.test_conn_fill = 0',       ', key_cut = ''created_at, kind'''),
 	('many runs, cut',      'sift.test_col_segment_kb = 64', ', key_cut = ''created_at, kind''');
 CREATE FUNCTION build(shape int, OUT entries_are_the_join boolean, OUT entity_rows_once boolean, OUT has_scope_segments boolean, OUT repeated_addresses bigint, OUT dead_entries bigint,
 					  OUT entry_count boolean) LANGUAGE plpgsql AS
@@ -60,14 +60,14 @@ BEGIN
 	entry_count := f.scope_entries = (SELECT count(*) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id);
 END $$;
 SELECT s.name, b.* FROM shapes s, LATERAL build(s.n) b ORDER BY s.n;
-        name         | entries_are_the_join | entity_rows_once | has_scope_segments | repeated_addresses | dead_entries | entry_count 
----------------------+----------------------+------------------+--------------------+--------------------+--------------+-------------
- default             | t                    | t                | t                  |                  0 |            0 | t
- key set             | t                    | t                | t                  |                  0 |            0 | t
- probe               | t                    | t                | t                  |                  0 |            0 | t
- many runs           | t                    | t                | t                  |                  0 |            0 | t
- entities cut by key | t                    | t                | t                  |                  0 |            0 | t
- many runs, cut      | t                    | t                | t                  |                  0 |            0 | t
+       name       | entries_are_the_join | entity_rows_once | has_scope_segments | repeated_addresses | dead_entries | entry_count 
+------------------+----------------------+------------------+--------------------+--------------------+--------------+-------------
+ default          | t                    | t                | t                  |                  0 |            0 | t
+ key set          | t                    | t                | t                  |                  0 |            0 | t
+ probe            | t                    | t                | t                  |                  0 |            0 | t
+ many runs        | t                    | t                | t                  |                  0 |            0 | t
+ dim_a cut by key | t                    | t                | t                  |                  0 |            0 | t
+ many runs, cut   | t                    | t                | t                  |                  0 |            0 | t
 (6 rows)
 
 -- the keys of a fact: 0 for the NULL and unknown members, else 1..6

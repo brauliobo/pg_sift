@@ -155,9 +155,9 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 										   pred_in(ex, total, sc->fk, false, rd->patch, rd->npatch,
 												   psprintf("member that changed, with a pair now (%s)", keys_text(rd->patch, rd->npatch))));
 
-			or_arms = lappend(or_arms, conjunction(ex, total, patch, SAP_AND, "entity rows of the changed members"));
+			or_arms = lappend(or_arms, conjunction(ex, total, patch, SAP_AND, "entity rows of the changed pairs"));
 		}
-		root = conjunction(ex, total, or_arms, SAP_OR, "scope units or the changed members' entity rows");
+		root = conjunction(ex, total, or_arms, SAP_OR, "scope units or the entity rows of the changed pairs");
 		*add = lappend(*add, root);
 		ex->scope_preds++;
 	}

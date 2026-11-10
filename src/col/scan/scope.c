@@ -516,9 +516,9 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 	rd->npatch = sort_unique(rd->patch, ps.out.n);
 	/* the entity rows of a member are one fact each: a row that counts once for each of the member's pairs with the keys can only come from the units */
 	if (rd->npatch > 0 && !once && any_member_twice(&ps.out))
-		rd->why = "per pair, changed members";
+		rd->why = "per pair, changed pairs";
 	else if (rd->npatch > 0 && topn)
-		rd->why = "top-n, changed members";
+		rd->why = "top-n, changed pairs";
 }
 
 SiftScopeRead *

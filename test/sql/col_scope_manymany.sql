@@ -32,7 +32,7 @@ END $$;
 -- 12 groups; member m is in 1 + m % 6 of them (1 to 6), members 100..109 are in none; 20,000 padded events, some without a member, some of a member that is nowhere
 CREATE TABLE membership (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
 INSERT INTO membership SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m NOT BETWEEN 100 AND 109 ON CONFLICT DO NOTHING;
-SELECT keys, count(*) AS entities FROM (SELECT dim_a_id, count(*) AS keys FROM membership GROUP BY 1) k GROUP BY 1 ORDER BY 1;
+SELECT keys, count(*) AS dim_a FROM (SELECT dim_a_id, count(*) AS keys FROM membership GROUP BY 1) k GROUP BY 1 ORDER BY 1;
 CREATE INDEX membership_journal ON membership USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + (i * 7919) % 320 END,

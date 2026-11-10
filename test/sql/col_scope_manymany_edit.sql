@@ -25,7 +25,7 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v)
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
-SELECT keys, count(*) AS entities FROM (SELECT dim_a_id, count(*) AS keys FROM tenant_scope GROUP BY 1) k GROUP BY 1 ORDER BY 1;
+SELECT keys, count(*) AS dim_a FROM (SELECT dim_a_id, count(*) AS keys FROM tenant_scope GROUP BY 1) k GROUP BY 1 ORDER BY 1;
 
 
 -- the battery: the scope form (@ is the conjunct) against the join form of the same statement; sql_form rows are the join as written (no marker: whatever the planner makes of it is the same rows)
@@ -76,7 +76,7 @@ INSERT INTO edits (n, descr, script, abort, rebuild, patch) VALUES
 	d AS (DELETE FROM tenant_scope t USING m WHERE t.dim_a_id = m.dim_a_id AND t.tenant_id = (SELECT min(tenant_id) FROM tenant_scope WHERE dim_a_id = m.dim_a_id) RETURNING t.dim_a_id)
   INSERT INTO tenant_scope SELECT m.dim_a_id, k FROM m, generate_series(1, 12) k WHERE NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = m.dim_a_id AND s.tenant_id = k) ORDER BY k DESC LIMIT 1',
  false, false, true),
-(2, 'the key of the pairs of 30 entities is updated (the key changes, the entity stays)',
+(2, 'the key of the pairs of 30 dim_a is updated (the key changes, the entity stays)',
  'UPDATE tenant_scope t SET tenant_id = 1 + t.tenant_id % 12 WHERE dim_a_id % 10 = 3 AND NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = t.dim_a_id AND s.tenant_id = 1 + t.tenant_id % 12)',
  false, false, true),
 (3, 'an entity of 5 keys gains a sixth, one of 6 keys loses two, one of 1 key loses it',
@@ -85,7 +85,7 @@ INSERT INTO edits (n, descr, script, abort, rebuild, patch) VALUES
   DELETE FROM tenant_scope WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, min(tenant_id) FROM tenant_scope WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope GROUP BY 1 HAVING count(*) = 6 ORDER BY 1 LIMIT 5) GROUP BY 1);
   DELETE FROM tenant_scope WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope GROUP BY 1 HAVING count(*) = 1 ORDER BY 1 LIMIT 5)',
  false, false, true),
-(4, 'entities that had no pair get pairs in three keys',
+(4, 'dim_a that had no pair get pairs in three keys',
  'INSERT INTO tenant_scope SELECT m, k FROM generate_series(100, 109) m, generate_series(1, 3) j, LATERAL (SELECT 1 + (m + j * 5) % 12 AS k) x ON CONFLICT DO NOTHING', false, false, true),
 (5, 'a key is emptied', 'CREATE TEMP TABLE saved AS SELECT * FROM tenant_scope WHERE tenant_id = 7; DELETE FROM tenant_scope WHERE tenant_id = 7', false, false, true),
 (6, 'the key is filled again with the same pairs', 'INSERT INTO tenant_scope SELECT * FROM saved', false, false, true),
@@ -99,16 +99,16 @@ INSERT INTO edits (n, descr, script, abort, rebuild, patch) VALUES
 	f AS (DELETE FROM events e USING m WHERE e.dim_a_id = m.dim_a_id RETURNING 1)
   INSERT INTO tenant_scope SELECT m.dim_a_id, k FROM m, generate_series(1, 12) k WHERE NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = m.dim_a_id AND s.tenant_id = k) ORDER BY k LIMIT 1',
  false, false, true),
-(9, 'facts of 40 entities move to another entity (new versions: their keys are those of the new entity)',
+(9, 'facts of 40 dim_a move to another entity (new versions: their keys are those of the new entity)',
  'UPDATE events SET dim_a_id = 1 + (dim_a_id * 7) % 300 WHERE dim_a_id % 8 = 2', false, false, false),
-(10, 'new facts of entities of every number of keys, and of an unknown one',
+(10, 'new facts of dim_a of every number of keys, and of an unknown one',
  'INSERT INTO events SELECT 8000 + i, CASE WHEN i % 50 = 0 THEN 7777 ELSE 1 + i % 320 END, timestamptz ''2026-06-01'' + i * interval ''3 minutes'', i % 10, ''y'' FROM generate_series(1, 400) i', false, false, false),
 (11, 'the pairs are replaced by the same pairs (truncate and load: a new lineage)',
  'CREATE TEMP TABLE all_pairs AS SELECT * FROM tenant_scope; TRUNCATE tenant_scope; INSERT INTO tenant_scope SELECT * FROM all_pairs', false, false, false),
 (12, 'the scope segments are written again (REINDEX)', 'REINDEX INDEX events_col', false, true, false),
 (13, 'a promotion of the new facts', 'SELECT sift.col_promote(''events_col'')', false, false, false),
 (14, 'a merge', 'SELECT sift.col_merge(''events_col'', true)', false, false, false),
-(15, 'a pair edit after the promotion and the merge: 25 entities move',
+(15, 'a pair edit after the promotion and the merge: 25 dim_a move',
  'UPDATE tenant_scope t SET tenant_id = 1 + t.tenant_id % 12 WHERE dim_a_id % 12 = 5 AND NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = t.dim_a_id AND s.tenant_id = 1 + t.tenant_id % 12)',
  false, false, true);
 

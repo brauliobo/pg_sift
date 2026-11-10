@@ -396,7 +396,7 @@ sift_scope_resolve(Relation heap, Relation index)
 
 		if (!OidIsValid(journal))
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
-							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which members changed since the scope segments were written.",
+							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
 									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
 		table_close(rel, NoLock);
 		keep = list_append_unique_oid(keep, btree);

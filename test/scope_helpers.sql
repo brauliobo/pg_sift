@@ -6,8 +6,8 @@
 -- scope_run(q, plain): the scope form q and the plain form `plain` of one statement: same rows through the scope path, the planned plan and the plain plan (sift.enable_agg off), whether the
 --   scope units were read (stored), the fallback reason (why), the patched members (patched), whether the scan has a scope conjunct at all (engaged), and whether the path is accounted for (path_ok: stored, or a documented reason).
 CREATE FUNCTION scope_reason_ok(why text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-	SELECT why ~ '^(disabled|no scope index|column .* not in the scope units|unfilled|several stamps|scope segments do not cover the rows|write buffer|top-n, changed members|'
-		'dedupe over work_mem|dedupe keys|no journal|log not complete|other lineage|trimmed|snapshot|snapshot older than the stamp|stamp aged|too many changed keys|per pair, changed members)$'
+	SELECT why ~ '^(disabled|no scope index|column .* not in the scope units|unfilled|several stamps|scope segments do not cover the rows|write buffer|top-n, changed pairs|'
+		'dedupe over work_mem|dedupe keys|no journal|log not complete|other lineage|trimmed|snapshot|snapshot older than the stamp|stamp aged|too many changed keys|per pair, changed pairs)$'
 $$;
 
 CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched boolean, OUT engaged boolean, OUT path_ok boolean) LANGUAGE plpgsql AS $$

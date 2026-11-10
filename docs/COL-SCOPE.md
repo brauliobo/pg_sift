@@ -46,7 +46,7 @@ the join, which the planner keeps (only the testing marker `sift.in_scope_pairs`
 
 `Scope Index`, `Scope Keys`, `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
 Keys`, `Scope Patched Rows`, `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
-`no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer`, `top-n, changed members` (a top-N cannot take the patch),
+`no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer`, `top-n, changed pairs` (a top-N cannot take the patch),
 `dedupe over work_mem`, `dedupe keys`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
 the scope index fills it again), `trimmed`, `snapshot` (a serializable or non-MVCC snapshot), `snapshot older than the stamp`, `stamp aged`, `too many changed keys`. A scope read is decided once, by the
 leader (the verdict, the changed members and the patch are made from the snapshot of the statement): it has no workers.

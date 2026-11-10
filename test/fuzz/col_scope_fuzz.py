@@ -4,7 +4,7 @@
   test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8]     needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
-and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between members), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
+and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between dim_b), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
 tenant of pairs, a reload of the pairs, rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
 After every step a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
 (a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason
@@ -114,7 +114,7 @@ class Seed:
         r = self.rng = random.Random(seed)
         self.seed, self.caps = seed, caps
         self.n = r.choice([rows // 2, rows])
-        self.members = r.choice([60, 300, 1500])
+        self.dim_b = r.choice([60, 300, 1500])
         self.nkeys = r.choice([12, 16, 24, 40])
         self.mtype = r.choice(['int', 'bigint'])
         self.ktype = r.choice(['int', 'bigint', 'smallint'])
@@ -134,7 +134,7 @@ class Seed:
 DROP TABLE IF EXISTS events, tenant_scope CASCADE;
 CREATE TABLE tenant_scope (dim_a_id {self.mtype} NOT NULL, tenant_id {self.ktype} NOT NULL, PRIMARY KEY ({self.pk})) WITH (autovacuum_enabled = off);
 INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys} FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM
-	(SELECT m, (m * 7919) % 1000 AS h FROM generate_series(1, {self.members}) m) x) y, generate_series(0, 5) j WHERE j < y.n ON CONFLICT DO NOTHING;
+	(SELECT m, (m * 7919) % 1000 AS h FROM generate_series(1, {self.dim_b}) m) x) y, generate_series(0, 5) j WHERE j < y.n ON CONFLICT DO NOTHING;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO events SELECT {self.fact_rows(1, self.n)};
 {jr}CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(text)}{trk});
@@ -144,7 +144,7 @@ VACUUM (ANALYZE) tenant_scope;"""
 
     # facts: some without an entity, some of an unknown one, a hot head, the rest spread
     def fact_rows(self, a, b):
-        m = (f"CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN {self.members + 1000} WHEN i % 3 = 0 THEN 1 + i % 20 ELSE 1 + (i * 7919) % {self.members} END")
+        m = (f"CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN {self.dim_b + 1000} WHEN i % 3 = 0 THEN 1 + i % 20 ELSE 1 + (i * 7919) % {self.dim_b} END")
         return f"i, {m}, DATE '2026-01-01' + (i * 7919) % 300, i % 7, i % 10, repeat('x', 60) FROM generate_series({a}, {b}) i"
 
     # ---- the steps: (kind, sql, effect); effect: facts, pairs, aborted, in_txn, maint, vacuum, rebuild, none
@@ -157,7 +157,7 @@ VACUUM (ANALYZE) tenant_scope;"""
                 f"ORDER BY random() LIMIT 1)")
 
     def pair_ins(self, pct):
-        return (f"INSERT INTO tenant_scope SELECT m, k FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.members + 20}) m WHERE {self.window(pct, 'm')} "
+        return (f"INSERT INTO tenant_scope SELECT m, k FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')} "
                 f"AND (SELECT count(*) FROM tenant_scope s WHERE s.dim_a_id = m) < 6) x WHERE k IS NOT NULL ON CONFLICT DO NOTHING")
 
     def pair_del(self, pct):
@@ -186,11 +186,11 @@ VACUUM (ANALYZE) tenant_scope;"""
         if kind == 'upd_val':
             return kind, f"UPDATE events SET v = (v + 3) % 10, created_at = created_at + interval '30 hours' WHERE {self.window(pct)}", 'facts'
         if kind == 'upd_member':
-            return kind, f"UPDATE events SET dim_a_id = 1 + (dim_a_id * 7 + id) % {self.members} WHERE dim_a_id IS NOT NULL AND {self.window(pct)}", 'facts'
+            return kind, f"UPDATE events SET dim_a_id = 1 + (dim_a_id * 7 + id) % {self.dim_b} WHERE dim_a_id IS NOT NULL AND {self.window(pct)}", 'facts'
         if kind == 'upsert':
             a = r.randint(1, self.next_id - 1)
             self.next_id = max(self.next_id, a + 401)
-            return kind, (f"INSERT INTO events SELECT i, 1 + i % {self.members}, DATE '2027-01-01' + i % 20, 5, i % 10, 'u' FROM generate_series({a}, {a + 400}) i "
+            return kind, (f"INSERT INTO events SELECT i, 1 + i % {self.dim_b}, DATE '2027-01-01' + i % 20, 5, i % 10, 'u' FROM generate_series({a}, {a + 400}) i "
                           f"ON CONFLICT (id) DO UPDATE SET dim_a_id = excluded.dim_a_id, v = excluded.v + 1"), 'facts'
         if kind in ('pair_ins', 'pair_del', 'pair_move', 'pair_upd'):
             return kind, getattr(self, kind)(pct), 'pairs'

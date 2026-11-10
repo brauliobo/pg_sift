@@ -65,7 +65,7 @@ CREATE FUNCTION state(label text, OUT state text, OUT covered boolean, OUT entit
 BEGIN
 	state := label;
 	covered := sift._test_col_scope_covered('events_col', 'tenant_id');
-	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'entities'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
+	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'base'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
 		INTO entity_segs, scope_segs FROM sift._test_col_scope_stamps('events_col') s;
 	SELECT bool_and(r.same), bool_and(r.stored), min(r.why) INTO same, stored, why FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
 	SELECT e.missing, e.extra INTO missing, extra FROM entries() e;
@@ -100,7 +100,7 @@ SELECT * FROM state('updates promoted');
 -- the merge of everything: the entity segments into one (the entries stay, the addresses are the same), the scope segments into one by the range of their key, under the oldest stamp
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 SELECT * FROM state('merged');
-SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons, bool_and(covered) FILTER (WHERE family = 'entities') AS covered FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
+SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons, bool_and(covered) FILTER (WHERE family = 'base') AS covered FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) =
 	   (SELECT min(horizon) FROM stamps_before WHERE family = 'scope' AND scope = 0) AS oldest_stamp_kept;
 SELECT sift.col_merge('events_col', true) >= 0 AS merged_again;

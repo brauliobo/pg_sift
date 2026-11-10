@@ -60,7 +60,7 @@ CREATE FUNCTION state(label text, OUT state text, OUT covered boolean, OUT entit
 BEGIN
 	state := label;
 	covered := sift._test_col_scope_covered('events_col', 'tenant_id');
-	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'entities'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
+	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'base'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
 		INTO entity_segs, scope_segs FROM sift._test_col_scope_stamps('events_col') s;
 	SELECT bool_and(r.same), bool_and(r.stored), min(r.why) INTO same, stored, why FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
 	SELECT e.missing, e.extra INTO missing, extra FROM entries() e;
@@ -81,9 +81,9 @@ SELECT sift.col_verify('events_col', true);
 -- rows in the write buffer have no entries: the entity path reads them with the members of the key; the segments still cover the rows they hold
 INSERT INTO events SELECT 20000 + i, 1 + i % 300, timestamptz '2026-02-01' + i * interval '1 hour', i % 10, 'y' FROM generate_series(1, 400) i;
 SELECT state, covered, entity_segs, scope_segs, same, stored, why FROM state('write buffer');
-    state     | covered | entity_segs | scope_segs | same | stored |          why           
---------------+---------+-------------+------------+------+--------+------------------------
- write buffer | t       |           1 |          1 | t    | f      | top-n, changed members
+    state     | covered | entity_segs | scope_segs | same | stored |         why          
+--------------+---------+-------------+------------+------+--------+----------------------
+ write buffer | t       |           1 |          1 | t    | f      | top-n, changed pairs
 (1 row)
 
 -- promoted: the entity segment and the scope segments of the rows come in one switch of the directory (one more of each); the rows of the buffer have their entries
@@ -121,18 +121,18 @@ SELECT sift.col_verify('events_col', true);
 -- the stamps: a promotion stamps its segments with the snapshot it read the pairs under; the merge of the scope segments keeps the oldest
 CREATE TEMP TABLE stamps_before AS SELECT DISTINCT family, scope, lineage, horizon FROM sift._test_col_scope_stamps('events_col');
 SELECT family, count(DISTINCT horizon) AS horizons FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
-  family  | horizons 
-----------+----------
- entities |        3
- scope    |        3
+ family | horizons 
+--------+----------
+ base   |        3
+ scope  |        3
 (2 rows)
 
 -- updates: the new versions are in the buffer (entity path), the old addresses keep their entries until VACUUM
 UPDATE events SET v = v + 1 WHERE id % 7 = 0;
 SELECT state, covered, same, stored, why FROM state('updated');
-  state  | covered | same | stored |          why           
----------+---------+------+--------+------------------------
- updated | t       | t    | f      | top-n, changed members
+  state  | covered | same | stored |         why          
+---------+---------+------+--------+----------------------
+ updated | t       | t    | f      | top-n, changed pairs
 (1 row)
 
 SELECT sift.col_promote('events_col') >= 0 AS promoted_updates;
@@ -160,11 +160,11 @@ SELECT * FROM state('merged');
  merged | t       |           1 |          1 | t    | t      |     |       0 |     0
 (1 row)
 
-SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons, bool_and(covered) FILTER (WHERE family = 'entities') AS covered FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
-  family  | segments | horizons | covered 
-----------+----------+----------+---------
- entities |        1 |        1 | t
- scope    |        1 |        1 | 
+SELECT family, count(DISTINCT gen) AS segments, count(DISTINCT horizon) AS horizons, bool_and(covered) FILTER (WHERE family = 'base') AS covered FROM sift._test_col_scope_stamps('events_col') WHERE scope = 0 GROUP BY family ORDER BY family;
+ family | segments | horizons | covered 
+--------+----------+----------+---------
+ base   |        1 |        1 | t
+ scope  |        1 |        1 | 
 (2 rows)
 
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) =
@@ -267,9 +267,9 @@ SELECT * FROM state('refilled');
 
 UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id % 2 = 0;
 SELECT state, covered, same, stored, why FROM state('pairs edited');
-    state     | covered | same | stored |          why           
---------------+---------+------+--------+------------------------
- pairs edited | t       | t    | f      | top-n, changed members
+    state     | covered | same | stored |         why          
+--------------+---------+------+--------+----------------------
+ pairs edited | t       | t    | f      | top-n, changed pairs
 (1 row)
 
 SELECT sift.col_maintain('events_col') AS rewritten_stale;

@@ -152,7 +152,7 @@ sift_test_col_scope_stamps(PG_FUNCTION_ARGS)
 		seg = sift_cseg_open(index, e, CurrentMemoryContext);
 		for (int s = 0; s < seg->nscope; s++)
 		{
-			Datum		v[7] = {Int64GetDatum(e->gen), CStringGetTextDatum(sift_seg_is_scope(e) ? "scope" : "entities"), BoolGetDatum(sift_seg_is_scoped(e)),
+			Datum		v[7] = {Int64GetDatum(e->gen), CStringGetTextDatum(sift_seg_is_scope(e) ? "scope" : "base"), BoolGetDatum(sift_seg_is_scoped(e)),
 			Int32GetDatum(sift_seg_is_scope(e) ? sift_seg_scope_ordinal(e) : -1), Int32GetDatum(s), Int64GetDatum((int64) seg->scope[s].lineage),
 			Int64GetDatum(seg->scope[s].xmin)};
 			bool		nulls[7] = {false};

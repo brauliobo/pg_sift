@@ -40,7 +40,7 @@ INSERT INTO shapes (name, setting, opts) VALUES
 	('key set',             'sift.test_conn_fill = 1',       ''),
 	('probe',               'sift.test_conn_fill = 2',       ''),
 	('many runs',           'sift.test_col_segment_kb = 64', ''),
-	('entities cut by key', 'sift.test_conn_fill = 0',       ', key_cut = ''created_at, kind'''),
+	('dim_a cut by key', 'sift.test_conn_fill = 0',       ', key_cut = ''created_at, kind'''),
 	('many runs, cut',      'sift.test_col_segment_kb = 64', ', key_cut = ''created_at, kind''');
 CREATE FUNCTION build(shape int, OUT entries_are_the_join boolean, OUT entity_rows_once boolean, OUT has_scope_segments boolean, OUT repeated_addresses bigint, OUT dead_entries bigint,
 					  OUT entry_count boolean) LANGUAGE plpgsql AS

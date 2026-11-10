@@ -43,7 +43,7 @@ sql primary "DELETE FROM tenant_scope WHERE t = 3 AND m % 4 = 0" "INSERT INTO te
 catchup primary standby || bail "the standby did not catch up after the changes"
 check "primary: the read after the changes is the join" test "$(scope_rows primary)" == "$(join_rows primary)"
 check "standby: the read after the changes is the join" test "$(scope_rows standby)" == "$(join_rows standby)"
-scope_patched() { # the members the read patched in, 0 when it patched none or did not read the units
+scope_patched() { # the dim_b the read patched in, 0 when it patched none or did not read the units
 	local n
 	n=$(sql "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
 		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $MARK" | sed -n 's/^ *Scope Patched Keys: //p' | head -1)
