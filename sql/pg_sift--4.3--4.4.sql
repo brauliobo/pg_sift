@@ -70,11 +70,20 @@ COMMENT ON FUNCTION sift.scope_pairs_insert(sift.scope_copies, text) IS 'Interna
 -- The DELETE of the copy's rows that a statement trigger of op runs: the rows of the old transition table whose copies go (sift.scope_changed)
 CREATE FUNCTION sift.scope_fact_delete(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
 	SELECT format('DELETE FROM %s d USING %s o WHERE %s', c.copy, sift.scope_changed(c.key_columns, c.columns, op, 'old'), sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND ')) $$;
-CREATE FUNCTION sift.scope_pairs_delete(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
-	SELECT format('DELETE FROM %s d USING %s o WHERE d.%I = o.%I AND d.%I = o.%I', c.copy, sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], op, 'old'),
-		c.fk, c.member, c.scope_key, c.scope_key) $$;
+-- The copy's rows of the pairs that go. A pair whose member has no fact in the table has no copy row, and a statement over all the pairs read the whole copy for as few as 1,000 of
+-- them (600 M instructions, 1,000 and 10,000 pairs alike): scope_pairs_gone lists the pairs whose member has a fact (a probe of the table's index on the foreign key, 8,000
+-- instructions each), in arrays whose length the planner knows, and scope_pairs_delete deletes their copy rows. A semi join, not a join, so that PostgreSQL hashes the pairs and
+-- not the copy: from about 400 pairs (1.14 copies per fact, 25 facts for each member) it reads the copy once, below that it probes it for each pair.
+CREATE FUNCTION sift.scope_pairs_gone(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('SELECT array_agg(o.%1$I)::text, array_agg(o.%2$I)::text FROM %3$s o WHERE EXISTS (SELECT 1 FROM %4$s f WHERE f.%5$I = o.%1$I)',
+		c.member, c.scope_key, sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], op, 'old'), c.source, c.fk) $$;
+CREATE FUNCTION sift.scope_pairs_delete(c sift.scope_copies) RETURNS text LANGUAGE sql STABLE AS $$
+	SELECT format('DELETE FROM %s d WHERE EXISTS (SELECT 1 FROM unnest($1::%s[], $2::%s[]) x(m, k) WHERE d.%I = x.m AND d.%I = x.k)', c.copy,
+		(SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a WHERE a.attrelid = c.copy::regclass AND a.attname = c.fk),
+		(SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a WHERE a.attrelid = c.copy::regclass AND a.attname = c.scope_key), c.fk, c.scope_key) $$;
 COMMENT ON FUNCTION sift.scope_fact_delete(sift.scope_copies, text) IS 'Internal: the DELETE of the copy''s rows that the trigger of the table of a scope copy runs for its transition table old_rows (op: the trigger''s operation)';
-COMMENT ON FUNCTION sift.scope_pairs_delete(sift.scope_copies, text) IS 'Internal: the DELETE of the copy''s rows that the trigger of the scope relation of a scope copy runs for its transition table old_rows (op: the trigger''s operation)';
+COMMENT ON FUNCTION sift.scope_pairs_gone(sift.scope_copies, text) IS 'Internal: the SELECT of the arrays of the pairs of the rows that go (op: the trigger''s operation) whose member has a fact in the table of a scope copy';
+COMMENT ON FUNCTION sift.scope_pairs_delete(sift.scope_copies) IS 'Internal: the DELETE of the copy''s rows of the pairs, in the arrays $1 (members) and $2 (scope keys), that scope_pairs_gone listed';
 
 -- The statements that keep a copy exact. A partitioned copy gets the partition of a scope key that appears in the scope relation when the pair is inserted.
 CREATE FUNCTION sift.scope_fact_trg() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -108,12 +117,17 @@ DECLARE
 	c        sift.scope_copies;
 	src      text;
 	k        bigint;
+	ms       text;
+	ks       text;
 BEGIN
 	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
-		EXECUTE sift.scope_pairs_delete(c, TG_OP);
+		EXECUTE sift.scope_pairs_gone(c, TG_OP) INTO ms, ks;
+		IF ms IS NOT NULL THEN
+			EXECUTE sift.scope_pairs_delete(c) USING ms, ks;
+		END IF;
 	END IF;
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
 		src := sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], TG_OP, 'new');
