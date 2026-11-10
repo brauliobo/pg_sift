@@ -169,7 +169,72 @@ What it costs: the copy of that table is 134 MB of heap, a 29 MB `sift_col` inde
 
 ### When not to use it
 
-A fact that reaches many keys (above 3 on average), a scope key of text or uuid (use an integer key), a scope that changes by the expiry of a date with no write (keep the date in the copy and test it), a restricted user inside a tenant (filter the user's ids inside the tenant's rows: the copy gains little when the user's set is a small part of it), and tables small enough that the join answers in a few milliseconds.
+A fact that reaches many keys (above 3 on average), a scope key of text or uuid (use an integer key), a scope that changes by the expiry of a date with no write when it is not kept from a view (see below: `sift.scope_expire_pairs`), a restricted user inside a tenant (filter the user's ids inside the tenant's rows: the copy gains little when the user's set is a small part of it), and tables small enough that the join answers in a few milliseconds.
+
+## Keeping the pairs from a view
+
+The scope relation is often not a table anyone writes but the answer of a view: the ids a tenant sees are the ids it is assigned directly, plus the ids of the groups it is assigned (`assignments` and `group_members`), minus the rows soft deleted (`deleted_at`) and the assignments that have expired (`expires_at`). Reading it through the view expands the assignments and the group membership for every request. A table of the pairs, kept equal to the view, makes that expansion one index range, and a scope copy built on it (above) is kept equal to the join by the same transaction.
+
+```sql
+CREATE VIEW visible_dim_a AS   -- (dim_a_id, tenant_id): the member first, the scope key second
+	SELECT a.dim_a_id, a.tenant_id FROM assignments a WHERE a.dim_a_id IS NOT NULL AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > now())
+	UNION
+	SELECT m.dim_a_id, a.tenant_id FROM assignments a JOIN group_members m ON m.group_id = a.group_id AND m.deleted_at IS NULL
+	WHERE a.group_id IS NOT NULL AND a.deleted_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > now());
+CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+CREATE INDEX ON scope_pairs (dim_a_id);
+-- a change of a row of assignments names a tenant (its keys), a change of a row of group_members names an id (the pairs of that id)
+SELECT * FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'assignments', 'key', 'tenant_id', expires => 'expires_at');
+SELECT * FROM sift.scope_follow_pairs('scope_pairs', 'visible_dim_a', 'group_members', 'member', 'dim_a_id');
+SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id');   -- optional: the copy on the pairs
+SELECT * FROM sift.scope_expire_pairs('scope_pairs');   -- from a scheduler, for the pairs that expired with no write
+```
+
+`sift.scope_follow_pairs` makes the pair table equal to the view (the first column of the view is the member, the second the scope key; the pair table has columns of those names) and puts statement triggers with transition tables on the source table: after an insert, update, delete or truncate of its rows, the ids (`'member'`) or keys (`'key'`) that the old and new rows name in `source_column` are recomputed from the view, in the transaction of the change, with `sift.scope_refresh_pairs`. That function reads the pairs the table has for those ids, compares them with the view's in one statement and inserts the missing pairs and deletes the extra ones: the pair table and a copy on it (its own triggers fire on the difference) are equal to the view when the statement ends. An assignment that names a group is covered because the recompute is by key: the key's pairs are read again from the whole view, and so is a pair given both by a direct assignment and through a group (the view's `UNION` and the function's `DISTINCT` make it one pair). `sift.scope_refresh_pairs(pairs, view, 'key', ARRAY[3, 7])` names ids or keys by hand and a call without ids recomputes everything; `sift.scope_unfollow_pairs` drops the triggers (do it before dropping a table or the view).
+
+What a recipe needs to hold:
+
+- **Exactness.** The pairs equal the view as of the transaction of the last change of a source table, under READ COMMITTED. A refresh takes a lock of the pair table for the transaction, so a second one waits for the commit of the first and reads what it wrote: two sessions that change different source tables at once (an assignment of a group here, a new id in that group there) cannot each miss the pair that depends on both. The writers of the source tables are serialized on that lock until they commit, and the roles that write them need the privileges of the pair table (the triggers run as the writer). A table the triggers do not hear (a logical replication target, `COPY` with triggers off, `ALTER TABLE .. DISABLE TRIGGER`) leaves the pairs behind: `sift.scope_refresh_pairs` without ids puts them right, and `(SELECT * FROM visible_dim_a EXCEPT SELECT * FROM scope_pairs) UNION ALL (SELECT * FROM scope_pairs EXCEPT SELECT * FROM visible_dim_a)` lists the difference. `sift.scope_follow_pairs` refuses a logical replication target.
+- **Only columns of the followed table name ids or keys.** A table whose change reaches ids it has no column for (a `groups` table whose `deleted_at` hides all its group's ids) is not followed: express the change in the table that names them, or refresh the keys that see the group by hand.
+- **Indexes.** The refresh reads the source tables by the id or key it is given: `assignments (tenant_id)`, `assignments (group_id)`, `assignments (dim_a_id)`, `group_members (dim_a_id)` and the primary key of `group_members` by group, and the pair table by key (its primary key) and by id (the index above).
+- **Expiry by date with no write.** A pair that ends because `expires_at` passes does not change any row, so no trigger hears it: the pair table is the view as of the last change, and the view's `now()` is the time of the transaction that evaluated it. `sift.scope_expire_pairs(pairs, overlap)` applies the expiries: for each followed table that names an `expires` column, it refreshes the ids or keys of the rows whose date lies between the last call minus `overlap` (default one hour) and now, returns the pairs it inserted and deleted, and remembers the time. Call it from a scheduler at the granularity the application accepts a stale pair (a minute, an hour); it reads the rows that expired in that window (index the `expires` column). The overlap covers a transaction that evaluated the view before a sweep and committed after it, so it is an upper bound of the duration of a write transaction of the source; a longer one can leave a pair that expired meanwhile until the next write of its id or key. Nothing time dependent is kept in the copy: a pair that expired and is not yet swept is the only stale thing, and `sift.scope_verify` compares the copy with the pair table, not with the clock.
+
+### What the pair table alone measures
+
+2,000,000 facts, 20,000 ids, 60 tenants of skewed size, 18,035 memberships in 267 groups of about 68 ids, 12,840 assignments (5% soft deleted, 2% expiring), 21,214 pairs for 15,163 visible ids (scratch measurement, PostgreSQL 18.6, one backend, serial, `work_mem = 256MB`, instructions of the backend, median of 5 warm runs; cold: the cluster restarted before the statement, empty shared buffers, warm page cache; answers equal in every cell). The pair table is 0.75 MB of heap and a 0.67 MB primary key, 0.46 MB for the index by id. "Expansion" counts and sums the ids of one tenant; "sum by kind" and "latest 20 facts" read the facts of those ids by the fact index and `dim_a_id IN (SELECT dim_a_id FROM <view or pairs> WHERE tenant_id = $1)`.
+
+| statement | tenant of | view: M instr, ms, hits (cold ms, blocks read) | pairs: M instr, ms, hits (cold ms, blocks read) |
+|---|---|---|---|
+| expansion | 2,032 ids | 13.29, 4.70, 1,034 (14.1, 176) | 2.11, 0.50, 8 (0.83, 8) |
+| expansion | 207 ids | 2.51, 2.66, 133 (4.6, 129) | 0.41, 0.12, 4 (0.18, 4) |
+| expansion | 91 ids | 1.85, 1.87, 51 (3.2, 49) | 0.31, 0.11, 3 (0.15, 3) |
+| sum by kind | 2,032 ids | 85.03, 28.3, 2,373 (51.4, 1,446) | 73.41, 25.6, 1,347 (51.0, 1,277) |
+| sum by kind | 207 ids | 59.82, 27.3, 1,472 (67.3, 1,394) | 58.30, 22.7, 1,343 (55.5, 1,266) |
+| sum by kind | 91 ids | 58.28, 28.0, 1,390 (46.8, 1,314) | 57.36, 33.5, 1,342 (49.1, 1,267) |
+| latest 20 facts | 2,032 ids | 15.63, 5.83, 1,068 (9.7, 199) | 4.03, 3.80, 42 (3.5, 24) |
+| latest 20 facts | 207 ids | 3.81, 2.48, 170 (13.4, 147) | 2.30, 1.43, 41 (3.1, 27) |
+| latest 20 facts | 91 ids | 3.19, 1.24, 88 (7.2, 73) | 2.29, 0.82, 40 (3.0, 26) |
+
+The pair table cuts the expansion about 6 times in instructions and by 94 to 99% in buffer hits and in blocks read cold; a request that reads the facts of the ids gains what the expansion cost (2,032 ids: 85.0 to 73.4 M instructions, 2,373 to 1,347 hits; a latest-20 read 15.6 to 4.0 M, 1,068 to 42 hits) and nothing more, because the fact read dominates. The pairs column is the plan with `sift.agg_probe_rewrite = off`: with the setting on, the planner prices a probe of the primary key of `scope_pairs` for each id the scan meets (20,000 probes) below the one hashed set of the tenant's ids and chooses it, and the sum by kind then takes 282, 266 and 266 M instructions and 22,100 hits for the three tenants against the 1,350 of the set (the view, a `UNION`, cannot be probed and is planned as the set). That is the price of the probe plan, not of the pair table: a pair table of a small tenant in a large id range, read by a `sift_col` aggregate, is planned wrongly until the probe's price follows the tenant's size; until then `SET sift.agg_probe_rewrite = off` for the statement gives the set plan. The latest-20 reads were planned as the set in both columns.
+
+### What one edit costs
+
+The same fixture. Each row is one statement in a transaction that is rolled back, after a checkpoint (so the WAL includes the full-page image of the first change of each page), median of 3 or 5 runs, instructions of the backend, the milliseconds of the statement inside the backend (the host ran at 15 to 30% CPU pressure), WAL records plus full-page images. *Source alone* is the statement with no trigger; *pairs followed* adds the refresh of the pair table; *with a copy* adds the copy on the pairs (2,112,841 rows, 154 MB of heap, a 33 MB `sift_col` index, an 82 MB maintenance btree), which holds one row of the fact table for each fact of an id and each key of it: the figures of that column follow the 100 facts an id has on average (the 1,000 ids of the group edits hold 73,664 facts, 4,637 for a group of 51).
+
+| edit | source alone: M instr, ms, WAL | pairs followed: M instr, ms, WAL | with a copy: M instr, ms, WAL |
+|---|---|---|---|
+| an id moves between groups (1 row) | 0.4, 1.1, 0.02 MB | 4.6, 4.2, 0.04 MB | 42.1, 13.6, 0.50 MB |
+| a group gains 1 id | 0.2, 0.6, 0.02 MB | 4.3, 3.8, 0.04 MB | 8.4, 6.7, 0.07 MB |
+| a group gains 1,000 ids | 25.2, 10.7, 0.32 MB | 125.8, 35.9, 0.69 MB | 3,444, 1,296, 46.6 MB |
+| a group loses 1,000 ids (delete) | 15.4, 3.8, 0.09 MB | 80.6, 19.0, 0.18 MB | 475, 163, 9.2 MB |
+| 1,000 ids soft deleted | 50.9, 16.5, 0.47 MB | 122.9, 22.2, 0.56 MB | 515, 135, 9.5 MB |
+| a tenant gains a group of 51 ids | 0.3, 2.1, 0.02 MB | 9.7, 27.1, 0.38 MB | 216, 86, 3.3 MB |
+| a tenant gains a group of 1,051 ids | 0.3, 1.3, 0.02 MB | 51.9, 16.2, 0.74 MB | 3,725, 2,023, 43.4 MB |
+| a tenant loses that group (delete) | 0.3, 0.6, 0.01 MB | 17.7, 7.4, 0.11 MB | 481, 142, 10.6 MB |
+| that assignment soft deleted | 0.4, 1.0, 0.01 MB | 17.8, 10.1, 0.11 MB | 481, 127, 10.5 MB |
+| ... and restored | 0.3, 1.6, 0.01 MB | 52.8, 18.6, 0.74 MB | 3,795, 2,706, 43.1 MB |
+
+The refresh of the pair table costs a plan of its statement (about 4 M instructions and 4 ms for one id; the statement is planned on each call) and a read of the ids' or keys' pairs and of the view for them, so it follows the size of the edit and, for a key, the size of the key: 1,000 ids cost 80 to 125 M instructions and 0.2 to 0.7 MB of WAL. The copy is what the edit costs once the facts of the ids are rewritten: about 45,000 instructions and 620 B of WAL (300 B of records) for each copy row inserted, and 5,400 instructions and 120 B for each deleted. An edit that changes the ids of a tenant in bulk is the one to batch in one statement; a copy on the pairs is worth it where the reads it serves (above) outnumber such edits.
 
 ## What an index of this kind does not answer yet
 
