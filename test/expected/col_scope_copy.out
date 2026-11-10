@@ -14,34 +14,75 @@ CREATE TABLE no_pk (dim_a_id int NOT NULL, created_at timestamptz);
 SELECT sift.scope_create('no_pk_copy', 'no_pk', 'dim_a_id', 'pairs', 'scope_id');
 ERROR:  scope_create: table "public.no_pk" has no primary key
 DETAIL:  The primary key identifies the rows of the copy that a change of the table touches.
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 44 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 46 at RAISE
 CREATE TABLE dup_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL);
 SELECT sift.scope_create('dup_copy', 'facts', 'dim_a_id', 'dup_pairs', 'scope_id');
 ERROR:  scope_create: table "public.dup_pairs" has no unique index on (dim_a_id, scope_id)
 DETAIL:  A scope relation holds each (member, scope key) pair once: a duplicate pair would give a row two copies in one key.
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 50 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 52 at RAISE
 CREATE TABLE text_pairs (dim_a_id int NOT NULL, scope_id text NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 SELECT sift.scope_create('text_copy', 'facts', 'dim_a_id', 'text_pairs', 'scope_id');
 ERROR:  scope_create: scope key "scope_id" of "public.text_pairs" is not an integer column
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 55 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 57 at RAISE
 SELECT sift.scope_create('facts', 'facts', 'dim_a_id', 'pairs', 'scope_id');
 ERROR:  scope_create: relation "facts" already exists
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 31 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 33 at RAISE
 SELECT sift.scope_create('bad_columns', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount', 'nope']);
 ERROR:  scope_create: table "public.facts" has no column "nope"
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 81 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 83 at RAISE
 SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', order_column => 'note');
 ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric or float column
 CONTEXT:  SQL statement "CREATE INDEX bad_order_col ON public.bad_order USING sift_col (scope_id, id, dim_a_id, created_at, kind, amount, note) WITH (key_order = 'scope_id, note')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 120 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 122 at EXECUTE
 -- a copy holds a row once per key of its member: a member in too many keys is refused with the measured figure
 CREATE TABLE wide_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 7) k;
 SELECT sift.scope_create('wide_copy', 'facts', 'dim_a_id', 'wide_pairs', 'scope_id');
-ERROR:  scope_create: a row of "public.facts" would have 7.00 copies on average (the limit is 1.8)
+ERROR:  scope_create: a row of "public.facts" would have 7.00 copies on average, above max_copies 1.8
 DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 17 MB, +701% over the table and its indexes.
-HINT:  Key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 98 at RAISE
+HINT:  Pass max_copies => 7 to build it anyway, key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 100 at RAISE
+-- the refusal is a default: max_copies raises it, and the NOTICE gives the same figures
+CREATE TABLE triple_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
+INSERT INTO triple_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 3) k;
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id');
+ERROR:  scope_create: a row of "public.facts" would have 3.00 copies on average, above max_copies 1.8
+DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 7 MB, +300% over the table and its indexes.
+HINT:  Pass max_copies => 3 to build it anyway, key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 100 at RAISE
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 3.1) AS copy_rows;
+NOTICE:  sift_col index "triple_copy_col": 5 automatic choices, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = scope_id, created_at;
+rollup_columns = scope_id, note; key_cut = scope_id; order_array_columns = created_at; and 1 more
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('triple_copy_col');
+NOTICE:  sift_col index "triple_copy_col" is column format minor 41, which a library before 4.0 cannot read
+HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
+NOTICE:  scope copy public.triple_copy: 90000 rows, 3.00 copies per row of "public.facts" that reaches a key
+DETAIL:  100% of those rows have 2 or more copies, at most 3; the copy takes 7.6 MB with its indexes, +314% over the table and its indexes.
+NOTICE:  scope copy public.triple_copy: no sift_col index on "public.facts", all 6 columns carried, table of 5.9 MB
+DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
+HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.
+NOTICE:  scope copy public.triple_copy: run VACUUM public.triple_copy now
+DETAIL:  VACUUM cannot run inside a function. A copy that is not vacuumed has an empty visibility map: a read checks every row it keeps in the heap.
+HINT:  sift.scope_status shows whether a copy was vacuumed.
+ copy_rows 
+-----------
+     90000
+(1 row)
+
+SELECT sift.scope_drop('triple_copy');
+ scope_drop 
+------------
+ 
+(1 row)
+
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 0.9);
+ERROR:  scope_create: max_copies must be 1 or more, not 0.9
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 30 at RAISE
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => NULL);
+ERROR:  scope_create: max_copies must be 1 or more, not NULL
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 30 at RAISE
+DROP TABLE triple_pairs;
 DROP TABLE no_pk, dup_pairs, text_pairs, wide_pairs;
 SELECT sift.scope_create('facts_by_scope', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
 NOTICE:  sift_col index "facts_by_scope_col": 4 automatic choices, 1 advice

@@ -5,7 +5,7 @@
   test/fuzz/scope_fuzz.py --repro DIR/scope_fuzz_N.sql | --selftest
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT). A seed gives facts(id, dim_a_id, created_at, kind, amount, note) and scope pairs (dim_a_id, scope_id), with a skewed
-multiplicity (most ids in one key, 10% in two or more up to six, some in none, some keys empty; every third seed has one key for each id) and two copies of the facts, a
+multiplicity (most ids in one key, 10% in two or more up to six, some in none, some keys empty; every third seed has one key for each id) and two copies of the facts (built with max_copies, as a seed's multiplicity can pass the default 1.8), a
 partitioned one and a plain one, and a script of steps: one statement (insert, update of an amount, of a note, of the foreign key or of the primary key, delete, upsert, MERGE,
 COPY, TRUNCATE of the facts or of the pairs, pairs inserted, moved between keys, moved to another id, deleted), a data-modifying CTE that changes facts and pairs in one statement,
 a transaction (COMMIT, ROLLBACK, SAVEPOINT with ROLLBACK TO and RELEASE, a check in the middle), VACUUM and the maintenance of the index. After every step (and in a fresh backend after every
@@ -122,8 +122,8 @@ CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timest
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 INSERT INTO pairs VALUES {pairs};
 INSERT INTO facts SELECT i, 1 + (i * 13) % {ABSENT}, timestamptz '2026-01-01' + i * interval '1 hour', i % 5, i % 97, 'n' || i % 7 FROM generate_series(1, {n}) i;
-SELECT sift.scope_create('cflat', 'facts', 'dim_a_id', 'pairs', 'scope_id');
-SELECT sift.scope_create('cpart', 'facts', 'dim_a_id', 'pairs', 'scope_id', partition => true);
+SELECT sift.scope_create('cflat', 'facts', 'dim_a_id', 'pairs', 'scope_id', max_copies => {KEYS});
+SELECT sift.scope_create('cpart', 'facts', 'dim_a_id', 'pairs', 'scope_id', partition => true, max_copies => {KEYS});
 VACUUM (ANALYZE) cflat;
 {helpers()}"""
 

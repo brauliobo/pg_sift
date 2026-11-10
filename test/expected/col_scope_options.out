@@ -15,7 +15,7 @@ SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id')
 ERROR:  the jsonb column "notes" of a sift_col index needs paths
 HINT:  Declare them with the paths option: WITH (paths = 'notes.* float4'), or REINDEX to read them from the documents.
 CONTEXT:  SQL statement "CREATE INDEX by_options_col ON public.by_options USING sift_col (scope_id, id, dim_a_id, created_at, metrics_a, notes, note) WITH (key_order = 'scope_id, created_at')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 120 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 122 at EXECUTE
 SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id', options => 'paths = ''metrics_a.* float8, notes.k int4''') AS copy_rows;
  copy_rows 
 -----------
@@ -129,7 +129,7 @@ SELECT sift.scope_create('overridden', 'facts', 'dim_a_id', 'pairs', 'scope_id',
 ERROR:  the paths option names "metrics_a", which is not a jsonb column of the index
 HINT:  A path starts with the name of an indexed jsonb column.
 CONTEXT:  SQL statement "CREATE INDEX overridden_col ON public.overridden USING sift_col (scope_id, id, dim_a_id, created_at, note) WITH (key_order = 'scope_id, created_at', paths = 'metrics_a.* float8', dict_lookup = 'off', array_lengths = 'off')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text) line 120 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 122 at EXECUTE
 SELECT sift.scope_create('overridden', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['created_at', 'note'], options => 'paths = '''' ') AS copy_rows;
  copy_rows 
 -----------

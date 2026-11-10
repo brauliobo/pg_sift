@@ -159,10 +159,9 @@ COMMENT ON FUNCTION sift.scope_trigger_name(text, text) IS 'Internal: the name o
 
 CREATE FUNCTION sift.scope_create(copy text, source regclass, fk name, scope_relation regclass, scope_key name, columns name[] DEFAULT NULL,
 								  partition boolean DEFAULT false, member name DEFAULT NULL, order_column name DEFAULT NULL,
-								  options text DEFAULT NULL) RETURNS bigint
+								  options text DEFAULT NULL, max_copies numeric DEFAULT 1.8) RETURNS bigint
 	LANGUAGE plpgsql AS $$
 DECLARE
-	cap       CONSTANT float8 := 1.8;
 	src       text := sift.scope_qualified(source);
 	rel       text := sift.scope_qualified(scope_relation);
 	cname     text;
@@ -189,6 +188,9 @@ DECLARE
 									   'write_buffer_limit', 'dead_rewrite_pct', 'vacuum_truncate'];
 BEGIN
 	member := COALESCE(member, fk);
+	IF max_copies IS NULL OR max_copies < 1 THEN
+		RAISE EXCEPTION 'scope_create: max_copies must be 1 or more, not %', COALESCE(max_copies::text, 'NULL') USING ERRCODE = 'invalid_parameter_value';
+	END IF;
 	IF to_regclass(copy) IS NOT NULL THEN
 		RAISE EXCEPTION 'scope_create: relation "%" already exists', copy USING ERRCODE = 'duplicate_table';
 	END IF;
@@ -256,11 +258,11 @@ BEGIN
 		   sum(r.copies_per_fact * r.facts) * pg_relation_size(source)::float8 / NULLIF(sum(r.facts), 0) * 1.4
 		INTO mult, multi, maxk, est
 		FROM sift.scope_replica_counts(src, fk, rel, member) r;
-	IF mult > cap THEN
-		RAISE EXCEPTION 'scope_create: a row of "%" would have % copies on average (the limit is %)', src, round(mult::numeric, 2), cap
+	IF mult > max_copies THEN
+		RAISE EXCEPTION 'scope_create: a row of "%" would have % copies on average, above max_copies %', src, round(mult::numeric, 2), max_copies
 			USING DETAIL = format('The copy would hold that many times the rows of the table that reach a scope key: about %s MB, +%s%% over the table and its indexes.',
 								  round((est / 1048576)::numeric), round(est * 100 / (SELECT sum(pg_total_relation_size(r)) FROM sift.scope_relations(source) r))),
-				  HINT = 'Key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.', ERRCODE = 'feature_not_supported';
+				  HINT = format('Pass max_copies => %s to build it anyway, key the copy by a scope relation whose members belong to fewer keys, or read the table through the join.', ceil(mult * 10) / 10), ERRCODE = 'feature_not_supported';
 	END IF;
 
 	-- the copy
@@ -433,7 +435,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION sift.scope_drop(text) IS 'Drops a scope copy with its triggers on the table and on the scope relation';
-COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name, text) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index by the scope key and triggers that keep it exact; returns the rows. It takes the columns and the column options (paths, ..) of the table''s sift_col index; options adds or replaces some. VACUUM it afterwards: sift.scope_status tells. See INDEX-RECIPES';
+COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name, text, numeric) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index by the scope key and triggers that keep it exact; returns the rows. Takes the columns and options of the table''s sift_col index. Above max_copies copies per row (default 1.8) it refuses; a larger max_copies builds it. VACUUM it afterwards. See INDEX-RECIPES';
 
 -- Pairs kept from a view: the scope relation of a copy (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
 -- source tables (assignments, group membership). sift.scope_refresh_pairs recomputes the pairs of named member ids or scope keys from the view and applies the difference;

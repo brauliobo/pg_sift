@@ -24,6 +24,15 @@ SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', 
 CREATE TABLE wide_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 7) k;
 SELECT sift.scope_create('wide_copy', 'facts', 'dim_a_id', 'wide_pairs', 'scope_id');
+-- the refusal is a default: max_copies raises it, and the NOTICE gives the same figures
+CREATE TABLE triple_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
+INSERT INTO triple_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 3) k;
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id');
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 3.1) AS copy_rows;
+SELECT sift.scope_drop('triple_copy');
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 0.9);
+SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => NULL);
+DROP TABLE triple_pairs;
 DROP TABLE no_pk, dup_pairs, text_pairs, wide_pairs;
 
 SELECT sift.scope_create('facts_by_scope', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
