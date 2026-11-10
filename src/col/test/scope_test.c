@@ -238,3 +238,4 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 	}
 	return in_scope(fcinfo, keys, n);
 }
+#endif							/* SIFT_TESTING */
