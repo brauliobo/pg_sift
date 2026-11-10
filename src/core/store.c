@@ -362,6 +362,12 @@ xid_safexid(void)
 		(FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) || !(IsInParallelMode() || IsParallelWorker()));
 }
 
+bool
+sift_xid_unassignable(void)
+{
+	return IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny());
+}
+
 /* Physical directory changes survive transaction abort; publish their cache invalidation before a relation lock can be released. */
 void
 invalidate_mapping(Relation index)

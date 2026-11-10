@@ -78,7 +78,8 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 				nworkers = Min(max_parallel_maintenance_workers, MAX_RANGES - 1);
 	uint64		gen;
 
-	if (nworkers < 1 || n > MAX_MERGE_FANIN)
+	/* the context of the workers needs a transaction id from before its parallel mode, which a parallel VACUUM's leader cannot take: one process merges */
+	if (nworkers < 1 || n > MAX_MERGE_FANIN || sift_xid_unassignable())
 		return -1;
 	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment merge", ALLOCSET_DEFAULT_SIZES);
 #ifdef SIFT_TESTING
