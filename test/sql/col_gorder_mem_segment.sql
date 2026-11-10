@@ -109,7 +109,10 @@ RESET sift.test_limits;
 -- an overlay of 52,000 rows beside 520,000: its rows are sorted in memory by each scan, and a cap below them reads the units
 CREATE TABLE gl (id int, ts timestamp) WITH (autovacuum_enabled = off);
 INSERT INTO gl SELECT i, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 1000003) * INTERVAL '1 minute' FROM generate_series(1, 520000) i;
+-- the writer of the build holds the rows of two orders in memory until the segment is cut: at the default 64 MB it cuts 520,000 rows in two, and the overlay is beside the larger half
+SET maintenance_work_mem = '128MB';
 CREATE INDEX gl_ix ON gl USING sift_col (id, ts) WITH (key_cut = 'off', order_columns = 'id', order_array_columns = 'auto: ts');
+RESET maintenance_work_mem;
 VACUUM (FREEZE, ANALYZE) gl;
 SELECT count(*) AS gl_entries FROM sift._test_col_gorder('gl_ix', 1) \gset
 INSERT INTO gl SELECT 520000 + i, TIMESTAMP '2025-12-01' + (i::bigint * 6007 % 700001) * INTERVAL '1 minute' FROM generate_series(1, 52000) i;
