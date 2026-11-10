@@ -1,6 +1,6 @@
 -- A fact read for several scope keys at once with the meaning of IN / EXISTS counts once, though its member has pairs with several of the keys: the scope units of each key hold it, and the
--- entry of the unit of the first key of the member is the one that counts (the others are replicas), so the answer is the plain join's (md5) and a naive IN over the replicated units
--- would count the members of two keys twice. A top-N over several keys is read from the entity rows (the units of different keys have no order across them), and a join to another
+-- units of all but the least key of the member leave its facts out (a list of members for each key that has them: Scope Dedupe Keys), so the answer is the plain join's (md5) and a naive IN over
+-- the replicated units would count the members of two keys twice. A top-N over several keys reads the same units, and a join to another
 -- relation per fact (GROUP BY the key of another scope) goes on top of the scan of the scope units of one key: the scope units expose the same rows as the entity scan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -8,18 +8,20 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.test_scope_trust = on;
 
 -- 12 tenants and 20 groups; 300 members in one to six tenants (a quarter of them in two or more) and in zero to four groups
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 300) m, generate_series(0, m % 6) j WHERE m % 25 <> 0;
 CREATE TABLE group_scope (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
 INSERT INTO group_scope SELECT m, 1 + (m * 3 + j * 5) % 20 FROM generate_series(1, 300) m, generate_series(0, m % 4) j WHERE m % 17 <> 0;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX group_scope_journal ON group_scope USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 999 ELSE 1 + (i * 7919) % 320 END,
 	timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 20000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id); group_id: dim_a_id -> group_scope(dim_a_id, group_id)');
+REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 
 -- the same rows as the plain statement, whether the scope units were read, why not, whether the facts of a replica are left to the first key, and the scope the statement reads
@@ -39,7 +41,7 @@ BEGIN
 	same := a = b;
 	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	dedupe := jsonb_path_exists(p, '$.**."Scope Dedupe"');
+	dedupe := jsonb_path_exists(p, '$.**."Scope Dedupe Keys"');
 	scopes_read := (SELECT count(*) FROM jsonb_path_query(p, '$.**."Scope Index"'));
 END $$;
 
