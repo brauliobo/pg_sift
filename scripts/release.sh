@@ -39,6 +39,13 @@ vocabulary() { [[ -n ${NEUTRAL_VOCAB:-} ]] || { [[ -n ${NEUTRAL_VOCAB_FILE:-} &&
 # the extension version of a release: its MAJOR.MINOR for the first (and for every patch of a minor before 4.2, whose patch releases kept it, or carried SQL: MAJOR.MINOR.N), MAJOR.MINOR.PATCH
 # for a patch release of 4.2 or later: ext_version_ok CONTROL_VERSION MAJOR.MINOR PATCH
 before_42() { [[ $1 != 4.2 && $(printf '%s\n' "$1" 4.2 | sort -V | head -n 1) == "$1" ]]; }
+# an extension at FROM reaches TO by its own script, or, for a patch version (4.2.2), by the script back to its minor (4.2.2--4.2) and the one from the minor (4.2--4.3):
+# update_path_ok SQLDIR FROM TO
+update_path_ok() {
+	local d=$1 from=$2 to=$3 minor=${2%.*}
+	[[ $from == "$to" || -f $d/pg_sift--$from--$to.sql ]] && return 0
+	[[ $from == *.*.* && -f $d/pg_sift--$from--$minor.sql && -f $d/pg_sift--$minor--$to.sql ]]
+}
 ext_version_ok() {
 	(( $3 == 0 )) && { [[ $1 == "$2" ]]; return; }
 	before_42 "$2" && { [[ $1 == "$2" || $1 == "$2".[0-9]* ]]; return; }
@@ -126,6 +133,8 @@ selftest() {
 		[[ $(git log -1 --format=%s) == "release: 4.2.1: the extension version" && -z $(git status --porcelain) ]]' _ "$g"
 	ext 4.2.2 --ext-version
 	chk pass "--ext-version 4.2.2 goes on from 4.2.1" bash -c 'cd "$1" && [[ -f sql/pg_sift--4.2.1--4.2.2.sql && -f sql/pg_sift--4.2.2--4.2.sql ]]' _ "$g"
+	chk pass "a patch version reaches the next minor by its way back to its minor, a minor needs its own script" bash -c "$(declare -f update_path_ok)"'; d=$1; touch "$d/pg_sift--4.2--4.3.sql" "$d/pg_sift--4.2.2--4.2.sql"
+		update_path_ok "$d" 4.2.2 4.3 && update_path_ok "$d" 4.3 4.3 && ! update_path_ok "$d" 4.2.2 4.4 && ! update_path_ok "$d" 4.1 4.3' _ "$g/sql"
 	ext 4.3.0 --ext-version
 	chk pass "a minor has no extension version of its own to move" grep -q "only a patch release" "$t/ext.out"
 	ext 4.1.9 --ext-version
@@ -208,7 +217,7 @@ preflight() {
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version unless it carries SQL)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
-	[[ $pm == "$ext" ]] || [[ -f $R/sql/pg_sift--$pm--$ext.sql ]] || die "sql/pg_sift--$pm--$ext.sql is missing: the upgrade from $PREV has no script"
+	update_path_ok "$R/sql" "$pm" "$ext" || die "sql/pg_sift--$pm--$ext.sql is missing, and $pm has no way back to its minor and on: the upgrade from $PREV has no script"
 	[[ $ext == "$MM" ]] || before_42 "$MM" || [[ -f $R/sql/pg_sift--$ext--$MM.sql ]] || die "sql/pg_sift--$ext--$MM.sql is missing: the next minor has no path from $ext"
 }
 
