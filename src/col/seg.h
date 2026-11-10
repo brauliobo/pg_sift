@@ -303,7 +303,7 @@ extern uint32 sift_cseg_preagg_units(SiftColSegment *seg);
 /* What the sidecar of the segment holds against the spec an index writes now, and whether a rewrite can give it what it lacks (sift_col_refresh); setting: sift.col_format_minor */
 /* sample 0: every unit; else that many of them, evenly spread (c->units says how many were counted) */
 extern void sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, uint32 sample, SiftCPaggCensus *c);
-extern double sift_cseg_gorder_compact_chunks(SiftColSegment *seg, int col);	/* the chunks of the order blocks of leaf col that are compact, read from their directories */
+extern double sift_cseg_gorder_chunks(SiftColSegment *seg, int col, uint32 flags, bool complete_only);	/* the chunks of the order blocks of leaf col (complete ones only, with a compact header: for the compact flag) with a flag of flags in the pad word, read from their directories */
 extern bool sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */

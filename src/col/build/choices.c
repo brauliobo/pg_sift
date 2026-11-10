@@ -272,10 +272,10 @@ d_point_tid(Derive *d)
 
 /* The column format minor the complete order arrays of an index have (a compact one is newer than the others) */
 static int
-order_minor(const SiftColLeafStats *ls, int ncols)
+order_minor(Relation index, const SiftColLeafStats *ls, int ncols)
 {
 	for (int c = 0; c < ncols; c++)
-		if (ls[c].gord_seek_blocks > 0)
+		if ((ls[c].gord_rows > 0 || ls[c].gord_ends_rows > 0) && sift_col_gorder_chunks(index, c, SIFT_CGORD_SEEK | SIFT_CGORD_POS, false) > 0)
 			return SIFT_COL_FORMAT_SEEKORD;
 	for (int c = 0; c < ncols; c++)
 		if (ls[c].gord_perm > 0)
@@ -322,7 +322,7 @@ d_order_arrays(Derive *d)
 	}
 	if (n + ne == 0)
 		return;
-	minor = order_minor(ls, defs->ncols);
+	minor = order_minor(d->index, ls, defs->ncols);
 	need_minor(d, ne > 0 ? Max(minor, SIFT_COL_FORMAT_ENDORD) : minor);
 	while (*glist == ' ')
 		glist++;
@@ -363,7 +363,7 @@ d_order_layout(Derive *d)
 			continue;
 		any = any || ls[c].gord_compact_blocks > 0;
 		if (ls[c].gord_compact_blocks > 0)
-			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * sift_col_gorder_compact_chunks(d->index, c) / ls[c].gord_chunks);
+			appendStringInfo(&out, "%s%s compact in %.0f%% of chunks", out.len ? ", " : "", name, 100.0 * sift_col_gorder_chunks(d->index, c, SIFT_CGORD_COMPACT, true) / ls[c].gord_chunks);
 		else
 			appendStringInfo(&out, "%s%s exact", out.len ? ", " : "", name);
 		appendStringInfo(&cost, "%s%s %.1f bytes a row", cost.len ? ", " : "", name, ls[c].gord_bytes / ls[c].gord_rows);

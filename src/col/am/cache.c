@@ -345,10 +345,10 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 }
 
 double
-sift_col_gorder_compact_chunks(Relation index, int leaf)
+sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_only)
 {
 	SiftDirSnapshot dir;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col compact chunks", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col order chunks", ALLOCSET_DEFAULT_SIZES);
 	double		n = 0;
 
 	(void) sift_col_rel_private(index, cx);	/* opening segments reads catalogs and reloads the cached state */
@@ -358,7 +358,7 @@ sift_col_gorder_compact_chunks(Relation index, int leaf)
 		{
 			SiftColSegment *seg = sift_cseg_open(index, &dir.segs[i], cx);
 
-			n += sift_cseg_gorder_compact_chunks(seg, leaf);
+			n += sift_cseg_gorder_chunks(seg, leaf, flags, complete_only);
 			sift_cseg_close(seg);
 		}
 	MemoryContextDelete(cx);
