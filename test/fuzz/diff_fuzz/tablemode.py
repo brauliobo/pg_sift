@@ -16,6 +16,7 @@ TABLE_SKIP = {
     'keytable': 'ktf is read through its sift_col index only',
     'dictcount': 'dcf is read through its sift_col index only',
     'flatkeys': 'the key tables are read through a sift_col index',
+    'groupsplit': 'the facts are read through a sift_col index',
     'keylist': 'the facts are read through a sift_col index',
     'ctecopies': 'the documents are read through a sift_col index',
     'arrlen': 'the lengths of an array are two lanes of the sift_col index (array_lengths); a sift_table keeps the image alone',
