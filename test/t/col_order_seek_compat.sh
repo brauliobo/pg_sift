@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Seekable order chunks (column format minor 47) beside plain ones (38) in one index: the ordered reads of top-N, OFFSET, range and IN list are the heap's over both, the index
-# verifies and takes writes; and a release that does not know minor 47 refuses the index at the directory, where a segment format it does not know is invalid,
+# Seekable order chunks (column format minor 44) beside plain ones (38) in one index: the ordered reads of top-N, OFFSET, range and IN list are the heap's over both, the index
+# verifies and takes writes; and a release that does not know minor 44 refuses the index at the directory, where a segment format it does not know is invalid,
 # refuses to read the table with it (an error that names the format, no wrong answer), and this tree reads the index again.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -24,7 +24,7 @@ sql sk "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE au (id int, g int, 
 	"INSERT INTO au SELECT i, i % 50, timestamp '2026-03-01' + (i::bigint * 6007 % 100003) * interval '1 minute', md5(i::text) FROM generate_series(60001, 90000) i" \
 	"SELECT sift.col_promote('au_ix')" >"$TAPDIR/setup.out" 2>&1 || { cat "$TAPDIR/setup.out" >&2; bail "the index cannot be made"; }
 FORMATS="SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('au_ix') WHERE kind = 'immutable'"
-check "the index has seekable (47) and plain (38) order chunks" test "$(sql sk "$FORMATS")" == 38,47
+check "the index has seekable (44) and plain (38) order chunks" test "$(sql sk "$FORMATS")" == 38,44
 
 Q=("SELECT id, ts FROM au ORDER BY ts DESC, id LIMIT 20" "SELECT id, ts FROM au ORDER BY ts, id LIMIT 20 OFFSET 100"
 	"SELECT id, ts FROM au WHERE ts BETWEEN timestamp '2026-02-10' AND timestamp '2026-03-12' ORDER BY ts, id LIMIT 20"
@@ -42,10 +42,10 @@ node_stop sk
 use_root sk "$oldroot"
 node_start sk || bail "cannot start $ref"
 sql sk "SELECT sift.col_merge('au_ix', true)" >"$TAPDIR/old.out" 2>&1
-check "$ref refuses a merge: it names the segment format it does not read" test "$(grep -c 'segment of column format 1.47, this build reads' "$TAPDIR/old.out")" == 1
+check "$ref refuses a merge: it names the segment format it does not read" test "$(grep -c 'segment of column format 1.44, this build reads' "$TAPDIR/old.out")" == 1
 sql sk "SELECT count(*) FROM au" >"$TAPDIR/old_read.out" 2>&1
 check "$ref refuses a read of the table the same way, and returns no row" \
-	test "$(grep -c 'segment of column format 1.47, this build reads' "$TAPDIR/old_read.out")" == 1 -a "$(grep -cE '^[0-9]+$' "$TAPDIR/old_read.out")" == 0
+	test "$(grep -c 'segment of column format 1.44, this build reads' "$TAPDIR/old_read.out")" == 1 -a "$(grep -cE '^[0-9]+$' "$TAPDIR/old_read.out")" == 0
 node_stop sk
 
 use_root sk "$newroot"

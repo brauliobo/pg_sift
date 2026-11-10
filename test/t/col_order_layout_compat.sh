@@ -43,7 +43,7 @@ node_stop legacy
 use_root legacy "$newroot"
 node_start legacy || bail "cannot start the new library"
 sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
-# plain order chunks: the format numbers below tell the layouts apart (a default build writes seekable chunks, column format 47)
+# plain order chunks: the format numbers below tell the layouts apart (a default build writes seekable chunks, column format 44)
 if [[ $(sql legacy "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_limits'") == 1 ]]; then
 	sql legacy "ALTER SYSTEM SET sift.test_limits = 'gord_seek_pct=0'" "SELECT pg_reload_conf()" >/dev/null
 	sleep 1

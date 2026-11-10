@@ -47,7 +47,7 @@ CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
 NOTICE:  sift_col index "pe_col": 3 automatic choices
 DETAIL:  point_tid_columns = k; order_array_columns = k; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_col');
-NOTICE:  sift_col index "pe_col" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pe_col" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
 CREATE TABLE shapes (n int, sql text);

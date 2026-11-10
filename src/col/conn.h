@@ -193,7 +193,7 @@ extern const char *sift_col_source_proof(struct SiftColSource *src, int found_le
  * stamp of the parent's journal (sift_conn_take) and knows the keys of the parent table under the snapshot the stamp was taken for, by reading the parent once when the fill is begun or by probing its unique btree for the keys of each batch, whichever is cheaper; a row whose key is found there gets
  * the found flag, every other row (a NULL key, a key the parent lacks) gets NULLs and is read by the join. A connection whose journal does not vouch now (no journal
  * yet, a log that is not complete) clears its flags and leaves the stamp empty (lineage 0): the segment says nothing for it.
- * The stamps are written with the segment (the SCHEMA section, column format 45) and are what a reader compares with its snapshot (the rule above).
+ * The stamps are written with the segment (the SCHEMA section, column format 44) and are what a reader compares with its snapshot (the rule above).
  */
 struct SiftColFill;
 /* rows: the most rows the fill will be asked about (what the writer is to write: a promotion's buffer, a merge's input, a build's table); it prices the parent scan against the probes */

@@ -43,7 +43,7 @@ SELECT regexp_replace(c, '^connect=', '') AS option FROM pg_class, unnest(relopt
 SELECT DISTINCT format FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
  format 
 --------
-     45
+     44
 (1 row)
 
 -- the option wins: off, a named connection, and the setting

@@ -17,7 +17,7 @@ FROM generate_series(1, 12000) n;
 CREATE INDEX ko_i ON ko USING sift_col (id sift.col_int4_ops, i sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops)
 	WITH (order_columns = 'id, i, b, d, t', order_array_columns = 'id, i, b, d, t', order_layout = 'whole', track_changes = 'off');
 NOTICE:  sift_col index "ko_i": 2 automatic choices, 1 advice
-NOTICE:  sift_col index "ko_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ko_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ko;
 SET sift.test_topn_heads = off;
 -- the rows are the plan's without the extension, in order; the answer says 'index' when the scan fetched no heap row, 'fetched' when it fetched more than the rows it gave out, 'units' when

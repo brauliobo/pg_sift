@@ -23,7 +23,7 @@ CREATE FUNCTION gm_shapes() RETURNS TABLE (top text, in_list text, measure text)
 -- by default: no second order, and WHERE measure = x ORDER BY ts LIMIT n reads the units
 CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_array_group') AS second_order;
  order_arrays | second_order 
 --------------+--------------
@@ -46,7 +46,7 @@ SELECT * FROM gm_shapes();
 ALTER INDEX gm_i SET (order_array_group = 'auto: amount');
 REINDEX INDEX gm_i;
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_array_group') AS second_order;
  order_arrays |   second_order   
 --------------+------------------
@@ -62,7 +62,7 @@ SELECT * FROM gm_shapes();
 -- what the build wrote is the hint of the next REINDEX (an index of an older release keeps its second order)
 REINDEX INDEX gm_i;
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_group') AS second_order_after_reindex;
  second_order_after_reindex 
 ----------------------------
@@ -72,7 +72,7 @@ SELECT opt('gm_i', 'order_array_group') AS second_order_after_reindex;
 ALTER INDEX gm_i RESET (order_array_group);
 REINDEX INDEX gm_i;
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_group') AS second_order_reset;
  second_order_reset 
 --------------------
@@ -104,7 +104,7 @@ INSERT INTO ge SELECT id, g, ts, amount, pad FROM gm;
 VACUUM (FREEZE, ANALYZE) ge;
 CREATE INDEX ge_auto ON ge USING sift_col (id, g, ts, set_id, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "ge_auto": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "ge_auto" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ge_auto" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('ge_auto', 'order_array_columns') AS order_arrays, opt('ge_auto', 'order_array_group') AS second_order;
  order_arrays |   second_order   
 --------------+------------------
@@ -133,7 +133,7 @@ INSERT INTO gf SELECT id, g, ts, amount, pad FROM gm;
 VACUUM (FREEZE, ANALYZE) gf;
 CREATE INDEX gf_auto ON gf USING sift_col (id, g, ts, owner, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "gf_auto": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gf_auto" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gf_auto" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gf_auto', 'order_array_columns') AS order_arrays, opt('gf_auto', 'order_array_group') AS second_order;
  order_arrays |  second_order   
 --------------+-----------------
@@ -166,28 +166,28 @@ SELECT stmt, second_order_with(stmt) AS second_order FROM unnest(ARRAY[
 	'CREATE UNIQUE INDEX gm_bt ON gm (amount, ts, id)'
 ]) AS stmt;
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  index "gm_bt" does not exist, skipping
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
                         stmt                        |   second_order   
 ----------------------------------------------------+------------------
                                                     | -
@@ -207,7 +207,7 @@ NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before
 CREATE INDEX gm_bt ON gm (amount, ts);
 CREATE INDEX gm_i ON gm USING sift_col (id, g, ts, amount, pad) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_group') AS second_order;
    second_order   
 ------------------
@@ -231,7 +231,7 @@ SELECT * FROM gm_shapes();
 DROP INDEX gm_bt;
 REINDEX INDEX gm_i;
 NOTICE:  sift_col index "gm_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "gm_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "gm_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('gm_i', 'order_array_group') AS second_order_after_the_btree_is_gone;
  second_order_after_the_btree_is_gone 
 --------------------------------------

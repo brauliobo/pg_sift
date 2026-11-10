@@ -14,7 +14,7 @@ INSERT INTO tb SELECT i, (ARRAY['Zeta', 'alpha', 'Alpha', 'beta', 'été', 'ete'
 FROM generate_series(1, 9000) i;
 CREATE INDEX tb_i ON tb USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
 NOTICE:  sift_col index "tb_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "tb_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "tb_i" is column format minor 44, which a library before 4.3 cannot read
 INSERT INTO tb SELECT 20000 + i, 'alpha' || (i % 97), 'beta' || (i % 89) FROM generate_series(1, 300) i;
 ANALYZE tb;
 CREATE FUNCTION tb_count(cond text, bitmap bool) RETURNS bigint LANGUAGE plpgsql AS $$
@@ -67,10 +67,10 @@ ALTER TABLE tk ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO tk SELECT * FROM ts;
 CREATE INDEX ts_i ON ts USING sift_col (id sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_columns = 'd', order_array_columns = 'd, c', key_cut = 'off');
 NOTICE:  sift_col index "ts_i": 1 automatic choice, 2 advice
-NOTICE:  sift_col index "ts_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ts_i" is column format minor 44, which a library before 4.3 cannot read
 CREATE INDEX tk_i ON tk USING sift_col (k sift.col_int4_ops, d sift.col_int4_ops, c sift.col_text_ops, flag sift.col_int4_ops) WITH (order_columns = 'd', order_array_columns = 'd, c', key_cut = 'k');
 NOTICE:  sift_col index "tk_i": 1 automatic choice, 2 advice
-NOTICE:  sift_col index "tk_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "tk_i" is column format minor 44, which a library before 4.3 cannot read
 ANALYZE ts;
 ANALYZE tk;
 SELECT sift.col_verify('ts_i'), sift.col_verify('tk_i');

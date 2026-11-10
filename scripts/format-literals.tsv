@@ -1,13 +1,11 @@
 # FILE, the literal, why: places that name a column format by number. Checked by scripts/check-format-literals.sh against src/col/api/format.h (pin below).
-# pin	a3ce995d2d191444ee6aaf7de2c3911d2266358a4b29a0fffe13a16e573de05c
+# pin	b6df571e3db07330ec0a76246a313db7f853139b031ca6900d9a18e346e87532
 test/sql/col_gorder_ends.sql	40	the ends block is column format 40 by definition (has_ends)
 test/sql/col_key_cut.sql	17	the first minor of key_cut, under the setting that writes no later one
 test/t/col_key_cut_merge.sh	34	the table-first unit of a key-cut merge; a later minor must be read here from the constant
 test/t/col_order_layout_compat.sh	38	what the real 3.7.1 library wrote (a fixed fact of that release)
 test/t/col_order_layout_compat.sh	41	the compact order array (column format 41), by definition
 test/t/col_order_layout_compat.sh	42	the text order array named by dictionary code (column format 42), by definition
-test/t/col_order_layout_crash.sh	41	the compact order array, by definition
-test/t/col_order_layout_replica.sh	41	the compact order array, by definition
 test/t/upgrade_check.sh	22	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	25	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	34	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
@@ -15,4 +13,4 @@ test/t/upgrade_check.sh	35	the minor of the option the check is about, in the te
 test/t/upgrade_check.sh	38	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	41	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	42	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	47	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/upgrade_check.sh	44	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)

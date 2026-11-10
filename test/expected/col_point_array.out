@@ -15,11 +15,11 @@ VACUUM (FREEZE, ANALYZE) pk;
 CREATE FUNCTION opt(regclass, text) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE $2 || '=%'), '-') $$;
 CREATE INDEX pk_auto ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "pk_auto": 2 automatic choices, 1 advice
-NOTICE:  sift_col index "pk_auto" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pk_auto" is column format minor 44, which a library before 4.3 cannot read
 -- the same index with the directory of the ordered key and no array of it: what the build chose before
 CREATE INDEX pk_dir ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', point_tid_columns = 'id', order_columns = 'ts', order_array_columns = 'ts');
 NOTICE:  sift_col index "pk_dir": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "pk_dir" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pk_dir" is column format minor 44, which a library before 4.3 cannot read
 SELECT i AS idx, opt(i::regclass, 'order_array_columns') AS order_arrays, opt(i::regclass, 'point_tid_columns') AS directory
 FROM unnest(ARRAY['pk_auto', 'pk_dir']) i ORDER BY 1;
    idx   | order_arrays | directory 
@@ -103,7 +103,7 @@ SET enable_seqscan = on; SET enable_bitmapscan = on;
 -- a rebuild decides again from the data it finds
 REINDEX INDEX pk_auto;
 NOTICE:  sift_col index "pk_auto": 2 automatic choices, 1 advice
-NOTICE:  sift_col index "pk_auto" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pk_auto" is column format minor 44, which a library before 4.3 cannot read
 SELECT opt('pk_auto', 'order_array_columns') AS order_arrays, opt('pk_auto', 'point_tid_columns') AS directory;
  order_arrays | directory 
 --------------+-----------
@@ -114,12 +114,12 @@ DROP INDEX pk_auto;
 -- a key scattered over the heap keeps the directory (and its own array, as before); no array of the build's, or a table under 100,000 rows: the ordered key keeps the directory; a listed array replaces it
 CREATE INDEX pk_uid ON pk USING sift_col (uid, ts) WITH (key_cut = 'off', key_order = 'off');
 NOTICE:  sift_col index "pk_uid": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "pk_uid" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pk_uid" is column format minor 44, which a library before 4.3 cannot read
 CREATE INDEX pk_off ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_array_columns = 'off');
 NOTICE:  sift_col index "pk_off": 1 automatic choice (point_tid_columns), 1 advice (track_changes)
 CREATE INDEX pk_list ON pk USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off', order_columns = 'id', order_array_columns = 'id');
 NOTICE:  sift_col index "pk_list": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "pk_list" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "pk_list" is column format minor 44, which a library before 4.3 cannot read
 CREATE TABLE pks AS SELECT id, uid, ts, pad FROM pk WHERE id <= 90000;
 VACUUM (FREEZE, ANALYZE) pks;
 CREATE INDEX pks_i ON pks USING sift_col (id, ts) WITH (key_cut = 'off', key_order = 'off');

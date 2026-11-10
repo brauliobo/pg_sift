@@ -81,7 +81,7 @@ looked up again; `REINDEX` keeps it, and `sift.col_connections` has `automatic` 
 `SET sift.col_auto_connect = off` (then `connect = 'auto'` on one index still connects it) turn it off. An explicit `connect` always wins.
 
 The price the user is told about is in the next section: the journal of the parent index (one 32-byte record for each entry an UPDATE, DELETE or key change of the parent ends), the writers of the parent
-table held out while the first child is made, and column format minor 45 for the child.
+table held out while the first child is made, and column format minor 44 for the child.
 
 ## What a connection costs, and why the automatic one stays unconditional
 
@@ -181,7 +181,7 @@ here, and the price in `conn_fill.c` (time on a warm cache) does not know it. A 
 
 ## The found leaf
 
-Format minor 45. A connected index holds, after its own leaves and like the leaves of a jsonb path, one derived leaf for each connection: a boolean `<fk>#found` (the parent row was found when the
+Format minor 44. A connected index holds, after its own leaves and like the leaves of a jsonb path, one derived leaf for each connection: a boolean `<fk>#found` (the parent row was found when the
 segment was made). It is not a column of the table: the write buffer and a row of a segment made before the connection was resolved have no value, which reads as not found, and a not found row is read
 by the join. A release before 4.3 refuses a segment of this format; `sift.col_leaves` lists the leaves.
 

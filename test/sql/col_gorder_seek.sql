@@ -1,4 +1,4 @@
--- A chunk of an order array may be seekable (column format minor 47): sub-blocks of 32 entries with a fence key each, so that a seek and a scan decode the window they need.
+-- A chunk of an order array may be seekable (column format minor 44): sub-blocks of 32 entries with a fence key each, so that a seek and a scan decode the window they need.
 -- The limit gord_seek_pct (115) says how many percent of the plain bytes a seekable chunk may take; 0 writes plain chunks (minor 38), sift.test_col_gorder_seek makes every chunk seekable.
 -- The entries, the answers and the verify are the same in both, one table holds segments of both, and a merge writes the current ones.
 CREATE EXTENSION pg_sift_test CASCADE;

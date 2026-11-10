@@ -1,5 +1,5 @@
 -- A chunk of the order array of a group (order_array_group 'auto: ent_id', beside the complete plain order of the column) may hold the positions of its entries in the plain order, not their keys
--- and addresses (SIFT_CGORD_POS, column format minor 47): a position costs the gap to the one before it in the group, a key and an address the bits of the whole order. The limit gord_pos_pct (75) says how
+-- and addresses (SIFT_CGORD_POS, column format minor 44): a position costs the gap to the one before it in the group, a key and an address the bits of the whole order. The limit gord_pos_pct (75) says how
 -- many percent of the bytes of the other form a positional chunk may take; 0 writes none. The answers are the heap's in both, whatever the group, the direction, the NULL keys, the ties, the dead rows,
 -- the write buffers, a merge and a REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;

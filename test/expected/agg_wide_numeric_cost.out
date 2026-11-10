@@ -20,7 +20,7 @@ CREATE INDEX items_col ON items USING sift_col (id, kind, typed, many, few, wman
 NOTICE:  sift_col index "items_col": 2 automatic choices (order_array_columns, track_changes)
 DETAIL:  order_array_columns = typed; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
-NOTICE:  sift_col index "items_col" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "items_col" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -20,7 +20,7 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tr_str(i) END, CASE WHEN i % 37 = 
 INSERT INTO tr (id, c, l) VALUES (9001, '', ''), (9002, NULL, NULL);
 CREATE INDEX tr_i ON tr USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
 NOTICE:  sift_col index "tr_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "tr_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "tr_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT sift.col_verify('tr_i');
  col_verify 
 ------------
@@ -134,7 +134,7 @@ SELECT * FROM tr_all(6);
 
 REINDEX INDEX tr_i;
 NOTICE:  sift_col index "tr_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "tr_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "tr_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT sift.col_verify('tr_i');
  col_verify 
 ------------

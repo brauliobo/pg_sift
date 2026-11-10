@@ -16,7 +16,7 @@ INSERT INTO ok (id, c, n, s) SELECT i, (i * 7919) % 37, (i * 104729) % 100003, '
 CREATE INDEX ok_i ON ok USING sift_col (id sift.col_int4_ops, c sift.col_int4_ops, n sift.col_int4_ops, s sift.col_text_ops)
 	WITH (key_cut = 'c', order_columns = 'id, n', order_array_columns = 'id, n, s', track_changes = 'off');
 NOTICE:  sift_col index "ok_i": 1 automatic choice (order_array_columns), 1 advice (order_columns)
-NOTICE:  sift_col index "ok_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ok_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ok;
 SET sift.test_topn_heads = off;
 -- the rows are the plan's without the extension, in order; the answer says 'skipped' when the scan fetched no more than the LIMIT and an eighth of the OFFSET more, 'fetched'

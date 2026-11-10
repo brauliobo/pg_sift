@@ -176,10 +176,10 @@ CREATE INDEX dr_off ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts
 NOTICE:  sift_col index "dr_off": 2 advice (track_changes, order_columns)
 CREATE INDEX dr_arrays ON dr USING sift_col (id, ts, pad) WITH (order_columns = 'ts', order_array_columns = 'ts', key_cut = 'off');
 NOTICE:  sift_col index "dr_arrays": 1 automatic choice, 2 advice
-NOTICE:  sift_col index "dr_arrays" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "dr_arrays" is column format minor 44, which a library before 4.3 cannot read
 CREATE INDEX dr_list ON dr USING sift_col (id, ts, pad) WITH (order_array_columns = 'ts', key_cut = 'off');
 NOTICE:  sift_col index "dr_list": 1 automatic choice (order_array_columns), 1 advice (track_changes)
-NOTICE:  sift_col index "dr_list" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "dr_list" is column format minor 44, which a library before 4.3 cannot read
 SELECT i AS idx, dr_runs(i::regclass) AS runs, (SELECT count(*) FROM sift.col_sections(i::regclass) WHERE section LIKE 'order%' OR section LIKE 'gorder%') > 0 AS has_array
 FROM unnest(ARRAY['dr_off', 'dr_arrays', 'dr_list']) i ORDER BY 1;
     idx    | runs | has_array 

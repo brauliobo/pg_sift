@@ -129,7 +129,7 @@ q clean "DROP INDEX facts_gord" >/dev/null
 # a compact global order (order_layout = 'compact') is column format 41, which 3.7 cannot read: the setting 14 and a REINDEX write what it reads; the whole order of the same index
 # is what 3.7 wrote. The compact order needs a segment of many rows (a testing build lowers the threshold)
 if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_gorder_ends'") == 1 ]]; then
-	# plain chunks: the column format minors below tell the layouts apart (a default build writes seekable chunks, minor 47, checked after them)
+	# plain chunks: the column format minors below tell the layouts apart (a default build writes seekable chunks, minor 44, checked after them)
 	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "CREATE TABLE gord_rows AS SELECT i AS id, TIMESTAMP '2026-01-01' + (hashint8extended(i, 7) & 35184372088831) * INTERVAL '1 microsecond' AS ts FROM generate_series(1, 20000) i" \
 		"CREATE INDEX gord_whole ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'whole')" \
 		"CREATE INDEX gord_compact ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts', order_layout = 'compact')" \
@@ -147,14 +147,14 @@ if [[ $(q clean "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_go
 	q clean "SET sift.test_limits = 'gord_seek_pct=0'" "SET sift.test_col_gorder_ends = 64" "ALTER INDEX gord_whole SET (order_layout = 'compact')" "REINDEX INDEX gord_whole" >/dev/null
 	check "order_layout = compact and a REINDEX write column format 41" grep -q -E '^ok +gord_whole +index +format 1\.[0-9]+, column format 41' <<<"$(uc clean)"
 	q clean "SET sift.test_col_gorder_ends = 64" "CREATE INDEX gord_seek ON gord_rows USING sift_col (id, ts) WITH (order_columns = 'ts', order_array_columns = 'ts')" >/dev/null
-	check "an index with seekable order chunks is column format 47" grep -q -E '^ok +gord_seek +index +format 1\.[0-9]+, column format 47' <<<"$(uc clean)"
+	check "an index with seekable order chunks is column format 44" grep -q -E '^ok +gord_seek +index +format 1\.[0-9]+, column format 44' <<<"$(uc clean)"
 	check "to 3.7: seekable order chunks are a blocker that says to write the setting 14" grep -q -E "^blocker +gord_seek .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_seek" <<<"$(uc --to 3.7 clean)"
 	q clean "DROP TABLE gord_rows, gord_ties" >/dev/null
 else skip 10 "a release build has no test settings: the threshold of the compact order cannot be lowered"; fi
-# the order array of a text column names its strings by their dictionary codes (column format 42, or 47 once its chunks are seekable); 3.7 reads the copy of the strings, so the setting 14 and a REINDEX write what it reads
+# the order array of a text column names its strings by their dictionary codes (column format 42, or 44 once its chunks are seekable); 3.7 reads the copy of the strings, so the setting 14 and a REINDEX write what it reads
 q clean "CREATE TABLE gord_text AS SELECT i AS id, md5(i::text) AS name FROM generate_series(1, 3000) i" \
 	"CREATE INDEX gord_text_i ON gord_text USING sift_col (id, name) WITH (order_array_columns = 'name')" >/dev/null
-check "an index with the order array of a text column is column format 42 or 47 (seekable chunks)" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format (42|47)' <<<"$(uc clean)"
+check "an index with the order array of a text column is column format 42 or 44 (seekable chunks)" grep -q -E '^ok +gord_text_i +index +format 1\.[0-9]+, column format (42|44)' <<<"$(uc clean)"
 check "to 3.7: it is a blocker that says to write the setting 14" grep -q -E "^blocker +gord_text_i .*SET sift.col_format_minor = 14, then REINDEX INDEX gord_text_i" <<<"$(uc --to 3.7 clean)"
 q clean "SET sift.col_format_minor = 14" "REINDEX INDEX gord_text_i" >/dev/null
 check "to 3.7: the advice makes the index readable" test -z "$(row "$(uc --to 3.7 clean)" blocker gord_text_i)"

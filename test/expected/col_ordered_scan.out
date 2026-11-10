@@ -13,7 +13,7 @@ CREATE INDEX os_i ON os USING sift_col (k, id) WITH (count_columns = 'off', writ
 NOTICE:  sift_col index "os_i": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = k; order_layout = k exact
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('os_i');
-NOTICE:  sift_col index "os_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "os_i" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 CREATE TABLE ot (id int, k int8, pad text DEFAULT repeat('x', 200));
 ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
@@ -35,7 +35,7 @@ NOTICE:  sift_col index "oc_i": 2 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = k;
 order_layout = k compact in 49% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oc_i');
-NOTICE:  sift_col index "oc_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "oc_i" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 VACUUM (ANALYZE) oc;
 VACUUM (ANALYZE) oa;

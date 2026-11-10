@@ -160,7 +160,7 @@ struct SiftColSegWriter
 	bool		wantends;		/* ... some leaf will, so the segment is of the rooted layout whether or not it has a point directory */
 	bool		anyends;		/* ... and some of them keeps the ends of the order only (minor 40) */
 	bool		anycompact;		/* ... and some of them is a compact block (minor 41) */
-	bool		anyseek;		/* ... and some chunk is a seekable one (minor 47) */
+	bool		anyseek;		/* ... and some chunk is a seekable one (minor 44) */
 	bool		anypacked;		/* ... and one of them is a packed table (column format minor 36) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */

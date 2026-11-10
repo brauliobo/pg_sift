@@ -1,4 +1,4 @@
--- The directory entry of a write buffer that holds reference records (sift.col_wbuf_ref) is column format minor 46, so that a release that does not know the records refuses the index; a buffer
+-- The directory entry of a write buffer that holds reference records (sift.col_wbuf_ref) is column format minor 44, so that a release that does not know the records refuses the index; a buffer
 -- of records that hold their values stays as it was (minor 6), and the entry is marked before the first reference is written, whether the row goes in at once or from the backend's batch of a transaction.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -21,7 +21,7 @@ INSERT INTO f SELECT i, i % 5, i FROM generate_series(101, 200) i;
 SELECT sift._test_wbuf_format('f_ix') AS with_references;
  with_references 
 -----------------
-              46
+              44
 (1 row)
 
 SELECT sift.col_promote('f_ix') >= 0 AS promoted;
@@ -59,7 +59,7 @@ COMMIT;
 SELECT sift._test_wbuf_format('f_ix') AS from_a_batch;
  from_a_batch 
 --------------
-           46
+           44
 (1 row)
 
 SELECT sift.col_verify('f_ix', true);

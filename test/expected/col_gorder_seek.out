@@ -1,4 +1,4 @@
--- A chunk of an order array may be seekable (column format minor 47): sub-blocks of 32 entries with a fence key each, so that a seek and a scan decode the window they need.
+-- A chunk of an order array may be seekable (column format minor 44): sub-blocks of 32 entries with a fence key each, so that a seek and a scan decode the window they need.
 -- The limit gord_seek_pct (115) says how many percent of the plain bytes a seekable chunk may take; 0 writes plain chunks (minor 38), sift.test_col_gorder_seek makes every chunk seekable.
 -- The entries, the answers and the verify are the same in both, one table holds segments of both, and a merge writes the current ones.
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -87,7 +87,7 @@ SELECT sift.col_verify('gs_old', true), sift.col_verify('gs_new', true);
 SELECT 'gs_old' AS idx, format FROM sift.col_segments('gs_old') WHERE kind = 'immutable' UNION ALL SELECT 'gs_new', format FROM sift.col_segments('gs_new') WHERE kind = 'immutable' ORDER BY 1;
   idx   | format 
 --------+--------
- gs_new |     47
+ gs_new |     44
  gs_old |     38
 (2 rows)
 
@@ -186,7 +186,7 @@ SELECT format, count(*) AS segments FROM sift.col_segments('gs_new') WHERE kind 
  format | segments 
 --------+----------
      38 |        1
-     47 |        2
+     44 |        2
 (2 rows)
 
 SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gs_check();
@@ -210,7 +210,7 @@ SELECT sift.col_verify('gs_new', true);
 SELECT format, count(*) AS segments FROM sift.col_segments('gs_new') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------
-     47 |        1
+     44 |        1
 (1 row)
 
 SELECT bool_and(same) AS all_same, count(*) AS shapes FROM gs_check();

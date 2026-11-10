@@ -19,7 +19,7 @@ FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
 	WITH (order_columns = 'id, a, b, c, t', order_array_columns = 'id, a, b, c, t, s');
 NOTICE:  sift_col index "ot_i": 1 automatic choice, 2 advice
-NOTICE:  sift_col index "ot_i" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ot_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
 SET sift.test_topn_heads = off;
 -- the answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key; the second field is the heap fetches
@@ -179,7 +179,7 @@ RESET sift.test_limits;
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
 NOTICE:  sift_col index "ot_k": 1 automatic choice, 2 advice
-NOTICE:  sift_col index "ot_k" is column format minor 47, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ot_k" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
  result  | count 

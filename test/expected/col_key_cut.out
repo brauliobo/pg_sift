@@ -194,7 +194,7 @@ SELECT sift.col_verify('kc_idx', true);
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  format 
 --------
-     47
+     44
 (1 row)
 
 -- the setting that rolls a 3.3 index back to a release that cannot read minor 17 writes superblock units again
@@ -222,7 +222,7 @@ REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  format 
 --------
-     47
+     44
 (1 row)
 
 -- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan

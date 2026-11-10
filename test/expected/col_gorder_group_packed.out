@@ -1,5 +1,5 @@
 -- The table of groups of a grouped order array (order_array_group 'auto: ent_id') of 1,024 groups or more, with no NULL key, is packed to the bits of the distance of a group from the first and of the
--- start of its entries (word 7 of the block, column format minor 47): a block with NULL keys keeps the 24 bytes of each group. The answers are the heap's in both, for a group the table has, between
+-- start of its entries (word 7 of the block, column format minor 44): a block with NULL keys keeps the 24 bytes of each group. The answers are the heap's in both, for a group the table has, between
 -- two of them, before the first and after the last, and after writes, a merge and a REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"

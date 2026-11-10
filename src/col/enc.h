@@ -18,7 +18,7 @@ typedef struct SiftColSchema
 	bool		contain;		/* some leaf is the head of a range or network with the lanes of its containment operators: column format minor 26 (SIFT_COL_FORMAT_CONTAIN) */
 	bool		wide;			/* some leaf is a lane, money or interval (sift_col_def_needs_wide): a segment of this schema is column format minor 5 */
 	bool		kinds;			/* some leaf is filled from a jsonb path (sift_col_def_has_kinds): a segment of this schema whose kinds are complete is column format minor 6 */
-	bool		connected;		/* some leaf is the found flag of a connection (SIFT_COLD_FOUND): a segment of this schema is column format minor 45 (SIFT_COL_FORMAT_CONN) */
+	bool		connected;		/* some leaf is the found flag of a connection (SIFT_COLD_FOUND): a segment of this schema is column format minor 44 (SIFT_COL_FORMAT_CONN) */
 	SiftColDef *cols;			/* [ncols], paths copied */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
