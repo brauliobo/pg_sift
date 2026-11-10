@@ -587,3 +587,10 @@ CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8
 -- Executor end (src/agg/cte/hook.c): whether the check of the executor state's slot table accepts a slot made in the query context (false) or in a context of a node (true)
 CREATE FUNCTION sift._test_slot_owner(in_node_cxt bool) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_slot_owner' LANGUAGE C STRICT;
+
+-- Scope index (src/col/test/scope_test.c): the marker of a scope read. A scan of the index takes it as its scope conjunct (agg/plan_scope.c); a statement the scan does not
+-- take evaluates it as written: true when the scope relation of the scope key_name of the index has the pair (fk, key) in the snapshot of the statement.
+CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, key int8) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_in_scope' LANGUAGE C STABLE PARALLEL SAFE;
+CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, keys int8[]) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_in_scope_set' LANGUAGE C STABLE PARALLEL SAFE;
