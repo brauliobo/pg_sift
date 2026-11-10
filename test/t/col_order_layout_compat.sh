@@ -43,6 +43,11 @@ node_stop legacy
 use_root legacy "$newroot"
 node_start legacy || bail "cannot start the new library"
 sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
+# plain order chunks: the format numbers below tell the layouts apart (a default build writes seekable chunks, column format 47)
+if [[ $(sql legacy "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_limits'") == 1 ]]; then
+	sql legacy "ALTER SYSTEM SET sift.test_limits = 'gord_seek_pct=0'" "SELECT pg_reload_conf()" >/dev/null
+	sleep 1
+fi
 verify() { test -z "$(sql legacy "SELECT sift.col_verify('o_col', true)" 2>&1)"; }
 check "the new library verifies the index of 3.7.1 and its ordered reads are the heap's" test "$(verify && echo ok)|$(sql legacy "$ORD")|$(sql legacy "$ORDD")" == "ok|$want|$wantd"
 sql legacy "INSERT INTO orders SELECT i, TIMESTAMP '2026-01-01' + random() * 300 * INTERVAL '1 day', i FROM generate_series(34001, 36000) i" "SELECT sift.col_promote('o_col')" >/dev/null

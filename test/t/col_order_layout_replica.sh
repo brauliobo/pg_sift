@@ -12,7 +12,8 @@ node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off
-sift.test_col_gorder_ends = 64"
+sift.test_col_gorder_ends = 64
+sift.test_limits = 'gord_seek_pct=0'"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"SELECT setseed(0.42)" \
