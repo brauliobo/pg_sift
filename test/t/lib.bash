@@ -273,6 +273,21 @@ crash_cycle() {
 	return 1
 }
 
+# node_stop_fast DATA: the fast shutdown the leak gate asks for. One that does not end in 120 s is a finding of its own, with what each
+# process of the cluster waits for (the immediate stop that follows leaves temporary files that are not the finding)
+node_stop_fast() {
+	local pid
+	pg_ctl -D "$1" -m fast -w -t 120 stop >/dev/null 2>&1 && return 0
+	pid=$(head -1 "$1/postmaster.pid" 2>/dev/null)
+	leak_finding "fast shutdown did not end in 120 s; the processes left:"
+	ps -o pid,ppid,stat,wchan:30,args --ppid "${pid:-0}" 2>&1 | sed 's/^/# /' >&2
+	for pid in $(pgrep -P "${pid:-0}"); do
+		command -v gdb >/dev/null && { echo "# backtrace of $pid:"; gdb -p "$pid" -batch -ex bt 2>&1 | tail -n 30; } >&2
+	done
+	pg_ctl -D "$1" -m immediate stop >/dev/null 2>&1
+	return 1
+}
+
 # node_leakcheck NAME: the cluster invariants while it runs, a clean shutdown (LeakSanitizer reports as the processes exit)
 # and the scan of its log
 node_leakcheck() {
@@ -280,7 +295,7 @@ node_leakcheck() {
 	d=$(dir "$1")
 	if [[ -f $d/data/postmaster.pid ]]; then
 		PGHOST=$d/sock PGPORT=$(port "$1") PGUSER=postgres leak_cluster "$d/data" || rc=1
-		pg_ctl -D "$d/data" -m fast -w -t 120 stop >/dev/null 2>&1 || pg_ctl -D "$d/data" -m immediate stop >/dev/null 2>&1
+		node_stop_fast "$d/data" || rc=1
 		leak_after_stop "$d/data" || rc=1
 	fi
 	leak_scan "$d" || rc=1
