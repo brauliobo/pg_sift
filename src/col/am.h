@@ -65,6 +65,8 @@ typedef struct SiftColRel
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;
+	bool		journal_known;	/* journal_lineage (col/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
+	uint64		journal_lineage;
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 

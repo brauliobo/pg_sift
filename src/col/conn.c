@@ -21,7 +21,6 @@
 #include "access/xlog.h"
 #include "catalog/pg_type_d.h"
 #include "storage/lmgr.h"
-#include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -36,65 +35,28 @@
 #define CONN_AGE_MAX	(1U << 30)
 
 /*
- * What this backend knows of the journals it writes: the lineage of an index (0: none), by the oid and the file, dropped by a relcache invalidation of the index (the
- * transaction that connects a child invalidates it, and a writer takes its lock on the table after that transaction ended: the table lock it holds out until then).
+ * What this backend knows of the journals it writes: the lineage of an index (0: none), kept in the state the relcache entry of the index holds for the access method, which the relcache
+ * frees when it invalidates the entry (the transaction that connects a child invalidates it, and a writer takes its lock on the table after that transaction ended: the table lock it holds
+ * out until then). It follows the entry by itself: a relcache callback would take one of the ten slots a backend has for all its libraries (scripts/check-relcache-slots.sh), and a
+ * syscache one would not hear that invalidation, which changes no row of pg_class.
  */
-typedef struct JournalEnt
-{
-	Oid			relid;			/* hash key */
-	RelFileNumber relnumber;
-	uint64		lineage;
-} JournalEnt;
-
-static HTAB *journals;
-
-static void
-journal_inval(Datum arg, Oid relid)
-{
-	HASH_SEQ_STATUS seq;
-	JournalEnt *e;
-
-	if (journals == NULL)
-		return;
-	if (relid != InvalidOid)
-	{
-		(void) hash_search(journals, &relid, HASH_REMOVE, NULL);
-		return;
-	}
-	hash_seq_init(&seq, journals);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		(void) hash_search(journals, &e->relid, HASH_REMOVE, NULL);
-}
-
 /* The lineage of the journal of the index, read from the header page once for each use of the index until it is invalidated */
 static uint64
 journal_lineage(Relation index)
 {
-	Oid			relid = RelationGetRelid(index);
-	JournalEnt *e;
-	bool		found;
 	SiftTombKeys k;
 	uint64		n;
 	SiftDirSnapshot *dir;
 
-	if (journals == NULL)
-	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(JournalEnt),.hcxt = CacheMemoryContext};
-
-		journals = hash_create("sift key journals", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		CacheRegisterRelcacheCallback(journal_inval, (Datum) 0);
-	}
-	e = hash_search(journals, &relid, HASH_FIND, NULL);
-	if (e != NULL && e->relnumber == index->rd_locator.relNumber)
-		return e->lineage;
+	if (sift_col_rel(index)->journal_known)
+		return sift_col_rel(index)->journal_lineage;
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
 	if (!sift_tomb_peek_keys(index, dir, &k, &n))
 		memset(&k, 0, sizeof(k));
 	pfree(dir);
-	e = hash_search(journals, &relid, HASH_ENTER, &found);
-	e->relnumber = index->rd_locator.relNumber;
-	e->lineage = k.lineage;
+	sift_col_rel(index)->journal_known = true;
+	sift_col_rel(index)->journal_lineage = k.lineage;
 	return k.lineage;
 }
 
