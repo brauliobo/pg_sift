@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "col/build/build_int.h"
+#include "col/scope.h"
 
 #define SCOPE_ROWS_FACTOR	2		/* the rows a scope family is expected to hold for each row of the table, to fit its segments to the directory (a bound: the average is the keys of a member) */
 
@@ -73,10 +74,69 @@ colb_scope_feed(ColBuild *b, const SiftColBatch *src)
 	}
 }
 
+/* 2291000 as 2,291,000 */
+static char *
+count_text(uint64 n)
+{
+	char	   *plain = psprintf(UINT64_FORMAT, n),
+			   *out = palloc(strlen(plain) * 4 / 3 + 2),
+			   *o = out;
+	int			len = strlen(plain);
+
+	for (int i = 0; i < len; i++)
+	{
+		if (i > 0 && (len - i) % 3 == 0)
+			*o++ = ',';
+		*o++ = plain[i];
+	}
+	*o = '\0';
+	return out;
+}
+
+static uint64
+segs_sum(const SiftSegEntry *segs, int n, bool bytes)
+{
+	uint64		sum = 0;
+
+	for (int i = 0; i < n; i++)
+		sum += bytes ? segs[i].bytes : segs[i].ndocs;
+	return sum;
+}
+
+/*
+ * What a scope costs, said once per scope when the build is done: its entries for the rows of the table (the multiplicity of its scope key: how many keys the member of a row has, on
+ * average) and the growth of the index. A multiplicity above sift.scope_max_multiplicity is refused. The sizes are said from 1 MB of entities: below, they are a few kB that the
+ * compressors change from one library version to the next.
+ */
+static void
+scope_report(const ColBuild *b, int s)
+{
+	const ColBuild *sb = b->scope[s];
+	uint64		rows = segs_sum(b->segs, b->nsegs, false),
+				entries = segs_sum(sb->segs, sb->nsegs, false),
+				before = segs_sum(b->segs, b->nsegs, true),
+				added = segs_sum(sb->segs, sb->nsegs, true);
+	double		per_row = rows > 0 ? (double) entries / rows : 0;
+	const char *name = b->r->schema->cols[b->r->scope_leaf[s]].path;
+	char	   *what = pnstrdup(name, strlen(name) - strlen("#scope"));
+
+	if (per_row > sift_scope_max_multiplicity)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("scope \"%s\": %s entries for %s rows (%.2f per row) is over sift.scope_max_multiplicity (%g)", what,
+						count_text(entries), count_text(rows), per_row, sift_scope_max_multiplicity),
+						errhint("A member that is in so many scope keys is better read through the join: drop the scope, or raise sift.scope_max_multiplicity.")));
+	if (before >= 1000000)
+		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row); the index grows from %.1f MB to %.1f MB (+%.0f%%)", what, count_text(entries), count_text(rows),
+								per_row, before / 1e6, (before + added) / 1e6, 100.0 * added / before)));
+	else
+		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row)", what, count_text(entries), count_text(rows), per_row)));
+}
+
 /* The segments of the scopes follow those of the entities in b->segs, flagged */
 void
 colb_scope_gather(ColBuild *b)
 {
+	for (int s = 0; s < b->nscope; s++)
+		scope_report(b, s);
 	for (int s = 0; s < b->nscope; s++)
 	{
 		const ColBuild *sb = b->scope[s];

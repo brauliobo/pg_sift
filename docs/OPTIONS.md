@@ -36,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 42 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
 
@@ -2336,6 +2336,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to fall back to the join earlier.
 - **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
 
+#### sift.scope_max_multiplicity
+
+`sift_col` · diagnostic · since 4.4 · default 8
+
+- **What it does:** the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept
+- **Gain:** n/a: a refusal limit, not a speed choice
+- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; the figure is measured from the entries the build wrote and said in a NOTICE with the growth of the index
+- **When:** CREATE INDEX and REINDEX of an index that declares a scope.
+- **Default:** 8 — 8: a row is replicated at most 8 times on average, so the scope segments are at most 8 times the entity segments; measured multiplicities are 1.0 to 1.1 for tenants and groups.
+- **Turn off:** SET sift.scope_max_multiplicity = 1000000 accepts any figure. No REINDEX.
+- **Upgrade from 4.3:** New in 4.4.
+- **Advice:** Leave at 8. Raise it for a scope whose members are in many scope keys and that you want replicated all the same; the NOTICE after the build says the figure and the growth of the index.
+- **Sources:** benchmark `test:col_scope_journal`; [FORMATS](FORMATS.md)
+
 ### safety
 
 #### sift.max_expansions
@@ -2719,7 +2733,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift_col(scope)`.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`.
 
 | Option | 4.3 | 4.4 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2738,6 +2752,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the leaf. |
 | `sift.agg_scope` | new | on |  | New in 4.4. |
 | `sift.scope_patch_keys` | new | 4096 |  | New in 4.4. |
+| `sift.scope_max_multiplicity` | new | 8 |  | New in 4.4. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
