@@ -18,6 +18,7 @@ max_parallel_workers_per_gather = 0"
 node_start primary || bail "primary start failed"
 D=$(dir primary)
 
+# sift.agg_force: at the 2000 rows of the quick tier the planner reads the heap, which never reads the buffer (and its entries)
 ANSWERS="SELECT md5(concat_ws('|',
     (SELECT count(*) || ',' || sum(v) FROM a),
     (SELECT count(*) || ',' || sum(v) FROM a WHERE g = 3),
@@ -28,7 +29,7 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE INDEX a_ix ON a USING sift_col (id, g, v)" \
 	"CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS \$\$ $ANSWERS \$\$" \
 	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
-		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); s := answers(); RETURN n = s; END \$\$" >/dev/null || bail "setup failed"
+		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true); s := answers(); RETURN n = s; END \$\$" >/dev/null || bail "setup failed"
 
 # a connected child (the foreign key is a column of its index) whose parent changes: the found flag and the join are the normal plan's, with its rows in the buffer as references
 sql primary "CREATE TABLE dim (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = off)" \
