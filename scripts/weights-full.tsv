@@ -1,12 +1,18 @@
 # job	PostgreSQL 17 lane seconds	PostgreSQL 18 lane seconds: the median of the passing jobs of runs 42109149971 42118704860 42130202667 42138245661 (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10
 # a job that passed in none of these runs keeps the seconds it had
+# tap-shell-tbl_twin_fuzz*/col_twin_fuzz*: lane seconds of one PostgreSQL 18 run (hosted 42815952773), the same on 17 until measured
 tap-shell-compat_matrix	0	867
 difftest-2	851	851
 difftest-1	760	760
 tap-shell-scaling_slope	0	745
+tap-shell-tbl_twin_fuzz_e	725	725
+tap-shell-tbl_twin_fuzz_f	725	725
 difftest-fuzz-tbl	688	550
 difftest-col-4	656	577
 difftest-mutants-3	631	631
+tap-shell-col_twin_fuzz_b	628	628
+tap-shell-tbl_twin_fuzz	624	624
+tap-shell-tbl_twin_fuzz_b	624	624
 difftest-col-2	614	577
 difftest-col-5	593	613
 difftest-col-3	606	577
@@ -25,12 +31,17 @@ difftest-col-tbl-8	515	530
 difftest-mutants-1	520	520
 difftest-col-tbl-5	515	495
 fuzz	514	514
+tap-shell-tbl_twin_fuzz_c	502	502
+tap-shell-tbl_twin_fuzz_d	502	502
+tap-shell-tbl_twin_fuzz_g	502	502
+tap-shell-tbl_twin_fuzz_h	502	502
 tap-shell-tbl_load_ring	321	451
 tap-shell-pg_upgrade	45	449
 difftest-fuzz	392	400
 tap-shell-sb_mask_small	0	393
 tap-shell-store_crash	365	391
 tap-shell-col_index_crash	299	366
+tap-shell-col_twin_fuzz	362	362
 difftest-nopos	351	351
 tap-shell-pg_upgrade_33	252	333
 hardened	325	325

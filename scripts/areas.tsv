@@ -14,7 +14,7 @@
 =col	^(installcheck-(roles_|settings_removed|reloption_aliases|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|reloption_alias_dump|maint_lock_order|instr_budget_lib|leaf_stats_shared|compat_matrix|sb_mask_small)|tap-01[56]_space|soak-col$|difftest-col)
 =layout	^tap-shell-scaling_slope$
 =agg	^(installcheck-(roles_|slot_owner|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|fresh_backend|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|tap-023_dimmap|difftest-(col|fuzz|txn(-shapes)?|bm25)|plan-gate|plan-budget|exec-budget|corpus)
-=tbl	^(installcheck-(roles_|settings_removed|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_twin_fuzz(_[bcd])?|tbl_first_writer_crash|tbl_load_workers|tbl_load_ring|tbl_load_stream|tbl_options_cluster)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
+=tbl	^(installcheck-(roles_|settings_removed|tbl_|segfmt_mixed)|tap-shell-(old_lib_refusal|tbl_twin_fuzz(_[b-h])?|tbl_first_writer_crash|tbl_load_workers|tbl_load_ring|tbl_load_stream|tbl_options_cluster)|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
 =dec	^(fuzz|hardened|tools-build)$
 =any	^(release-library-regress(-[12])?|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
@@ -39,7 +39,7 @@
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/[^dtbc]	^(fuzz|hardened|tools-build)$|{ci}
 ^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl|-having)?(-[12])?$|{ci}
-^test/fuzz/tbl_twin_fuzz	^tap-shell-tbl_twin_fuzz(_[bcd])?$|{ci}
+^test/fuzz/tbl_twin_fuzz	^tap-shell-tbl_twin_fuzz(_[b-h])?$|{ci}
 ^test/fuzz/col_twin_fuzz	^tap-shell-col_twin_fuzz(_b)?$|{ci}
 ^test/fuzz/txn_fuzz	^difftest-txn(-shapes)?$|{ci}
 ^test/fuzz/bm25_fuzz	^difftest-bm25$|{ci}
