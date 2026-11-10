@@ -31,6 +31,9 @@ col/codec_neon.c
 col/compress.c
 col/seg/seg.c
 col/seg/gorder.c
+col/seg/gorder_seek.c
+col/seg/gorder_str.c
+col/seg/gorder_group.c
 col/seg/prune.c
 col/seg/verify.c
 col/seg/vers.c
@@ -63,6 +66,7 @@ col/gorder.c
 col/gquant.c
 col/gorder_opt.c
 col/gorder_read.c
+col/gorder_seek.c
 col/point.c
 col/runs.c
 col/hll.c

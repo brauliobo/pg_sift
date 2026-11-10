@@ -141,6 +141,28 @@ sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays 
 {
 }
 
+SegPts *
+sift_cseg_pts_find(SiftColSegment *seg)
+{
+	return NULL;
+}
+
+void
+sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p)
+{
+}
+
+SegGOrdHead *
+sift_cseg_gordh_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h)
+{
+}
+
 void *
 sift_cseg_sets_find(SiftColSegment *seg, int col)
 {
