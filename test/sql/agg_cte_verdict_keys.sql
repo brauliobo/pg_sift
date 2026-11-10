@@ -1,5 +1,6 @@
 -- The verdict of a statement with a shared CTE of the keys a request names is kept under the statement without its constants, and the lists of the requests
--- are of other sizes: a key of the mean keeps the lookups of the normal plan, two keys take one scan, five or more take both. The size of a request counts the
+-- are of other sizes: a key of the mean keeps the lookups of the normal plan, three keys take one scan, five or more take both (two keys are a tie of the price of
+-- the scan and of the lookups, which the size of the index moves, so no list is that long). The size of a request counts the
 -- loops of a nested loop (the scan on its inner side reads its rows for each key). Each list is planned as it is planned alone, in whatever order the lists are met.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -28,14 +29,14 @@ CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_help
 
 -- the lists planned in full
 CREATE TABLE lists (name text, ids text, scans int);
-INSERT INTO lists (name, ids) SELECT 'n' || n, (SELECT string_agg(g::text, ',') FROM generate_series(1000, 999 + n) g) FROM unnest(ARRAY[1, 2, 3, 5, 100]) n;
+INSERT INTO lists (name, ids) SELECT 'n' || n, (SELECT string_agg(g::text, ',') FROM generate_series(1000, 999 + n) g) FROM unnest(ARRAY[1, 3, 5, 100]) n;
 INSERT INTO lists VALUES ('hot', '1');
 SET sift.verdict_cache_kb = 0;
 UPDATE lists SET scans = scans_of(keys_query(ids));
 RESET sift.verdict_cache_kb;
 SELECT name, scans FROM lists ORDER BY name;
 
--- 48 plannings in the order of an md5, from the verdicts the earlier ones made
+-- 40 plannings in the order of an md5, from the verdicts the earlier ones made
 ANALYZE events;
 SELECT count(*) FILTER (WHERE scans_of(keys_query(ids)) <> scans) AS plans_of_another_list, count(*) AS plannings
 FROM (SELECT l.ids, l.scans FROM lists l, generate_series(1, 8) k ORDER BY md5(l.name || ':' || k)) s;
