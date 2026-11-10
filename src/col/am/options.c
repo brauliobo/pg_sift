@@ -15,6 +15,7 @@
 #include "col/seg.h"
 #include "col/am/am_int.h"
 #include "col/conn.h"
+#include "col/scope.h"
 #include "core/ops.h"
 
 bool		sift_col_legacy_options = false;
@@ -172,6 +173,19 @@ connect_syntax(const char *value)
 
 SYNTAX_VALIDATOR(connect, connect_syntax(value))
 
+/* 'key_name: fk -> relation(member, scope_key)', or empty or off: the names are resolved where the declaration is made (col/scope_decl.c) */
+static const char *
+scope_syntax(const char *value)
+{
+	const char *err = NULL;
+
+	if (value[0] == '\0' || strcmp(value, "off") == 0)
+		return NULL;
+	return sift_scope_parse(value, &err) ? NULL : err;
+}
+
+SYNTAX_VALIDATOR(scope, scope_syntax(value))
+
 /* one column, or 'group, key': the names themselves are checked where the options they stand for are */
 static const char *
 key_order_syntax(const char *value)
@@ -255,6 +269,14 @@ sift_col_init(void)
 							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is rewritten whatever the share, "
 							"within the rules of sift.col_auto_merge (the WAL budget included).",
 							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_scope",
+							 "EXPERIMENTAL: a scan of an index with the option scope answers the rows of a scope key (a join to its scope relation, or IN, EXISTS over it, by that key) from the scope segments of the index.",
+							 "Off: the planner does not recognise the scope forms, and a scan that carries one reads the entity path (the join as written).",
+							 &sift_agg_scope, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.scope_patch_keys",
+							"The most member keys changed in a scope relation since the stamp of its scope segments that a statement patches through the entity path before it reads the entity path whole.",
+							"A read of a scope key reads its scope units less the rows of the members that changed since the stamp, which it reads from the entity path; more changed keys than this make the read fall back to the join.",
+							&sift_scope_patch_keys, 4096, 1, 1048576, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
 							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
@@ -361,6 +383,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_scope_trust",
+							 "Testing: a scope whose relation has no journal is read as if it vouched for the stamp of its scope segments (the proof of concept of the scope index).",
+							 NULL, &sift_test_scope_trust, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -544,6 +569,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "connect",
 						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key)' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column; the parent columns that queries read come from the parent's own index. The parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
 						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "scope",
+						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key)' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a unique btree covers; several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 4.4 and later read; default none)",
+						 "", sift_col_validate_scope, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
 						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
@@ -592,6 +620,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 	{"track_changes", RELOPT_TYPE_STRING, offsetof(SiftColOptions, track_changes)},
 	{"connect", RELOPT_TYPE_STRING, offsetof(SiftColOptions, connect)},
+	{"scope", RELOPT_TYPE_STRING, offsetof(SiftColOptions, scope)},
 };
 
 /*
@@ -749,6 +778,7 @@ sift_col_alter_check(Relation index)
 	sift_col_row_key_check(index);
 	sift_col_track_reconcile(index);
 	sift_conn_alter(index);
+	sift_scope_alter(index);
 }
 
 
@@ -772,6 +802,8 @@ sift_col_options_key_order_auto(Relation index)
 COL_OPT_STR(sift_col_options_row_key, track_changes, "auto")
 
 COL_OPT_STR(sift_col_options_connect, connect, "")
+
+COL_OPT_STR(sift_col_options_scope, scope, "")
 
 bool
 sift_col_options_key_cut_rows_set(Relation index)

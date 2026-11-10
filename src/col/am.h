@@ -17,6 +17,7 @@
 #include "core/visibility.h"
 #include "col/wbuf.h"
 #include "col/conn.h"
+#include "col/scope.h"
 
 /* The xid before which every transaction that inserted an entry of the segment committed; false when the segment does not say */
 static inline bool
@@ -50,6 +51,9 @@ typedef struct SiftColRel
 	int			conn_first;	/* the leaves from this id on are the found flags of the connections (SIFT_COLD_FOUND); none when it is ncols */
 	int			nconn;			/* connections of the index (col/conn.h) and the leaves of each */
 	int			conn_found[SIFT_CONN_MAX_CONNECTIONS];	/* the leaf of the found flag of each connection */
+	int			scope_first;	/* the leaves from this id on are the derived keys of the scopes (SIFT_COLD_SCOPE); none when it is ncols */
+	int			nscope;			/* scopes of the index (col/scope.h) and the leaf of each */
+	int			scope_leaf[SIFT_SCOPE_MAX];	/* the leaf of the derived key of each scope */
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
@@ -253,6 +257,7 @@ extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
 extern void sift_col_validate_track_changes(const char *value);
 extern void sift_col_validate_connect(const char *value);
+extern void sift_col_validate_scope(const char *value);
 extern void sift_col_validate_key_order(const char *value);
 extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);

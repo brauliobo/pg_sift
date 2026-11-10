@@ -44,6 +44,8 @@ extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf,
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
 /* CREATE INDEX, REINDEX and ALTER INDEX: resolves the declaration, writes the dependency on the unique btree, or removes it */
 extern void sift_scope_resolve(Relation heap, Relation index);
+/* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
+extern void sift_scope_alter(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 

@@ -103,6 +103,8 @@ The diagnostic options (generated from [options.tsv](options.tsv)):
 | `sift.plan_scale` | sift_col, sift_table | plan as if the tables with a sift_col index had this many times the pages and rows, to see the planner's choice at a larger size (on every supported PostgreSQL) |
 | `sift.agg_force` | sift_col, sift_table | takes the aggregate scan wherever one is possible, whatever the plans cost, to time the plan the cost model refused |
 | `sift.eval_methods` | sift_col | selects the developer evaluation method named: penalty_maintenance prices the VACUUM that reads ask for |
+| `sift.agg_scope` | sift_col | the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index |
+| `sift.scope_patch_keys` | sift_col | the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole |
 <!-- sift-diagnostics:end -->
 
 ## Same word, three places

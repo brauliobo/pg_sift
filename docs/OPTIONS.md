@@ -35,8 +35,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 39 | to measure, compare or explain a plan; not for a deployed configuration |
+| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
 
@@ -1744,6 +1744,21 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Set it on the index of a table that joins a dimension table by an integer key, once the dimension table has a sift_col index that holds its key (the primary key) and the columns the queries read. An unqualified parent name is in the schema of this index's table. DROP INDEX of the parent index needs CASCADE while the connection exists. Remove it with ALTER INDEX .. SET (connect = 'off').
 - **Sources:** benchmark `test:col_conn_declare`; [COL-CONNECT](COL-CONNECT.md)
 
+#### sift_col(scope)
+
+`sift_col` · opt-in · since 4.4 · default ''
+
+- **What it does:** EXPERIMENTAL: declares a derived key of the rows of this index, the scope key that a table of (member, scope) pairs gives each row through its member key (the column fk of this index); the index depends on the unique btree of that table. This release makes the declaration, the leaf of the derived key (NULL in every row of the entity segments) and the column format minor; the scope segments and the reads that use them come with the scope index itself
+- **Gain:** n/a: this release adds the declaration; the scope segments and their reads are not in it
+- **Impact:** index size: n/a: the leaf of the derived key is a constant NULL; build, merge and writes: n/a: no row is written for it; other: format minor 45; one int8 leaf of the derived key for each scope in every segment (constant NULL: a few bytes a unit); no scope segment is written yet
+- **When:** A heap table of pairs that is not the indexed table, not partitioned and not a view; integer keys only (map a text key through a dictionary table).
+- **Default:** '' — Not on by default: a scope names a table of pairs, so only the user can say it.
+- **Why not the default:** the history does not say
+- **Turn off:** ALTER INDEX i SET (scope = 'off') or RESET (scope): the dependency goes; REINDEX drops the leaf and the format minor goes back.
+- **Upgrade from 4.3:** A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the leaf.
+- **Advice:** Declare it on the index of a fact table whose member key (an integer column of the index) is listed with the scope key in a table of pairs that has a unique btree on exactly those two columns (a primary key, a unique index) and both columns NOT NULL. An unqualified relation name is in the schema of this index's table. DROP INDEX of that btree needs CASCADE while the declaration exists. Remove it with ALTER INDEX .. SET (scope = 'off').
+- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+
 ### diagnostic
 
 #### sift(build_segments)
@@ -2293,6 +2308,34 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave empty; name the method only for developer evaluation.
 - **Sources:** benchmark `test:col_eval_methods`; [OPTIONS](OPTIONS.md)
 
+#### sift.agg_scope
+
+`sift_col` · diagnostic · since 4.4 · default on
+
+- **What it does:** the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index
+- **Gain:** n/a: the planner recognises no scope form yet
+- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting
+- **When:** Statements that join, or IN or EXISTS over, the scope relation of an index with a scope.
+- **Default:** on — On: a scope is declared by the user, and the setting only gates what the declaration buys.
+- **Turn off:** SET sift.agg_scope = off (session, role, database or postgresql.conf): the joins are the ordinary ones. No REINDEX.
+- **Upgrade from 4.3:** New in 4.4.
+- **Advice:** Leave on. Off keeps the join as written; it applies to the scans of an index that declares a scope.
+- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+
+#### sift.scope_patch_keys
+
+`sift_col` · diagnostic · since 4.4 · default 4096
+
+- **What it does:** the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole
+- **Gain:** n/a: the reader of the scope segments is not in this release
+- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; each patched key is a probe of the entity path
+- **When:** Reads of a scope key after the scope relation changed.
+- **Default:** 4096 — 4,096: the most keys a statement patches before the entity path is cheaper (the cap of the found flag of 4.3 is 16,384 keys of one parent).
+- **Turn off:** SET sift.scope_patch_keys = 1 patches one key and falls back to the join for more. No REINDEX.
+- **Upgrade from 4.3:** New in 4.4.
+- **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to fall back to the join earlier.
+- **Sources:** benchmark `test:col_scope_declare`; [FORMATS](FORMATS.md)
+
 ### safety
 
 #### sift.max_expansions
@@ -2676,7 +2719,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: none.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift_col(scope)`.
 
 | Option | 4.3 | 4.4 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2692,6 +2735,9 @@ No default changed since 4.3; new: none.
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
+| `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the leaf. |
+| `sift.agg_scope` | new | on |  | New in 4.4. |
+| `sift.scope_patch_keys` | new | 4096 |  | New in 4.4. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
