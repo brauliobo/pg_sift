@@ -234,6 +234,15 @@ The reads of the table above, absolute numbers: the join is the fact index and `
 
 What it costs is in the cost table above: the copy of the 1.14 table is 139 MB of heap (76.5 B for each of its 1,812,118 rows), a 30 MB `sift_col` index (16.4 B a row) and a 39 MB btree (21.6 B a row), 207 MB beside 243 MB of table and indexes (+85%); inserting 10,000 facts takes 887 M instructions against 658 M (+35%) and 25.8 MB of WAL against 23.9 MB; deleting 1,000 facts 1,069 M against 1,024 M and updating 1,000 1,195 M against 1,084 M; a fact table without the copy is not slowed on reads.
 
+Updating facts costs the rows that changed, found by a set difference of the transition tables: linear under any planner estimate. The statement it replaced joined the two transition tables and could flip to a nested loop with a join filter, quadratic (59.6 G instructions at n = 4,000 facts with hash and merge joins off). The difference reads and compares every carried column of the rows an update touches, so a wide column costs on every update of a fact, and the update rewrites each of the fact's copies. Updating n facts of a 100,000-fact table with 1.6 copies per fact, M instructions (PostgreSQL 18.6, one backend, median of 3):
+
+| copy | n | previous statement | set difference | over |
+|---|---|---|---|---|
+| wide carried json (~1.5 KB documents) | 1,000 / 4,000 / 10,000 | 161.5 / 815.6 / 2,527 | 242.6 / 1,149.2 / 3,278 | +50% / +41% / +30% |
+| narrow rows | 1,000 / 4,000 / 10,000 | | | +1% to +4% |
+
+When the report does not read a wide json column, leave it out of the copy with the `columns` list of `sift.scope_create`: a narrower copy keeps the update cost near the narrow row.
+
 ### The maintenance btree
 
 A change of a fact finds its copies by the primary key, and an insert checks that a change of the other table in the same statement has not made the copy already (a statement that changes a pair and a fact of its member). The alternatives measured on the 1,812,118 rows of the 1.14 table, and the ones that kept their rank at 2, 3 and 6 copies per fact (WAL after a checkpoint):
