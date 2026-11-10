@@ -638,8 +638,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (!ex->open_deferred)
 		register_combos(ex);
 	join_filters(ex, old);
-	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok) */
-	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin, "sift: a join of a top-N is not a filter of the scan");
+	/* the planner takes only the joins that are (agg/order/shape.c, topn_joins_ok), and the scope conjunct is one more filter */
+	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin + (ex->spec->scope != NULL), "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
 	if (!ex->open_deferred)
 		prune_init(ex);
