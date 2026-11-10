@@ -178,6 +178,18 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
     choices of `sift.index_choices` and the errors name the new spelling (`invalid rollup_columns option: ..`). `sift.upgrade_commands()` matches both spellings, so an index with either gets the same advice; a script or a view of yours that matches the text of `pg_class.reloptions` for `rollup_dims`
     should match `rollup_columns` too. `sift.index_choices` reports the choice as `rollup_columns`. The limit ids of `sift.stats()` keep their names (`limit.rollup_dims`). *Files, `REINDEX`:* no (the files hold no option names). *Off:* not applicable; the old names go away in 5.0.
 
+## What 4.3 deprecates and 4.4 removes
+
+Three `sift_col` options are accepted and ignored by 4.3 and are removed in 4.4, when an `ALTER INDEX .. SET` or a `CREATE INDEX` that names one is refused. A `CREATE INDEX` or a `REINDEX` that names one says so in its `NOTICE`, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
+
+| Option | What 4.3 does | What to do before 4.4 |
+|---|---|---|
+| `order_columns` | writes no sorted run; the order arrays (`order_array_columns`, chosen by the build) answer a top-N, a range and an `OFFSET` | `ALTER INDEX .. RESET (order_columns)`; keep `order_array_columns` if you set it |
+| `point_columns` | lists its columns as heap addresses, as `point_tid_columns` does | set `point_tid_columns` to the same columns and reset `point_columns` |
+| `key_cut_rows` | the units aim at the rows of an average superblock | `ALTER INDEX .. RESET (key_cut_rows)` |
+
+`order_layout` and `sift.col_format_minor` stay through 4.4. The setting `sift.test_col_legacy_options`, which makes a build honor the three options and which the test clusters of this project set, is for tests only and goes away with them; do not set it on a server.
+
 ## 3. A newer PostgreSQL major
 
 `pg_upgrade` copies the relation files and restores the catalogs. pg_sift needs only its library for the new major next to the server (the same release as
