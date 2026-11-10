@@ -651,3 +651,11 @@ COMMENT ON FUNCTION sift.scope_pairs_where(text, name[], boolean, text) IS 'Inte
 COMMENT ON FUNCTION sift.scope_fact_trg() IS 'Internal: the statement trigger of the table of a scope copy; applies the inserted, updated and deleted rows to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
 COMMENT ON FUNCTION sift.scope_pairs_trg() IS 'Internal: the statement trigger of the scope relation of a scope copy; applies the inserted, updated and deleted pairs to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
 COMMENT ON FUNCTION sift.scope_truncate_trg() IS 'Internal: the TRUNCATE trigger of the table and of the scope relation of a scope copy; empties the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
+COMMENT ON FUNCTION sift.scope_fact_trg() IS 'Internal: the statement trigger of the table of a scope copy; applies the inserted, updated and deleted rows to the copy';
+COMMENT ON FUNCTION sift.scope_pairs_trg() IS 'Internal: the statement trigger of the scope relation of a scope copy; applies the inserted, updated and deleted pairs to the copy';
+COMMENT ON FUNCTION sift.scope_truncate_trg() IS 'Internal: the TRUNCATE trigger of the table and of the scope relation of a scope copy; empties the copy';
+
+CREATE FUNCTION sift.col_build_lock() RETURNS event_trigger
+	AS 'MODULE_PATHNAME', 'sift_col_build_lock' LANGUAGE C;
+CREATE EVENT TRIGGER sift_col_build_lock ON ddl_command_start WHEN TAG IN ('CREATE INDEX') EXECUTE FUNCTION sift.col_build_lock();
+COMMENT ON FUNCTION sift.col_build_lock() IS 'Internal: the event trigger before CREATE INDEX of a sift_col index; takes the table lock that the build of its change log needs first, so that two builds on one table do not deadlock';

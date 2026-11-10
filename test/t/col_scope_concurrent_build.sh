@@ -17,6 +17,8 @@ sql scb "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 	"INSERT INTO events SELECT i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 20000) i" >/dev/null || bail "setup failed"
 
+# the event trigger that takes the stronger lock at the start (below) cannot help a session that holds ShareLock before the statement: it is off for this part
+sql scb "ALTER EVENT TRIGGER sift_col_build_lock DISABLE" >/dev/null
 build() { # NAME: a session that takes ShareLock on the table, waits for the other one to take it, then builds
 	psql "${S[@]}" -c "BEGIN" -c "LOCK TABLE events IN SHARE MODE" -c "SELECT pg_sleep(1.5)" \
 		-c "CREATE INDEX $1 ON events USING sift_col (id, dim_a_id, created_at, v) WITH (track_changes = 'off', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
@@ -36,6 +38,7 @@ sql scb "REINDEX INDEX events_a" "SET sift.agg_force = on" >/dev/null
 check "a read through the scope is the join" test "$(sql scb "SET sift.agg_force = on" "SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_a'::regclass, 'tenant_id', e.dim_a_id, 5)")" == \
 	"$(sql scb "SET sift.enable_agg = off" "SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5)")"
 
+sql scb "ALTER EVENT TRIGGER sift_col_build_lock ENABLE" >/dev/null
 # the same without the barrier, with the default change tracking: the log of each index installs two triggers on the table at the end of its build (CREATE TRIGGER takes ShareRowExclusiveLock),
 # so two builds that run at the same time were each waiting for the other's ShareLock. The statement takes the lock first now (an event trigger before CREATE INDEX of a sift_col index).
 race() { # NAME
