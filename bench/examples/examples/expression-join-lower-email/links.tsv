@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+contact	lower(email)	member	email_lc	n:1	tier,country

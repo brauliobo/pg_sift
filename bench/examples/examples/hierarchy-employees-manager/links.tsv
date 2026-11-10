@@ -1,0 +1,3 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+timesheet	employee_id	employee	id	n:1	manager_id,dept,level,active
+employee	manager_id	employee	id	n:1	dept,level
