@@ -13,11 +13,13 @@
  *  (a) the relation and its columns are the index's declared scope, and the join is the equality of its member column and the declared column of the scanned table;
  *  (b) the scope key is bound by one equality or IN list of constants or of parameters (a $n, an InitPlan's output, a stable expression: the scan evaluates them when it starts), the
  *      scope relation has no other table joined to it and no condition but the predicate of the unique btree that defines its pairs, which the statement must state (agg/scope_legs.c);
- *  (c) the statement reads no column of the scope relation (a group key, an aggregate argument): the declaration needs a unique btree on (member, key), so a row of the scanned table
- *      has at most one pair with a key and the join, the semi join and the scope read count it the same;
+ *  (c) the statement reads no column of the scope relation but its key as a group key (`GROUP BY s.key`, "every tenant"): the declaration needs a unique btree on (member, key), so a row
+ *      of the scanned table has at most one pair with a key and the join, the semi join and the scope read count it the same; the group key is read as the derived leaf of the scope, which holds the
+ *      key of each pair the scan reads (an aggregate argument, a select list expression, a HAVING that reads the key keeps the join);
  *  (d) a semi join (IN, EXISTS) counts a row once whichever keys it has, which the reader does (Scope Semantics: once); a join counts it once for each pair, which the reader reads
- *      per pair only for one key: of several, a member whose pairs changed needs the join (docs/COL-SCOPE.md), so the plan keeps it (an array or a list of parameters may hold several: a
- *      join takes a scalar parameter only);
+ *      per pair for one key, for several and for every key (no condition on the key, SiftAggScope.all). Where the units cannot answer (the reader's refusals, its changed pairs) or cost more, the
+ *      node runs the join as written (agg/cost/scope.c: the plan holds it), so a read of several or of every key, and a read that groups by the key, is planned only where the first pass
+ *      has that join (an array or a list of parameters may hold several keys: a join takes a scalar parameter only);
  *  (e) the other conjuncts and the aggregates are the scan's as ever.
  * Whether the index may be read at execution (its stamps, the journal, the write buffers) is the reader's verdict, and EXPLAIN says it (Scope Fallback). Every near miss is reported
  * (slug scope) with its reason, and the join runs as it is written. A marker that stays an ordinary filter says why in the spec (scope_why: EXPLAIN prints it as Scope Fallback), so that a scope
@@ -111,7 +113,7 @@ fk_leaf(AggCtx *c, Node *fk, const char *key_name, const char **why)
 
 /* ---- the testing marker ---- */
 
-/* sift.<name>(index, key_name, fk [, keys]) of the testing extension */
+/* sift.<name>(index, key_name, fk, key or keys) of the testing extension */
 static bool
 is_func(Node *q, const char *name, int nargs)
 {
@@ -122,7 +124,7 @@ is_func(Node *q, const char *name, int nargs)
 static bool
 is_marker(Node *q)
 {
-	return is_func(q, "in_scope", 4) || is_func(q, "in_scope_pairs", 4) || is_func(q, "in_scope_all", 3);
+	return is_func(q, "in_scope", 4) || is_func(q, "in_scope_pairs", 4);
 }
 
 static bool
@@ -143,52 +145,26 @@ static SiftAggScope *
 marker_scope(AggCtx *c, Node *q, const char **why)
 {
 	FuncExpr   *f = (FuncExpr *) q;
-	bool		all = list_length(f->args) == 3;
 	Const	   *idx = arg_const(f, 0, REGCLASSOID),
 			   *name = arg_const(f, 1, TEXTOID),
-			   *key = all ? NULL : arg_const(f, 3, INT8OID);
+			   *key = arg_const(f, 3, INT8OID);
 	int			leaf;
 	SiftAggScope proto = {0};
 
-	if (key == NULL && !all)
+	if (key == NULL)
 		key = arg_const(f, 3, INT8ARRAYOID);
-	if (idx == NULL || name == NULL || (key == NULL && !all))
+	if (idx == NULL || name == NULL || key == NULL)
 		return no_scope(why, "scope index, name or keys are not constants");
 	if (DatumGetObjectId(idx->constvalue) != c->indexoid)
 		return no_scope(why, "scope index is not the scanned index");
 	if ((leaf = fk_leaf(c, list_nth(f->args, 2), TextDatumGetCString(name->constvalue), why)) < 0)
 		return NULL;
-	if (!all && key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
+	if (key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
 		return no_scope(why, "a scope key is NULL");
 	proto.key_name = TextDatumGetCString(name->constvalue);
-	proto.all = all;
-	if (!all)
-		proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
+	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
 	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
 	return scope_make(c, &proto, leaf);
-}
-
-/*
- * The expression that stands for the derived key of a scope the scan reads every key of: the testing marker sift.scope_key(index, key_name, fk), in a group key or an aggregate. Its leaf is the one
- * of the derived key "<key_name>#scope", whose value is the key of each row the scan reads (the reader gives only rows that have one).
- * RELEASE-TODO: the recognition of the join replaces it: the key column of the scope relation in a GROUP BY of the join, read as this leaf, of the type of that column.
- */
-int
-sift_agg_scope_key_leaf(AggCtx *c, Node *e)
-{
-	FuncExpr   *f = (FuncExpr *) e;
-	Const	   *idx,
-			   *name;
-	const char *why;
-
-	if (c->scope_all == NULL || !is_func(e, "scope_key", 3))
-		return -1;
-	idx = arg_const(f, 0, REGCLASSOID);
-	name = arg_const(f, 1, TEXTOID);
-	if (idx == NULL || name == NULL || DatumGetObjectId(idx->constvalue) != c->indexoid || strcmp(TextDatumGetCString(name->constvalue), c->scope_all) != 0 ||
-		fk_leaf(c, list_nth(f->args, 2), c->scope_all, &why) < 0)
-		return -1;
-	return sift_agg_scope_leaf(c->lay, c->scope_all);
 }
 
 /* ---- the join to the scope relation ---- */
@@ -277,6 +253,18 @@ AttrNumber
 item_attno(const AttrNumber *map, int nmap, AttrNumber att)
 {
 	return map == NULL ? att : att > 0 && att < nmap ? map[att] : InvalidAttrNumber;
+}
+
+/* the derived leaf of the scope the pass took out, when e is its key column (a bare Var of the item): what a group key `s.key` reads (match_leaf); -1 when it is not */
+int
+sift_agg_scope_key_leaf(AggCtx *c, Node *e)
+{
+	const ScopeTake *t = c->scope_take;
+	const Var  *v = (const Var *) e;
+
+	if (c->scope_key == NULL || !IsA(e, Var) || v->varno != t->rti || v->varlevelsup != 0 || item_attno(t->map, t->nmap, v->varattno) != t->key)
+		return -1;
+	return sift_agg_scope_leaf(c->lay, c->scope_key);
 }
 
 /* n is a plain column of the item rti */
@@ -424,6 +412,41 @@ read_above(PlannerInfo *root, Index rti)
 }
 
 /*
+ * How the statement reads the item rti above the scan, for a join that counts a row for each pair (allowed): not at all (NULL, *key false), or its key column as a group key and
+ * nothing else of it (NULL, *key true): the scan groups by the derived leaf, whose type is int8, so the Var's int2 or int4 key is the leaf narrowed to a value it holds, as the join's. Else why not: a
+ * column read as a value (an aggregate argument, an expression, HAVING), grouping sets, DISTINCT ON, or no grouping at all.
+ */
+static const char *
+key_above(AggCtx *c, Index rti, const AttrNumber *map, int nmap, AttrNumber key, bool allowed, bool *as_key)
+{
+	PlannerInfo *root = c->root;
+	Query	   *parse = root->parse;
+
+	*as_key = false;
+	if (!read_above(root, rti))
+		return NULL;
+	if (!allowed)
+		return "the statement reads a column of the scope relation (a group key, an aggregate argument), which a semi join does not give";
+	if (parse->groupClause == NIL && parse->distinctClause == NIL)
+		return "the statement reads a column of the scope relation, and groups by none";
+	if (parse->groupingSets != NIL || parse->hasDistinctOn)
+		return "the statement reads the key of the scope relation in grouping sets or DISTINCT ON";
+	if (parse->havingQual != NULL && bms_is_member(rti, pull_varnos(root, parse->havingQual)))
+		return "HAVING reads a column of the scope relation";
+	foreach_node(TargetEntry, te, root->processed_tlist)
+	{
+		const Var  *v = (const Var *) te->expr;
+
+		if (!bms_is_member(rti, pull_varnos(root, (Node *) te->expr)))
+			continue;
+		if (!IsA(te->expr, Var) || v->varno != rti || v->varnullingrels != NULL || item_attno(map, nmap, v->varattno) != key)
+			return psprintf("the statement reads a column of the scope relation other than its key as a group key: %s", expr_text(c, (Node *) te->expr));
+	}
+	*as_key = true;
+	return NULL;
+}
+
+/*
  * The item rti of the FROM list as the scope join of the index: what the pass takes out of it is in t. NULL: it is, and the pass has its conditions; NOT_SCOPE: it is not the scope relation
  * of the index; else why it is but not a join the scope read answers.
  */
@@ -442,6 +465,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			   *tabq = NULL;
 	Var		   *fk = NULL,
 			   *kvar = NULL;
+	bool		key_read;
 	SiftAggScope sc = {0};
 	List	   *pool,
 			   *rest = NIL;
@@ -475,8 +499,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	foreach_int(o, fs->rtis)
 		if (o != rti && root->simple_rel_array[o] != NULL && bms_is_member(rti, root->simple_rel_array[o]->lateral_relids))
 			return "another item of the FROM list reads the scope relation";
-	if (read_above(root, rti))
-		return "the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give";
+	if ((why = key_above(c, rti, map, nmap, get_attnum(relid, sp->rel.b), lj == NULL, &key_read)) != NULL)
+		return why;
 	own = bms_add_member(bms_make_singleton(rti), c->relid);
 	foreach_ptr(Node, q, pool)
 	{
@@ -530,14 +554,20 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			return miss;
 		keyq = tabq;
 	}
-	if (keyq == NULL)
+	/* a join with no condition on the key reads every key, a row for each pair; a semi join of every key is not that */
+	sc.all = keyq == NULL && lj == NULL;
+	if (keyq == NULL && !sc.all)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
-	/* several keys counted for each pair: where the units cannot (a member's pairs changed) the node runs the join the first pass priced, so it needs one */
-	if (sc.nkeys > 1 && lj == NULL && t->alts == NIL)
-		return "several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
+	/* several keys or every key counted for each pair, or a group key: where the units cannot (the reader refuses them, or the join costs less) the node runs the join the first pass priced, so it needs one */
+	if ((sc.all || sc.nkeys > 1 || key_read) && lj == NULL && t->alts == NIL)
+		return "several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
 	if ((why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
 		return why;
 	t->rti = rti;
+	t->map = map;
+	t->nmap = nmap;
+	t->key = get_attnum(relid, sp->rel.b);
+	t->key_read = key_read;
 	t->fk = (Var *) copyObject(fk);
 	sc.key_name = sp->key_name;
 	sc.once = lj != NULL;
@@ -707,16 +737,16 @@ sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	const char *why = scan_why(c);
 	int			leaf;
 
-	c->scope_all = NULL;
+	c->scope_key = NULL;
 	if (t == NULL)
 	{
 		scope_scan(c, s, fs, why);
-		c->scope_all = s->scope != NULL && s->scope->all ? s->scope->key_name : NULL;
 		return true;
 	}
 	if (why == NULL && (leaf = fk_leaf(c, (Node *) t->fk, t->sc.key_name, &why)) >= 0)
 	{
 		s->scope = scope_make(c, &t->sc, leaf);
+		c->scope_key = t->key_read ? t->sc.key_name : NULL;
 		return true;
 	}
 	scope_miss(why);
@@ -727,6 +757,6 @@ sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 void
 sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why)
 {
-	c->scope_all = NULL;
+	c->scope_key = NULL;
 	scope_scan(c, s, fs, why);
 }

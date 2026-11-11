@@ -423,7 +423,7 @@ explain_scope(AggExec *ex, ExplainState *es)
 	/* a plain EXPLAIN has not opened the index */
 	index = ex->index ? ex->index : index_open(node->indexoid, AccessShareLock);
 	sift_scope_columns(index, sc->key_name, &kept, &all);
-	if (sc->all && group_reads(node, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
+	if (group_reads(node, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
 		ExplainPropertyText("Scope Group Key", sc->key_name, es);
 	if (index != ex->index)
 		index_close(index, NoLock);

@@ -12,6 +12,8 @@
 /* check-memory: allow-allocs the arrays follow the keys of one scope conjunct and the members the caps of the statement allow, not the rows of the table */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/table.h"
 #include "utils/lsyscache.h"
 
@@ -189,14 +191,37 @@ entry_rows(AggExec *ex, Snapshot snapshot)
 }
 
 /*
- * Does the join as written (SiftAggScope.alt) cost less than the scope units for the counts c: the units cost their setup, the entries they read and the patch and delta of the changed
- * members (col/scope.h), the join its price for the keys the entries stand for. The join is a scan whose cost grows with the rows the keys leave, and the units' with the entries, so a few keys
+ * A read per pair whose members changed since the stamp scans the units that held an entry of a changed member row by row with the entries left out (a liveness selection of the unit), which costs
+ * more an entry than the pre-aggregates or an entry read and aggregated as the price of col/scope.h counts it (300,000 events, 5,000 members, 50 keys, every key by the key, warm, instructions of the
+ * backend; 5, 20, 50, 100 and 200 changed pairs: 20.8, 38.6, 65.5, 78.2 and 94.0 million): SCOPE_DEAD_ENTRY_INSTR an entry of those units (the rows read, the selection, the aggregation), and
+ * SCOPE_CHANGED_INSTR once for the patch and the delta's setup beyond the units and the copies the price counts. The units a changed member's entries are in are those of its keys: of the keys, a changed
+ * member (SCOPE_CHANGED_SPREAD) leaves the share 1 - exp(-SCOPE_CHANGED_SPREAD * changed / keys) of the entries in units of that kind (the fit of the entries read, 12.8% of them with 4 changed keys, 44% with 18, 92% with 45).
+ */
+#define SCOPE_DEAD_ENTRY_INSTR	143
+#define SCOPE_CHANGED_INSTR		8500000
+#define SCOPE_CHANGED_SPREAD	1.8
+
+/* what the scope units cost for the counts c of a read (rd: what the reader found, NULL before it was made) */
+static double
+units_price(const SiftAggScope *sc, const SiftScopeCounts *c, const SiftScopeRead *rd)
+{
+	SiftScopeCounts units = *c;
+	double		keys = sc->knot_rows > 0 ? c->entries / sc->knot_rows : sc->nkeys,
+				dead = rd != NULL && rd->nexcept > 0 && !sc->once ? 1.0 - exp(-SCOPE_CHANGED_SPREAD * rd->nchanged / Max(keys, 1.0)) : 0.0;
+
+	units.entries = c->entries * (1.0 - dead) * sc->rowwise;
+	return sift_scope_units_price(&units) + sc->entry_instr * units.entries + dead * c->entries * SCOPE_DEAD_ENTRY_INSTR + (dead > 0 ? SCOPE_CHANGED_INSTR : 0);
+}
+
+/*
+ * Does the join as written (SiftAggScope.alt) cost less than the scope units for the counts c: the units cost their setup, the entries they read (the share rowwise, the rest the
+ * pre-aggregates of the units answer) and the patch and delta of the changed members (col/scope.h), the join its price for the keys the entries stand for. The join is a scan whose cost grows with the rows the keys leave, and the units' with the entries, so a few keys
  * read the units and many read the join, and the changed members of every key (a patch of the units of the entity segments for each) the join, which does not read them twice.
  */
 static bool
-join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c)
+join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c, const SiftScopeRead *rd)
 {
-	return sift_scope_units_price(c) + sc->entry_instr * c->entries > alt_price(sc, sc->knot_rows > 0 ? c->entries / sc->knot_rows : sc->nkeys);
+	return units_price(sc, c, rd) > alt_price(sc, sc->knot_rows > 0 ? c->entries / sc->knot_rows : sc->nkeys);
 }
 
 /* the reason EXPLAIN gives for the join the node runs */
@@ -244,7 +269,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	if (sc->alt != NULL && !sift_test_scope_patch)
 	{
 		c.entries = entry_rows(ex, snapshot);
-		if (join_cheaper(sc, &c))
+		if (join_cheaper(sc, &c, NULL))
 		{
 			run_join(ex, join_cheaper_why(sc));
 			return false;
@@ -261,7 +286,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	c.patch_units = rd->patch_units;
 	c.patch_scan_rows = rd->patch_scan;
 	c.delta_rows = rd->delta_rows + rd->patch_rows;
-	if (sc->alt != NULL && !sift_test_scope_patch && join_cheaper(sc, &c))
+	if (sc->alt != NULL && !sift_test_scope_patch && join_cheaper(sc, &c, rd))
 	{
 		run_join(ex, join_cheaper_why(sc));
 		return false;
@@ -354,10 +379,14 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 	uint32		nplain;
 	List	   *arms = NIL;
 
-	/* every key: the units are all read, each row has its key */
-	ex->scope_preds = 0;
+	/* every key: the units are all read, each row has its key, but the units of another scope of the index have none (the zones of the key's leaf are NULL there): a key list leaves them out by its keys */
 	if (sc->all)
+	{
+		*add = lappend(*add, pred_node(ex, SAP_NULL, total, sleaf, 1, 0, psprintf("%s IS NOT NULL", ex->lay->leaf[sleaf].name)));
+		ex->scope_preds = 1;
 		return;
+	}
+	ex->scope_preds = 0;
 	nplain = plain_keys(sc, rd, plain);
 	if (nplain > 0 || rd->ndrop == 0)
 		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, NULL));

@@ -66,7 +66,7 @@ INSERT INTO forms VALUES
  ('two keys, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY kind$q$),
  ('miss: condition on a pair column', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3 AND valid_until IS NULL) GROUP BY kind$q$),
  ('miss: key not bound', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope) GROUP BY kind$q$),
- ('miss: group by the key', $q$SELECT s.tenant_id, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY s.tenant_id$q$),
+ ('join, group by the key', $q$SELECT s.tenant_id, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY s.tenant_id$q$),
  ('miss: range on the key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id < 3) GROUP BY kind$q$),
  ('miss: another column read', $q$SELECT kind, s.valid_until, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind, s.valid_until$q$),
  ('miss: wrong fact column', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$),

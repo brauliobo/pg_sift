@@ -198,7 +198,7 @@ NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index 
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them)
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: keys by a join to the table of keys

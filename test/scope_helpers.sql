@@ -3,9 +3,9 @@
 -- the reasons the scan of a scope may give for reading the entity rows.
 --
 -- scope_reason_ok(why): whether a "Scope Fallback" reason is one of the documented ones (docs/COL-SCOPE.md).
--- scope_group_run(q, plain): a read of every key by the key of each pair (sift.in_scope_all, sift.scope_key): the same, for a statement PostgreSQL cannot run without the scan, so that a read the
---   reader refuses raises: refused is then true and why the reason. The groups are compared as the rows of a md5 (q and plain order them the same way or are compared as sets); group_key: the scan groups
---   by the derived key, preagg: some unit answered from its pre-aggregates, delta_rows: the rows of the write buffers it read as its delta.
+-- scope_group_run(q): a read of every key by the key of each pair, the join `f JOIN pairs m ON m.member = f.fk GROUP BY m.key`: the rows of q under the planner (the scope units, or the join the node runs where
+--   the reader refuses or the join costs less: why is the reason) against sift.agg_scope = off and the normal plan, as the md5 of the rows; group_key: the scan groups by the derived key, preagg: some unit
+--   answered from its pre-aggregates, delta_rows: the rows of the write buffers it read as its delta.
 -- scope_run(q, plain): the scope form q and the plain form `plain` of one statement: same rows through the scope path, the planned plan and the plain plan (sift.enable_agg off), whether the
 --   scope units were read (stored), the fallback reason (why), the patched members (patched), whether the scan has a scope conjunct at all (engaged), and whether the path is accounted for (path_ok: stored, or a documented reason).
 CREATE FUNCTION scope_reason_ok(why text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
@@ -13,37 +13,32 @@ CREATE FUNCTION scope_reason_ok(why text) RETURNS boolean LANGUAGE sql IMMUTABLE
 		'dedupe over work_mem|dedupe keys|no journal|log not complete|other lineage|trimmed|snapshot|snapshot older than the stamp|stamp aged|too many changed keys)$'
 $$;
 
-CREATE FUNCTION scope_group_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT refused boolean, OUT group_key boolean, OUT preagg boolean, OUT delta_rows int,
-	OUT engaged boolean, OUT path_ok boolean) LANGUAGE plpgsql AS $$
+CREATE FUNCTION scope_group_run(q text, OUT same boolean, OUT stored boolean, OUT why text, OUT group_key boolean, OUT preagg boolean, OUT delta_rows int, OUT engaged boolean, OUT path_ok boolean)
+LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
+	c text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	SET LOCAL sift.agg_force = on;
-	refused := false;
-	BEGIN
-		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-		EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
-	EXCEPTION WHEN feature_not_supported THEN
-		refused := true;
-		why := substring(SQLERRM FROM '"(.*)"');
-	END;
-	engaged := true;
-	stored := false;
-	IF NOT refused THEN
-		SET LOCAL sift.enable_agg = off;
-		EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || plain || ') t' INTO b;
-		SET LOCAL sift.enable_agg = on;
-		same := a = b;
-		why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-		stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-		engaged := jsonb_path_exists(p, '$.**."Scope Index"');
-		group_key := jsonb_path_exists(p, '$.**."Scope Group Key"');
-		preagg := coalesce(jsonb_path_query_first(p, '$.**."Units From Pre-aggregates"')::text::int, 0) > 0;
-		delta_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
-	END IF;
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_scope = on;
+	same := a = b AND b = c;
+	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
+	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	engaged := jsonb_path_exists(p, '$.**."Scope Index"');
+	group_key := jsonb_path_exists(p, '$.**."Scope Group Key"');
+	preagg := coalesce(jsonb_path_query_first(p, '$.**."Units From Pre-aggregates"')::text::int, 0) > 0;
+	delta_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
 	path_ok := stored OR scope_reason_ok(why);
 END $$;
 

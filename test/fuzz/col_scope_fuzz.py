@@ -57,7 +57,7 @@ BEGIN
 		det := NULL; st := false; wh := NULL; ok := true;
 		BEGIN
 			IF d.class = 'group key' THEN
-				SELECT * INTO r FROM scope_group_run(d.q, d.plain);
+				SELECT * INTO r FROM scope_group_run(d.q);
 			ELSE
 				SELECT * INTO r FROM scope_run(d.q, d.plain);
 			END IF;
@@ -67,7 +67,7 @@ BEGIN
 			ELSIF NOT d.sql_form AND NOT (r.path_ok OR coalesce(r.why ~ ok_why, false)) THEN ok := false; det := 'the scope path is neither read nor accounted for';
 			ELSIF d.sql_form AND planner AND d.engage_wanted AND NOT r.engaged THEN ok := false; det := 'the planner did not recognise the form';
 			ELSIF strict AND d.stored_wanted AND NOT r.stored THEN ok := false; det := 'not stored right after a build';
-			ELSIF d.want_why IS NOT NULL AND (r.why IS NULL OR r.why !~ d.want_why) THEN ok := false; det := 'fallback reason is not ' || d.want_why;
+			ELSIF d.want_why IS NOT NULL AND r.engaged AND (r.why IS NULL OR r.why !~ d.want_why) THEN ok := false; det := 'fallback reason is not ' || d.want_why;
 			END IF;
 		EXCEPTION WHEN OTHERS THEN
 			ok := false; det := 'ERROR ' || SQLERRM;
@@ -329,7 +329,7 @@ VACUUM (ANALYZE) {self.tables};"""
         def add(cls, cols, q, ks, stored):
             subset = self.kept is None or cols <= self.kept
             stored = stored and subset and all(k in keys for k in ks)
-            qs.append((cls, q.replace('@', mark(ks)), q.replace('@', plain(ks)), False, stored, False, None if subset else '^column .* not in the scope units$'))
+            qs.append((cls, q.replace('@', mark(ks)), q.replace('@', plain(ks)), False, stored, False, None if subset or self.union else '^column .* not in the scope units$'))
 
         for name, cols, q in r.sample(shapes, 3):
             add('one key', cols, q, [pick()], True)
@@ -343,26 +343,23 @@ VACUUM (ANALYZE) {self.tables};"""
         joined = f"JOIN {self.pairs} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.act}"   # the pairs are distinct: a row once for each
         qs.append(('per pair', pair % ((scoped,) * 2 + (lst(ks),)), pair % ((joined,) * 2 + (lst(ks),)), False, False, False, None))
         P = self.pairs
-        gk, ga = "sift.scope_key('events_col'::regclass, 'tenant_id', e.dim_a_id)", "sift.in_scope_all('events_col'::regclass, 'tenant_id', e.dim_a_id)"
         for cols, aggs, filt in self.grng.sample([({'v'}, "count(*), sum(v)", ''), ({'id', 'v'}, "min(id), max(id), min(v)", ''), (set(), "count(DISTINCT e.dim_a_id), count(*)", ''),
                                           ({'v'}, "count(*), sum(v)", ' AND v > 4'), ({'id', 'created_at'}, "min(id), max(id)", f" AND created_at >= DATE '2026-0{m1}-01'")], 3):
             subset = self.kept is None or cols <= self.kept   # every key by its key: stored right after a build, else the join
-            qs.append(('group key', f"SELECT {gk} AS k, {aggs} FROM events e WHERE {ga}{filt} GROUP BY 1 ORDER BY 1",
-                       f"SELECT s.tenant_id AS k, {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act} WHERE true{filt} GROUP BY 1 ORDER BY 1", False, subset, False,
-                       None if subset else '^column .* not in the scope units$'))
-        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE {ga}",   # a row for each pair, no group
-                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}", False, self.kept is None or {'v', 'id'} <= self.kept, False,
-                   None if self.kept is None or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
-        ks2 = sorted(set(ks))   # several keys counted for each pair (it raises a refusal as the markers of every key do): the changed pairs of a dim_b are read once from the segments and expanded by its pairs
+            gq = f"SELECT s.tenant_id AS k, {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act} WHERE true{filt} GROUP BY 1 ORDER BY 1"
+            qs.append(('group key', gq, gq, False, subset and not self.union, False, None if subset or self.union else '^column .* not in the scope units$'))
+        gq = f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}"   # a row for each pair, every key, no group
+        qs.append(('group key', gq, gq, False, (self.kept is None or {'v', 'id'} <= self.kept) and not self.union, False, None if self.kept is None or self.union or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
+        ks2 = sorted(set(ks))   # several keys counted for each pair, by the key too: the changed pairs of a dim_b are read once from the segments and expanded by its pairs
         subset = self.kept is None or {'v', 'id'} <= self.kept
-        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', e.dim_a_id, ARRAY[{lst(ks2)}]::int8[])",
-                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}", False, False, False,
-                   None if subset else '^column .* not in the scope units$'))
+        for aggs, by in (("count(*), sum(v), min(id)", ''), ("s.tenant_id AS k, count(*), sum(v)", ' GROUP BY 1 ORDER BY 1')):
+            gq = f"SELECT {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}{by}"
+            qs.append(('group key', gq, gq, False, False, False, None if subset or self.union else '^column .* not in the scope units$'))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % (P, self.act), False),
                           ("SELECT count(*), sum(v) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (P, lst([pick() for _ in range(3)]), self.act), False),
                           ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM %s s WHERE tenant_id = %d%s)" % (P, pick(), self.act), True),
                           ("SELECT count(*), sum(v) FROM events e WHERE EXISTS (SELECT 1 FROM %s s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = %d%s)" % (P, pick(), self.act), True)]:
-            qs.append(('sql form', q, q, True, False, engage and self.cols is None and not self.soft and not self.union, None))   # the planner's proof of a predicate is a separate piece
+            qs.append(('sql form', q, q, True, False, engage and self.cols is None and not self.union, None))   # a scope of two paths is no relation the planner proves
         return qs
 
 

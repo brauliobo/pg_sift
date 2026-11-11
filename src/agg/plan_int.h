@@ -177,7 +177,7 @@ typedef struct AggCtx
 	List	   *joins;			/* JoinCtx */
 	struct ScopeTake *scope_take;	/* the join to the scope relation the second pass took out of the FROM list (plan_scope.c); NULL: none */
 	struct ScopeTake *scope_pass;	/* the two passes of the statement over a scope index (group_paths_skip, topn_paths): the first leaves its paths' specs there as the join the second may run instead */
-	const char *scope_all;		/* the scope (key_name) whose every key the scan reads (SiftAggScope.all): its derived leaf is a leaf the spec may read; NULL: none */
+	const char *scope_key;		/* the scope (key_name) whose derived key the statement groups by (ScopeTake.key_read): its leaf is a leaf the spec may read; NULL: none */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
@@ -324,6 +324,10 @@ typedef struct ScopeTake
 	Index		rti;			/* what the pass took out: the scope relation, or the view over it (0: nothing yet) */
 	Index		krti;			/* ... and the table of keys its key was joined to (0: the key is bound by constants or parameters) */
 	Var		   *fk;				/* the member key of the scanned table the join equated to the scope relation's member column */
+	AttrNumber *map;			/* the columns of the table that those of the item are (a view over the scope relation; NULL: the item is the table), nmap entries */
+	int			nmap;
+	AttrNumber	key;			/* the key column of the scope relation */
+	bool		key_read;		/* the statement groups by the key column of the item, which the scan reads as the derived leaf of the scope (sift_agg_scope_key_leaf) */
 	SiftAggScope sc;			/* the conjunct as the join states it: all but fk (the leaf, which the scan's layout gives) */
 	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them (for a parameter, those of the average key) */
 } ScopeTake;
@@ -608,7 +612,7 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
 extern bool sift_agg_scope_wanted(AggCtx *c);
-/* the derived leaf of the scope the scan reads every key of, when e is the expression that stands for it (match_leaf); -1 when it is not */
+/* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);

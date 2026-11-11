@@ -127,16 +127,16 @@ ORDER BY f.name COLLATE "C", k.n, m.mode;
  IN, table of keys, a plan of its own     |   30 | force_generic_plan | scope read    |                             | t
  join, ANY ($1), a row for each pair      |    1 | force_custom_plan  | scope read    |                             | t
  join, ANY ($1), a row for each pair      |    1 | force_generic_plan | scope read    |                             | t
- join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
- join, ANY ($1), a row for each pair      |   10 | force_generic_plan | join          | join is cheaper for 10 keys | t
- join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
- join, ANY ($1), a row for each pair      |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
+ join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | scope read    |                             | t
+ join, ANY ($1), a row for each pair      |   10 | force_generic_plan | scope read    |                             | t
+ join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | scope read    |                             | t
+ join, ANY ($1), a row for each pair      |   30 | force_generic_plan | scope read    |                             | t
  join, table of keys, a row for each pair |    1 | force_custom_plan  | scope read    |                             | t
  join, table of keys, a row for each pair |    1 | force_generic_plan | scope read    |                             | t
- join, table of keys, a row for each pair |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
- join, table of keys, a row for each pair |   10 | force_generic_plan | join          | join is cheaper for 10 keys | t
- join, table of keys, a row for each pair |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
- join, table of keys, a row for each pair |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
+ join, table of keys, a row for each pair |   10 | force_custom_plan  | scope read    |                             | t
+ join, table of keys, a row for each pair |   10 | force_generic_plan | scope read    |                             | t
+ join, table of keys, a row for each pair |   30 | force_custom_plan  | scope read    |                             | t
+ join, table of keys, a row for each pair |   30 | force_generic_plan | scope read    |                             | t
  latest 5, ANY ($1)                       |    1 | force_custom_plan  | scope read    |                             | t
  latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read    |                             | t
  latest 5, ANY ($1)                       |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
@@ -183,11 +183,11 @@ SELECT f.name, c.* FROM cforms f, cached_keys(f, ARRAY[1, 30, 10, 30, 1, 20, 2])
  IN, ANY ($1)                        | 20 | join       | t
  IN, ANY ($1)                        |  2 | scope read | t
  join, ANY ($1), a row for each pair |  1 | scope read | t
- join, ANY ($1), a row for each pair | 30 | join       | t
- join, ANY ($1), a row for each pair | 10 | join       | t
- join, ANY ($1), a row for each pair | 30 | join       | t
+ join, ANY ($1), a row for each pair | 30 | scope read | t
+ join, ANY ($1), a row for each pair | 10 | scope read | t
+ join, ANY ($1), a row for each pair | 30 | scope read | t
  join, ANY ($1), a row for each pair |  1 | scope read | t
- join, ANY ($1), a row for each pair | 20 | join       | t
+ join, ANY ($1), a row for each pair | 20 | scope read | t
  join, ANY ($1), a row for each pair |  2 | scope read | t
 (14 rows)
 
@@ -249,8 +249,8 @@ SELECT * FROM states('built');
  built | IN, ANY ($1)                        | 4       | join       | join is cheaper for 4 keys  | t
  built | IN, ANY ($1)                        | 30      | join       | join is cheaper for 30 keys | t
  built | join, ANY ($1), a row for each pair | 1 (22)  | scope read |                             | t
- built | join, ANY ($1), a row for each pair | 4       | join       | join is cheaper for 4 keys  | t
- built | join, ANY ($1), a row for each pair | 30      | join       | join is cheaper for 30 keys | t
+ built | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
+ built | join, ANY ($1), a row for each pair | 30      | scope read |                             | t
  built | latest 5, ANY ($1)                  | 1 (22)  | scope read |                             | t
  built | latest 5, ANY ($1)                  | 4       | scope read |                             | t
  built | latest 5, ANY ($1)                  | 30      | join       | join is cheaper for 30 keys | t
