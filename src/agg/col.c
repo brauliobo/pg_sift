@@ -888,6 +888,7 @@ static const SiftSrcProvider col_provider = {
 	.open = col_open,
 	.open_part = col_open_part,
 	.open_scope = sift_col_open_scope,
+	.scope_delta = sift_col_open_scope_delta,
 	.view_size = col_view_size,
 	.view_export = col_view_export,
 	.conn_proof = sift_col_conn_proof,

@@ -129,8 +129,9 @@ extern bool sift_scope_covered(Relation index, int scope);
 
 /*
  * The reader (col/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member
- * is not in except (the members whose pairs changed since the stamp, and those that have a row in a write buffer, which no scope entry describes); the entity rows of the
- * members of patch (those of except that have a pair with a key now) are read besides, through the entity path, so that the aggregates see one stream. With once and several keys,
+ * is not in except (the members whose pairs changed since the stamp); the entity rows of the members of patch (those of except that have a pair with a key now) are read
+ * besides, through the entity path, so that the aggregates see one stream. The rows of the write buffers, which no scope entry describes, are the delta: each one of a member
+ * that did not change is read from the buffer once for each of its pairs with a key (sift_col_scope_delta). With once and several keys,
  * the row of a member that has a pair with several of the keys counts in the units of the least of them only: drop[i] lists, for the key drop[i].key, the members whose rows
  * of that key's units are not counted. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys (sift_scope_members) instead; the word
  * is what EXPLAIN prints after "Scope Fallback". A leaf the scan reads (leaves[0..nleaves)) that the scope segments keep no values of (cols(..) of the scope) is a fallback. topn: the scan is a top-N, which does not read the units of both families as one.
@@ -142,9 +143,39 @@ typedef struct SiftScopeDrop
 	uint32		n;
 } SiftScopeDrop;
 
+/* A pair of the scope relation: the member key and the scope key */
+typedef struct SiftScopePair
+{
+	int64		member;
+	int64		key;
+} SiftScopePair;
+
+/* The write buffers of an index: the batches of the live rows of each, as the backend keeps them (a scan reads them the same way), and what the scan stamps their rows with (col/scan/scope_delta.c) */
+struct SiftColBatch;
+typedef struct SiftScopeBuffer
+{
+	struct SiftColBatch **b;
+	int			n;
+	TransactionId stamp;
+	bool		roots;
+} SiftScopeBuffer;
+
+struct SiftDirSnapshot;
+struct SiftScopeDelta;
+extern SiftScopeBuffer *sift_scope_buffers(Relation index, const struct SiftDirSnapshot *dir, int *n);
+extern uint64 sift_scope_buffers_rows(const SiftScopeBuffer *bufs, int nbufs);
+/* The member keys of the rows of the buffers (not distinct, not sorted); *n of them */
+extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, uint32 *n);
+/* The rows of the buffers whose member has one of the pairs (ascending by member), a copy for each, with the values of the leaves[0..nleaves) the scan reads: *rows of them */
+extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves, int nleaves, uint64 *rows);
+
+/* The pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending), read from the leaves of its sift_col index ix (agg/lookcol.c); false: the index cannot give them */
+extern bool lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n);
+
 typedef struct SiftScopeRead
 {
 	const char *why;
+	int			scope;			/* the ordinal of the scope */
 	int64	   *except;
 	uint32		nexcept;
 	int64	   *patch;
@@ -154,6 +185,9 @@ typedef struct SiftScopeRead
 	int			ndrop;
 	int64	   *members;		/* the members the scope relation lists for the keys, when the read listed them to price the patch: the entity path takes them */
 	uint32		nmembers;
+	uint64		buffer_rows;	/* the live rows of the write buffers */
+	struct SiftScopeDelta *delta;	/* the rows of the buffers of the members that did not change (their stored entries are valid), copied for each of the pairs they have with the keys: what the source reads of them */
+	uint64		delta_rows;		/* ... and how many copies they are */
 } SiftScopeRead;
 
 /*
@@ -166,8 +200,57 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_ENTITY_INSTR		21
 #define SIFT_SCOPE_PAIR_INSTR		25
 #define SIFT_SCOPE_MEMBER_INSTR		5600
+/* a row of a write buffer whose member has a pair with the keys, copied for each pair, made a unit and read (the buffer's own rows cost the entity path as much to scan) */
+#define SIFT_SCOPE_DELTA_INSTR		900
+/* a read whose delta costs more than this is priced against the entity path (the pricing itself costs about 1.9 million on the fixture below) */
+#define SIFT_SCOPE_DELTA_PRICED		4000000
 /* the changed members one read lists, at most (8 MB of keys) */
 #define SIFT_SCOPE_CHANGED_MAX		(1 << 20)
+/* a scope entry tested against the drop lists of a read of several keys counted once (the figure of the planner lane: about 7 tests a row and key; not measured with the figures above) */
+#define SIFT_SCOPE_DEDUPE_INSTR		7
+
+/*
+ * The counts the price of a read of a scope key takes. The executor (scope_open) has them from the read it made: the entries and rows from the zones and set summaries of the units as the scan
+ * prunes them, the entity rows of the members to patch (the changed members that have a pair with a key), the delta and the members the relation lists. The planner can know at plan time: nkeys and once (its estimate of nkeys, or the real count once the keys are
+ * evaluated), the entries as nkeys times the entries a key holds (rows of the scope segments of the directory over their keys), pairs as the reltuples of the relation of pairs and path_rows
+ * as the rows of the entity segments the members of the keys may hold; patch_rows and delta_rows are 0 until the journal and the write buffers are read (the upper bound of delta_rows is the rows
+ * of the buffers in the directory times nkeys). A changed member costs its patch rows here and, in the reader, SIFT_SCOPE_MEMBER_INSTR a member against the cap of SIFT_SCOPE_CHANGED_MAX: the figures of the entries and the patch rows
+ * were measured with it in.
+ */
+typedef struct SiftScopeCounts
+{
+	uint32		nkeys;
+	bool		once;			/* a row counts once though its member has pairs with several keys */
+	uint64		entries;		/* the rows of the scope units of the keys */
+	uint64		patch_rows;		/* the entity rows that may hold a member to patch */
+	uint64		delta_rows;		/* the copies of buffer rows the delta reads */
+	uint64		pairs;			/* the pairs of the relation, which the entity path lists the members of the keys from */
+	uint64		path_rows;		/* the entity rows that may hold a member the relation lists for the keys */
+} SiftScopeCounts;
+
+/* What the scope units cost, with the patch and the delta (pure: instructions of the backend) */
+static inline double
+sift_scope_units_price(const SiftScopeCounts *c)
+{
+	double		entry = SIFT_SCOPE_ENTRY_INSTR + (c->once && c->nkeys > 1 ? SIFT_SCOPE_DEDUPE_INSTR : 0);
+
+	return entry * c->entries + SIFT_SCOPE_PATCH_INSTR * (double) c->patch_rows +
+		SIFT_SCOPE_DELTA_INSTR * (double) c->delta_rows;
+}
+
+/* What the entity path (the join as written) costs: the pairs read and the entity rows of the members they list (pure) */
+static inline double
+sift_scope_entity_price(const SiftScopeCounts *c)
+{
+	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows;
+}
+
+/* Is the entity path the cheaper of the two (pure: the same counts give the same answer) */
+static inline bool
+sift_scope_entity_cheaper(const SiftScopeCounts *c)
+{
+	return sift_scope_units_price(c) > sift_scope_entity_price(c);
+}
 
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
 								   const int *leaves, int nleaves);

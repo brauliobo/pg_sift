@@ -131,6 +131,8 @@ extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *g
 extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
 extern void *col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view);
 extern void *sift_col_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+struct SiftScopeRead;
+extern void sift_col_open_scope_delta(void *impl, const struct SiftScopeRead *rd);
 extern const char *sift_col_conn_proof(void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
 extern void sift_col_miss(Relation index, SiftSrcStats *st);
 

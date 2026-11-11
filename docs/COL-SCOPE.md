@@ -55,7 +55,10 @@ nothing to the journal. The scope entries are the active pairs only (soft delete
 ## What a read does
 
 A scan of the index with a scope conjunct (the rows whose member has a pair with a key) reads the scope units of those keys, less the members that changed in the relation of pairs since the
-stamp of the units (the journal says which), plus the entity rows of those of them that have a pair with a key now (the patch), and the rows of the write buffers' members the same way. A statement
+stamp of the units (the journal says which), plus the entity rows of those of them that have a pair with a key now (the patch), plus the delta: the rows of the write buffers, which no scope entry describes. The delta reads the buffer rows once,
+keeps those whose member did not change, and copies each once for each pair of its member with a key under the statement's snapshot (the pairs come from the pair btree, the leaves of the journal index of the pairs or a scan of the
+relation, whichever is cheapest), as the promotion would write them; the scan reads the copies as one more unit of each key, so the visibility check and the tombstones are those of the
+write buffer's rows. A buffered row of a member whose pairs changed is read with the rest of that member's rows by the patch. A statement
 that the scope cannot answer reads the entity rows of the members the relation lists for the keys; the answer is the join's in every case (the tests compare md5 against the plain join after every
 state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). The scan takes the scope conjunct from the join the way an application writes it
 (the recognition below), or from the marker `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join).
@@ -106,11 +109,22 @@ to 24.3 for the join; 100 members 20.7 against 20.8). Pricing costs 1.9 million 
 rows of the index at 21 over 5,600 for a changed member's probe): more read the entity path (`too many changed keys`). The setting `sift.scope_patch_keys` is gone; the testing setting `sift.test_scope_patch`
 takes the patch whatever it costs.
 
+**One price.** The two routes are priced by `sift_scope_entity_cheaper` (`src/col/scope.h`, with `sift_scope_units_price` and `sift_scope_entity_price`): pure functions of the counts of a `SiftScopeCounts` (keys, `once`, the entries of
+the units, the entity rows of the patch, the delta rows, the pairs and the entity rows of the listed members), so the executor (from the zones of the units it read) and the planner (from its estimates)
+decide from the same inputs, and the same snapshot and keys give the same route. A read of several keys counted once adds 7 instructions an entry for the drop lists.
+
+**The delta is priced the same way.** The rows of the write buffers cost 900 instructions a row the pairs select (copy, encode and sort), against the 21 of an entity row of the entity path, and a
+read whose delta costs more than 4,000,000 instructions is priced against the entity path, as the patch is. Measured on 300,000 events, 5,000 members and 50 tenants (instructions of the backend, warm, median of 5, a read of one tenant): the clean read costs 1.49 million and the join 3.32; with 2,000 buffered
+rows the read costs 1.95 million (110 blocks hit, none read; join 3.48); with 20,000 buffered rows 2.63 million (join 3.96). Before, any buffered row made the read take the entity rows of its members
+besides the units, 32.5 million with 2,000 buffered rows and 93.7 with 20,000 when forced, and the entity path (8.8 and 9.5 million, dearer than the join) when priced. A tenant that holds a large share of the
+members with a buffer of tens of thousands of rows can still cost more than the join: the copies are encoded for each read. 20 changed pairs still cost 5.3 million (the entity rows of the changed members, against
+the join's 3.7): the rows of a changed member are read through the entity path.
+
 ## EXPLAIN
 
 `Scope Index`, `Scope Keys`, `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
-Keys`, `Scope Patched Rows`, `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
-`no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer`, `top-n, changed pairs` (a top-N cannot take the patch),
+Keys`, `Scope Patched Rows`, `Scope Delta Rows` (the copies of write buffer rows the scan reads, not counted in the patched rows), `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
+`no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer` (the pairs of the buffered rows are more than work_mem holds), `top-n, changed pairs` (a top-N cannot take the patch or the delta of a changed pair),
 `dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
 the scope index fills it again), `trimmed`, `snapshot` (a serializable or non-MVCC snapshot), `snapshot older than the stamp`, `stamp aged`, `too many changed keys`. A scope read is decided once, by the
 leader (the verdict, the changed members and the patch are made from the snapshot of the statement): it has no workers.

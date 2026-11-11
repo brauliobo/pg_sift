@@ -273,6 +273,10 @@ extern bool sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int 
 struct SiftColBatch;
 extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const *batches, int nbatches);
 
+/* The source of the scope segments of an index (SIFT_COLO_SCOPE), before sift_col_begin: the rows of the write buffers expanded by the pairs rd->delta lists, as units of memory (col/scan/scope_delta.c); the rows were selected by the reader (sift_scope_delta_select) */
+struct SiftScopeRead;
+extern void sift_col_scope_delta(SiftColSource *src, const struct SiftScopeRead *rd);
+
 /*
  * A batch (one SB, rows in key order, all live) as the unit the source is at, in place of the one it was at. Invalidates the vectors of the
  * previous unit like sift_col_next; the batch must stay until the next unit. Its rows are checked against the snapshot like those of a stored unit.

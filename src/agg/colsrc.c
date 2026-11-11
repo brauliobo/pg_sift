@@ -124,6 +124,13 @@ sift_colsrc_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryC
 	return src;
 }
 
+void
+sift_colsrc_scope_delta(SiftSrcSource *src, const struct SiftScopeRead *rd)
+{
+	SIFT_INVARIANT(src->prov->scope_delta != NULL, "sift: the source of this index has no scope segments");
+	src->prov->scope_delta(src->impl, rd);
+}
+
 bool
 sift_colsrc_can_part(Oid relam, bool index)
 {

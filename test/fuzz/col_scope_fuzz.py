@@ -6,7 +6,7 @@
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
 and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between dim_b), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
 tenant of pairs, a reload of the pairs, rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
-After every step a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
+After every step (a 'buffer' step leaves its rows in the write buffer, and the read of a key whose dim_b have some must take them as its delta) a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
 (a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason
 (scope_reason_ok in test/scope_helpers.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
@@ -111,7 +111,7 @@ KEYS_PER = {
     'heavy': "2 + m % 5",
 }
 INDEX_COLS = ['id', 'dim_a_id', 'created_at', 'kind', 'v']
-STEPS = [('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 4), ('pair_ins', 11), ('pair_del', 9), ('pair_move', 11), ('pair_upd', 6), ('aborted', 5),
+STEPS = [('buffer', 9), ('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 4), ('pair_ins', 11), ('pair_del', 9), ('pair_move', 11), ('pair_upd', 6), ('aborted', 5),
          ('savepoints', 5), ('in_txn', 5), ('promote', 7), ('merge', 5), ('vacuum', 6), ('vacuum_pairs', 3), ('reindex', 3), ('pair_reload', 2), ('analyze', 1)]
 SOFT_STEPS = [('pair_soft', 9), ('pair_restore', 6), ('pair_ins_deleted', 3), ('pair_note', 3)]   # added to the steps of a seed whose pairs are soft deleted
 
@@ -217,6 +217,11 @@ VACUUM (ANALYZE) tenant_scope;"""
             a, m = self.next_id, r.choice([50, 500, 2500])
             self.next_id += m
             return kind, f"INSERT INTO events SELECT {self.fact_rows(a, a + m - 1)}", 'facts'
+        if kind == 'buffer':   # rows that stay in the write buffer (no promotion before the reads): inserted, a window updated and another deleted, whose reads must take their delta from it
+            a, m = self.next_id, r.choice([30, 200])
+            self.next_id += m
+            return kind, (f"INSERT INTO events SELECT {self.fact_rows(a, a + m - 1)}; UPDATE events SET v = (v + 1) % 10 WHERE {self.window(pct)}; "
+                          f"DELETE FROM events WHERE id > {a} AND id % 13 = 0"), f'buffer {a}'
         if kind == 'del':
             return kind, f"DELETE FROM events WHERE {self.window(pct)}", 'facts'
         if kind == 'upd_val':
@@ -323,6 +328,22 @@ def check(a, s, label, strict, stats):
             stats[why] += int(n)
 
 
+def check_delta(a, s, label, first_id):
+    """The rows inserted since first_id are in the write buffer: a read of a key whose dim_b have some, that takes the units and patches no member, reads them as its delta (Scope Delta Rows)."""
+    keys = current_keys(a, s)
+    if not keys:
+        return
+    k = s.rng.choice(keys)
+    q = f"SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, {k})"
+    out = a.run(f"SELECT 'rows', count(*) FROM events e WHERE e.id >= {first_id} AND EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = {k}{s.act});\n"
+                "SELECT 'buffer', coalesce(sum(rows), 0) FROM sift.col_segments('events_col') WHERE kind = 'buffer';\n"
+                "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) " + q + ";")
+    rows, buf = (int(re.search(rf'^{w}\|(\d+)$', out, re.M).group(1)) for w in ('rows', 'buffer'))
+    delta = re.search(r'Scope Delta Rows: (\d+)', out)
+    if rows > 0 and buf > 0 and 'Scope Units Read' in out and 'Scope Patched Keys' not in out and not (delta and int(delta.group(1)) > 0):
+        raise Fail(f'{label}: key {k} has {rows} buffered rows and the read of its units took none as its delta: {out.strip()[-700:]}')
+
+
 def check_in_txn(a, s, label, stats, rng):
     """The reads inside the transaction that edited the pairs (its own changes visible), then it commits or rolls back."""
     check(a, s, f'{label} inside', False, stats)
@@ -371,6 +392,8 @@ def run_seed(seed, rows, steps, out_dir):
                 check_in_txn(a, s, label, stats, s.rng)
             else:
                 check(a, s, label, effect == 'rebuild', stats)
+            if effect.startswith('buffer '):
+                check_delta(a, s, label, int(effect.split()[1]))
             if effect == 'vacuum' and not reader:
                 dead = a.run("SELECT 'dead', sf_dead();")
                 if 'dead|0' not in dead:

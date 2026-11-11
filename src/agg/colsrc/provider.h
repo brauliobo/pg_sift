@@ -8,6 +8,8 @@
 
 #include "agg/colsrc/exec.h"
 
+struct SiftScopeRead;
+
 typedef struct SiftSrcProvider
 {
 	bool		(*owns_index) (Oid indexrelam);
@@ -22,6 +24,8 @@ typedef struct SiftSrcProvider
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the provider has no scope indexes, col/scope.h): open for a scan that reads the scope segments of the index and nothing else */
 	void	   *(*open_scope) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	/* Optional (NULL: no scope indexes), on a source of open_scope before its first begin: the rows of the write buffers the read expands by the pairs rd->delta lists are units of the source (col/scan/scope_delta.c) */
+	void		(*scope_delta) (void *impl, const struct SiftScopeRead *rd);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
 	/* Optional (NULL: the source reads no directory it could share): the bytes of the directory the source read, and their number; the participants of a parallel scan number the units of its items by one copy */

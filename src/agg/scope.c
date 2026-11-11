@@ -83,9 +83,10 @@ listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
 }
 
 /*
- * Is the entity path cheaper than the units with the patch? The patch reads the scope entries of the keys and the units of the entity rows that may hold a member to patch, each row
+ * Is the entity path cheaper than the units with the patch and the delta? The patch reads the scope entries of the keys and the units of the entity rows that may hold a member to patch, each row
  * dearer than the entity path's (one conjunct for two sources). The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
- * which the planner's semi join does the same way: both are counted from the zones and set summaries of the units, as the scan prunes them. The list the entity path takes is kept.
+ * which the planner's semi join does the same way: both are counted from the zones and set summaries of the units, as the scan prunes them, and priced by sift_scope_entity_cheaper
+ * (col/scope.h), which the planner calls with its estimates. The list the entity path takes is kept.
  */
 static bool
 patch_dearer(AggExec *ex, Snapshot snapshot)
@@ -96,22 +97,29 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
 	double		pairs;
-	double		patch;
-	double		path;
+	SiftScopeCounts c;
+	bool		dearer;
 
 	rd->members = listed_members(ex, snapshot, &rd->nmembers, &pairs);
-	patch = SIFT_SCOPE_ENTRY_INSTR * (double) unit_rows(units, scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys) +
-		SIFT_SCOPE_PATCH_INSTR * (double) unit_rows(entity, sc->fk, rd->patch, rd->npatch);
-	path = SIFT_SCOPE_PAIR_INSTR * pairs + SIFT_SCOPE_ENTITY_INSTR * (double) unit_rows(entity, sc->fk, rd->members, rd->nmembers);
+	c = (SiftScopeCounts) {
+		.nkeys      = sc->nkeys,
+		.once       = sc->once,
+		.entries    = unit_rows(units, scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys),
+		.patch_rows = unit_rows(entity, sc->fk, rd->patch, rd->npatch),
+		.delta_rows = rd->delta_rows,
+		.pairs      = pairs,
+		.path_rows  = unit_rows(entity, sc->fk, rd->members, rd->nmembers),
+	};
 	sift_colsrc_close(entity);
 	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
-	if (patch <= path)
+	dearer = sift_scope_entity_cheaper(&c);
+	if (!dearer)
 	{
 		pfree(rd->members);
 		rd->members = NULL;
 	}
-	return patch > path;
+	return dearer;
 }
 
 /*
@@ -130,7 +138,8 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return false;
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL,
 										ex->spec->leaves, ex->spec->nleaves);
-	if (rd->why == NULL && rd->npatch > 0 && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+	if (rd->why == NULL && (rd->npatch > 0 || SIFT_SCOPE_DELTA_INSTR * (double) rd->delta_rows > SIFT_SCOPE_DELTA_PRICED) && (sc->once || sc->nkeys == 1) &&
+		!sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
 	ex->scope_why = rd->why;
 	return ex->scope_why == NULL;

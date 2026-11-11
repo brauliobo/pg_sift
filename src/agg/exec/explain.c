@@ -422,8 +422,10 @@ explain_scope(AggExec *ex, ExplainState *es)
 	{
 		ExplainPropertyInteger("Scope Changed Keys", NULL, ex->scope_rd->nchanged, es);
 		ExplainPropertyInteger("Scope Patched Keys", NULL, ex->scope_rd->npatch, es);
-		ExplainPropertyInteger("Scope Patched Rows", NULL, cc.rows_entity + cc.rows_wbuf, es);
+		ExplainPropertyInteger("Scope Patched Rows", NULL, cc.rows_entity + cc.rows_wbuf - ex->scope_rd->delta_rows, es);
 	}
+	if (ex->scope_rd->delta_rows > 0)
+		ExplainPropertyInteger("Scope Delta Rows", NULL, ex->scope_rd->delta_rows, es);
 	if (ex->scope_rd->ndrop > 0)
 		ExplainPropertyInteger("Scope Dedupe Keys", NULL, ex->scope_rd->ndrop, es);
 	sift_explain_begin(&ln, es, "Scope Units");

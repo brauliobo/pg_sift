@@ -441,6 +441,8 @@ typedef struct PruneRange
 } PruneRange;
 
 extern void	scan_load_wbuf(SiftColSource *src);
+/* A batch of memory as a unit of the scan; lane: its rows are those of a write buffer, stamped xstamp, which the heap check vets */
+extern void	scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots);
 extern bool	segments_current(SiftColSource *src);
 extern void scan_view_load(SiftColSource *src, Relation heap, const void *view);
 extern MemoryContext gorder_cx(SiftColSource *src);

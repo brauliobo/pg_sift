@@ -26,6 +26,7 @@
 #include "utils/numeric.h"
 #include "utils/rel.h"
 
+#include "col/scope.h"
 #include "agg/agg.h"
 #include "agg/agg_int.h"
 #include "agg/leaf_int.h"
@@ -773,19 +774,19 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	return ok;
 }
 
-typedef struct KeyMembers
+typedef struct KeyPairs
 {
 	const int64 *keys;			/* ascending */
 	int			nkeys;
-	int64	   *member;
+	SiftScopePair *pair;
 	uint32		n;
 	uint32		cap;
-} KeyMembers;
+} KeyPairs;
 
 static void
-key_members_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows)
+key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows)
 {
-	KeyMembers *km = arg;
+	KeyPairs   *kp = arg;
 
 	for (int w = 0; w < (unit->nrow + 63) / 64; w++)
 		for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)
@@ -793,25 +794,25 @@ key_members_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, u
 			int64		i = (int64) w * 64 + __builtin_ctzll(bits),
 						key = lookcol_scalar_value(&need[1], i);
 
-			if (key < km->keys[0] || key > km->keys[km->nkeys - 1] || !bsearch(&key, km->keys, km->nkeys, sizeof(int64), sift_cmp_i64))
+			if (key < kp->keys[0] || key > kp->keys[kp->nkeys - 1] || !bsearch(&key, kp->keys, kp->nkeys, sizeof(int64), sift_cmp_i64))
 				continue;
-			if (km->n == km->cap)
-				km->member = km->member ? repalloc(km->member, (km->cap *= 2) * sizeof(int64)) : palloc((km->cap = 1024) * sizeof(int64));
-			km->member[km->n++] = lookcol_scalar_value(&need[0], i);
+			if (kp->n == kp->cap)
+				kp->pair = kp->pair ? repalloc(kp->pair, (kp->cap *= 2) * sizeof(SiftScopePair)) : palloc((kp->cap = 1024) * sizeof(SiftScopePair));
+			kp->pair[kp->n++] = (SiftScopePair) {lookcol_scalar_value(&need[0], i), key};
 		}
 }
 
 /*
- * The distinct values of column member of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending), ascending, from the leaves of its sift_col index ix: the
- * members a scope relation lists for the keys, read as the leaves of the index hold them. False (nothing read) when the index is not one of the whole table or holds a value a leaf
+ * The (member, key) pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending), in the order of the leaves, from the leaves of its sift_col index ix: the
+ * pairs a scope relation lists for the keys, read as the leaves of the index hold them. False (nothing read) when the index is not one of the whole table or holds a value a leaf
  * cannot store.
  */
 bool
-lookcol_members(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, int64 **out, uint32 *n)
+lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n)
 {
 	Relation	index = index_open(ix, AccessShareLock);
 	ColNeed		need[2] = {0};
-	KeyMembers	km = {.keys = keys,.nkeys = nkeys};
+	KeyPairs	kp = {.keys = keys,.nkeys = nkeys};
 	bool		ok = nkeys > 0 && usable_index(index);
 
 	if (ok)
@@ -819,16 +820,30 @@ lookcol_members(Relation rel, Oid ix, Snapshot snap, int member, int key, const 
 		need[0].lf = column_leaf_any(sift_colsrc_layout(index), member, NULL);
 		need[1].lf = column_leaf_any(sift_colsrc_layout(index), key, NULL);
 		ok = need[0].lf != NULL && need[1].lf != NULL && need[0].lf->vtype != SCV_CODE && need[1].lf->vtype != SCV_CODE &&
-			lookcol_read_units(&(UnitScope) {.snap = snap}, rel, index, NULL, need, 2, key_members_unit, &km);
+			lookcol_read_units(&(UnitScope) {.snap = snap}, rel, index, NULL, need, 2, key_pairs_unit, &kp);
 	}
 	index_close(index, AccessShareLock);
-	if (!ok)
+	*out = kp.pair;
+	*n = kp.n;
+	return ok;
+}
+
+/* The distinct values of column member of the rows of rel whose column key is one of the keys, ascending (lookcol_pairs) */
+bool
+lookcol_members(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, int64 **out, uint32 *n)
+{
+	SiftScopePair *pairs;
+	uint32		np;
+
+	if (!lookcol_pairs(rel, ix, snap, member, key, keys, nkeys, &pairs, &np))
 		return false;
-	sift_sort_i64(km.member, km.n);
+	*out = palloc(Max(np, 1) * sizeof(int64));
+	for (uint32 i = 0; i < np; i++)
+		(*out)[i] = pairs[i].member;
+	sift_sort_i64(*out, np);
 	*n = 0;
-	for (uint32 i = 0; i < km.n; i++)
-		if (*n == 0 || km.member[*n - 1] != km.member[i])
-			km.member[(*n)++] = km.member[i];
-	*out = km.member ? km.member : palloc(sizeof(int64));
+	for (uint32 i = 0; i < np; i++)
+		if (*n == 0 || (*out)[*n - 1] != (*out)[i])
+			(*out)[(*n)++] = (*out)[i];
 	return true;
 }
