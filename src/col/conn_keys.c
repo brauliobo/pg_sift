@@ -79,7 +79,7 @@ sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key
 
 	if (OidIsValid(pred_index))
 	{
-		Relation	idx = index_open(pred_index, NoLock);
+		Relation	idx = index_open(pred_index, AccessShareLock);
 		IndexInfo  *ii = BuildIndexInfo(idx);
 
 		if (ii->ii_Predicate != NIL)
