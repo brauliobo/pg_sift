@@ -239,6 +239,7 @@ typedef struct SiftAggPath
 	List       *subroots;		/* and the query level it belongs to */
 	List       *parent_pathkeys;	/* an ordered path: the pathkeys of the parent query it satisfies (also on columns the sub-select gives as constants) ... */
 	Index		parent_rti;		/* ... on the entry of the parent that reads this level */
+	List	   *alt_children;	/* the child paths of the join a scope read holds (ScopeAlt.children): the last children of the node, after those of its own joins and its spine */
 } SiftAggPath;
 
 typedef struct JsonRef
@@ -312,6 +313,7 @@ typedef struct ScopeAlt
 	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
 	double		entry_instr;
 	double		knot_rows;
+	List	   *children;		/* the plans its joins read (a sub-select, a union of the two paths of a scope), numbered as the first pass's children: the node of the second pass holds them after its own */
 } ScopeAlt;
 
 typedef struct ScopeTake
@@ -658,6 +660,8 @@ extern const char *scope_arm_proof(Oid relid, List *pred, AttrNumber a, AttrNumb
 /* cost/scope.c: a serial path of the first pass leaves the join it priced (scope_alt_record) for the node of the second to run instead; the path of the second pass takes the one of its order (scope_alt_attach: false, a join the units cannot answer) */
 extern void scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List *pathkeys);
 extern bool scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys);
+/* ... the plans of that join go after the node's own children, and the join's numbers follow them (after agg_path_children and the spine; s is the spec whose scope carries the join) */
+extern void scope_alt_children(SiftAggPath *ap, SiftAggSpec *s);
 /* scope_table.c: a table of keys joined to the scope relation (kvar: its key column, joinq: the equality) is the ARRAY(SELECT ..) of its rows, planned as an InitPlan when the path becomes a plan */
 extern const char *scope_key_table(AggCtx *c, FromScan *fs, List *pool, Node *joinq, Var *kvar, Index srti, bool once, SiftAggScope *sc, ScopeTake *t);
 extern const SiftAggSpec *scope_keys_plan(PlannerInfo *root, const SiftAggSpec *s);

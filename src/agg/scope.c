@@ -23,6 +23,15 @@
 #include "agg/agg_int.h"
 #include "agg/lookcol_int.h"
 
+static bool test_scope_join;
+
+void
+sift_agg_scope_init(void)
+{
+	DefineCustomBoolVariable("sift.test_scope_join", "Testing: a scope read runs the join the node holds, whatever the units cost.", NULL, &test_scope_join, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+}
+
 int
 sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 {
@@ -317,6 +326,11 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
+	if (sc->alt != NULL && test_scope_join)
+	{
+		run_join(ex, "sift.test_scope_join");
+		return false;
+	}
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
 	if (priced)
 	{

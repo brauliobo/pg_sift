@@ -40,6 +40,7 @@ SiftAggPred *pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, 
 SiftAggPred *pred_in(AggExec *ex, int *total, int leaf, bool not_in, const int64 *keys, uint32 n, const char *desc);
 void scope_keys_init(AggExec *ex);
 bool scope_open(AggExec *ex, Snapshot snapshot);
+void sift_agg_scope_init(void);
 void scope_filter(AggExec *ex, int *total, List **add);
 void table_init(AggExec *ex);
 void table_reset(AggExec *ex);

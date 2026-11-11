@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
@@ -80,14 +81,14 @@ alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel
 	return agg_ops;
 }
 
-/* does the node of the second pass run this spec in the place of its own: it has no plan of its own but the node's, and no parameter of an enclosing level */
+/* does the node of the second pass run this spec in the place of its own: the plans its joins read are children it can hold (no parameter of an enclosing level, none of a query level of its own), and it has no spine */
 static bool
 alt_runs(AggCtx *c, const SiftAggSpec *s)
 {
 	if (s->scope != NULL || s->nworkers > 0 || c->level_params != NIL || c->spine != NULL || c->nparts > 0)
 		return false;
 	foreach_ptr(JoinCtx, jc, c->joins)
-		if (jc->cpath != NULL)
+		if (jc->cpath != NULL && (jc->j.params != NIL || jc->j.subplan > 0 || c->detached))
 			return false;
 	return true;
 }
@@ -99,6 +100,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	static const double counts[] = {1, 3, 10, 30, 100};
 	ScopeAlt   *a;
 	RelOptInfo *srel;
+	RangeTblEntry *rte;
 	Index		rti;
 	AttrNumber	att;
 	Oid			type,
@@ -113,7 +115,17 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	if (t == NULL || t->second || !t->try || !alt_runs(c, s) || !sift_agg_scope_item(c, &rti, &att))
 		return;
 	srel = c->root->simple_rel_array[rti];
-	get_atttypetypmodcoll(planner_rt_fetch(rti, c->root)->relid, att, &type, &typmod, &coll);
+	rte = planner_rt_fetch(rti, c->root);
+	if (rte->rtekind == RTE_RELATION)
+		get_atttypetypmodcoll(rte->relid, att, &type, &typmod, &coll);
+	else
+	{
+		Expr	   *key = list_nth_node(TargetEntry, rte->subquery->targetList, att - 1)->expr;
+
+		type = exprType((Node *) key);
+		typmod = exprTypmod((Node *) key);
+		coll = exprCollation((Node *) key);
+	}
 	kall = Max(estimate_num_groups(c->root, list_make1(makeVar(rti, att, type, typmod, coll, 0)), Max(srel->tuples, 1.0), NULL, NULL), 1.0);
 	per = Max(srel->tuples, 1.0) / kall;
 	a = palloc0(sizeof(ScopeAlt));
@@ -122,6 +134,9 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	a->startup = p->startup_cost;
 	a->total = p->total_cost;
 	a->knot_rows = Max(input_rel->rows * per / Max(srel->rows, 1.0), 1.0);
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->cpath != NULL)
+			a->children = lappend(a->children, jc->cpath);
 	a->entry_instr = 0;
 	for (int i = 0; i <= lengthof(counts); i++)
 	{
@@ -157,7 +172,9 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	if (best == NULL)
 		return s->scope->once || (!s->scope->all && s->scope->nkeys <= 1 && !t->key_read);
 	sc = memcpy(palloc(sizeof(SiftAggScope)), s->scope, sizeof(SiftAggScope));
-	sc->alt = best->spec;
+	sc->alt = agg_spec_keep(best->spec);
+	sc->alt->join = memcpy(palloc(best->spec->njoin * sizeof(SiftAggJoin)), best->spec->join, best->spec->njoin * sizeof(SiftAggJoin));
+	((SiftAggPath *) p)->alt_children = best->children;
 	sc->nknot = best->nknot;
 	memcpy(sc->knot_k, best->knot_k, sizeof(sc->knot_k));
 	memcpy(sc->knot_instr, best->knot_instr, sizeof(sc->knot_instr));
@@ -177,4 +194,17 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	p->total_cost = Min(p->total_cost, best->total * (1.0 - 1e-6));
 	p->startup_cost = Min(p->startup_cost, best->startup * (1.0 - 1e-6));
 	return true;
+}
+
+void
+scope_alt_children(SiftAggPath *ap, SiftAggSpec *s)
+{
+	SiftAggSpec *alt = s->scope != NULL ? s->scope->alt : NULL;
+	int			shift = list_length(ap->path.custom_paths);
+
+	if (alt == NULL)
+		return;
+	for (int i = 0; i < alt->njoin; i++)
+		alt->join[i].child += alt->join[i].child >= 0 ? shift : 0;
+	ap->path.custom_paths = list_concat_copy(ap->path.custom_paths, ap->alt_children);
 }

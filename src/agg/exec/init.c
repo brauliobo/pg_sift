@@ -18,6 +18,7 @@ sift_agg_init(void)
 	sift_aggcte_init();
 	sift_agg_probe_init();
 	sift_search_init();
+	sift_agg_scope_init();
 	sift_agg_rows_init();
 	sift_agg_refuse_init();
 	DefineCustomBoolVariable("sift.enable_agg",
