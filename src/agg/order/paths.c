@@ -320,7 +320,7 @@ topn_paths_one(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel
 	fs.scope = scope->second ? scope : NULL;
 	if (!agg_base(c, root, input_rel, &fs))
 		return;
-	scope->try = !scope->second && sift_agg_scope_wanted(c);
+	scope->try = !scope->second && sift_agg_scope_wanted(c, &fs);
 	if (c->func_rti != 0 || !topn_lefts_ok(fs.lefts) ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) :
 		  sift_colsrc_can_tids(get_rel_relam(agg_src_table(c)), false)))

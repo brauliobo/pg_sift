@@ -1,5 +1,6 @@
 -- Every statement that holds a relation of a scope of the index and is not read from the scope units says why (sift.explain_why, arm scope) and returns the rows of the join as written:
--- the relation behind a view that also reads its child tables, and the ones listed below.
+-- the scope relation inside a join of the sub-select of a semi join, in a sub-select that is no select of it alone, in a plan of its own (NOT IN, OR, a scalar sub-select, a CTE kept as a plan,
+-- an aggregate argument, HAVING), joined twice, under a partitioned scan, or behind a view that also reads its child tables.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -10,19 +11,25 @@ CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WI
 INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 1 + i % 10 FROM generate_series(1, 360) i;
+CREATE TABLE pe (id int, dim_a_id int, kind text, amount int) PARTITION BY RANGE (id);
+CREATE TABLE pe1 PARTITION OF pe FOR VALUES FROM (0) TO (3000);
+CREATE TABLE pe2 PARTITION OF pe FOR VALUES FROM (3000) TO (6001);
+INSERT INTO pe SELECT id, dim_a_id, kind, amount FROM events;
 CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
-VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+CREATE INDEX pe1_col ON pe1 USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX pe2_col ON pe2 USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+VACUUM (FREEZE, ANALYZE) events, pe, tenant_scope;
 
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text;
+DECLARE l text; r text; scoped bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Scope Index: ' THEN RETURN 'scope read'; END IF;
+		scoped := scoped OR l ~ 'Scope Index: ';
 	END LOOP;
 	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN coalesce('join, ' || r, 'no reason');
+	RETURN CASE WHEN scoped THEN 'scope read' || coalesce(', and ' || r, '') ELSE 'join, ' || coalesce(r, 'no reason') END;
 END $$;
 
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -44,13 +51,33 @@ BEGIN
 	RETURN a = b;
 END $$;
 
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+ ('nested IN, the scope relation inside the sub-select', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT o.dim_a_id FROM events o WHERE o.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)) GROUP BY kind$q$),
+ ('nested EXISTS, the scope relation inside the sub-select', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM events o WHERE o.id = e.id AND o.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)) GROUP BY kind$q$),
+ ('IN over a sub-select of two tables', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT o.dim_a_id FROM tenant_scope o JOIN tenant_scope s ON s.tenant_id = o.tenant_id WHERE s.dim_a_id = 4) GROUP BY kind$q$),
+ ('join to a sub-select of two tables', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN (SELECT s.dim_a_id FROM tenant_scope s JOIN tenant_scope t ON t.tenant_id = s.tenant_id WHERE t.dim_a_id = 4 OFFSET 0) s ON s.dim_a_id = e.dim_a_id GROUP BY kind$q$),
+ ('lateral sub-select', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e, LATERAL (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = 3 LIMIT 1) l GROUP BY kind$q$),
+ ('NOT IN', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id NOT IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$),
+ ('IN or another condition', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) OR e.amount = 7 GROUP BY kind$q$),
+ ('MATERIALIZED CTE', $q$WITH ids AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM ids) GROUP BY kind$q$),
+ ('CTE used twice', $q$WITH ids AS (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM ids) AND e.dim_a_id IN (SELECT dim_a_id FROM ids) GROUP BY kind$q$),
+ ('scalar sub-select in the select list', $q$SELECT kind, sum(amount) AS total, (SELECT count(*) FROM tenant_scope WHERE tenant_id = 3) AS n_scope FROM events e GROUP BY kind$q$),
+ ('sub-select in an aggregate argument', $q$SELECT kind, sum(CASE WHEN e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) THEN amount END) AS total FROM events e GROUP BY kind$q$),
+ ('sub-select in HAVING', $q$SELECT kind, sum(amount) AS total FROM events e GROUP BY kind HAVING sum(amount) > (SELECT count(*) FROM tenant_scope WHERE tenant_id = 3)$q$),
+ ('two IN over the scope relation', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) AND e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (3, 5)) GROUP BY kind$q$),
+ ('a join and an IN over the scope relation', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 AND e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (3, 5)) GROUP BY kind$q$),
+ ('partitioned facts, IN', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM pe WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$),
+ ('partitioned facts, join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM pe JOIN tenant_scope s ON s.dim_a_id = pe.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$);
+
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
+
 -- a child table of the scope relation, with pairs the units do not hold
 CREATE TABLE tenant_scope_child () INHERITS (tenant_scope);
 INSERT INTO tenant_scope_child VALUES (399, 3), (398, 3);
 VACUUM (ANALYZE) tenant_scope, tenant_scope_child;
 CREATE VIEW scope_barrier WITH (security_barrier) AS SELECT dim_a_id, tenant_id FROM tenant_scope;
-
-CREATE TABLE forms (name text PRIMARY KEY, q text);
+TRUNCATE forms;
 INSERT INTO forms VALUES
  ('view over a relation with child tables', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN scope_barrier s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$);
 
@@ -59,5 +86,5 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
 DROP FUNCTION label(text), rows_md5(text), same(text);
 DROP TABLE forms;
 DROP VIEW scope_barrier;
-DROP TABLE tenant_scope_child, events, tenant_scope;
+DROP TABLE tenant_scope_child, events, pe, tenant_scope;
 DROP EXTENSION pg_sift;

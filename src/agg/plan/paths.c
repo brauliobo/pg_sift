@@ -87,7 +87,7 @@ group_paths_one(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel
 	}
 	scope->skip = fs.skip;
 	scope->flip = fs.flip;
-	scope->try = !scope->second && sift_agg_scope_wanted(c);
+	scope->try = !scope->second && sift_agg_scope_wanted(c, &fs);
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);

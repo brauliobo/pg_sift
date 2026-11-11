@@ -948,3 +948,11 @@ select status, count(*), sum(amount) from scope_events where dim_a_id in (select
 -- @case scope_union_param | scope | the key of the union by a parameter, generic plan
 -- @pre set plan_cache_mode = force_generic_plan; prepare su(int) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id where v.tenant_id = $1 group by 1;
 execute su(1 + @K@ % 50);
+
+-- ===================== a relation of a scope that no pass takes: the join as written, with the reason
+-- @case scope_refused_nested_in | join | the scope relation inside the sub-select of a semi join
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select o.dim_a_id from scope_events o where o.dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) group by 1;
+-- @case scope_refused_not_in | join | NOT IN over the pairs is a plan of its own
+select status, count(*), sum(amount) from scope_events where dim_a_id not in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) group by 1;
+-- @case scope_refused_two_in | scope | two IN over the pairs: one is read from the units, the other stays a join
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) and dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50)) group by 1;

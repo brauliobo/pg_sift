@@ -611,7 +611,7 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 /* plan_scope.c: the scope conjunct of the scan into s->scope, from the marker in the conjuncts or from the join the second pass took out (false: it has none to take); a scan that builds its spec in another way reads none */
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
-extern bool sift_agg_scope_wanted(AggCtx *c);
+extern bool sift_agg_scope_wanted(AggCtx *c, const FromScan *fs);
 /* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);

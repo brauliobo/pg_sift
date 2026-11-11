@@ -236,6 +236,39 @@ plain_select(const Query *q)
 			 q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->sortClause != NIL || q->rowMarks != NIL);
 }
 
+typedef struct ScopeSeen
+{
+	Oid			heapoid;
+	const SiftScopeSpecs *specs;
+} ScopeSeen;
+
+/* does the tree n read a relation of a scope of the index (a table of any query inside it) */
+static bool
+scope_seen_walker(Node *n, ScopeSeen *s)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, RangeTblEntry))
+		return ((RangeTblEntry *) n)->rtekind == RTE_RELATION && declared_scope(s->heapoid, s->specs, ((RangeTblEntry *) n)->relid) != NULL;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, scope_seen_walker, s, QTW_EXAMINE_RTES_BEFORE);
+	return expression_tree_walker(n, scope_seen_walker, s);
+}
+
+/* why the item rti of the FROM list, a sub-select that is none of the scope read's items, reads a relation of a scope all the same; NOT_SCOPE: it reads none */
+static const char *
+item_strays(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
+{
+	RangeTblEntry *rte = planner_rt_fetch(rti, c->root);
+	ScopeSeen	seen = {c->heapoid, specs};
+
+	if (rte->rtekind != RTE_SUBQUERY || !scope_seen_walker((Node *) rte->subquery, &seen))
+		return NOT_SCOPE;
+	return bms_is_empty(c->root->simple_rel_array[rti]->lateral_relids) ?
+		"a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units" :
+		"a lateral (correlated) sub-select reads the scope relation";
+}
+
 /*
  * What the item rti of the FROM list is as a scope relation: the table itself, or the one table of a sub-select PostgreSQL did not flatten (a security barrier view) that projects its
  * columns, which is then read through (map[resno] is the column of the table the sub-select outputs as resno, 0 for another expression; nmap entries), or the union of the two paths of a
@@ -528,7 +561,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 				tables = NULL;
 
 	if (sp == NULL)
-		return NOT_SCOPE;
+		return item_strays(c, specs, rti);
 	if (why != NULL)
 		return why;
 	if (sp->joined != NULL && !it.is_union)
@@ -667,19 +700,50 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 	return false;
 }
 
-/* Does the first pass scan an index that declares scopes, with tables joined to it: the statement may have a scope join for a second pass to take out */
+/*
+ * Why a relation of a scope of the index stays in the statement where the pass has no item of the FROM list to take: a table inside a join of the sub-select of a semi or anti join, or a
+ * sub-select the planner runs as a plan of its own (NOT IN, OR, a scalar or an ARRAY sub-select, a MATERIALIZED CTE, the select list). NULL: none does.
+ */
+static const char *
+scope_strays(AggCtx *c, const FromScan *fs, const SiftScopeSpecs *specs)
+{
+	ScopeSeen	seen = {c->heapoid, specs};
+
+	for (int rti = -1; (rti = bms_next_member(fs->hidden, rti)) >= 0;)
+		if (scope_seen_walker((Node *) planner_rt_fetch(rti, c->root), &seen))
+			return "the scope relation is a table inside a join in the sub-select of a semi join: only a semi join to the scope relation itself is read from the units";
+	foreach_ptr(PlannerInfo, sub, c->root->glob->subroots)
+		if (sub->parent_root == c->root && scope_seen_walker((Node *) sub->parse, &seen))
+			return "a sub-select over the scope relation is a plan of its own (NOT IN, OR, a scalar sub-select, a MATERIALIZED CTE, the select list): only a join, IN or EXISTS that PostgreSQL pulls up into the join is read from the units";
+	return NULL;
+}
+
+/* Does the first pass scan an index that declares scopes, with tables joined to it: the statement may have a scope join for a second pass to take out; says why a relation of a scope that no pass can take stays in it */
 bool
-sift_agg_scope_wanted(AggCtx *c)
+sift_agg_scope_wanted(AggCtx *c, const FromScan *fs)
 {
 	Relation	index;
-	bool		declared;
+	SiftScopeSpecs *specs;
+	const char *why;
+	Index		rti;
+	AttrNumber	key;
 
-	if (!sift_agg_scope || c->nparts > 0 || c->joins == NIL || !OidIsValid(c->indexoid))
+	if (!sift_agg_scope || !OidIsValid(c->indexoid) || (c->joins == NIL && c->root->glob->subroots == NIL))
 		return false;
 	index = index_open(c->indexoid, AccessShareLock);
-	declared = sift_col_is_index(index) && sift_scope_specs(index) != NULL;
+	specs = sift_col_is_index(index) ? sift_scope_specs(index) : NULL;
 	index_close(index, NoLock);
-	return declared;
+	if (specs == NULL)
+		return false;
+	if ((why = scope_strays(c, fs, specs)) != NULL)
+		scope_miss(why);
+	if (c->nparts > 0)
+	{
+		if (sift_agg_scope_item(c, &rti, &key))
+			scope_miss("a scan of partitions reads no scope");
+		return false;
+	}
+	return c->joins != NIL;
 }
 
 /* the item rti leaves the FROM list with the conditions that read it and its outer or semi join */
@@ -725,6 +789,12 @@ sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined)
 	drop_item(c->root, fs, joined, t->rti);
 	if (t->krti != 0)
 		drop_item(c->root, fs, joined, t->krti);
+	foreach_int(rti, *joined)
+		if (scope_item(c, specs, rti).sp != NULL)
+		{
+			scope_miss("a scan reads one scope relation: another join to a scope relation stays a join");
+			break;
+		}
 	c->scope_take = t;
 	return true;
 }

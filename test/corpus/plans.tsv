@@ -434,3 +434,6 @@ scope_union_join_view	SiftAgg	single:t
 scope_union_join_all	-	scope:f:scope,single:f:join_child
 scope_union_missing	SiftAgg	scope:f:scope,single:t
 scope_union_param	-	n/a(prepared)
+scope_refused_nested_in	SiftAgg	scope:f:scope,single:t
+scope_refused_not_in	SiftAgg	scope:f:scope,single:t
+scope_refused_two_in	SiftAgg	scope:f:scope,single:t
