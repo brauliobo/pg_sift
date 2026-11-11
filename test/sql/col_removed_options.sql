@@ -7,8 +7,9 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 \set VERBOSITY terse
 
-CREATE TABLE ro (id int, tenant_id int, uid int, ts timestamp, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO ro SELECT i, (i::bigint * 7919 % 300)::int, (i::bigint * 7919 % 40009)::int, timestamp '2026-01-01' + i * interval '1 second', md5(i::text)
+-- no string column: the later indexes would share its strings through a value store and the first would not, which is a layout of its own
+CREATE TABLE ro (id int, tenant_id int, uid int, ts timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO ro SELECT i, (i::bigint * 7919 % 300)::int, (i::bigint * 7919 % 40009)::int, timestamp '2026-01-01' + i * interval '1 second'
 FROM generate_series(1, 40000) i;
 VACUUM (FREEZE, ANALYZE) ro;
 
@@ -20,8 +21,8 @@ CREATE FUNCTION ro_layout(ix regclass) RETURNS text LANGUAGE sql AS $$
 	FROM sift.col_segments(ix) WHERE kind = 'immutable' $$;
 
 -- an index with the option and the same index without it: the NOTICE of the option, nothing else is said
-CREATE INDEX ro_plain ON ro USING sift_col (id, tenant_id, uid, ts, pad) WITH (key_cut = 'tenant_id', point_tid_columns = 'off', order_array_columns = 'off');
-SELECT format('CREATE INDEX ro_%1$s ON ro USING sift_col (id, tenant_id, uid, ts, pad) WITH (key_cut = ''tenant_id'', point_tid_columns = ''off'', order_array_columns = ''off'', %1$s = %2$s)', opt, val)
+CREATE INDEX ro_plain ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = 'tenant_id', point_tid_columns = 'off', order_array_columns = 'off');
+SELECT format('CREATE INDEX ro_%1$s ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = ''tenant_id'', point_tid_columns = ''off'', order_array_columns = ''off'', %1$s = %2$s)', opt, val)
 FROM ro_opts \gexec
 SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout, (SELECT reloptions FROM pg_class WHERE relname = 'ro_' || opt) AS stored FROM ro_opts ORDER BY opt;
 
