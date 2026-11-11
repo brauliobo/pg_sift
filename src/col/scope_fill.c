@@ -4,6 +4,8 @@
  * For each scope the fill knows the pairs (member, scope key) of the relation under a snapshot the way the fill of the found flags knows a parent (col/conn_fill.c): by reading the relation
  * once into the pairs sorted by member, or by asking its unique btree for the members of each batch, whichever the rows to fill make cheaper (the same price rule and the same btree probe). The stamp is taken before the
  * relation is read, from the journal of the relation (col/scope_journal.c): lineage 0 (and the snapshot's xmin) when the relation has no journal that vouches for the snapshot.
+ * A scope of two paths has the DISTINCT union of the pairs of its relation and of the joined ones, (member, key) for each row of the second relation (via, key) and each member of the third
+ * (via, member) with the same via: the three are read, or asked, in the way of one, and a member's keys are the keys of its pairs and of the keys of each of its via values.
  */
 #include "postgres.h"
 
@@ -50,19 +52,44 @@ typedef struct ScopeSeen
 	uint32		n;
 } ScopeSeen;
 
-typedef struct ScopeMap
+/* The relation of one path with its unique btree and its columns: the pairs it gives are (a, b) */
+typedef struct ScopeSrc
 {
-	SiftConnStamp stamp;
-	int			fk_leaf;		/* the leaf of the fact index that holds the member key */
-	ScopePair  *pairs;			/* the key set: every pair, sorted (NULL: the probe) */
-	uint64		npairs;
+	Relation	rel;
+	Oid			btree;
+	AttrNumber	a;
+	AttrNumber	b;
+} ScopeSrc;
+
+typedef struct ScopeList
+{
+	ScopePair  *p;
+	uint64		n;
+} ScopeList;
+
+/* The btree asked for the values of its first column, the answers remembered: the b column of the rows of each value */
+typedef struct ScopeProbe
+{
 	MemoryContext cx;
 	SiftConnProbe *probe;
-	AttrNumber	key_att;		/* the scope key in the relation: what the probe reads */
+	AttrNumber	out;			/* the column the probe reads of each row */
 	HTAB	   *seen;
 	int64	   *pool;
 	uint64		npool;
 	uint64		poolcap;
+} ScopeProbe;
+
+typedef struct ScopeMap
+{
+	SiftConnStamp stamp;
+	int			fk_leaf;		/* the leaf of the fact index that holds the member key */
+	ScopePair  *pairs;			/* the key set: every pair, sorted and distinct (NULL: the probes) */
+	uint64		npairs;
+	MemoryContext cx;
+	bool		hops;			/* two paths: the keys of a member are those of d and those of g of each value of v */
+	ScopeProbe	d;				/* member -> keys of the pairs relation */
+	ScopeProbe	v;				/* two paths: member -> via values (the members of the via relation, asked by member) */
+	ScopeProbe	g;				/* two paths: via value -> keys of the joined relation */
 } ScopeMap;
 
 struct SiftScopeFill
@@ -88,33 +115,122 @@ pair_cmp(const void *a, const void *b)
 }
 
 static void
-count_pair(void *arg, int64 member, int64 key)
+count_pair(void *arg, int64 a, int64 b)
 {
 	(*(uint64 *) arg)++;
 }
 
 static void
-add_pair(void *arg, int64 member, int64 key)
+add_pair(void *arg, int64 a, int64 b)
 {
-	ScopeMap   *m = arg;
+	ScopeList  *l = arg;
 
-	m->pairs[m->npairs++] = (ScopePair) {member, key};
+	l->p[l->n++] = (ScopePair) {a, b};
 }
 
-/* Reads the relation into the sorted pairs, unless they need more than limit bytes */
+/* Reads the pairs (a, b) of the source into the list, sorted, unless they need more than *budget bytes; else takes what they need from it */
 static bool
-pairs_load(ScopeMap *m, MemoryContext cx, Relation rel, Oid btree, AttrNumber member, AttrNumber key, Snapshot snap, Size limit)
+list_load(ScopeList *l, MemoryContext cx, const ScopeSrc *src, Snapshot snap, Size *budget)
 {
 	uint64		n = 0;
 
-	sift_conn_scan_keys(rel, btree, member, key, snap, count_pair, &n);
-	if (n > limit / sizeof(ScopePair))
+	sift_conn_scan_keys(src->rel, src->btree, src->a, src->b, snap, count_pair, &n);
+	if (n > *budget / sizeof(ScopePair))
 		return false;
-	/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
-	m->pairs = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(ScopePair), MCXT_ALLOC_HUGE);
-	sift_conn_scan_keys(rel, btree, member, key, snap, add_pair, m);
-	qsort(m->pairs, m->npairs, sizeof(ScopePair), pair_cmp);
+	*budget -= n * sizeof(ScopePair);
+	/* check-memory: allow the bytes were checked against the budget of the caller (maintenance_work_mem / 2) above */
+	l->p = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(ScopePair), MCXT_ALLOC_HUGE);
+	l->n = 0;
+	sift_conn_scan_keys(src->rel, src->btree, src->a, src->b, snap, add_pair, l);
+	qsort(l->p, l->n, sizeof(ScopePair), pair_cmp);
 	return true;
+}
+
+/* The pairs (member, key) of the rows of the joined relation g (via, key) and the members of the via relation v (via, member) with the same via, in the array out of at most max, from *n on; returns how many there are */
+static uint64
+join_via(const ScopeList *v, const ScopeList *g, ScopePair *out, uint64 *n)
+{
+	uint64		total = 0;
+	uint64		i = 0,
+				j = 0;
+
+	while (i < v->n && j < g->n)
+	{
+		uint64		ie = i,
+					je = j;
+
+		if (v->p[i].member != g->p[j].member)
+		{
+			if (v->p[i].member < g->p[j].member)
+				i++;
+			else
+				j++;
+			continue;
+		}
+		while (ie < v->n && v->p[ie].member == v->p[i].member)
+			ie++;
+		while (je < g->n && g->p[je].member == g->p[j].member)
+			je++;
+		total += (ie - i) * (je - j);
+		if (out != NULL)
+			for (uint64 x = i; x < ie; x++)
+				for (uint64 y = j; y < je; y++)
+					out[(*n)++] = (ScopePair) {v->p[x].key, g->p[y].key};
+		i = ie;
+		j = je;
+	}
+	return total;
+}
+
+/* Sorts the pairs and keeps each once */
+static uint64
+pairs_distinct(ScopePair *p, uint64 n)
+{
+	uint64		k = 0;
+
+	qsort(p, n, sizeof(ScopePair), pair_cmp);
+	for (uint64 i = 0; i < n; i++)
+		if (k == 0 || pair_cmp(&p[k - 1], &p[i]) != 0)
+			p[k++] = p[i];
+	return k;
+}
+
+/*
+ * Reads the pairs of the scope into the sorted, distinct key set, unless they need more than limit bytes. The pairs of two paths are the direct ones and the join of the other two relations
+ * on the via column (all three are read: the join is made of their sorted lists, a member of a via value with each key of it).
+ */
+static bool
+pairs_load(ScopeMap *m, MemoryContext cx, const ScopeSrc *src, int nsrc, Snapshot snap, Size limit)
+{
+	ScopeList	d = {0},
+				v = {0},
+				g = {0};
+	Size		budget = limit;
+	uint64		nj;
+	bool		ok = list_load(&d, cx, &src[0], snap, &budget);
+
+	if (ok && nsrc == 1)
+	{
+		m->pairs = d.p;
+		m->npairs = d.n;
+		return true;
+	}
+	ok = ok && list_load(&v, cx, &src[2], snap, &budget) && list_load(&g, cx, &src[1], snap, &budget);
+	nj = ok ? join_via(&v, &g, NULL, NULL) : 0;
+	ok = ok && nj <= budget / sizeof(ScopePair) - d.n;
+	if (ok)
+	{
+		/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
+		m->pairs = MemoryContextAllocExtended(cx, Max(d.n + nj, 1) * sizeof(ScopePair), MCXT_ALLOC_HUGE);
+		memcpy(m->pairs, d.p, d.n * sizeof(ScopePair));
+		m->npairs = d.n;
+		join_via(&v, &g, m->pairs, &m->npairs);
+		m->npairs = pairs_distinct(m->pairs, m->npairs);
+	}
+	for (ScopeList *l = &d; l != NULL; l = l == &d ? &v : l == &v ? &g : NULL)
+		if (l->p != NULL)
+			pfree(l->p);
+	return ok;
 }
 
 static HTAB *
@@ -125,20 +241,39 @@ seen_new(MemoryContext cx)
 	return hash_create("sift scope probe", 1024, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
+/* The btree of the source asked by its column by, the answers the column out of each row */
+static void
+probe_begin(ScopeProbe *p, MemoryContext cx, const ScopeSrc *src, AttrNumber by, AttrNumber out, Snapshot snap)
+{
+	p->cx = cx;
+	p->probe = sift_conn_probe_begin_on(cx, src->rel, src->btree, by, snap);
+	p->out = out;
+	p->seen = seen_new(cx);
+}
+
 /*
- * The relation is open (AccessShare, held to the end of the transaction) and btree is its unique index on (member, key), in either order. stamp is the stamp of its journal taken
- * before the relation is read (lineage 0: the journal cannot vouch, the entries are written all the same and a reader will not take them for the relation's).
+ * The sources are open (AccessShare, held to the end of the transaction), each with its unique btree on its two columns, in either order: the pairs relation, and for two paths the joined
+ * relation (via, key) and the via relation (via, member). stamp is the stamp of the journal of the pairs relation taken before it is read (lineage 0: the journal cannot vouch, the
+ * entries are written all the same and a reader will not take them for the relation's).
  */
 static void
-map_begin(SiftScopeFill *f, ScopeMap *m, Relation rel, Oid btree, AttrNumber member, AttrNumber key, Snapshot snap, uint64 rows, SiftConnStamp stamp)
+map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot snap, uint64 rows, SiftConnStamp stamp)
 {
+	double		parent_rows = 0;
+
 	m->cx = f->cx;
 	m->stamp = stamp;
-	if (sift_conn_probe_cheaper(rows, sift_conn_rows_of(rel)) || !pairs_load(m, f->cx, rel, btree, member, key, snap, (Size) maintenance_work_mem * 1024 / 2))
+	m->hops = nsrc == 3;
+	for (int i = 0; i < nsrc; i++)
+		parent_rows += sift_conn_rows_of(src[i].rel);
+	if (sift_conn_probe_cheaper(rows, parent_rows) || !pairs_load(m, f->cx, src, nsrc, snap, (Size) maintenance_work_mem * 1024 / 2))
 	{
-		m->probe = sift_conn_probe_begin_on(f->cx, rel, btree, member, snap);
-		m->key_att = key;
-		m->seen = seen_new(f->cx);
+		probe_begin(&m->d, f->cx, &src[0], src[0].a, src[0].b, snap);
+		if (m->hops)
+		{
+			probe_begin(&m->v, f->cx, &src[2], src[2].b, src[2].a, snap);
+			probe_begin(&m->g, f->cx, &src[1], src[1].a, src[1].b, snap);
+		}
 	}
 }
 
@@ -171,7 +306,7 @@ fill_done(SiftScopeFill *f)
 	bool		probing = false;
 
 	for (int i = 0; i < f->n; i++)
-		probing |= f->m[i].probe != NULL;
+		probing |= f->m[i].d.probe != NULL;
 	if (!probing && !IsInParallelMode())
 		UnregisterSnapshot(f->snap);
 	if (!probing || IsInParallelMode())
@@ -195,18 +330,21 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 	fill_snapshot(f);
 	for (int i = 0; i < f->n; i++)
 	{
-		Relation	rel;
-		AttrNumber	member,
-					key;
-		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
+		const SiftScopeSpec *sp = specs->s[i];
+		int			nsrc = sp->joined ? 3 : 1;
+		ScopeSrc	src[3];
 		SiftConnStamp stamp;
 
+		src[0].btree = sift_scope_relation_index(heap, index, sp, &src[0].rel, &src[0].a, &src[0].b);
+		for (int h = 1; h < nsrc; h++)
+			src[h].btree = sift_scope_hop_index(heap, index, sp, h, &src[h].rel, &src[h].a, &src[h].b);
 		/* the stamp comes before the first read of the relation */
 		if (sift_scope_take(index, i, f->snap, &stamp) != SIFT_CONN_OK)
 			stamp.xmin = f->snap->xmin;
 		f->m[i].fk_leaf = r->first[r->schema->cols[r->scope_leaf[i]].attno];
-		map_begin(f, &f->m[i], rel, btree, member, key, f->snap, rows, stamp);
-		table_close(rel, NoLock);
+		map_begin(f, &f->m[i], src, nsrc, f->snap, rows, stamp);
+		for (int h = 0; h < nsrc; h++)
+			table_close(src[h].rel, NoLock);
 	}
 	fill_done(f);
 	table_close(heap, NoLock);
@@ -218,9 +356,10 @@ SiftScopeFill *
 sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows)
 {
 	SiftScopeFill *f = fill_new(mcxt, 1);
+	ScopeSrc	src = {rel, btree, member, key};
 
 	fill_snapshot(f);
-	map_begin(f, &f->m[0], rel, btree, member, key, f->snap, rows, (SiftConnStamp) {.xmin = f->snap->xmin});
+	map_begin(f, &f->m[0], &src, 1, f->snap, rows, (SiftConnStamp) {.xmin = f->snap->xmin});
 	fill_done(f);
 	return f;
 }
@@ -306,7 +445,7 @@ sift_scope_fill_hook(SiftScopeFill *f, SiftColFill *conn, int nconn)
 
 typedef struct ProbeKeys
 {
-	ScopeMap   *m;
+	ScopeProbe *p;
 	ScopeSeen  *e;
 } ProbeKeys;
 
@@ -314,52 +453,94 @@ static bool
 collect_key(void *arg, TupleTableSlot *slot)
 {
 	ProbeKeys  *pk = arg;
-	ScopeMap   *m = pk->m;
+	ScopeProbe *p = pk->p;
 	int64		key;
 
-	if (!sift_conn_slot_key(slot, m->key_att, &key))
+	if (!sift_conn_slot_key(slot, p->out, &key))
 		return true;
-	if (m->npool == m->poolcap)
+	if (p->npool == p->poolcap)
 	{
-		m->poolcap = Max(m->poolcap * 2, 1024);
-		m->pool = m->pool == NULL ? MemoryContextAllocExtended(m->cx, m->poolcap * sizeof(int64), MCXT_ALLOC_HUGE)
-			: repalloc_huge(m->pool, m->poolcap * sizeof(int64));
+		p->poolcap = Max(p->poolcap * 2, 1024);
+		p->pool = p->pool == NULL ? MemoryContextAllocExtended(p->cx, p->poolcap * sizeof(int64), MCXT_ALLOC_HUGE)
+			: repalloc_huge(p->pool, p->poolcap * sizeof(int64));
 	}
-	m->pool[m->npool++] = key;
+	p->pool[p->npool++] = key;
 	pk->e->n++;
 	return true;
 }
 
-/* The keys of every member of the batch are in the cache */
+/* The answers for every value of the batch (nulls: bit set = NULL, NULL: none) are in the cache */
 static void
-probe_members(ScopeMap *m, const int64 *fk, const uint64 *nulls, uint32 nrows)
+probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
 {
 	SiftConnProbeScan s;
 
-	if (hash_get_num_entries(m->seen) > SEEN_MAX || m->npool > POOL_MAX)
+	if (hash_get_num_entries(p->seen) > SEEN_MAX || p->npool > POOL_MAX)
 	{
-		hash_destroy(m->seen);
-		m->seen = seen_new(m->cx);
-		m->npool = 0;
+		hash_destroy(p->seen);
+		p->seen = seen_new(p->cx);
+		p->npool = 0;
 	}
-	sift_conn_probe_open(m->probe, &s);
-	for (uint32 row = 0; row < nrows; row++)
+	sift_conn_probe_open(p->probe, &s);
+	for (uint32 i = 0; i < n; i++)
 	{
 		bool		hit;
 		ScopeSeen  *e;
 		ProbeKeys	pk;
 
-		if (sift_col_bit_test(nulls, row))
+		if (nulls != NULL && sift_col_bit_test(nulls, i))
 			continue;
-		e = hash_search(m->seen, &fk[row], HASH_ENTER, &hit);
+		e = hash_search(p->seen, &vals[i], HASH_ENTER, &hit);
 		if (hit)
 			continue;
-		e->start = m->npool;
+		e->start = p->npool;
 		e->n = 0;
-		pk = (ProbeKeys) {m, e};
-		sift_conn_probe_key(m->probe, &s, fk[row], collect_key, &pk);
+		pk = (ProbeKeys) {p, e};
+		sift_conn_probe_key(p->probe, &s, vals[i], collect_key, &pk);
 	}
 	sift_conn_probe_close(&s);
+}
+
+/* The answer of the cache for a value it holds */
+static const ScopeSeen *
+seen_of(const ScopeProbe *p, int64 val)
+{
+	return hash_search(p->seen, &val, HASH_FIND, NULL);
+}
+
+/* Appends k values to the array a of *n, grown as it needs (*cap) */
+static void
+append_i64(int64 **a, uint64 *cap, uint64 *n, const int64 *src, uint64 k)
+{
+	if (*n + k > *cap)
+	{
+		*cap = Max(*cap * 2, *n + k);
+		/* check-memory: allow the values of one batch or one member, as many as the answers of the caches hold for them */
+		*a = *a == NULL ? palloc_extended(*cap * sizeof(int64), MCXT_ALLOC_HUGE) : repalloc_huge(*a, *cap * sizeof(int64));
+	}
+	memcpy(*a + *n, src, k * sizeof(int64));
+	*n += k;
+}
+
+/* The via values of the members of the batch are in the cache of the joined relation */
+static void
+probe_groups(ScopeMap *m, const int64 *fk, const uint64 *nulls, uint32 nrows)
+{
+	int64	   *vias = NULL;
+	uint64		n = 0,
+				cap = 0;
+
+	for (uint32 r = 0; r < nrows; r++)
+		if (!sift_col_bit_test(nulls, r))
+		{
+			const ScopeSeen *e = seen_of(&m->v, fk[r]);
+
+			append_i64(&vias, &cap, &n, m->v.pool + e->start, e->n);
+		}
+	if (n > 0)
+		probe_values(&m->g, vias, NULL, (uint32) n);
+	if (vias != NULL)
+		pfree(vias);
 }
 
 static void
@@ -394,28 +575,76 @@ pairs_first(const ScopeMap *m, int64 member)
 	return lo;
 }
 
+static int
+cmp_key(const void *a, const void *b)
+{
+	int64		x = *(const int64 *) a,
+				y = *(const int64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* The keys of a member of a scope of two paths: those of its direct pairs and of each of its via values, each once, ascending, in *keys (grown as it needs) */
+static uint64
+member_keys(const ScopeMap *m, int64 member, int64 **keys, uint64 *cap)
+{
+	const ScopeSeen *d = seen_of(&m->d, member),
+			   *v = seen_of(&m->v, member);
+	uint64		n = 0,
+				k = 0;
+
+	append_i64(keys, cap, &n, m->d.pool + d->start, d->n);
+	for (uint32 j = 0; j < v->n; j++)
+	{
+		const ScopeSeen *e = seen_of(&m->g, m->v.pool[v->start + j]);
+
+		append_i64(keys, cap, &n, m->g.pool + e->start, e->n);
+	}
+	qsort(*keys, n, sizeof(int64), cmp_key);
+	for (uint64 i = 0; i < n; i++)
+		if (k == 0 || (*keys)[k - 1] != (*keys)[i])
+			(*keys)[k++] = (*keys)[i];
+	return k;
+}
+
 uint32
 sift_scope_fill_expand(SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap)
 {
 	ScopeMap   *m = &f->m[scope];
+	int64	   *own = NULL;
+	uint64		owncap = 0;
 	uint32		n = 0;
 
-	if (m->probe != NULL)
-		probe_members(m, fk, nulls, nrows);
+	if (m->d.probe != NULL)
+		probe_values(&m->d, fk, nulls, nrows);
+	if (m->d.probe != NULL && m->hops)
+	{
+		probe_values(&m->v, fk, nulls, nrows);
+		probe_groups(m, fk, nulls, nrows);
+	}
 	for (uint32 r = 0; r < nrows; r++)
 	{
 		if (sift_col_bit_test(nulls, r))
 			continue;
-		if (m->probe != NULL)
+		if (m->d.probe != NULL && m->hops)
 		{
-			const ScopeSeen *e = hash_search(m->seen, &fk[r], HASH_FIND, NULL);
+			uint64		nk = member_keys(m, fk[r], &own, &owncap);
+
+			for (uint64 j = 0; j < nk; j++)
+				put(&n, row, key, cap, r, own[j]);
+		}
+		else if (m->d.probe != NULL)
+		{
+			const ScopeSeen *e = seen_of(&m->d, fk[r]);
 
 			for (uint32 j = 0; j < e->n; j++)
-				put(&n, row, key, cap, r, m->pool[e->start + j]);
+				put(&n, row, key, cap, r, m->d.pool[e->start + j]);
 		}
 		else
 			for (uint64 i = pairs_first(m, fk[r]); i < m->npairs && m->pairs[i].member == fk[r]; i++)
 				put(&n, row, key, cap, r, m->pairs[i].key);
 	}
+	if (own != NULL)
+		pfree(own);
 	return n;
 }

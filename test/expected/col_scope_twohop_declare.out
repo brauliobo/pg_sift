@@ -126,7 +126,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the via members of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  scope "tenant_id": 80 entries for 2,000 rows (0.04 per row)
+NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
 NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
