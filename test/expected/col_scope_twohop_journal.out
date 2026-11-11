@@ -276,7 +276,7 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
  too many changed keys |    
 (1 row)
 
--- a group that has more members than the cap is over it
+-- a group that has more members than the cap of the journal read is over it, and the patch is then priced against the entity path
 UPDATE grants SET deleted_at = now() WHERE id = 3;
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 5, :l1, :l2);
           why          | key 
@@ -284,14 +284,14 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
  too many changed keys |    
 (1 row)
 
-SET sift.scope_patch_keys = 5;
+SET sift.test_scope_patch = off;
 SELECT * FROM probe();
  same | units |          why          
 ------+-------+-----------------------
  t    | f     | too many changed keys
 (1 row)
 
-RESET sift.scope_patch_keys;
+RESET sift.test_scope_patch;
 SELECT * FROM probe();
  same | units | why 
 ------+-------+-----

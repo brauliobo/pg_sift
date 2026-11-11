@@ -116,12 +116,12 @@ UPDATE memberships SET deleted_at = NULL WHERE group_id = 1 AND dim_a_id = 3;
 UPDATE grants SET deleted_at = now() WHERE id = 5;
 SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 0, :l1, :l2);
--- a group that has more members than the cap is over it
+-- a group that has more members than the cap of the journal read is over it, and the patch is then priced against the entity path
 UPDATE grants SET deleted_at = now() WHERE id = 3;
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 5, :l1, :l2);
-SET sift.scope_patch_keys = 5;
+SET sift.test_scope_patch = off;
 SELECT * FROM probe();
-RESET sift.scope_patch_keys;
+RESET sift.test_scope_patch;
 SELECT * FROM probe();
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 5);
 

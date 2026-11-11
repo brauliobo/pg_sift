@@ -448,12 +448,14 @@ Oid
 sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey)
 {
 	PairScan	ps = {0};
+	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
 
-	scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), &ps, NULL, 0, NULL);
+	scope_relation(heap, index, ord, &ps, NULL, 0, NULL);
 	*rel = ps.rel;
 	*member = ps.member;
 	*skey = ps.skey;
-	return sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
+	/* the leaves of one journal list the pairs of one relation; the members of a scope of two paths are listed by sift_scope_members */
+	return sift_scope_specs(index)->s[ord]->joined != NULL ? InvalidOid : sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
 /* ---- what the segments of the index say ---- */
