@@ -18,7 +18,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 
-/* The scope relation of the scope and the index that journals it, both open and locked AccessShare; false: the scope is not declared now, or its relation has no journal index */
+/* The scope relation of the scope and the index that journals it, both open and locked AccessShare; false: the scope is not declared now, its relation has no journal index, or it has two paths (no journal yet) */
 static bool
 journal_open(Relation index, int scope, LOCKMODE lock, Relation *rel, Relation *jidx)
 {
@@ -29,7 +29,7 @@ journal_open(Relation index, int scope, LOCKMODE lock, Relation *rel, Relation *
 	Oid			joid,
 				btree;
 
-	if (specs == NULL || scope < 0 || scope >= specs->n)
+	if (specs == NULL || scope < 0 || scope >= specs->n || specs->s[scope]->joined != NULL)
 		return false;
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	btree = sift_scope_relation_index(heap, index, specs->s[scope], rel, &member, &key);

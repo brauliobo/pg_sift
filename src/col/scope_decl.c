@@ -27,6 +27,7 @@
 #include "optimizer/optimizer.h"
 #include "utils/ruleutils.h"
 #include "utils/fmgroids.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -40,13 +41,65 @@ bool		sift_test_scope_patch = false;
 int			sift_test_scope_unit_kind = 0;
 #endif
 
+/* [using name], when the text has it; p is after the closing parenthesis of the relation */
+static const char *
+parse_using(const char *p, char **name, const char **err)
+{
+	p = sift_conn_skip_ws(p);
+	if (strncmp(p, "using", 5) != 0 || !isspace((unsigned char) p[5]))
+		return p;
+	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 5), name, err)) == NULL)
+		return NULL;
+	return sift_conn_skip_ws(p);
+}
+
+/* [schema.]name(a, b) [using index] of one relation, whose columns have the roles ra and rb (the words of the errors) */
+static const char *
+parse_rel(const char *p, SiftScopeRel *r, const char *ra, const char *rb, const char **err)
+{
+	char	   *name;
+
+	if ((p = sift_conn_read_name(sift_conn_skip_ws(p), &name, err)) == NULL)
+		return NULL;
+	if (*p == '.')
+	{
+		r->schema = name;
+		if ((p = sift_conn_read_name(p + 1, &r->name, err)) == NULL)
+			return NULL;
+	}
+	else
+		r->name = name;
+	p = sift_conn_skip_ws(p);
+	if (*p != '(')
+	{
+		*err = psprintf("expected '(' and the %s and %s columns of the relation after its name", ra, rb);
+		return NULL;
+	}
+	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 1), &r->a, err)) == NULL)
+		return NULL;
+	p = sift_conn_skip_ws(p);
+	if (*p != ',')
+	{
+		*err = psprintf("expected ',' and the %s column after the %s column", rb, ra);
+		return NULL;
+	}
+	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 1), &r->b, err)) == NULL)
+		return NULL;
+	p = sift_conn_skip_ws(p);
+	if (*p != ')')
+	{
+		*err = psprintf("expected ')' after the %s column: a scope is a member column and a scope key column", rb);
+		return NULL;
+	}
+	return parse_using(p + 1, &r->index_name, err);
+}
+
 /* One scope, from *pp to its end (a ';' or the end of the text); NULL with *err set when it does not parse */
 static SiftScopeSpec *
 parse_one(const char **pp, const char **err)
 {
 	SiftScopeSpec *s = palloc0(sizeof(SiftScopeSpec));
 	const char *p = sift_conn_skip_ws(*pp);
-	char	   *name;
 
 	if ((p = sift_conn_read_name(p, &s->key_name, err)) == NULL)
 		return NULL;
@@ -64,44 +117,21 @@ parse_one(const char **pp, const char **err)
 		*err = "expected '->' after the column of this index that holds the member key";
 		return NULL;
 	}
-	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 2), &name, err)) == NULL)
+	if ((p = parse_rel(p + 2, &s->rel, "member", "scope key", err)) == NULL)
 		return NULL;
-	if (*p == '.')
+	if (*p == '|')
 	{
-		s->rel_schema = name;
-		if ((p = sift_conn_read_name(p + 1, &s->rel_name, err)) == NULL)
+		s->joined = palloc0(sizeof(SiftScopeRel));
+		s->via = palloc0(sizeof(SiftScopeRel));
+		if ((p = parse_rel(p + 1, s->joined, "via", "scope key", err)) == NULL)
 			return NULL;
-	}
-	else
-		s->rel_name = name;
-	p = sift_conn_skip_ws(p);
-	if (*p != '(')
-	{
-		*err = "expected '(' and the member and scope key columns of the relation after its name";
-		return NULL;
-	}
-	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 1), &s->member, err)) == NULL)
-		return NULL;
-	p = sift_conn_skip_ws(p);
-	if (*p != ',')
-	{
-		*err = "expected ',' and the scope key column after the member column";
-		return NULL;
-	}
-	if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 1), &s->scope_key, err)) == NULL)
-		return NULL;
-	p = sift_conn_skip_ws(p);
-	if (*p != ')')
-	{
-		*err = "expected ')' after the scope key column: a scope is a member column and a scope key column";
-		return NULL;
-	}
-	p = sift_conn_skip_ws(p + 1);
-	if (strncmp(p, "using", 5) == 0 && isspace((unsigned char) p[5]))
-	{
-		if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 5), &s->index_name, err)) == NULL)
+		if (strncmp(p, "via", 3) != 0 || !isspace((unsigned char) p[3]))
+		{
+			*err = "expected 'via' and the relation that lists the members of the via column after the second path";
 			return NULL;
-		p = sift_conn_skip_ws(p);
+		}
+		if ((p = parse_rel(p + 3, s->via, "via", "member", err)) == NULL)
+			return NULL;
 	}
 	if (strncmp(p, "cols", 4) == 0 && *sift_conn_skip_ws(p + 4) == '(')
 	{
@@ -186,21 +216,24 @@ sift_scope_specs(Relation index)
 	return s;
 }
 
-/* The checks of one column of the scope relation: it exists, is an integer and is NOT NULL (a pair has both keys) */
+/*
+ * The checks of one column of a relation of the scope: it exists and is an integer. A scope of one path needs it NOT NULL (a pair has both keys); on two paths a row with a NULL in a column of
+ * its path is not a pair of that path, as a join drops it (a grant on a group has no member, a grant on a member no group).
+ */
 static AttrNumber
-relation_column(Relation rel, const SiftScopeSpec *s, const char *name)
+relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name)
 {
 	AttrNumber	att = get_attnum(RelationGetRelid(rel), name);
 	Form_pg_attribute a;
 
 	if (att == InvalidAttrNumber)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": relation \"%s\" has no column \"%s\"", s->key_name, s->rel_name, name)));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": relation \"%s\" has no column \"%s\"", s->key_name, r->name, name)));
 	a = TupleDescAttr(RelationGetDescr(rel), att - 1);
 	if (!sift_conn_integer_type(a->atttypid))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is not an integer", s->key_name, name, s->rel_name),
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is not an integer", s->key_name, name, r->name),
 						errhint("The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.")));
-	if (!a->attnotnull)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is nullable", s->key_name, name, s->rel_name),
+	if (!a->attnotnull && s->joined == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is nullable", s->key_name, name, r->name),
 						errhint("Declare the member and scope key columns NOT NULL: a pair has both keys.")));
 	return att;
 }
@@ -252,7 +285,7 @@ is_pair_btree(Relation idx, AttrNumber member, AttrNumber key)
  * only partial one (its predicate is a statement of which rows are pairs), else the lowest oid of the plain ones. Two partial ones are ERROR: which rows are pairs would be a guess.
  */
 static Oid
-pair_index(Relation rel, const SiftScopeSpec *s, AttrNumber member, AttrNumber key)
+pair_index(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumber member, AttrNumber key)
 {
 	Oid			plain = InvalidOid,
 				partial = InvalidOid;
@@ -261,29 +294,29 @@ pair_index(Relation rel, const SiftScopeSpec *s, AttrNumber member, AttrNumber k
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
 		bool		ok = is_pair_btree(idx, member, key),
-					named = s->index_name != NULL && strcmp(RelationGetRelationName(idx), s->index_name) == 0,
+					named = r->index_name != NULL && strcmp(RelationGetRelationName(idx), r->index_name) == 0,
 					pred = !heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL);
 
 		index_close(idx, AccessShareLock);
 		if (named)
 		{
 			if (!ok)
-				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": index \"%s\" is not a valid immediate unique btree on exactly (%s, %s)", s->key_name, s->index_name, s->member, s->scope_key),
-								errhint("Name a unique btree of %s on its member and scope key columns, in either order; it may be partial.", s->rel_name)));
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": index \"%s\" is not a valid immediate unique btree on exactly (%s, %s)", s->key_name, r->index_name, r->a, r->b),
+								errhint("Name a unique btree of %s on its member and scope key columns, in either order; it may be partial.", r->name)));
 			return ioid;
 		}
-		if (!ok || s->index_name != NULL)
+		if (!ok || r->index_name != NULL)
 			continue;
 		if (!pred && !OidIsValid(plain))
 			plain = ioid;
 		else if (pred && OidIsValid(partial))
-			ereport(ERROR, (errcode(ERRCODE_AMBIGUOUS_PARAMETER), errmsg("scope \"%s\": \"%s\" has two partial unique btrees on (%s, %s)", s->key_name, s->rel_name, s->member, s->scope_key),
+			ereport(ERROR, (errcode(ERRCODE_AMBIGUOUS_PARAMETER), errmsg("scope \"%s\": \"%s\" has two partial unique btrees on (%s, %s)", s->key_name, r->name, r->a, r->b),
 							errhint("The predicate of the unique btree says which rows are pairs: name the one that does with USING <index> after the columns.")));
 		else if (pred)
 			partial = ioid;
 	}
-	if (s->index_name != NULL)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no index \"%s\"", s->key_name, s->rel_name, s->index_name),
+	if (r->index_name != NULL)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no index \"%s\"", s->key_name, r->name, r->index_name),
 						errhint("USING names a unique btree of the scope relation.")));
 	return OidIsValid(partial) ? partial : plain;
 }
@@ -343,11 +376,43 @@ sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, 
 	return OidIsValid(journal) && predicate_implied_by(index_predicate(pair_btree), index_predicate(journal), false) ? journal : InvalidOid;
 }
 
+/* Relation i of the declaration: 0 the pairs (member, scope key), 1 the joined path (via, scope key), 2 the members of the via column (via, member) */
+static const SiftScopeRel *
+decl_rel(const SiftScopeSpec *s, int i)
+{
+	return i == 0 ? &s->rel : i == 1 ? s->joined : s->via;
+}
+
+/* The relation of the declaration, a heap table that is not the fact table, left open in *rel, locked AccessShare */
+static void
+open_table(Relation heap, const SiftScopeSpec *s, const SiftScopeRel *r, Relation *rel)
+{
+	Oid			roid = sift_conn_relation_oid(RelationGetRelid(heap), r->schema, r->name, AccessShareLock, false);
+
+	if (roid == RelationGetRelid(heap))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope relation is the table of the index", s->key_name),
+						errhint("Name the table of (member, scope key) pairs.")));
+	*rel = table_open(roid, NoLock);
+	if ((*rel)->rd_rel->relkind != RELKIND_RELATION || (*rel)->rd_rel->relam != HEAP_TABLE_AM_OID)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is not a plain heap table", s->key_name, r->name),
+						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
+}
+
+/* The two columns of the relation of the declaration: integers, two columns */
+static void
+check_columns(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumber *a, AttrNumber *b)
+{
+	*a = relation_column(rel, s, r, r->a);
+	*b = relation_column(rel, s, r, r->b);
+	if (*a == *b)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
+						errhint("A scope relation has two columns: the member key and the scope key.")));
+}
+
 /* The checks of one scope's declaration; the relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with it */
 void
 sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)
 {
-	Oid			roid;
 	AttrNumber	fk = get_attnum(RelationGetRelid(heap), s->fk),
 				named;
 
@@ -361,20 +426,17 @@ sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relat
 	if (named != InvalidAttrNumber && sift_conn_index_column(index, named) != InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_DUPLICATE_COLUMN), errmsg("scope \"%s\": the name of the derived key is a column of this index", s->key_name),
 						errhint("Give the derived key a name that no column of the index has: key_order names a column or a derived key.")));
-	roid = sift_conn_relation_oid(RelationGetRelid(heap), s->rel_schema, s->rel_name, AccessShareLock, false);
-	if (roid == RelationGetRelid(heap))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope relation is the table of the index", s->key_name),
-						errhint("Name the table of (member, scope key) pairs.")));
-	*rel = table_open(roid, NoLock);
-	if ((*rel)->rd_rel->relkind != RELKIND_RELATION || (*rel)->rd_rel->relam != HEAP_TABLE_AM_OID)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is not a plain heap table", s->key_name, s->rel_name),
-						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
+	open_table(heap, s, &s->rel, rel);
 	check_cols(index, s);
-	*member = relation_column(*rel, s, s->member);
-	*scope_key = relation_column(*rel, s, s->scope_key);
-	if (*member == *scope_key)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
-						errhint("A scope relation has two columns: the member key and the scope key.")));
+	check_columns(*rel, s, &s->rel, member, scope_key);
+}
+
+/* The joined path and the members of its via column (hop 1, 2) with their columns; the checks of sift_scope_relation passed for the pairs relation */
+static void
+open_hop(Relation heap, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b)
+{
+	open_table(heap, s, decl_rel(s, hop), rel);
+	check_columns(*rel, s, decl_rel(s, hop), a, b);
 }
 
 /* The indexes this index depends on (normal edges to an index): the unique btrees and journal indexes of its scopes and the parent indexes of its connections */
@@ -423,20 +485,38 @@ recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
 }
 
 /*
- * The checks of one scope and the unique btree of its relation that defines its pairs: the one the index records (its dependency), never one chosen again by the rule: a btree made or rebuilt
- * after the scope segments were written must not change which rows are pairs under them. CREATE INDEX and REINDEX record it (sift_scope_resolve). The relation is left open in *rel.
+ * The checks of one relation of a scope (path 0: the pairs; 1, 2: the joined path and the members of its via column) and the unique btree of it that defines its rows: the one the index
+ * records (its dependency), never one chosen again by the rule: a btree made or rebuilt after the scope segments were written must not change which rows are pairs under them.
+ * CREATE INDEX and REINDEX record it (sift_scope_resolve). The relation is left open in *rel.
  */
+static Oid
+path_index(Relation heap, Relation index, const SiftScopeSpec *s, int path, Relation *rel, AttrNumber *a, AttrNumber *b)
+{
+	const SiftScopeRel *r = decl_rel(s, path);
+	Oid			btree;
+
+	if (path == 0)
+		sift_scope_relation(heap, index, s, rel, a, b);
+	else
+		open_hop(heap, s, path, rel, a, b);
+	btree = recorded_btree(RelationGetRelid(index), *rel, *a, *b);
+	if (!OidIsValid(btree))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": index \"%s\" has no recorded unique btree on (%s, %s) of \"%s\"", s->key_name, RelationGetRelationName(index), r->a, r->b, r->name),
+						errhint("REINDEX INDEX %s records it again.", RelationGetRelationName(index))));
+	return btree;
+}
+
 Oid
 sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)
 {
-	Oid			btree;
+	return path_index(heap, index, s, 0, rel, member, scope_key);
+}
 
-	sift_scope_relation(heap, index, s, rel, member, scope_key);
-	btree = recorded_btree(RelationGetRelid(index), *rel, *member, *scope_key);
-	if (!OidIsValid(btree))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": index \"%s\" has no recorded unique btree on (%s, %s) of \"%s\"", s->key_name, RelationGetRelationName(index), s->member, s->scope_key, s->rel_name),
-						errhint("REINDEX INDEX %s records it again.", RelationGetRelationName(index))));
-	return btree;
+Oid
+sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b)
+{
+	Assert(s->joined != NULL && (hop == 1 || hop == 2));
+	return path_index(heap, index, s, hop, rel, a, b);
 }
 
 /* Is the sift_col index a scope relation's journal index (track_changes = 'ctid', as opposed to the parent index of a connection, which tracks a key column)? */
@@ -485,24 +565,107 @@ sync_edges(Oid index, List *keep)
 	CommandCounterIncrement();
 }
 
-/* Says which unique btree defines the pairs, and its predicate */
+/* Says which unique btree defines the rows of relation i of the declaration, and its predicate; a scope of two paths names the columns and what the rows are */
 static void
-notice_btree(const SiftScopeSpec *s, Relation rel, Oid btree)
+notice_btree(const SiftScopeSpec *s, int i, Relation rel, Oid btree)
 {
+	static const char *const what[] = {"direct pairs", "joined pairs", "via members"};
+	const SiftScopeRel *r = decl_rel(s, i);
 	List	   *pred = index_predicate(btree);
+	const char *text = pred == NIL ? NULL : deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(RelationGetRelationName(rel), RelationGetRelid(rel)), false, false);
 
-	if (pred == NIL)
-		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\"", s->key_name, s->rel_name, get_rel_name(btree))));
+	if (s->joined == NULL && pred == NIL)
+		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\"", s->key_name, r->name, get_rel_name(btree))));
+	else if (s->joined == NULL)
+		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\" that satisfy %s", s->key_name, r->name, get_rel_name(btree), text)));
+	else if (pred == NIL)
+		ereport(NOTICE, (errmsg("scope \"%s\": the %s of \"%s\" (%s, %s) are the rows of its unique btree \"%s\"", s->key_name, what[i], r->name, r->a, r->b, get_rel_name(btree))));
 	else
-		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\" that satisfy %s", s->key_name, s->rel_name, get_rel_name(btree),
-								deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(RelationGetRelationName(rel), RelationGetRelid(rel)), false, false))));
+		ereport(NOTICE, (errmsg("scope \"%s\": the %s of \"%s\" (%s, %s) are the rows of its unique btree \"%s\" that satisfy %s", s->key_name, what[i], r->name, r->a, r->b, get_rel_name(btree), text)));
+}
+
+/* Is column a of relation x and column b of relation y the same column pair of the same relation, in either order */
+static bool
+same_columns(Relation x, AttrNumber xa, AttrNumber xb, Relation y, AttrNumber ya, AttrNumber yb)
+{
+	return RelationGetRelid(x) == RelationGetRelid(y) && ((xa == ya && xb == yb) || (xa == yb && xb == ya));
+}
+
+static void
+check_same_type(const SiftScopeSpec *s, const char *role, Relation x, AttrNumber xa, Relation y, AttrNumber ya)
+{
+	Oid			tx = get_atttype(RelationGetRelid(x), xa),
+				ty = get_atttype(RelationGetRelid(y), ya);
+
+	if (tx != ty)
+		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("scope \"%s\": the %s columns \"%s\" of \"%s\" (%s) and \"%s\" of \"%s\" (%s) differ in type", s->key_name, role,
+																	get_attname(RelationGetRelid(x), xa, false), RelationGetRelationName(x), format_type_be(tx),
+																	get_attname(RelationGetRelid(y), ya, false), RelationGetRelationName(y), format_type_be(ty)),
+						errhint("The columns a scope joins are of one integer type: change a column or the declaration.")));
+}
+
+/* The three relations of a scope of two paths with their columns: the paths are three different sets of columns, and what joins has one type */
+static void
+check_hops(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2])
+{
+	for (int i = 0; i < 3; i++)
+		for (int j = 0; j < i; j++)
+			if (same_columns(rel[i], att[i][0], att[i][1], rel[j], att[j][0], att[j][1]))
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the declaration reads \"%s\" (%s, %s) twice", s->key_name, decl_rel(s, i)->name, decl_rel(s, i)->a, decl_rel(s, i)->b),
+								errhint("The direct pairs, the pairs by the via column and the members of the via column are three different sets of columns.")));
+	check_same_type(s, "via", rel[1], att[1][0], rel[2], att[2][0]);
+	check_same_type(s, "member", rel[0], att[0][0], rel[2], att[2][1]);
+	check_same_type(s, "scope key", rel[0], att[0][1], rel[1], att[1][1]);
+}
+
+/* The unique btree that defines the rows of relation i of the declaration: the recorded one when sticky (and using, if it names one, must be it), else chosen by the rule, said in a NOTICE */
+static Oid
+choose_btree(Relation index, const SiftScopeSpec *s, int i, Relation rel, AttrNumber a, AttrNumber b, bool sticky)
+{
+	const SiftScopeRel *r = decl_rel(s, i);
+	Oid			btree = sticky ? recorded_btree(RelationGetRelid(index), rel, a, b) : InvalidOid;
+
+	if (sticky && r->index_name != NULL)
+	{
+		Oid			named = pair_index(rel, s, r, a, b);
+
+		if (OidIsValid(btree) && named != btree)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", s->key_name, get_rel_name(btree), r->index_name),
+							errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
+	}
+	if (!OidIsValid(btree))
+	{
+		btree = pair_index(rel, s, r, a, b);
+		if (!OidIsValid(btree))
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no unique btree index on (%s, %s)", s->key_name, r->name, r->a, r->b),
+							errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.", r->name, r->a, r->b)));
+		notice_btree(s, i, rel, btree);
+	}
+	return btree;
+}
+
+/* The journal index of the pairs relation (of a scope of one path), which must hear of every pair */
+static Oid
+require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree)
+{
+	Oid			journal = sift_scope_journal_index(rel, member, key, btree);
+
+	if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, btree, true)))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", s->key_name, s->rel.name),
+						errhint("A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
+								s->rel.name, s->rel.a, s->rel.b)));
+	if (!OidIsValid(journal))
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", s->key_name, s->rel.name),
+						errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
+								s->rel.name, s->rel.a, s->rel.b)));
+	return journal;
 }
 
 /*
- * CREATE INDEX, REINDEX and ALTER INDEX: finds the unique btree of the relation of each scope the option names and makes the dependency of the index on it, so that DROP INDEX of
- * the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the option is off or not set. The dependency
- * is the record of which btree defines the pairs: CREATE INDEX and REINDEX (which write the scope segments) choose it by the rule and say which in a NOTICE; ALTER INDEX (sticky) leaves the
- * one recorded, as the segments were written under it.
+ * CREATE INDEX, REINDEX and ALTER INDEX: finds the unique btree of each relation of each scope the option names (one for the pairs; a scope of two paths names three) and makes the dependency
+ * of the index on it, so that DROP INDEX of the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the
+ * option is off or not set. The dependency is the record of which btree defines the rows: CREATE INDEX and REINDEX (which write the scope segments) choose it by the rule and say which in a
+ * NOTICE; ALTER INDEX (sticky) leaves the one recorded, as the segments were written under it. The edges of the btrees of one relation are told apart by their columns.
  */
 void
 sift_scope_resolve(Relation heap, Relation index, bool sticky)
@@ -515,44 +678,27 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 						errhint("Declare a scope on a sift_col index of a heap table.")));
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
-		Relation	rel;
-		AttrNumber	member,
-					key;
-		Oid			btree,
-					journal;
+		const SiftScopeSpec *s = specs->s[i];
+		int			npath = s->joined ? 3 : 1;
+		Relation	rel[3];
+		AttrNumber	att[3][2];
+		Oid			btree[3];
 
-		sift_scope_relation(heap, index, specs->s[i], &rel, &member, &key);
-		btree = sticky ? recorded_btree(RelationGetRelid(index), rel, member, key) : InvalidOid;
-		if (sticky && specs->s[i]->index_name != NULL)
+		sift_scope_relation(heap, index, s, &rel[0], &att[0][0], &att[0][1]);
+		for (int h = 1; h < npath; h++)
+			open_hop(heap, s, h, &rel[h], &att[h][0], &att[h][1]);
+		if (npath == 3)
+			check_hops(s, rel, att);
+		for (int h = 0; h < npath; h++)
 		{
-			Oid			named = pair_index(rel, specs->s[i], member, key);
-
-			if (OidIsValid(btree) && named != btree)
-				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", specs->s[i]->key_name, get_rel_name(btree), specs->s[i]->index_name),
-								errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
+			btree[h] = choose_btree(index, s, h, rel[h], att[h][0], att[h][1], sticky);
+			keep = list_append_unique_oid(keep, btree[h]);
 		}
-		if (!OidIsValid(btree))
-		{
-			btree = pair_index(rel, specs->s[i], member, key);
-			if (!OidIsValid(btree))
-				ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no unique btree index on (%s, %s)", specs->s[i]->key_name, specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key),
-								errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.", specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
-			notice_btree(specs->s[i], rel, btree);
-		}
-		journal = sift_scope_journal_index(rel, member, key, btree);
-
-		if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, btree, true)))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", specs->s[i]->key_name, specs->s[i]->rel_name),
-							errhint("A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
-									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
-		if (!OidIsValid(journal))
-			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
-							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
-									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
-		table_close(rel, NoLock);
-		keep = list_append_unique_oid(keep, btree);
-		if (OidIsValid(journal))
-			keep = list_append_unique_oid(keep, journal);
+		/* a scope of two paths has no journal yet: its reads say so and read the entity rows */
+		if (npath == 1)
+			keep = list_append_unique_oid(keep, require_journal(s, rel[0], att[0][0], att[0][1], btree[0]));
+		for (int h = 0; h < npath; h++)
+			table_close(rel[h], NoLock);
 	}
 	sync_edges(RelationGetRelid(index), keep);
 	list_free(keep);
@@ -641,9 +787,10 @@ sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumbe
 					k;
 		char	   *name = psprintf("%s#scope", s->key_name);
 
-		if (sift_conn_index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
-			sift_conn_relation_oid(RelationGetRelid(heap), s->rel_schema, s->rel_name, NoLock, false) != rel ||
-			get_attnum(rel, s->member) != member || get_attnum(rel, s->scope_key) != scope_key)
+		/* the pairs of a scope of two paths are not the rows of one relation */
+		if (s->joined != NULL || sift_conn_index_column(index, get_attnum(RelationGetRelid(heap), s->fk)) != fk ||
+			sift_conn_relation_oid(RelationGetRelid(heap), s->rel.schema, s->rel.name, NoLock, false) != rel ||
+			get_attnum(rel, s->rel.a) != member || get_attnum(rel, s->rel.b) != scope_key)
 			continue;
 		for (int i = 0; i < meta->ncols; i++)
 			if ((meta->cols[i].flags & SIFT_COLD_SCOPE) && strcmp(meta->cols[i].path, name) == 0)
@@ -660,14 +807,30 @@ sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	Relation	rel;
+	const SiftScopeSpec *s;
+	Relation	rel,
+				via;
 	SiftScopeLeg *l = &legs[0];
 
 	Assert(specs != NULL && scope >= 0 && scope < specs->n);
-	l->btree = sift_scope_relation_index(heap, index, specs->s[scope], &rel, &l->member, &l->key);
+	s = specs->s[scope];
+	l->btree = sift_scope_relation_index(heap, index, s, &rel, &l->member, &l->key);
 	l->rel = RelationGetRelid(rel);
 	l->pred = index_predicate(l->btree);
+	l->via_rel = InvalidOid;
 	table_close(rel, NoLock);
+	if (s->joined != NULL)
+	{
+		l = &legs[1];
+		l->btree = sift_scope_hop_index(heap, index, s, 1, &rel, &l->member, &l->key);
+		l->rel = RelationGetRelid(rel);
+		l->pred = index_predicate(l->btree);
+		l->via_btree = sift_scope_hop_index(heap, index, s, 2, &via, &l->via_join, &l->via_member);
+		l->via_rel = RelationGetRelid(via);
+		l->via_pred = index_predicate(l->via_btree);
+		table_close(rel, NoLock);
+		table_close(via, NoLock);
+	}
 	table_close(heap, NoLock);
-	return 1;
+	return s->joined != NULL ? 2 : 1;
 }

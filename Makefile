@@ -272,6 +272,7 @@ TESTING_REGRESS += col_scope_patch
 TESTING_REGRESS += col_scope_patch_price
 TESTING_REGRESS += col_scope_precheck
 TESTING_REGRESS += col_scope_read
+TESTING_REGRESS += col_scope_twohop_declare
 TESTING_REGRESS += col_scope_verify_order
 TESTING_REGRESS += col_seg_head
 TESTING_REGRESS += col_seg_mirror

@@ -16,15 +16,23 @@
 #include "col/col.h"
 #include "col/conn.h"
 
+/* A relation of a declaration and the two columns it names: (member, scope key) for the pairs, (via, scope key) for the joined path, (via, member) for the via relation */
+typedef struct SiftScopeRel
+{
+	char	   *schema;				/* NULL: the schema of the fact table */
+	char	   *name;
+	char	   *a;
+	char	   *b;
+	char	   *index_name;			/* using name: the unique btree of the relation that defines its rows, NULL: chosen by the rule (sift_scope_resolve) */
+} SiftScopeRel;
+
 typedef struct SiftScopeSpec
 {
 	char	   *key_name;			/* the name of the derived leaf, "<key_name>#scope" */
 	char	   *fk;					/* column of the fact index that holds the member key */
-	char	   *rel_schema;			/* NULL: the schema of the fact table */
-	char	   *rel_name;
-	char	   *member;				/* columns of the scope relation */
-	char	   *scope_key;
-	char	   *index_name;			/* using name: the unique btree of the relation that defines the pairs, NULL: chosen by the rule (sift_scope_resolve) */
+	SiftScopeRel rel;				/* the pairs (member, scope_key) */
+	SiftScopeRel *joined;			/* two-hop: | rel2(via, scope_key) via vrel(via, member): the pairs are those of rel and, for each row of rel2, the members of vrel with its via */
+	SiftScopeRel *via;				/* ... vrel; both NULL for a scope of one path */
 	List	   *cols;				/* cols(a, b, c): the columns of the index its scope segments keep (with the member key and the time column of the cut); NIL: all of them */
 } SiftScopeSpec;
 
@@ -49,6 +57,8 @@ extern int	sift_scope_time_leaf(const SiftColDef *defs, int n);
 extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
 /* ... and the unique btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
+/* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded unique btrees */
+extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
 /* CREATE INDEX, REINDEX (sticky false: chooses the unique btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
@@ -59,6 +69,7 @@ extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel
 /*
  * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the unique btree
  * that defines them (recorded when the scope segments were written); pred is the predicate of that btree as an implicit-AND list over Vars of varno 1 (NIL: every row).
+ * The pairs of a scope are the distinct (member, key) of its legs.
  */
 typedef struct SiftScopeLeg
 {
@@ -67,8 +78,14 @@ typedef struct SiftScopeLeg
 	AttrNumber	key;
 	Oid			btree;
 	List	   *pred;
+	/* a joined leg (via_rel valid): member is the column that joins via_rel by via_join, via_member the member key of via_rel; the pairs are (via_member, key) of the rows that join */
+	Oid			via_rel;
+	AttrNumber	via_join;
+	AttrNumber	via_member;
+	Oid			via_btree;
+	List	   *via_pred;
 } SiftScopeLeg;
-/* The legs of scope ordinal scope of the index: 1 (the pairs relation); returns their number */
+/* The legs of scope ordinal scope of the index: 1 (the pairs relation) or 2 (the pairs relation and the joined path); returns their number */
 extern int	sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2]);
 
 /* The cut of the units of the segments of a scope: cut[] (SIFT_COL_CUT_MAX leaves) gets its derived key and the time column of the index if it has one; returns their number */

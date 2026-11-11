@@ -427,28 +427,50 @@ sift_test_col_scope_mark(PG_FUNCTION_ARGS)
 	index_close(index, NoLock);
 	PG_RETURN_VOID();
 }
-/* sift._test_scope_legs(index, scope): the leg of the scope the planner is handed: the pair relation, its columns, the unique btree that defines the pairs and its predicate (NULL: every row) */
+/* a predicate as text, NULL when the leg has none */
+static Datum
+pred_text(Oid rel, List *pred, bool *isnull)
+{
+	*isnull = pred == NIL;
+	return *isnull ? (Datum) 0 : CStringGetTextDatum(deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(get_rel_name(rel), rel), false, false));
+}
+
+/*
+ * sift._test_scope_legs(index, scope): the legs of the scope the planner is handed, one row each: the pair relation, its columns, the unique btree that defines the pairs and its predicate
+ * (NULL: every row); a joined leg also the relation that lists the members of its via column (via_join, via_member), its btree and predicate
+ */
 Datum
 sift_test_scope_legs(PG_FUNCTION_ARGS)
 {
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftScopeLeg legs[2];
-	TupleDesc	desc;
-	Datum		v[5];
-	bool		nulls[5] = {false, false, false, false, false};
+	int			n;
 
-	if (sift_scope_legs(index, PG_GETARG_INT32(1), legs) != 1)
-		elog(ERROR, "a scope with one path has one leg");
-	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	v[0] = ObjectIdGetDatum(legs[0].rel);
-	v[1] = CStringGetTextDatum(get_attname(legs[0].rel, legs[0].member, false));
-	v[2] = CStringGetTextDatum(get_attname(legs[0].rel, legs[0].key, false));
-	v[3] = ObjectIdGetDatum(legs[0].btree);
-	nulls[4] = legs[0].pred == NIL;
-	v[4] = nulls[4] ? (Datum) 0 : CStringGetTextDatum(deparse_expression((Node *) make_ands_explicit(legs[0].pred), deparse_context_for(get_rel_name(legs[0].rel), legs[0].rel), false, false));
+	InitMaterializedSRF(fcinfo, 0);
+	n = sift_scope_legs(index, PG_GETARG_INT32(1), legs);
+	for (int i = 0; i < n; i++)
+	{
+		const SiftScopeLeg *l = &legs[i];
+		bool		joined = OidIsValid(l->via_rel);
+		Datum		v[11] = {Int32GetDatum(i), ObjectIdGetDatum(l->rel), CStringGetTextDatum(get_attname(l->rel, l->member, false)), CStringGetTextDatum(get_attname(l->rel, l->key, false)),
+		ObjectIdGetDatum(l->btree)};
+		bool		nulls[11] = {false};
+
+		v[5] = pred_text(l->rel, l->pred, &nulls[5]);
+		nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[10] = !joined;
+		if (joined)
+		{
+			v[6] = ObjectIdGetDatum(l->via_rel);
+			v[7] = CStringGetTextDatum(get_attname(l->via_rel, l->via_join, false));
+			v[8] = CStringGetTextDatum(get_attname(l->via_rel, l->via_member, false));
+			v[9] = ObjectIdGetDatum(l->via_btree);
+			v[10] = pred_text(l->via_rel, l->via_pred, &nulls[10]);
+		}
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
 	index_close(index, NoLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */
