@@ -837,6 +837,7 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 {
 	SiftAggPath *ap = (SiftAggPath *) newNode(sizeof(SiftAggPath), T_CustomPath);
 	CustomPath *cp = &ap->path;
+	SiftAggScope *scope0;
 
 	s->nworkers = nworkers;
 	cp->path.pathtype = T_CustomScan;
@@ -855,7 +856,12 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	/* the groups after the n-th of the sort key are not emitted (a tie keeps more): the sort above sees about n of them */
 	if (s->gtopn_k > 0 && cp->path.rows > 4.0 * s->gtopn_k)
 		cp->path.rows = 2.0 * s->gtopn_k;
+	scope0 = s->scope;
+	if (!scope_alt_attach(c, s, &cp->path, pathkeys))
+		return;
+	scope_alt_record(c, s, input_rel, &cp->path, pathkeys);
 	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
+	s->scope = scope0;
 	agg_path_children(c, ap);
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);

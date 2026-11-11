@@ -63,7 +63,7 @@ INSERT INTO forms VALUES
  ('top 5 ids', $q$SELECT e.dim_a_id, sum(amount) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY e.dim_a_id ORDER BY total DESC, e.dim_a_id LIMIT 5$q$),
  ('latest 5', $q$SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) ORDER BY created_at DESC, id LIMIT 5$q$),
  -- near misses: each keeps the join
- ('miss: two keys, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY kind$q$),
+ ('two keys, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY kind$q$),
  ('miss: condition on a pair column', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3 AND valid_until IS NULL) GROUP BY kind$q$),
  ('miss: key not bound', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope) GROUP BY kind$q$),
  ('miss: group by the key', $q$SELECT s.tenant_id, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY s.tenant_id$q$),

@@ -78,6 +78,13 @@ typedef struct JstrTrial
 
 #define JSTR_TRIAL		4
 
+/* does a top-N's walk of the global order answer the scan from the index alone: it reads no aggregate, group, join or search (AggExec.open_deferred) */
+static inline bool
+sift_topn_walks_alone(const SiftAggSpec *s)
+{
+	return s->naggs == 0 && s->group < 0 && s->ncombo == 0 && s->search == NULL;
+}
+
 typedef struct AggExec
 {
 	CustomScanState css;

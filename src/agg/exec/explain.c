@@ -394,7 +394,9 @@ group_reads(const SiftAggSpec *s, int leaf)
 static void
 explain_scope(AggExec *ex, ExplainState *es)
 {
-	const SiftAggScope *sc = ex->spec->scope;
+	/* a node that ran the join as written (scope_open) has its alternative for spec, and keeps the one it was planned with in unpacked */
+	const SiftAggSpec *node = ex->unpacked != NULL && ex->unpacked->scope != NULL ? ex->unpacked : ex->spec;
+	const SiftAggScope *sc = node->scope;
 	SiftExplainLine ln;
 	SiftSrcCounters cc;
 	Relation	index;
@@ -407,9 +409,9 @@ explain_scope(AggExec *ex, ExplainState *es)
 			ExplainPropertyText("Scope Fallback", ex->spec->scope_why, es);
 		return;
 	}
-	if (ex->spec->scope_why != NULL)
-		ExplainPropertyText("Scope Filter Left", ex->spec->scope_why, es);
-	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
+	if (node->scope_why != NULL)
+		ExplainPropertyText("Scope Filter Left", node->scope_why, es);
+	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(node->indexoid), sc->key_name), es);
 	if (sc->all)
 		ExplainPropertyText("Scope Keys", "all", es);
 	else if (sc->param == NULL)
@@ -419,9 +421,9 @@ explain_scope(AggExec *ex, ExplainState *es)
 	else
 		ExplainPropertyText("Scope Keys", sc->param_desc, es);
 	/* a plain EXPLAIN has not opened the index */
-	index = ex->index ? ex->index : index_open(ex->spec->indexoid, AccessShareLock);
+	index = ex->index ? ex->index : index_open(node->indexoid, AccessShareLock);
 	sift_scope_columns(index, sc->key_name, &kept, &all);
-	if (sc->all && group_reads(ex->spec, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
+	if (sc->all && group_reads(node, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
 		ExplainPropertyText("Scope Group Key", sc->key_name, es);
 	if (index != ex->index)
 		index_close(index, NoLock);
@@ -433,7 +435,8 @@ explain_scope(AggExec *ex, ExplainState *es)
 	if (ex->scope_why != NULL)
 	{
 		ExplainPropertyText("Scope Fallback", ex->scope_why, es);
-		ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
+		if (ex->spec == node)
+			ExplainPropertyInteger("Scope Members Listed", NULL, ex->scope_members, es);
 		return;
 	}
 	if (ex->scope_rd->nexcept > 0 || ex->scope_rd->ndrop > 0)

@@ -150,7 +150,7 @@ state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a cra
 
 A statement that joins the scanned table to the scope relation of one of its scope indexes is planned twice: as written, and with that join taken out of the `FROM` list and its two
 conditions, the equality of the member column with the declared column of the table and the binding of the scope key, made the scope conjunct of the scan (`EXPLAIN`: `Scope Index`). The
-estimated costs of the two plans choose: the scope read leaves the share of the rows that the pairs of the keys own (`pg_stats` of the key column of the relation, the most common keys by their
+estimated costs of the two plans choose (and, at execution, the real keys: below): the scope read leaves the share of the rows that the pairs of the keys own (`pg_stats` of the key column of the relation, the most common keys by their
 own frequency) of the distinct members of the table, where the join's key filter on the member column leaves the units that hold a member of the keys, most of them for facts ordered by time. The
 rows are those of the join in every case; whether the index may be read at execution is the reader's verdict (`Scope Fallback`).
 
@@ -159,7 +159,7 @@ rows are those of the join in every case; whether the index may be read at execu
 | `JOIN scope_rel s ON s.member = f.fk WHERE s.scope_key = k` (also `IN (k1, k2)` with one distinct key) | once for each pair | yes |
 | `f.fk IN (SELECT member FROM scope_rel WHERE scope_key = k or IN (list))`, `EXISTS`, a CTE of the members, a set-returning SQL function of them | once | yes, any number of constant keys |
 | the same through a view, a security barrier view that projects the two columns, an inlined `STABLE` SQL function | as written | yes |
-| `JOIN` with several keys | once for each pair | no: a member whose pairs changed needs the join, which counts them |
+| `JOIN` with several keys (`= ANY ($1)`, `IN (k1, k2)`, a table of keys) | once for each pair | yes, where the plan holds the join as written (below): the node runs it where the units cannot count a row for each pair, or cost more |
 | `GROUP BY` the scope key ("every tenant"), or any other column of the relation read | once for each pair | not by the planner yet: the reader gives it (below; the testing markers reach it) |
 | the scope key bound by a parameter: `= $1`, `= ANY ($1)`, `IN ($1, $2)`, a stable expression (`current_setting(..)::int`), the output of an InitPlan (`= (SELECT ..)`, `= ANY (ARRAY(SELECT ..))`) | as written | yes: the keys are those of the execution (below); a join (a row for each pair) only for a scalar, an array may hold several keys |
 | a table of keys: `s.key IN (SELECT key FROM keys WHERE ..)`, `EXISTS`, `JOIN keys k ON k.key = s.key` | as written | yes, read once when the scan starts (below); a join (a row for each pair) only where the table gives one key: a unique index on the key column with the other columns bound, or a `DISTINCT` sub-select |
@@ -167,10 +167,10 @@ rows are those of the join in every case; whether the index may be read at execu
 
 **Parameters.** A key that is a parameter of a prepared statement (or the output of an InitPlan, or a stable expression) is read when the scan starts, so a generic plan has the scope read for every value: the plan
 is made once, and each execution has the keys, the verdict of the reader and the changed pairs of its own snapshot (a cached plan stays exact when the pairs change between two executions; NULL and the NULLs of an
-array match nothing, an empty set reads no unit). `EXPLAIN` shows `Scope Keys: $1`, and a run `Scope Keys: $1 (2 keys)`; more keys than the dedupe lists or than `work_mem` read the entity rows
+array match nothing, an empty set reads no unit). `EXPLAIN` shows `Scope Keys: $1`, and a run `Scope Keys: $1 (2 keys)`; more keys than the dedupe lists or than `work_mem` run the join as written
 (`Scope Fallback: dedupe keys`, `dedupe over work_mem`) as for constants. A custom plan has the constants and is priced for them. A generic plan has no value to price: a scalar is the pairs of the average key
-(the rows `pg_stats` expect for an equality on the key column), an array that is not a list the 10 keys PostgreSQL assumes for an array it does not know, and the choice between the scope read and the join is made
-once for all values, so a tenant far above the average pays the plan the average chose (the scope read grows with the tenant, the join with the table).
+(the rows `pg_stats` expect for an equality on the key column), an array that is not a list the 10 keys PostgreSQL assumes for an array it does not know, and the choice between the scope read and the join is made at execution, for the keys the
+execution has (below).
 
 **A table of keys.** The keys of a user, a team or a role are a table, and the statement reads them in a join (`JOIN keys k ON k.key = s.key WHERE k.user_id = 7`), an `IN` or an `EXISTS`. The planner takes the table out of
 the join and has the scan read its keys once when it starts, in the statement's snapshot and with the table's own conditions (as the output of an InitPlan: `Scope Keys: ARRAY(SELECT ..)`), so the keys of each execution of a
@@ -182,7 +182,27 @@ statement reads, keeps the join and says why in `sift.explain_why`. The price is
 a user of the few largest tenants of a skewed set gets a plan priced for average ones: on 300,000 events and 50 tenants the scope read of one key runs in 2.1 million instructions against 7 to 20 million, 3 small tenants 5.3
 against 7.6, the 10 largest 37.8 against 16.6, and 30 keys keep the join.
 
-A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
+**The scope read or the join, for the keys of the execution.** The plan of a scope read holds the join as written too (the first pass's scan, packed with the node), with its price in instructions at 1, 3, 10, 30 and 100 keys of
+the average size and at every key (linear between them: `AGG_ALT_ROW` a row of the table, `AGG_ALT_PAIR` a pair of the relation, `AGG_ALT_OP` an operator of the model beyond the first key's, `src/agg/cost/model.h`). When
+the scan starts it counts the entries of the keys it really has (a constant list, a parameter, an array, the rows of a table of keys), prices the units with `src/col/scope.h` (the entries, the
+aggregation of a row the planner supplies, the dedupe lists the read made, the patch and the delta of the changed members) and runs the join where it costs less: `Scope Fallback: join is cheaper for 30 keys` (`for every key` for a read of every
+key). The reader's refusals (`top-n, changed pairs`, `dedupe keys`, `too many changed keys`, the journal's words) are the same choice with the reader's reason: the join answers, which counts a row for each pair of a member in several keys
+and the units cannot once the pairs of the member changed, so a read of several keys that counts a row for each pair never raises an error. A rescan decides again; `EXPLAIN` always says which way the node went (the scope lines, or
+`Scope Fallback`). The join runs in the leader as a serial scan (a scope read has no workers). The generic plan has the same alternative: the key count it was priced for is the 10 PostgreSQL assumes for an array, the
+execution has the real one. No plan holds the alternative where the join as written has no plan of this scan (the keys are the output of an InitPlan array, or the join is to a plan of its own: a table of keys read through a join that is
+not a semi join of one key), where the scope index is on a view, or where workers were planned: those keep the choice of the plan (the estimated costs) or the reader's refusal as an error of the testing markers.
+Measured on 120,000 and 150,000 events with 1,200 and 50,000 members, and 300,000 events with 5,000 members in several of 50 tenants (instructions of the backend, execution of a prepared statement, warm, median of 3):
+
+| shape | keys | join as written | scope read | node |
+|---|---|---|---|---|
+| 30 members of 111 rows a key | 1 / 10 / 30 | 1.9 / 3.3 / 5.9 M | 0.45 / 2.9 / 7.3 M | scope / join / join (0.49 / 3.4 / 6.1 M) |
+| 500 members of 3 rows a key | 1 / 10 / 30 | 3.5 / 4.2 / 7.3 M | 0.46 / 5.1 / 10.3 M | scope / scope / scope (0.49 / 5.1 / 10.4 M) |
+| 110 members of 55 rows, 10% in two keys | 1 / 10 / 30 / 50 | 3.2 / 7.4 / 13.6 / 19.1 M | 0.46 / 6.4 / 20.4 / 48.2 M | scope / scope / join / join (0.50 / 6.5 / 13.8 / 19.3 M) |
+
+and with changed pairs (the third shape, one tenant of 110 members, join 3.9 M clean): 20 pairs of the tenant changed, scope forced 12.2 M, node 5.1 M (join 4.4); 20 pairs of every tenant, 30 keys: scope forced 141.6 M, node 20.5 M (join 16.6);
+every pair of every tenant, 30 keys: scope forced 501 M, node 26.8 M (join 17.6; the reader lists the changed members before it refuses). The join's price follows within 8% from 3 keys on and 37% at the first key where the
+units of the keys leave some of the table's units out; the units' price is the weaker half (the aggregation of a row and the units' own setup differ with the shape: the node takes the join up to 0.9 M instructions (0.2 ms) late or early in
+the middle of the range, where the two cost the same, and 3 M where a key has many members of few rows). A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
 `ORDER BY .. LIMIT` and the aggregates are the scan's as ever.
 
 **Many to many.** A member may be in several keys: a fact has one entry for each. A read of one key counts each fact of a member that has the pair once. A read of several keys with the meaning of
@@ -206,8 +226,8 @@ before any row (1,400,000: the journal's vouch and changed keys, the directory, 
 find them when no point directory names them, 1,700 a copy of the delta (a changed key's row or a buffered row, copied for each pair, made a unit and read), against the entity path (the keys the relation lists for the tenants, read
 from the leaves of its journal index at 25 a pair, 10 a table row the key filter tests and 35 a row it keeps), which says `Scope Fallback: patch dearer than the entity path`. The prices are pure functions of the counts of a
 `SiftScopeCounts` (`sift_scope_patch_price`, `sift_scope_units_price`, `sift_scope_entity_price` and `sift_scope_entity_cheaper`: the keys and `once`, the entries of the units, the units and rows the patch reads, the delta rows, the
-pairs and the table rows of the listed keys), so the executor (from the zones of the units it read) and the planner (from its estimates) decide from the same inputs. A read of several keys counted once adds 7 instructions an entry
-for the drop lists. A patch and a delta that cost less than pricing them (1,000,000: listing the keys and counting their rows) are read without it. The changed keys one read lists are bounded by the table rows of the index at 21 over
+pairs and the table rows of the listed keys), so the executor (from the zones of the units it read) and the planner (from its estimates) decide from the same inputs. A read of several keys counted once adds 15 instructions an entry for each key whose rows a drop list
+thins (`Scope Dedupe Keys`). A patch and a delta that cost less than pricing them (1,000,000: listing the keys and counting their rows) are read without it. The changed keys one read lists are bounded by the table rows of the index at 21 over
 5,600 for a changed key's probe: more read the entity path (`too many changed keys`). The setting `sift.scope_patch_keys` is gone; the testing setting `sift.test_scope_patch` takes the patch whatever it costs.
 Measured on the fixture above (a read of one tenant; the join 3.24 million clean, 3.63 and 4.16 with 20 and 200 changed pairs): the clean read costs 1.54 million, with 20 changed pairs the read says why and runs the entity path
 (5.3 million: the join's 3.6 and 1.7 million of decision, the journal's vouch, the changed keys, the pairs of the changed keys and the listing of the tenant's keys) where the patch forced costs 8.2 million (5.2 with a point directory
@@ -225,7 +245,7 @@ unit with no member to leave out answers from its pre-aggregates, histograms and
 have. The rest is as for one key: the stored entries of the keys that changed leave at the source and their rows are read once from the table segments and expanded by the pairs they have now (above), and the rows of the write
 buffers are the delta, a copy for each pair of their dim_a_id. The planner chooses between the read and the join at the start of the scan from the price of one function (`sift_scope_entity_cheaper`, with the counts of the read: a
 read of every key has no entity path of its own, so only the planner can take the join). Until the planner recognises the join, the testing markers `sift.in_scope_all(index, key_name, fk)` in the `WHERE` clause and
-`sift.scope_key(index, key_name, fk)` as a group key or an aggregate stand for it, and a refused read raises the error the planner will replace by the join (tests `col_scope_groupkey`, `col_scope_changed_pairs`). Measured on 300,000 events,
+`sift.scope_key(index, key_name, fk)` as a group key or an aggregate stand for it, and a refused read raises the error the planner replaces by the join where it recognises the join (tests `col_scope_groupkey`, `col_scope_changed_pairs`, `agg_scope_choice`). Measured on 300,000 events,
 5,000 dim_a_ids and 50 tenants (instructions of the backend, warm, median of 5; `sum(amount), count(*)` for every tenant): the read costs 1.99 million instructions (86 units from pre-aggregates, 409 blocks hit; the join 53.0 million, 206 hit),
 with 2,000 buffered rows 7.1 million (2,190 copies; the join 53.6; 12.3 before the copies were sorted by radix), with 20 changed pairs 39.4 million (a unit with a changed key's entries is read row by row; the join 56.2; the
 reader refused it after 0.94 million instructions, which the join added to its 56.7) and with 200 changed pairs 89.5 million (the join 56.6: the delta's 25,140 copies cost more than the join, which the planner will choose).
@@ -235,7 +255,7 @@ reader refused it after 0.94 million instructions, which the join added to its 5
 `Scope Index`, `Scope Keys` (`all` for every key), `Scope Group Key` (a group key of the scan is the derived key), `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
 Keys`, `Scope Patched Rows` (the rows of the entity segments read for the changed keys that have a pair now), `Scope Delta Rows` (the copies of the rows of the write buffers and of the patched rows the scan reads, one for each pair), `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
 `no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer` (the pairs of the buffered rows are more than work_mem holds), `top-n, changed pairs` (a top-N cannot take the patch or the delta of a changed pair),
-`dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
+`dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, `join is cheaper for N keys` (the node ran the join as written), and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
 the scope index fills it again), `trimmed`, `snapshot` (a serializable or non-MVCC snapshot), `snapshot older than the stamp`, `stamp aged`, `too many changed keys`. A scope read is decided once, by the
 leader (the verdict, the changed members and the patch are made from the snapshot of the statement): it has no workers.
 

@@ -513,7 +513,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	}
 	if (keyq == NULL)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
-	if (sc.nkeys > 1 && lj == NULL)
+	/* several keys counted for each pair: where the units cannot (a member's pairs changed) the node runs the join the first pass priced, so it needs one */
+	if (sc.nkeys > 1 && lj == NULL && t->alts == NIL)
 		return "several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
 	t->rti = rti;
 	t->fk = (Var *) copyObject(fk);
@@ -523,6 +524,28 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	if (tabq == NULL)
 		t->pairs = root->simple_rel_array[rti]->rows;
 	return NULL;
+}
+
+bool
+sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
+{
+	Relation	index = index_open(c->indexoid, AccessShareLock);
+	SiftScopeSpecs *specs = sift_col_is_index(index) ? sift_scope_specs(index) : NULL;
+
+	index_close(index, NoLock);
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+		const SiftScopeSpec *sp = rte->rtekind == RTE_RELATION ? declared_scope(c->heapoid, specs, rte->relid) : NULL;
+
+		if (sp != NULL)
+		{
+			*rti = jc->rti;
+			*key = get_attnum(rte->relid, sp->rel.b);
+			return true;
+		}
+	}
+	return false;
 }
 
 /* Does the first pass scan an index that declares scopes, with tables joined to it: the statement may have a scope join for a second pass to take out */

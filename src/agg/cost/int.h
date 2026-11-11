@@ -36,6 +36,7 @@ typedef struct CostAcc
 	double		lift;			/* the factor the scan is charged for the rows of an unnest the normal plan expects (agg_cost): the workers it starts cost as much */
 } CostAcc;
 
+extern double agg_ops;		/* the operators of the scan agg_cost priced last, as the executor spends them: before its share against the native plan */
 extern bool pricing_wide;
 extern bool pricing_scratch;
 

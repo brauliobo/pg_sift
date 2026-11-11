@@ -890,5 +890,19 @@ select status, count(*), sum(amount) from scope_events where dim_a_id in (select
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_home k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;
 -- @case scope_keytable_join_null | scope | the home key is NULL: no key
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_home k on k.tenant_id = s.tenant_id where k.user_id = 3 group by 1;
--- @case scope_keytable_join_many | scope | JOIN keys of a user with three keys counts a row for each pair: the join stays
+-- @case scope_keytable_join_many | scope | JOIN keys of a user with three keys counts a row for each pair: the scope read, or the join as written where it costs less
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_user_keys k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;
+
+-- ===================== scope index: the scope read or the join as written, chosen for the keys of the execution
+-- @case scope_choice_array_one | scope | an array parameter of one tenant: the scope read costs less than the join the plan holds, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sc1(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;
+execute sc1(array[1 + @K@ % 50]);
+-- @case scope_choice_array_many | scope | the same plan with thirty tenants: the join as written costs less and runs (Scope Fallback: join is cheaper)
+-- @pre set plan_cache_mode = force_generic_plan; prepare sc1(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;
+execute sc1(array[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]);
+-- @case scope_choice_pairs_few | scope | a join of three tenants counts a row for each pair: the scope read, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sc2(int[]) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = any ($1) group by 1;
+execute sc2(array[1 + @K@ % 50, 1 + @K2@ % 50, 7]);
+-- @case scope_choice_pairs_many | scope | the same with thirty tenants, and a custom plan
+-- @pre set plan_cache_mode = force_custom_plan; prepare sc2(int[]) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = any ($1) group by 1;
+execute sc2(array[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]);

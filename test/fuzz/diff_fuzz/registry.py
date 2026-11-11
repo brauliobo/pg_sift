@@ -80,7 +80,10 @@ def variants(r, fam):
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
     if fam == 'scope':  # the join the plan keeps (the switch off), and the planner's two plans with workers planned (a scope read has none)
-        v += [('scopepar', 'sift.enable_agg=on;' + PAR % (2, 'on')), ('scopeoff', 'sift.enable_agg=on;sift.agg_scope=off;max_parallel_workers_per_gather=0')]
+        v += [('scopepar', 'sift.enable_agg=on;' + PAR % (2, 'on')), ('scopeoff', 'sift.enable_agg=on;sift.agg_scope=off;max_parallel_workers_per_gather=0'),
+              # the price chooses between the scope read and the join as written for the keys of the execution (the cluster of the tests takes the units whatever they cost)
+              ('scopeprice', 'sift.enable_agg=on;sift.test_scope_patch=off;max_parallel_workers_per_gather=0'),
+              ('scopegeneric', 'sift.enable_agg=on;sift.test_scope_patch=off;plan_cache_mode=force_generic_plan;max_parallel_workers_per_gather=0')]
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [

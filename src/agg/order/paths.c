@@ -36,6 +36,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	CustomPath *cp = &ap->path;
 	double		matches = Max(c->rel->rows, 1.0);
 	Cost		extra;
+	SiftAggScope *scope0;
 
 	s->nworkers = nworkers;
 	cp->path.pathtype = T_CustomScan;
@@ -65,7 +66,12 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
 	agg_force_price(&cp->path);
+	scope0 = s->scope;
+	if (!scope_alt_attach(c, s, &cp->path, cp->path.pathkeys))
+		return;
+	scope_alt_record(c, s, input_rel, &cp->path, cp->path.pathkeys);
 	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
+	s->scope = scope0;
 	agg_path_children(c, ap);
 	agg_arm_path(&cp->path);
 	/* TOPN_TIES: the rows come in the order of the first keys only; the Sort puts the others in order, and the Limit above it takes the first */
@@ -299,6 +305,7 @@ topn_paths_one(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED] ? root->upper_targets[UPPERREL_ORDERED] : window_rel->reltarget;
 
 	c->topn_target = target;
+	c->scope_pass = scope;
 	if (!sift_enable_agg || !sift_enable_topn || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || parse->limitCount == NULL ||
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual)
 		return;

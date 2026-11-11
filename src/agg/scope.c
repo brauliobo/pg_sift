@@ -37,14 +37,14 @@ sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 
 static SiftSrcPrune *values_prune(int leaf, const int64 *vals, uint32 n);
 
-/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them) */
+/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); vals NULL: of every unit */
 static uint64
 unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n)
 {
 	SiftSrcUnit u;
 	uint64		rows = 0;
 
-	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), values_prune(leaf, vals, n), 1);
+	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), vals ? values_prune(leaf, vals, n) : NULL, vals ? 1 : 0);
 	while (sift_colsrc_next(src, &u))
 		rows += u.nrow;
 	return rows;
@@ -158,6 +158,71 @@ read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
 }
 
 /*
+ * What the join as written costs for `keys` keys of the average size, in instructions: the planner's price at its knots (SiftAggScope), linear between them and flat past the last, which is
+ * every key. A first segment goes on below its first knot (a key count the entries of a read give may be a fraction of one).
+ */
+static double
+alt_price(const SiftAggScope *sc, double keys)
+{
+	int			i = 0;
+	double		k = Min(keys, sc->knot_k[sc->nknot - 1]);
+
+	if (sc->nknot == 1)
+		return sc->knot_instr[0];
+	while (i + 2 < sc->nknot && k > sc->knot_k[i + 1])
+		i++;
+	return Max(sc->knot_instr[i] + (sc->knot_instr[i + 1] - sc->knot_instr[i]) * (k - sc->knot_k[i]) / (sc->knot_k[i + 1] - sc->knot_k[i]), 0.0);
+}
+
+/* the rows of the scope units of the keys: the entries a read of them takes (every unit for every key) */
+static uint64
+entry_rows(AggExec *ex, Snapshot snapshot)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
+	uint64		rows = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->all ? NULL : sc->keys, sc->nkeys);
+
+	sift_colsrc_close(units);
+	MemoryContextDelete(cx);
+	return rows;
+}
+
+/*
+ * Does the join as written (SiftAggScope.alt) cost less than the scope units for the counts c: the units cost their setup, the entries they read and the patch and delta of the changed
+ * members (col/scope.h), the join its price for the keys the entries stand for. The join is a scan whose cost grows with the rows the keys leave, and the units' with the entries, so a few keys
+ * read the units and many read the join, and the changed members of every key (a patch of the units of the entity segments for each) the join, which does not read them twice.
+ */
+static bool
+join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c)
+{
+	return sift_scope_units_price(c) + sc->entry_instr * c->entries > alt_price(sc, sc->knot_rows > 0 ? c->entries / sc->knot_rows : sc->nkeys);
+}
+
+/* the reason EXPLAIN gives for the join the node runs */
+static const char *
+join_cheaper_why(const SiftAggScope *sc)
+{
+	return sc->all ? "join is cheaper for every key" : psprintf("join is cheaper for %d key%s", sc->nkeys, sc->nkeys == 1 ? "" : "s");
+}
+
+/*
+ * The node runs the join as written, in the place of its own spec (ex->spec; the EXPLAIN reads the scope from ex->unpacked, which keeps the spec the node was planned with, so that a scan
+ * that starts over decides again), when the reader refuses the units (whatever it says: the units cannot answer and the join can) or when it costs less for what this execution finds
+ * (join_cheaper). The entries come first, which a few keys cost almost nothing, and where the join is dearer than the setup and the entries of the units alone the reader is not asked; its
+ * counts of the changed members and the buffers then make the price whole. A test that wants the units whatever they cost says so (sift.test_scope_patch).
+ */
+static void
+run_join(AggExec *ex, const char *why)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+
+	ex->scope_why = why;
+	SIFT_INVARIANT(sc->alt->nkeys == ex->spec->nkeys && sc->alt->naggs == ex->spec->naggs && sc->alt->nparts == 0, "sift: the join a scope read holds has the groups of the node's own");
+	ex->spec = sc->alt;
+}
+
+/*
  * Decides how the scan reads the conjunct, before its source is opened (the source of the scope segments is another one); true: the scope segments, and the rows of the entity
  * too when ex->scope_rd->npatch > 0.
  */
@@ -168,16 +233,41 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	SiftScopeRead *rd;
 	int		   *leaves;
 	int			nleaves;
+	SiftScopeCounts c;
 
 	ex->scope_rd = NULL;
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
+	c = (SiftScopeCounts) {.nkeys = sc->nkeys, .once = sc->once};
+	if (sc->alt != NULL && !sift_test_scope_patch)
+	{
+		c.entries = entry_rows(ex, snapshot);
+		if (join_cheaper(sc, &c))
+		{
+			run_join(ex, join_cheaper_why(sc));
+			return false;
+		}
+	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
 										ex->spec->topn != NULL, leaves, nleaves);
-	/* a patch and a delta that cost less than the pricing do not call for it */
-	if (rd->why == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+	if (sc->alt != NULL && rd->why != NULL)
+	{
+		run_join(ex, rd->why);
+		return false;
+	}
+	c.drops = rd->ndrop;
+	c.patch_units = rd->patch_units;
+	c.patch_scan_rows = rd->patch_scan;
+	c.delta_rows = rd->delta_rows + rd->patch_rows;
+	if (sc->alt != NULL && !sift_test_scope_patch && join_cheaper(sc, &c))
+	{
+		run_join(ex, join_cheaper_why(sc));
+		return false;
+	}
+	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
+	if (rd->why == NULL && sc->alt == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
 	if (rd->why == NULL)
 		sift_scope_read_rows(rd);
@@ -330,7 +420,9 @@ scope_filter(AggExec *ex, int *total, List **add)
 		stored_filter(ex, total, add, leaf);
 		return;
 	}
-	/* one row for each pair of a member in several keys, and the key of each, is what only the join of the scope relation gives: the planner keeps it as the fallback of such a scope */
+	/* a node that holds the join as written has run it (scope_open), whatever the reader said, and the planner gives a read of several keys for each pair no other: only the testing marker, which stands for
+	 * the join and has none to run, reaches the error */
+	SIFT_INVARIANT(sc->alt == NULL, "sift: a scope read that holds the join as written reads the entity rows");
 	if (!sc->once && (sc->all || sc->nkeys > 1))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
 						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));

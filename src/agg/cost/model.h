@@ -19,6 +19,9 @@
 #define AGG_SCOPE_ARM		7.0		/* the predicates a row of the scope units goes through for each key of an IN or EXISTS whose members the dedupe leaves out (scope_tests) */
 #define AGG_OP_NS			3.0		/* the nanoseconds an operator is counted at (AGG_SCAN_SPEED takes the share the scan really spends) */
 #define AGG_IN_TEST_BASE	1.0		/* the nanoseconds a row costs the test of a list in the cache, which AGG_FILTER_VALUE already counts */
+#define AGG_ALT_ROW			14.5	/* the instructions of the backend a row of the table costs the join as written of a scope read (agg/cost/scope.c): it scans the units its filters leave, which for facts of members not in time order are nearly all. 120,000 and 150,000 rows took 1.9 and 2.5 million instructions with one key: 14.6 and 15 each */
+#define AGG_ALT_OP			17.0	/* ... and an operator of the model (agg_ops) beyond the first key's, which is the rows the keys select: 16.9 instructions from 1 to 30 keys of 3,333 rows each */
+#define AGG_ALT_PAIR		225.0	/* ... and a pair of the scope relation, which the lookup table reads and loads: 500 members of 3 rows each took 184,000 instructions a key with their rows, 136,000 of them the operators of the rows */
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
 #define AGG_KEY_ROW			1.0		/* a group key id */

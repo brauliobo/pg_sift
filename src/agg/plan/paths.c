@@ -55,6 +55,7 @@ group_paths_one(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel
 			   *firsts = NIL;
 	bool		lead = true;
 
+	c->scope_pass = scope;
 	if (scope->second)
 	{
 		fs.skip = scope->skip;

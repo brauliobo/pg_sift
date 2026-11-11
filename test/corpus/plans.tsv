@@ -412,4 +412,8 @@ scope_keytable_exists	SiftAgg	single:t
 scope_keytable_empty	SiftAgg	single:t
 scope_keytable_join_one	SiftAgg	single:t
 scope_keytable_join_null	SiftAgg	single:t
-scope_keytable_join_many	SiftAgg	scope:f:scope,single:t
+scope_keytable_join_many	SiftAgg	single:t
+scope_choice_array_one	-	n/a(prepared)
+scope_choice_array_many	-	n/a(prepared)
+scope_choice_pairs_few	-	n/a(prepared)
+scope_choice_pairs_many	-	n/a(prepared)

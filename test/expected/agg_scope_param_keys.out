@@ -55,9 +55,9 @@ INSERT INTO pforms VALUES
  ('IN, table of keys as ARRAY(SELECT ..)', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1))) GROUP BY kind$q$, '1'),
  ('groups, ANY ($1)', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = ANY ($1)) GROUP BY kind$q$, $a$'{1,2,3}'$a$),
  -- near misses: each keeps the join
- ('miss: join, ANY ($1), a row for each pair', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY ($1) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
+ ('join, ANY ($1), a row for each pair', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY ($1) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
  ('miss: join, ANY (ARRAY(SELECT ..)), a row for each pair', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1)) GROUP BY kind$q$, '2'),
- ('miss: join, IN ($1, $2), a row for each pair', 'int, int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ($1, $2) GROUP BY kind$q$, '2, 5'),
+ ('join, IN ($1, $2), a row for each pair', 'int, int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ($1, $2) GROUP BY kind$q$, '2, 5'),
  ('miss: numeric $1', 'numeric', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind$q$, '3'),
  ('miss: $1 and a column', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1 + dim_a_id % 2) GROUP BY kind$q$, '3'),
  ('miss: range on the key', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id < $1) GROUP BY kind$q$, '3'),
@@ -157,6 +157,10 @@ FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) OR
  join, $1                                                | force_generic_plan | scope read, keys $1, per pair                                               | t
  join, $1 in the first position                          | force_custom_plan  | scope read, 1 keys, per pair                                                | t
  join, $1 in the first position                          | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, ANY ($1), a row for each pair                     | force_custom_plan  | scope read, 3 keys, per pair                                                | t
+ join, ANY ($1), a row for each pair                     | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, IN ($1, $2), a row for each pair                  | force_custom_plan  | scope read, 2 keys, per pair                                                | t
+ join, IN ($1, $2), a row for each pair                  | force_generic_plan | scope read, keys ARRAY[$1, $2], per pair                                    | t
  join, bigint $1                                         | force_custom_plan  | scope read, 1 keys, per pair                                                | t
  join, bigint $1                                         | force_generic_plan | scope read, keys $1, per pair                                               | t
  join, other conditions                                  | force_custom_plan  | scope read, 1 keys, per pair                                                | t
@@ -167,12 +171,8 @@ FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) OR
  latest 5, $1                                            | force_generic_plan | scope read, keys $1, once                                                   | t
  miss: $1 and a column                                   | force_custom_plan  | join                                                                        | t
  miss: $1 and a column                                   | force_generic_plan | join                                                                        | t
- miss: join, ANY ($1), a row for each pair               | force_custom_plan  | join                                                                        | t
- miss: join, ANY ($1), a row for each pair               | force_generic_plan | join                                                                        | t
  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | join                                                                        | t
  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | force_generic_plan | join                                                                        | t
- miss: join, IN ($1, $2), a row for each pair            | force_custom_plan  | join                                                                        | t
- miss: join, IN ($1, $2), a row for each pair            | force_generic_plan | join                                                                        | t
  miss: keys by a join to the table of keys               | force_custom_plan  | join                                                                        | t
  miss: keys by a join to the table of keys               | force_generic_plan | join                                                                        | t
  miss: numeric $1                                        | force_custom_plan  | join                                                                        | t
@@ -197,15 +197,7 @@ NOTICE:  miss: $1 and a column
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope relation has another condition: (tenant_scope.tenant_id = ($1 + (tenant_scope.dim_a_id % 2))))
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
-NOTICE:  miss: join, ANY ($1), a row for each pair
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them)
-DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them)
-DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
-NOTICE:  miss: join, IN ($1, $2), a row for each pair
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
@@ -224,13 +216,11 @@ HINT:  Join the scope relation by its declared member column to the declared col
                           name                           | plan 
 ---------------------------------------------------------+------
  miss: $1 and a column                                   | join
- miss: join, ANY ($1), a row for each pair               | join
  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | join
- miss: join, IN ($1, $2), a row for each pair            | join
  miss: keys by a join to the table of keys               | join
  miss: numeric $1                                        | join
  miss: range on the key                                  | join
-(7 rows)
+(5 rows)
 
 RESET sift.explain_refusals;
 SET client_min_messages = warning;
@@ -280,18 +270,18 @@ SELECT c.note, arg_run(f, c.keys) AS run, same_rows(f, 'force_generic_plan', c.k
 FROM (VALUES ('keys that have lists', $a$'{1,2,3}'$a$),
 			 ('more keys than the dedupe lists', quote_literal('{' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 80) g) || '}'))) c(note, keys), pforms f
 WHERE f.name = 'groups, ANY ($1)' ORDER BY c.note COLLATE "C";
-              note               |                               run                               | same_rows 
----------------------------------+-----------------------------------------------------------------+-----------
- keys that have lists            | Keys: $1 (3 keys)                                               | t
- more keys than the dedupe lists | Keys: $1 (80 keys); Fallback: dedupe keys; Members Listed: 2000 | t
+              note               |                    run                    | same_rows 
+---------------------------------+-------------------------------------------+-----------
+ keys that have lists            | Keys: $1 (3 keys)                         | t
+ more keys than the dedupe lists | Keys: $1 (80 keys); Fallback: dedupe keys | t
 (2 rows)
 
 SET work_mem = '64kB';
 SELECT 'lists over work_mem' AS note, arg_run(f, k.keys) AS run, same_rows(f, 'force_generic_plan', k.keys) AS same_rows
 FROM pforms f, (SELECT quote_literal('{' || string_agg(g::text, ',') || '}') AS keys FROM generate_series(1, 80) g) k WHERE f.name = 'groups, ANY ($1)';
-        note         |                                   run                                    | same_rows 
----------------------+--------------------------------------------------------------------------+-----------
- lists over work_mem | Keys: $1 (80 keys); Fallback: dedupe over work_mem; Members Listed: 2000 | t
+        note         |                        run                         | same_rows 
+---------------------+----------------------------------------------------+-----------
+ lists over work_mem | Keys: $1 (80 keys); Fallback: dedupe over work_mem | t
 (1 row)
 
 RESET work_mem;
@@ -380,42 +370,42 @@ SELECT * FROM states('an ended pair');
 
 INSERT INTO tenant_scope VALUES (370, 3), (371, 2), (371, 5), (371, 3);
 SELECT * FROM states('inserted pairs');
-     state      |     form     |                                  run                                  | same_rows 
-----------------+--------------+-----------------------------------------------------------------------+-----------
- inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                   | t
- inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                   | t
- inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44 | t
+     state      |     form     |                                 run                                 | same_rows 
+----------------+--------------+---------------------------------------------------------------------+-----------
+ inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of three keys moved, write buffer');
-                        state                        |     form     |                                  run                                  | same_rows 
------------------------------------------------------+--------------+-----------------------------------------------------------------------+-----------
- facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                   | t
- facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                   | t
- facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44 | t
+                        state                        |     form     |                                 run                                 | same_rows 
+-----------------------------------------------------+--------------+---------------------------------------------------------------------+-----------
+ facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
-            state             |     form     |                                  run                                  | same_rows 
-------------------------------+--------------+-----------------------------------------------------------------------+-----------
- every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
- every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
- every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44 | t
+            state             |     form     |                                 run                                 | same_rows 
+------------------------------+--------------+---------------------------------------------------------------------+-----------
+ every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                 | t
+ every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                 | t
+ every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 
 SET sift.test_scope_patch = off;
 SELECT * FROM states('more changed pairs than the bound');
-               state               |     form     |                                  run                                  | same_rows 
------------------------------------+--------------+-----------------------------------------------------------------------+-----------
- more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
- more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
- more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44 | t
+               state               |     form     |                           run                           | same_rows 
+-----------------------------------+--------------+---------------------------------------------------------+-----------
+ more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
+ more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: join is cheaper for 3 keys | t
+ more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
+ more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback: join is cheaper for 1 key  | t
 (4 rows)
 
 RESET sift.test_scope_patch;

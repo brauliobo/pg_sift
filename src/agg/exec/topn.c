@@ -375,7 +375,7 @@ topn_run(AggExec *ex)
 
 	ex->started = true;
 	/* the walk of the global order answers a scan with no aggregate, group, join or search from the index alone */
-	ex->open_deferred = ex->spec->naggs == 0 && ex->spec->group < 0 && ex->spec->ncombo == 0 && ex->spec->search == NULL;
+	ex->open_deferred = sift_topn_walks_alone(ex->spec);
 	engine_open(ex, ex->snap, ex->params);
 	agg_test_wait();
 	if (!ex->open_deferred)

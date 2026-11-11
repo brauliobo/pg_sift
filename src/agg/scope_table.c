@@ -214,9 +214,13 @@ scope_key_table(AggCtx *c, FromScan *fs, List *pool, Node *joinq, Var *kvar, Ind
 	one = n > 0 && sift_agg_unique_key(rte->relid, n, 0, atts, NULL);
 	atts[n++] = kvar->varattno;
 	if (!once && !one)
-		return klj == NULL && !sift_agg_unique_key(rte->relid, n, 0, atts, NULL) ?
-			"the table of keys may hold a key more than once, and the join counts a row for each of them" :
-			"the table of keys may give several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
+	{
+		if (klj == NULL && !sift_agg_unique_key(rte->relid, n, 0, atts, NULL))
+			return "the table of keys may hold a key more than once, and the join counts a row for each of them";
+		/* several keys, each once: where the units cannot count a row for each pair (a member's pairs changed) the node runs the join the first pass priced */
+		if (t->alts == NIL)
+			return "the table of keys may give several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
+	}
 	sc->nkeys = one ? 1 : (int) Min(Max(rel->rows, 1.0), 1000000.0);
 	sc->keys_query = keys_query(root, rte, kvar, kquals);
 	sc->param = (Node *) makeNode(Param);

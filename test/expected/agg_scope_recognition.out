@@ -60,7 +60,7 @@ INSERT INTO forms VALUES
  ('top 5 ids', $q$SELECT e.dim_a_id, sum(amount) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY e.dim_a_id ORDER BY total DESC, e.dim_a_id LIMIT 5$q$),
  ('latest 5', $q$SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) ORDER BY created_at DESC, id LIMIT 5$q$),
  -- near misses: each keeps the join
- ('miss: two keys, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY kind$q$),
+ ('two keys, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY kind$q$),
  ('miss: condition on a pair column', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3 AND valid_until IS NULL) GROUP BY kind$q$),
  ('miss: key not bound', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope) GROUP BY kind$q$),
  ('miss: group by the key', $q$SELECT s.tenant_id, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5, 9) GROUP BY s.tenant_id$q$),
@@ -146,7 +146,6 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  miss: group by the key                   | join, the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give | t
  miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                          | t
  miss: range on the key                   | join, the scope relation has another condition: (tenant_scope.tenant_id < 3)                                                      | t
- miss: two keys, a row for each pair      | join, several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them           | t
  miss: view with DISTINCT                 | join, the sub-select over the scope relation is not a plain projection of its columns                                             | t
  miss: view with a condition              | join, the view over the scope relation has a condition of its own                                                                 | t
  miss: wrong fact column                  | join, the join is not by the declared member column dim_a_id and the declared column dim_a_id of the scanned table                | t
@@ -155,6 +154,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  plain view                               | scope read, 1 keys                                                                                                                | t
  through another join                     | scope read, 1 keys                                                                                                                | t
  top 5 ids                                | scope read, 1 keys                                                                                                                | t
+ two keys, a row for each pair            | scope read, 3 keys, per pair                                                                                                      | t
 (35 rows)
 
 -- the switch: with sift.agg_scope off nothing is taken out
@@ -214,55 +214,55 @@ SELECT * FROM states('an ended pair');
 
 INSERT INTO tenant_scope VALUES (370, 3, NULL), (371, 2, NULL), (371, 5, NULL);
 SELECT * FROM states('inserted pairs');
-     state      |       name       |                        run                         | same_rows 
-----------------+------------------+----------------------------------------------------+-----------
- inserted pairs | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- inserted pairs | IN               | Changed Keys: 3; Patched Keys: 1                   | t
- inserted pairs | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- inserted pairs | barrier view, IN | Changed Keys: 3; Patched Keys: 1                   | t
- inserted pairs | join             | Changed Keys: 3; Patched Keys: 1                   | t
- inserted pairs | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43 | t
- inserted pairs | top 5 ids        | Changed Keys: 3; Patched Keys: 1                   | t
+     state      |       name       |                       run                        | same_rows 
+----------------+------------------+--------------------------------------------------+-----------
+ inserted pairs | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | IN               | Changed Keys: 3; Patched Keys: 1                 | t
+ inserted pairs | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | barrier view, IN | Changed Keys: 3; Patched Keys: 1                 | t
+ inserted pairs | join             | Changed Keys: 3; Patched Keys: 1                 | t
+ inserted pairs | latest 5         | Fallback: top-n, changed pairs                   | t
+ inserted pairs | top 5 ids        | Changed Keys: 3; Patched Keys: 1                 | t
 (7 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of two keys moved, write buffer');
-                       state                       |       name       |                        run                         | same_rows 
----------------------------------------------------+------------------+----------------------------------------------------+-----------
- facts of a member of two keys moved, write buffer | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- facts of a member of two keys moved, write buffer | IN               | Changed Keys: 3; Patched Keys: 1                   | t
- facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1   | t
- facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 3; Patched Keys: 1                   | t
- facts of a member of two keys moved, write buffer | join             | Changed Keys: 3; Patched Keys: 1                   | t
- facts of a member of two keys moved, write buffer | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43 | t
- facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 3; Patched Keys: 1                   | t
+                       state                       |       name       |                       run                        | same_rows 
+---------------------------------------------------+------------------+--------------------------------------------------+-----------
+ facts of a member of two keys moved, write buffer | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of two keys moved, write buffer | IN               | Changed Keys: 3; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 3; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | join             | Changed Keys: 3; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | latest 5         | Fallback: top-n, changed pairs                   | t
+ facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 3; Patched Keys: 1                 | t
 (7 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
-            state             |       name       |                        run                         | same_rows 
-------------------------------+------------------+----------------------------------------------------+-----------
- every pair of a member ended | EXISTS, two keys | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- every pair of a member ended | IN               | Changed Keys: 4; Patched Keys: 1                   | t
- every pair of a member ended | IN, three keys   | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- every pair of a member ended | barrier view, IN | Changed Keys: 4; Patched Keys: 1                   | t
- every pair of a member ended | join             | Changed Keys: 4; Patched Keys: 1                   | t
- every pair of a member ended | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43 | t
- every pair of a member ended | top 5 ids        | Changed Keys: 4; Patched Keys: 1                   | t
+            state             |       name       |                       run                        | same_rows 
+------------------------------+------------------+--------------------------------------------------+-----------
+ every pair of a member ended | EXISTS, two keys | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | IN               | Changed Keys: 4; Patched Keys: 1                 | t
+ every pair of a member ended | IN, three keys   | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | barrier view, IN | Changed Keys: 4; Patched Keys: 1                 | t
+ every pair of a member ended | join             | Changed Keys: 4; Patched Keys: 1                 | t
+ every pair of a member ended | latest 5         | Fallback: top-n, changed pairs                   | t
+ every pair of a member ended | top 5 ids        | Changed Keys: 4; Patched Keys: 1                 | t
 (7 rows)
 
 -- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
 SET sift.test_scope_patch = off;
 SELECT * FROM states('more changed pairs than the bound');
-               state               |       name       |                        run                         | same_rows 
------------------------------------+------------------+----------------------------------------------------+-----------
- more changed pairs than the bound | EXISTS, two keys | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- more changed pairs than the bound | IN               | Changed Keys: 4; Patched Keys: 1                   | t
- more changed pairs than the bound | IN, three keys   | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
- more changed pairs than the bound | barrier view, IN | Changed Keys: 4; Patched Keys: 1                   | t
- more changed pairs than the bound | join             | Changed Keys: 4; Patched Keys: 1                   | t
- more changed pairs than the bound | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43 | t
- more changed pairs than the bound | top 5 ids        | Changed Keys: 4; Patched Keys: 1                   | t
+               state               |       name       |                 run                  | same_rows 
+-----------------------------------+------------------+--------------------------------------+-----------
+ more changed pairs than the bound | EXISTS, two keys | Fallback: join is cheaper for 2 keys | t
+ more changed pairs than the bound | IN               | Fallback: join is cheaper for 1 key  | t
+ more changed pairs than the bound | IN, three keys   | Fallback: join is cheaper for 3 keys | t
+ more changed pairs than the bound | barrier view, IN | Changed Keys: 4; Patched Keys: 1     | t
+ more changed pairs than the bound | join             | Fallback: join is cheaper for 1 key  | t
+ more changed pairs than the bound | latest 5         | Fallback: join is cheaper for 1 key  | t
+ more changed pairs than the bound | top 5 ids        | Fallback: join is cheaper for 1 key  | t
 (7 rows)
 
 RESET sift.test_scope_patch;

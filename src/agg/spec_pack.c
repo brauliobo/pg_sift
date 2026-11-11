@@ -104,6 +104,8 @@ pk_i64(Codec *c, int64 *v)
 	pk_str(c, &s);
 }
 
+static void codec_spec(Codec *c, SiftAggSpec *s);
+
 static void
 codec_scope(Codec *c, SiftAggScope **sc)
 {
@@ -123,6 +125,21 @@ codec_scope(Codec *c, SiftAggScope **sc)
 		pk_i64(c, &(*sc)->keys[i]);
 	PK(c, (*sc)->once);
 	PK(c, (*sc)->all);
+	has = !c->rd && (*sc)->alt != NULL;
+	pk_int(c, &has);
+	if (!has)
+		return;
+	if (c->rd)
+		(*sc)->alt = palloc0(sizeof(SiftAggSpec));
+	codec_spec(c, (*sc)->alt);
+	PK(c, (*sc)->nknot);
+	for (int i = 0; i < (*sc)->nknot; i++)
+	{
+		pk_dbl(c, &(*sc)->knot_k[i]);
+		pk_dbl(c, &(*sc)->knot_instr[i]);
+	}
+	pk_dbl(c, &(*sc)->knot_rows);
+	pk_dbl(c, &(*sc)->entry_instr);
 }
 
 static void

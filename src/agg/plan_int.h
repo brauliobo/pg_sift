@@ -176,6 +176,7 @@ typedef struct AggCtx
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	struct ScopeTake *scope_take;	/* the join to the scope relation the second pass took out of the FROM list (plan_scope.c); NULL: none */
+	struct ScopeTake *scope_pass;	/* the two passes of the statement over a scope index (group_paths_skip, topn_paths): the first leaves its paths' specs there as the join the second may run instead */
 	const char *scope_all;		/* the scope (key_name) whose every key the scan reads (SiftAggScope.all): its derived leaf is a leaf the spec may read; NULL: none */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
@@ -299,9 +300,24 @@ typedef struct LeftJoin
  * The second pass over a statement that joins the scope relation of a scope index (plan_scope.c): the join is taken out of the FROM list and its conditions are the scope
  * conjunct of the scan (SiftAggScope), which the price of the pass weighs against the first pass's join.
  */
+/* A serial path of the first pass: the join as written, which the node of the second pass may run instead (agg/cost/scope.c) */
+typedef struct ScopeAlt
+{
+	SiftAggSpec *spec;
+	List	   *pathkeys;		/* the order the path promises: the node of the second pass takes the alternative of its own */
+	Cost		startup;
+	Cost		total;
+	int			nknot;			/* its price in instructions, for knot_k[i] keys of the average size (SiftAggScope) */
+	double		knot_k[SIFT_AGG_SCOPE_KNOTS];
+	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
+	double		entry_instr;
+	double		knot_rows;
+} ScopeAlt;
+
 typedef struct ScopeTake
 {
 	bool		try;			/* the first pass scanned an index that declares scopes and joined tables to it: a second pass may take a join out */
+	List	   *alts;			/* ScopeAlt of the first pass, none when its join cannot be run by the node of the second */
 	bool		second;			/* this is the second pass: it scans as the first did (skip, flip) */
 	int			skip;
 	bool		flip;
@@ -596,6 +612,11 @@ extern bool sift_agg_scope_wanted(AggCtx *c);
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);
+/* the item of the FROM list that is the scope relation of the index, and its key column (false: the scan has none) */
+extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key);
+/* cost/scope.c: a serial path of the first pass leaves the join it priced (scope_alt_record) for the node of the second to run instead; the path of the second pass takes the one of its order (scope_alt_attach: false, a join the units cannot answer) */
+extern void scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List *pathkeys);
+extern bool scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys);
 /* scope_table.c: a table of keys joined to the scope relation (kvar: its key column, joinq: the equality) is the ARRAY(SELECT ..) of its rows, planned as an InitPlan when the path becomes a plan */
 extern const char *scope_key_table(AggCtx *c, FromScan *fs, List *pool, Node *joinq, Var *kvar, Index srti, bool once, SiftAggScope *sc, ScopeTake *t);
 extern const SiftAggSpec *scope_keys_plan(PlannerInfo *root, const SiftAggSpec *s);

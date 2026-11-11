@@ -244,6 +244,7 @@ agg_open_cost(int nparts)
 #define AGG_WIDE_CAP		0.5
 
 double		agg_read_rows;
+double		agg_ops;
 
 /*
  * the units the normal plan reads the table with through a path: the cost of a parameterized path is one probe, paid for each row of the biggest relation that drives it (the one row of
@@ -348,6 +349,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * count of the index answers it in a tenth of a millisecond: search_count), so does one whose normal plan reads an index of a few rows (agg_in_list_cost: 0.4 ms against 2.7) and an ungrouped aggregate.
 	 */
 	k.ms = !c->search && !s->topn && s->nkeys > 0 && normal_units(c) ? AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST : 1.0;
+	agg_ops = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost + k.recheck * AGG_SCAN_SPEED;
 	k.scan_cost = ((k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost) * k.ms + k.recheck * AGG_SCAN_SPEED +
 		k.ms_ops * AGG_SCAN_SPEED * AGG_NORMAL_UNITS_MS * AGG_OP_NS * 1e-6 / DEFAULT_CPU_OPERATOR_COST;
 	/* a top-N reads a fraction of the units, but opens the match set whole */

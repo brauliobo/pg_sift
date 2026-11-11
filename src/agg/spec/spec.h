@@ -21,6 +21,8 @@ typedef struct SiftAggOrd
 	Oid			eqcoll;
 } SiftAggOrd;
 
+#define SIFT_AGG_SCOPE_KNOTS	6		/* the key counts the planner prices the join as written at (agg/cost/scope.c) */
+
 /*
  * The scope conjunct of a scan (col/scope.h): the rows whose member key has a pair with one of the scope keys, which the scan reads from the scope segments of its
  * index, or, when it cannot (agg/scope.c says why), from the entity rows of the members the scope relation lists for the keys. No other conjunct of the spec is about it.
@@ -36,6 +38,12 @@ typedef struct SiftAggScope
 	struct Query *keys_query;	/* planner only: param is the output of this table of keys' sub-select, an InitPlan made when the path becomes a plan (scope_keys_plan); not packed */
 	bool		once;			/* a row counts once whichever of the keys it has (IN, EXISTS); false: once for each pair of its member, as a join and GROUP BY the key count it */
 	bool		all;			/* every key (keys NULL, nkeys 0, not once): a row for each pair of its member, which the spec may group by the derived leaf (sift_agg_scope_leaf) */
+	struct SiftAggSpec *alt;	/* the join as written: the scan of this spec without the conjunct, which the node runs instead when it costs less for the keys it has (agg/scope.c scope_open); NULL: there is none */
+	int			nknot;			/* what the alternative costs, in instructions, for knot_k[i] keys of the average size (the planner's own price, agg/cost/scope.c): linear between the knots, flat past the last */
+	double		knot_k[SIFT_AGG_SCOPE_KNOTS];
+	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
+	double		entry_instr;	/* the instructions the aggregation of a row of the keys costs, on top of the entry the units read (SIFT_SCOPE_ENTRY_INSTR): the operators of the model a row has, which both ways pay */
+	double		knot_rows;		/* the rows the alternative reads for one key of the average size: the entries of a read, over this, are the keys it has in those units */
 } SiftAggScope;
 
 /* The leaf of the derived key "<key_name>#scope" in the layout of a scope index; -1 when it has none */
