@@ -1,6 +1,6 @@
 -- The relation of a shared value store (docs/COL-VSTORE.md): one for each (table, column) whose values several sift_col indexes share.
 -- It is made by the build of the first index that uses it (sift.test_vstore_columns names the columns in this test, whatever the rule says), found by the
--- next one, dropped with the last one or with the table, and it is a table in name only: nothing reads or writes it but sift.
+-- next one, dropped with the last one or with the table, and it is a materialized view that is never populated (no publication lists it): nothing reads or writes it but sift.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET sift.test_vstore_columns = 'uid,url';
@@ -15,11 +15,12 @@ SELECT store, table_name, column_name, indexes_using FROM sift.col_value_store_s
 SELECT left(obj_description('vs_t_uid_sift_values'::regclass), 63) AS comment;
 SELECT c.relname, a.amname, c.relkind FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.relname LIKE 'vs\_t\_%\_sift\_values' ORDER BY 1;
 
--- it has no rows and takes none; it cannot be indexed or truncated; what a rewrite copies is its pages
+-- it has no rows and takes none; it cannot be indexed, truncated or refreshed; what a rewrite copies is its pages
 SELECT count(*) FROM vs_t_uid_sift_values;
 INSERT INTO vs_t_uid_sift_values VALUES ('x');
 CREATE INDEX ON vs_t_uid_sift_values (uid);
 TRUNCATE vs_t_uid_sift_values;
+DO $$ BEGIN REFRESH MATERIALIZED VIEW vs_t_uid_sift_values; EXCEPTION WHEN OTHERS THEN RAISE WARNING 'refresh refused: %', sqlstate; END $$;
 SELECT pg_relation_size('vs_t_uid_sift_values') AS before_rewrite \gset
 VACUUM FULL vs_t_uid_sift_values;
 SELECT pg_relation_size('vs_t_uid_sift_values') = :before_rewrite AS rewrite_keeps_the_pages;
@@ -27,7 +28,7 @@ ANALYZE vs_t_uid_sift_values;
 VACUUM vs_t_uid_sift_values;
 
 -- it cannot be dropped under an index; it goes with the last index
-DROP TABLE vs_t_uid_sift_values;
+DROP MATERIALIZED VIEW vs_t_uid_sift_values;
 DROP INDEX vs_a;
 SELECT count(*) AS stores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
 REINDEX TABLE vs_t;
@@ -87,7 +88,7 @@ CREATE INDEX vs_pi ON vs_p USING sift_col (id, tenant, url);
 CREATE INDEX vs_pj ON vs_p USING sift_col (id, url);
 SELECT store, table_name, indexes_using FROM sift.col_value_store_status WHERE table_name::text LIKE 'vs\_p%' ORDER BY 1;
 
--- a publication of all tables lists the stores (they are tables) and does not stop the writes of the table
+-- a publication of all tables does not list the stores (they are not tables), so a subscriber that lacks them is not broken by an index
 CREATE PUBLICATION vs_pub FOR ALL TABLES;
 INSERT INTO vs_p VALUES (1000, 1, 'x');
 SELECT count(*) FROM pg_publication_tables WHERE pubname = 'vs_pub' AND tablename LIKE 'vs\_p%\_sift\_values';

@@ -83,8 +83,8 @@ INSERT INTO vd_steps VALUES
 SELECT unnest(ARRAY[sql, format('SELECT * FROM vd_check(%L), vd_state(%L)', label, label)]) FROM vd_steps ORDER BY n \gexec
 
 -- nobody can drop a store under a member, by its name or by the table
-DROP TABLE vd_uid_sift_values;
-DROP TABLE vd_url_sift_values;
+DROP MATERIALIZED VIEW vd_uid_sift_values;
+DROP MATERIALIZED VIEW vd_url_sift_values;
 SELECT * FROM vd_check('after the refused drops');
 
 -- a column that goes drops the indexes that hold it, and the stores that only they used; a member without it stays whole

@@ -225,13 +225,13 @@ SELECT * FROM vd_check('drop one of two members'), vd_state('drop one of two mem
 (1 row)
 
 -- nobody can drop a store under a member, by its name or by the table
-DROP TABLE vd_uid_sift_values;
-ERROR:  cannot drop table vd_uid_sift_values because other objects depend on it
-DETAIL:  index vd_f depends on table vd_uid_sift_values
+DROP MATERIALIZED VIEW vd_uid_sift_values;
+ERROR:  cannot drop materialized view vd_uid_sift_values because other objects depend on it
+DETAIL:  index vd_f depends on materialized view vd_uid_sift_values
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
-DROP TABLE vd_url_sift_values;
-ERROR:  cannot drop table vd_url_sift_values because other objects depend on it
-DETAIL:  index vd_f depends on table vd_url_sift_values
+DROP MATERIALIZED VIEW vd_url_sift_values;
+ERROR:  cannot drop materialized view vd_url_sift_values because other objects depend on it
+DETAIL:  index vd_f depends on materialized view vd_url_sift_values
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 SELECT * FROM vd_check('after the refused drops');
           step           | shapes | same 

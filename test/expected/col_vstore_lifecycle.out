@@ -1,6 +1,6 @@
 -- The relation of a shared value store (docs/COL-VSTORE.md): one for each (table, column) whose values several sift_col indexes share.
 -- It is made by the build of the first index that uses it (sift.test_vstore_columns names the columns in this test, whatever the rule says), found by the
--- next one, dropped with the last one or with the table, and it is a table in name only: nothing reads or writes it but sift.
+-- next one, dropped with the last one or with the table, and it is a materialized view that is never populated (no publication lists it): nothing reads or writes it but sift.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET sift.test_vstore_columns = 'uid,url';
@@ -25,26 +25,23 @@ SELECT left(obj_description('vs_t_uid_sift_values'::regclass), 63) AS comment;
 SELECT c.relname, a.amname, c.relkind FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.relname LIKE 'vs\_t\_%\_sift\_values' ORDER BY 1;
        relname        |   amname    | relkind 
 ----------------------+-------------+---------
- vs_t_uid_sift_values | sift_values | r
- vs_t_url_sift_values | sift_values | r
+ vs_t_uid_sift_values | sift_values | m
+ vs_t_url_sift_values | sift_values | m
 (2 rows)
 
--- it has no rows and takes none; it cannot be indexed or truncated; what a rewrite copies is its pages
+-- it has no rows and takes none; it cannot be indexed, truncated or refreshed; what a rewrite copies is its pages
 SELECT count(*) FROM vs_t_uid_sift_values;
- count 
--------
-     0
-(1 row)
-
+ERROR:  materialized view "vs_t_uid_sift_values" has not been populated
+HINT:  Use the REFRESH MATERIALIZED VIEW command.
 INSERT INTO vs_t_uid_sift_values VALUES ('x');
-ERROR:  "vs_t_uid_sift_values" is a shared value store, managed by sift
-HINT:  Create or drop the sift_col indexes of its table instead.
+ERROR:  cannot change materialized view "vs_t_uid_sift_values"
 CREATE INDEX ON vs_t_uid_sift_values (uid);
 ERROR:  "vs_t_uid_sift_values" is a shared value store, managed by sift
 HINT:  Create or drop the sift_col indexes of its table instead.
 TRUNCATE vs_t_uid_sift_values;
-ERROR:  "vs_t_uid_sift_values" is a shared value store, managed by sift
-HINT:  Create or drop the sift_col indexes of its table instead.
+ERROR:  "vs_t_uid_sift_values" is not a table
+DO $$ BEGIN REFRESH MATERIALIZED VIEW vs_t_uid_sift_values; EXCEPTION WHEN OTHERS THEN RAISE WARNING 'refresh refused: %', sqlstate; END $$;
+WARNING:  refresh refused: 0A000
 SELECT pg_relation_size('vs_t_uid_sift_values') AS before_rewrite \gset
 VACUUM FULL vs_t_uid_sift_values;
 SELECT pg_relation_size('vs_t_uid_sift_values') = :before_rewrite AS rewrite_keeps_the_pages;
@@ -56,10 +53,10 @@ SELECT pg_relation_size('vs_t_uid_sift_values') = :before_rewrite AS rewrite_kee
 ANALYZE vs_t_uid_sift_values;
 VACUUM vs_t_uid_sift_values;
 -- it cannot be dropped under an index; it goes with the last index
-DROP TABLE vs_t_uid_sift_values;
-ERROR:  cannot drop table vs_t_uid_sift_values because other objects depend on it
-DETAIL:  index vs_a depends on table vs_t_uid_sift_values
-index vs_b depends on table vs_t_uid_sift_values
+DROP MATERIALIZED VIEW vs_t_uid_sift_values;
+ERROR:  cannot drop materialized view vs_t_uid_sift_values because other objects depend on it
+DETAIL:  index vs_a depends on materialized view vs_t_uid_sift_values
+index vs_b depends on materialized view vs_t_uid_sift_values
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 DROP INDEX vs_a;
 SELECT count(*) AS stores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
@@ -140,7 +137,7 @@ SELECT has_table_privilege('vs_reader', 'vs_app.t_uid_sift_values', 'select') AS
 
 SET ROLE vs_reader;
 SELECT count(*) FROM vs_app.t_uid_sift_values;
-ERROR:  permission denied for table t_uid_sift_values
+ERROR:  permission denied for materialized view t_uid_sift_values
 RESET ROLE;
 -- names: a schema that needs quoting, identifiers cut at 63 bytes, two columns whose names cut to the same, a partition for each partitioned leaf
 CREATE SCHEMA "Vs Odd";
@@ -178,13 +175,13 @@ SELECT store, table_name, indexes_using FROM sift.col_value_store_status WHERE t
  vs_p1_url_sift_values | vs_p1      |             2
 (2 rows)
 
--- a publication of all tables lists the stores (they are tables) and does not stop the writes of the table
+-- a publication of all tables does not list the stores (they are not tables), so a subscriber that lacks them is not broken by an index
 CREATE PUBLICATION vs_pub FOR ALL TABLES;
 INSERT INTO vs_p VALUES (1000, 1, 'x');
 SELECT count(*) FROM pg_publication_tables WHERE pubname = 'vs_pub' AND tablename LIKE 'vs\_p%\_sift\_values';
  count 
 -------
-     2
+     0
 (1 row)
 
 DROP PUBLICATION vs_pub;

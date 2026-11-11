@@ -27,14 +27,20 @@
 #include "catalog/pg_type.h"
 #include "commands/comment.h"
 #include "commands/defrem.h"
+#include "commands/matview.h"
 #include "commands/tablecmds.h"
 #include "miscadmin.h"
+#include "parser/analyze.h"
+#include "parser/parser.h"
+#include "rewrite/rewriteDefine.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "col/am.h"
@@ -64,7 +70,7 @@ sift_vstore_is_store(Oid relid)
 	{
 		Form_pg_class cls = (Form_pg_class) GETSTRUCT(tp);
 
-		is = cls->relkind == RELKIND_RELATION && OidIsValid(cls->relam) && cls->relam == get_table_am_oid(SIFT_VSTORE_AM_NAME, true);
+		is = cls->relkind == RELKIND_MATVIEW && OidIsValid(cls->relam) && cls->relam == get_table_am_oid(SIFT_VSTORE_AM_NAME, true);
 		ReleaseSysCache(tp);
 	}
 	return is;
@@ -287,6 +293,23 @@ init_store(Oid store)
 	table_close(rel, NoLock);
 }
 
+/*
+ * The store is a materialized view that is never populated: a publication (FOR ALL TABLES too) lists tables only, so an index built on a database
+ * that publishes every table does not add a relation that subscribers lack, and pg_dump and pg_upgrade restore it empty (the view's query is a constant).
+ */
+static void
+make_unpopulated_view(Oid store, const char *col)
+{
+	const char *sql = psprintf("SELECT NULL::text AS %s", quote_identifier(col));
+	RawStmt    *raw = linitial_node(RawStmt, raw_parser(sql, RAW_PARSE_DEFAULT));
+	Relation	rel = table_open(store, AccessExclusiveLock);
+
+	DefineQueryRewrite(pstrdup("_RETURN"), store, NULL, CMD_SELECT, true, false, list_make1(parse_analyze_fixedparams(raw, sql, NULL, 0, NULL)));
+	CommandCounterIncrement();
+	SetMatViewPopulatedState(rel, false);
+	table_close(rel, NoLock);
+}
+
 static Oid
 create_store(Relation heap, const char *col)
 {
@@ -296,9 +319,10 @@ create_store(Relation heap, const char *col)
 
 	TupleDescInitEntry(td, 1, col, TEXTOID, -1, 0);
 	store = heap_create_with_catalog(name, RelationGetNamespace(heap), InvalidOid, InvalidOid, InvalidOid, InvalidOid, heap->rd_rel->relowner, vstore_am(),
-									 td, NIL, RELKIND_RELATION, heap->rd_rel->relpersistence, false, false, ONCOMMIT_NOOP, (Datum) 0, false, false, true,
+									 td, NIL, RELKIND_MATVIEW, heap->rd_rel->relpersistence, false, false, ONCOMMIT_NOOP, (Datum) 0, false, false, true,
 									 InvalidOid, NULL);
 	CommandCounterIncrement();
+	make_unpopulated_view(store, col);
 	depend_on(RelationRelationId, store, RelationGetRelid(heap), DEPENDENCY_AUTO);
 	CreateComments(store, RelationRelationId, 0,
 				   psprintf(vstore_comment, col, RelationGetRelationName(heap)));
@@ -593,6 +617,7 @@ gone_xact(XactEvent event, void *arg)
 		else if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].heap)))
 			heaps = list_append_unique_oid(heaps, gone[i].heap);
 	ngone = kept;
+	PushActiveSnapshot(GetTransactionSnapshot());	/* the commit of a VACUUM has none, and the catalog deletes want one */
 	foreach_oid(heapoid, heaps)
 	{
 		Relation	heap = try_table_open(heapoid, AccessShareLock);
@@ -603,6 +628,7 @@ gone_xact(XactEvent event, void *arg)
 		each_store(heapoid, left_visit, heap);
 		table_close(heap, NoLock);
 	}
+	PopActiveSnapshot();
 	if (heaps != NIL)
 		CommandCounterIncrement();
 }

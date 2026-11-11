@@ -302,6 +302,9 @@ check "dump: the source has three members on two stores" test "$MEMBERS" == 3 -a
 PGARGS=(-h "$D/sock" -p "$(port primary)" -U postgres)
 pg_dump "${PGARGS[@]}" -Fc -f "$D/src.custom" postgres 2>"$D/dump.err"
 check "dump: pg_dump -Fc succeeds" test $? -eq 0 -a ! -s "$D/dump.err"
+dumped() { pg_restore -f - "$D/src.custom" | grep -c "$1"; }
+check "dump: the stores are created without data" test "$(dumped 'CREATE MATERIALIZED VIEW .*sift_values')|$(dumped 'WITH NO DATA')" == "2|2"
+check "dump: no store is refreshed" test "$(dumped 'REFRESH MATERIALIZED VIEW')" == 0
 restore() { # DB [pg_restore flags]: a new database on the primary, the archive restored into it
 	local db=$1
 	shift
@@ -316,7 +319,7 @@ restored() { # DB: the restored table as the source was
 	out=; check "restore $db: the table has its $MEMBERS sift_col indexes" test "$(dbq primary "$db" "SELECT count(*) FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND i.indrelid = 't'::regclass")" == "$MEMBERS"
 	names=$(dbq primary "$db" "SELECT string_agg(c.relname || ':' || c.relkind::text, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relname LIKE '%sift_values%'")
-	out=; check "restore $db: exactly one store relation for each shared column (no copies of a name)" test "$names" == "t_uid_sift_values:r,t_url_sift_values:r"
+	out=; check "restore $db: exactly one store relation for each shared column (no copies of a name)" test "$names" == "t_uid_sift_values:m,t_url_sift_values:m"
 	out=; check "restore $db: the stores serve all the members" stores_are "uid=$MEMBERS url=$MEMBERS" "$db"
 	out=; check "restore $db: equal answers, on both nodes and every member verified" equal_answers "$db"
 	out=; check "restore $db: no dependency to a relation that is gone" test "$(dbq primary "$db" "SELECT count(*) FROM pg_depend d
