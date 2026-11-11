@@ -5,8 +5,8 @@
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
 # (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
 # REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 key_columns (a summary), 12 superunit,
-# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory), 17 key_cut (units cut by a key), 18 order_columns at the default setting (the runs with their heads), 19 a NULL-heavy integer leaf (the exceptions of its units), 20 hll_columns (a sketch of a column in every unit)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
-# and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
+# 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory), 17 key_cut (units cut by a key), 19 a NULL-heavy integer leaf (the exceptions of its units), 20 hll_columns (a sketch of a column in every unit)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# and of the wide-row write buffer (11; no build writes the sorted runs of 13 and 18 since 5.0); the last release then gets the
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -185,18 +185,18 @@ sift.async_maintenance = off'
 	[[ $newest == 3 ]] || formats+=("hi $newest")
 	((newest > 4)) && formats+=("h4 4")
 	((newest >= 4)) && formats+=("ke 4")
-	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "kc 17" "hd 18" "ex 19" "hl 20" "df 12")
-	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "dk 14" "kp 15" "pt 16" "kc 17" "ex 19" "hl 20" "df 12")
+	declare -A OPT=([cm]=", cube_minmax = true"
+		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [ex]="*, CASE WHEN id % 500 = 0 THEN id END AS z" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ex]="id, g, n, z" [ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
 	# the minor the data stamps beyond the setting: a key_columns leaf also gets the key table of a segment (22), a point directory the exact slots (33), a key-cut unit the table first (34)
 	declare -A STAMP=([kp]=22 [pt]=33 [kc]=34)
-	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex hl df "
-	refused=" cm ca rd sc su rn dk kp pt kc hd ex hl df "
+	docsonly=" h4 ke cm ca rd sc su dk kp pt kc ex hl df "
+	refused=" cm ca rd sc su dk kp pt kc ex hl df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != hd && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 18, 19 or 20 at the default setting (15)
+		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 19 or 20 at the default setting (15)
 		q "$set" \
 			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
@@ -232,7 +232,6 @@ sift.async_maintenance = off'
 			same "$ref: the $fmt clone answers a lookup as the plain plan after ${step%%(*}" "$(q "SET sift.enable_col_scan = on" "SET enable_seqscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")" "$optwant"
 		done
 	done
-	check "$ref: the clone with order_columns under the lowest setting holds no run" test "$(q "SELECT count(*) FROM sift.col_sections('docs_lo_col') WHERE section = 'runs'")" == 0
 	if [[ $hastbl == yes ]]; then
 		# the two sift_table formats that no index shows: the calendar cells of a timestamp column (8) and the write buffer of a row on tail pages (11)
 		q "CREATE TABLE tbl_ca (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ca SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" "VACUUM tbl_ca" \
@@ -297,7 +296,7 @@ sift.async_maintenance = off'
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
 		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
 		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
+		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
 		check "3.2 downgrade: it lists the BM25 index (segment format 4, metapage minor 1.4: the release refuses it)" test "$(grep -c ' dgb_idx ' <<<"$blockers")" == 1
 		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
@@ -364,7 +363,10 @@ sift.async_maintenance = off'
 		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims|rollup_columns"
 		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
-		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3))"
+		# the tables of the catalog that the extension of this tree has and 3.2 lacks: their configuration dump finds no relation
+		check "3.2 downgrade: the catalog tables that 3.2 lacks (sift.projections, sift.scope_copies, sift.scope_follows) are the other errors" test "$(grep -o 'relation "sift\.[a-z_]*" does not exist' <<<"$errs" | sort | paste -sd' ' -)" == 'relation "sift.projections" does not exist relation "sift.scope_copies" does not exist relation "sift.scope_follows" does not exist'
+		out=$errs
+		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3 + 3))"
 		[[ $(grep -c . <<<"$errs") == $((withopt + 3)) ]] || diag "restore errors: $errs"
 		check "3.2 downgrade: those tables are empty in the restored database" test "$(qd rst "SELECT (SELECT count(*) FROM tbl_big) + (SELECT count(*) FROM tbl_wr) + (SELECT count(*) FROM tbl_wr2)")" == 0
 		check "3.2 downgrade: the restored database is at 3.2 with all its rows" test "$(qd rst "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" "SELECT count(*) FROM docs_df" "SELECT count(*) FROM tbl_ca" | tr '\n' ' ')" == \
