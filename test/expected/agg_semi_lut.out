@@ -9,6 +9,8 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- the statements check the lookup tables the scan loads (the plans with probes have their own test, agg_probe_rewrite)
 SET sift.agg_probe_rewrite = off;
+-- the scan's key filter tests every key of a semi join the table would test (agg_join_key_types): left out, the table is built and used
+SET sift.agg_join_filter = off;
 -- the ordered index-only scan of the key joined by a memoized lookup costs few pages and would take the plan over from the pushed one at these page costs: the statements check the pushed plan
 SET sift.enable_col_scan = off;
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
@@ -95,9 +97,9 @@ SELECT * FROM same($$SELECT count(*) AS n, count(dim_a_id) AS c FROM ev WHERE NO
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b)$$);
-  plan   | result_rows | vs_generic_join | vs_normal_plan 
----------+-------------+-----------------+----------------
- SiftAgg |           1 |               0 |              0
+         plan          | result_rows | vs_generic_join | vs_normal_plan 
+-----------------------+-------------+-----------------+----------------
+ SiftAgg semi tables 1 |           1 |               0 |              0
 (1 row)
 
 -- a dimension attribute: the keys of the rows of a table that have it
@@ -231,15 +233,15 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM
 
 SET sift.agg_semi_lut_size = 1024;
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_1mb;
- span_3m_1mb 
--------------
- SiftAgg
+      span_3m_1mb      
+-----------------------
+ SiftAgg semi tables 1
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$);
-  plan   | result_rows | vs_generic_join | vs_normal_plan 
----------+-------------+-----------------+----------------
- SiftAgg |           1 |               0 |              0
+         plan          | result_rows | vs_generic_join | vs_normal_plan 
+-----------------------+-------------+-----------------+----------------
+ SiftAgg semi tables 1 |           1 |               0 |              0
 (1 row)
 
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS span_2000_1mb;
@@ -270,9 +272,8 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM
  SiftAgg semi tables 1
 (1 row)
 
--- from workers: each builds its table (the join key filters left out, so that the scan reads every unit and the workers share a scan that pays for them)
+-- from workers: each builds its table (the scan reads every unit, so that the workers share a scan that pays for them)
 ALTER TABLE ev SET (parallel_workers = 2);
-SET sift.agg_join_filter = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -289,7 +290,6 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT
  SiftAgg with workers semi tables 1 |           4 |               0 |              0
 (1 row)
 
-RESET sift.agg_join_filter;
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;

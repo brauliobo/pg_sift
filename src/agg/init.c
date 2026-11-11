@@ -332,9 +332,8 @@ semi_lut_build(AggExec *ex, int ci)
 		semi_pass(ex, ci);
 		return;
 	}
-	/* an int8 leaf the scan's key filter has tested needs no test of its own (the pass an int8 leaf had before it had a table) */
-	if (wide)
-		semi_pass(ex, ci);
+	/* a leaf the scan's key filter has tested (an exact set of the table's keys, applied to every row) needs no test of its own */
+	semi_pass(ex, ci);
 	if (cs->spass)
 		return;
 	if (kept && semi_set_ready(&m->sset) && m->slut_kind == j->kind && m->slut_wide == wide && semi_set_bytes(&m->sset) <= limit)

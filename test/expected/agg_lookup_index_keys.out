@@ -72,24 +72,24 @@ INSERT INTO cases (name, setup, q) VALUES
 	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
 	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$);
 SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s ORDER BY c.id;
-                  name                   | pushed |                                        lookup                                         | differing | workers 
------------------------------------------+--------+---------------------------------------------------------------------------------------+-----------+---------
- scan keys: equality                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
- scan keys: anti                         | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables                |         0 |       0
- scan keys: equality, range              | t      | Lookup: 809 rows read, 809 rows loaded, 1 index scans, 1 key filters, 1 semi tables   |         0 |       0
- scan keys: equality ANY                 | t      | Lookup: 9003 rows read, 3002 rows loaded, 1 key filters, 1 semi tables                |         0 |       0
- not a key: boolean                      | t      | Lookup: 1503 rows read, 1336 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
- not a key: second column                | t      | Lookup: 3 rows read, 3 rows loaded, 1 index scans, 1 key filters, 1 semi tables       |         0 |       0
- not a key: two ANY on one column        | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
- not a key: two equalities on one column | t      | Lookup: 1503 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
- not a key: two ANY, index of the column | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
- not a key: key not in the index         | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
- text key                                | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 text key filters           |         0 |       0
- inner, repeated key                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters                |         0 |       0
- inner, repeated key, no key filters     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
- left                                    | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
- byte table refused                      | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
- byte table refused, anti                | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans                               |         0 |       0
+                  name                   | pushed |                                        lookup                                        | differing | workers 
+-----------------------------------------+--------+--------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 key passes |         0 |       0
+ scan keys: anti                         | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables               |         0 |       0
+ scan keys: equality, range              | t      | Lookup: 809 rows read, 809 rows loaded, 1 index scans, 1 key filters, 1 key passes   |         0 |       0
+ scan keys: equality ANY                 | t      | Lookup: 9003 rows read, 3002 rows loaded, 1 key filters, 1 key passes                |         0 |       0
+ not a key: boolean                      | t      | Lookup: 1503 rows read, 1336 rows loaded, 1 index scans, 1 key filters, 1 key passes |         0 |       0
+ not a key: second column                | t      | Lookup: 3 rows read, 3 rows loaded, 1 index scans, 1 key filters, 1 key passes       |         0 |       0
+ not a key: two ANY on one column        | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 key passes    |         0 |       0
+ not a key: two equalities on one column | t      | Lookup: 1503 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 key passes    |         0 |       0
+ not a key: two ANY, index of the column | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 key passes    |         0 |       0
+ not a key: key not in the index         | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 key passes |         0 |       0
+ text key                                | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 text key filters          |         0 |       0
+ inner, repeated key                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters               |         0 |       0
+ inner, repeated key, no key filters     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                              |         0 |       0
+ left                                    | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                              |         0 |       0
+ byte table refused                      | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                              |         0 |       0
+ byte table refused, anti                | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans                              |         0 |       0
 (16 rows)
 
 -- pages that are not all-visible (new versions, deleted rows) and an insert of the transaction: their rows come from the heap, the others from the index entries
@@ -97,28 +97,28 @@ UPDATE pair SET gone = NOT gone WHERE k % 10 = 0;
 DELETE FROM pair WHERE grp = 2 AND k % 7 = 0;
 INSERT INTO pair SELECT 2, 1 + i * 17 % 6000, NULL, false FROM generate_series(1, 300) i;
 SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 2, 12) ORDER BY c.id;
-        name         | pushed |                                                  lookup                                                  | differing | workers 
----------------------+--------+----------------------------------------------------------------------------------------------------------+-----------+---------
- scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1953 heap fetches, 1 key filters, 1 semi tables |         0 |       0
- scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1650 heap fetches, 1 semi tables                |         0 |       0
- inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1710 heap fetches, 1 key filters                |         0 |       0
+        name         | pushed |                                                 lookup                                                  | differing | workers 
+---------------------+--------+---------------------------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1953 heap fetches, 1 key filters, 1 key passes |         0 |       0
+ scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1650 heap fetches, 1 semi tables               |         0 |       0
+ inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1710 heap fetches, 1 key filters               |         0 |       0
 (3 rows)
 
 VACUUM pair;
 SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 12) ORDER BY c.id;
-        name         | pushed |                                        lookup                                         | differing | workers 
----------------------+--------+---------------------------------------------------------------------------------------+-----------+---------
- scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
- inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters                |         0 |       0
+        name         | pushed |                                        lookup                                        | differing | workers 
+---------------------+--------+--------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters, 1 key passes |         0 |       0
+ inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters               |         0 |       0
 (2 rows)
 
 BEGIN;
 INSERT INTO pair SELECT 2, 2 + i * 19 % 6000, NULL, false FROM generate_series(1, 50) i;
 SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 2) ORDER BY c.id;
-        name         | pushed |                                                 lookup                                                 | differing | workers 
----------------------+--------+--------------------------------------------------------------------------------------------------------+-----------+---------
- scan keys: equality | t      | Lookup: 1637 rows read, 1636 rows loaded, 1 index scans, 50 heap fetches, 1 key filters, 1 semi tables |         0 |       0
- scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables                                 |         0 |       0
+        name         | pushed |                                                lookup                                                 | differing | workers 
+---------------------+--------+-------------------------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1637 rows read, 1636 rows loaded, 1 index scans, 50 heap fetches, 1 key filters, 1 key passes |         0 |       0
+ scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables                                |         0 |       0
 (2 rows)
 
 ROLLBACK;

@@ -96,7 +96,7 @@ SELECT * FROM check_all('key filters');
  key filters | 11 | NOT IN a column without NULL               | t         | t          | t     | 0 byte table
  key filters | 12 | IN int4 table, int8 leaf                   | t         | t          | t     | 0 byte table
  key filters | 13 | NOT EXISTS int4 table, int8 leaf           | t         | t          | t     | 1 byte table
- key filters | 14 | IN int8 table, int4 leaf                   | t         | t          | t     | 1 byte table
+ key filters | 14 | IN int8 table, int4 leaf                   | t         | t          | t     | 0 byte table
  key filters | 15 | inner join, int8 unique key, no column     | t         | t          | t     | 0 byte table
  key filters | 16 | IN an empty table                          | t         | t          | t     | 0 byte table
  key filters | 17 | NOT EXISTS an empty table                  | t         | t          | t     | 1 byte table

@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
+-- the scan's key filter tests every key of a semi join the table would test (agg_join_key_types): left out, the table is built and kept
+SET sift.agg_join_filter = off;
 
 CREATE TABLE ev (id int, dim_a_id int, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + (i::bigint * 7919) % 3000, i % 100 FROM generate_series(1, 60000) i;
