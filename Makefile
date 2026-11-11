@@ -260,6 +260,7 @@ TESTING_REGRESS += col_scope_journal_partial
 TESTING_REGRESS += col_scope_maint
 TESTING_REGRESS += col_scope_manymany
 TESTING_REGRESS += col_scope_manymany_edit
+TESTING_REGRESS += col_scope_pairs_listed
 TESTING_REGRESS += col_scope_pairs_partial
 TESTING_REGRESS += col_scope_pairs_recorded
 TESTING_REGRESS += col_scope_parallel

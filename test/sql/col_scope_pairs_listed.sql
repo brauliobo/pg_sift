@@ -1,0 +1,60 @@
+-- The members a read lists to price the patch against the entity path come from the pairs, not from the rows of the journal index: a plain journal index of a relation whose pairs are the rows of
+-- a partial unique btree holds the soft deleted rows too (sift.test_scope_patch off: the patch is priced). Each state of the relation is read from the units or the entity rows, whichever is
+-- cheaper, with the answer of the join on the active rows.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+
+CREATE FUNCTION compare(OUT differ int, OUT fell_back int) LANGUAGE plpgsql AS $$
+DECLARE
+	k int;
+	a record;
+	b record;
+	p jsonb;
+BEGIN
+	differ := 0;
+	fell_back := 0;
+	FOR k IN 1..21 LOOP
+		EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO p;
+		IF jsonb_path_exists(p, '$.**."Scope Fallback"') THEN fell_back := fell_back + 1; END IF;
+		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO a;
+		SET LOCAL sift.enable_agg = off;
+		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM memberships WHERE group_id = %s AND deleted_at IS NULL)', k) INTO b;
+		SET LOCAL sift.enable_agg = on;
+		IF a <> b THEN differ := differ + 1; END IF;
+	END LOOP;
+END $$;
+
+CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz, note int, PRIMARY KEY (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
+INSERT INTO memberships SELECT 1 + e % 20, e, CASE WHEN e % 9 = 0 THEN now() END FROM generate_series(1, 400) e;
+CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 20000) i;
+INSERT INTO memberships VALUES (8, 433, NULL);
+CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+REINDEX INDEX facts_col;
+VACUUM (FREEZE, ANALYZE) facts;
+SET sift.test_scope_patch = off;
+SELECT * FROM compare();
+
+CREATE TABLE states (n int, label text, stmt text);
+INSERT INTO states VALUES
+	(1, 'soft delete', 'UPDATE memberships SET deleted_at = now() WHERE group_id = 5 AND dim_a_id = 4'),
+	(2, 'restore', 'UPDATE memberships SET deleted_at = NULL WHERE group_id = 5 AND dim_a_id = 4'),
+	(3, 'insert a soft deleted pair', 'INSERT INTO memberships VALUES (5, 430, now())'),
+	(4, 'insert an active pair', 'INSERT INTO memberships VALUES (5, 431, NULL)'),
+	(5, 'move a member to another group', 'UPDATE memberships SET group_id = 6 WHERE group_id = 5 AND dim_a_id = 64'),
+	(6, 'soft delete many', 'UPDATE memberships SET deleted_at = now() WHERE dim_a_id % 7 = 0 AND deleted_at IS NULL'),
+	(7, 'restore many', 'UPDATE memberships SET deleted_at = NULL WHERE dim_a_id % 14 = 0');
+-- each state is committed, and then read: the groups whose answer differs from the join's (differ), and how many were read from the entity rows
+SELECT stmt FROM (SELECT n, 0 AS k, stmt FROM states
+	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, differ, fell_back FROM compare()', n, label) FROM states) t ORDER BY n, k \gexec
+
+RESET sift.test_scope_patch;
+DROP TABLE facts, memberships, states CASCADE;
+DROP FUNCTION compare();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

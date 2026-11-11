@@ -334,6 +334,15 @@ sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, 
 	return journal_scan(rel, member, scope_key, pair_btree, false);
 }
 
+/* The journal index whose leaves list exactly the pairs (its predicate and the one of the btree imply each other): a plain journal of a partial btree holds the soft deleted rows too */
+Oid
+sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
+{
+	Oid			journal = sift_scope_journal_index(rel, member, scope_key, pair_btree);
+
+	return OidIsValid(journal) && predicate_implied_by(index_predicate(pair_btree), index_predicate(journal), false) ? journal : InvalidOid;
+}
+
 /* The checks of one scope's declaration; the relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with it */
 void
 sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)

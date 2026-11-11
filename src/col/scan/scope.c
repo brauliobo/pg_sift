@@ -308,7 +308,7 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 	*rel = ps.rel;
 	*member = ps.member;
 	*skey = ps.skey;
-	return sift_scope_journal_index(ps.rel, ps.member, ps.skey, ps.btree);
+	return sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
 /* ---- what the segments of the index say ---- */

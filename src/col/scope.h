@@ -83,6 +83,8 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
  */
 /* The journal index of the relation for the pairs defined by pair_btree: a plain index, or one whose predicate the predicate of pair_btree implies (every pair is in it); InvalidOid when it has none */
 extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
+/* ... and the one whose leaves list exactly the pairs, InvalidOid when there is none */
+extern Oid	sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
 extern bool sift_scope_has_journal(Relation index, int scope);
 /* The journals of the scopes of the index, made when its build has read the table (the writers of the scope relation are held out to the end of the statement) */
 extern void sift_scope_start(Relation heap, Relation index);
