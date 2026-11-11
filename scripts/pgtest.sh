@@ -86,7 +86,11 @@ install() {
 	echo "$FLAVOR" >"$ROOT/.flavor"
 }
 
-# The lines that make the staged sift loadable (the server's own install on PostgreSQL 17)
+# The setting only the library of this tree defines: a released library that runs on the data directory of the cluster (scripts/old-lib-check.sh) warns that
+# "sift" is a reserved prefix for it. The cluster of `start` gets it on the command line of the server of this tree, not in its postgresql.conf (`conf common`).
+TREE_CONF='sift.test_scope_patch = on'
+
+# The lines that make the staged sift loadable (the server's own install on PostgreSQL 17); `conf common`: those that any release of the library accepts
 conf() {
 	leak_conf
 	# the background pass of a sift_table is on by default; a test counts the segments, blocks and dead rows its own statements leave, so the
@@ -97,7 +101,7 @@ conf() {
 	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
 	echo "sift.col_auto_merge_wal_pct = 0"
 	# the tests of the scope index patch the members that changed whatever the patch costs; the test of the price says SET sift.test_scope_patch = off
-	echo "sift.test_scope_patch = on"
+	[[ ${1:-} == common ]] || echo "$TREE_CONF"
 	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
 	# partitions took 5.6 s to compile and 11 ms to run (PostgreSQL 17 of the CI runners has the library in its package, 18 in another one)
 	echo "jit = off"
@@ -147,7 +151,7 @@ start() {
 			port = $PORT
 			listen_addresses = ''
 			unix_socket_directories = '$SOCK'
-			$(conf)
+			$(conf common)
 			fsync = off
 			max_wal_size = 512MB
 			min_wal_size = 80MB
@@ -160,7 +164,7 @@ start() {
 		EOF
 	fi
 	reset_auto_conf "$DATA"
-	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -w start >/dev/null )
+	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -o "-c ${TREE_CONF// = /=}" -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
 	leak_baseline "$DATA"
 }

@@ -395,6 +395,8 @@ scope() {
 		$(psql_new -c "SELECT max(format) < $fmt FROM sift.col_segments('plain_ix') WHERE kind = 'immutable'") == t ]] &&
 		pass "this tree writes column format $fmt for the index with a scope and an older one for the index without" ||
 		fail "this tree writes column format $fmt for the index with a scope and an older one for the index without"
+	# the older library has not the functions of the event triggers of 5.0 and would fail every CREATE INDEX and DROP INDEX (docs/UPGRADING.md, `trigger`)
+	psql_new -c "ALTER EVENT TRIGGER sift_col_build_lock DISABLE" -c "ALTER EVENT TRIGGER sift_col_value_store_sql_drop DISABLE" >/dev/null
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
 	FORMAT_ERROR="column format 1\\.$fmt"
