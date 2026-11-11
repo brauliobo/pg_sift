@@ -45,8 +45,9 @@ SET enable_indexscan = off;
 SET sift.plan_scale = 30;
 EXPLAIN (COSTS OFF) SELECT id, amount FROM w WHERE d >= date '2023-06-01' AND d < date '2023-08-01';
 
--- a semi join whose lookup table is read whole (6,000,000 rows here priced as 60 times 100,000) costs 29 operators a row, 86 ns (61 to 127 ns measured for 1,500,000 to
--- 6,000,000 rows): the orders of three months stay with the normal plan, which probes the index for them (2.6 ms against 772 ms)
+-- a semi join to a table of 6,000,000 rows (here 100,000 priced as 60 times as many) over the orders of three months: the scan takes the orders' keys from its own units and probes the
+-- index of the lookup table for them, 0.47 against 4.7 G instructions and 95 against 505 ms of the normal plan (a hash semi join that reads the lookup table whole; a nested loop, forced,
+-- takes 1.4 G and 171 ms), measured at 1,500,000 orders
 CREATE TABLE o (o_orderkey int PRIMARY KEY, o_orderdate date NOT NULL, o_prio int NOT NULL);
 CREATE TABLE l (l_orderkey int NOT NULL, l_commitdate date NOT NULL, l_receiptdate date NOT NULL);
 INSERT INTO o SELECT g, date '1992-01-01' + (random() * 2400)::int, g % 5 FROM generate_series(1, 25000) g;
