@@ -12,6 +12,7 @@
 # --inject: a prefix of its own (<version>-assert-inject) built with --enable-injection-points, with the injection_points test module installed (the TAP tests that stop a
 # worker at a named point of its code, no sleeps: test/t/*inject*)
 #
+# ICU is built in (the locale tests, the "en-x-icu" collation and the nondeterministic ones need it; the prefix name has it so that a build in use keeps its own).
 # The pinned minors are the ones of the distribution server this was written against (18.6; 17.11 for the 17 branch), the tarball is
 # checked against the sha256 below. Prefix: $SIFT_PG_CACHE (default ${XDG_CACHE_HOME:-~/.cache}/sift/pg)/<version>-assert[-valgrind]; the
 # tarballs are kept in $SIFT_PG_CACHE/src. A build takes about five minutes (nice, 4 jobs); it is not repeated while the recipe (version,
@@ -44,10 +45,10 @@ SUM=${PG_ASSERT_SHA256:-${SHA256[$V]:-}}
 [[ -n $SUM ]] || { echo "pg-assert: no sha256 for PostgreSQL $V (PG_ASSERT_SHA256)" >&2; exit 1; }
 
 CACHE=${SIFT_PG_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/pg}
-PREFIX=$CACHE/$V-assert${VALGRIND:+-valgrind}${INJECT:+-inject}
+PREFIX=$CACHE/$V-assert-icu${VALGRIND:+-valgrind}${INJECT:+-inject}
 CPP="-DRANDOMIZE_ALLOCATED_MEMORY -DCATCACHE_FORCE_RELEASE${VALGRIND:+ -DUSE_VALGRIND}"
 CFLAGS_="-O1 -ggdb -fno-omit-frame-pointer"
-RECIPE="$V sha256=$SUM cassert debug tap CPPFLAGS=[$CPP] CFLAGS=[$CFLAGS_] contrib=[$CONTRIB]${INJECT:+ injection-points}"
+RECIPE="$V sha256=$SUM cassert debug tap icu CPPFLAGS=[$CPP] CFLAGS=[$CFLAGS_] contrib=[$CONTRIB]${INJECT:+ injection-points}"
 
 mkdir -p "$CACHE/src"
 exec 9>"$CACHE/.lock"
@@ -71,7 +72,7 @@ trap 'rm -rf "$WORK"' EXIT
 	export PERL5LIB="${XDG_CACHE_HOME:-$HOME/.cache}/sift/perl5${PERL5LIB:+:$PERL5LIB}"
 	rm -rf "$PREFIX"
 	CPPFLAGS="$CPP" CFLAGS="$CFLAGS_" ./configure --prefix="$PREFIX" --enable-cassert --enable-debug --enable-tap-tests ${INJECT:+--enable-injection-points} \
-		--without-icu --without-readline --without-zlib >configure.log 2>&1 || { tail -n 20 configure.log; exit 1; }
+		--with-icu --without-readline --without-zlib >configure.log 2>&1 || { tail -n 20 configure.log; exit 1; }
 	nice make -j4 -s >make.log 2>&1 || { tail -n 30 make.log; exit 1; }
 	nice make -s install >/dev/null
 	for c in $CONTRIB; do nice make -s -C contrib/$c install >/dev/null; done

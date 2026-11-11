@@ -44,7 +44,7 @@ jobs:
       - name: Install build dependencies
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev
+          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev
 
       # the build is about five minutes: cached on the recipe (scripts/pg-assert.sh holds the version and flags)
       - name: Cache the PostgreSQL build
@@ -93,7 +93,7 @@ jobs:
       - name: Install build dependencies and valgrind
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev valgrind libc6-dbg
+          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev valgrind libc6-dbg
 
       - name: Cache the PostgreSQL build
         uses: actions/cache@v5
