@@ -28,6 +28,29 @@ the member key, the column the units are cut by and the derived key; every other
 (`Scope Fallback: column pad not in the scope units`). The subset is smaller: the scope segments of the generic test table are smaller with `cols(kind, value_num)` than with every column, and
 smaller again with `cols(created_at)`; the entries are the same.
 
+## Pairs that are soft deleted: a partial unique btree
+
+The pairs may be the rows of a PARTIAL unique btree of the relation: the predicate says which rows are pairs, and the rows that satisfy it are unique on the two columns. A bridge table that soft
+deletes keeps its all-rows unique btree (the primary key) and adds the one that defines the pairs:
+
+    CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
+    CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
+      WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+
+No table exists for the index alone, and the application deletes as it does. An `UPDATE` that sets `deleted_at` ends a pair and one that clears it creates one: the journal records the member of both,
+so a read takes the stored entries of the members that did not change and reads the entity rows of those that did. A statement that updates a column no index holds is a HOT update and writes
+nothing to the journal. The scope entries are the active pairs only (soft deleted rows have none), and the answer is the join on the active rows in every state.
+
+- **Which btree.** `using <index>` after the columns names it (`memberships(dim_a_id, group_id) using memberships_active`); without it the only partial unique btree on exactly the two columns, else the lowest oid of
+  the plain ones; two partial ones are an error that asks for `using`. The `NOTICE` of `CREATE INDEX` and `REINDEX` names it and its predicate; the index records it (the dependency), every read uses it, and one made
+  later changes nothing until `REINDEX` chooses again. `ALTER INDEX` with another `using` than the recorded btree is refused: the segments were written under the recorded one.
+- **Journal index.** A plain one, or a partial one whose predicate the predicate of the pairs' btree implies (`WHERE deleted_at IS NULL` beside the same predicate: a soft delete writes one record). A partial one
+  that a pair can be inserted outside of does not qualify: it never hears of that pair.
+- **What the predicate can be.** What PostgreSQL accepts in an index predicate: immutable, over the columns of the row (`IS NULL`, comparisons with constants, boolean columns). `now()` is refused by PostgreSQL
+  (`functions in index predicate must be marked IMMUTABLE`), so a pair that ends by the clock needs a column the application or a scheduled `UPDATE` sets (`UPDATE grants SET expired = true WHERE expired_at <= now() AND NOT expired`,
+  a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the copy path ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
+
 ## What a read does
 
 A scan of the index with a scope conjunct (the rows whose member has a pair with a key) reads the scope units of those keys, less the members that changed in the relation of pairs since the

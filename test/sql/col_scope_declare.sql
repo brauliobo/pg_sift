@@ -65,7 +65,7 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('nullable columns', 'tenant_id: dim_a_id -> pairs_nullable(m, s)'),
 	('no unique btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
 	('unique on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
-	('partial unique', 'tenant_id: dim_a_id -> pairs_partial(m, s)'),
+	('partial unique, no journal index', 'tenant_id: dim_a_id -> pairs_partial(m, s)'),
 	('deferrable unique', 'tenant_id: dim_a_id -> pairs_deferrable(m, s)'),
 	('unique with an included column', 'tenant_id: dim_a_id -> pairs_include(m, s)');
 SELECT n, why, try(format('CREATE INDEX bad ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num) WITH (scope = %L)', opt)) AS result

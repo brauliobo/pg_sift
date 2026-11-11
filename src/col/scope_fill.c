@@ -103,16 +103,16 @@ add_pair(void *arg, int64 member, int64 key)
 
 /* Reads the relation into the sorted pairs, unless they need more than limit bytes */
 static bool
-pairs_load(ScopeMap *m, MemoryContext cx, Relation rel, AttrNumber member, AttrNumber key, Snapshot snap, Size limit)
+pairs_load(ScopeMap *m, MemoryContext cx, Relation rel, Oid btree, AttrNumber member, AttrNumber key, Snapshot snap, Size limit)
 {
 	uint64		n = 0;
 
-	sift_conn_scan_keys(rel, member, key, snap, count_pair, &n);
+	sift_conn_scan_keys(rel, btree, member, key, snap, count_pair, &n);
 	if (n > limit / sizeof(ScopePair))
 		return false;
 	/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
 	m->pairs = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(ScopePair), MCXT_ALLOC_HUGE);
-	sift_conn_scan_keys(rel, member, key, snap, add_pair, m);
+	sift_conn_scan_keys(rel, btree, member, key, snap, add_pair, m);
 	qsort(m->pairs, m->npairs, sizeof(ScopePair), pair_cmp);
 	return true;
 }
@@ -134,7 +134,7 @@ map_begin(SiftScopeFill *f, ScopeMap *m, Relation rel, Oid btree, AttrNumber mem
 {
 	m->cx = f->cx;
 	m->stamp = stamp;
-	if (sift_conn_probe_cheaper(rows, sift_conn_rows_of(rel)) || !pairs_load(m, f->cx, rel, member, key, snap, (Size) maintenance_work_mem * 1024 / 2))
+	if (sift_conn_probe_cheaper(rows, sift_conn_rows_of(rel)) || !pairs_load(m, f->cx, rel, btree, member, key, snap, (Size) maintenance_work_mem * 1024 / 2))
 	{
 		m->probe = sift_conn_probe_begin_on(f->cx, rel, btree, member, snap);
 		m->key_att = key;

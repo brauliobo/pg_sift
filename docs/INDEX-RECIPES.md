@@ -330,6 +330,36 @@ What a recipe needs to hold:
 - **Indexes.** The refresh reads the source tables by the id or key it is given: `assignments (tenant_id)`, `assignments (group_id)`, `assignments (dim_a_id)`, `group_members (dim_a_id)` and the primary key of `group_members` by group, and the pair table by key (its primary key) and by id (the index above). A scope copy on the pairs also reads the fact table by its foreign key (`facts (dim_a_id)`, as a pair that comes in already did): the pairs that go are looked up there first, one probe each, because a pair whose id has no fact has no copy row and the copy is not read for it.
 - **Expiry by date with no write.** A pair that ends because `expires_at` passes does not change any row, so no trigger hears it: the pair table is the view as of the last change, and the view's `now()` is the time of the transaction that evaluated it. `sift.scope_expire_pairs(pairs, overlap)` applies the expiries: for each followed table that names an `expires` column, it refreshes the ids or keys of the rows whose date lies between the last call minus `overlap` (default one hour) and now, returns the pairs it inserted and deleted, and remembers the time. Call it from a scheduler at the granularity the application accepts a stale pair (a minute, an hour); it reads the rows that expired in that window (index the `expires` column). The overlap covers a transaction that evaluated the view before a sweep and committed after it, so it is an upper bound of the duration of a write transaction of the source; a longer one can leave a pair that expired meanwhile until the next write of its id or key. Nothing time dependent is kept in the copy: a pair that expired and is not yet swept is the only stale thing, and `sift.scope_verify` compares the copy with the pair table, not with the clock.
 
+### Soft deleted memberships and grants
+
+A bridge table that soft deletes (`memberships(group_id, dim_a_id, deleted_at)`, unique over all rows) and grants that reach an entity directly or through a group (`grants(id, account_id, dim_a_id, group_id,
+deleted_at, expired_at)`, a `CHECK` that one of the two is NULL) are kept as two views of their active rows and two pair tables that follow them. A group is a scope of the memberships alone; an account is the
+union of its direct grants and of the memberships of the groups it holds, active rows only (`deleted_at IS NULL`, `expired_at IS NULL OR expired_at > now()`):
+
+```sql
+CREATE VIEW active_memberships AS SELECT dim_a_id, group_id FROM memberships WHERE deleted_at IS NULL;
+CREATE VIEW visible_dim_a AS
+	SELECT g.dim_a_id, g.account_id FROM grants g WHERE g.dim_a_id IS NOT NULL AND g.deleted_at IS NULL AND (g.expired_at IS NULL OR g.expired_at > now())
+	UNION
+	SELECT m.dim_a_id, g.account_id FROM grants g JOIN memberships m ON m.group_id = g.group_id AND m.deleted_at IS NULL
+	WHERE g.group_id IS NOT NULL AND g.deleted_at IS NULL AND (g.expired_at IS NULL OR g.expired_at > now());
+CREATE TABLE group_pairs   (dim_a_id int NOT NULL, group_id   int NOT NULL, PRIMARY KEY (group_id, dim_a_id));   CREATE INDEX ON group_pairs (dim_a_id);
+CREATE TABLE account_pairs (dim_a_id int NOT NULL, account_id int NOT NULL, PRIMARY KEY (account_id, dim_a_id)); CREATE INDEX ON account_pairs (dim_a_id);
+SELECT * FROM sift.scope_follow_pairs('group_pairs',   'active_memberships', 'memberships', 'pair',   'group_id');
+SELECT * FROM sift.scope_follow_pairs('account_pairs', 'visible_dim_a',      'grants',      'pair',   'account_id', expires => 'expired_at');
+SELECT * FROM sift.scope_follow_pairs('account_pairs', 'visible_dim_a',      'memberships', 'member', 'dim_a_id');
+SELECT sift.scope_create('facts_by_group',   'facts', 'dim_a_id', 'group_pairs',   'group_id');
+SELECT sift.scope_create('facts_by_account', 'facts', 'dim_a_id', 'account_pairs', 'account_id');   -- max_copies => N above 1.8 copies a fact
+VACUUM facts_by_group; VACUUM facts_by_account;
+SELECT * FROM sift.scope_verify('facts_by_group');   -- no rows
+```
+
+The indexes the refresh reads are `memberships (dim_a_id) WHERE deleted_at IS NULL`, `grants (account_id)`, `grants (group_id) WHERE group_id IS NOT NULL`, `grants (dim_a_id) WHERE dim_a_id IS NOT NULL` and,
+for the sweep, `grants (expired_at) WHERE expired_at IS NOT NULL`, and a btree on `facts (dim_a_id)`. Run `sift.scope_expire_pairs('account_pairs')` from a scheduler. The group alone needs no
+table when the scope index is enough ([COL-SCOPE](COL-SCOPE.md#pairs-that-are-soft-deleted-a-partial-unique-btree): the partial unique btree of the memberships is the pairs). The costs measured on
+1,000,000 facts, 20,000 ids, 500 groups and 50 accounts (22,000 active memberships, 20% of the table soft deleted): a read of one account from the copy takes 0.46 to 0.55 M instructions where the join through the
+view takes 18 to 26 M; soft deleting a membership takes 16.7 M instructions, a direct grant 10.3 M and a grant of a group 636 M (the whole key of the account is recomputed from the view).
+
 ### What the pair table alone measures
 
 2,000,000 facts, 20,000 ids, 60 tenants of skewed size, 18,035 memberships in 267 groups of about 68 ids, 12,840 assignments (5% soft deleted, 2% expiring), 21,214 pairs for 15,163 visible ids (scratch measurement, PostgreSQL 18.6, one backend, serial, `work_mem = 256MB`, instructions of the backend, median of 5 warm runs; cold: the cluster restarted before the statement, empty shared buffers, warm page cache; answers equal in every cell). The pair table is 0.75 MB of heap and a 0.67 MB primary key, 0.46 MB for the index by id. "Expansion" counts and sums the ids of one tenant; "sum by kind" and "latest 20 facts" read the facts of those ids by the fact index and `dim_a_id IN (SELECT dim_a_id FROM <view or pairs> WHERE tenant_id = $1)`.

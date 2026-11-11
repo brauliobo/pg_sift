@@ -12,6 +12,10 @@ After every step a battery is the plain join: through the scope path (sift.in_sc
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
 entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size and track_changes.
 
+A third of the seeds make the pairs SOFT deleted: the pair table has a deleted_at column, its pairs are the rows of a partial unique btree WHERE deleted_at IS NULL (the primary key over all rows stays),
+the journal index is plain or partial on the same predicate, and the steps soft delete, restore, insert soft deleted pairs and update a column no index holds besides the others; the plain join
+reads the active rows.
+
 The journal index of the pairs is made first and the scope index is made again (REINDEX) after its first build, which starts the journal. 'planner' (probed: the SQL forms IN and EXISTS have a
 scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset (a read of another column must fall back with the
 column reason).
@@ -83,7 +87,7 @@ END $$;
 CREATE OR REPLACE FUNCTION sf_entries_are_the_join() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
-		= (SELECT md5(string_agg(e.ctid::text || ':' || t.tenant_id, ',' ORDER BY e.ctid, t.tenant_id)) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id);
+		= (SELECT md5(string_agg(e.ctid::text || ':' || t.tenant_id, ',' ORDER BY e.ctid, t.tenant_id)) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id @ACT_T@);
 END $$;
 """
 
@@ -107,6 +111,7 @@ KEYS_PER = {
 }
 STEPS = [('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 4), ('pair_ins', 11), ('pair_del', 9), ('pair_move', 11), ('pair_upd', 6), ('aborted', 5),
          ('savepoints', 5), ('in_txn', 5), ('promote', 7), ('merge', 5), ('vacuum', 6), ('vacuum_pairs', 3), ('reindex', 3), ('pair_reload', 2), ('analyze', 1)]
+SOFT_STEPS = [('pair_soft', 9), ('pair_restore', 6), ('pair_ins_deleted', 3), ('pair_note', 3)]   # added to the steps of a seed whose pairs are soft deleted
 
 
 class Seed:
@@ -125,19 +130,27 @@ class Seed:
         self.seg_kb = r.choice([None, None, None, 96])
         self.cols = ['created_at', 'v'] if r.random() < 0.5 else None
         self.next_id = self.n + 1
+        sr = random.Random(seed * 7919 + 13)   # its own stream: the seeds that are not soft draw what they drew before
+        self.soft = seed % 3 == 2   # a third of the seeds, and seed 2 of the quick tier
+        self.pk2 = sr.choice(['dim_a_id, tenant_id', 'tenant_id, dim_a_id'])
+        self.jpartial = self.soft and sr.random() < 0.5
+        self.steps = STEPS + SOFT_STEPS if self.soft else STEPS
+        self.act = ' AND s.deleted_at IS NULL' if self.soft else ''
 
     def setup_sql(self):
         trk = ", track_changes = 'off'" if self.track == 'off' else ''
         text = "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)" + (f" cols({', '.join(self.cols)})" if self.cols else '')
-        jr = "CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');\n"
+        jr = ("CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
+              + (" WHERE deleted_at IS NULL" if self.jpartial else "") + ";\n")
+        act = f"CREATE UNIQUE INDEX tenant_scope_active ON tenant_scope ({self.pk2}) WHERE deleted_at IS NULL;\n" if self.soft else ''
         return f"""{f"SET sift.test_col_segment_kb = {self.seg_kb};" if self.seg_kb else ""}
 DROP TABLE IF EXISTS events, tenant_scope CASCADE;
-CREATE TABLE tenant_scope (dim_a_id {self.mtype} NOT NULL, tenant_id {self.ktype} NOT NULL, PRIMARY KEY ({self.pk})) WITH (autovacuum_enabled = off);
-INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys} FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM
+CREATE TABLE tenant_scope (dim_a_id {self.mtype} NOT NULL, tenant_id {self.ktype} NOT NULL, deleted_at timestamptz, note int, PRIMARY KEY ({self.pk})) WITH (autovacuum_enabled = off);
+INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys}, {"CASE WHEN (m + j) % 6 = 0 THEN now() END" if self.soft else "NULL"} FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM
 	(SELECT m, (m * 7919) % 1000 AS h FROM generate_series(1, {self.dim_b}) m) x) y, generate_series(0, 5) j WHERE j < y.n ON CONFLICT DO NOTHING;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO events SELECT {self.fact_rows(1, self.n)};
-{jr}CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(text)}{trk});
+{act}{jr}CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(text)}{trk});
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;"""
@@ -160,6 +173,20 @@ VACUUM (ANALYZE) tenant_scope;"""
         return (f"INSERT INTO tenant_scope SELECT m, k FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')} "
                 f"AND (SELECT count(*) FROM tenant_scope s WHERE s.dim_a_id = m) < 6) x WHERE k IS NOT NULL ON CONFLICT DO NOTHING")
 
+    def pair_soft(self, pct):   # soft delete (the rows that are not pairs yet are left alone)
+        return f"UPDATE tenant_scope SET deleted_at = now() WHERE {self.window(pct, 'dim_a_id')} AND tenant_id % 2 = {self.rng.randint(0, 1)} AND deleted_at IS NULL"
+
+    def pair_restore(self, pct):   # a pair that is soft deleted comes back, unless the member has an active one under that key already (the partial unique btree)
+        return (f"UPDATE tenant_scope t SET deleted_at = NULL WHERE t.deleted_at IS NOT NULL AND {self.window(pct, 'dim_a_id')} AND NOT EXISTS "
+                f"(SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = t.dim_a_id AND s.tenant_id = t.tenant_id AND s.deleted_at IS NULL)")
+
+    def pair_ins_deleted(self, pct):
+        return (f"INSERT INTO tenant_scope SELECT m, k, now() FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')}) x "
+                f"WHERE k IS NOT NULL ON CONFLICT DO NOTHING")
+
+    def pair_note(self, pct):   # a column no index holds
+        return f"UPDATE tenant_scope SET note = coalesce(note, 0) + 1 WHERE {self.window(pct, 'dim_a_id')}"
+
     def pair_del(self, pct):
         return f"DELETE FROM tenant_scope WHERE {self.window(pct, 'dim_a_id')} AND tenant_id % 2 = {self.rng.randint(0, 1)}"
 
@@ -173,7 +200,7 @@ VACUUM (ANALYZE) tenant_scope;"""
 
     def step(self, reader):
         r = self.rng
-        kind = r.choices([k for k, _ in STEPS], [w for _, w in STEPS])[0]
+        kind = r.choices([k for k, _ in self.steps], [w for _, w in self.steps])[0]
         pct = r.choice([1, 3, 10, 30, 60])
         if reader and kind in ('reindex', 'pair_reload'):   # their lock waits for the reader's transaction
             kind = 'promote'
@@ -192,7 +219,7 @@ VACUUM (ANALYZE) tenant_scope;"""
             self.next_id = max(self.next_id, a + 401)
             return kind, (f"INSERT INTO events SELECT i, 1 + i % {self.dim_b}, DATE '2027-01-01' + i % 20, 5, i % 10, 'u' FROM generate_series({a}, {a + 400}) i "
                           f"ON CONFLICT (id) DO UPDATE SET dim_a_id = excluded.dim_a_id, v = excluded.v + 1"), 'facts'
-        if kind in ('pair_ins', 'pair_del', 'pair_move', 'pair_upd'):
+        if kind in ('pair_ins', 'pair_del', 'pair_move', 'pair_upd', 'pair_soft', 'pair_restore', 'pair_ins_deleted', 'pair_note'):
             return kind, getattr(self, kind)(pct), 'pairs'
         if kind == 'aborted':
             return kind, f"BEGIN; DELETE FROM events WHERE {self.window(pct)}; {self.pair_move(pct)}; {self.pair_del(pct)}; ROLLBACK", 'aborted'
@@ -224,8 +251,8 @@ VACUUM (ANALYZE) tenant_scope;"""
         mark = lambda ks: ("sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, %d)" % ks[0] if len(ks) == 1 else
                            "sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, ARRAY[%s]::int8[])" % lst(ks))
         plain = lambda ks: r.choice([
-            "EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = ANY (ARRAY[%s]::int8[]))" % lst(ks),
-            "e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (ARRAY[%s]::int8[]))" % lst(ks)])
+            "EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = ANY (ARRAY[%s]::int8[])%s)" % (lst(ks), self.act),
+            "e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope s WHERE tenant_id = ANY (ARRAY[%s]::int8[])%s)" % (lst(ks), self.act)])
         m1 = r.randint(1, 8)
         shapes = [   # name, the columns it reads, the statement (@ is the conjunct)
             ('agg', {'id', 'kind', 'v'}, "SELECT count(*), sum(v), count(DISTINCT dim_a_id), count(DISTINCT kind), min(id), max(id) FROM events e WHERE @"),
@@ -249,12 +276,12 @@ VACUUM (ANALYZE) tenant_scope;"""
         pair = "SELECT k, (SELECT count(*) FROM events e WHERE %s), (SELECT sum(v) FROM events e WHERE %s) FROM unnest(ARRAY[%s]::int8[]) k ORDER BY k"
         qs.append(('per pair',
                    pair % (("sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, k)",) * 2 + (lst(ks),)),
-                   pair % (("EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = k)",) * 2 + (lst(ks),)), False, False, False, None))
-        for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY 1 ORDER BY 1", False),
-                          ("SELECT count(*), sum(v) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)" % lst([pick() for _ in range(3)]), False),
-                          ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %d)" % pick(), True),
-                          ("SELECT count(*), sum(v) FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = %d)" % pick(), True)]:
-            qs.append(('sql form', q, q, True, False, engage and self.cols is None, None))
+                   pair % (("EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = k%s)" % self.act,) * 2 + (lst(ks),)), False, False, False, None))
+        for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % self.act, False),
+                          ("SELECT count(*), sum(v) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (lst([pick() for _ in range(3)]), self.act), False),
+                          ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope s WHERE tenant_id = %d%s)" % (pick(), self.act), True),
+                          ("SELECT count(*), sum(v) FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = %d%s)" % (pick(), self.act), True)]:
+            qs.append(('sql form', q, q, True, False, engage and self.cols is None and not self.soft, None))   # the planner's proof of a predicate is a separate piece
         return qs
 
 
@@ -264,13 +291,13 @@ def insert_battery(qs):
     return f"TRUNCATE sf_q; INSERT INTO sf_q VALUES {rows};"
 
 
-def current_keys(a):
-    out = a.run("SELECT coalesce(string_agg(DISTINCT tenant_id::text, ','), '') FROM tenant_scope;")
+def current_keys(a, s):
+    out = a.run("SELECT coalesce(string_agg(DISTINCT tenant_id::text, ','), '') FROM tenant_scope s WHERE true%s;" % s.act)
     return [int(x) for x in out.strip().split(',') if x]
 
 
 def check(a, s, label, strict, stats):
-    qs = s.battery(current_keys(a))
+    qs = s.battery(current_keys(a, s))
     out = a.run(insert_battery(qs) + f"\nSELECT sf_run({sqlstr(label)}, {str(strict).lower()}, {str('planner' in s.caps).lower()});\n"
                 "SELECT 'verify', sf_verify();\nSELECT 'bad', stage, qid, class, left(detail, 500) FROM sf_res WHERE NOT ok;\n"
                 "SELECT 'why', coalesce(why, CASE WHEN stored THEN 'stored' ELSE 'none' END), count(*) FROM sf_res GROUP BY 2;\nTRUNCATE sf_res;")
@@ -312,7 +339,7 @@ def run_seed(seed, rows, steps, out_dir):
         caps = probe(a)
         s = Seed(seed, rows, caps)
         log.write(f'-- seed {seed} planner={"planner" in caps} {vars(s)}\n')
-        a.run(LIB)
+        a.run(LIB.replace('@ACT_T@', 'AND t.deleted_at IS NULL' if s.soft else ''))
         out = a.run(s.setup_sql())
         if ERR.search(out):
             raise Fail(f'setup: {out.strip()[:1500]}')
@@ -321,7 +348,7 @@ def run_seed(seed, rows, steps, out_dir):
         if reader:
             rd.run('CREATE TEMP TABLE sf_q (LIKE public.sf_q);')   # the reader's own battery, in its own snapshot
             rd.run('BEGIN ISOLATION LEVEL REPEATABLE READ;')
-            out = rd.run(insert_battery(s.battery(current_keys(a))) + f"\nSELECT 'snap', sf_snap();")
+            out = rd.run(insert_battery(s.battery(current_keys(a, s))) + f"\nSELECT 'snap', sf_snap();")
             if not re.search(r'^snap\|$', out, re.M):
                 raise Fail(f'reader first read: {out.strip()[:500]}')
         for i in range(steps):

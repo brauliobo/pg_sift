@@ -546,6 +546,9 @@ CREATE FUNCTION sift._test_col_scope_entries(index regclass, OUT gen int8, OUT u
 -- the journal of the scope relation of a scope (ordinal from 0) of a scope index: the stamp a derivation takes now, whether a stamp may be read by the snapshot, and the members whose pairs changed since it
 CREATE FUNCTION sift._test_scope_take(index regclass, scope int, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_take' LANGUAGE C STRICT;
+-- the leg of a scope the planner is handed (col/scope.h SiftScopeLeg): the pair relation, its columns, the unique btree that defines the pairs and its predicate
+CREATE FUNCTION sift._test_scope_legs(index regclass, scope int, OUT rel regclass, OUT member text, OUT key text, OUT btree regclass, OUT pred text) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_legs' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_scope_vouch' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record

@@ -229,7 +229,7 @@ extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
 /* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation */
 extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
-extern void sift_conn_scan_keys(Relation rel, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
+extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
 
 /* The btree probe of the keys of a batch (col/conn_probe.c): the other way to know whether the parent has one visible row for a key */
 typedef struct SiftConnProbe SiftConnProbe;

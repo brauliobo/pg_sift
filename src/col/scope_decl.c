@@ -8,6 +8,8 @@
  */
 #include "postgres.h"
 
+#include <ctype.h>
+
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
@@ -21,6 +23,9 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
+#include "nodes/makefuncs.h"
+#include "optimizer/optimizer.h"
+#include "utils/ruleutils.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -92,6 +97,12 @@ parse_one(const char **pp, const char **err)
 		return NULL;
 	}
 	p = sift_conn_skip_ws(p + 1);
+	if (strncmp(p, "using", 5) == 0 && isspace((unsigned char) p[5]))
+	{
+		if ((p = sift_conn_read_name(sift_conn_skip_ws(p + 5), &s->index_name, err)) == NULL)
+			return NULL;
+		p = sift_conn_skip_ws(p);
+	}
 	if (strncmp(p, "cols", 4) == 0 && *sift_conn_skip_ws(p + 4) == '(')
 	{
 		p = sift_conn_skip_ws(p + 4) + 1;
@@ -223,48 +234,93 @@ check_cols(Relation index, const SiftScopeSpec *s)
 								errhint("Name each column once.")));
 }
 
-/* Does the index serve as the unique btree of the pairs (member, scope_key): a plain, immediate, unique btree on exactly those two columns, in either order */
+/*
+ * Does the index serve as the unique btree of the pairs (member, scope_key): an immediate, unique btree on exactly those two columns, in either order. Its predicate, if it has one, says which
+ * rows are pairs (WHERE deleted_at IS NULL): PostgreSQL accepts only an immutable one, and the rows that satisfy it are unique on the two columns.
+ */
 static bool
 is_pair_btree(Relation idx, AttrNumber member, AttrNumber key)
 {
 	const FormData_pg_index *i = idx->rd_index;
 
 	return idx->rd_rel->relam == BTREE_AM_OID && i->indisunique && i->indimmediate && i->indisvalid && i->indisready && i->indnatts == 2 && i->indnkeyatts == 2 &&
-		heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
 		((i->indkey.values[0] == member && i->indkey.values[1] == key) || (i->indkey.values[0] == key && i->indkey.values[1] == member));
 }
 
-/* The unique btree the rule picks for the pairs of the relation: the lowest oid of those that qualify. The scope index records it (a dependency) when it is built; see sift_scope_relation_index */
+/*
+ * The unique btree that defines the pairs of the relation, chosen when the scope segments are written (the index records it, see sift_scope_relation_index): the one named by using; else the
+ * only partial one (its predicate is a statement of which rows are pairs), else the lowest oid of the plain ones. Two partial ones are ERROR: which rows are pairs would be a guess.
+ */
 static Oid
-pair_index(Relation rel, AttrNumber member, AttrNumber key)
+pair_index(Relation rel, const SiftScopeSpec *s, AttrNumber member, AttrNumber key)
 {
+	Oid			plain = InvalidOid,
+				partial = InvalidOid;
+
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
-		bool		ok = is_pair_btree(idx, member, key);
+		bool		ok = is_pair_btree(idx, member, key),
+					named = s->index_name != NULL && strcmp(RelationGetRelationName(idx), s->index_name) == 0,
+					pred = !heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL);
 
 		index_close(idx, AccessShareLock);
-		if (ok)
+		if (named)
+		{
+			if (!ok)
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": index \"%s\" is not a valid immediate unique btree on exactly (%s, %s)", s->key_name, s->index_name, s->member, s->scope_key),
+								errhint("Name a unique btree of %s on its member and scope key columns, in either order; it may be partial.", s->rel_name)));
 			return ioid;
+		}
+		if (!ok || s->index_name != NULL)
+			continue;
+		if (!pred && !OidIsValid(plain))
+			plain = ioid;
+		else if (pred && OidIsValid(partial))
+			ereport(ERROR, (errcode(ERRCODE_AMBIGUOUS_PARAMETER), errmsg("scope \"%s\": \"%s\" has two partial unique btrees on (%s, %s)", s->key_name, s->rel_name, s->member, s->scope_key),
+							errhint("The predicate of the unique btree says which rows are pairs: name the one that does with USING <index> after the columns.")));
+		else if (pred)
+			partial = ioid;
 	}
-	return InvalidOid;
+	if (s->index_name != NULL)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no index \"%s\"", s->key_name, s->rel_name, s->index_name),
+						errhint("USING names a unique btree of the scope relation.")));
+	return OidIsValid(partial) ? partial : plain;
+}
+
+/* The predicate of an index as an implicit-AND list over Vars of varno 1 (a copy), NIL for a plain one */
+static List *
+index_predicate(Oid indexoid)
+{
+	Relation	idx = index_open(indexoid, AccessShareLock);
+	List	   *pred = list_copy(RelationGetIndexPredicate(idx));
+
+	index_close(idx, AccessShareLock);
+	return pred;
 }
 
 /*
- * The journal indexes of the scope relation: ready sift_col indexes with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid among the
- * plain ones (partial: the ones with a predicate). A journal records the pairs a statement ends and inserts, so it must see every row: a partial one never hears of a pair inserted
- * outside its predicate, and a read would take the member for unchanged.
+ * The journal indexes of the scope relation: ready sift_col indexes with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid of those that hear of
+ * every pair. A journal records the pairs a statement ends and inserts, so a partial one qualifies only when the predicate of the btree that defines the pairs implies its predicate (every pair
+ * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged. unfit: the first one that is not so (for the hint), not a candidate.
  */
 static Oid
-journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, bool partial)
+journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree, bool unfit)
 {
+	List	   *pair_pred = index_predicate(pair_btree);
+
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
 		bool		ok = sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
-			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber &&
-			heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) != partial;
+			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber;
 
+		if (ok)
+		{
+			List	   *jpred = RelationGetIndexPredicate(idx);
+
+			ok = (jpred == NIL || predicate_implied_by(jpred, pair_pred, false)) != unfit;
+		}
 		index_close(idx, AccessShareLock);
 		if (ok)
 			return ioid;
@@ -273,9 +329,9 @@ journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, bool partial
 }
 
 Oid
-sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key)
+sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
 {
-	return journal_scan(rel, member, scope_key, false);
+	return journal_scan(rel, member, scope_key, pair_btree, false);
 }
 
 /* The checks of one scope's declaration; the relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with it */
@@ -417,6 +473,20 @@ sync_edges(Oid index, List *keep)
 			ObjectAddressSet(to, RelationRelationId, btree);
 			recordDependencyOn(&from, &to, DEPENDENCY_NORMAL);
 		}
+	CommandCounterIncrement();
+}
+
+/* Says which unique btree defines the pairs, and its predicate */
+static void
+notice_btree(const SiftScopeSpec *s, Relation rel, Oid btree)
+{
+	List	   *pred = index_predicate(btree);
+
+	if (pred == NIL)
+		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\"", s->key_name, s->rel_name, get_rel_name(btree))));
+	else
+		ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\" that satisfy %s", s->key_name, s->rel_name, get_rel_name(btree),
+								deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(RelationGetRelationName(rel), RelationGetRelid(rel)), false, false))));
 }
 
 /*
@@ -444,19 +514,27 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 
 		sift_scope_relation(heap, index, specs->s[i], &rel, &member, &key);
 		btree = sticky ? recorded_btree(RelationGetRelid(index), rel, member, key) : InvalidOid;
+		if (sticky && specs->s[i]->index_name != NULL)
+		{
+			Oid			named = pair_index(rel, specs->s[i], member, key);
+
+			if (OidIsValid(btree) && named != btree)
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", specs->s[i]->key_name, get_rel_name(btree), specs->s[i]->index_name),
+								errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
+		}
 		if (!OidIsValid(btree))
 		{
-			btree = pair_index(rel, member, key);
+			btree = pair_index(rel, specs->s[i], member, key);
 			if (!OidIsValid(btree))
 				ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no unique btree index on (%s, %s)", specs->s[i]->key_name, specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key),
 								errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.", specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
-			ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\"", specs->s[i]->key_name, specs->s[i]->rel_name, get_rel_name(btree))));
+			notice_btree(specs->s[i], rel, btree);
 		}
-		journal = sift_scope_journal_index(rel, member, key);
+		journal = sift_scope_journal_index(rel, member, key, btree);
 
-		if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, true)))
+		if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, btree, true)))
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", specs->s[i]->key_name, specs->s[i]->rel_name),
-							errhint("A partial index never hears of a pair inserted outside its predicate: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
+							errhint("A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
 									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
 		if (!OidIsValid(journal))
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
@@ -566,4 +644,21 @@ sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumbe
 		return c;
 	}
 	return -1;
+}
+
+int
+sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
+{
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	Relation	rel;
+	SiftScopeLeg *l = &legs[0];
+
+	Assert(specs != NULL && scope >= 0 && scope < specs->n);
+	l->btree = sift_scope_relation_index(heap, index, specs->s[scope], &rel, &l->member, &l->key);
+	l->rel = RelationGetRelid(rel);
+	l->pred = index_predicate(l->btree);
+	table_close(rel, NoLock);
+	table_close(heap, NoLock);
+	return 1;
 }

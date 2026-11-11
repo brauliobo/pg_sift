@@ -24,6 +24,7 @@ typedef struct SiftScopeSpec
 	char	   *rel_name;
 	char	   *member;				/* columns of the scope relation */
 	char	   *scope_key;
+	char	   *index_name;			/* using name: the unique btree of the relation that defines the pairs, NULL: chosen by the rule (sift_scope_resolve) */
 	List	   *cols;				/* cols(a, b, c): the columns of the index its scope segments keep (with the member key and the time column of the cut); NIL: all of them */
 } SiftScopeSpec;
 
@@ -55,6 +56,21 @@ extern void sift_scope_alter(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
+/*
+ * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the unique btree
+ * that defines them (recorded when the scope segments were written); pred is the predicate of that btree as an implicit-AND list over Vars of varno 1 (NIL: every row).
+ */
+typedef struct SiftScopeLeg
+{
+	Oid			rel;
+	AttrNumber	member;
+	AttrNumber	key;
+	Oid			btree;
+	List	   *pred;
+} SiftScopeLeg;
+/* The legs of scope ordinal scope of the index: 1 (the pairs relation); returns their number */
+extern int	sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2]);
+
 /* The cut of the units of the segments of a scope: cut[] (SIFT_COL_CUT_MAX leaves) gets its derived key and the time column of the index if it has one; returns their number */
 struct SiftColRel;
 extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
@@ -65,8 +81,8 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
  * and a KEYADD record for the member of every pair inserted; the rule that reads them is the one of the connections (col/conn.h, docs/COL-CONNECT.md). The scope is the ordinal of the
  * scope in the declaration of the fact index; a scope whose relation has no journal index vouches for nothing (SIFT_CONN_NO_JOURNAL).
  */
-/* The journal index of the relation for the pair (member, scope_key); InvalidOid when it has none */
-extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key);
+/* The journal index of the relation for the pairs defined by pair_btree: a plain index, or one whose predicate the predicate of pair_btree implies (every pair is in it); InvalidOid when it has none */
+extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
 extern bool sift_scope_has_journal(Relation index, int scope);
 /* The journals of the scopes of the index, made when its build has read the table (the writers of the scope relation are held out to the end of the statement) */
 extern void sift_scope_start(Relation heap, Relation index);

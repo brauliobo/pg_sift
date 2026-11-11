@@ -240,7 +240,7 @@ pairs_of_keys(PairScan *ps)
 	if (btree_leads_with(ps->btree, ps->skey))
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
 	else
-		sift_conn_scan_keys(ps->rel, ps->member, ps->skey, ps->snap, scan_pair, ps);
+		sift_conn_scan_keys(ps->rel, ps->btree, ps->member, ps->skey, ps->snap, scan_pair, ps);
 	if (ps->out.n > 0)
 		qsort(ps->out.p, ps->out.n, sizeof(ScopePair), cmp_by_member);
 }

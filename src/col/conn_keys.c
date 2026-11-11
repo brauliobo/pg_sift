@@ -11,6 +11,9 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_type_d.h"
+#include "access/genam.h"
+#include "catalog/index.h"
+#include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
 #include "utils/snapmgr.h"
@@ -61,22 +64,46 @@ sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
 	return !isnull && key_of(TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid, d, k);
 }
 
-/* Calls f for every row of rel that holds both columns (key2 InvalidAttrNumber: the first alone, k2 is then 0), under snap */
+/*
+ * Calls f for every row of rel that holds both columns (key2 InvalidAttrNumber: the first alone, k2 is then 0), under snap. pred_index: a partial btree of rel whose predicate
+ * defines the rows (a scope relation's pairs): a row that fails it is not one (InvalidOid: every row)
+ */
 void
-sift_conn_scan_keys(Relation rel, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
+sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
 	TableScanDesc scan = sift_table_beginscan(rel, snap, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
+	EState	   *estate = NULL;
+	ExprState  *pred = NULL;
+	ExprContext *econtext = NULL;
 
+	if (OidIsValid(pred_index))
+	{
+		Relation	idx = index_open(pred_index, NoLock);
+		IndexInfo  *ii = BuildIndexInfo(idx);
+
+		if (ii->ii_Predicate != NIL)
+		{
+			estate = CreateExecutorState();
+			econtext = GetPerTupleExprContext(estate);
+			econtext->ecxt_scantuple = slot;
+			pred = ExecPrepareQual(ii->ii_Predicate, estate);
+		}
+		index_close(idx, NoLock);
+	}
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		int64		k,
 					k2 = 0;
 
+		if (pred != NULL && !ExecQual(pred, econtext))
+			continue;
 		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_key(slot, key2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
+	if (estate != NULL)
+		FreeExecutorState(estate);
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
 }
@@ -146,7 +173,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 	uint64		range;
 	MemoryContext old = MemoryContextSwitchTo(cx);
 
-	sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, count_key, &st);
+	sift_conn_scan_keys(parent, InvalidOid, key, InvalidAttrNumber, snap, count_key, &st);
 	range = st.rows == 0 ? 0 : (uint64) st.hi - (uint64) st.lo;
 	set = palloc0(sizeof(SiftConnKeySet));
 	set->lo = st.lo;
@@ -166,7 +193,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 	if (set->slots > 0)
 	{
 		set->bits = palloc_extended((set->slots + 63) / 64 * sizeof(uint64), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
-		sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, set_bit, set);
+		sift_conn_scan_keys(parent, InvalidOid, key, InvalidAttrNumber, snap, set_bit, set);
 	}
 	else
 	{
@@ -175,7 +202,7 @@ sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapsho
 
 		/* check-memory: allow the bytes were checked against the limit of the caller (maintenance_work_mem / 2) above */
 		set->keys = palloc_extended(Max(st.rows, 1) * sizeof(int64), MCXT_ALLOC_HUGE);
-		sift_conn_scan_keys(parent, key, InvalidAttrNumber, snap, add_key, &kf);
+		sift_conn_scan_keys(parent, InvalidOid, key, InvalidAttrNumber, snap, add_key, &kf);
 		set->nkeys = kf.n;
 		qsort(set->keys, set->nkeys, sizeof(int64), cmp_key);
 		set->again = palloc_extended(Max(set->nkeys, 1), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);

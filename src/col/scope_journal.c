@@ -26,14 +26,15 @@ journal_open(Relation index, int scope, LOCKMODE lock, Relation *rel, Relation *
 	Relation	heap;
 	AttrNumber	member,
 				key;
-	Oid			joid;
+	Oid			joid,
+				btree;
 
 	if (specs == NULL || scope < 0 || scope >= specs->n)
 		return false;
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	sift_scope_relation(heap, index, specs->s[scope], rel, &member, &key);
+	btree = sift_scope_relation_index(heap, index, specs->s[scope], rel, &member, &key);
 	table_close(heap, NoLock);
-	joid = sift_scope_journal_index(*rel, member, key);
+	joid = sift_scope_journal_index(*rel, member, key, btree);
 	if (!OidIsValid(joid))
 	{
 		table_close(*rel, NoLock);

@@ -10,11 +10,13 @@
 #include "catalog/pg_type_d.h"
 #include "common/int.h"
 #include "fmgr.h"
+#include "nodes/makefuncs.h"
 #include "funcapi.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
@@ -321,6 +323,7 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 	return in_scope(fcinfo, keys, n);
 }
 
+PG_FUNCTION_INFO_V1(sift_test_scope_legs);
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
 PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
@@ -404,4 +407,28 @@ sift_test_col_scope_mark(PG_FUNCTION_ARGS)
 	index_close(index, NoLock);
 	PG_RETURN_VOID();
 }
+/* sift._test_scope_legs(index, scope): the leg of the scope the planner is handed: the pair relation, its columns, the unique btree that defines the pairs and its predicate (NULL: every row) */
+Datum
+sift_test_scope_legs(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftScopeLeg legs[2];
+	TupleDesc	desc;
+	Datum		v[5];
+	bool		nulls[5] = {false, false, false, false, false};
+
+	if (sift_scope_legs(index, PG_GETARG_INT32(1), legs) != 1)
+		elog(ERROR, "a scope with one path has one leg");
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	v[0] = ObjectIdGetDatum(legs[0].rel);
+	v[1] = CStringGetTextDatum(get_attname(legs[0].rel, legs[0].member, false));
+	v[2] = CStringGetTextDatum(get_attname(legs[0].rel, legs[0].key, false));
+	v[3] = ObjectIdGetDatum(legs[0].btree);
+	nulls[4] = legs[0].pred == NIL;
+	v[4] = nulls[4] ? (Datum) 0 : CStringGetTextDatum(deparse_expression((Node *) make_ands_explicit(legs[0].pred), deparse_context_for(get_rel_name(legs[0].rel), legs[0].rel), false, false));
+	index_close(index, NoLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
 #endif							/* SIFT_TESTING */
