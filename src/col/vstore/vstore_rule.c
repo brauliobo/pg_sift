@@ -89,8 +89,20 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 	char	   *mine = NULL;
 
 	*v = (SiftVStoreVerdict) {.state = SIFT_VSTORE_NONE};
-	if (hatt == InvalidAttrNumber || sift_col_list_has(sift_col_options_count_columns(index), keycols_leaf_name(index, d)) ||
-		!keycols_col_stats(heap, hatt, &nd, &corr, &width))
+	if (hatt == InvalidAttrNumber || sift_col_list_has(sift_col_options_count_columns(index), keycols_leaf_name(index, d)))
+		return;
+	/*
+	 * pg_upgrade builds the index on an empty table and then puts the files of the old index in place: what the old index held is in those files, and
+	 * the dependency on the store of its column has to be made here. An index of another key order that the old cluster kept apart depends on the store too
+	 * and the store outlives the members that read it until it is dropped, which costs nothing else.
+	 */
+	if (IsBinaryUpgrade)
+	{
+		if (sift_vstore_exists(heap, hatt))
+			v->state = SIFT_VSTORE_SHARED;
+		return;
+	}
+	if (!keycols_col_stats(heap, hatt, &nd, &corr, &width))
 		return;
 	saving(rows, nd, width, &per_row, &share);
 	if (per_row < VSTORE_MIN_BYTES || share <= VSTORE_MIN_SAVED)

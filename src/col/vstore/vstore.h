@@ -20,6 +20,7 @@
 #define SIFT_VSTORE_META_FLAG	0x00040000	/* SiftMetaPageData.flags: this relation is a shared value store */
 
 /* The store of the column of the table: found by its dependency on the table, else adopted by its name (a restored dump has no dependency), else made; the index depends on it */
+extern bool sift_vstore_exists(Relation heap, AttrNumber attno);
 extern Oid	sift_vstore_ensure(Relation heap, Relation index, AttrNumber attno);
 /* The store of the column, InvalidOid when there is none */
 extern Oid	sift_vstore_find(Relation heap, AttrNumber attno);

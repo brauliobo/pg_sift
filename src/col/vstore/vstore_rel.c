@@ -232,24 +232,38 @@ store_name(Relation heap, const char *col, int pass)
 
 static void init_store(Oid store);
 
-/* A restored dump has the relation and not its dependency on the table: the relation of the first name that holds the column is the store */
+/* The relation of the first name that holds the column: the store, when a restored dump has it without its dependency on the table */
 static Oid
-adopt_by_name(Relation heap, const char *col)
+store_by_name(Relation heap, const char *col)
 {
 	for (int pass = 0;; pass++)
 	{
 		Oid			cand = get_relname_relid(store_name(heap, col, pass), RelationGetNamespace(heap));
 
-		if (!OidIsValid(cand))
-			return InvalidOid;
-		if (store_of_column(cand, col))
-		{
-			depend_on(RelationRelationId, cand, RelationGetRelid(heap), DEPENDENCY_AUTO);
-			CommandCounterIncrement();
-			init_store(cand);
+		if (!OidIsValid(cand) || store_of_column(cand, col))
 			return cand;
-		}
 	}
+}
+
+static Oid
+adopt_by_name(Relation heap, const char *col)
+{
+	Oid			cand = store_by_name(heap, col);
+
+	if (OidIsValid(cand))
+	{
+		depend_on(RelationRelationId, cand, RelationGetRelid(heap), DEPENDENCY_AUTO);
+		CommandCounterIncrement();
+		init_store(cand);
+	}
+	return cand;
+}
+
+/* Whether the column has a store, the restored one without its dependency on the table too (pg_upgrade restores the relations before the indexes) */
+bool
+sift_vstore_exists(Relation heap, AttrNumber attno)
+{
+	return OidIsValid(sift_vstore_find(heap, attno)) || OidIsValid(store_by_name(heap, get_attname(RelationGetRelid(heap), attno, false)));
 }
 
 /* The metapage of a store that has none: a new store, or one a restored dump made (the relation without its pages) */
