@@ -1,9 +1,9 @@
 -- GROUP BY the scope key, "every tenant": a scan of every key of a scope reads the scope units key by key, a fact counted once for each pair of its member (the join's meaning), and groups by the derived leaf
 -- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the rows of
 -- such a member are read once from the entity segments and expanded by the pairs it has now, so that every row has its key (col_scope_changed_pairs: what that reads). Table-driven: each state of the facts and
--- the pairs (the states accumulate) by each shape (aggregates, filters, members in one, three or no key); every read is md5 equal to the plain join (the group rows included) or says why it needs the join.
--- The testing markers stand for the recognition of the join: sift.in_scope_all in the WHERE clause and sift.scope_key in the group key (RELEASE-TODO: the planner recognises the join itself and runs the join when
--- the reader refuses; the markers then raise the error shown here).
+-- the pairs (the states accumulate) by each shape (aggregates, filters, members in one, three or no key); the statement is the join `f JOIN pairs m ON m.member = f.fk GROUP BY m.key` as an application writes it (the
+-- planner recognises it: agg_scope_group_key), and every read is md5 equal to the join under sift.agg_scope = off and to the normal plan (the group rows included), from the units or, where the reader refuses,
+-- from the join the node runs (the route says why).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -41,15 +41,12 @@ INSERT INTO shapes VALUES
 	(8, 'dim_b in no key', 'count(*), sum(v)', 'f.dim_a_id BETWEEN 100 AND 109', true),
 	(9, 'a row for each pair, no group', 'count(*), sum(v), min(id), max(id)', NULL, false);
 
--- facts: the table, idx: its scope index, pairs: the relation of the pairs (a sub-select when its active pairs are a partial btree's)
-CREATE FUNCTION probe(facts text, idx text, pairs text)
+-- facts: the table, pairs: the relation of the pairs (a sub-select when its active pairs are a partial btree's)
+CREATE FUNCTION probe(facts text, pairs text)
 RETURNS TABLE (n int, label text, verdict text, route text, group_key boolean, preagg boolean, delta text) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' WHEN false THEN 'DIFFERENT' ELSE 'needs the join' END, CASE WHEN r.refused THEN 'error: ' || r.why ELSE coalesce(r.why, CASE WHEN r.stored THEN 'units' END) END, r.group_key, r.preagg,
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' END), r.group_key, r.preagg,
 		CASE WHEN r.delta_rows IS NULL THEN 'no read' WHEN r.delta_rows = 0 THEN 'none' ELSE 'read' END
 	FROM shapes s, LATERAL scope_group_run(
-		format('SELECT %s%s FROM %s f WHERE sift.in_scope_all(%L::regclass, ''group_id'', f.dim_a_id)%s%s',
-			CASE WHEN s.grouped THEN format('sift.scope_key(%L::regclass, ''group_id'', f.dim_a_id) AS k, ', idx) END, s.aggs, facts, idx,
-			coalesce(' AND ' || s.filter, ''), CASE WHEN s.grouped THEN ' GROUP BY 1' END),
 		format('SELECT %s%s FROM %s f JOIN %s m ON m.dim_a_id = f.dim_a_id%s%s', CASE WHEN s.grouped THEN 'm.group_id AS k, ' END, s.aggs, facts, pairs,
 			coalesce(' WHERE ' || s.filter, ''), CASE WHEN s.grouped THEN ' GROUP BY 1' END)) r
 	ORDER BY s.n
@@ -94,8 +91,8 @@ BEGIN
 END $$;
 
 \echo clean
-SELECT * FROM probe('facts', 'facts_col', 'membership');
-SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe(''facts'', ''facts_col'', ''membership'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT * FROM probe('facts', 'membership');
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe(''facts'', ''membership'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('facts_col', true);
 
 -- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too, so the pairs of a buffered row's member are those of the btree. A buffered row of a member
@@ -110,11 +107,11 @@ CREATE INDEX sd_facts_col ON sd_facts USING sift_col (id, dim_a_id, at, v) WITH 
 REINDEX INDEX sd_facts_col;
 VACUUM (FREEZE, ANALYZE) sd_facts;
 
--- the shapes: how many answer as the join does, are read from the units, say the key and read a delta, and how many need the join
+-- the shapes: how many answer as the join does, are read from the units, say the key and read a delta, and how many the node answers with the join
 CREATE FUNCTION sd_probe(OUT same int, OUT units int, OUT with_key int, OUT with_delta int, OUT needs_join int) LANGUAGE sql AS $$
 	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route = 'units'), count(*) FILTER (WHERE group_key),
-		count(*) FILTER (WHERE delta = 'read'), count(*) FILTER (WHERE verdict = 'needs the join')
-	FROM probe('sd_facts', 'sd_facts_col', '(SELECT * FROM sd_pairs WHERE deleted_at IS NULL)')
+		count(*) FILTER (WHERE delta = 'read'), count(*) FILTER (WHERE route <> 'units')
+	FROM probe('sd_facts', '(SELECT * FROM sd_pairs WHERE deleted_at IS NULL)')
 $$;
 CREATE TABLE sd_states (n int, label text, stmt text);
 INSERT INTO sd_states VALUES
@@ -129,6 +126,6 @@ DROP TABLE sd_states, sd_facts, sd_pairs;
 DROP FUNCTION sd_probe();
 
 DROP TABLE shapes, states, facts, membership;
-DROP FUNCTION probe(text, text, text), apply(int), scope_group_run(text, text), scope_run(text, text), scope_reason_ok(text);
+DROP FUNCTION probe(text, text), apply(int), scope_group_run(text), scope_run(text, text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

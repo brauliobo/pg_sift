@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential fuzz of the scope index (test/t/col_scope_fuzz.sh runs it).
 
-  test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8] [--family all|pairs|union] [--twohop-strict] [--twohop-reason REGEX]
+  test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8] [--family all|pairs|union|dups] [--twohop-strict] [--twohop-reason REGEX]
                                                                            needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
@@ -17,6 +17,12 @@ entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segme
 A third of the seeds make the pairs SOFT deleted: the pair table has a deleted_at column, its pairs are the rows of a partial unique btree WHERE deleted_at IS NULL (the primary key over all rows stays),
 the journal index is plain or partial on the same predicate, and the steps soft delete, restore, insert soft deleted pairs and update a column no index holds besides the others; the plain join
 reads the active rows.
+
+The duplicates family (--family dups, never in 'all': the seeds of the other families stay) makes the pairs the DISTINCT rows of a btree that is not unique (the order of its two columns is drawn; partial in a soft seed),
+so that a pair is several rows (row_src; the primary key is row_id). The steps add a duplicate row, delete one of several (the pair stays), delete the last (it ends), move one of several to another
+key or the only row, soft delete one of several, replace the rows of pairs in ONE transaction (a duplicate in and the old rows out, the old out and a new in, or a duplicate in and out), and roll back a duplicate
+insert or a delete of the last rows. The final entries of the scope units must be the join of the facts with the DISTINCT pairs, IN and EXISTS count a fact once, and the statements a multiset refuses
+(a join, a read for each pair or by the key) run as written, the join of the rows, and say the multiset reason.
 
 The journal index of the pairs is made first and the scope index is made again (REINDEX) after its first build, which starts the journal. 'planner' (probed: the SQL forms IN and EXISTS have a
 scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset drawn per seed from the columns of the index (with or without the primary key,
@@ -57,7 +63,7 @@ BEGIN
 		det := NULL; st := false; wh := NULL; ok := true;
 		BEGIN
 			IF d.class = 'group key' THEN
-				SELECT * INTO r FROM scope_group_run(d.q, d.plain);
+				SELECT * INTO r FROM scope_group_run(d.q);
 			ELSE
 				SELECT * INTO r FROM scope_run(d.q, d.plain);
 			END IF;
@@ -67,7 +73,7 @@ BEGIN
 			ELSIF NOT d.sql_form AND NOT (r.path_ok OR coalesce(r.why ~ ok_why, false)) THEN ok := false; det := 'the scope path is neither read nor accounted for';
 			ELSIF d.sql_form AND planner AND d.engage_wanted AND NOT r.engaged THEN ok := false; det := 'the planner did not recognise the form';
 			ELSIF strict AND d.stored_wanted AND NOT r.stored THEN ok := false; det := 'not stored right after a build';
-			ELSIF d.want_why IS NOT NULL AND (r.why IS NULL OR r.why !~ d.want_why) THEN ok := false; det := 'fallback reason is not ' || d.want_why;
+			ELSIF d.want_why IS NOT NULL AND r.engaged AND (r.why IS NULL OR r.why !~ d.want_why) THEN ok := false; det := 'fallback reason is not ' || d.want_why;
 			END IF;
 		EXCEPTION WHEN OTHERS THEN
 			ok := false; det := 'ERROR ' || SQLERRM;
@@ -175,6 +181,20 @@ class Seed:
         self.omit = self.ok_why = None
         self.expects_stored = True
 
+    multiset = False   # a read for each pair is refused: it runs as written
+
+    def oracle(self):   # the relation of the pairs the final entries are compared with
+        return self.pairs
+
+    def oracle_act(self):
+        return 'AND t.deleted_at IS NULL' if self.soft else ''
+
+    def once_rel(self):   # a fact once for each pair: the rows of the pairs, or the distinct pairs of a multiset
+        return self.pairs
+
+    def once_act(self):
+        return self.act
+
     def strict(self, flag):   # whether the reads right after a build must be stored
         return flag
 
@@ -189,7 +209,7 @@ class Seed:
               + (" WHERE deleted_at IS NULL" if self.jpartial else "") + ";\n")
         act = f"CREATE UNIQUE INDEX tenant_scope_active ON tenant_scope ({self.pk2}) WHERE deleted_at IS NULL;\n" if self.soft else ''
         return f"""CREATE TABLE tenant_scope (dim_a_id {self.mtype} NOT NULL, tenant_id {self.ktype} NOT NULL, deleted_at timestamptz, note int, PRIMARY KEY ({self.pk})) WITH (autovacuum_enabled = off);
-INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys}, {"CASE WHEN (m + j) % 6 = 0 THEN now() END" if self.soft else "NULL"} FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM
+INSERT INTO tenant_scope (dim_a_id, tenant_id, deleted_at) SELECT m, 1 + (m * 31 + j * 13) % {self.nkeys}, {"CASE WHEN (m + j) % 6 = 0 THEN now() END" if self.soft else "NULL"} FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM
 	(SELECT m, (m * 7919) % 1000 AS h FROM generate_series(1, {self.dim_b}) m) x) y, generate_series(0, 5) j WHERE j < y.n ON CONFLICT DO NOTHING;
 {act}{jr}"""
 
@@ -221,7 +241,7 @@ VACUUM (ANALYZE) {self.tables};"""
                 f"ORDER BY random() LIMIT 1)")
 
     def pair_ins(self, pct):
-        return (f"INSERT INTO tenant_scope SELECT m, k FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')} "
+        return (f"INSERT INTO tenant_scope (dim_a_id, tenant_id) SELECT m, k FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')} "
                 f"AND (SELECT count(*) FROM tenant_scope s WHERE s.dim_a_id = m) < 6) x WHERE k IS NOT NULL ON CONFLICT DO NOTHING")
 
     def pair_soft(self, pct):   # soft delete (the rows that are not pairs yet are left alone)
@@ -232,7 +252,7 @@ VACUUM (ANALYZE) {self.tables};"""
                 f"(SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = t.dim_a_id AND s.tenant_id = t.tenant_id AND s.deleted_at IS NULL)")
 
     def pair_ins_deleted(self, pct):
-        return (f"INSERT INTO tenant_scope SELECT m, k, now() FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')}) x "
+        return (f"INSERT INTO tenant_scope (dim_a_id, tenant_id, deleted_at) SELECT m, k, now() FROM (SELECT m, {self.free_key('m')} AS k FROM generate_series(1, {self.dim_b + 20}) m WHERE {self.window(pct, 'm')}) x "
                 f"WHERE k IS NOT NULL ON CONFLICT DO NOTHING")
 
     def pair_note(self, pct):   # a column no index holds
@@ -243,7 +263,7 @@ VACUUM (ANALYZE) {self.tables};"""
 
     def pair_move(self, pct):
         return (f"WITH d AS (DELETE FROM tenant_scope WHERE {self.window(pct, 'dim_a_id')} AND tenant_id % 3 = {self.rng.randint(0, 2)} RETURNING dim_a_id) "
-                f"INSERT INTO tenant_scope SELECT m, {self.free_key('m')} FROM (SELECT DISTINCT dim_a_id AS m FROM d) x ON CONFLICT DO NOTHING")
+                f"INSERT INTO tenant_scope (dim_a_id, tenant_id) SELECT m, {self.free_key('m')} FROM (SELECT DISTINCT dim_a_id AS m FROM d) x ON CONFLICT DO NOTHING")
 
     def pair_upd(self, pct):
         return (f"UPDATE tenant_scope t SET tenant_id = 1 + t.tenant_id % {self.nkeys} WHERE {self.window(pct, 'dim_a_id')} AND NOT EXISTS "
@@ -329,7 +349,7 @@ VACUUM (ANALYZE) {self.tables};"""
         def add(cls, cols, q, ks, stored):
             subset = self.kept is None or cols <= self.kept
             stored = stored and subset and all(k in keys for k in ks)
-            qs.append((cls, q.replace('@', mark(ks)), q.replace('@', plain(ks)), False, stored, False, None if subset else '^column .* not in the scope units$'))
+            qs.append((cls, q.replace('@', mark(ks)), q.replace('@', plain(ks)), False, stored, False, None if subset or self.union else '^column .* not in the scope units$'))
 
         for name, cols, q in r.sample(shapes, 3):
             add('one key', cols, q, [pick()], True)
@@ -340,29 +360,28 @@ VACUUM (ANALYZE) {self.tables};"""
         ks = [pick() for _ in range(3)]
         pair = "SELECT k, (SELECT count(*) FROM events e %s), (SELECT sum(v) FROM events e %s) FROM unnest(ARRAY[%s]::int8[]) k ORDER BY k"
         scoped = f"WHERE sift.{self.marker}('events_col'::regclass, 'tenant_id', e.dim_a_id, k)"
-        joined = f"JOIN {self.pairs} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.act}"   # the pairs are distinct: a row once for each
+        joined = f"JOIN {self.once_rel()} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.once_act()}"   # the pairs are distinct: a row once for each
         qs.append(('per pair', pair % ((scoped,) * 2 + (lst(ks),)), pair % ((joined,) * 2 + (lst(ks),)), False, False, False, None))
         P = self.pairs
-        gk, ga = "sift.scope_key('events_col'::regclass, 'tenant_id', e.dim_a_id)", "sift.in_scope_all('events_col'::regclass, 'tenant_id', e.dim_a_id)"
         for cols, aggs, filt in self.grng.sample([({'v'}, "count(*), sum(v)", ''), ({'id', 'v'}, "min(id), max(id), min(v)", ''), (set(), "count(DISTINCT e.dim_a_id), count(*)", ''),
                                           ({'v'}, "count(*), sum(v)", ' AND v > 4'), ({'id', 'created_at'}, "min(id), max(id)", f" AND created_at >= DATE '2026-0{m1}-01'")], 3):
             subset = self.kept is None or cols <= self.kept   # every key by its key: stored right after a build, else the join
-            qs.append(('group key', f"SELECT {gk} AS k, {aggs} FROM events e WHERE {ga}{filt} GROUP BY 1 ORDER BY 1",
-                       f"SELECT s.tenant_id AS k, {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act} WHERE true{filt} GROUP BY 1 ORDER BY 1", False, subset, False,
-                       None if subset else '^column .* not in the scope units$'))
-        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE {ga}",   # a row for each pair, no group
-                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}", False, self.kept is None or {'v', 'id'} <= self.kept, False,
-                   None if self.kept is None or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
-        ks2 = sorted(set(ks))   # several keys counted for each pair (it raises a refusal as the markers of every key do): the changed pairs of a dim_b are read once from the segments and expanded by its pairs
+            gq = f"SELECT s.tenant_id AS k, {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act} WHERE true{filt} GROUP BY 1 ORDER BY 1"
+            qs.append(('group key', gq, gq, False, subset and not self.union, False, None if subset or self.union else '^column .* not in the scope units$'))
+        gq = f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}"   # a row for each pair, every key, no group
+        qs.append(('group key', gq, gq, False, (self.kept is None or {'v', 'id'} <= self.kept) and not self.union, False, None if self.kept is None or self.union or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
+        ks2 = sorted(set(ks))   # several keys counted for each pair, by the key too: the changed pairs of a dim_b are read once from the segments and expanded by its pairs
         subset = self.kept is None or {'v', 'id'} <= self.kept
-        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', e.dim_a_id, ARRAY[{lst(ks2)}]::int8[])",
-                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}", False, False, False,
-                   None if subset else '^column .* not in the scope units$'))
+        for aggs, by in (("count(*), sum(v), min(id)", ''), ("s.tenant_id AS k, count(*), sum(v)", ' GROUP BY 1 ORDER BY 1')):
+            gq = f"SELECT {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}{by}"
+            qs.append(('group key', gq, gq, False, False, False, None if subset or self.union else '^column .* not in the scope units$'))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % (P, self.act), False),
                           ("SELECT count(*), sum(v) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (P, lst([pick() for _ in range(3)]), self.act), False),
                           ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM %s s WHERE tenant_id = %d%s)" % (P, pick(), self.act), True),
                           ("SELECT count(*), sum(v) FROM events e WHERE EXISTS (SELECT 1 FROM %s s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = %d%s)" % (P, pick(), self.act), True)]:
-            qs.append(('sql form', q, q, True, False, engage and self.cols is None and not self.soft and not self.union, None))   # the planner's proof of a predicate is a separate piece
+            qs.append(('sql form', q, q, True, False, engage and self.cols is None and not self.union, None))   # a scope of two paths is no relation the planner proves
+        if self.multiset:   # the reads for each pair are refused whatever the columns: they only say the multiset reason
+            qs = [(c, q, p, f, st and c != 'group key', e, None if c == 'group key' else w) for c, q, p, f, st, e, w in qs]
         return qs
 
 
@@ -531,7 +550,83 @@ INSERT INTO grants (tenant_id, group_id, deleted_at) SELECT 1 + (g * 17 + j * 5)
                 f"INSERT INTO {t} SELECT * FROM {tmp}")
 
 
+DUP_STEPS = [('dup_add', 12), ('dup_remove', 9), ('dup_last', 8), ('dup_move', 8), ('dup_move_last', 5), ('dup_swap', 8), ('dup_aborted', 6)]
+DUP_SOFT_STEPS = [('dup_soft_one', 5)]
+
+
+class DupSeed(Seed):
+    """The pairs are the DISTINCT rows of a btree that is not unique: a pair may be several rows (row_src), and exists while one row that satisfies the btree's predicate holds it."""
+    pair_kinds = Seed.pair_kinds + tuple(k for k, _ in DUP_STEPS + DUP_SOFT_STEPS)
+
+    def __init__(self, seed, rows, caps):
+        super().__init__(seed, rows, caps)
+        self.order = random.Random(seed * 15485863 + 7).choice(FIRST)   # its own stream
+        self.on = 'deleted_at IS NULL' if self.soft else 'true'
+        self.steps = self.steps + DUP_STEPS + (DUP_SOFT_STEPS if self.soft else [])
+
+    def oracle(self):   # the distinct pairs, the meaning of IN and EXISTS
+        return f"(SELECT DISTINCT dim_a_id, tenant_id FROM tenant_scope WHERE {self.on})"
+
+    multiset = True
+    once_rel = oracle
+
+    def oracle_act(self):
+        return ''
+
+    def once_act(self):
+        return ''
+
+    def pair_sql(self):
+        part = ' WHERE deleted_at IS NULL' if self.soft else ''
+        jr = (f"CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
+              + (" WHERE deleted_at IS NULL" if self.jpartial else "") + ";\n")
+        return f"""CREATE TABLE tenant_scope (row_id serial PRIMARY KEY, row_src int NOT NULL DEFAULT 1, dim_a_id {self.mtype} NOT NULL, tenant_id {self.ktype} NOT NULL, deleted_at timestamptz, note int) WITH (autovacuum_enabled = off);
+INSERT INTO tenant_scope (row_src, dim_a_id, tenant_id, deleted_at) SELECT r, m, 1 + (m * 31 + j * 13) % {self.nkeys}, {"CASE WHEN (m + j) % 6 = 0 AND r = 1 THEN now() END" if self.soft else "NULL"}
+	FROM (SELECT m, {KEYS_PER[self.profile]} AS n FROM (SELECT m, (m * 7919) % 1000 AS h FROM generate_series(1, {self.dim_b}) m) x) y, generate_series(0, 5) j, generate_series(1, 3) r
+	WHERE j < y.n AND r <= 1 + (m % 4 = 0)::int + (m % 20 = 0)::int;
+CREATE INDEX tenant_scope_pairs ON tenant_scope ({self.order}){part};
+{jr}"""
+
+    def one_row(self, pct, agg, having):   # one row of each pair in a window that has so many active rows
+        return f"SELECT {agg}(row_id) FROM tenant_scope WHERE {self.on} AND {self.window(pct, 'dim_a_id')} GROUP BY dim_a_id, tenant_id HAVING count(*) {having}"
+
+    def dup_add(self, pct):   # a duplicate row of pairs (of soft deleted ones too: it brings them back)
+        return (f"INSERT INTO tenant_scope (row_src, dim_a_id, tenant_id) SELECT DISTINCT 4, dim_a_id, tenant_id FROM tenant_scope WHERE {self.window(pct, 'dim_a_id')}")
+
+    def dup_remove(self, pct):   # one of the rows of pairs that have several: they stay
+        return f"DELETE FROM tenant_scope WHERE row_id IN ({self.one_row(pct, 'min', '> 1')})"
+
+    def dup_last(self, pct):   # the only row of pairs: they end
+        return f"DELETE FROM tenant_scope WHERE row_id IN ({self.one_row(pct, 'min', '= 1')})"
+
+    def dup_move(self, pct):   # one row of pairs that have several moves to another key: the old pairs stay, the new ones may exist
+        return f"UPDATE tenant_scope SET tenant_id = 1 + tenant_id % {self.nkeys} WHERE row_id IN ({self.one_row(pct, 'max', '> 1')})"
+
+    def dup_move_last(self, pct):   # the only row of pairs moves: the old pairs end
+        return f"UPDATE tenant_scope SET tenant_id = 1 + tenant_id % {self.nkeys} WHERE row_id IN ({self.one_row(pct, 'max', '= 1')})"
+
+    def dup_soft_one(self, pct):
+        return f"UPDATE tenant_scope SET deleted_at = now() WHERE row_id IN ({self.one_row(pct, 'min', '> 1')})"
+
+    def dup_swap(self, pct):   # in ONE transaction a duplicate row comes and the last (old) row goes, or the other way round, or a duplicate comes and goes: the pairs stay
+        w = f"{self.on} AND {self.window(pct, 'dim_a_id')}"
+        ins = f"INSERT INTO tenant_scope (row_src, dim_a_id, tenant_id) SELECT DISTINCT {{}}, dim_a_id, tenant_id FROM tenant_scope WHERE {w}"
+        return self.rng.choice([
+            f"BEGIN; {ins.format(5)}; DELETE FROM tenant_scope WHERE row_src <> 5 AND {w}; COMMIT",
+            f"BEGIN; WITH d AS (DELETE FROM tenant_scope WHERE {w} RETURNING dim_a_id, tenant_id) INSERT INTO tenant_scope (row_src, dim_a_id, tenant_id) "
+            f"SELECT DISTINCT 5, dim_a_id, tenant_id FROM d; COMMIT",
+            f"BEGIN; {ins.format(6)}; DELETE FROM tenant_scope WHERE row_src = 6; COMMIT"])
+
+    def dup_aborted(self, pct):   # a rolled back duplicate (and a new pair), or a rolled back delete of the last rows
+        w = f"{self.on} AND {self.window(pct, 'dim_a_id')}"
+        return self.rng.choice([
+            f"BEGIN; INSERT INTO tenant_scope (row_src, dim_a_id, tenant_id) SELECT DISTINCT 7, dim_a_id, tenant_id FROM tenant_scope WHERE {w}; {self.pair_ins(pct)}; ROLLBACK",
+            f"BEGIN; {self.dup_last(pct)}; {self.dup_move_last(pct)}; ROLLBACK"])
+
+
 def make_seed(seed, rows, caps, family, reason):
+    if family == 'dups':
+        return DupSeed(seed, rows, caps)
     return UnionSeed(seed, rows, caps, reason) if family == 'union' or (family == 'all' and seed % 3 == 0) else Seed(seed, rows, caps)
 
 
@@ -606,7 +701,7 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
         caps = probe(a) | ({'twohop_strict'} if twohop_strict else set())
         s = make_seed(seed, rows, caps, family, twohop_reason)
         log.write(f'-- seed {seed} planner={"planner" in caps} {type(s).__name__} {vars(s)}\n')
-        a.run(LIB.replace('@ACT_T@', 'AND t.deleted_at IS NULL' if s.soft else '').replace('@PAIRS@', s.pairs))
+        a.run(LIB.replace('@ACT_T@', s.oracle_act()).replace('@PAIRS@', s.oracle()))
         out = a.run(s.setup_sql())
         if ERR.search(out):
             raise Fail(f'setup: {out.strip()[:1500]}')
@@ -666,7 +761,7 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=12000)
     ap.add_argument('--steps', type=int, default=8)
-    ap.add_argument('--family', choices=['all', 'pairs', 'union'], default='all', help='all: every third seed is a union seed')
+    ap.add_argument('--family', choices=['all', 'pairs', 'union', 'dups'], default='all', help='all: every third seed is a union seed; dups: every seed has pairs in several rows')
     ap.add_argument('--twohop-strict', action='store_true', help='the reads of one key right after a build are stored in a union seed, and the fallback reason of --twohop-reason is not accepted')
     ap.add_argument('--twohop-reason', default=TWOHOP_REASON, help='a fallback reason accepted in a union seed besides the documented ones')
     o = ap.parse_args()

@@ -171,6 +171,26 @@ pairs_add(ScopePairs *ps, int64 member, int64 key)
 	ps->p[ps->n++] = (SiftScopePair) {member, key};
 }
 
+uint64
+sift_scope_pairs_distinct(SiftScopePair *p, uint64 n)
+{
+	uint64		k = 0;
+
+	if (n > 0)
+		pairs_by_member(p, n);
+	for (uint64 i = 0; i < n; i++)
+		if (k == 0 || PAIR_BY_MEMBER(&p[k - 1], &p[i]))
+			p[k++] = p[i];
+	return k;
+}
+
+/* The pairs of the list ascending by member, each once: a relation lists a pair once for each of its rows, the leaves of the journal index and the probes of the btree too */
+static void
+pairs_distinct(ScopePairs *ps)
+{
+	ps->n = (uint32) sift_scope_pairs_distinct(ps->p, ps->n);
+}
+
 /* ---- the pairs of the scope relation under the snapshot ---- */
 
 typedef struct PairScan
@@ -278,8 +298,7 @@ pairs_of_keys(PairScan *ps)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
 	else if (!leaf_pairs(ps))
 		sift_conn_scan_keys(ps->rel, ps->btree, ps->member, ps->skey, ps->snap, scan_pair, ps);
-	if (ps->out.n > 0)
-		pairs_by_member(ps->out.p, ps->out.n);
+	pairs_distinct(&ps->out);
 }
 
 /* The pairs of the members with one of the keys: the btree asked for each member when it leads with the member and that is cheaper than reading the pairs of the keys (the fill's price rule), else the pairs of the keys filtered */
@@ -291,8 +310,7 @@ pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
 	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper(n, sift_conn_rows_of(ps->rel)))
 	{
 		probe_all(ps, ps->member, members, n, probe_of_member);
-		if (ps->out.n > 0)
-			pairs_by_member(ps->out.p, ps->out.n);
+		pairs_distinct(&ps->out);
 		return;
 	}
 	pairs_of_keys(ps);
@@ -394,20 +412,6 @@ add_joined_pairs(Relation heap, Relation index, const SiftScopeSpec *s, PairScan
 	for (uint32 i = 0; i < v.out.n; i++)
 		for (uint32 j = first_of_member(&g.out, v.out.p[i].key); j < g.out.n && g.out.p[j].member == v.out.p[i].key; j++)
 			pairs_add(&ps->out, v.out.p[i].member, g.out.p[j].key);
-}
-
-/* Sorts the pairs by member and keeps each once */
-static void
-pairs_distinct(ScopePairs *ps)
-{
-	uint32		k = 0;
-
-	if (ps->n > 0)
-		pairs_by_member(ps->p, ps->n);
-	for (uint32 i = 0; i < ps->n; i++)
-		if (k == 0 || PAIR_BY_MEMBER(&ps->p[k - 1], &ps->p[i]))
-			ps->p[k++] = ps->p[i];
-	ps->n = k;
 }
 
 /*
@@ -626,12 +630,13 @@ typedef struct ScopeFill
  * of a valid pair describes, expanded by the pairs of their member. Sets rd->why when the stored read is not exact.
  */
 static void
-stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves, SiftScopeRead *rd)
+stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves, uint32 max_changed,
+			SiftScopeRead *rd)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 	SiftConnKeys changed = {0};
 	SiftConnWhy verdict;
-	uint32		cap = patch_cap(dir, once || nkeys == 1);
+	uint32		cap = Min(patch_cap(dir, once || nkeys == 1), max_changed);
 	bool		several = once && nkeys > 1;
 	SiftScopeBuffer *bufs;
 	int			nbufs;
@@ -686,6 +691,7 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 
 		all = scope_pairs(heap, index, ord, snap, keys, nkeys, both, nboth, max);
 	}
+	rd->pairs = all.n;
 	if (all.over)
 		rd->why = several ? "dedupe over work_mem" : "write buffer";
 	else if (several && !dedupe_drops(&all, rd->except, rd->nexcept, rd))
@@ -732,7 +738,8 @@ sift_scope_read_rows(SiftScopeRead *rd)
 }
 
 SiftScopeRead *
-sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves)
+sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves,
+				uint32 max_changed)
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
@@ -755,6 +762,6 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
-	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, rd);
+	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
 	return rd;
 }

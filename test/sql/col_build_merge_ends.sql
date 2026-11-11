@@ -19,6 +19,9 @@ CREATE INDEX pairs_journal ON pairs USING sift_col (member, tenant) WITH (track_
 
 CREATE INDEX facts_col ON facts USING sift_col (id, member, d, v) WITH (scope = 'tenant: member -> pairs(member, tenant)');
 SELECT max(gen) < 64 AS merges_end, count(*) > 1 AS cut_by_memory FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
+-- the stale connection the build leaves is refreshed by one more pass, and the next passes find nothing to do (the refresh does not come back: a rewrite restamps what was stale)
+DO $$ DECLARE n int := 0; BEGIN WHILE sift.col_maintain('facts_col') LOOP n := n + 1; IF n > 4 THEN RAISE EXCEPTION 'the maintenance of facts_col does not end'; END IF; END LOOP; END $$;
+SELECT max(gen) < 64 AS still_ends FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
 SELECT sift.col_verify('facts_col', true);
 
 DROP TABLE facts, pairs;

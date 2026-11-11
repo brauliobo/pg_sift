@@ -3,7 +3,7 @@
 -- grouped by the key of each pair, and the read of several keys that counts a row for each pair, need no join for that. Table-driven: each state of the pairs and the events (the states accumulate) by each
 -- read shape; every read is md5 equal to the plain join, takes the scope units (no "changed pairs" refusal), and reads no more rows than the changed dim_a_id have and the buffers hold: the rows read
 -- from the segments are at most those the changed dim_a_id have, the copies of the delta at most those rows and the buffers' times the most keys a dim_a_id has. Counts only, no timings.
--- The testing markers stand for the recognition of the join: sift.in_scope_all and sift.scope_key (every key), sift.in_scope (one key or a list) and sift.in_scope_pairs (a row for each pair).
+-- The statements are the joins as an application writes them, which the planner recognises (agg_scope_recognition, agg_scope_group_key): every key by the key, one key or a list in an IN, a join with several keys.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -39,31 +39,30 @@ BEGIN
 	RETURN n;
 END $$;
 
--- q: a read over the scope units, plain: the join. route: the fallback reason or "units"; delta: what the delta read (the rows of the buffers, those of the changed dim_a_id too: patch); bounded: the rows it read are within the bounds above (a read every key at once raises when the
--- reader refuses: the reason is the route then)
-CREATE FUNCTION cp_run(q text, plain text, tbl text, idx text, OUT same boolean, OUT route text, OUT delta text, OUT bounded boolean) LANGUAGE plpgsql AS $$
+-- q: a statement the planner reads from the scope units; the same under sift.agg_scope = off and the normal plan. route: the fallback reason or "units"; delta: what the delta read (the rows of the buffers, those of the changed dim_a_id too: patch); bounded: the rows it read are within the bounds above
+CREATE FUNCTION cp_run(q text, tbl text, idx text, OUT same boolean, OUT route text, OUT delta text, OUT bounded boolean) LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
+	c text;
 	changed bigint := changed_rows(tbl, idx);
 	buffered bigint;
 	patched int;
 	d int;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	BEGIN
-		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-		EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
-	EXCEPTION WHEN feature_not_supported THEN
-		route := 'error: ' || substring(SQLERRM FROM '"(.*)"');
-		RETURN;
-	END;
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || plain || ') t' INTO b;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
 	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_scope = on;
 	SELECT coalesce(sum(rows), 0) INTO buffered FROM sift.col_segments(idx::regclass) WHERE kind = 'buffer';
-	same := a = b;
+	same := a = b AND b = c;
 	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}', CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'units' ELSE 'no scope read' END);
 	patched := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Rows"')::text::int, 0);
 	d := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
@@ -71,29 +70,21 @@ BEGIN
 	bounded := patched <= changed AND d <= (patched + buffered) * 6;
 END $$;
 
--- the read shapes: the conjunct of the scope over the events f (%L its index), the aggregates, whether the statement groups by the key, and the join's form (pred: the condition over the pairs m, %s their relation)
-CREATE TABLE shapes (n int, label text, scope text, aggs text, grouped boolean, joined boolean, pred text);
+-- the read shapes: the statement over the events %1$I f and the relation of the pairs %2$s m, whose active pairs the condition %3$s says (true: every row is a pair; a partial btree's predicate)
+CREATE TABLE shapes (n int, label text, stmt text);
 INSERT INTO shapes VALUES
-	(1, 'every key, count and sum', 'sift.in_scope_all(%L::regclass, ''tenant_id'', f.dim_a_id)', 'count(*), sum(amount)', true, true, 'true'),
-	(2, 'every key, count(DISTINCT dim_a_id)', 'sift.in_scope_all(%L::regclass, ''tenant_id'', f.dim_a_id)', 'count(DISTINCT f.dim_a_id), count(*)', true, true, 'true'),
-	(3, 'every key, min and max', 'sift.in_scope_all(%L::regclass, ''tenant_id'', f.dim_a_id)', 'min(id), max(id), min(amount)', true, true, 'true'),
-	(4, 'one key, count and sum', 'sift.in_scope(%L::regclass, ''tenant_id'', f.dim_a_id, 3)', 'count(*), sum(amount)', false, false,
-		'f.dim_a_id IN (SELECT dim_a_id FROM %s m WHERE m.tenant_id = 3)'),
-	(5, 'one key, min and max', 'sift.in_scope(%L::regclass, ''tenant_id'', f.dim_a_id, 4)', 'min(id), max(id)', false, false,
-		'f.dim_a_id IN (SELECT dim_a_id FROM %s m WHERE m.tenant_id = 4)'),
-	(6, 'a list of keys, a row once', 'sift.in_scope(%L::regclass, ''tenant_id'', f.dim_a_id, ''{3,5,7}''::int8[])', 'count(*), sum(amount)', false, false,
-		'f.dim_a_id IN (SELECT dim_a_id FROM %s m WHERE m.tenant_id IN (3, 5, 7))'),
-	(7, 'three keys, a row for each pair', 'sift.in_scope_pairs(%L::regclass, ''tenant_id'', f.dim_a_id, ''{3,5,7}''::int8[])', 'count(*), sum(amount), min(id)', false, true, 'm.tenant_id IN (3, 5, 7)');
+	(1, 'every key, count and sum', 'SELECT m.tenant_id AS k, count(*), sum(amount) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE %3$s GROUP BY 1'),
+	(2, 'every key, count(DISTINCT dim_a_id)', 'SELECT m.tenant_id AS k, count(DISTINCT f.dim_a_id), count(*) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE %3$s GROUP BY 1'),
+	(3, 'every key, min and max', 'SELECT m.tenant_id AS k, min(id), max(id), min(amount) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE %3$s GROUP BY 1'),
+	(4, 'one key, count and sum', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 3 AND %3$s)'),
+	(5, 'one key, min and max', 'SELECT min(id), max(id) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 4 AND %3$s)'),
+	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7) AND %3$s)'),
+	(7, 'three keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7) AND %3$s');
 
--- tbl: the events, idx: their scope index, pairs: the relation of the pairs (a sub-select when its active pairs are a partial btree's)
-CREATE FUNCTION probe(tbl text, idx text, pairs text) RETURNS TABLE (n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' WHEN false THEN 'DIFFERENT' ELSE 'needs the join' END, r.route, r.delta, r.bounded
-	FROM shapes s, LATERAL cp_run(
-		format('SELECT %s%s FROM %I f WHERE %s%s', CASE WHEN s.grouped THEN format('sift.scope_key(%L::regclass, ''tenant_id'', f.dim_a_id) AS k, ', idx) END, s.aggs, tbl, format(s.scope, idx),
-			CASE WHEN s.grouped THEN ' GROUP BY 1' END),
-		format('SELECT %s%s FROM %I f %s WHERE %s%s', CASE WHEN s.grouped THEN 'm.tenant_id AS k, ' END, s.aggs, tbl, CASE WHEN s.joined THEN format('JOIN %s m ON m.dim_a_id = f.dim_a_id', pairs) END,
-			CASE WHEN s.joined THEN s.pred ELSE format(s.pred, pairs) END, CASE WHEN s.grouped THEN ' GROUP BY 1' END),
-		tbl, idx) r
+-- tbl: the events, idx: their scope index, pairs: the relation of the pairs, active: the condition of its active pairs
+CREATE FUNCTION probe(tbl text, idx text, pairs text, active text DEFAULT 'true') RETURNS TABLE (n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route, r.delta, r.bounded
+	FROM shapes s, LATERAL cp_run(format(s.stmt, tbl, pairs, active), tbl, idx) r
 	ORDER BY s.n
 $$;
 
@@ -131,7 +122,7 @@ VACUUM (FREEZE, ANALYZE) sd_events;
 -- the shapes: how many answer as the join does, are read from the units, read a delta, and read within the bounds
 CREATE FUNCTION sd_probe(OUT same int, OUT units int, OUT with_delta int, OUT bounded int) LANGUAGE sql AS $$
 	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route = 'units'), count(*) FILTER (WHERE delta <> 'none'), count(*) FILTER (WHERE bounded)
-	FROM probe('sd_events', 'sd_events_col', '(SELECT * FROM sd_pairs WHERE deleted_at IS NULL)')
+	FROM probe('sd_events', 'sd_events_col', 'sd_pairs', 'm.deleted_at IS NULL')
 $$;
 CREATE TABLE sd_states (n int, label text, stmt text);
 INSERT INTO sd_states VALUES
@@ -148,6 +139,6 @@ DROP TABLE sd_states, sd_events, sd_pairs;
 DROP FUNCTION sd_probe();
 
 DROP TABLE shapes, states, events, tenant_scope;
-DROP FUNCTION probe(text, text, text), cp_run(text, text, text, text), changed_rows(text, text);
+DROP FUNCTION probe(text, text, text, text), cp_run(text, text, text), changed_rows(text, text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

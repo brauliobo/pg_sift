@@ -28,6 +28,7 @@ BEGIN
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Lookup Joins:%' THEN j := ' ' || trim(split_part(l, ':', 2)); END IF;
 		IF l LIKE '%semi tables%' THEN j := j || ', semi table'; END IF;
+		IF l LIKE '%key passes%' THEN j := j || ', key pass'; END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
 	RETURN r || j;

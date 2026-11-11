@@ -73,8 +73,8 @@ INSERT INTO bad_decls SELECT row_number() OVER (), why, opt FROM (VALUES
 	('joined column missing', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(nothing, tenant_id) via memberships(group_id, dim_a_id)'),
 	('via column missing', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, nothing)'),
 	('joined column not an integer', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants_text(group_id, tenant_id) via memberships(group_id, dim_a_id)'),
-	('joined path has no unique btree', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants_plain(group_id, tenant_id) via memberships(group_id, dim_a_id)'),
-	('via relation has no unique btree', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via grants_plain(group_id, tenant_id)'),
+	('joined path has no btree', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants_plain(group_id, tenant_id) via memberships(group_id, dim_a_id)'),
+	('via relation has no btree', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via grants_plain(group_id, tenant_id)'),
 	('same column twice in the joined path', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, group_id) via memberships(group_id, dim_a_id)'),
 	('the two paths are the same', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(dim_a_id, tenant_id) via memberships(group_id, dim_a_id)'),
 	('the joined path is the pairs reversed', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(tenant_id, dim_a_id) via memberships(group_id, dim_a_id)'),
@@ -97,8 +97,8 @@ SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_i
   5 | joined column missing                        | scope "tenant_id": relation "grants" has no column "nothing" []
   6 | via column missing                           | scope "tenant_id": relation "memberships" has no column "nothing" []
   7 | joined column not an integer                 | scope "tenant_id": column "group_id" of "grants_text" is not an integer [The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.]
-  8 | joined path has no unique btree              | scope "tenant_id": "grants_plain" has no unique btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
-  9 | via relation has no unique btree             | scope "tenant_id": "grants_plain" has no unique btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
+  8 | joined path has no btree                     | scope "tenant_id": "grants_plain" has no btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
+  9 | via relation has no btree                    | scope "tenant_id": "grants_plain" has no btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
  10 | same column twice in the joined path         | scope "tenant_id": the member and scope key columns are the same column [A scope relation has two columns: the member key and the scope key.]
  11 | the two paths are the same                   | scope "tenant_id": the declaration reads "grants" (dim_a_id, tenant_id) twice [The direct pairs, the pairs by the via column and the via relation are three different sets of columns.]
  12 | the joined path is the pairs reversed        | scope "tenant_id": the declaration reads "grants" (tenant_id, dim_a_id) twice [The direct pairs, the pairs by the via column and the via relation are three different sets of columns.]
@@ -106,8 +106,8 @@ SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_i
  14 | via columns differ in type                   | scope "tenant_id": the via columns "group_id" of "grants" (integer) and "group_id" of "memberships_via8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
  15 | member columns differ in type                | scope "tenant_id": the member columns "dim_a_id" of "grants" (integer) and "dim_a_id" of "memberships_member8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
  16 | key columns differ in type                   | scope "tenant_id": the scope key columns "tenant_id" of "grants" (integer) and "tenant_id" of "grants_key8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
- 17 | using an index of another relation           | scope "tenant_id": "grants" has no index "memberships_active" [USING names a unique btree of the scope relation.]
- 18 | using an index that is not there             | scope "tenant_id": "memberships" has no index "nowhere" [USING names a unique btree of the scope relation.]
+ 17 | using an index of another relation           | scope "tenant_id": "grants" has no index "memberships_active" [USING names a btree of the scope relation.]
+ 18 | using an index that is not there             | scope "tenant_id": "memberships" has no index "nowhere" [USING names a btree of the scope relation.]
  19 | cols names a column that is not in the index | scope "tenant_id": cols(..) names "nothing", which is not a column of this index [Name columns of the index: the scope segments keep those, the member key and the column the units are cut by.]
  20 | a scope of one path: nullable member         | scope "tenant_id": column "dim_a_id" of "grants" is nullable [Declare the member and scope key columns NOT NULL: a pair has both keys.]
  21 | a scope of one path: no journal index        | scope "tenant_id": "pairs_one" has no sift_col index that journals its changes [CREATE INDEX ON pairs_one USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
@@ -189,9 +189,9 @@ SELECT edges('facts_col') AS after_other_option;
 
 -- two partial unique btrees on the columns of the joined path: REINDEX says so, naming the index in USING settles it, ALTER keeps the recorded one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
-                                                                                                  two_partial                                                                                                   
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "grants" has two partial unique btrees on (group_id, tenant_id) [The predicate of the unique btree says which rows are pairs: name the one that does with USING <index> after the columns.]
+                                                                                               two_partial                                                                                               
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "grants" has two partial unique btrees on (group_id, tenant_id) [The predicate of the btree says which rows are pairs: name the one that does with USING <index> after the columns.]
 (1 row)
 
 SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)'')') AS using_other;

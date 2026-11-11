@@ -244,8 +244,6 @@ sift_test_col_scope_flag(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_in_scope);
 PG_FUNCTION_INFO_V1(sift_test_in_scope_set);
-PG_FUNCTION_INFO_V1(sift_test_in_scope_all);
-PG_FUNCTION_INFO_V1(sift_test_scope_key);
 
 /* the members of the keys under one snapshot, kept by the call site of the statement that asked */
 typedef struct InScope
@@ -269,7 +267,7 @@ cmp_i64(const void *a, const void *b)
 static bool
 same_ask(const InScope *st, Oid indexoid, const int64 *keys, int nkeys, Snapshot snap)
 {
-	return st != NULL && st->index == indexoid && st->nkeys == nkeys && (keys == NULL || memcmp(st->keys, keys, nkeys * sizeof(int64)) == 0) &&
+	return st != NULL && st->index == indexoid && st->nkeys == nkeys && memcmp(st->keys, keys, nkeys * sizeof(int64)) == 0 &&
 		st->xmin == snap->xmin && st->xmax == snap->xmax && st->curcid == snap->curcid;
 }
 
@@ -309,9 +307,7 @@ in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 			pfree(st->keys);
 		}
 		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), snap, keys, nkeys, &st->n);
-		st->keys = palloc(Max(nkeys, 1) * sizeof(int64));
-		if (keys != NULL)
-			memcpy(st->keys, keys, nkeys * sizeof(int64));
+		st->keys = memcpy(palloc(nkeys * sizeof(int64)), keys, nkeys * sizeof(int64));
 		st->nkeys = nkeys;
 		st->index = indexoid;
 		st->xmin = snap->xmin;
@@ -361,24 +357,8 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 	return in_scope(fcinfo, keys, n);
 }
 
-/* sift.in_scope_all(index regclass, key_name text, fk anyelement): whether the scope relation has a pair of fk with any key; a scan reads it as the join counts it, a row for each pair, every key */
-Datum
-sift_test_in_scope_all(PG_FUNCTION_ARGS)
-{
-	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
-		PG_RETURN_NULL();
-	return in_scope(fcinfo, NULL, 0);
-}
-
-/* sift.scope_key(index regclass, key_name text, fk anyelement): the key of each pair of a scan of every key of the scope; it has no value for a statement the scan does not read, which a row has many of */
-Datum
-sift_test_scope_key(PG_FUNCTION_ARGS)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.scope_key is read by a scan of the scope units of every key, with sift.in_scope_all")));
-	PG_RETURN_NULL();
-}
-
 PG_FUNCTION_INFO_V1(sift_test_scope_legs);
+PG_FUNCTION_INFO_V1(sift_test_scope_price);
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
 PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
@@ -474,6 +454,36 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+
+/* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
+Datum
+sift_test_scope_price(PG_FUNCTION_ARGS)
+{
+	SiftScopeCounts c = {
+		.nkeys = PG_GETARG_INT32(0),
+		.once = PG_GETARG_BOOL(1),
+		.units = PG_GETARG_INT64(2),
+		.entries = PG_GETARG_INT64(3),
+		.preagg = PG_GETARG_FLOAT8(4),
+		.entry_instr = PG_GETARG_FLOAT8(5),
+		.drops = PG_GETARG_INT32(6),
+		.key_pairs = PG_GETARG_INT64(7),
+		.changed = PG_GETARG_INT64(8),
+		.patch_units = PG_GETARG_INT64(9),
+		.patch_scan_rows = PG_GETARG_INT64(10),
+		.delta_rows = PG_GETARG_INT64(11),
+		.pairs = PG_GETARG_INT64(12),
+		.path_rows = PG_GETARG_INT64(13),
+		.path_units = PG_GETARG_INT64(14),
+	};
+	TupleDesc	desc;
+	Datum		v[2] = {Float8GetDatum(sift_scope_units_price(&c)), Float8GetDatum(sift_scope_entity_price(&c))};
+	bool		nulls[2] = {false, false};
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
 
 static void
 mark_scope_ref(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)

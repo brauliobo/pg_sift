@@ -23,7 +23,7 @@ typedef struct SiftScopeRel
 	char	   *name;
 	char	   *a;
 	char	   *b;
-	char	   *index_name;			/* using name: the unique btree of the relation that defines its rows, NULL: chosen by the rule (sift_scope_resolve) */
+	char	   *index_name;			/* using name: the btree of the relation that defines its rows, NULL: chosen by the rule (sift_scope_resolve) */
 } SiftScopeRel;
 
 typedef struct SiftScopeSpec
@@ -55,19 +55,19 @@ extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf,
 extern int	sift_scope_time_leaf(const SiftColDef *defs, int n);
 /* The checks of a declared scope's relation (ERROR with a hint when it does not qualify); left open in *rel, AccessShare */
 extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
-/* ... and the unique btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
+/* ... and the btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
-/* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded unique btrees */
+/* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded btrees */
 extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
-/* CREATE INDEX, REINDEX (sticky false: chooses the unique btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
+/* CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
-/* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */
+/* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
 /*
- * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the unique btree
+ * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the btree
  * that defines them (recorded when the scope segments were written); pred is the predicate of that btree as an implicit-AND list over Vars of varno 1 (NIL: every row).
  * The pairs of a scope are the distinct (member, key) of its legs.
  */
@@ -85,6 +85,8 @@ typedef struct SiftScopeLeg
 	Oid			via_btree;
 	List	   *via_pred;
 } SiftScopeLeg;
+/* Are the pairs of the scope (of one path) a multiset: its recorded btree is not unique (or none is recorded), so a join counts a fact once for each row of a pair */
+extern bool sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s);
 /* The legs of scope ordinal scope of the index: 1 (the pairs relation) or 2 (the pairs relation and the joined path); returns their number */
 extern int	sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2]);
 
@@ -179,6 +181,8 @@ typedef struct SiftScopePair
 	int64		member;
 	int64		key;
 } SiftScopePair;
+/* Sorts the pairs by (member, key) and keeps each once: the one place that turns the rows of a scope relation, which may hold a pair in several rows, into pairs; returns how many there are */
+extern uint64 sift_scope_pairs_distinct(SiftScopePair *p, uint64 n);
 
 /* The write buffers of an index: the batches of the live rows of each, as the backend keeps them (a scan reads them the same way), and what the scan stamps their rows with (col/scan/scope_delta.c) */
 struct SiftColBatch;
@@ -231,6 +235,7 @@ typedef struct SiftScopeRead
 	uint64		patch_units;	/* the units of the entity segments the rows are read from: each costs its chunks of the leaves the scan reads */
 	struct ScopeFill *fill;		/* what sift_scope_read_rows needs to read them */
 	uint32		nchanged;		/* the members whose pairs changed since the stamp, of except */
+	uint64		pairs;			/* the pairs of the keys the read listed (to dedupe a member in several keys, or to give the delta its pairs): 0 where it listed none */
 	SiftScopeDrop *drop;
 	int			ndrop;
 	int64	   *members;		/* the members the scope relation lists for the keys, when the read listed them to price the patch: the entity path takes them */
@@ -241,51 +246,68 @@ typedef struct SiftScopeRead
 } SiftScopeRead;
 
 /*
- * What a read of a scope key costs, in instructions of the backend (one cluster, 300,000 events, 5,000 members, 50 keys, units cut by time: every unit of the entity segments holds every member;
- * measured warm, the median of 5 runs): the scope read before any row (the journal's vouch and changed members, the directory, the scope units opened), a scope entry read and aggregated, a
- * unit of the entity segments the rows of the changed members are read from (its chunks of the leaves the scan reads and the pages they are on), an entity row looked at to find them when no point
- * directory of the member leaf names them, an entity row the units of the facts hold that the key filter of a list of members tests, a row it keeps (read and aggregated), a pair read from the leaves of the journal index of the scope relation, and a changed member (its journal record, its probe in the btree of pairs and
- * the heap row it finds).
+ * What a read of a scope key costs, in instructions of the backend (execution of a prepared statement, warm, median of 3, sum(amount) and count(*) by kind, the scope read forced; the fits are by relative least squares).
+ * The tables, of one unit a key: 120,000 events with 30 members of 111 rows a key; 150,000 events with 10, 50, 500 and 1,500 members of 150 to 3 rows a key (1,500 entries in every case); 450,000 events with 50 members
+ * a key; 300,000 events with 110 members of 55 rows a key, a tenth of them in two keys. The terms, from 43 reads of 2 to 50 keys (41 within 10% of the fit, 18% at most):
+ * the read before any unit (the journal's vouch, the directory, the statement: 459,000 at several keys, 447,000 at one), a unit read row by row (36,700) or answered from its pre-aggregates (13,300: the 12 units of a key
+ * cost 0.61 million, one 0.46), an entry read, tested and aggregated (62.6, of which the planner counts 44 to 46 for the aggregation of a row), 14.4 an entry more for each key whose rows a drop list thins and, for a read of
+ * several keys counted once, the pairs of the relation read whole to list those of the keys (38.9 a pair of the relation, whatever the keys: 10,000 pairs more cost 0.44 million at 3, 10 and 30 keys) and each pair of the
+ * keys listed and deduped (286): most of a read of 500 members a key or more (1,500 a key: 5.9 of the 23.3 million at 30 keys is the listing of 150,000 pairs, 12.9 the pairs of the keys; 3 keys cost 7.9 against 1.1 million
+ * for 50 members a key). A change since the stamp costs each changed member 3,300 (its journal record, the probe of its pairs: it is also what the reader's cap prices, the most it lists before the entity path costs less)
+ * and each entry of the units read row by row 20 (the source leaves out the entries of the changed members), and the patch about 1.4 times the figures it had (10 units and 300,000 entity rows to look at, with no point directory
+ * of the member leaf: 7 million): 266,000 a unit of the entity segments the changed members' rows are read from and 15 an entity row looked at to find them, then 1,385 a copy of the delta (a changed member's row or a
+ * buffered row, copied for each pair, made a unit and read). From 28 reads of 5 to 4,775 changed members of 1 to 30 keys: 20 within 10%, 26 within 15%, 20% at most (4,775 of 5,500 pairs, 30 keys: 494 million measured).
+ * The entity path reads a unit as a unit of the scope does (36,700), and the entity rows, the pairs and the rows kept at the figures of an earlier table (the one of col/conn.h).
  */
-#define SIFT_SCOPE_SETUP_INSTR		1400000
-#define SIFT_SCOPE_ENTRY_INSTR		20
-#define SIFT_SCOPE_PATCH_UNIT_INSTR	196000
-#define SIFT_SCOPE_SCAN_INSTR		10
+#define SIFT_SCOPE_SETUP_INSTR		450000
+#define SIFT_SCOPE_UNIT_INSTR		36700
+#define SIFT_SCOPE_PREAGG_UNIT_INSTR	13300
+#define SIFT_SCOPE_ENTRY_INSTR		18
+#define SIFT_SCOPE_LIST_INSTR		39
+#define SIFT_SCOPE_KEY_PAIR_INSTR	286
+#define SIFT_SCOPE_EXCEPT_INSTR		20
+#define SIFT_SCOPE_PATCH_UNIT_INSTR	266000
+#define SIFT_SCOPE_SCAN_INSTR		15
 #define SIFT_SCOPE_ENTITY_INSTR		10
 #define SIFT_SCOPE_MATCH_INSTR		35
 #define SIFT_SCOPE_PAIR_INSTR		25
-#define SIFT_SCOPE_MEMBER_INSTR		5600
+#define SIFT_SCOPE_MEMBER_INSTR		3300
 /* an entity row of an index read whole, against which the changed members one read lists are capped (the figures of a table of 1,000,000 rows and 20,000 members) */
 #define SIFT_SCOPE_CAP_ROW_INSTR	21
-/* a row of a write buffer, or of a changed member, whose member has a pair with the keys, copied for each pair, made a unit and read (a unit of one key of some thousand rows) */
-#define SIFT_SCOPE_DELTA_INSTR		1700
+/* a row of a write buffer, or of a changed member, whose member has a pair with the keys, copied for each pair, made a unit and read */
+#define SIFT_SCOPE_DELTA_INSTR		1385
 /* pricing a read against the entity path (the members listed, the rows counted) costs about this: a patch and a delta that cost less are read without it */
 #define SIFT_SCOPE_PRICING_INSTR	1000000
 /* the changed members one read lists, at most (8 MB of keys) */
 #define SIFT_SCOPE_CHANGED_MAX		(1 << 20)
-/* a scope entry tested against the drop list of each key of a read of several keys counted once that has one (the members it leaves to a lesser key): 217 instructions an entry for 10 keys, 364 for 20, 512 for 30,
- * 808 for 50 over the 67 of an entry of one key (300,000 events, 5,000 members in several keys, 50 keys, the largest keys first; warm, instructions of the backend): about 15 for each key with a list */
+/* a scope entry tested against the drop list of each key of a read of several keys counted once that has one (the members it leaves to a lesser key): the fit of 14.4 an entry for each key with a list (the rows of 10 to 50
+ * keys, 1 to 5 lists; the 15 of 10 to 50 keys of an earlier table, 217 instructions an entry for 10 keys over the 67 of one, held) */
 #define SIFT_SCOPE_DEDUPE_INSTR		15
 
 /*
- * The counts the price of a read of a scope key takes. The executor (scope_open) has them from the read it made: the entries and rows from the zones and set summaries of the units as the scan
- * prunes them, the entity rows of the members to patch (the changed members that have a pair with a key), the delta and the members the relation lists. The planner can know at plan time: nkeys and once (its estimate of nkeys, or the real count once the keys are
- * evaluated), the entries as nkeys times the entries a key holds (rows of the scope segments of the directory over their keys), pairs as the reltuples of the relation of pairs and path_rows
- * as the rows of the entity segments the members of the keys may hold; patch_units, patch_scan_rows and delta_rows are 0 until the journal and the write buffers are read (the upper bound of delta_rows is the rows
- * of the buffers in the directory times nkeys). A changed member costs its units and copies here and, in the reader, SIFT_SCOPE_MEMBER_INSTR a member against the cap of SIFT_SCOPE_CHANGED_MAX: the figures of the entries and the patch
- * were measured with it in.
+ * The counts the price of a read of a scope key takes. The executor (scope_open) has them from the read it made: the units and entries from the zones and set summaries as the scan prunes them, the changed members and the pairs the read
+ * listed, the entity rows of the members to patch (the changed members that have a pair with a key), the delta and the members the relation lists. The planner can know at plan time: nkeys and once (its estimate of nkeys, or the real count
+ * once the keys are evaluated), the units and entries as nkeys times those a key holds (the directory's), pairs as the reltuples of the relation of pairs, key_pairs as nkeys times the pairs of the average key and path_rows as the rows of the entity
+ * segments the members of the keys may hold and path_units as the units of them; changed, patch_units, patch_scan_rows and delta_rows are 0 until the journal and the write buffers are read (the upper bound of delta_rows is the rows of the buffers in the directory times nkeys).
+ * A zero count is the least the read costs: a struct of counts that names none of the last four prices the clean read, one that names no preagg reads every unit row by row.
  */
 typedef struct SiftScopeCounts
 {
 	uint32		nkeys;
-	bool		once;			/* a row counts once though its member has pairs with several keys */
+	bool		once;			/* a row counts once though its member has pairs with several keys: with several keys the read lists the pairs of the keys and its units cannot be answered from their pre-aggregates */
 	uint32		drops;			/* with once: the keys that have a drop list (SiftScopeRead.ndrop), 0 where the read has not been made: the least the units cost */
+	uint64		units;			/* the scope units of the keys */
 	uint64		entries;		/* the rows of the scope units of the keys */
+	double		preagg;			/* the share of the units their pre-aggregates answer (0..1, the planner's: 0 for a read of several keys counted once), the rest are read row by row */
+	double		entry_instr;	/* the instructions the aggregation of an entry costs on top of reading it (the operators of the model a row has, which the join pays too: SiftAggScope.entry_instr) */
+	uint64		key_pairs;		/* with once and several keys: the pairs of the keys the read lists to dedupe them (SiftScopeRead.pairs) */
+	uint64		changed;		/* the members whose pairs changed since the stamp (SiftScopeRead.nchanged): their stored entries are left out of the units */
 	uint64		patch_units;	/* the units of the entity segments the rows of the changed members that have a pair now are read from */
 	uint64		patch_scan_rows;	/* the entity rows looked at to find them (no point directory of the member leaf tells where they are) */
 	uint64		delta_rows;		/* the copies of the rows of the buffers and of the members to patch the delta reads */
-	uint64		pairs;			/* the pairs of the relation, which the entity path lists the members of the keys from */
+	uint64		pairs;			/* the pairs of the relation, which the entity path lists the members of the keys from and a read of several keys counted once reads whole to list those of its keys */
 	uint64		path_rows;		/* the entity rows that may hold a member the relation lists for the keys */
+	uint64		path_units;		/* ... and the units of the entity segments they are in */
 } SiftScopeCounts;
 
 /* What the patch and the delta cost on top of the scope units: the units of the changed members' rows, the rows looked at to find them, and the copies made of them and of the buffers' rows (pure: instructions of the backend) */
@@ -295,20 +317,31 @@ sift_scope_patch_price(const SiftScopeCounts *c)
 	return SIFT_SCOPE_PATCH_UNIT_INSTR * (double) c->patch_units + SIFT_SCOPE_SCAN_INSTR * (double) c->patch_scan_rows + SIFT_SCOPE_DELTA_INSTR * (double) c->delta_rows;
 }
 
-/* What the scope units cost, with the patch and the delta (pure) */
+/* The pairs a read of several keys counted once lists before it reads a unit: the relation's, whole, and those of its keys (pure) */
+static inline double
+sift_scope_list_price(const SiftScopeCounts *c)
+{
+	return c->once && c->nkeys > 1 ? SIFT_SCOPE_LIST_INSTR * (double) c->pairs + SIFT_SCOPE_KEY_PAIR_INSTR * (double) c->key_pairs : 0.0;
+}
+
+/* What the scope units cost, with the listing of the pairs, the changed members, the patch and the delta (pure) */
 static inline double
 sift_scope_units_price(const SiftScopeCounts *c)
 {
-	double		entry = SIFT_SCOPE_ENTRY_INSTR + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0);
+	double		rows = 1.0 - c->preagg,
+				entry = SIFT_SCOPE_ENTRY_INSTR + c->entry_instr + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0),
+				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0;
 
-	return SIFT_SCOPE_SETUP_INSTR + entry * c->entries + sift_scope_patch_price(c);
+	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR) * (double) c->units + rows * (entry + except) * (double) c->entries +
+		sift_scope_list_price(c) + SIFT_SCOPE_MEMBER_INSTR * (double) c->changed + sift_scope_patch_price(c);
 }
 
-/* What the entity path (the join as written) costs: the pairs read, the entity rows the key filter tests and those it keeps (pure) */
+/* What the entity path (the join as written) costs: the pairs read, the units of the entity rows that may hold a member of the keys, the rows the key filter tests and those it keeps (pure) */
 static inline double
 sift_scope_entity_price(const SiftScopeCounts *c)
 {
-	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows + SIFT_SCOPE_MATCH_INSTR * (double) c->entries;
+	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_UNIT_INSTR * (double) c->path_units + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows +
+		SIFT_SCOPE_MATCH_INSTR * (double) c->entries;
 }
 
 /* Is the entity path the cheaper of the two (pure: the same counts give the same answer) */
@@ -318,10 +351,11 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 	return sift_scope_units_price(c) > sift_scope_entity_price(c);
 }
 
+/* max_changed: the most changed members the caller will have read (its join costs less past them: the read then says "too many changed keys" without listing them); UINT32_MAX for as many as the cap allows */
 /* The rows of the patch (sift_scope_segment_rows): the delta takes them after the price of the read was taken (patch_rows and patch_scan are only expected until then); a read that is not to be made frees what the plan holds */
 extern void sift_scope_read_rows(SiftScopeRead *rd);
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
-								   const int *leaves, int nleaves);
+								   const int *leaves, int nleaves, uint32 max_changed);
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
@@ -330,7 +364,7 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 extern Oid	sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey);
 
 #ifdef SIFT_TESTING
-/* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
+/* A fill of one scope read from a relation and its btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;

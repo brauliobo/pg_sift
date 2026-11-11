@@ -6,6 +6,8 @@
  *  (a) every other condition of the statement on the relation is implied by the predicate (it filters none of the pairs out), and
  *  (b) the conditions together imply the predicate (it takes no row that is not a pair).
  * A plain btree has no predicate: any other condition fails (a). The predicate is the recorded btree's (sift_scope_legs), a copy of the relcache's; the conditions are the copies that are proved.
+ * The rows of a path whose column (the member, the key, the column that joins) is NULL are no pairs, as a join drops them: a condition that says the column is not NULL narrows nothing.
+ * The same proof holds for each relation of the arms of a union of the two paths of a scope (agg/scope_union.c).
  */
 #include "postgres.h"
 
@@ -38,9 +40,60 @@ relation_vars(Node *n, ItemVars *iv)
 
 		v->varno = 1;
 		v->varattno = item_attno(iv->map, iv->nmap, v->varattno);
+		v->varnosyn = 1;
+		v->varattnosyn = v->varattno;
 		return (Node *) v;
 	}
 	return expression_tree_mutator(n, relation_vars, iv);
+}
+
+/* `column IS NOT NULL` of the relation */
+static Node *
+not_null(Oid relid, AttrNumber att)
+{
+	NullTest   *nt = makeNode(NullTest);
+	Oid			type,
+				coll;
+	int32		typmod;
+
+	get_atttypetypmodcoll(relid, att, &type, &typmod, &coll);
+	nt->arg = (Expr *) makeVar(1, att, type, typmod, coll, 0);
+	nt->nulltesttype = IS_NOT_NULL;
+	nt->location = -1;
+	return (Node *) nt;
+}
+
+/*
+ * NULL: the conditions of the statement quals, mine as conditions over the Vars of varno 1 of the relation relid, take, of the rows that have the columns a and b, those that satisfy the predicate
+ * pred and no other; else why not. A condition is said as the statement says it, c being its context (NULL: an arm of a union, which has a range table of its own: the condition as the relation's).
+ */
+static const char *
+leg_proof(AggCtx *c, Oid relid, List *pred, AttrNumber a, AttrNumber b, List *quals, List *mine)
+{
+	List	   *narrowing = list_concat_copy(pred, list_make2(not_null(relid, a), not_null(relid, b)));
+	ListCell   *lq,
+			   *lm;
+
+	forboth(lq, quals, lm, mine)
+		if (!predicate_implied_by(list_make1(lfirst(lm)), narrowing, false))
+			return psprintf("the scope relation has another condition: %s",
+							c ? expr_text(c, lfirst(lq)) : deparse_expression(lfirst(lm), deparse_context_for(get_rel_name(relid), relid), false, false));
+	if (!predicate_implied_by(pred, mine, false))
+		return psprintf("the pairs of the scope are the rows of its unique btree that satisfy %s: the statement does not state it",
+						deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(get_rel_name(relid), relid), false, false));
+	return NULL;
+}
+
+/* the conditions quals of the item rti (its columns through map) as conditions over the columns of the relation */
+static List *
+relation_conditions(List *quals, Index rti, const AttrNumber *map, int nmap)
+{
+	ItemVars	iv = {rti, map, nmap};
+	List	   *mine = NIL;
+
+	foreach_ptr(Node, q, quals)
+		mine = lappend(mine, relation_vars(q, &iv));
+	return mine;
 }
 
 /*
@@ -51,25 +104,18 @@ const char *
 scope_pairs_proof(AggCtx *c, const SiftScopeSpecs *specs, const SiftScopeSpec *sp, Index rti, const AttrNumber *map, int nmap, List *rest)
 {
 	Relation	index = index_open(c->indexoid, AccessShareLock);
-	ItemVars	iv = {rti, map, nmap};
 	SiftScopeLeg legs[2];
-	List	   *mine = NIL;
 	int			ord = 0;
 
 	while (specs->s[ord] != sp)
 		ord++;
 	sift_scope_legs(index, ord, legs);
 	index_close(index, NoLock);
-	foreach_ptr(Node, q, rest)
-	{
-		Node	   *m = relation_vars(q, &iv);
+	return leg_proof(c, legs[0].rel, legs[0].pred, legs[0].member, legs[0].key, rest, relation_conditions(rest, rti, map, nmap));
+}
 
-		if (!predicate_implied_by(list_make1(m), legs[0].pred, false))
-			return psprintf("the scope relation has another condition: %s", expr_text(c, q));
-		mine = lappend(mine, m);
-	}
-	if (!predicate_implied_by(legs[0].pred, mine, false))
-		return psprintf("the pairs of the scope are the rows of its unique btree that satisfy %s: the statement does not state it",
-						deparse_expression((Node *) make_ands_explicit(legs[0].pred), deparse_context_for(get_rel_name(legs[0].rel), legs[0].rel), false, false));
-	return NULL;
+const char *
+scope_arm_proof(Oid relid, List *pred, AttrNumber a, AttrNumber b, Index rti, List *quals)
+{
+	return leg_proof(NULL, relid, pred, a, b, quals, relation_conditions(quals, rti, NULL, 0));
 }

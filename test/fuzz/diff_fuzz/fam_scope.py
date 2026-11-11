@@ -1,13 +1,17 @@
 # The scope family: the facts cut by the scope key of item_scope (events.parent_id -> tenant_id) in every form the planner recognises
 # (join, IN, EXISTS, GROUP BY the key, a keys table, a table of keys of a user in the IN, EXISTS and join forms) and in the near misses it refuses; item_grants is a scope relation of
-# soft deleted pairs (the pairs are its rows not soft deleted): the statements that state the predicate and those that do not; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
+# soft deleted pairs (the pairs are its rows not soft deleted): the statements that state the predicate and those that do not; item_links, item_members are a scope of two paths (the
+# direct grants of a tenant on an item and the grants on its groups): its pairs written as the UNION of the two, in IN, EXISTS and join forms, through views, in the near misses (a path alone, other keys in the
+# arms, a path without its predicate, UNION ALL under a join) that keep the join; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
 # array of 1 to 70 keys (the runtime choice between the scope read and the join as written is made for the keys of each execution), a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
+# The btree of the pairs is unique in an even seed and not unique in an odd one, where the joins run as written (a pair may be several rows) and IN and EXISTS count a fact once.
 
 from .columns import EVENTS, aggs, keys, preds
 from .fam_basic import grouped
 
-PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany']
-SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin', 'ktexists', 'ktjoin', 'ktmany', 'ktloose', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered', 'softjoin', 'softin', 'softexists', 'softbare', 'softinbare'] + PARAM_FORMS
+PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany', 'upin', 'upjoin', 'upany']
+UNION_FORMS = ['uin', 'uin', 'uinall', 'uexists', 'uview', 'ubarrier', 'ujoin', 'ujoin', 'ujoinm', 'ujoinall', 'ujoinkeys', 'ubranch', 'ukeys', 'ubare']
+SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin', 'ktexists', 'ktjoin', 'ktmany', 'ktloose', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered', 'softjoin', 'softin', 'softexists', 'softbare', 'softinbare'] + UNION_FORMS + PARAM_FORMS
 
 
 def gen_scope(r, ctx):
@@ -27,6 +31,10 @@ def render_scope_parts(p):
     j = 'events e JOIN item_scope s ON s.item_id = e.parent_id'
     g = 'events e JOIN item_grants s ON s.item_id = e.parent_id'
     live = 'deleted_at IS NULL'
+    kin, other = f'IN ({ts})', (one + 1) % 6
+    direct = lambda k: f'SELECT l.item_id FROM item_links l WHERE l.{live} AND l.tenant_id {k}'
+    groups = lambda k: f'SELECT m.item_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.{live} AND m.{live} AND l.tenant_id {k}'
+    uj = 'events e JOIN item_pairs v ON v.member = e.parent_id'
     return {
         'join': (j, [f's.tenant_id = {one}'], []),
         'in': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id IN ({ts}))'], []),
@@ -55,13 +63,29 @@ def render_scope_parts(p):
         'softin': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_grants WHERE tenant_id IN ({ts}) AND {live})'], []),
         'softinbare': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_grants WHERE tenant_id IN ({ts}))'], []),
         'softexists': ('events e', [f'EXISTS (SELECT 1 FROM item_grants s WHERE s.item_id = e.parent_id AND s.tenant_id = {one} AND s.{live})'], []),
+        'uin': ('events e', [f'e.parent_id IN ({direct(kin)} UNION {groups(kin)})'], []),
+        'uinall': ('events e', [f'e.parent_id IN ({direct(kin)} UNION ALL {groups(kin)})'], []),
+        'uexists': ('events e', [f'EXISTS (SELECT 1 FROM item_pairs v WHERE v.member = e.parent_id AND v.tenant_id = {one})'], []),
+        'uview': ('events e', [f'e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id {kin})'], []),
+        'ubarrier': ('events e', [f'e.parent_id IN (SELECT member FROM item_pairs_barrier WHERE tenant_id {kin})'], []),
+        'ujoin': (uj, [f'v.tenant_id = {one}'], []),
+        'ujoinm': (f'events e JOIN ({direct(kin)} UNION {groups(kin)}) v ON v.item_id = e.parent_id', [], []),
+        'ujoinall': ('events e JOIN item_pairs_all v ON v.member = e.parent_id', [f'v.tenant_id = {one}'], []),
+        'ujoinkeys': (uj, [f'v.tenant_id {kin}'], []),
+        'ubranch': ('events e', [f'e.parent_id IN ({(direct, groups)[one % 2](f"= {one}")})'], []),
+        'ukeys': ('events e', [f'e.parent_id IN ({direct(f"= {one}")} UNION {groups(f"= {other}")})'], []),
+        'ubare': ('events e', [f'e.parent_id IN (SELECT l.item_id FROM item_links l WHERE l.tenant_id = {one} UNION {groups(f"= {one}")})'], []),
+        'upin': ('events e', ['e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id = $1)'], []),
+        'upjoin': (uj, ['v.tenant_id = $1'], []),
+        'upany': ('events e', ['e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id = ANY ($1))'], []),
     }[p['form']]
 
 
 def param_of(p):
     """(type, argument) of the parameter of a prepared form"""
     return {'pjoin': ('int', str(p['tenants'][0])), 'pin': ('int', str(p['tenants'][0])), 'pany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants']))),
-            'pnull': ('int[]', p['nullarg']), 'pmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many']))), 'pjoinmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many'])))}[p['form']]
+            'pnull': ('int[]', p['nullarg']), 'pmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many']))), 'pjoinmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many']))),
+            'upin': ('int', str(p['tenants'][0])), 'upjoin': ('int', str(p['tenants'][0])), 'upany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants'])))}[p['form']]
 
 
 def render_scope(p):
@@ -85,8 +109,17 @@ def dml_scope(r, ctx):
         f'DELETE FROM item_scope WHERE item_id % {m} = {k} AND tenant_id = {t}', f'DELETE FROM item_scope WHERE item_id % {m * 5} = {k}',
         f'INSERT INTO item_scope SELECT i, {t} FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
         f'INSERT INTO item_scope SELECT i, {u} FROM item_scope WHERE tenant_id = {t} AND item_id % {m} = {k} ON CONFLICT DO NOTHING',
+        f'INSERT INTO item_scope SELECT item_id, tenant_id FROM item_scope WHERE item_id % {m} = {k} ON CONFLICT DO NOTHING',   # a duplicate row of a pair: none when the btree is unique
+        f'DELETE FROM item_scope WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY item_id, tenant_id ORDER BY ctid) n FROM item_scope '
+        f'WHERE item_id % {m} = {k}) x WHERE n = 2)',   # one of two rows of a pair
         f'UPDATE item_scope s SET tenant_id = (tenant_id + 1) % 6 WHERE item_id % {m} = {k} AND NOT EXISTS (SELECT 1 FROM item_scope o WHERE o.item_id = s.item_id AND o.tenant_id = (s.tenant_id + 1) % 6)',
         f'UPDATE item_grants SET deleted_at = now() WHERE item_id % {m} = {k} AND tenant_id = {t}', f'UPDATE item_grants SET deleted_at = NULL WHERE item_id % {m * 3} = {k}',
         f'INSERT INTO item_grants SELECT i, {t}, CASE WHEN i % 2 = 0 THEN now() END FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
         f'DELETE FROM item_grants WHERE item_id % {m * 5} = {k}',
-        'VACUUM item_scope', 'VACUUM item_grants', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])
+        f'UPDATE item_links SET deleted_at = now() WHERE item_id % {m} = {k} AND tenant_id = {t}', f'UPDATE item_links SET deleted_at = NULL WHERE id % {m * 3} = {k}',
+        f"INSERT INTO item_links SELECT 20000 + i * 10 + {t}, {t}, i, NULL, NULL, 'live' FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING",
+        f"INSERT INTO item_links SELECT 30000 + g * 10 + {t}, {t}, NULL, g, NULL, 'live' FROM generate_series(0, 19) g WHERE g % {m % 7 + 2} = {k % 3} ON CONFLICT DO NOTHING",
+        f'DELETE FROM item_links WHERE group_id = {k % 20} AND tenant_id = {t}', f'DELETE FROM item_links WHERE item_id % {m * 5} = {k}',
+        f'UPDATE item_members SET deleted_at = now() WHERE item_id % {m} = {k}', f'UPDATE item_members SET deleted_at = NULL WHERE item_id % {m * 3} = {k}',
+        f"INSERT INTO item_members SELECT {k % 20}, i, NULL, 'live' FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING", f'DELETE FROM item_members WHERE item_id % {m * 5} = {k}',
+        'VACUUM item_scope', 'VACUUM item_grants', 'VACUUM item_links', 'VACUUM item_members', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])

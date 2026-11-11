@@ -2,7 +2,7 @@
 -- the join (`grp = 2`, `grp = 2 AND k < 3000`), takes the key of each row from the index entry: the entry is not deformed, tested again or kept as a column. Every
 -- other table keeps the read it had: a condition that is not a scan key (`NOT gone`, a second equality on a column of the index, a column the index does not
 -- hold, a partial index, an INCLUDE column, a collation that is not the index's), a key that is not an integer, a join that keeps the table (LEFT), a byte table that is refused, and the rows of pages the
--- visibility map does not hold all-visible (read from the heap) or an insert of the transaction. Every statement is run with the scan (serial, with workers) and with
+-- visibility map does not hold all-visible (read from the heap) or an insert of the transaction. Every statement is run with the scan (serial, with workers that build their own table and with workers that share one) and with
 -- sift.enable_agg = off: the rows must be the same; the Lookup line of EXPLAIN shows the rows read and loaded (a NULL key is read and not loaded) and the heap fetches.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -53,12 +53,15 @@ BEGIN
 	SET LOCAL min_parallel_table_scan_size = 0;
 	SET LOCAL max_parallel_workers_per_gather = 2;
 	EXECUTE format('CREATE TEMP TABLE r_par ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.agg_lookup_shared_kb = 65536;
+	EXECUTE format('CREATE TEMP TABLE r_shared ON COMMIT DROP AS %s', q);
 	RESET max_parallel_workers_per_gather;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	differing := (SELECT count(*) FROM ((TABLE r_scan EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_scan)) d);
-	workers := (SELECT count(*) FROM ((TABLE r_par EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_par)) d);
-	DROP TABLE r_scan, r_par, r_off;
+	workers := (SELECT count(*) FROM ((TABLE r_par EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_par)) d)
+			 + (SELECT count(*) FROM ((TABLE r_shared EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_shared)) d);
+	DROP TABLE r_scan, r_par, r_shared, r_off;
 	RESET sift.enable_agg;
 	RETURN NEXT;
 END $$;

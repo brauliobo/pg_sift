@@ -22,12 +22,15 @@ double
 scope_share(AggCtx *c, const SiftAggSpec *s)
 {
 	const ScopeTake *t = c->scope_take;
-	double		nd;
+	double		nd,
+				share;
 
 	if (s->scope == NULL || t == NULL)
 		return 1.0;
 	nd = column_distinct(c, t->fk, false);
-	return Min(t->pairs / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT), 1.0);
+	share = t->pairs / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT);
+	/* a read of every key has a row for each pair of its member: the pairs a member has on average, which may exceed 1 */
+	return s->scope->all ? share : Min(share, 1.0);
 }
 
 /*
@@ -142,6 +145,8 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	ScopeTake  *t = c->scope_pass;
 	ScopeAlt   *best = NULL;
 	SiftAggScope *sc;
+	SiftAggScope one_scope;
+	SiftAggSpec one;
 
 	if (t == NULL || !t->second || s->scope == NULL)
 		return true;
@@ -150,14 +155,23 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 			best = a;
 	/* a row for each pair of a member in several keys is what the join counts, and the units cannot when the member's pairs changed */
 	if (best == NULL)
-		return s->scope->once || (!s->scope->all && s->scope->nkeys <= 1);
+		return s->scope->once || (!s->scope->all && s->scope->nkeys <= 1 && !t->key_read);
 	sc = memcpy(palloc(sizeof(SiftAggScope)), s->scope, sizeof(SiftAggScope));
 	sc->alt = best->spec;
 	sc->nknot = best->nknot;
 	memcpy(sc->knot_k, best->knot_k, sizeof(sc->knot_k));
 	memcpy(sc->knot_instr, best->knot_instr, sizeof(sc->knot_instr));
+	for (int i = 0; t->key_read && i < sc->nknot; i++)
+		sc->knot_instr[i] += AGG_ALT_JOIN * (sc->knot_k[i] - sc->knot_k[0]) * best->knot_rows;
 	sc->knot_rows = best->knot_rows;
 	sc->entry_instr = best->entry_instr;
+	/* the units answer from their pre-aggregates, where the spec can use them (a unit with a changed member does not): a read per pair always, a read counted once of one key, which the execution may have of the many the plan was
+	 * priced for (a read of several keys counted once leaves rows out of its units by the dedupe and reads them: sift_aggspec_preagg_why) */
+	one = *s;
+	one_scope = *s->scope;
+	one_scope.nkeys = 1;
+	one.scope = &one_scope;
+	sc->rowwise = 1.0 - preagg_share(c, &one);
 	s->scope = sc;
 	/* the node costs what the cheaper of its two ways does, and a hair less than the join it holds: the plan that can only be that join has no reason to win */
 	p->total_cost = Min(p->total_cost, best->total * (1.0 - 1e-6));

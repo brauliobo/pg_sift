@@ -69,6 +69,6 @@ SELECT sift.col_verify('events_col', true);
 
 DROP TABLE events, tenant_scope;
 DROP FUNCTION reads(regclass, regclass);
-DROP FUNCTION scope_run(text, text), scope_group_run(text, text), scope_reason_ok(text);
+DROP FUNCTION scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

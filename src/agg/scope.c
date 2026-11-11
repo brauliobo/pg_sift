@@ -12,11 +12,14 @@
 /* check-memory: allow-allocs the arrays follow the keys of one scope conjunct and the members the caps of the statement allow, not the rows of the table */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/table.h"
 #include "utils/lsyscache.h"
 
 #include "core/cmp.h"
 #include "col/scope.h"
+#include "col/seg.h"
 #include "agg/agg_int.h"
 #include "agg/lookcol_int.h"
 
@@ -39,14 +42,18 @@ static SiftSrcPrune *values_prune(int leaf, const int64 *vals, uint32 n);
 
 /* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); vals NULL: of every unit */
 static uint64
-unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n)
+unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n, uint64 *units)
 {
 	SiftSrcUnit u;
 	uint64		rows = 0;
 
+	*units = 0;
 	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), vals ? values_prune(leaf, vals, n) : NULL, vals ? 1 : 0);
 	while (sift_colsrc_next(src, &u))
+	{
 		rows += u.nrow;
+		(*units)++;
+	}
 	return rows;
 }
 
@@ -80,6 +87,87 @@ listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
 	return members;
 }
 
+/* the pairs of the relation of the scope */
+static double
+pairs_rows(AggExec *ex)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	Relation	rel;
+	AttrNumber	member,
+				skey;
+	double		rows;
+
+	(void) sift_scope_pairs_index(ex->heap, ex->index, sc->key_name, &rel, &member, &skey);
+	rows = Max(rel->rd_rel->reltuples, 0);
+	table_close(rel, NoLock);
+	return rows;
+}
+
+/* the entries of the scope segments, the rows a scan of every key reads */
+static uint64
+scope_entries(AggExec *ex)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	uint64		rows = 0;
+
+	sift_dir_read(ex->index, dir);
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && sift_seg_is_scope(&dir->segs[i]))
+			rows += dir->segs[i].ndocs;
+	pfree(dir);
+	return rows;
+}
+
+/*
+ * A read of units whose changed members' entries leave them (SCOPE_CHANGED_SPREAD) reads those units row by row: of the keys, a changed member leaves the share exp(-SCOPE_CHANGED_SPREAD * changed / keys)
+ * of the units without one (the fit of the entries read, 12.8% of them with 4 changed keys, 44% with 18, 92% with 45; 300,000 events, 5,000 members, 50 keys).
+ */
+#define SCOPE_CHANGED_SPREAD	1.8
+
+/* The keys the entries of a read stand for, as the join as written counts them: the entries of one key of the average size, which the planner's knots give */
+static double
+alt_keys(const SiftAggScope *sc, uint64 entries)
+{
+	return sc->knot_rows > 0 ? entries / sc->knot_rows : sc->nkeys;
+}
+
+/*
+ * The counts of the scope units of the keys (col/scope.h): the units and their entries as the scan prunes them, and the pairs of the relation a read of several keys counted once lists whole. With several keys
+ * counted once none of the units is answered from their pre-aggregates.
+ */
+static SiftScopeCounts
+unit_counts(AggExec *ex, Snapshot snapshot)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
+	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
+
+	c.entries = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->all ? NULL : sc->keys, sc->nkeys, &c.units);
+	sift_colsrc_close(units);
+	MemoryContextDelete(cx);
+	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
+	if (sc->once && sc->nkeys > 1)
+	{
+		c.pairs = pairs_rows(ex);
+		c.key_pairs = c.pairs * c.entries / Max(scope_entries(ex), 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
+	}
+	return c;
+}
+
+/* ... and what the reader found: the lists of the dedupe, the pairs it listed, the changed members, the patch and the delta; the units a changed member's entries leave are read row by row */
+static void
+read_counts(const SiftAggScope *sc, SiftScopeCounts *c, const SiftScopeRead *rd)
+{
+	c->drops = rd->ndrop;
+	c->key_pairs = rd->pairs;
+	c->changed = rd->nexcept;
+	c->patch_units = rd->patch_units;
+	c->patch_scan_rows = rd->patch_scan;
+	c->delta_rows = rd->delta_rows + rd->patch_rows;
+	c->preagg *= exp(-SCOPE_CHANGED_SPREAD * rd->nexcept / Max(alt_keys(sc, c->entries), 1.0));
+}
+
 /*
  * Is the entity path cheaper than the units with the patch and the delta? The units read the scope entries of the keys, the patch reads the rows of the members that changed by member key and the
  * delta copies them (and the rows of the write buffers) for each pair. The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
@@ -92,25 +180,17 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeRead *rd = ex->scope_rd;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
 	double		pairs;
 	SiftScopeCounts c;
 	bool		dearer;
 
 	rd->members = listed_members(ex, snapshot, &rd->nmembers, &pairs);
-	c = (SiftScopeCounts) {
-		.nkeys      = sc->nkeys,
-		.once       = sc->once,
-		.entries    = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys),
-		.patch_scan_rows = rd->patch_scan,
-		.patch_units = rd->patch_units,
-		.delta_rows = rd->delta_rows + rd->patch_rows,
-		.pairs      = pairs,
-		.path_rows  = unit_rows(entity, sc->fk, rd->members, rd->nmembers),
-	};
+	c = unit_counts(ex, snapshot);
+	read_counts(sc, &c, rd);
+	c.pairs = pairs;
+	c.path_rows = unit_rows(entity, sc->fk, rd->members, rd->nmembers, &c.path_units);
 	sift_colsrc_close(entity);
-	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
 	dearer = sift_scope_entity_cheaper(&c);
 	if (!dearer)
@@ -174,29 +254,24 @@ alt_price(const SiftAggScope *sc, double keys)
 	return Max(sc->knot_instr[i] + (sc->knot_instr[i + 1] - sc->knot_instr[i]) * (k - sc->knot_k[i]) / (sc->knot_k[i + 1] - sc->knot_k[i]), 0.0);
 }
 
-/* the rows of the scope units of the keys: the entries a read of them takes (every unit for every key) */
-static uint64
-entry_rows(AggExec *ex, Snapshot snapshot)
-{
-	const SiftAggScope *sc = ex->spec->scope;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
-	uint64		rows = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->all ? NULL : sc->keys, sc->nkeys);
-
-	sift_colsrc_close(units);
-	MemoryContextDelete(cx);
-	return rows;
-}
-
 /*
- * Does the join as written (SiftAggScope.alt) cost less than the scope units for the counts c: the units cost their setup, the entries they read and the patch and delta of the changed
- * members (col/scope.h), the join its price for the keys the entries stand for. The join is a scan whose cost grows with the rows the keys leave, and the units' with the entries, so a few keys
+ * Does the join as written (SiftAggScope.alt) cost less than the scope units for the counts c: the units cost what col/scope.h says of the counts (the entries and units they read, the listing of the pairs, the
+ * changed members and the patch and delta of them), the join its price for the keys the entries stand for. The join is a scan whose cost grows with the rows the keys leave, and the units' with the entries, so a few keys
  * read the units and many read the join, and the changed members of every key (a patch of the units of the entity segments for each) the join, which does not read them twice.
  */
 static bool
 join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c)
 {
-	return sift_scope_units_price(c) + sc->entry_instr * c->entries > alt_price(sc, sc->knot_rows > 0 ? c->entries / sc->knot_rows : sc->nkeys);
+	return sift_scope_units_price(c) > alt_price(sc, alt_keys(sc, c->entries));
+}
+
+/* the changed members past which the join costs less: each costs SIFT_SCOPE_MEMBER_INSTR beyond the price of the clean read (whose counts are c), which the reader need not list */
+static uint32
+changed_limit(const SiftAggScope *sc, const SiftScopeCounts *c)
+{
+	double		room = alt_price(sc, alt_keys(sc, c->entries)) - sift_scope_units_price(c);
+
+	return (uint32) Min(Max(room, 0.0) / SIFT_SCOPE_MEMBER_INSTR, (double) PG_UINT32_MAX);
 }
 
 /* the reason EXPLAIN gives for the join the node runs */
@@ -209,8 +284,9 @@ join_cheaper_why(const SiftAggScope *sc)
 /*
  * The node runs the join as written, in the place of its own spec (ex->spec; the EXPLAIN reads the scope from ex->unpacked, which keeps the spec the node was planned with, so that a scan
  * that starts over decides again), when the reader refuses the units (whatever it says: the units cannot answer and the join can) or when it costs less for what this execution finds
- * (join_cheaper). The entries come first, which a few keys cost almost nothing, and where the join is dearer than the setup and the entries of the units alone the reader is not asked; its
- * counts of the changed members and the buffers then make the price whole. A test that wants the units whatever they cost says so (sift.test_scope_patch).
+ * (join_cheaper). The counts of the units come first, which a few keys cost almost nothing, and where the join is dearer than what they price alone the reader is not asked; it is told how many changed
+ * members the join leaves it (changed_limit) and refuses the read before it lists more; its counts of the changed members, the patch and the buffers then make the price whole. A test that wants the units
+ * whatever they cost says so (sift.test_scope_patch).
  */
 static void
 run_join(AggExec *ex, const char *why)
@@ -234,34 +310,34 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	int		   *leaves;
 	int			nleaves;
 	SiftScopeCounts c;
+	uint32		max_changed = PG_UINT32_MAX;
+	bool		priced = sc != NULL && sc->alt != NULL && !sift_test_scope_patch;
 
 	ex->scope_rd = NULL;
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
-	c = (SiftScopeCounts) {.nkeys = sc->nkeys, .once = sc->once};
-	if (sc->alt != NULL && !sift_test_scope_patch)
+	if (priced)
 	{
-		c.entries = entry_rows(ex, snapshot);
+		c = unit_counts(ex, snapshot);
 		if (join_cheaper(sc, &c))
 		{
 			run_join(ex, join_cheaper_why(sc));
 			return false;
 		}
+		max_changed = changed_limit(sc, &c);
 	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
-										ex->spec->topn != NULL, leaves, nleaves);
+										ex->spec->topn != NULL, leaves, nleaves, max_changed);
 	if (sc->alt != NULL && rd->why != NULL)
 	{
 		run_join(ex, rd->why);
 		return false;
 	}
-	c.drops = rd->ndrop;
-	c.patch_units = rd->patch_units;
-	c.patch_scan_rows = rd->patch_scan;
-	c.delta_rows = rd->delta_rows + rd->patch_rows;
-	if (sc->alt != NULL && !sift_test_scope_patch && join_cheaper(sc, &c))
+	if (priced)
+		read_counts(sc, &c, rd);
+	if (priced && join_cheaper(sc, &c))
 	{
 		run_join(ex, join_cheaper_why(sc));
 		return false;
@@ -354,10 +430,14 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 	uint32		nplain;
 	List	   *arms = NIL;
 
-	/* every key: the units are all read, each row has its key */
-	ex->scope_preds = 0;
+	/* every key: the units are all read, each row has its key, but the units of another scope of the index have none (the zones of the key's leaf are NULL there): a key list leaves them out by its keys */
 	if (sc->all)
+	{
+		*add = lappend(*add, pred_node(ex, SAP_NULL, total, sleaf, 1, 0, psprintf("%s IS NOT NULL", ex->lay->leaf[sleaf].name)));
+		ex->scope_preds = 1;
 		return;
+	}
+	ex->scope_preds = 0;
 	nplain = plain_keys(sc, rd, plain);
 	if (nplain > 0 || rd->ndrop == 0)
 		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, NULL));

@@ -8,7 +8,7 @@ set client_min_messages = warning;
 select setseed(0.42);
 select :n_events / 4 as n_orders, :n_events / 2 as n_ledger, :n_events * 3 / 4 as n_web, :n_events * 2 / 5 as n_edges, :n_events / 500 + 1 as n_reads, 50000 as n_big \gset
 set sift.col_auto_merge = off;
-drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide, scope_pairs, scope_events, scope_user_keys, scope_home cascade;
+drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide, scope_pairs, scope_events, scope_user_keys, scope_home, scope_links, scope_members cascade;
 
 create table tenants (id int primary key, plan text);
 create table dim_a (id int primary key, tenant_id int not null, type text not null, region text not null);
@@ -188,9 +188,26 @@ create table scope_grants (dim_a_id int not null, tenant_id int not null, delete
 insert into scope_grants select dim_a_id, tenant_id, case when dim_a_id % 5 = 0 then now() end from scope_pairs;
 create unique index scope_grants_active on scope_grants (dim_a_id, tenant_id) where deleted_at is null;
 create index scope_grants_journal on scope_grants using sift_col (dim_a_id, tenant_id) with (track_changes = 'ctid') where deleted_at is null;
+-- a scope of two paths: the grants of a tenant on an entity (every third entity, some soft deleted) and on the groups of the entity (the other entities, some soft deleted from their group, and one in nine in two)
+create table scope_links (id int primary key, tenant_id int not null, dim_a_id int, group_id int, deleted_at timestamptz);
+insert into scope_links select id, tenant_id, id, null, case when id % 11 = 0 then now() end from dim_a where id % 3 = 0;
+insert into scope_links select 100000 + g, 1 + g % 50, null, g, null from generate_series(1, 40) g;
+create unique index scope_links_direct on scope_links (dim_a_id, tenant_id) where deleted_at is null;
+create unique index scope_links_group on scope_links (group_id, tenant_id) where deleted_at is null;
+create table scope_members (group_id int not null, dim_a_id int not null, deleted_at timestamptz);
+insert into scope_members select 1 + id % 40, id, case when id % 13 = 0 then now() end from dim_a where id % 3 <> 0;
+insert into scope_members select 1 + (id / 9) % 40, id, null from dim_a where id % 9 = 0 on conflict do nothing;
+create unique index scope_members_active on scope_members (group_id, dim_a_id) where deleted_at is null;
+create index scope_links_by_member on scope_links using sift_col (dim_a_id, tenant_id) with (track_changes = 'ctid');
+create index scope_links_by_group on scope_links using sift_col (group_id, tenant_id) with (track_changes = 'ctid');
+create index scope_members_by_member on scope_members using sift_col (dim_a_id, group_id) with (track_changes = 'ctid');
+create view scope_pairs_union as
+	select l.dim_a_id as member, l.tenant_id from scope_links l where l.deleted_at is null
+	union
+	select m.dim_a_id, l.tenant_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null;
 create table scope_events (id bigint primary key, dim_a_id int not null, status text not null, amount float8, d date not null);
 insert into scope_events select id, dim_a_id, status, amount, d from events;
-create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id); soft_tenant_id: dim_a_id -> scope_grants(dim_a_id, tenant_id)');
+create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id); soft_tenant_id: dim_a_id -> scope_grants(dim_a_id, tenant_id); group_tenant_id: dim_a_id -> scope_links(dim_a_id, tenant_id) | scope_links(group_id, tenant_id) via scope_members(group_id, dim_a_id)');
 reindex index scope_events_col;
 -- the tables of keys of a user: its tenants (users 1 and 2 have three and one, user 3 none), one home tenant a user (user 3 has a NULL one)
 create table scope_user_keys (user_id int not null, tenant_id int not null, primary key (user_id, tenant_id));

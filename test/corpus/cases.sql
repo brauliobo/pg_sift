@@ -893,6 +893,23 @@ select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s 
 -- @case scope_keytable_join_many | scope | JOIN keys of a user with three keys counts a row for each pair: the scope read, or the join as written where it costs less
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_user_keys k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;
 
+-- ===================== scope index: GROUP BY the key of the pairs (every tenant at once)
+-- @case scope_group_key | scope | the join to the pairs grouped by the key: every key read from the scope units
+select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+-- @case scope_group_key_status | scope | the key and a column of the facts, HAVING and ORDER BY the key
+select s.tenant_id, e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1, 2 having count(*) > 50 order by 1, 2;
+-- @case scope_group_key_keys | scope | four tenants grouped by the key (the join as written is held for the execution)
+select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id in (1, 2, 3, 4) group by 1;
+-- @case scope_group_key_distinct | scope | count(DISTINCT) of the facts' entity for every tenant
+select s.tenant_id, count(distinct e.dim_a_id), max(e.d) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+-- @case scope_group_key_topn | scope | the five tenants with the most amount
+select s.tenant_id, sum(e.amount) a from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1 order by a desc, 1 limit 5;
+-- @case scope_group_key_param | scope | the keys by an array parameter, grouped by the key, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sg(int[]) as select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = any ($1) group by 1;
+execute sg(array[3, 9, 20]);
+-- @case scope_group_key_expr | scope | the key in an expression keeps the join
+select s.tenant_id / 5, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+
 -- ===================== scope index: the scope read or the join as written, chosen for the keys of the execution
 -- @case scope_choice_array_one | scope | an array parameter of one tenant: the scope read costs less than the join the plan holds, generic plan
 -- @pre set plan_cache_mode = force_generic_plan; prepare sc1(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;
@@ -916,3 +933,28 @@ select date_trunc('month', d), count(distinct dim_a_id) from scope_events where 
 select e.status, count(*), sum(e.amount) from scope_events e join scope_grants s on s.dim_a_id = e.dim_a_id where s.tenant_id = 1 + @K@ % 50 group by 1;
 -- @case scope_pairs_predicate_in_missing | join | IN over the rows of the relation without the predicate: the join as written
 select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select dim_a_id from scope_grants where tenant_id = 1 + @K@ % 50) group by 1;
+
+-- ===================== scope index of two paths: the pairs written as the union of the direct grants and the grants of the groups
+-- @case scope_union_in | scope | IN over the union of the two paths, a member reached by both counts once
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select l.dim_a_id from scope_links l where l.deleted_at is null and l.tenant_id = 1 + @K@ % 50 union select m.dim_a_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null and l.tenant_id = 1 + @K@ % 50) group by 1;
+-- @case scope_union_in_view | scope | IN over the view of the union, three tenants
+select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select member from scope_pairs_union where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50, 7)) group by 1;
+-- @case scope_union_join_view | scope | a join to the view of the union counts a member once for each pair of one tenant
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id where v.tenant_id = 1 + @K@ % 50 group by 1;
+-- @case scope_union_join_all | join | a join to a UNION ALL of the two paths counts a member of both twice: the join as written
+select e.status, count(*), sum(e.amount) from scope_events e join (select l.dim_a_id as member, l.tenant_id from scope_links l where l.deleted_at is null union all select m.dim_a_id, l.tenant_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null) v on v.member = e.dim_a_id where v.tenant_id = 1 + @K@ % 50 group by 1;
+-- @case scope_union_missing | join | the direct path without the predicate of its btree counts the soft deleted grants: the join as written
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select l.dim_a_id from scope_links l where l.tenant_id = 1 + @K@ % 50 union select m.dim_a_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null and l.tenant_id = 1 + @K@ % 50) group by 1;
+-- @case scope_union_param | scope | the key of the union by a parameter, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare su(int) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id where v.tenant_id = $1 group by 1;
+execute su(1 + @K@ % 50);
+
+-- ===================== a relation of a scope that no pass takes: the join as written, with the reason
+-- @case scope_refused_nested_in | join | the scope relation inside the sub-select of a semi join
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select o.dim_a_id from scope_events o where o.dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) group by 1;
+-- @case scope_refused_not_in | join | NOT IN over the pairs is a plan of its own
+select status, count(*), sum(amount) from scope_events where dim_a_id not in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) group by 1;
+-- @case scope_refused_two_in | scope | two IN over the pairs: one is read from the units, the other stays a join
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) and dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50)) group by 1;
+-- @case scope_refused_array_any | join | the members as = ANY (ARRAY(SELECT ..)) are an InitPlan: the join as written
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) group by 1;

@@ -44,7 +44,8 @@ CREATE INDEX dim_col ON dim USING sift_col (id, label);
 CREATE TABLE ev (id int PRIMARY KEY, dim_id int, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 9999 ELSE 1 + i % 500 END, i % 100,
 	   md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 60000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, dim_id, amount, pad) WITH (connect = 'dim_id -> dim(id)');
+-- not key-cut: a VACUUM leaves a key-cut index a partition of free blocks for its rolling rewrite (col_rewrite_roll), and this test is of the space step that moves the runs down
+CREATE INDEX ev_col ON ev USING sift_col (id, dim_id, amount, pad) WITH (connect = 'dim_id -> dim(id)', key_cut = 'off');
 INSERT INTO ev SELECT i, 1 + i % 500, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(60001, 120000) i;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ev;
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;

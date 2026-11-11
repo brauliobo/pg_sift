@@ -63,8 +63,8 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('member not an integer', 'tenant_id: dim_a_id -> pairs_text(m, s)'),
 	('scope key not an integer', 'tenant_id: dim_a_id -> pairs_text(s, m)'),
 	('nullable columns', 'tenant_id: dim_a_id -> pairs_nullable(m, s)'),
-	('no unique btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
-	('unique on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
+	('no btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
+	('btree on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
 	('partial unique, no journal index', 'tenant_id: dim_a_id -> pairs_partial(m, s)'),
 	('deferrable unique', 'tenant_id: dim_a_id -> pairs_deferrable(m, s)'),
 	('unique with an included column', 'tenant_id: dim_a_id -> pairs_include(m, s)');

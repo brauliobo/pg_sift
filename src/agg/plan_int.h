@@ -177,7 +177,7 @@ typedef struct AggCtx
 	List	   *joins;			/* JoinCtx */
 	struct ScopeTake *scope_take;	/* the join to the scope relation the second pass took out of the FROM list (plan_scope.c); NULL: none */
 	struct ScopeTake *scope_pass;	/* the two passes of the statement over a scope index (group_paths_skip, topn_paths): the first leaves its paths' specs there as the join the second may run instead */
-	const char *scope_all;		/* the scope (key_name) whose every key the scan reads (SiftAggScope.all): its derived leaf is a leaf the spec may read; NULL: none */
+	const char *scope_key;		/* the scope (key_name) whose derived key the statement groups by (ScopeTake.key_read): its leaf is a leaf the spec may read; NULL: none */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
@@ -324,6 +324,10 @@ typedef struct ScopeTake
 	Index		rti;			/* what the pass took out: the scope relation, or the view over it (0: nothing yet) */
 	Index		krti;			/* ... and the table of keys its key was joined to (0: the key is bound by constants or parameters) */
 	Var		   *fk;				/* the member key of the scanned table the join equated to the scope relation's member column */
+	AttrNumber *map;			/* the columns of the table that those of the item are (a view over the scope relation; NULL: the item is the table), nmap entries */
+	int			nmap;
+	AttrNumber	key;			/* the key column of the scope relation */
+	bool		key_read;		/* the statement groups by the key column of the item, which the scan reads as the derived leaf of the scope (sift_agg_scope_key_leaf) */
 	SiftAggScope sc;			/* the conjunct as the join states it: all but fk (the leaf, which the scan's layout gives) */
 	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them (for a parameter, those of the average key) */
 } ScopeTake;
@@ -607,8 +611,8 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 /* plan_scope.c: the scope conjunct of the scan into s->scope, from the marker in the conjuncts or from the join the second pass took out (false: it has none to take); a scan that builds its spec in another way reads none */
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
-extern bool sift_agg_scope_wanted(AggCtx *c);
-/* the derived leaf of the scope the scan reads every key of, when e is the expression that stands for it (match_leaf); -1 when it is not */
+extern bool sift_agg_scope_wanted(AggCtx *c, const FromScan *fs);
+/* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);
@@ -616,10 +620,41 @@ extern bool read_above(PlannerInfo *root, Index rti);
 extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key);
 /* the column of the table that column att of the item is, through the column map of a view over it (plan_scope.c); InvalidAttrNumber: none */
 extern AttrNumber item_attno(const AttrNumber *map, int nmap, AttrNumber att);
-/* scope_legs.c: NULL when the conditions rest of the statement on the scope relation take the pairs of the scope and no other row; else why not */
+/*
+ * An item of the FROM list that may stand for the pairs relation of a declared scope: the table itself, a view over it, or the union of the two paths of a scope (scope_union.c). The columns of the
+ * item are those of the table relid through map; sp is NULL for an item that is none, why says why a join to it is not one the scope read answers.
+ */
+typedef struct ScopeItem
+{
+	const struct SiftScopeSpec *sp;
+	const char *why;
+	Oid			relid;
+	AttrNumber *map;
+	int			nmap;
+	bool		is_union;
+	bool		all;			/* a union: UNION ALL */
+	bool		member_only;	/* a union: it gives the members of the pairs, not the pairs: a row counts once for a member however the item is joined */
+	Node	   *key;			/* a union: the key its arms bind (NULL: no arm does) */
+	bool		key_both;		/* ... and both arms do */
+	List	   *rtes;			/* a union: the tables of its arms and the permission checks of each (RTEPermissionInfo), which the plan of the scope read no longer holds */
+	List	   *perms;
+} ScopeItem;
+/* the column's plain integer btree equality, a plain column of the item rti, and the value that the condition q binds the key column of the item rti to (plan_scope.c) */
+extern bool integer_eq(Oid opno);
+extern Var *item_var(Node *n, Index rti);
+extern Node *key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q);
+/* a select that only projects columns of its tables and filters them: no aggregate, grouping, DISTINCT, LIMIT, ORDER BY, sub-select, CTE or lock */
+extern bool plain_select(const Query *q);
+/* scope_union.c: the sub-select q (a union) as an item of the scope of two paths its arms read, if it is one; sp stays NULL for a union that reads no relation of a scope of the index */
 struct SiftScopeSpec;
 struct SiftScopeSpecs;
+extern ScopeItem scope_union_item(AggCtx *c, const struct SiftScopeSpecs *specs, Query *q);
+/* ... and the privileges on the tables of its arms, which the plan of the scope read must still check: they join the range table of the query */
+extern void scope_union_perms(PlannerInfo *root, const ScopeItem *it);
+/* scope_legs.c: NULL when the conditions rest of the statement on the scope relation take the pairs of the scope and no other row; else why not */
 extern const char *scope_pairs_proof(AggCtx *c, const struct SiftScopeSpecs *specs, const struct SiftScopeSpec *sp, Index rti, const AttrNumber *map, int nmap, List *rest);
+/* ... and the same of the conditions quals of table rti of an arm of a union on the relation relid, whose rows are its pairs by the btree predicate pred and the columns a and b */
+extern const char *scope_arm_proof(Oid relid, List *pred, AttrNumber a, AttrNumber b, Index rti, List *quals);
 /* cost/scope.c: a serial path of the first pass leaves the join it priced (scope_alt_record) for the node of the second to run instead; the path of the second pass takes the one of its order (scope_alt_attach: false, a join the units cannot answer) */
 extern void scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List *pathkeys);
 extern bool scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys);

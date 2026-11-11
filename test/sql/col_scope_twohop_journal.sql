@@ -116,14 +116,14 @@ UPDATE memberships SET deleted_at = NULL WHERE group_id = 1 AND dim_a_id = 3;
 UPDATE grants SET deleted_at = now() WHERE id = 5;
 SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 0, :l1, :l2);
--- a group that has more members than the cap of the journal read is over it, and the patch is then priced against the entity path
-UPDATE grants SET deleted_at = now() WHERE id = 3;
+-- two groups that have more members than the cap of the journal read are over it, and the patch is then priced against the entity path
+UPDATE grants SET deleted_at = now() WHERE id IN (3, 4);
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 5, :l1, :l2);
 SET sift.test_scope_patch = off;
 SELECT * FROM probe();
 RESET sift.test_scope_patch;
 SELECT * FROM probe();
-UPDATE grants SET deleted_at = NULL WHERE id IN (3, 5);
+UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
 
 -- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); a few are left to the reads
 VACUUM (ANALYZE) grants, memberships;
