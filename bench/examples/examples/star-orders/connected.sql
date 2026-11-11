@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins this example is about: orders -> customer, item, store (N:1, attributes the queries read are in `reads`).
