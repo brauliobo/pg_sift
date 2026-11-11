@@ -30,6 +30,7 @@
 #include "col/seg_int.h"
 #include "col/vstore/vstore.h"
 #include "core/page.h"
+#include "core/sift.h"
 #include "core/store.h"
 
 #define VRUN_MAGIC			0x4e555256	/* 'VRUN' */
@@ -517,6 +518,7 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 {
 	SiftDirChange chg = {.fn = epoch_edit};
 
+	(void) sift_catalog();
 	LockRelationForExtension(vs->rel, ExclusiveLock);
 	pfree(view_refresh(vs));
 	if (vs->view->total > 0)
@@ -720,6 +722,7 @@ retry:
 		missing += map[i] == PG_UINT32_MAX;
 	if (missing > 0)
 	{
+		(void) sift_catalog();	/* a catalog lookup under the extension lock would take a lock (the directory update reads the format minor of the segments) */
 		LockRelationForExtension(vs->rel, ExclusiveLock);
 		snap = view_refresh(vs);
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
