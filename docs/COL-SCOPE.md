@@ -154,6 +154,68 @@ Above the limit the join answers (the entity path), and a count or a sum by key 
 the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity, and a table of 100,000,000 events moves the break-even
 up (the join is linear in the table), which this limit does not price: raise it for such a table, from the figures of the NOTICE.
 
+## Replicate or reuse
+
+A read of the facts of one key (a tenant, a group) can be served two ways. **Replicate**: the scope index of this page, whose units hold the rows of each key. **Reuse**: no scope index; the plain `sift_col` index of the table is read by the
+member keys of the key, `fact.member IN (SELECT member FROM pairs WHERE key = k)`, which is exact at the time of the statement, keeps no journal, grows nothing and has no limit on the keys of a member. Both give the same rows. The
+planner reads the scope units whenever the scope index exists and the statement has a recognised form (`sift.agg_scope`); where there is none (not declared, or refused above the limit) the join is read by the member keys. The
+table is the measured cost of each, and the rule it leads to.
+
+Measured on a table of `events` (member, time, kind, value, quantity) joined to a table of (member, tenant) pairs, 2.7 entries a row, four tenants of 0.1%, 3.3%, 6.6% and 33% of the events, the six requests of a dashboard
+(sum by kind, sum by kind in one month, distinct members by month, top 20 members, a filter on the value, latest 20). Warm: instructions of the backend (geometric mean of the six) and shared buffers hit; cold: blocks read with
+every relation of the statement evicted. Every pair of cells returned the same rows.
+
+| events | tenant | replicate: M instr, hit, cold blocks | reuse: M instr, hit, cold blocks | reuse / replicate (instr) |
+|---:|---:|---|---|---:|
+| 100,000 | 0.1% | 0.90, 56, 8 | 2.32, 52, 49 | 2.6x |
+| 100,000 | 33% | 1.93, 108, 42 | 5.09, 92, 86 | 2.6x |
+| 500,000 | 0.1% | 1.09, 70, 16 | 3.68, 151, 132 | 3.4x |
+| 500,000 | 3.3% | 1.71, 94, 39 | 5.78, 198, 167 | 3.4x |
+| 500,000 | 33% | 5.03, 294, 167 | 14.07, 235, 211 | 2.8x |
+| 2,000,000 | 0.1% | 1.77, 152, 82 | 9.62, 502, 452 | 5.4x |
+| 2,000,000 | 3.3% | 3.88, 247, 142 | 16.68, 648, 584 | 4.3x |
+| 2,000,000 | 6.6% | 5.19, 311, 181 | 20.86, 656, 597 | 4.0x |
+| 2,000,000 | 33% | 13.12, 728, 428 | 51.20, 816, 760 | 3.9x |
+
+Reuse over replicate for each request at 2,000,000 events (instructions; tenants of 0.1%, 3.3%, 6.6%, 33%):
+
+| request | 0.1% | 3.3% | 6.6% | 33% |
+|---|---:|---:|---:|---:|
+| sum by kind, all time | 12.7x | 17.8x | 16.5x | 13.3x |
+| sum by kind, one month | 2.9x | 3.6x | 4.4x | 10.2x |
+| filter on the value | 12.9x | 8.5x | 5.7x | 2.5x |
+| distinct members by month | 4.6x | 3.1x | 2.4x | 1.4x |
+| top 20 members | 6.6x | 2.8x | 2.1x | 1.0x |
+| latest 20 | 1.7x | 1.4x | 2.0x | 6.9x |
+
+Reuse costs about 6 instructions a row of every unit that holds a member of the key, because the member column is decoded to find them, and its member list about 1.9 thousand instructions a member; replicate reads the rows of the key
+and answers sums and counts by kind and month from stored combinations. So reuse grows with the table (about 25 instructions an event for the 33% tenant, about 5 for the 0.1% one), replicate with the tenant. At 10^8 events the
+slopes of the three sizes give about 2.5 G instructions for reuse and 0.65 G for replicate for the 33% tenant, about 0.5 G and 0.09 G for the 0.1% tenant (extrapolated, not measured).
+
+What a replicated scope index costs (same table, `sift.scope_max_multiplicity` raised for the 5.4 rows; entries a row = multiplicity):
+
+| events | entries a row | entity index | with the scope | build | WAL of the build |
+|---:|---:|---:|---:|---:|---:|
+| 500,000 | 1.05 | 13.0 MB, 1.4 s | 25.4 MB (+95%) | 2.4 s | 50 MB (13 MB without) |
+| 500,000 | 2.7 | 13.0 MB | 44.2 MB (+240%) | 5.0 s | 89 MB |
+| 500,000 | 5.4 | 13.0 MB | 78.0 MB (+500%) | 5.7 s | 157 MB |
+| 2,000,000 | 1.05 | 55.3 MB, 10 s | 106.5 MB (+93%) | 11.2 s | 215 MB (55 MB without) |
+| 2,000,000 | 2.7 | 55.3 MB | 192.3 MB (+248%) | 21.4 s | 557 MB |
+| 2,000,000 | 5.4 | 55.3 MB | 335.2 MB (+506%) | 64.8 s | 676 MB |
+
+Writes to the facts cost the same with and without the scope (10,000 inserted, updated or deleted facts, 500,000 events: 537, 1,021 and 493 M instructions either way); the promotion that applies the journal costs 470 M
+instructions and 1.1 MB of WAL against 74 M and 0.3 MB (+396 M, +0.8 MB for each 10,000 facts); 100 pairs added to a key cost 0.5 M more. Reuse costs nothing to write. A table of the totals by member, kind and month kept by triggers
+is not an alternative: its cells are 85% of the facts at 25 facts a member over 10 kinds and 12 months, and its writes cost +125% (insert), +73% (update) and +140% (delete) instructions.
+
+**The rule.** Declare a scope (`WITH (scope = ..)`) when the requests by a key are sums and counts by kind or time, the keys are up to about a tenth of the facts, and the members are in few keys (up to 3 entries a row, the
+limit; the growth above is what the `NOTICE` says). Leave it undeclared when the requests are top-N, distinct or latest rows over keys of a third of the facts or more, when the members are in many keys, when the table is small (reuse
+is 2 to 5 M instructions at 100,000 events), or when the extra size, build and 0.8 MB of WAL for each 10,000 facts of promotion are not worth the saving. Above the limit `CREATE INDEX` refuses the
+scope and says the size it would have had; the join answers, at the cost of the table above and nothing more.
+
+With both a scope index and an entity index on a table, the planner chose the scope read in all 48 cells measured (2,000,000 events at 2.7 entries a row and 500,000 at 5.4, four tenants, six requests), and it was never
+more than 1% dearer than the join read measured on its own (the closest cells: top 20 of the 33% key, 82.8 against 85.3 M instructions at 2,000,000 events, and 22.3 against 22.1 M at 500,000 events and 5.4 entries a row);
+`sift.agg_scope = off` gives the join read for a comparison.
+
 ## What it costs
 
 `CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,248 entries for 100,000 rows (0.93 per row); the index grows from 2.4 MB to 4.4 MB (+81%)` (the growth is said
