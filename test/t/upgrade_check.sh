@@ -3,6 +3,7 @@
 # not read (--to), for options that wait for a REINDEX, for settings and test objects left behind, for an extension older than the library, for an
 # index the library refuses, and that the check leaves nothing behind in the database.
 . "$(dirname "$0")/lib.bash"
+. "$(dirname "$0")/lib_twohop.bash"
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 q() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d "$db" "${@/#/--command=}"; }
@@ -11,7 +12,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 106
+plan 112
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -295,4 +296,20 @@ check "the other removed setting is a blocker too, with its ALTER ROLE .. IN DAT
 check "the removed setting is no warning of the generic check" test "$(grep -c -E '^warn +sift\.enable_col' <<<"$out")" == 0
 q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.table_auto_defrag_dead_pct" >/dev/null
 check "after the commands nothing of it is left" test "$(uc v42 | grep -c 'sift\.enable_col')" == 0
+# a scope is column format 45 and a scope of two paths (the grants of a member and of a group, and the memberships: three stamps in a segment) column format 49: 4.3 reads neither, 5.0 both
+q postgres "CREATE DATABASE hop" "ALTER DATABASE hop SET sift.scope_max_multiplicity = 8" >/dev/null
+printf '%s;\n' "CREATE EXTENSION pg_sift" "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" "CREATE TABLE one_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" "INSERT INTO one_pairs SELECT m, 1 + m % 12 FROM generate_series(1, 200) m" \
+	"CREATE INDEX one_pairs_journal ON one_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" "CREATE TABLE one_events (id int PRIMARY KEY, dim_a_id int, v int)" \
+	"INSERT INTO one_events SELECT i, 1 + i % 200, i % 10 FROM generate_series(1, 2000) i" \
+	"CREATE INDEX one_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> one_pairs(dim_a_id, tenant_id)')" "REINDEX INDEX one_col" |
+	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scopes cannot be set up"
+out=$(uc hop)
+check "a scope of one path is column format 45, one of two paths is column format 49" grep -q -E '^ok +one_col +index +format 1\.[0-9]+, column format 45' <<<"$out" && grep -q -E '^ok +hop_col +index +format 1\.[0-9]+, column format 49' <<<"$out"
+out=$(uc --to 4.3 hop)
+check "to 4.3: both are blockers" test -n "$(row "$out" blocker one_col)" -a -n "$(row "$out" blocker hop_col)"
+check "to 4.3: the journal indexes and the grants of the scopes, which have no scope, are ok" test -z "$(row "$out" blocker grants_by_member)" -a -z "$(row "$out" blocker memberships_by_member)"
+out=$(uc --to 5.0 hop)
+check "to 5.0: neither is a blocker" test -z "$(row "$out" blocker one_col)" -a -z "$(row "$out" blocker hop_col)"
+check "the preflight lists no REINDEX for the scope indexes or their journals" test "$(q hop "SELECT count(*) FROM sift.upgrade_commands()")" == 0
+check "a scope of two paths the older library cannot read is a finding with an advice, not an error" test "$(uc --to 4.3 hop | grep -c -E '^blocker +hop_col .+')" == 1
 finish

@@ -12,6 +12,7 @@
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 . "$(dirname "$0")/lib_upgrade.bash"
+. "$(dirname "$0")/lib_twohop.bash"
 
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
@@ -48,7 +49,7 @@ else
 	build_old "$OLDCFG" "$OV/oldroot" || { (($? == 77)) && exit 0; tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
 	overlay "$OLDCFG" "$OV/old" "$OV/oldroot"
 fi
-plan $((34 + (${#OLD_REF} ? 3 : 0)))
+plan $((37 + (${#OLD_REF} ? 3 : 0)))
 OLDB=$OV/old$("$OLDCFG" --bindir)
 NEWB=$OV/new$("$NEWCFG" --bindir)
 PATH=$NEWB:$PATH
@@ -185,6 +186,17 @@ CREATE FUNCTION tblq_off(t regclass) RETURNS text LANGUAGE sql SET sift.enable_a
 SQL
 )
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
+# a scope of two paths (5.0's, column format 49; lib_twohop.bash): the grants of a member and of a group and the memberships, three recorded btrees and three journals under one scope index
+HOPQ() { q "$1" postgres "${@:2}"; }
+TWOHOP_SQL=HOPQ
+HOPSTATE="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'hop_col' AND o LIKE 'scope=%'
+	UNION ALL SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'hop_col'::regclass
+	AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'"
+if [[ -z $OLD_REF ]]; then
+	q old postgres "ALTER DATABASE postgres SET sift.scope_max_multiplicity = 8" >/dev/null || bail "the multiplicity limit"
+	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
+	HOP_BEFORE=$(HOPQ old "$HOPSTATE")
+fi
 # stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
 q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE postgres IN DATABASE postgres SET sift.enable_agg = on" >/dev/null || bail "stored settings"
 VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true), sift.col_verify('trk_c', true), sift.col_verify('trk_late_z', true)"
@@ -289,6 +301,19 @@ q new postgres "SET sift.test_vstore_columns = 'uid,url'" "CREATE TABLE vs2 (id 
 	"ANALYZE vs2" "CREATE INDEX vs2_a ON vs2 USING sift_col (id, uid, url)" "CREATE INDEX vs2_b ON vs2 USING sift_col (uid, id, url)" >/dev/null
 check "indexes built after the upgrade share their strings and answer as the normal plan" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status WHERE table_name = 'vs2'::regclass")" == "uid=2,url=2" \
 	-a "$(q new postgres "SELECT count(*) || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")" == "$(q new postgres "SET sift.enable_agg = off" "SELECT count(*) || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")"
+# the scope of two paths: the option and the edges to the three btrees and the three journals came with the dump, the reads are the join, the logs of the journals are not complete (their triggers are made
+# again, as for the connected pair) so nothing is vouched until the journals and then the scope index are rebuilt, and after that the units are read again
+if [[ -z $OLD_REF ]]; then
+	HOPQ new "CREATE EXTENSION pg_sift_test" >/dev/null   # the marker sift.in_scope; made here, so that the preflight above had no test object to list
+	check "the scope of two paths is as before: its option, and its edges to the three btrees and the three journals (a btree cannot be dropped)" test "$(HOPQ new "$HOPSTATE")" == "$HOP_BEFORE" \
+		-a "$(HOPQ new "DROP INDEX grants_direct" 2>&1 | grep -c 'cannot drop index')" == 1
+	check "its reads are the join, whatever the verdict (the read says $(twohop_why new))" test "$(twohop_reads new)" == same
+	HOPQ new "UPDATE grants SET deleted_at = now() WHERE group_id = 3 AND deleted_at IS NULL" "INSERT INTO memberships (group_id, dim_a_id) VALUES (3, 150) ON CONFLICT DO NOTHING" \
+		"UPDATE grants SET deleted_at = now() WHERE dim_a_id % 17 = 0" >/dev/null
+	HOPQ new "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
+	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join, the units are read, and the indexes verify" test "$(twohop_reads new)|$(twohop_why new)" == "same|stored" \
+		-a -z "$(HOPQ new "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+else skip 3 "an index of a release has no scope of two paths"; fi
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \
