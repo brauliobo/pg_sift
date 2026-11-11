@@ -297,7 +297,7 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 		return NULL;
 	st = MemoryContextAllocZero(mcxt, sizeof(SiftScopeStale));
 	st->n = sift_col_rel(index)->nscope;
-	st->snap = IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	st->snap = RegisterSnapshot(IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot());
 	for (int i = 0; i < st->n; i++)
 		if (journals_open(index, i, AccessShareLock, &st->s[i].J))
 		{
@@ -342,6 +342,7 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 void
 sift_scope_stale_end(SiftScopeStale *st)
 {
+	UnregisterSnapshot(st->snap);
 	for (int i = 0; i < st->n; i++)
 		journals_close(&st->s[i].J);
 }
