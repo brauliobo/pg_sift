@@ -162,7 +162,7 @@ rows are those of the join in every case; whether the index may be read at execu
 | `JOIN` with several keys | once for each pair | no: a member whose pairs changed needs the join, which counts them |
 | `GROUP BY` the scope key ("every tenant"), or any other column of the relation read | once for each pair | not by the planner yet: the reader gives it (below; the testing markers reach it) |
 | the scope key bound by a parameter: `= $1`, `= ANY ($1)`, `IN ($1, $2)`, a stable expression (`current_setting(..)::int`), the output of an InitPlan (`= (SELECT ..)`, `= ANY (ARRAY(SELECT ..))`) | as written | yes: the keys are those of the execution (below); a join (a row for each pair) only for a scalar, an array may hold several keys |
-| a table of keys joined to the scope relation (`JOIN keys k ON k.key = s.key`, `s.key IN (SELECT key FROM keys ..)`) | | no: the keys of the table are not known when the plan is made (`= ANY (ARRAY(SELECT key FROM keys ..))` is) |
+| a table of keys: `s.key IN (SELECT key FROM keys WHERE ..)`, `EXISTS`, `JOIN keys k ON k.key = s.key` | as written | yes, read once when the scan starts (below); a join (a row for each pair) only where the table gives one key: a unique index on the key column with the other columns bound, or a `DISTINCT` sub-select |
 | another condition on the relation, a view with a condition, `DISTINCT` or a join inside the sub-select, `NOT EXISTS`, an outer join, row-level security on the relation | | no |
 
 **Parameters.** A key that is a parameter of a prepared statement (or the output of an InitPlan, or a stable expression) is read when the scan starts, so a generic plan has the scope read for every value: the plan
@@ -171,6 +171,16 @@ array match nothing, an empty set reads no unit). `EXPLAIN` shows `Scope Keys: $
 (`Scope Fallback: dedupe keys`, `dedupe over work_mem`) as for constants. A custom plan has the constants and is priced for them. A generic plan has no value to price: a scalar is the pairs of the average key
 (the rows `pg_stats` expect for an equality on the key column), an array that is not a list the 10 keys PostgreSQL assumes for an array it does not know, and the choice between the scope read and the join is made
 once for all values, so a tenant far above the average pays the plan the average chose (the scope read grows with the tenant, the join with the table).
+
+**A table of keys.** The keys of a user, a team or a role are a table, and the statement reads them in a join (`JOIN keys k ON k.key = s.key WHERE k.user_id = 7`), an `IN` or an `EXISTS`. The planner takes the table out of
+the join and has the scan read its keys once when it starts, in the statement's snapshot and with the table's own conditions (as the output of an InitPlan: `Scope Keys: ARRAY(SELECT ..)`), so the keys of each execution of a
+prepared statement are the rows of that moment. The table is read by the scan's own sub-query and no longer by the statement, so it must be a plain heap or
+partitioned table the role reads without row-level security, that the statement does not modify, with conditions that are immutable or stable and cannot raise an error. A join counts a fact once for each pair and each
+row of the key table, so it is recognised only where the table holds the key once (a primary or unique non-partial index on the key column, the other columns bound by `=`, or a `DISTINCT` / `GROUP BY` sub-select);
+`IN` and `EXISTS` count once and take any number of keys. A key table that is a view, a materialized or foreign table, a sub-select, a table with row-level security, one that is joined to another table or whose columns the
+statement reads, keeps the join and says why in `sift.explain_why`. The price is made of the key table's rows (the estimate of its conditions; 10 for an unbounded set) and the pairs of the average key, so
+a user of the few largest tenants of a skewed set gets a plan priced for average ones: on 300,000 events and 50 tenants the scope read of one key runs in 2.1 million instructions against 7 to 20 million, 3 small tenants 5.3
+against 7.6, the 10 largest 37.8 against 16.6, and 30 keys keep the join.
 
 A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
 `ORDER BY .. LIMIT` and the aggregates are the scan's as ever.
@@ -369,6 +379,6 @@ copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.
 ## Limits
 
 EXPERIMENTAL; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs (the relations of a scope of two paths included); at most one joined path, no third hop; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds, and so does every key by the key when a changed member has a pair now; a join to a table of keys and the planner's recognition of a `GROUP BY` the key are not in this release; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds, and so does every key by the key when a changed member has a pair now; a join to a table of keys that may hold a key twice and the planner's recognition of a `GROUP BY` the key are not in this release; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
 by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

@@ -291,6 +291,8 @@ typedef struct LeftJoin
 	List	   *quals;			/* its ON clause */
 	SiftJoinKind kind;
 	Relids		tree;			/* a semi or anti join to a tree of joined tables: the relids of the join PostgreSQL planned for it; rti is its one table the ON clause reads */
+	Node	   *rarg;			/* ... and the tree itself, with the conditions of the sub-select (scan_tree) */
+	List	   *inner;			/* ... and the conditions of the ON clause that read the tree's tables only (PostgreSQL keeps all of the sub-select's WHERE there when it has several tables) */
 } LeftJoin;
 
 /*
@@ -304,6 +306,7 @@ typedef struct ScopeTake
 	int			skip;
 	bool		flip;
 	Index		rti;			/* what the pass took out: the scope relation, or the view over it (0: nothing yet) */
+	Index		krti;			/* ... and the table of keys its key was joined to (0: the key is bound by constants or parameters) */
 	Var		   *fk;				/* the member key of the scanned table the join equated to the scope relation's member column */
 	SiftAggScope sc;			/* the conjunct as the join states it: all but fk (the leaf, which the scan's layout gives) */
 	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them (for a parameter, those of the average key) */
@@ -489,6 +492,7 @@ extern bool arg_joined(AggCtx *c, Node *arg);
 extern bool compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai);
 
 extern void scan_from(Node *n, FromScan *f);
+extern bool scan_tree(Node *n, Relids *tables, List **quals);
 extern FuncKind func_kind_of(RangeTblFunction *f);
 extern int	array_group(AggCtx *c, Node *e);
 extern SiftSrcLeafKind func_leaf_kind(FuncKind k);
@@ -591,6 +595,10 @@ extern bool sift_agg_scope_wanted(AggCtx *c);
 /* the derived leaf of the scope the scan reads every key of, when e is the expression that stands for it (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
+extern bool read_above(PlannerInfo *root, Index rti);
+/* scope_table.c: a table of keys joined to the scope relation (kvar: its key column, joinq: the equality) is the ARRAY(SELECT ..) of its rows, planned as an InitPlan when the path becomes a plan */
+extern const char *scope_key_table(AggCtx *c, FromScan *fs, List *pool, Node *joinq, Var *kvar, Index srti, bool once, SiftAggScope *sc, ScopeTake *t);
+extern const SiftAggSpec *scope_keys_plan(PlannerInfo *root, const SiftAggSpec *s);
 extern bool agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern bool spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys);
 extern void agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel,

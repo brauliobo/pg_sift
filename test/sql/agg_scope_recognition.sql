@@ -71,8 +71,6 @@ INSERT INTO forms VALUES
  ('miss: another column read', $q$SELECT kind, s.valid_until, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind, s.valid_until$q$),
  ('miss: wrong fact column', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$),
  ('miss: NOT EXISTS', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = 3) GROUP BY kind$q$),
- ('miss: table of keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id GROUP BY kind$q$),
- ('miss: keys sub-select', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id FROM my_tenants)) GROUP BY kind$q$),
  ('miss: view with a condition', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN scope_barrier_live s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$),
  ('miss: view with DISTINCT', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN scope_barrier_distinct s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$),
  ('not a scope: volatile function', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events_of_volatile(3) GROUP BY kind$q$),

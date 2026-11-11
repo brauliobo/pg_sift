@@ -326,6 +326,35 @@ key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
 	return strip_relabel(val);
 }
 
+/* a column of another table than the item rti (not under an outer join) */
+static Var *
+other_var(Node *n, Index rti)
+{
+	Node	   *v = strip_relabel(n);
+
+	return IsA(v, Var) && ((Var *) v)->varno != rti && ((Var *) v)->varlevelsup == 0 && ((Var *) v)->varnullingrels == NULL ? (Var *) v : NULL;
+}
+
+/* q equates the key column of the item rti to a column of another table (a table of keys): that column; NULL when q is not such a condition */
+static Var *
+key_equality(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
+{
+	OpExpr	   *op = (OpExpr *) q;
+	Var		   *mine,
+			   *theirs;
+
+	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !integer_eq(op->opno))
+		return NULL;
+	mine = item_var(linitial(op->args), rti);
+	theirs = other_var(lsecond(op->args), rti);
+	if (mine == NULL || theirs == NULL)
+	{
+		mine = item_var(lsecond(op->args), rti);
+		theirs = other_var(linitial(op->args), rti);
+	}
+	return mine != NULL && item_attno(map, nmap, mine->varattno) == key ? theirs : NULL;
+}
+
 /* the keys a generic plan expects of an array it does not know: the estimate of PostgreSQL's own for an ANY (array parameter) */
 #define SCOPE_PARAM_KEYS	10
 
@@ -374,7 +403,7 @@ key_source(AggCtx *c, Node *val, SiftAggScope *sc)
 }
 
 /* does the statement read a column of the item above the scan: a group key, an aggregate argument, the select list (the conditions that bind it are not read above) */
-static bool
+bool
 read_above(PlannerInfo *root, Index rti)
 {
 	return bms_is_member(rti, pull_varnos(root, (Node *) root->processed_tlist)) || bms_is_member(rti, pull_varnos(root, root->parse->havingQual));
@@ -395,10 +424,14 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	const SiftScopeSpec *sp = OidIsValid(relid) ? declared_scope(c->heapoid, specs, relid) : NULL;
 	LeftJoin   *lj = NULL;
 	Node	   *joinq = NULL,
-			   *keyq = NULL;
-	Var		   *fk = NULL;
+			   *keyq = NULL,
+			   *tabq = NULL;
+	Var		   *fk = NULL,
+			   *kvar = NULL;
 	SiftAggScope sc = {0};
-	Relids		own;
+	List	   *pool;
+	Relids		own,
+				tables = NULL;
 
 	if (sp == NULL)
 		return NOT_SCOPE;
@@ -409,19 +442,26 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			lj = o;
 	if (lj != NULL && lj->kind != SJ_SEMI)
 		return "the scope relation is not joined by an inner or semi join (IN, EXISTS)";
-	if (lj != NULL && lj->tree != NULL)
-		return "the scope relation is joined to other tables inside the sub-select of the semi join";
+	pool = list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? list_concat_copy(lj->quals, lj->inner) : NIL);
+	if (lj != NULL && lj->tree != NULL && !scan_tree(lj->rarg, &tables, &pool))
+		return "the sub-select of the semi join has a join other than a semi join";
+	/* a semi join of a table to the scope relation's key is a table of keys (`s.key IN (SELECT ..)`); a join of another kind reading it is no scope read */
 	foreach_ptr(LeftJoin, o, fs->lefts)
-		foreach_ptr(Node, q, o->quals)
-			if (o != lj && bms_is_member(rti, pull_varnos(root, q)))
-				return psprintf("the join to %s reads a column of the scope relation", get_rel_name(planner_rt_fetch(o->rti, root)->relid));
+	{
+		if (o != lj && o->kind == SJ_SEMI)
+			pool = list_concat_copy(pool, o->quals);
+		else
+			foreach_ptr(Node, q, o->quals)
+				if (o != lj && bms_is_member(rti, pull_varnos(root, q)))
+					return psprintf("the join to %s reads a column of the scope relation", get_rel_name(planner_rt_fetch(o->rti, root)->relid));
+	}
 	foreach_int(o, fs->rtis)
 		if (o != rti && root->simple_rel_array[o] != NULL && bms_is_member(rti, root->simple_rel_array[o]->lateral_relids))
 			return "another item of the FROM list reads the scope relation";
 	if (read_above(root, rti))
 		return "the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give";
 	own = bms_add_member(bms_make_singleton(rti), c->relid);
-	foreach_ptr(Node, q, list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? lj->quals : NIL))
+	foreach_ptr(Node, q, pool)
 	{
 		Relids		v = pull_varnos(root, q);
 		Var		   *theirs,
@@ -431,7 +471,14 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		if (!bms_is_member(rti, v))
 			continue;
 		if (!bms_is_subset(v, own))
-			return psprintf("a condition reads the scope relation and another table (a table of keys, a join): %s", expr_text(c, q));
+		{
+			if (tabq != NULL && equal(q, tabq))
+				continue;
+			if (tabq != NULL || (kvar = key_equality(rti, map, nmap, get_attnum(relid, sp->rel.b), q)) == NULL)
+				return psprintf("a condition reads the scope relation and another table (not the equality of its key to the key column of a table): %s", expr_text(c, q));
+			tabq = q;
+			continue;
+		}
 		if (member_equality(c, rti, q, &theirs, &ours))
 		{
 			if (item_attno(map, nmap, theirs->varattno) != get_attnum(relid, sp->rel.a) || ours->varattno != get_attnum(c->heapoid, sp->fk))
@@ -454,6 +501,16 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	}
 	if (joinq == NULL)
 		return psprintf("the scope relation is not joined by its member column %s to the column %s of the scanned table", sp->rel.a, sp->fk);
+	if (lj != NULL && lj->tree != NULL && (tabq == NULL || !bms_equal(tables, bms_add_member(bms_make_singleton(rti), kvar->varno))))
+		return "the scope relation is joined to other tables inside the sub-select of the semi join";
+	if (tabq != NULL)
+	{
+		const char *miss = keyq != NULL ? "the scope key is bound more than once" : scope_key_table(c, fs, pool, tabq, kvar, rti, lj != NULL, &sc, t);
+
+		if (miss != NULL)
+			return miss;
+		keyq = tabq;
+	}
 	if (keyq == NULL)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
 	if (sc.nkeys > 1 && lj == NULL)
@@ -463,7 +520,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	sc.key_name = sp->key_name;
 	sc.once = lj != NULL;
 	t->sc = sc;
-	t->pairs = root->simple_rel_array[rti]->rows;
+	if (tabq == NULL)
+		t->pairs = root->simple_rel_array[rti]->rows;
 	return NULL;
 }
 
@@ -480,6 +538,23 @@ sift_agg_scope_wanted(AggCtx *c)
 	declared = sift_col_is_index(index) && sift_scope_specs(index) != NULL;
 	index_close(index, NoLock);
 	return declared;
+}
+
+/* the item rti leaves the FROM list with the conditions that read it and its outer or semi join */
+static void
+drop_item(PlannerInfo *root, FromScan *fs, List **joined, Index rti)
+{
+	foreach_ptr(Node, q, fs->quals)
+		if (bms_is_member(rti, pull_varnos(root, q)))
+			fs->quals = foreach_delete_current(fs->quals, q);
+	foreach_ptr(Node, q, fs->scan_quals)
+		if (bms_is_member(rti, pull_varnos(root, q)))
+			fs->scan_quals = foreach_delete_current(fs->scan_quals, q);
+	foreach_ptr(LeftJoin, o, fs->lefts)
+		if (o->rti == rti)
+			fs->lefts = foreach_delete_current(fs->lefts, o);
+	*joined = list_delete_int(*joined, rti);
+	fs->rtis = list_delete_int(fs->rtis, rti);
 }
 
 /*
@@ -505,17 +580,9 @@ sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined)
 			scope_miss(why);
 		return false;
 	}
-	foreach_ptr(Node, q, fs->quals)
-		if (bms_is_member(t->rti, pull_varnos(c->root, q)))
-			fs->quals = foreach_delete_current(fs->quals, q);
-	foreach_ptr(Node, q, fs->scan_quals)
-		if (bms_is_member(t->rti, pull_varnos(c->root, q)))
-			fs->scan_quals = foreach_delete_current(fs->scan_quals, q);
-	foreach_ptr(LeftJoin, o, fs->lefts)
-		if (o->rti == t->rti)
-			fs->lefts = foreach_delete_current(fs->lefts, o);
-	*joined = list_delete_int(*joined, t->rti);
-	fs->rtis = list_delete_int(fs->rtis, t->rti);
+	drop_item(c->root, fs, joined, t->rti);
+	if (t->krti != 0)
+		drop_item(c->root, fs, joined, t->krti);
 	c->scope_take = t;
 	return true;
 }

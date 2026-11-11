@@ -528,9 +528,9 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 
 /* the packed spec of a path with correlated children: their plans are numbered in a copy of the join list (the path's spec stays as it is: a path may become a plan more than once) */
 static List *
-pack_with_children(PlannerInfo *root, CustomPath *best)
+pack_with_children(PlannerInfo *root, CustomPath *best, const SiftAggSpec *spec)
 {
-	SiftAggSpec own = *(const SiftAggSpec *) linitial(best->custom_private);
+	SiftAggSpec own = *spec;
 
 	own.join = memcpy(palloc(own.njoin * sizeof(*own.join)), own.join, own.njoin * sizeof(*own.join));
 	plan_correlated_children(root, best, &own);
@@ -575,7 +575,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 {
 	CustomScan *cs = makeNode(CustomScan);
 	List	   *scan_tlist = lsecond(best->custom_private);
-	const SiftAggSpec *spec = linitial(best->custom_private);
+	const SiftAggSpec *spec = scope_keys_plan(root, linitial(best->custom_private));
 	GroupPathExtraData *gextra = NULL;
 
 	cs->scan.plan.targetlist = root->parse->hasWindowFuncs ? (List *) topn_window_aggs((Node *) tlist, NULL) : tlist;
@@ -586,7 +586,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	if (root->parse->groupingSets != NIL)
 		const_keys_as_columns(root, cs);
 #endif
-	cs->custom_private = has_correlated_children(best) ? pack_with_children(root, best) : sift_aggspec_pack(spec);
+	cs->custom_private = has_correlated_children(best) ? pack_with_children(root, best, spec) : sift_aggspec_pack(spec);
 	/* declared, so that PostgreSQL knows the plan depends on them and rescans it when the enclosing level sets new values (agg_rescan) */
 	if (list_length(best->custom_private) > 2)
 		cs->custom_exprs = copyObject(lthird(best->custom_private));

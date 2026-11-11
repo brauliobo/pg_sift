@@ -210,7 +210,7 @@ NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index 
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: keys by a join to the table of keys
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (a condition reads the scope relation and another table (a table of keys, a join): (k.tenant_id = s.tenant_id))
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the table of keys may hold a key more than once, and the join counts a row for each of them)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: numeric $1

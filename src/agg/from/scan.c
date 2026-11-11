@@ -12,6 +12,13 @@
 #include "agg/part.h"
 #include "agg/from/int.h"
 
+/* the conditions of a join as a list: the ANDed ones, or the one */
+static List *
+join_quals(Node *quals)
+{
+	return quals == NULL ? NIL : IsA(quals, List) ? list_copy((List *) quals) : list_make1(quals);
+}
+
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
 static RangeTblRef *
 right_table(Node *n)
@@ -49,7 +56,7 @@ right_only(Node *q, Index rti)
 static Node *
 anti_witness(JoinExpr *j, Index rti)
 {
-	foreach_ptr(Node, q, j->quals == NULL ? NIL : IsA(j->quals, List) ? (List *) j->quals : list_make1(j->quals))
+	foreach_ptr(Node, q, join_quals(j->quals))
 	{
 		OpExpr	   *op = IsA(q, OpExpr) ? (OpExpr *) q : NULL;
 
@@ -111,11 +118,10 @@ scan_preserved(JoinExpr *j, FromScan *f)
 	}
 	scanned = f->flip ? linitial_int(right.rtis) : l ? l->rtindex : linitial_int(left.rtis);
 	dim = f->flip ? l->rtindex : r->rtindex;
-	lj = palloc(sizeof(LeftJoin));
+	lj = palloc0(sizeof(LeftJoin));
 	lj->kind = full ? SJ_FULL : SJ_RIGHT;
-	lj->tree = NULL;
 	lj->rti = dim;
-	lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+	lj->quals = join_quals(j->quals);
 	/*
 	 * PostgreSQL moves the WHERE of a sub-select on the nullable side into the ON clause: what does not read the preserved table filters the
 	 * nullable input before the match, like the conditions inside it (a lookup whose filter matches nothing then ends the scan).
@@ -170,6 +176,35 @@ tree_relids(Node *n, Relids *tables, Relids *ojs)
 }
 
 /*
+ * The tables and the conditions of the right side of a semi join (its tables, and the semi joins of the IN sub-selects inside it with the WHERE of each level): the sub-select as
+ * PostgreSQL pulled it up. A semi join of a table that holds its key once is an inner join from PostgreSQL 19 on: the rows the outer semi join sees are the same.
+ * false: it has another kind of join.
+ */
+bool
+scan_tree(Node *n, Relids *tables, List **quals)
+{
+	if (IsA(n, RangeTblRef))
+		*tables = bms_add_member(*tables, ((RangeTblRef *) n)->rtindex);
+	else if (IsA(n, FromExpr))
+	{
+		foreach_ptr(Node, x, ((FromExpr *) n)->fromlist)
+			if (!scan_tree(x, tables, quals))
+				return false;
+		*quals = list_concat(*quals, list_copy((List *) ((FromExpr *) n)->quals));
+	}
+	else if (IsA(n, JoinExpr) && (((JoinExpr *) n)->jointype == JOIN_SEMI || ((JoinExpr *) n)->jointype == JOIN_INNER))
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+
+		*quals = list_concat(*quals, join_quals(j->quals));
+		return scan_tree(j->larg, tables, quals) && scan_tree(j->rarg, tables, quals);
+	}
+	else
+		return false;
+	return true;
+}
+
+/*
  * A semi or anti join (IN, EXISTS, NOT EXISTS) whose right side is a tree of joined tables: PostgreSQL planned the tree as a join of its own, and
  * its rows are the keys the join looks up. The ON clause reads the columns of one table of the tree, which stands for it; the other tables of the
  * tree are only in its plan (hidden).
@@ -180,14 +215,15 @@ scan_semi_tree(JoinExpr *j, FromScan *f)
 	Relids		tables = NULL,
 				ojs = NULL;
 	Relids		read = NULL;
-	List	   *quals = NIL;
+	List	   *quals = NIL,
+			   *inner = NIL;
 	LeftJoin   *lj;
 
 	tree_relids(j->rarg, &tables, &ojs);
 	if (bms_membership(tables) != BMS_MULTIPLE)
 		return false;
 	/* a condition of the ON clause that reads only the tree's tables (an anti join keeps it there) is already in the plan PostgreSQL made of the tree */
-	foreach_ptr(Node, q, j->quals == NULL ? NIL : IsA(j->quals, List) ? (List *) j->quals : list_make1(j->quals))
+	foreach_ptr(Node, q, join_quals(j->quals))
 	{
 		List	   *vars = pull_var_clause(q, PVC_RECURSE_PLACEHOLDERS);
 		bool		outside = vars == NIL;
@@ -197,7 +233,10 @@ scan_semi_tree(JoinExpr *j, FromScan *f)
 		foreach_ptr(Var, v, vars)
 			outside |= !bms_is_member(v->varno, tables) || v->varlevelsup != 0;
 		if (!outside)
+		{
+			inner = lappend(inner, q);
 			continue;
+		}
 		quals = lappend(quals, q);
 		foreach_ptr(Var, v, vars)
 			if (bms_is_member(v->varno, tables))
@@ -206,11 +245,13 @@ scan_semi_tree(JoinExpr *j, FromScan *f)
 	if (bms_membership(read) != BMS_SINGLETON)
 		return false;
 	scan_from(j->larg, f);
-	lj = palloc(sizeof(LeftJoin));
+	lj = palloc0(sizeof(LeftJoin));
 	lj->kind = j->jointype == JOIN_SEMI ? SJ_SEMI : SJ_ANTI;
 	lj->rti = bms_next_member(read, -1);
 	lj->quals = quals;
 	lj->tree = bms_union(tables, ojs);
+	lj->rarg = j->rarg;
+	lj->inner = inner;
 	f->rtis = lappend_int(f->rtis, lj->rti);
 	f->hidden = bms_join(f->hidden, bms_del_member(bms_copy(tables), lj->rti));
 	f->lefts = lappend(f->lefts, lj);
@@ -238,13 +279,13 @@ scan_from(Node *n, FromScan *f)
 			  (((JoinExpr *) n)->jointype == JOIN_INNER && bms_is_member(right_table(((JoinExpr *) n)->rarg)->rtindex, f->outer))))
 	{
 		JoinExpr   *j = (JoinExpr *) n;
-		LeftJoin   *lj = palloc(sizeof(LeftJoin));
+		LeftJoin   *lj = palloc0(sizeof(LeftJoin));
 		RangeTblRef *r = right_table(j->rarg);
 
 		scan_from(j->larg, f);
 		lj->kind = j->jointype == JOIN_SEMI ? SJ_SEMI : j->jointype == JOIN_ANTI ? SJ_ANTI : SJ_LEFT;
 		lj->rti = r->rtindex;
-		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+		lj->quals = join_quals(j->quals);
 		/* an inner join the scan joins outer: what it says of the other tables only is the WHERE of the scan, not the ON of the outer join */
 		if (j->jointype == JOIN_INNER)
 			foreach_ptr(Node, q, list_copy(lj->quals))
@@ -256,7 +297,6 @@ scan_from(Node *n, FromScan *f)
 		/* the WHERE of a pulled up sub-select that is the right side filters the table's rows before the join: more of the ON clause */
 		if (IsA(j->rarg, FromExpr) && ((FromExpr *) j->rarg)->quals)
 			lj->quals = list_concat(lj->quals, list_copy((List *) ((FromExpr *) j->rarg)->quals));
-		lj->tree = NULL;
 		f->rtis = lappend_int(f->rtis, lj->rti);
 		f->lefts = lappend(f->lefts, lj);
 	}
@@ -266,14 +306,13 @@ scan_from(Node *n, FromScan *f)
 	{
 		JoinExpr   *j = (JoinExpr *) n;
 		RangeTblRef *head = lateral_head(j->rarg);
-		LeftJoin   *lj = palloc(sizeof(LeftJoin));
+		LeftJoin   *lj = palloc0(sizeof(LeftJoin));
 
 		scan_from(j->larg, f);
 		scan_from(j->rarg, f);
 		lj->kind = SJ_LEFT;
 		lj->rti = head->rtindex;
-		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
-		lj->tree = NULL;
+		lj->quals = join_quals(j->quals);
 		f->lefts = lappend(f->lefts, lj);
 		f->nested = bms_add_member(f->nested, head->rtindex);
 		f->ojrels = bms_add_member(f->ojrels, j->rtindex);
@@ -285,7 +324,7 @@ scan_from(Node *n, FromScan *f)
 		scan_from(j->larg, f);
 		scan_from(j->rarg, f);
 		if (j->quals)
-			f->quals = list_concat(f->quals, list_copy(IsA(j->quals, List) ? (List *) j->quals : list_make1(j->quals)));
+			f->quals = list_concat(f->quals, join_quals(j->quals));
 	}
 	else
 		f->ok = false;
