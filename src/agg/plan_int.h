@@ -620,10 +620,41 @@ extern bool read_above(PlannerInfo *root, Index rti);
 extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key);
 /* the column of the table that column att of the item is, through the column map of a view over it (plan_scope.c); InvalidAttrNumber: none */
 extern AttrNumber item_attno(const AttrNumber *map, int nmap, AttrNumber att);
-/* scope_legs.c: NULL when the conditions rest of the statement on the scope relation take the pairs of the scope and no other row; else why not */
+/*
+ * An item of the FROM list that may stand for the pairs relation of a declared scope: the table itself, a view over it, or the union of the two paths of a scope (scope_union.c). The columns of the
+ * item are those of the table relid through map; sp is NULL for an item that is none, why says why a join to it is not one the scope read answers.
+ */
+typedef struct ScopeItem
+{
+	const struct SiftScopeSpec *sp;
+	const char *why;
+	Oid			relid;
+	AttrNumber *map;
+	int			nmap;
+	bool		is_union;
+	bool		all;			/* a union: UNION ALL */
+	bool		member_only;	/* a union: it gives the members of the pairs, not the pairs: a row counts once for a member however the item is joined */
+	Node	   *key;			/* a union: the key its arms bind (NULL: no arm does) */
+	bool		key_both;		/* ... and both arms do */
+	List	   *rtes;			/* a union: the tables of its arms and the permission checks of each (RTEPermissionInfo), which the plan of the scope read no longer holds */
+	List	   *perms;
+} ScopeItem;
+/* the column's plain integer btree equality, a plain column of the item rti, and the value that the condition q binds the key column of the item rti to (plan_scope.c) */
+extern bool integer_eq(Oid opno);
+extern Var *item_var(Node *n, Index rti);
+extern Node *key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q);
+/* a select that only projects columns of its tables and filters them: no aggregate, grouping, DISTINCT, LIMIT, ORDER BY, sub-select, CTE or lock */
+extern bool plain_select(const Query *q);
+/* scope_union.c: the sub-select q (a union) as an item of the scope of two paths its arms read, if it is one; sp stays NULL for a union that reads no relation of a scope of the index */
 struct SiftScopeSpec;
 struct SiftScopeSpecs;
+extern ScopeItem scope_union_item(AggCtx *c, const struct SiftScopeSpecs *specs, Query *q);
+/* ... and the privileges on the tables of its arms, which the plan of the scope read must still check: they join the range table of the query */
+extern void scope_union_perms(PlannerInfo *root, const ScopeItem *it);
+/* scope_legs.c: NULL when the conditions rest of the statement on the scope relation take the pairs of the scope and no other row; else why not */
 extern const char *scope_pairs_proof(AggCtx *c, const struct SiftScopeSpecs *specs, const struct SiftScopeSpec *sp, Index rti, const AttrNumber *map, int nmap, List *rest);
+/* ... and the same of the conditions quals of table rti of an arm of a union on the relation relid, whose rows are its pairs by the btree predicate pred and the columns a and b */
+extern const char *scope_arm_proof(Oid relid, List *pred, AttrNumber a, AttrNumber b, Index rti, List *quals);
 /* cost/scope.c: a serial path of the first pass leaves the join it priced (scope_alt_record) for the node of the second to run instead; the path of the second pass takes the one of its order (scope_alt_attach: false, a join the units cannot answer) */
 extern void scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List *pathkeys);
 extern bool scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys);

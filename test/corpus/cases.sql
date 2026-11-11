@@ -933,3 +933,11 @@ select date_trunc('month', d), count(distinct dim_a_id) from scope_events where 
 select e.status, count(*), sum(e.amount) from scope_events e join scope_grants s on s.dim_a_id = e.dim_a_id where s.tenant_id = 1 + @K@ % 50 group by 1;
 -- @case scope_pairs_predicate_in_missing | join | IN over the rows of the relation without the predicate: the join as written
 select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select dim_a_id from scope_grants where tenant_id = 1 + @K@ % 50) group by 1;
+
+-- ===================== scope index of two paths: the pairs written as the union of the direct grants and the grants of the groups
+-- @case scope_union_in | scope | IN over the union of the two paths, a member reached by both counts once
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select l.dim_a_id from scope_links l where l.deleted_at is null and l.tenant_id = 1 + @K@ % 50 union select m.dim_a_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null and l.tenant_id = 1 + @K@ % 50) group by 1;
+-- @case scope_union_in_view | scope | IN over the view of the union, three tenants
+select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select member from scope_pairs_union where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50, 7)) group by 1;
+-- @case scope_union_missing | join | the direct path without the predicate of its btree counts the soft deleted grants: the join as written
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select l.dim_a_id from scope_links l where l.tenant_id = 1 + @K@ % 50 union select m.dim_a_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null and l.tenant_id = 1 + @K@ % 50) group by 1;

@@ -84,8 +84,29 @@ CREATE TABLE item_grants (item_id int NOT NULL, tenant_id int NOT NULL, deleted_
 INSERT INTO item_grants SELECT i, t, CASE WHEN fz.h(i, 240 + t) % 100 < 25 THEN now() END FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 250 + t) % 100 < 22 AND i % 13 <> 4;
 CREATE UNIQUE INDEX item_grants_active ON item_grants (item_id, tenant_id) WHERE deleted_at IS NULL;
 CREATE INDEX item_grants_journal ON item_grants USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL;
+-- a scope of two paths: the pairs are the grants of a tenant on an item and on the groups of the item (the members of a group are the rows of item_members not soft deleted); some items are reached by both paths
+CREATE TABLE item_links (id int PRIMARY KEY, tenant_id int NOT NULL, item_id int, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
+INSERT INTO item_links SELECT i * 10 + t, t, i, NULL, CASE WHEN fz.h(i, 260 + t) % 100 < 20 THEN now() END, 'live' FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 255 + t) % 100 < 8;
+INSERT INTO item_links SELECT 10000 + g * 10 + t, t, NULL, g, CASE WHEN fz.h(g, 270 + t) % 100 < 15 THEN now() END, 'live' FROM generate_series(0, 19) g, generate_series(0, 5) t WHERE fz.h(g, 265 + t) % 100 < 25;
+CREATE TABLE item_members (group_id int NOT NULL, item_id int NOT NULL, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
+INSERT INTO item_members SELECT g, i, CASE WHEN fz.h(i, 290 + g) % 100 < 15 THEN now() END, 'live' FROM generate_series(0, 599) i, generate_series(0, 19) g WHERE fz.h(i, 280 + g) % 100 < 7;
+CREATE UNIQUE INDEX item_links_direct ON item_links (item_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX item_links_group ON item_links (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX item_members_active ON item_members (group_id, item_id) WHERE deleted_at IS NULL;
+CREATE INDEX item_links_by_item ON item_links USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX item_links_by_group ON item_links USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX item_members_by_item ON item_members USING sift_col (item_id, group_id) WITH (track_changes = 'ctid');
+-- the union as an application keeps it: the pairs of the scope in a view, and through a security barrier view
+CREATE VIEW item_pairs AS
+	SELECT l.item_id AS member, l.tenant_id FROM item_links l WHERE l.deleted_at IS NULL
+	UNION
+	SELECT m.item_id, l.tenant_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE VIEW item_pairs_barrier WITH (security_barrier) AS
+	SELECT l.item_id AS member, l.tenant_id FROM item_links l WHERE l.deleted_at IS NULL
+	UNION
+	SELECT m.item_id, l.tenant_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.deleted_at IS NULL AND m.deleted_at IS NULL;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv, ivl)
-	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id); soft_tenant_id: parent_id -> item_grants(item_id, tenant_id)');
+	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id); soft_tenant_id: parent_id -> item_grants(item_id, tenant_id); group_tenant_id: parent_id -> item_links(item_id, tenant_id) | item_links(group_id, tenant_id) via item_members(group_id, item_id)');
 -- @heap
 -- the journal of the pairs starts at the build of the first scope index: a rebuild stamps its scope segments
 REINDEX INDEX events_col;

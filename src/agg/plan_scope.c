@@ -191,7 +191,7 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 /* ---- the join to the scope relation ---- */
 
 /* the integer btree equality `=` (also between int2, int4 and int8): the scope key compares as the join does */
-static bool
+bool
 integer_eq(Oid opno)
 {
 	return op_in_opfamily(opno, INTEGER_BTREE_FAM_OID) && get_op_opfamily_strategy(opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber;
@@ -227,46 +227,60 @@ declared_scope(Oid heapoid, const SiftScopeSpecs *specs, Oid relid)
 	return two;
 }
 
-/*
- * The table an item of the FROM list is: itself, or the one table of a sub-select PostgreSQL did not flatten (a security barrier view) that projects its columns, which is then read
- * through (map[resno] is the column of the table the sub-select outputs as resno, 0 for another expression; *nmap entries). *why: it is that table's, but not one the join may be
- * read through. InvalidOid: it is neither.
- */
-static Oid
-scope_table(PlannerInfo *root, Index rti, AttrNumber **map, int *nmap, const char **why)
+/* a select that only projects columns of its tables and filters them */
+bool
+plain_select(const Query *q)
 {
+	return !(q->hasAggs || q->hasWindowFuncs || q->hasSubLinks || q->groupClause != NIL || q->distinctClause != NIL || q->limitCount != NULL ||
+			 q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->sortClause != NIL || q->rowMarks != NIL);
+}
+
+/*
+ * What the item rti of the FROM list is as a scope relation: the table itself, or the one table of a sub-select PostgreSQL did not flatten (a security barrier view) that projects its
+ * columns, which is then read through (map[resno] is the column of the table the sub-select outputs as resno, 0 for another expression; nmap entries), or the union of the two paths of a
+ * scope (scope_union.c). why: it is that table's, but not one the join may be read through. sp NULL: it is none.
+ */
+static ScopeItem
+scope_item(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
+{
+	PlannerInfo *root = c->root;
 	RangeTblEntry *rte = planner_rt_fetch(rti, root);
 	RelOptInfo *rel = root->simple_rel_array[rti];
+	ScopeItem	it = {0};
 	Query	   *q;
 	RangeTblEntry *base;
 
 	if (rel == NULL)
-		return InvalidOid;
+		return it;
 	if (rte->rtekind == RTE_RELATION)
 	{
 		if (rte->securityQuals != NIL)
-			*why = "row-level security applies to the scope relation";
-		return rte->inh ? InvalidOid : rte->relid;
+			it.why = "row-level security applies to the scope relation";
+		it.relid = rte->inh ? InvalidOid : rte->relid;
 	}
-	if (rte->rtekind != RTE_SUBQUERY || !bms_is_empty(rel->lateral_relids))
-		return InvalidOid;
-	q = rte->subquery;
-	if (list_length(q->rtable) != 1 || (base = linitial_node(RangeTblEntry, q->rtable))->rtekind != RTE_RELATION)
-		return InvalidOid;
-	if (q->hasAggs || q->hasWindowFuncs || q->hasSubLinks || q->groupClause != NIL || q->distinctClause != NIL || q->limitCount != NULL ||
-		q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->sortClause != NIL || q->rowMarks != NIL)
-		*why = "the sub-select over the scope relation is not a plain projection of its columns";
-	else if (q->jointree->quals != NULL || base->securityQuals != NIL)
-		*why = "the view over the scope relation has a condition of its own";
-	else
+	else if (rte->rtekind == RTE_SUBQUERY && bms_is_empty(rel->lateral_relids))
 	{
-		*nmap = list_length(q->targetList) + 1;
-		*map = palloc0(*nmap * sizeof(AttrNumber));
-		foreach_node(TargetEntry, te, q->targetList)
-			if (!te->resjunk && IsA(te->expr, Var) && ((Var *) te->expr)->varlevelsup == 0)
-				(*map)[te->resno] = ((Var *) te->expr)->varattno;
+		q = rte->subquery;
+		if (q->setOperations != NULL)
+			return scope_union_item(c, specs, q);
+		if (list_length(q->rtable) != 1 || (base = linitial_node(RangeTblEntry, q->rtable))->rtekind != RTE_RELATION)
+			return it;
+		if (!plain_select(q))
+			it.why = "the sub-select over the scope relation is not a plain projection of its columns";
+		else if (q->jointree->quals != NULL || base->securityQuals != NIL)
+			it.why = "the view over the scope relation has a condition of its own";
+		else
+		{
+			it.nmap = list_length(q->targetList) + 1;
+			it.map = palloc0(it.nmap * sizeof(AttrNumber));
+			foreach_node(TargetEntry, te, q->targetList)
+				if (!te->resjunk && IsA(te->expr, Var) && ((Var *) te->expr)->varlevelsup == 0)
+					it.map[te->resno] = ((Var *) te->expr)->varattno;
+		}
+		it.relid = base->relid;
 	}
-	return base->relid;
+	it.sp = OidIsValid(it.relid) ? declared_scope(c->heapoid, specs, it.relid) : NULL;
+	return it;
 }
 
 /* the column of the table that column att of the item is (InvalidAttrNumber: none) */
@@ -289,7 +303,7 @@ sift_agg_scope_key_leaf(AggCtx *c, Node *e)
 }
 
 /* n is a plain column of the item rti */
-static Var *
+Var *
 item_var(Node *n, Index rti)
 {
 	Node	   *v = strip_relabel(n);
@@ -319,7 +333,7 @@ member_equality(AggCtx *c, Index rti, Node *q, Var **theirs, Var **ours)
  * q binds the key column of the item: `key = value`, `value = key` or `key = ANY (array)` (IN (list)). The value, a Const when the statement knows it, else an expression of its
  * parameters; NULL when q is not such a condition.
  */
-static Node *
+Node *
 key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
 {
 	Node	   *col,
@@ -468,6 +482,20 @@ key_above(AggCtx *c, Index rti, const AttrNumber *map, int nmap, AttrNumber key,
 }
 
 /*
+ * The key a union's arms bind and the one the statement binds (keyval, in the condition keyq on the item): the same, or the arms alone bind it, both of them. NULL: it is the scope's key, into sc
+ * when the arms are what binds it; else why not.
+ */
+static const char *
+arm_key(AggCtx *c, const ScopeItem *it, Node *keyq, Node *keyval, SiftAggScope *sc)
+{
+	if (keyq != NULL)
+		return equal(keyval, it->key) ? NULL : "the arms of the union bind another key than the statement";
+	if (!it->key_both)
+		return "an arm of the union does not bind the scope key";
+	return key_source(c, it->key, sc) ? NULL : "the arms of the union bind the scope key by other than constants or parameters";
+}
+
+/*
  * The item rti of the FROM list as the scope join of the index: what the pass takes out of it is in t. NULL: it is, and the pass has its conditions; NOT_SCOPE: it is not the scope relation
  * of the index; else why it is but not a join the scope read answers.
  */
@@ -475,18 +503,21 @@ static const char *
 take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, ScopeTake *t)
 {
 	PlannerInfo *root = c->root;
-	AttrNumber *map = NULL;
-	int			nmap = 0;
-	const char *why = NULL;
-	Oid			relid = scope_table(root, rti, &map, &nmap, &why);
-	const SiftScopeSpec *sp = OidIsValid(relid) ? declared_scope(c->heapoid, specs, relid) : NULL;
+	ScopeItem	it = scope_item(c, specs, rti);
+	const SiftScopeSpec *sp = it.sp;
+	AttrNumber *map = it.map;
+	int			nmap = it.nmap;
+	const char *why = it.why;
+	Oid			relid = it.relid;
 	LeftJoin   *lj = NULL;
 	Node	   *joinq = NULL,
 			   *keyq = NULL,
+			   *keyval = NULL,
 			   *tabq = NULL;
 	Var		   *fk = NULL,
 			   *kvar = NULL;
-	bool		key_read;
+	bool		key_read,
+				once;
 	SiftAggScope sc = {0};
 	List	   *pool,
 			   *rest = NIL;
@@ -497,7 +528,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return NOT_SCOPE;
 	if (why != NULL)
 		return why;
-	if (sp->joined != NULL)
+	if (sp->joined != NULL && !it.is_union)
 		return "the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set";
 	foreach_ptr(LeftJoin, o, fs->lefts)
 		if (o->rti == rti)
@@ -506,6 +537,11 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return "the scope relation is not joined by an inner or semi join (IN, EXISTS)";
 	if (lj == NULL && scope_multiset(c->indexoid, sp->key_name))
 		return SCOPE_MULTISET;
+	once = lj != NULL || it.member_only;
+	if (it.is_union && lj == NULL && !it.member_only)
+		return "a join to the union of the two paths of the scope that reads its key is not read from the scope yet";
+	if (it.all && lj == NULL)
+		return "a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION";
 	pool = list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? list_concat_copy(lj->quals, lj->inner) : NIL);
 	if (lj != NULL && lj->tree != NULL && !scan_tree(lj->rarg, &tables, &pool))
 		return "the sub-select of the semi join has a join other than a semi join";
@@ -559,6 +595,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			if (keyq != NULL && !equal(q, keyq))
 				return "the scope key is bound more than once";
 			keyq = q;
+			keyval = val;
 		}
 		else if (bms_membership(v) == BMS_SINGLETON)
 			rest = lappend(rest, q);
@@ -571,20 +608,26 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return "the scope relation is joined to other tables inside the sub-select of the semi join";
 	if (tabq != NULL)
 	{
-		const char *miss = keyq != NULL ? "the scope key is bound more than once" : scope_key_table(c, fs, pool, tabq, kvar, rti, lj != NULL, &sc, t);
+		const char *miss = keyq != NULL || it.key != NULL ? "the scope key is bound more than once" : scope_key_table(c, fs, pool, tabq, kvar, rti, lj != NULL, &sc, t);
 
 		if (miss != NULL)
 			return miss;
 		keyq = tabq;
 	}
-	/* a join with no condition on the key reads every key, a row for each pair; a semi join of every key is not that */
-	sc.all = keyq == NULL && lj == NULL;
+	if (it.key != NULL && (why = arm_key(c, &it, keyq, keyval, &sc)) != NULL)
+		return why;
+	keyq = keyq != NULL ? keyq : it.key;
+	/* a join with no condition on the key reads every key, a row for each pair; a semi join of every key is not that, nor is a union of members */
+	sc.all = keyq == NULL && lj == NULL && !it.member_only;
 	if (keyq == NULL && !sc.all)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
 	/* several keys or every key counted for each pair, or a group key: where the units cannot (the reader refuses them, or the join costs less) the node runs the join the first pass priced, so it needs one */
-	if ((sc.all || sc.nkeys > 1 || key_read) && lj == NULL && t->alts == NIL)
-		return "several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
-	if ((why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
+	if ((sc.all || sc.nkeys > 1 || key_read) && !once && t->alts == NIL)
+		return it.is_union ? "several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place" :
+			"several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
+	if (it.is_union && rest != NIL)
+		return psprintf("the union of the two paths of the scope has another condition: %s", expr_text(c, linitial(rest)));
+	if (!it.is_union && (why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
 		return why;
 	t->rti = rti;
 	t->map = map;
@@ -593,10 +636,11 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	t->key_read = key_read;
 	t->fk = (Var *) copyObject(fk);
 	sc.key_name = sp->key_name;
-	sc.once = lj != NULL;
+	sc.once = once;
 	t->sc = sc;
 	if (tabq == NULL)
 		t->pairs = root->simple_rel_array[rti]->rows;
+	scope_union_perms(root, &it);
 	return NULL;
 }
 
