@@ -1,17 +1,20 @@
 # The scope family: the facts cut by the scope key of item_scope (events.parent_id -> tenant_id) in every form the planner recognises
-# (join, IN, EXISTS, GROUP BY the key, a keys table) and in the near misses it refuses. The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
+# (join, IN, EXISTS, GROUP BY the key, a keys table) and in the near misses it refuses; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
+# array, a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
 
 from .columns import EVENTS, aggs, keys, preds
 from .fam_basic import grouped
 
-SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered']
+PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull']
+SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered'] + PARAM_FORMS
 
 
 def gen_scope(r, ctx):
     ks = r.sample(range(6), r.choice([1, 1, 2, 3]))
-    return dict(table='events', form=r.choice(SCOPE_FORMS), tenants=ks, keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])),
+    form = r.choice(SCOPE_FORMS)
+    return dict(table='events', form=form, tenants=ks, keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])),
                 aggs=aggs(r, 'e', EVENTS, r.randrange(1, 5)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True,
-                cut=r.randrange(100, 600))
+                cut=r.randrange(100, 600), prep=form in PARAM_FORMS, pid=r.randrange(10 ** 9), nullarg=r.choice(['NULL', "'{NULL}'", "'{}'", "'{%d,NULL}'" % ks[0]]))
 
 
 def render_scope_parts(p):
@@ -25,6 +28,10 @@ def render_scope_parts(p):
         'exists': ('events e', [f'EXISTS (SELECT 1 FROM item_scope s WHERE s.item_id = e.parent_id AND s.tenant_id = {one})'], []),
         'group': (j, [f's.tenant_id IN ({ts})'], ['s.tenant_id']),
         'keytable': (j + ' JOIN (VALUES %s) k(t) ON k.t = s.tenant_id' % ', '.join(f'({t})' for t in p['tenants']), [], []),
+        'pjoin': (j, ['s.tenant_id = $1'], []),
+        'pin': ('events e', ['e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id = $1)'], []),
+        'pany': ('events e', ['e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id = ANY ($1))'], []),
+        'pnull': ('events e', ['e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id = ANY ($1))'], []),
         'anyarray': ('events e', [f'e.parent_id = ANY (ARRAY(SELECT item_id FROM item_scope WHERE tenant_id = {one}))'], []),
         'joinin': (j, [f's.tenant_id IN ({ts})'], []),
         'left': ('events e LEFT JOIN item_scope s ON s.item_id = e.parent_id AND s.tenant_id = %d' % one, [], ['s.tenant_id IS NULL']),
@@ -34,10 +41,20 @@ def render_scope_parts(p):
     }[p['form']]
 
 
+def param_of(p):
+    """(type, argument) of the parameter of a prepared form"""
+    return {'pjoin': ('int', str(p['tenants'][0])), 'pin': ('int', str(p['tenants'][0])), 'pany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants']))),
+            'pnull': ('int[]', p['nullarg'])}[p['form']]
+
+
 def render_scope(p):
     frm, wh, ks = render_scope_parts(p)
     q = dict(p, where=wh + p['where'], keys=ks + p['keys'])
-    return grouped(q, frm), bool(q['keys'])
+    sql = grouped(q, frm)
+    if p['prep']:
+        ty, arg = param_of(p)
+        sql = f"PREPARE sp{p['pid']}({ty}) AS {sql}\n@@\nEXECUTE sp{p['pid']}({arg})"
+    return sql, bool(q['keys'])
 
 
 def dml_scope(r, ctx):
