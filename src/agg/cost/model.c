@@ -246,16 +246,29 @@ agg_open_cost(int nparts)
 double		agg_read_rows;
 
 /*
- * the cheapest path of the table that is not parameterized, under its Gather when it has one: what the normal plan reads the table with. The cost of a parameterized path is one probe
- * (8 units for a lookup of a join's key), not a read of the table: it would put a join query's scan in the units of a plan that reads a few rows, 4 times what the plan that reads the table whole costs
+ * the units the normal plan reads the table with through a path: the cost of a parameterized path is one probe, paid for each row of the biggest relation that drives it (the one row of
+ * the CTE of a key: 82 units; the rows of the table a semi join reads whole: a probe each), so a join query's scan is in the units of a plan that reads a few rows only when it does
  */
+static Cost
+read_units(AggCtx *c, Path *p)
+{
+	double		probes = 1.0;
+	int			x = -1;
+
+	if (p->param_info != NULL)
+		while ((x = bms_next_member(p->param_info->ppi_req_outer, x)) >= 0)
+			probes = Max(probes, c->root->simple_rel_array[x]->rows);
+	return p->total_cost * probes;
+}
+
+/* the path of the table the normal plan reads the least with, under its Gather when it has one */
 static Path *
 cheapest_read(AggCtx *c)
 {
 	Path	   *best = NULL;
 
 	foreach_ptr(Path, p, c->rel->pathlist)
-		if (p->param_info == NULL && (best == NULL || p->total_cost < best->total_cost))
+		if (best == NULL || read_units(c, p) < read_units(c, best))
 			best = p;
 	if (best && IsA(best, GatherPath))
 		best = ((GatherPath *) best)->subpath;
@@ -273,7 +286,7 @@ normal_units(AggCtx *c)
 	Path	   *best = cheapest_read(c);
 
 	if (c->joins != NIL)
-		return best && best->total_cost > AGG_JOIN_SCALAR_FLOOR;
+		return best && read_units(c, best) > AGG_JOIN_SCALAR_FLOOR;
 	return best && best->pathtype == T_SeqScan;
 }
 

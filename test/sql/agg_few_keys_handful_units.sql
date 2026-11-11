@@ -9,8 +9,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the lookup table is read whole or by probes of its keys (agg_probe_rewrite): the charge of the key's excess is checked on the plans without the probes
 SET sift.agg_probe_rewrite = off;
--- every row is analyzed, and the lookup table has 20,000 rows: the scan of the small entity costs 941 against 473 of the normal plan (a gap of half, 491 against 473 with 4,740 rows was a tie that
--- the sample of the statistics could turn), the scan of the large entity 1,200 against 473,000
+-- every row is analyzed, and the lookup table has 20,000 rows: the scan of the small entity costs 705 against 473 of the normal plan (a gap of half, 491 against 473 with 4,740 rows was a tie that
+-- the sample of the statistics could turn), the scan of the large entity 414 against 686,544
 SET default_statistics_target = 10000;
 
 CREATE TABLE hk_dim_c (id int PRIMARY KEY, enabled boolean);
@@ -64,6 +64,9 @@ END $$;
 
 -- the plan taken: the small entity keeps the normal plan, the large one the scan
 SELECT sub AS scope, hk_plan(sub) AS plan, hk_same(sub) AS rows_unlike_normal FROM generate_series(1, 2) sub;
+-- and the prices: the normal plan reads the table through the probes of one key (82 units for the key of the CTE), not whole, so the scan is not counted in the units of a plan that reads it
+-- whole and is dearer than the normal plan for the small entity
+SELECT sub AS scope, w.scan_cost > w.normal_cost AS scan_dearer FROM generate_series(1, 2) sub, LATERAL sift.explain_why(hk_q(sub)) w WHERE w.arm = 'L2:single' ORDER BY sub;
 
 -- updates, deletes, a NULL entity and a row past the cut between the runs
 UPDATE hk_events SET metrics_a = metrics_a || '{"extra": 3}' WHERE id % 11 = 0 AND dim_a_id IN (7, 11);
