@@ -50,10 +50,9 @@ CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,n
 SELECT sift.scope_create('bad_columns', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount', 'nope']);
 ERROR:  scope_create: table "public.facts" has no column "nope"
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 80 at RAISE
-SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', order_column => 'note');
-ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric or float column
-CONTEXT:  SQL statement "CREATE INDEX bad_order_col ON public.bad_order USING sift_col (scope_id, id, dim_a_id, created_at, kind, amount, note) WITH (key_order = 'scope_id, note')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 120 at EXECUTE
+SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount'], order_column => 'note');
+ERROR:  scope_create: order column "note" is not a carried column of "public.facts"
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 87 at RAISE
 -- a copy holds a row once per key of its member: a member in too many keys is refused with the measured figure
 CREATE TABLE wide_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 7) k;
@@ -112,7 +111,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "facts_by_scope_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.facts_by_scope: 45000 rows, 1.58 copies per row of "public.facts" that reaches a key
-DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 4.1 MB with its indexes, +152% over the table and its indexes.
+DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 4.0 MB with its indexes, +149% over the table and its indexes.
 NOTICE:  scope copy public.facts_by_scope: no sift_col index on "public.facts", all 6 columns carried, table of 2.9 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.

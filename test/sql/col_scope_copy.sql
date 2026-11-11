@@ -27,7 +27,7 @@ CREATE TABLE text_pairs (dim_a_id int NOT NULL, scope_id text NOT NULL, PRIMARY 
 SELECT sift.scope_create('text_copy', 'facts', 'dim_a_id', 'text_pairs', 'scope_id');
 SELECT sift.scope_create('facts', 'facts', 'dim_a_id', 'pairs', 'scope_id');
 SELECT sift.scope_create('bad_columns', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount', 'nope']);
-SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', order_column => 'note');
+SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount'], order_column => 'note');
 -- a copy holds a row once per key of its member: a member in too many keys is refused with the measured figure
 CREATE TABLE wide_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 7) k;
