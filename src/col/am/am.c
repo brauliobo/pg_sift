@@ -253,9 +253,9 @@ sift_col_stmt_start(QueryDesc *queryDesc)
 
 		st->what = (speculative ? STMT_SPECULATIVE : 0) | (updating ? STMT_UPDATING : 0) | (writing ? STMT_WRITING : 0) | (ending ? STMT_ENDING : 0);
 		st->nrels = nrels;
-		stmt_result_rels(ps, st->rels);
 		if (ending)
 		{
+			stmt_result_rels(ps, st->rels);
 			st->next = batch_ending;
 			batch_ending = st;
 		}
