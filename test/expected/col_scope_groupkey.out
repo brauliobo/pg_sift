@@ -1,7 +1,7 @@
 -- GROUP BY the scope key, "every tenant": a scan of every key of a scope reads the scope units key by key, a fact counted once for each pair of its member (the join's meaning), and groups by the derived leaf
--- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the entity
--- rows of such a member that has a pair now would have no key: the reader refuses ("per pair, changed pairs") and the statement needs the join. Table-driven: each state of the facts and the pairs (the
--- states accumulate) by each shape (aggregates, filters, members in one, three or no key); every read is md5 equal to the plain join (the group rows included) or says why it needs the join.
+-- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the rows of
+-- such a member are read once from the entity segments and expanded by the pairs it has now, so that every row has its key (col_scope_changed_pairs: what that reads). Table-driven: each state of the facts and
+-- the pairs (the states accumulate) by each shape (aggregates, filters, members in one, three or no key); every read is md5 equal to the plain join (the group rows included) or says why it needs the join.
 -- The testing markers stand for the recognition of the join: sift.in_scope_all in the WHERE clause and sift.scope_key in the group key (RELEASE-TODO: the planner recognises the join itself and runs the join when
 -- the reader refuses; the markers then raise the error shown here).
 CREATE EXTENSION pg_sift;
@@ -252,17 +252,17 @@ SELECT apply(8) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'facts_col', 'membership')
- n |                  label                   |    verdict     |             route              | group_key | preagg |  delta  
----+------------------------------------------+----------------+--------------------------------+-----------+--------+---------
- 1 | count and sum per key                    | needs the join | error: per pair, changed pairs |           |        | no read
- 2 | count(DISTINCT member) per key           | needs the join | error: per pair, changed pairs |           |        | no read
- 3 | min and max per key                      | needs the join | error: per pair, changed pairs |           |        | no read
- 4 | count and sum, filter on a stored column | needs the join | error: per pair, changed pairs |           |        | no read
- 5 | min and max, filter on the time          | needs the join | error: per pair, changed pairs |           |        | no read
- 6 | dim_b in one key                         | needs the join | error: per pair, changed pairs |           |        | no read
- 7 | dim_b in three keys                      | needs the join | error: per pair, changed pairs |           |        | no read
- 8 | dim_b in no key                          | needs the join | error: per pair, changed pairs |           |        | no read
- 9 | a row for each pair, no group            | needs the join | error: per pair, changed pairs |           |        | no read
+ n |                  label                   | verdict | route | group_key | preagg | delta 
+---+------------------------------------------+---------+-------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | units | t         | f      | read
+ 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
+ 3 | min and max per key                      | same    | units | t         | f      | read
+ 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
+ 5 | min and max, filter on the time          | same    | units | t         | f      | read
+ 6 | dim_b in one key                         | same    | units | t         | f      | read
+ 7 | dim_b in three keys                      | same    | units | t         | f      | read
+ 8 | dim_b in no key                          | same    | units | t         | f      | read
+ 9 | a row for each pair, no group            | same    | units | f         | f      | read
 (9 rows)
 
 SELECT apply(9) AS state
@@ -272,17 +272,17 @@ SELECT apply(9) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'facts_col', 'membership')
- n |                  label                   |    verdict     |             route              | group_key | preagg |  delta  
----+------------------------------------------+----------------+--------------------------------+-----------+--------+---------
- 1 | count and sum per key                    | needs the join | error: per pair, changed pairs |           |        | no read
- 2 | count(DISTINCT member) per key           | needs the join | error: per pair, changed pairs |           |        | no read
- 3 | min and max per key                      | needs the join | error: per pair, changed pairs |           |        | no read
- 4 | count and sum, filter on a stored column | needs the join | error: per pair, changed pairs |           |        | no read
- 5 | min and max, filter on the time          | needs the join | error: per pair, changed pairs |           |        | no read
- 6 | dim_b in one key                         | needs the join | error: per pair, changed pairs |           |        | no read
- 7 | dim_b in three keys                      | needs the join | error: per pair, changed pairs |           |        | no read
- 8 | dim_b in no key                          | needs the join | error: per pair, changed pairs |           |        | no read
- 9 | a row for each pair, no group            | needs the join | error: per pair, changed pairs |           |        | no read
+ n |                  label                   | verdict | route | group_key | preagg | delta 
+---+------------------------------------------+---------+-------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | units | t         | f      | read
+ 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
+ 3 | min and max per key                      | same    | units | t         | f      | read
+ 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
+ 5 | min and max, filter on the time          | same    | units | t         | f      | read
+ 6 | dim_b in one key                         | same    | units | t         | f      | read
+ 7 | dim_b in three keys                      | same    | units | t         | f      | read
+ 8 | dim_b in no key                          | same    | units | t         | f      | read
+ 9 | a row for each pair, no group            | same    | units | f         | f      | read
 (9 rows)
 
 SELECT apply(10) AS state
@@ -292,17 +292,17 @@ SELECT apply(10) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'facts_col', 'membership')
- n |                  label                   |    verdict     |             route              | group_key | preagg |  delta  
----+------------------------------------------+----------------+--------------------------------+-----------+--------+---------
- 1 | count and sum per key                    | needs the join | error: per pair, changed pairs |           |        | no read
- 2 | count(DISTINCT member) per key           | needs the join | error: per pair, changed pairs |           |        | no read
- 3 | min and max per key                      | needs the join | error: per pair, changed pairs |           |        | no read
- 4 | count and sum, filter on a stored column | needs the join | error: per pair, changed pairs |           |        | no read
- 5 | min and max, filter on the time          | needs the join | error: per pair, changed pairs |           |        | no read
- 6 | dim_b in one key                         | needs the join | error: per pair, changed pairs |           |        | no read
- 7 | dim_b in three keys                      | needs the join | error: per pair, changed pairs |           |        | no read
- 8 | dim_b in no key                          | needs the join | error: per pair, changed pairs |           |        | no read
- 9 | a row for each pair, no group            | needs the join | error: per pair, changed pairs |           |        | no read
+ n |                  label                   | verdict | route | group_key | preagg | delta 
+---+------------------------------------------+---------+-------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | units | t         | f      | read
+ 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
+ 3 | min and max per key                      | same    | units | t         | f      | read
+ 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
+ 5 | min and max, filter on the time          | same    | units | t         | f      | read
+ 6 | dim_b in one key                         | same    | units | t         | f      | read
+ 7 | dim_b in three keys                      | same    | units | t         | f      | read
+ 8 | dim_b in no key                          | same    | units | t         | f      | read
+ 9 | a row for each pair, no group            | same    | units | f         | f      | read
 (9 rows)
 
 SELECT apply(11) AS state
@@ -312,17 +312,17 @@ SELECT apply(11) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'facts_col', 'membership')
- n |                  label                   |    verdict     |             route              | group_key | preagg |  delta  
----+------------------------------------------+----------------+--------------------------------+-----------+--------+---------
- 1 | count and sum per key                    | needs the join | error: per pair, changed pairs |           |        | no read
- 2 | count(DISTINCT member) per key           | needs the join | error: per pair, changed pairs |           |        | no read
- 3 | min and max per key                      | needs the join | error: per pair, changed pairs |           |        | no read
- 4 | count and sum, filter on a stored column | needs the join | error: per pair, changed pairs |           |        | no read
- 5 | min and max, filter on the time          | needs the join | error: per pair, changed pairs |           |        | no read
- 6 | dim_b in one key                         | needs the join | error: per pair, changed pairs |           |        | no read
- 7 | dim_b in three keys                      | needs the join | error: per pair, changed pairs |           |        | no read
- 8 | dim_b in no key                          | needs the join | error: per pair, changed pairs |           |        | no read
- 9 | a row for each pair, no group            | needs the join | error: per pair, changed pairs |           |        | no read
+ n |                  label                   | verdict | route | group_key | preagg | delta 
+---+------------------------------------------+---------+-------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | units | t         | f      | read
+ 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
+ 3 | min and max per key                      | same    | units | t         | f      | read
+ 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
+ 5 | min and max, filter on the time          | same    | units | t         | f      | read
+ 6 | dim_b in one key                         | same    | units | t         | f      | read
+ 7 | dim_b in three keys                      | same    | units | t         | f      | read
+ 8 | dim_b in no key                          | same    | units | t         | f      | read
+ 9 | a row for each pair, no group            | same    | units | f         | f      | read
 (9 rows)
 
 SELECT apply(12) AS state
@@ -332,17 +332,17 @@ SELECT apply(12) AS state
 (1 row)
 
 SELECT * FROM probe('facts', 'facts_col', 'membership')
- n |                  label                   |    verdict     |             route              | group_key | preagg |  delta  
----+------------------------------------------+----------------+--------------------------------+-----------+--------+---------
- 1 | count and sum per key                    | needs the join | error: per pair, changed pairs |           |        | no read
- 2 | count(DISTINCT member) per key           | needs the join | error: per pair, changed pairs |           |        | no read
- 3 | min and max per key                      | needs the join | error: per pair, changed pairs |           |        | no read
- 4 | count and sum, filter on a stored column | needs the join | error: per pair, changed pairs |           |        | no read
- 5 | min and max, filter on the time          | needs the join | error: per pair, changed pairs |           |        | no read
- 6 | dim_b in one key                         | needs the join | error: per pair, changed pairs |           |        | no read
- 7 | dim_b in three keys                      | needs the join | error: per pair, changed pairs |           |        | no read
- 8 | dim_b in no key                          | needs the join | error: per pair, changed pairs |           |        | no read
- 9 | a row for each pair, no group            | needs the join | error: per pair, changed pairs |           |        | no read
+ n |                  label                   | verdict | route | group_key | preagg | delta 
+---+------------------------------------------+---------+-------+-----------+--------+-------
+ 1 | count and sum per key                    | same    | units | t         | f      | read
+ 2 | count(DISTINCT member) per key           | same    | units | t         | f      | read
+ 3 | min and max per key                      | same    | units | t         | f      | read
+ 4 | count and sum, filter on a stored column | same    | units | t         | f      | read
+ 5 | min and max, filter on the time          | same    | units | t         | f      | read
+ 6 | dim_b in one key                         | same    | units | t         | f      | read
+ 7 | dim_b in three keys                      | same    | units | t         | f      | read
+ 8 | dim_b in no key                          | same    | units | t         | f      | read
+ 9 | a row for each pair, no group            | same    | units | f         | f      | read
 (9 rows)
 
 SELECT apply(13) AS state
@@ -451,7 +451,7 @@ UPDATE sd_pairs SET deleted_at = NULL WHERE dim_a_id % 12 = 1
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    0 |     0 |        0 |          0 |          9
+    9 |     9 |        8 |          9 |          0
 (1 row)
 
 SELECT 5 AS n, 'promoted' AS state
@@ -469,7 +469,7 @@ SELECT sift.col_promote('sd_facts_col')
 SELECT * FROM sd_probe()
  same | units | with_key | with_delta | needs_join 
 ------+-------+----------+------------+------------
-    0 |     0 |        0 |          0 |          9
+    9 |     9 |        8 |          9 |          0
 (1 row)
 
 DROP TABLE sd_states, sd_facts, sd_pairs;

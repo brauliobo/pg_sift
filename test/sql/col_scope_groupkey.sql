@@ -1,7 +1,7 @@
 -- GROUP BY the scope key, "every tenant": a scan of every key of a scope reads the scope units key by key, a fact counted once for each pair of its member (the join's meaning), and groups by the derived leaf
--- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the entity
--- rows of such a member that has a pair now would have no key: the reader refuses ("per pair, changed pairs") and the statement needs the join. Table-driven: each state of the facts and the pairs (the
--- states accumulate) by each shape (aggregates, filters, members in one, three or no key); every read is md5 equal to the plain join (the group rows included) or says why it needs the join.
+-- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the rows of
+-- such a member are read once from the entity segments and expanded by the pairs it has now, so that every row has its key (col_scope_changed_pairs: what that reads). Table-driven: each state of the facts and
+-- the pairs (the states accumulate) by each shape (aggregates, filters, members in one, three or no key); every read is md5 equal to the plain join (the group rows included) or says why it needs the join.
 -- The testing markers stand for the recognition of the join: sift.in_scope_all in the WHERE clause and sift.scope_key in the group key (RELEASE-TODO: the planner recognises the join itself and runs the join when
 -- the reader refuses; the markers then raise the error shown here).
 CREATE EXTENSION pg_sift;

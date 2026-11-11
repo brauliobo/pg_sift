@@ -598,15 +598,13 @@ engine_open_rest(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
-/* The source of a scope read: the scope segments with the rows of the write buffers expanded by their members' pairs, and with members to patch the entity rows of the index beside them */
+/* The source of a scope read: the scope segments, less the stored entries of the members that changed, with the rows no entry describes copied for each pair of their member (the delta) */
 static SiftSrcSource *
 scope_source(AggExec *ex, Snapshot snapshot)
 {
-	bool		patch = ex->scope_rd->npatch > 0;
-	SiftSrcSource *src = patch ? sift_aggpart_open_scope(ex->heap, RelationGetRelid(ex->index), snapshot, ex->cxt, ex->view) :
-		sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+	SiftSrcSource *src = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
 
-	sift_colsrc_scope_delta(patch ? sift_aggpart_source(src, 0) : src, ex->scope_rd);
+	sift_colsrc_scope_delta(src, ex->scope_rd);
 	return src;
 }
 

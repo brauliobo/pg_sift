@@ -65,42 +65,42 @@ UPDATE memberships SET deleted_at = NULL WHERE group_id = 5 AND dim_a_id = 4
 SELECT 2 AS n, 'restore' AS state, differ, fell_back FROM compare()
  n |  state  | differ | fell_back 
 ---+---------+--------+-----------
- 2 | restore |      0 |         1
+ 2 | restore |      0 |         0
 (1 row)
 
 INSERT INTO memberships VALUES (5, 430, now())
 SELECT 3 AS n, 'insert a soft deleted pair' AS state, differ, fell_back FROM compare()
  n |           state            | differ | fell_back 
 ---+----------------------------+--------+-----------
- 3 | insert a soft deleted pair |      0 |         1
+ 3 | insert a soft deleted pair |      0 |         0
 (1 row)
 
 INSERT INTO memberships VALUES (5, 431, NULL)
 SELECT 4 AS n, 'insert an active pair' AS state, differ, fell_back FROM compare()
  n |         state         | differ | fell_back 
 ---+-----------------------+--------+-----------
- 4 | insert an active pair |      0 |         1
+ 4 | insert an active pair |      0 |         0
 (1 row)
 
 UPDATE memberships SET group_id = 6 WHERE group_id = 5 AND dim_a_id = 64
 SELECT 5 AS n, 'move a member to another group' AS state, differ, fell_back FROM compare()
  n |             state              | differ | fell_back 
 ---+--------------------------------+--------+-----------
- 5 | move a member to another group |      0 |         2
+ 5 | move a member to another group |      0 |         0
 (1 row)
 
 UPDATE memberships SET deleted_at = now() WHERE dim_a_id % 7 = 0 AND deleted_at IS NULL
 SELECT 6 AS n, 'soft delete many' AS state, differ, fell_back FROM compare()
  n |      state       | differ | fell_back 
 ---+------------------+--------+-----------
- 6 | soft delete many |      0 |         2
+ 6 | soft delete many |      0 |         0
 (1 row)
 
 UPDATE memberships SET deleted_at = NULL WHERE dim_a_id % 14 = 0
 SELECT 7 AS n, 'restore many' AS state, differ, fell_back FROM compare()
  n |    state     | differ | fell_back 
 ---+--------------+--------+-----------
- 7 | restore many |      0 |        11
+ 7 | restore many |      0 |         0
 (1 row)
 
 RESET sift.test_scope_patch;

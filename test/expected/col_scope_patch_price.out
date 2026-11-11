@@ -62,31 +62,31 @@ INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n <= 1;
 SELECT '1 member' AS state, * FROM probe(1);
   state   |    idx    | verdict | route | patched_keys | patched_percent_of_table 
 ----------+-----------+---------+-------+--------------+--------------------------
- 1 member | by_member | same    | units |            1 |                        1
- 1 member | by_time   | same    | units |            1 |                        1
+ 1 member | by_member | same    | units |            1 |                        0
+ 1 member | by_time   | same    | units |            1 |                        0
 (2 rows)
 
 INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n BETWEEN 2 AND 10;
 SELECT '10 dim_b' AS state, * FROM probe(1);
-  state   |    idx    | verdict | route | patched_keys | patched_percent_of_table 
-----------+-----------+---------+-------+--------------+--------------------------
- 10 dim_b | by_member | same    | units |           10 |                        3
- 10 dim_b | by_time   | same    | units |           10 |                       23
+  state   |    idx    | verdict |               route               | patched_keys | patched_percent_of_table 
+----------+-----------+---------+-----------------------------------+--------------+--------------------------
+ 10 dim_b | by_member | same    | units                             |           10 |                        0
+ 10 dim_b | by_time   | same    | patch dearer than the entity path |            0 |                        0
 (2 rows)
 
 INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n BETWEEN 11 AND 100;
 SELECT '100 dim_b' AS state, * FROM probe(1);
    state   |    idx    | verdict |               route               | patched_keys | patched_percent_of_table 
 -----------+-----------+---------+-----------------------------------+--------------+--------------------------
- 100 dim_b | by_member | same    | units                             |          100 |                       25
+ 100 dim_b | by_member | same    | patch dearer than the entity path |            0 |                        0
  100 dim_b | by_time   | same    | patch dearer than the entity path |            0 |                        0
 (2 rows)
 
 SELECT '100 dim_b, other group' AS state, * FROM probe(2);
-         state          |    idx    | verdict | route | patched_keys | patched_percent_of_table 
-------------------------+-----------+---------+-------+--------------+--------------------------
- 100 dim_b, other group | by_member | same    | units |            4 |                        6
- 100 dim_b, other group | by_time   | same    | units |            4 |                       13
+         state          |    idx    | verdict |               route               | patched_keys | patched_percent_of_table 
+------------------------+-----------+---------+-----------------------------------+--------------+--------------------------
+ 100 dim_b, other group | by_member | same    | units                             |            4 |                        0
+ 100 dim_b, other group | by_time   | same    | patch dearer than the entity path |            0 |                        0
 (2 rows)
 
 -- the patch is only taken when it is cheaper: the testing setting takes it whatever it costs, and the answer is the same
@@ -94,8 +94,8 @@ SET sift.test_scope_patch = on;
 SELECT '100 dim_b, patch forced' AS state, * FROM probe(1);
           state          |    idx    | verdict | route | patched_keys | patched_percent_of_table 
 -------------------------+-----------+---------+-------+--------------+--------------------------
- 100 dim_b, patch forced | by_member | same    | units |          100 |                       25
- 100 dim_b, patch forced | by_time   | same    | units |          100 |                       85
+ 100 dim_b, patch forced | by_member | same    | units |          100 |                        3
+ 100 dim_b, patch forced | by_time   | same    | units |          100 |                        3
 (2 rows)
 
 SET sift.test_scope_patch = off;

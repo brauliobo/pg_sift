@@ -258,15 +258,15 @@ SELECT * FROM states('every pair of a member ended');
 -- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
 SET sift.test_scope_patch = off;
 SELECT * FROM states('more changed pairs than the bound');
-               state               |       name       |                               run                                | same_rows 
------------------------------------+------------------+------------------------------------------------------------------+-----------
- more changed pairs than the bound | EXISTS, two keys | Fallback: patch dearer than the entity path; Members Listed: 78  | t
- more changed pairs than the bound | IN               | Fallback: patch dearer than the entity path; Members Listed: 43  | t
- more changed pairs than the bound | IN, three keys   | Fallback: patch dearer than the entity path; Members Listed: 119 | t
- more changed pairs than the bound | barrier view, IN | Fallback: patch dearer than the entity path; Members Listed: 43  | t
- more changed pairs than the bound | join             | Fallback: patch dearer than the entity path; Members Listed: 43  | t
- more changed pairs than the bound | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43               | t
- more changed pairs than the bound | top 5 ids        | Fallback: patch dearer than the entity path; Members Listed: 43  | t
+               state               |       name       |                        run                         | same_rows 
+-----------------------------------+------------------+----------------------------------------------------+-----------
+ more changed pairs than the bound | EXISTS, two keys | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
+ more changed pairs than the bound | IN               | Changed Keys: 4; Patched Keys: 1                   | t
+ more changed pairs than the bound | IN, three keys   | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
+ more changed pairs than the bound | barrier view, IN | Changed Keys: 4; Patched Keys: 1                   | t
+ more changed pairs than the bound | join             | Changed Keys: 4; Patched Keys: 1                   | t
+ more changed pairs than the bound | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43 | t
+ more changed pairs than the bound | top 5 ids        | Changed Keys: 4; Patched Keys: 1                   | t
 (7 rows)
 
 RESET sift.test_scope_patch;

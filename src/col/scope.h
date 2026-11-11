@@ -157,13 +157,14 @@ extern bool sift_scope_covered(Relation index, int scope);
 
 /*
  * The reader (col/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member
- * is not in except (the members whose pairs changed since the stamp); the entity rows of the members of patch (those of except that have a pair with a key now) are read
- * besides, through the entity path, so that the aggregates see one stream. The rows of the write buffers, which no scope entry describes, are the delta: each one of a member
- * that did not change is read from the buffer once for each of its pairs with a key (sift_col_scope_delta). With once and several keys,
+ * is not in except (the members whose pairs changed since the stamp): the source leaves their stored entries out (sift_col_scope_except). The rows no scope entry describes are the delta:
+ * those of the write buffers and the live rows of the entity segments of the members of patch (those of except that have a pair with a key now, read by member key), each read once
+ * for each of its member's pairs with a key under the statement's snapshot (sift_col_scope_delta). With once and several keys,
  * the row of a member that has a pair with several of the keys counts in the units of the least of them only: drop[i] lists, for the key drop[i].key, the members whose rows
- * of that key's units are not counted. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys (sift_scope_members) instead; the word
- * is what EXPLAIN prints after "Scope Fallback". keys NULL (with !once): every key, a row for each of its member's pairs, which a scan groups by the derived leaf "<key_name>#scope" (every row the scan reads has
- * its key then: the entity rows of changed members, which have none, are not read, and a read that needs them says why: "per pair, changed pairs"). A leaf the scan reads (leaves[0..nleaves)) that the scope segments keep no values of (cols(..) of the scope) is a fallback. topn: the scan is a top-N, which does not read the units of both families as one.
+ * of that key's units are not counted, and the delta copies a row for the least key only. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys
+ * (sift_scope_members) instead; the word is what EXPLAIN prints after "Scope Fallback". keys NULL (with !once): every key, a row for each of its member's pairs, which a scan groups by the derived leaf
+ * "<key_name>#scope" (every row the scan reads has its key then). A leaf the scan reads (leaves[0..nleaves)) that the scope segments keep no values of (cols(..) of the scope) is a fallback.
+ * topn: the scan is a top-N, which does not read the units of both families as one.
  */
 typedef struct SiftScopeDrop
 {
@@ -187,6 +188,8 @@ typedef struct SiftScopeBuffer
 	int			n;
 	TransactionId stamp;
 	bool		roots;
+	bool		lane;			/* the rows are checked against the heap whatever the map says: a write buffer's, or rows decoded from a segment */
+	uint64	  **rows;			/* the rows of b[i] the buffer holds, as bits (NULL: all of them): the buffers made from the rows of a segment share their batches */
 } SiftScopeBuffer;
 
 struct SiftDirSnapshot;
@@ -195,6 +198,20 @@ extern SiftScopeBuffer *sift_scope_buffers(Relation index, const struct SiftDirS
 extern uint64 sift_scope_buffers_rows(const SiftScopeBuffer *bufs, int nbufs);
 /* The member keys of the rows of the buffers (not distinct, not sorted); *n of them */
 extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, uint32 *n);
+/*
+ * The live rows of the entity segments whose member key is one of the members (ascending), read by member key: first a plan, from the point directory of the member leaf of each segment (the rows it
+ * lists) or, for a segment with none, from the zones of the leaf (the units it leaves open are read whole): *rows the rows the members are expected to have there, *scanned those read to find them (rows_per_member
+ * is what the segments of the relation have of a member on average); then the rows themselves, decoded with the leaves[0..nleaves) the scan reads and added to bufs as buffers of their own, those on pages the
+ * visibility map holds all-visible apart from those the heap must check: *rows of them, bufs grown and returned
+ */
+struct SiftScopeSegPlan;
+typedef struct SiftScopeSegPlan SiftScopeSegPlan;
+extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, double rows_per_member, uint64 *rows, uint64 *scanned,
+												  uint64 *units);
+extern SiftScopeBuffer *sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, Snapshot snap, int scope, const struct SiftDirSnapshot *dir, SiftScopeBuffer *bufs, int *nbufs,
+												 const int *leaves, int nleaves, uint64 *rows);
+/* The sets of b after those of a */
+extern struct SiftScopeDelta *sift_scope_delta_merge(const struct SiftScopeDelta *a, const struct SiftScopeDelta *b);
 /* The rows of the buffers whose member has one of the pairs (ascending by member), a copy for each, with the values of the leaves[0..nleaves) the scan reads: *rows of them */
 extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves, int nleaves, uint64 *rows);
 
@@ -207,32 +224,43 @@ typedef struct SiftScopeRead
 	int			scope;			/* the ordinal of the scope */
 	int64	   *except;
 	uint32		nexcept;
-	int64	   *patch;
+	int64	   *patch;			/* the members of except that have a pair with a key now: their rows are read by member key from the entity segments and are the delta of their pairs */
 	uint32		npatch;
+	uint64		patch_rows;		/* the rows of the entity segments read for them (before they are copied for each pair): expected until sift_scope_read_rows, then as read */
+	uint64		patch_scan;		/* the rows of the entity segments read to find them: no point directory of the member leaf tells where they are */
+	uint64		patch_units;	/* the units of the entity segments the rows are read from: each costs its chunks of the leaves the scan reads */
+	struct ScopeFill *fill;		/* what sift_scope_read_rows needs to read them */
 	uint32		nchanged;		/* the members whose pairs changed since the stamp, of except */
 	SiftScopeDrop *drop;
 	int			ndrop;
 	int64	   *members;		/* the members the scope relation lists for the keys, when the read listed them to price the patch: the entity path takes them */
 	uint32		nmembers;
 	uint64		buffer_rows;	/* the live rows of the write buffers */
-	struct SiftScopeDelta *delta;	/* the rows of the buffers of the members that did not change (their stored entries are valid), copied for each of the pairs they have with the keys: what the source reads of them */
+	struct SiftScopeDelta *delta;	/* the rows of the buffers and the segment rows of the patched members, copied for each of the pairs their member has with the keys: what the source reads of them */
 	uint64		delta_rows;		/* ... and how many copies they are */
 } SiftScopeRead;
 
 /*
- * What a read of a scope key costs, in instructions of the backend (one cluster, 1,000,000 events, 20,000 members, 500 keys, units cut by time: every unit holds every member): a scope
- * entry read and aggregated, an entity row of the units that hold a member to patch (the conjunct is an OR over the two sources), an entity row read for a list of members (the semi
- * join's key filter), a pair read from the leaves of the journal index of the scope relation, and a changed member (its journal record, its probe in the btree of pairs and the heap row it finds).
+ * What a read of a scope key costs, in instructions of the backend (one cluster, 300,000 events, 5,000 members, 50 keys, units cut by time: every unit of the entity segments holds every member;
+ * measured warm, the median of 5 runs): the scope read before any row (the journal's vouch and changed members, the directory, the scope units opened), a scope entry read and aggregated, a
+ * unit of the entity segments the rows of the changed members are read from (its chunks of the leaves the scan reads and the pages they are on), an entity row looked at to find them when no point
+ * directory of the member leaf names them, an entity row the units of the facts hold that the key filter of a list of members tests, a row it keeps (read and aggregated), a pair read from the leaves of the journal index of the scope relation, and a changed member (its journal record, its probe in the btree of pairs and
+ * the heap row it finds).
  */
+#define SIFT_SCOPE_SETUP_INSTR		1400000
 #define SIFT_SCOPE_ENTRY_INSTR		20
-#define SIFT_SCOPE_PATCH_INSTR		47
-#define SIFT_SCOPE_ENTITY_INSTR		21
+#define SIFT_SCOPE_PATCH_UNIT_INSTR	196000
+#define SIFT_SCOPE_SCAN_INSTR		10
+#define SIFT_SCOPE_ENTITY_INSTR		10
+#define SIFT_SCOPE_MATCH_INSTR		35
 #define SIFT_SCOPE_PAIR_INSTR		25
 #define SIFT_SCOPE_MEMBER_INSTR		5600
-/* a row of a write buffer whose member has a pair with the keys, copied for each pair, made a unit and read (the buffer's own rows cost the entity path as much to scan) */
-#define SIFT_SCOPE_DELTA_INSTR		900
-/* a read whose delta costs more than this is priced against the entity path (the pricing itself costs about 1.9 million on the fixture below) */
-#define SIFT_SCOPE_DELTA_PRICED		4000000
+/* an entity row of an index read whole, against which the changed members one read lists are capped (the figures of a table of 1,000,000 rows and 20,000 members) */
+#define SIFT_SCOPE_CAP_ROW_INSTR	21
+/* a row of a write buffer, or of a changed member, whose member has a pair with the keys, copied for each pair, made a unit and read (a unit of one key of some thousand rows) */
+#define SIFT_SCOPE_DELTA_INSTR		1700
+/* pricing a read against the entity path (the members listed, the rows counted) costs about this: a patch and a delta that cost less are read without it */
+#define SIFT_SCOPE_PRICING_INSTR	1000000
 /* the changed members one read lists, at most (8 MB of keys) */
 #define SIFT_SCOPE_CHANGED_MAX		(1 << 20)
 /* a scope entry tested against the drop lists of a read of several keys counted once (the figure of the planner lane: about 7 tests a row and key; not measured with the figures above) */
@@ -242,8 +270,8 @@ typedef struct SiftScopeRead
  * The counts the price of a read of a scope key takes. The executor (scope_open) has them from the read it made: the entries and rows from the zones and set summaries of the units as the scan
  * prunes them, the entity rows of the members to patch (the changed members that have a pair with a key), the delta and the members the relation lists. The planner can know at plan time: nkeys and once (its estimate of nkeys, or the real count once the keys are
  * evaluated), the entries as nkeys times the entries a key holds (rows of the scope segments of the directory over their keys), pairs as the reltuples of the relation of pairs and path_rows
- * as the rows of the entity segments the members of the keys may hold; patch_rows and delta_rows are 0 until the journal and the write buffers are read (the upper bound of delta_rows is the rows
- * of the buffers in the directory times nkeys). A changed member costs its patch rows here and, in the reader, SIFT_SCOPE_MEMBER_INSTR a member against the cap of SIFT_SCOPE_CHANGED_MAX: the figures of the entries and the patch rows
+ * as the rows of the entity segments the members of the keys may hold; patch_units, patch_scan_rows and delta_rows are 0 until the journal and the write buffers are read (the upper bound of delta_rows is the rows
+ * of the buffers in the directory times nkeys). A changed member costs its units and copies here and, in the reader, SIFT_SCOPE_MEMBER_INSTR a member against the cap of SIFT_SCOPE_CHANGED_MAX: the figures of the entries and the patch
  * were measured with it in.
  */
 typedef struct SiftScopeCounts
@@ -251,27 +279,34 @@ typedef struct SiftScopeCounts
 	uint32		nkeys;
 	bool		once;			/* a row counts once though its member has pairs with several keys */
 	uint64		entries;		/* the rows of the scope units of the keys */
-	uint64		patch_rows;		/* the entity rows that may hold a member to patch */
-	uint64		delta_rows;		/* the copies of buffer rows the delta reads */
+	uint64		patch_units;	/* the units of the entity segments the rows of the changed members that have a pair now are read from */
+	uint64		patch_scan_rows;	/* the entity rows looked at to find them (no point directory of the member leaf tells where they are) */
+	uint64		delta_rows;		/* the copies of the rows of the buffers and of the members to patch the delta reads */
 	uint64		pairs;			/* the pairs of the relation, which the entity path lists the members of the keys from */
 	uint64		path_rows;		/* the entity rows that may hold a member the relation lists for the keys */
 } SiftScopeCounts;
 
-/* What the scope units cost, with the patch and the delta (pure: instructions of the backend) */
+/* What the patch and the delta cost on top of the scope units: the units of the changed members' rows, the rows looked at to find them, and the copies made of them and of the buffers' rows (pure: instructions of the backend) */
+static inline double
+sift_scope_patch_price(const SiftScopeCounts *c)
+{
+	return SIFT_SCOPE_PATCH_UNIT_INSTR * (double) c->patch_units + SIFT_SCOPE_SCAN_INSTR * (double) c->patch_scan_rows + SIFT_SCOPE_DELTA_INSTR * (double) c->delta_rows;
+}
+
+/* What the scope units cost, with the patch and the delta (pure) */
 static inline double
 sift_scope_units_price(const SiftScopeCounts *c)
 {
 	double		entry = SIFT_SCOPE_ENTRY_INSTR + (c->once && c->nkeys > 1 ? SIFT_SCOPE_DEDUPE_INSTR : 0);
 
-	return entry * c->entries + SIFT_SCOPE_PATCH_INSTR * (double) c->patch_rows +
-		SIFT_SCOPE_DELTA_INSTR * (double) c->delta_rows;
+	return SIFT_SCOPE_SETUP_INSTR + entry * c->entries + sift_scope_patch_price(c);
 }
 
-/* What the entity path (the join as written) costs: the pairs read and the entity rows of the members they list (pure) */
+/* What the entity path (the join as written) costs: the pairs read, the entity rows the key filter tests and those it keeps (pure) */
 static inline double
 sift_scope_entity_price(const SiftScopeCounts *c)
 {
-	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows;
+	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows + SIFT_SCOPE_MATCH_INSTR * (double) c->entries;
 }
 
 /* Is the entity path the cheaper of the two (pure: the same counts give the same answer) */
@@ -281,6 +316,8 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 	return sift_scope_units_price(c) > sift_scope_entity_price(c);
 }
 
+/* The rows of the patch (sift_scope_segment_rows): the delta takes them after the price of the read was taken (patch_rows and patch_scan are only expected until then); a read that is not to be made frees what the plan holds */
+extern void sift_scope_read_rows(SiftScopeRead *rd);
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
 								   const int *leaves, int nleaves);
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */

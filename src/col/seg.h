@@ -517,6 +517,8 @@ typedef bool (*SiftColFreezeFn) (void *arg, uint32 xmin, uint32 cmin);
 extern void sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg);
 /* The live rows of unit u with only the scalar leaves want names (their keys, nulls and overflow flags, dictionaries of strings): the keys of the rows are complete, no version is read */
 extern void sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst);
+/* ... and of those, only the m rows (ascending, live ones: the caller has read the liveness): the values of a plain leaf are decoded at their positions, not whole */
+extern void sift_cseg_decode_unit_rows(SiftColSegment *seg, uint32 u, const bool *want, const uint32 *rows, uint32 m, SiftColBatch *dst);
 
 /*
  * Does a unit flag the overflow of a leaf while no live row holds an overflow value in it (the rows that did are dead)? The flag stays with the

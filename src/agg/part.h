@@ -17,12 +17,6 @@
  */
 extern SiftSrcSource *sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, Snapshot snapshot, MemoryContext mcxt, const void *view);
 /*
- * The two sources of a scope read of an index as one source: its scope segments (the units of the scope keys) and its entity rows (the patch: write buffers included), the units
- * of the scope source first. The prune entries with fam SSF_SCOPE or SSF_ENTITY go to that source alone, the others to both.
- */
-extern SiftSrcSource *sift_aggpart_open_scope(Relation heap, Oid index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-
-/*
  * The partitions the conditions refute (bounds against conditions on the partitioned table's columns, varno 1, operands already constants) are
  * not read: they take no superblocks. Called once, before the source is counted. Returns how many it dropped. A worker does not call it: it sets
  * the leader's offsets, which hold nothing for those partitions.

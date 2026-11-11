@@ -253,6 +253,7 @@ TESTING_REGRESS += col_rollup_refresh
 TESTING_REGRESS += col_run_heads
 TESTING_REGRESS += col_scan_unit_order
 TESTING_REGRESS += col_scope_build
+TESTING_REGRESS += col_scope_changed_pairs
 TESTING_REGRESS += col_scope_cols
 TESTING_REGRESS += col_scope_cols_maint
 TESTING_REGRESS += col_scope_covered

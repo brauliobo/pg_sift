@@ -13,9 +13,9 @@
 #include "col/ver.h"
 #include "core/live.h"
 
-/* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries */
+/* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries; rows: the m rows (ascending, live) to decode (NULL: all the live ones) */
 static void
-decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, SiftColFreezeFn freeze, void *arg)
+decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, const uint32 *rows, uint32 m, SiftColFreezeFn freeze, void *arg)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	SiftCUnitView v;
@@ -39,10 +39,15 @@ decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, 
 			sift_cseg_unit_fill(seg, u, v.chunk_off[c], v.chunk_len[c]);
 		dicts[c] = want == NULL || want[c] ? sift_cseg_dict(seg, c) : NULL;
 	}
-	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->id);
 	dst->keyed = v.keyed;
-	sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, want, dst);
+	if (rows != NULL)
+		sift_cunit_decode_rows(&v, r->id, dicts, rows, m, want, dst);
+	else
+	{
+		sift_cseg_live(seg, u, live);
+		sift_cunit_decode(&v, r->id, dicts, dirty ? live : NULL, want, dst);
+	}
 	pfree(dicts);
 	if (want == NULL && sift_cseg_vers(seg))
 	{
@@ -75,19 +80,25 @@ decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst, const bool *want, 
 void
 sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, SiftColFreezeFn freeze, void *arg)
 {
-	decode_unit(seg, u, dst, NULL, freeze, arg);
+	decode_unit(seg, u, dst, NULL, NULL, 0, freeze, arg);
 }
 
 void
 sift_cseg_decode_unit(SiftColSegment *seg, uint32 u, SiftColBatch *dst)
 {
-	decode_unit(seg, u, dst, NULL, NULL, NULL);
+	decode_unit(seg, u, dst, NULL, NULL, 0, NULL, NULL);
 }
 
 void
 sift_cseg_decode_unit_leaves(SiftColSegment *seg, uint32 u, const bool *want, SiftColBatch *dst)
 {
-	decode_unit(seg, u, dst, want, NULL, NULL);
+	decode_unit(seg, u, dst, want, NULL, 0, NULL, NULL);
+}
+
+void
+sift_cseg_decode_unit_rows(SiftColSegment *seg, uint32 u, const bool *want, const uint32 *rows, uint32 m, SiftColBatch *dst)
+{
+	decode_unit(seg, u, dst, want, rows, m, NULL, NULL);
 }
 
 static bool

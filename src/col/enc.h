@@ -654,6 +654,8 @@ extern uint32 sift_cunit_row_page(const SiftCUnitView *v, uint32 row);
  * scalar leaves to decode: the others are left empty in dst (its keys and rows are complete), and need no dictionary.
  */
 extern void sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst);
+/* ... the m rows (ascending) only: a plain leaf is decoded at their positions, not whole, nor the addresses of the others */
+extern void sift_cunit_decode_rows(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint32 *rows, uint32 m, const bool *want, SiftColBatch *dst);
 
 /* The zone recomputed from a chunk (for verification: C4). set is meaningful for STR leaves only. */
 extern void sift_cchunk_zone(const SiftCChunk *c, SiftColStore store, SiftCZone *z);

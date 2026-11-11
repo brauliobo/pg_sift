@@ -167,6 +167,7 @@ typedef struct ColUnit
 	TransactionId xstamp;		/* ... and the xid before which every transaction that inserted a row of it committed, none when not known */
 	bool		roots;			/* a batch of memory: ColMem.roots (a stored unit says it with its segment, sift_col_unit_roots) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
+	bool		excl;			/* a row of the unit is left out of the scan (ColSource.sx): not clean, and no net of dead rows */
 	bool		clean_ready;
 	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */
 	bool		delta_on;
@@ -231,6 +232,11 @@ struct SiftColSource
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
 	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
 	bool		super;			/* sift_col_super */
+	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
+	uint32		nsx;
+	uint64	   *sxb;			/* ... as a bitmap over their range when it is not too wide (NULL: bisect sx), sx_span bits */
+	uint64		sx_span;
+	int			sx_leaf;		/* ... and the leaf of the scope segments that holds the member key */
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
 	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
@@ -377,6 +383,9 @@ unit_keys(ColUnit *cu)
 	return cu->keys;
 }
 
+/* col/scan_unit.c: do the rows of the stored unit of a scope source include a member the source leaves out (cu->live then is the unit's selection without them) */
+extern bool unit_except(ColUnit *cu);
+
 /*
  * Whether the stored unit has no dead row, read from the liveness pages now and after the all-visible mask: a page turns all-visible only
  * after the VACUUM that made it so has removed the index entries of its dead tuples, so a mask that says "all-visible" is followed by liveness
@@ -391,6 +400,8 @@ unit_clean(ColUnit *cu)
 		unit_allvisible_vm(cu);
 		SIFT_COL_JITTER();
 		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
+		if (cu->src->nsx > 0)
+			cu->clean &= !unit_except(cu);
 		cu->clean_ready = true;
 	}
 	return cu->clean;

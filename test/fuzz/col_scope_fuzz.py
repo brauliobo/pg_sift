@@ -51,16 +51,17 @@ CREATE TABLE sf_res (stage text, qid int, class text, ok bool, stored bool, why 
 -- the statements of sf_q through the scope path, the planned plan and the plain plan, and the verdict of the reader
 DROP FUNCTION IF EXISTS sf_run(text, bool, bool);
 CREATE OR REPLACE FUNCTION sf_run(stage text, strict bool, planner bool, ok_why text DEFAULT NULL, no_stored bool DEFAULT false) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE d record; r record; ok bool; det text;
+DECLARE d record; r record; ok bool; det text; st bool; wh text;
 BEGIN
 	FOR d IN SELECT * FROM sf_q ORDER BY qid LOOP
-		det := NULL; r := NULL; ok := true;
+		det := NULL; st := false; wh := NULL; ok := true;
 		BEGIN
 			IF d.class = 'group key' THEN
 				SELECT * INTO r FROM scope_group_run(d.q, d.plain);
 			ELSE
 				SELECT * INTO r FROM scope_run(d.q, d.plain);
 			END IF;
+			st := r.stored; wh := r.why;
 			IF NOT r.same THEN ok := false; det := 'rows differ';
 			ELSIF no_stored AND r.stored THEN ok := false; det := 'the units were read though a journal is missing';
 			ELSIF NOT d.sql_form AND NOT (r.path_ok OR coalesce(r.why ~ ok_why, false)) THEN ok := false; det := 'the scope path is neither read nor accounted for';
@@ -71,7 +72,7 @@ BEGIN
 		EXCEPTION WHEN OTHERS THEN
 			ok := false; det := 'ERROR ' || SQLERRM;
 		END;
-		INSERT INTO sf_res VALUES (stage, d.qid, d.class, ok, coalesce(r.stored, false), r.why, det || ' [' || coalesce(r.why, 'stored') || '] ' || left(d.q, 200));
+		INSERT INTO sf_res VALUES (stage, d.qid, d.class, ok, st, wh, det || ' [' || coalesce(wh, 'stored') || '] ' || left(d.q, 200));
 	END LOOP;
 END $$;
 
@@ -352,6 +353,11 @@ VACUUM (ANALYZE) {self.tables};"""
         qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE {ga}",   # a row for each pair, no group
                    f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}", False, self.kept is None or {'v', 'id'} <= self.kept, False,
                    None if self.kept is None or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
+        ks2 = sorted(set(ks))   # several keys counted for each pair (it raises a refusal as the markers of every key do): the changed pairs of a dim_b are read once from the segments and expanded by its pairs
+        subset = self.kept is None or {'v', 'id'} <= self.kept
+        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', e.dim_a_id, ARRAY[{lst(ks2)}]::int8[])",
+                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}", False, False, False,
+                   None if subset else '^column .* not in the scope units$'))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % (P, self.act), False),
                           ("SELECT count(*), sum(v) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (P, lst([pick() for _ in range(3)]), self.act), False),
                           ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM %s s WHERE tenant_id = %d%s)" % (P, pick(), self.act), True),

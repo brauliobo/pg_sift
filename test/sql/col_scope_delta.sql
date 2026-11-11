@@ -1,7 +1,7 @@
 -- The rows of the write buffers have no scope entries. A read of a scope key reads them from the buffers, once for each pair of their member under the statement's snapshot (the delta, as the promotion
 -- would write them) and the stored units of every member that did not change: the rows it reads besides the units are those of the buffers, not the entity rows of the table. Table-driven: each state
 -- of the facts and the pairs (the states accumulate), each read shape; every read is md5 equal to the plain join, says whether it took the units, and how many rows its delta read next to the
--- rows of the buffers. A member whose pairs changed is patched through the entity rows, the buffer rows of it with the rest of its rows (sift.test_scope_patch: the cluster of the tests patches
+-- rows of the buffers and those read for the changed pairs. A member whose pairs changed is patched through the entity rows, the buffer rows of it with the rest of its rows (sift.test_scope_patch: the cluster of the tests patches
 -- whatever it costs).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -13,7 +13,7 @@ SET client_min_messages = warning;
 SET sift.agg_force = on;
 
 -- q: the statement over the scope units; plain: the same over the join of the pairs
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched_keys int, OUT delta_rows int)
+CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched_keys int, OUT patched_rows int, OUT delta_rows int)
 LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
@@ -37,6 +37,7 @@ BEGIN
 	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
 	patched_keys := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Keys"')::text::int, 0);
+	patched_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Rows"')::text::int, 0);
 	delta_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
 END $$;
 
@@ -67,10 +68,10 @@ INSERT INTO shapes VALUES
 	(5, 'listing of one key', 1, false, '{4}', 'SELECT id, v FROM facts f WHERE @ ORDER BY id DESC LIMIT 25',
 		'SELECT id, v FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY ($)) ORDER BY id DESC LIMIT 25');
 
--- delta: none, within the rows of the buffers (the copies a pair of each of the keys makes at most), or more than they hold
+-- delta: none, within the rows of the buffers and those read for the changed pairs (the copies a pair of each of the keys makes at most), or more than they hold
 CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text, delta text, patched boolean) LANGUAGE sql AS $$
 	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' WHEN false THEN 'DIFFERENT' ELSE 'needs the join' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' END),
-		CASE WHEN r.delta_rows IS NULL THEN 'no read' WHEN r.delta_rows = 0 THEN 'none' WHEN r.delta_rows <= b.rows * s.nkeys THEN 'within the buffers' ELSE 'MORE THAN THE BUFFERS' END, r.patched_keys > 0
+		CASE WHEN r.delta_rows IS NULL THEN 'no read' WHEN r.delta_rows = 0 THEN 'none' WHEN r.delta_rows <= (b.rows + r.patched_rows) * s.nkeys THEN 'within the rows read' ELSE 'MORE THAN THE ROWS READ' END, r.patched_keys > 0
 	FROM shapes s,
 		LATERAL (SELECT coalesce(sum(rows), 0) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'buffer') b,
 		LATERAL scope_run(

@@ -165,9 +165,9 @@ SELECT stmt FROM (SELECT n, 0 AS k, setup AS stmt FROM states WHERE setup IS NOT
 REINDEX INDEX facts_col
 INSERT INTO grants VALUES (101, 3, 30, NULL, NULL)
 SELECT 1 AS n, 'a grant to a member' AS state, c.*, v.* FROM changed() c, verdict() v
- n |        state        | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+---------------------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 1 | a grant to a member | ok  | {30}  |    40 |      0 |    34 |      19 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |        state        | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+---------------------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ 1 | a grant to a member | ok  | {30}  |    40 |      0 |    35 |      20 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -190,49 +190,49 @@ SELECT 3 AS n, 'a grant to a member restored' AS state, c.*, v.* FROM changed() 
 REINDEX INDEX facts_col
 DELETE FROM grants WHERE id = 8
 SELECT 4 AS n, 'a grant to a member deleted' AS state, c.*, v.* FROM changed() c, verdict() v
- n |            state            | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+-----------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 4 | a grant to a member deleted | ok  | {2}   |    40 |      0 |    35 |      15 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |            state            | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+-----------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ 4 | a grant to a member deleted | ok  | {2}   |    40 |      0 |    36 |      16 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 UPDATE grants SET dim_a_id = NULL, group_id = 6 WHERE id = 13
 SELECT 5 AS n, 'a grant moved from a member to a group' AS state, c.*, v.* FROM changed() c, verdict() v
- n |                 state                  | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+----------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 5 | a grant moved from a member to a group | ok  | {5,15,17,23,29,35,40,41,45,47,53} |    40 |      0 |    34 |      19 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |                 state                  | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+----------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 5 | a grant moved from a member to a group | ok  | {5,15,17,23,29,35,40,41,45,47,53} |    40 |      0 |    35 |      20 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 UPDATE grants SET group_id = NULL, dim_a_id = 41 WHERE id = 14
 SELECT 6 AS n, 'a grant moved from a group to a member' AS state, c.*, v.* FROM changed() c, verdict() v
- n |                 state                  | why |                dim_b                 | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+----------------------------------------+-----+--------------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 6 | a grant moved from a group to a member | ok  | {4,10,16,20,28,34,40,41,46,50,52,58} |    40 |      0 |    32 |      27 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |                 state                  | why |                dim_b                 | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+----------------------------------------+-----+--------------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 6 | a grant moved from a group to a member | ok  | {4,10,16,20,28,34,40,41,46,50,52,58} |    40 |      0 |    33 |      28 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 INSERT INTO grants VALUES (102, 2, NULL, 1, NULL)
 SELECT 7 AS n, 'a grant to a group' AS state, c.*, v.* FROM changed() c, verdict() v
- n |       state        | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+--------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 7 | a grant to a group | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    33 |      23 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |       state        | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+--------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 7 | a grant to a group | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    34 |      24 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 UPDATE grants SET deleted_at = now() WHERE id = 5
 SELECT 8 AS n, 'a grant to a group soft deleted' AS state, c.*, v.* FROM changed() c, verdict() v
- n |              state              | why |             dim_b             | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+---------------------------------+-----+-------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 8 | a grant to a group soft deleted | ok  | {2,8,14,20,26,30,32,38,50,56} |    40 |      0 |    33 |      23 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |              state              | why |             dim_b             | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+---------------------------------+-----+-------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 8 | a grant to a group soft deleted | ok  | {2,8,14,20,26,30,32,38,50,56} |    40 |      0 |    34 |      24 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 UPDATE grants SET deleted_at = NULL WHERE id = 10
 SELECT 9 AS n, 'a grant to a group restored' AS state, c.*, v.* FROM changed() c, verdict() v
- n |            state            | why |              dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+-----------------------------+-----+----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 9 | a grant to a group restored | ok  | {3,9,15,21,25,27,39,45,51,55,57} |    40 |      0 |    34 |      19 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |            state            | why |              dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+-----------------------------+-----+----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 9 | a grant to a group restored | ok  | {3,9,15,21,25,27,39,45,51,55,57} |    40 |      0 |    35 |      20 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -254,9 +254,9 @@ SELECT 11 AS n, 'a membership soft deleted' AS state, c.*, v.* FROM changed() c,
 REINDEX INDEX facts_col
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 6 AND dim_a_id = 11
 SELECT 12 AS n, 'a membership restored' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |         state         | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+-----------------------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 12 | a membership restored | ok  | {11}  |    40 |      0 |    35 |      15 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |         state         | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+-----------------------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ 12 | a membership restored | ok  | {11}  |    40 |      0 |    36 |      16 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -270,9 +270,9 @@ SELECT 13 AS n, 'a member moved to another group' AS state, c.*, v.* FROM change
 REINDEX INDEX facts_col
 UPDATE grants SET deleted_at = now() WHERE id = 1
 SELECT 14 AS n, 'a member reached by two paths loses one' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |                  state                  | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+-----------------------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 14 | a member reached by two paths loses one | ok  | {5}   |    40 |      0 |    35 |      15 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |                  state                  | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+-----------------------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ 14 | a member reached by two paths loses one | ok  | {5}   |    40 |      0 |    36 |      16 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -286,17 +286,17 @@ SELECT 15 AS n, 'a member reached by two paths loses both' AS state, c.*, v.* FR
 REINDEX INDEX facts_col
 DELETE FROM grants WHERE id = 3; INSERT INTO grants VALUES (103, 1, NULL, 6, NULL)
 SELECT 16 AS n, 'a grant to a group deleted and added again' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |                   state                    | why |              dim_b              | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+--------------------------------------------+-----+---------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 16 | a grant to a group deleted and added again | ok  | {11,15,17,23,29,35,41,45,47,53} |    40 |      0 |    34 |      19 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |                   state                    | why |              dim_b              | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+--------------------------------------------+-----+---------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 16 | a grant to a group deleted and added again | ok  | {11,15,17,23,29,35,41,45,47,53} |    40 |      0 |    35 |      20 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
 WITH d AS (DELETE FROM memberships WHERE group_id = 2 RETURNING dim_a_id) INSERT INTO memberships (group_id, dim_a_id) SELECT 2, dim_a_id FROM d
 SELECT 17 AS n, 'a group emptied and filled again' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |              state               | why |               dim_b                | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+----------------------------------+-----+------------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 17 | a group emptied and filled again | ok  | {1,5,7,13,19,25,31,35,37,43,49,55} |    40 |      0 |    34 |      19 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |              state               | why |               dim_b                | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+----------------------------------+-----+------------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 17 | a group emptied and filled again | ok  | {1,5,7,13,19,25,31,35,37,43,49,55} |    40 |      0 |    35 |      20 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -326,9 +326,9 @@ SELECT 20 AS n, 'a rolled back savepoint' AS state, c.*, v.* FROM changed() c, v
 REINDEX INDEX facts_col
 BEGIN; SAVEPOINT s; INSERT INTO grants VALUES (106, 6, NULL, 4, NULL); RELEASE s; COMMIT
 SELECT 21 AS n, 'a released savepoint' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |        state         | why |              dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+----------------------+-----+----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 21 | a released savepoint | ok  | {3,9,15,21,25,27,39,45,51,55,57} |    40 |      0 |    33 |      23 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |        state         | why |              dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+----------------------+-----+----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 21 | a released savepoint | ok  | {3,9,15,21,25,27,39,45,51,55,57} |    40 |      0 |    34 |      24 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -344,9 +344,9 @@ SELECT 22 AS n, 'a statement that fails' AS state, c.*, v.* FROM changed() c, ve
 REINDEX INDEX facts_col
 INSERT INTO grants VALUES (109, 1, NULL, 1, NULL)
 SELECT 23 AS n, 'a grant to a group of dim_b that are also granted directly' AS state, c.*, v.* FROM changed() c, verdict() v
- n  |                           state                            | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
-----+------------------------------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 23 | a grant to a group of dim_b that are also granted directly | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    32 |      27 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ n  |                           state                            | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+----+------------------------------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 23 | a grant to a group of dim_b that are also granted directly | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    33 |      28 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 -- the edits of the whole run are in the pairs now: a rebuild has nothing to patch
@@ -362,9 +362,9 @@ BEGIN;
 DELETE FROM memberships WHERE group_id = 6;
 INSERT INTO grants VALUES (110, 2, 33, NULL, NULL);
 SELECT 'own transaction' AS state, c.*, v.* FROM changed() c, verdict() v;
-      state      | why |                dim_b                 | reads | differ | units | patched | refused | unaccounted |                    reasons                    
------------------+-----+--------------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- own transaction | ok  | {5,11,15,17,23,29,33,35,41,45,47,53} |    40 |      0 |    32 |      27 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+      state      | why |                dim_b                 | reads | differ | units | patched | refused | unaccounted |       reasons        
+-----------------+-----+--------------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ own transaction | ok  | {5,11,15,17,23,29,33,35,41,45,47,53} |    40 |      0 |    33 |      28 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 ROLLBACK;
@@ -403,9 +403,9 @@ SELECT sift.col_merge('facts_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT 'merged' AS state, c.*, v.* FROM changed() c, verdict() v;
- state  | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
---------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- merged | ok  | {41}  |    40 |      0 |    35 |      15 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+ state  | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+--------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ merged | ok  | {41}  |    40 |      0 |    36 |      16 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 SELECT journal, count(DISTINCT lineage) AS lineages, count(DISTINCT horizon::text) AS horizons FROM sift._test_col_scope_journal_stamps('facts_col') GROUP BY journal ORDER BY journal;
@@ -448,9 +448,9 @@ SELECT 1 AS n, 'a grant to a member, workers allowed' AS state, c.*, v.* FROM ch
 REINDEX INDEX facts_col
 INSERT INTO grants VALUES (202, 5, NULL, 1, NULL)
 SELECT 2 AS n, 'a grant to a group, workers allowed' AS state, c.*, v.* FROM changed() c, verdict() v
- n |                state                | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+-------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 2 | a grant to a group, workers allowed | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    30 |      30 |       2 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |                state                | why |               dim_b               | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+-------------------------------------+-----+-----------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 2 | a grant to a group, workers allowed | ok  | {6,10,12,18,24,30,36,40,42,48,54} |    40 |      0 |    32 |      32 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 REINDEX INDEX facts_col
@@ -464,9 +464,9 @@ SELECT 3 AS n, 'a membership soft deleted, workers allowed' AS state, c.*, v.* F
 REINDEX INDEX facts_col
 INSERT INTO grants VALUES (203, 6, 34, NULL, NULL); INSERT INTO grants VALUES (204, 6, NULL, 5, NULL); UPDATE memberships SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id = 1
 SELECT 4 AS n, 'the three at once, workers allowed' AS state, c.*, v.* FROM changed() c, verdict() v
- n |               state                | why |                 dim_b                  | reads | differ | units | patched | refused | unaccounted |                    reasons                    
----+------------------------------------+-----+----------------------------------------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- 4 | the three at once, workers allowed | ok  | {1,4,10,14,16,20,28,34,40,46,50,52,58} |    40 |      0 |    31 |      26 |       2 |           0 | per pair, changed pairs, top-n, changed pairs
+ n |               state                | why |                 dim_b                  | reads | differ | units | patched | refused | unaccounted |       reasons        
+---+------------------------------------+-----+----------------------------------------+-------+--------+-------+---------+---------+-------------+----------------------
+ 4 | the three at once, workers allowed | ok  | {1,4,10,14,16,20,28,34,40,46,50,52,58} |    40 |      0 |    33 |      28 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 RESET max_parallel_workers_per_gather;

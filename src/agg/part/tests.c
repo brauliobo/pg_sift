@@ -47,8 +47,6 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->run_windows += pc.run_windows;
 		c->dirty_rows += pc.dirty_rows;
 		c->rows_wbuf += pc.rows_wbuf;
-		if (ps->scope_pair && i == 1)
-			c->rows_entity = pc.rows;
 	}
 }
 

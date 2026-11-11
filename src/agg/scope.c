@@ -3,10 +3,9 @@
  *
  * "The rows whose member key has a pair with the key k": a scan of an index that declares the scope reads the scope segments, whose rows are replicated once for each
  * scope key of their member and cut by that key, so the conjunct is a test of the derived leaf "<key_name>#scope" against the keys, which the zones of the units decide
- * (the units of other keys are not read). The units describe the scope relation as of their stamp, so the scan leaves out the members whose pairs changed since and those that
- * have a row in a write buffer (fk NOT IN except), and reads the entity rows of those of them that have a pair now (scope IS NULL AND fk IN patch: the derived key is NULL in
- * the rows of the entity segments and the write buffers) as one stream, one disjunct of the same conjunct. A fact in the units of several keys counts once for IN and EXISTS:
- * the units of its other keys leave its member out. When the reader may not take the stored rows (sift_scope_read: the setting, the shape of the request, the verdict on the
+ * (the units of other keys are not read). The units describe the scope relation as of their stamp, so the source leaves out the stored entries of the members whose pairs changed since
+ * (sift_col_scope_delta), and reads their rows and those of the write buffers, copied for each pair they have now, as units of memory of the same source: the derived key holds the key
+ * of the pair in every row the scan reads. A fact in the units of several keys counts once for IN and EXISTS: the units of its other keys leave its member out (fk NOT IN drop). When the reader may not take the stored rows (sift_scope_read: the setting, the shape of the request, the verdict on the
  * segments) the scan is the one of the entity rows, and the conjunct is the test of the member key against the members the scope relation lists for the keys under the snapshot:
  * the plan that was always exact, as a conjunct of the scan.
  */
@@ -36,7 +35,7 @@ sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 	return -1;
 }
 
-static SiftSrcPrune *values_prune(int leaf, int fam, const int64 *vals, uint32 n);
+static SiftSrcPrune *values_prune(int leaf, const int64 *vals, uint32 n);
 
 /* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them) */
 static uint64
@@ -45,7 +44,7 @@ unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n)
 	SiftSrcUnit u;
 	uint64		rows = 0;
 
-	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), values_prune(leaf, SSF_ANY, vals, n), 1);
+	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), values_prune(leaf, vals, n), 1);
 	while (sift_colsrc_next(src, &u))
 		rows += u.nrow;
 	return rows;
@@ -82,8 +81,8 @@ listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
 }
 
 /*
- * Is the entity path cheaper than the units with the patch and the delta? The patch reads the scope entries of the keys and the units of the entity rows that may hold a member to patch, each row
- * dearer than the entity path's (one conjunct for two sources). The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
+ * Is the entity path cheaper than the units with the patch and the delta? The units read the scope entries of the keys, the patch reads the rows of the members that changed by member key and the
+ * delta copies them (and the rows of the write buffers) for each pair. The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
  * which the planner's semi join does the same way: both are counted from the zones and set summaries of the units, as the scan prunes them, and priced by sift_scope_entity_cheaper
  * (col/scope.h), which the planner calls with its estimates. The list the entity path takes is kept.
  */
@@ -104,8 +103,9 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 		.nkeys      = sc->nkeys,
 		.once       = sc->once,
 		.entries    = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys),
-		.patch_rows = unit_rows(entity, sc->fk, rd->patch, rd->npatch),
-		.delta_rows = rd->delta_rows,
+		.patch_scan_rows = rd->patch_scan,
+		.patch_units = rd->patch_units,
+		.delta_rows = rd->delta_rows + rd->patch_rows,
 		.pairs      = pairs,
 		.path_rows  = unit_rows(entity, sc->fk, rd->members, rd->nmembers),
 	};
@@ -119,6 +119,15 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 		rd->members = NULL;
 	}
 	return dearer;
+}
+
+/* what the read's patch and delta cost, from the counts it planned */
+static double
+patch_price(const SiftScopeRead *rd)
+{
+	SiftScopeCounts c = {.patch_units = rd->patch_units, .patch_scan_rows = rd->patch_scan, .delta_rows = rd->delta_rows + rd->patch_rows};
+
+	return sift_scope_patch_price(&c);
 }
 
 /*
@@ -137,9 +146,11 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return false;
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
 										ex->spec->topn != NULL, ex->spec->leaves, ex->spec->nleaves);
-	if (rd->why == NULL && (rd->npatch > 0 || SIFT_SCOPE_DELTA_INSTR * (double) rd->delta_rows > SIFT_SCOPE_DELTA_PRICED) && (sc->once || sc->nkeys == 1) &&
-		!sift_test_scope_patch && patch_dearer(ex, snapshot))
+	/* a patch and a delta that cost less than the pricing do not call for it */
+	if (rd->why == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
+	if (rd->why == NULL)
+		sift_scope_read_rows(rd);
 	ex->scope_why = rd->why;
 	return ex->scope_why == NULL;
 }
@@ -171,28 +182,21 @@ conjunction(AggExec *ex, int *total, List *preds, SiftAggPredKind kind, const ch
 	return p;
 }
 
-/* the members the units leave out (the changed ones, and those of the drop): the conjunct that keeps the others; NULL: none */
+/* the members the units of a key leave out (those the dedupe counts in a lesser key): the conjunct that keeps the others; NULL: none */
 static SiftAggPred *
-left_out(AggExec *ex, int *total, int fk, const SiftScopeRead *rd, const SiftScopeDrop *drop)
+left_out(AggExec *ex, int *total, int fk, const SiftScopeDrop *drop)
 {
-	uint32		nleft = rd->nexcept + (drop ? drop->n : 0);
-	int64	   *left;
-
-	if (nleft == 0)
+	if (drop == NULL)
 		return NULL;
-	left = palloc(nleft * sizeof(int64));
-	memcpy(left, rd->except, rd->nexcept * sizeof(int64));
-	if (drop)
-		memcpy(left + rd->nexcept, drop->members, drop->n * sizeof(int64));
-	return pred_in(ex, total, fk, true, left, nleft, psprintf("member not changed since the scope stamp (%s)", keys_text(left, nleft)));
+	return pred_in(ex, total, fk, true, drop->members, drop->n, psprintf("member not counted in a lesser key (%s)", keys_text(drop->members, drop->n)));
 }
 
 /* the conjuncts of the units of keys: their key, and the members left out */
 static List *
-arm_of(AggExec *ex, int *total, int sleaf, int fk, const int64 *keys, uint32 nkeys, const SiftScopeRead *rd, const SiftScopeDrop *drop)
+arm_of(AggExec *ex, int *total, int sleaf, int fk, const int64 *keys, uint32 nkeys, const SiftScopeDrop *drop)
 {
 	List	   *arm = list_make1(pred_in(ex, total, sleaf, false, keys, nkeys, psprintf("%s IN (%s)", ex->lay->leaf[sleaf].name, keys_text(keys, nkeys))));
-	SiftAggPred *left = left_out(ex, total, fk, rd, drop);
+	SiftAggPred *left = left_out(ex, total, fk, drop);
 
 	return left ? lappend(arm, left) : arm;
 }
@@ -218,8 +222,8 @@ plain_keys(const SiftAggScope *sc, const SiftScopeRead *rd, int64 *out)
 }
 
 /*
- * The stored rows of the keys as conjuncts of the scan: one arm for the keys that have no drop list and one for each key that has, which the scan ORs (and the patch is one more
- * arm), or the conjuncts themselves when there is one arm and nothing to patch, so that the source can run each on the encoded chunks.
+ * The rows of the keys as conjuncts of the scan: one arm for the keys that have no drop list and one for each key that has, which the scan ORs, or the conjuncts themselves when there is
+ * one arm, so that the source can run each on the encoded chunks. The members that changed are not here: the source leaves their stored entries out.
  */
 static void
 stored_filter(AggExec *ex, int *total, List **add, int sleaf)
@@ -230,50 +234,34 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 	uint32		nplain;
 	List	   *arms = NIL;
 
-	/* every key: the units are all read, each row has its key (no member to patch: the reader refuses it); only the changed members leave */
+	/* every key: the units are all read, each row has its key */
+	ex->scope_preds = 0;
 	if (sc->all)
-	{
-		SiftAggPred *left = left_out(ex, total, sc->fk, rd, NULL);
-
-		if (left)
-			*add = lappend(*add, left);
-		ex->scope_preds = left != NULL;
 		return;
-	}
 	nplain = plain_keys(sc, rd, plain);
 	if (nplain > 0 || rd->ndrop == 0)
-		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, rd, NULL));
+		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, NULL));
 	for (int d = 0; d < rd->ndrop; d++)
-		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, &rd->drop[d].key, 1, rd, &rd->drop[d]));
-	if (rd->npatch == 0 && list_length(arms) == 1)
+		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, &rd->drop[d].key, 1, &rd->drop[d]));
+	if (list_length(arms) == 1)
 	{
 		*add = list_concat(*add, linitial(arms));
-		ex->scope_preds += list_length(linitial(arms));
+		ex->scope_preds = list_length(linitial(arms));
 		return;
 	}
 	{
 		List	   *or_arms = NIL;
-		SiftAggPred *root;
 
 		foreach_ptr(List, arm, arms)
-			or_arms = lappend(or_arms, conjunction(ex, total, arm, SAP_AND, "scope units of the key, members not changed"));
-		if (rd->npatch > 0)
-		{
-			List	   *patch = list_make2(pred_node(ex, SAP_NULL, total, sleaf, 0, 0, "entity rows (no scope key)"),
-										   pred_in(ex, total, sc->fk, false, rd->patch, rd->npatch,
-												   psprintf("member that changed, with a pair now (%s)", keys_text(rd->patch, rd->npatch))));
-
-			or_arms = lappend(or_arms, conjunction(ex, total, patch, SAP_AND, "entity rows of the changed pairs"));
-		}
-		root = conjunction(ex, total, or_arms, SAP_OR, "scope units or the entity rows of the changed pairs");
-		*add = lappend(*add, root);
+			or_arms = lappend(or_arms, conjunction(ex, total, arm, SAP_AND, "scope units of the key"));
+		*add = lappend(*add, conjunction(ex, total, or_arms, SAP_OR, "scope units of the keys"));
 		ex->scope_preds++;
 	}
 }
 
 /* the entry that prunes the units of one source of a scope read to the values (a range, and the set when it is short enough for the source's directory) */
 static SiftSrcPrune *
-values_prune(int leaf, int fam, const int64 *vals, uint32 n)
+values_prune(int leaf, const int64 *vals, uint32 n)
 {
 	SiftSrcPrune *z = palloc0(sizeof(SiftSrcPrune));
 	int64	   *set = palloc(Max(n, 1) * sizeof(int64));
@@ -286,7 +274,6 @@ values_prune(int leaf, int fam, const int64 *vals, uint32 n)
 			set[k++] = set[i];
 	n = k;
 	z->leaf = leaf;
-	z->fam = fam;
 	z->lo = n > 0 ? set[0] : PG_INT64_MAX;
 	z->hi = n > 0 ? set[n - 1] : PG_INT64_MIN;
 	if (n > 0 && n <= ZONE_SET_CAP)
@@ -295,22 +282,6 @@ values_prune(int leaf, int fam, const int64 *vals, uint32 n)
 		z->nvals = n;
 	}
 	return z;
-}
-
-/*
- * What the two sources of a read that patches prune by: the scope units are those of the keys, the entity rows are those of the members to patch, each against its own source (the OR
- * of the conjunct tells the rows of a unit, which one source's entry must not refuse for the other's)
- */
-List *
-scope_prune(AggExec *ex, List *tests)
-{
-	const SiftAggScope *sc = ex->spec->scope;
-	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? sift_agg_scope_leaf(ex->lay, sc->key_name) : -1;
-
-	if (sleaf < 0 || ex->scope_rd->npatch == 0)
-		return tests;
-	tests = lappend(tests, values_prune(sleaf, SSF_SCOPE, sc->keys, sc->nkeys));
-	return lappend(tests, values_prune(sc->fk, SSF_ENTITY, ex->scope_rd->patch, ex->scope_rd->npatch));
 }
 
 /* The conjunct that keeps the rows of the scope: added to the spec after its own, as the key conjuncts of the joins are (join_filters) */

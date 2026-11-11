@@ -844,15 +844,29 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 	vals_put(dst->mcxt, &dst->col[col], key, isnull, ovf, tag);
 }
 
-void
-sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst)
+/*
+ * rows (NULL: every row that live keeps): the m rows (ascending) to decode, of which only the values of the plain leaves that are read at those positions are decoded: the others are decoded
+ * whole, as is the address of every row of a unit cut by key
+ */
+static void
+unit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const uint32 *rows, uint32 m, const bool *want, SiftColBatch *dst)
 {
 	const SiftColSchema *s = v->schema;
 	SiftKey    *keys = palloc(Max(v->nrows, 1) * sizeof(SiftKey));
 	UnitLeaf   *lf = palloc0(s->ncols * sizeof(UnitLeaf));
 
 	SIFT_INVARIANT(dst->schema->ncols == s->ncols && dst->sb == sb, "sift_col: a unit is decoded into a batch of its own schema and superblock");
-	sift_cunit_keys(v, sb, keys);
+	if (rows != NULL)
+	{
+		SiftKey    *some = palloc((m + 1) * sizeof(SiftKey));
+
+		sift_cunit_row_keys(v, sb, rows, m, some);
+		for (uint32 j = 0; j < m; j++)
+			keys[rows[j]] = some[j];
+		pfree(some);
+	}
+	else
+		sift_cunit_keys(v, sb, keys);
 	for (int col = 0; col < s->ncols; col++)
 	{
 		UnitLeaf   *l = &lf[col];
@@ -863,8 +877,18 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 		if (!l->present)
 			continue;
 		l->key = palloc((l->c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
-		sift_cchunk_decode(&l->c, l->key);
 		l->inl = l->c.enc == SIFT_COLENC_ISTR;
+		if (rows != NULL && s->cols[col].kind == SIFT_COLK_SCALAR && s->cols[col].parent < 0 && s->cols[col].store != SIFT_COLS_VAR && !l->inl)
+		{
+			int64	   *some = palloc((m + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+
+			sift_cchunk_decode_sel(&l->c, rows, m, some);
+			for (uint32 j = 0; j < m; j++)
+				l->key[rows[j]] = some[j];
+			pfree(some);
+		}
+		else
+			sift_cchunk_decode(&l->c, l->key);
 		l->tag = palloc(Max(l->c.n, 1));
 		if (!sift_cchunk_tags(&l->c, l->tag))
 		{
@@ -897,9 +921,11 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 							errmsg("invalid column unit: group leaf %d has %u values for %u elements", col, lf[col].c.n,
 								   lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0)));
 
-	for (uint32 r = 0; r < v->nrows; r++)
+	for (uint32 i = 0; i < (rows != NULL ? m : v->nrows); i++)
 	{
-		if (live != NULL && !sift_col_bit_test(live, r))
+		uint32		r = rows != NULL ? rows[i] : i;
+
+		if (rows == NULL && live != NULL && !sift_col_bit_test(live, r))
 			continue;
 		batch_row_begin(dst, keys[r]);
 		for (int col = 0; col < s->ncols; col++)
@@ -935,4 +961,16 @@ sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, co
 	}
 	pfree(lf);
 	pfree(keys);
+}
+
+void
+sift_cunit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint64 *live, const bool *want, SiftColBatch *dst)
+{
+	unit_decode(v, sb, dicts, live, NULL, 0, want, dst);
+}
+
+void
+sift_cunit_decode_rows(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const uint32 *rows, uint32 m, const bool *want, SiftColBatch *dst)
+{
+	unit_decode(v, sb, dicts, NULL, rows, m, want, dst);
 }

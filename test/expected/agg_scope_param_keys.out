@@ -410,12 +410,12 @@ SELECT * FROM states('every pair of a member ended');
 
 SET sift.test_scope_patch = off;
 SELECT * FROM states('more changed pairs than the bound');
-               state               |     form     |                                         run                                         | same_rows 
------------------------------------+--------------+-------------------------------------------------------------------------------------+-----------
- more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Fallback: patch dearer than the entity path; Members Listed: 44  | t
- more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Fallback: patch dearer than the entity path; Members Listed: 119 | t
- more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Fallback: patch dearer than the entity path; Members Listed: 44  | t
- more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44               | t
+               state               |     form     |                                  run                                  | same_rows 
+-----------------------------------+--------------+-----------------------------------------------------------------------+-----------
+ more changed pairs than the bound | IN, $1       | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
+ more changed pairs than the bound | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1   | t
+ more changed pairs than the bound | join, $1     | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                   | t
+ more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs; Members Listed: 44 | t
 (4 rows)
 
 RESET sift.test_scope_patch;
