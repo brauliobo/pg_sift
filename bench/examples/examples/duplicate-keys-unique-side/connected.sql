@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: fact -> dim where dim.id is NOT unique: a fact matches 1 to 3 dim rows

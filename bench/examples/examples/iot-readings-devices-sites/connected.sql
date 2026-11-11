@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: reading -> device -> site (a chain; the latest reading per device is a LATERAL / DISTINCT ON over (device_id, ts))
