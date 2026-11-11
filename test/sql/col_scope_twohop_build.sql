@@ -1,7 +1,7 @@
 -- The scope segments of a scope of two paths hold the DISTINCT union of the direct pairs (grants on a member) and the joined ones (grants on a group, with the members of the group): a member
 -- reached directly and through several groups is one pair, so a fact row is in the units of a key once. Every way to know the pairs (relations read once, btrees probed) writes the entries
--- of the SQL UNION; so do promotion and merge. A scope of two paths has no journal yet, so a read takes the entity rows of the members the three relations list for the keys: the answers
--- are those of the join, IN and EXISTS in every state of the relations, and the plan says why it did not read the units.
+-- of the SQL UNION; so do promotion and merge. The relations of this test have no journal indexes, so a read takes the entity rows of the members the three relations list for the keys: the
+-- answers are those of the join, IN and EXISTS in every state of the relations, and the plan says why it did not read the units (col_scope_twohop_patch reads them).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -128,7 +128,7 @@ SELECT key AS tenant_id, count(*) AS entries, count(DISTINCT tid) AS fact_rows F
 SELECT count(*) AS facts_of_member_5, (SELECT count(*) FROM sift._test_col_scope_entries('facts_col') e JOIN facts f ON f.ctid = e.tid WHERE e.key = 1 AND f.dim_a_id = 5) AS entries_of_tenant_1
 	FROM facts WHERE dim_a_id = 5;
 
--- the reads: the answers are the join's, IN and EXISTS; the scope units are not read (no journal yet) and the plan says so
+-- the reads: the answers are the join's, IN and EXISTS; the scope units are not read (no journal) and the plan says so
 SELECT * FROM reads();
 SELECT why() AS scope_fallback;
 -- a read of several keys that counts a row for each pair needs the units: it is refused with the reason, as for any scope read that cannot use them

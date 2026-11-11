@@ -65,6 +65,59 @@ seg_sec(const SiftColSegment *seg, SiftSection s)
 	return &seg->hdr->sections[s];
 }
 
+/*
+ * The stamps after the schema: [conn stamps][scope stamps][n stamps][magic], where a scope has one stamp; or, when a scope has a stamp for each of its journals (a scope of two paths,
+ * column format 49), [conn stamps][the stamps of scope 0][the stamps of scope 1]..[the number of stamps of each scope, uint32][n stamps][journals magic]
+ */
+static void
+head_stamps(const SiftColSegment *seg, SegHead *hd, const char *schema)
+{
+	uint32		tail[2],
+				counts[SIFT_SCOPE_MAX],
+				total;
+	int			nconn = sift_cschema_nconn(hd->schema),
+				nscope = sift_cschema_nscope(hd->schema);
+	Size		end = seg->hdr->dictroot_off;
+	bool		journals;
+
+	if (end < sizeof(tail))
+		corrupt(seg, "The schema section of a segment with derived leaves has no stamps.");
+	memcpy(tail, schema + end - sizeof(tail), sizeof(tail));
+	end -= sizeof(tail);
+	journals = tail[1] == SEG_STAMPS_JOURNALS_MAGIC;
+	if (journals && (seg->entry.format < SIFT_COL_FORMAT_TWOHOP || end < nscope * sizeof(uint32)))
+		corrupt(seg, "The scopes have a stamp for each journal, a segment of column format 1.%d cannot.", seg->entry.format);
+	if (!journals && tail[1] != SEG_STAMPS_MAGIC)
+		corrupt(seg, "The stamps of the %d connections and %d scopes of the schema are not there.", nconn, nscope);
+	if (journals)
+	{
+		end -= nscope * sizeof(uint32);
+		memcpy(counts, schema + end, nscope * sizeof(uint32));
+	}
+	total = nconn;
+	for (int s = 0; s < nscope; s++)
+	{
+		if (!journals)
+			counts[s] = 1;
+		if (counts[s] < 1 || counts[s] > SIFT_SCOPE_JOURNALS)
+			corrupt(seg, "The scope %d of the schema has %u stamps, not one to %d.", s, counts[s], SIFT_SCOPE_JOURNALS);
+		total += counts[s];
+	}
+	if (tail[0] != total || end < total * sizeof(SiftConnStamp))
+		corrupt(seg, "The stamps of the %d connections and %d scopes of the schema are not there.", nconn, nscope);
+	end -= total * sizeof(SiftConnStamp);
+	hd->nconn = nconn;
+	hd->nscope = nscope;
+	memcpy(hd->conn, schema + end, nconn * sizeof(SiftConnStamp));
+	end += nconn * sizeof(SiftConnStamp);
+	for (int s = 0; s < nscope; s++)
+	{
+		memcpy(hd->scope[s], schema + end, counts[s] * sizeof(SiftConnStamp));
+		hd->scope_journals[s] = counts[s];
+		end += counts[s] * sizeof(SiftConnStamp);
+	}
+}
+
 /* The schema and the unit directory of seg, read and checked against its header, made in cx */
 static SegHead *
 head_read(SiftColSegment *seg, MemoryContext cx)
@@ -92,23 +145,7 @@ head_read(SiftColSegment *seg, MemoryContext cx)
 	if (hd->schema->contain && seg->entry.format < SIFT_COL_FORMAT_CONTAIN)
 		corrupt(seg, "The schema has containment lanes, a segment of column format 1.%d cannot.", seg->entry.format);
 	if (hd->schema->connected || hd->schema->scoped)
-	{
-		uint32		tail[2];
-		int			nconn = sift_cschema_nconn(hd->schema),
-					nscope = sift_cschema_nscope(hd->schema);
-		const char *stamps;
-
-		if (h->dictroot_off < sizeof(tail))
-			corrupt(seg, "The schema section of a segment with derived leaves has no stamps.");
-		memcpy(tail, schema + h->dictroot_off - sizeof(tail), sizeof(tail));
-		if (tail[1] != SEG_STAMPS_MAGIC || tail[0] != (uint32) (nconn + nscope) || h->dictroot_off < sizeof(tail) + (nconn + nscope) * sizeof(SiftConnStamp))
-			corrupt(seg, "The stamps of the %d connections and %d scopes of the schema are not there.", nconn, nscope);
-		stamps = schema + h->dictroot_off - sizeof(tail) - (nconn + nscope) * sizeof(SiftConnStamp);
-		hd->nconn = nconn;
-		hd->nscope = nscope;
-		memcpy(hd->conn, stamps, nconn * sizeof(SiftConnStamp));
-		memcpy(hd->scope, stamps + nconn * sizeof(SiftConnStamp), nscope * sizeof(SiftConnStamp));
-	}
+		head_stamps(seg, hd, schema);
 	pfree(schema);
 	seg_read(seg, s[SIFT_SEC_DOCMAP].off + ALIGN8(h->dictroot_off), (Size) h->dictroot_n * sizeof(SiftColSBRef), dir);
 	for (uint32 i = 0; i < h->dictroot_n; i++)
@@ -200,15 +237,17 @@ sift_cseg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	memcpy(seg->conn, head->conn, sizeof(seg->conn));
 	seg->nscope = head->nscope;
 	memcpy(seg->scope, head->scope, sizeof(seg->scope));
+	memcpy(seg->scope_journals, head->scope_journals, sizeof(seg->scope_journals));
 	for (int i = 0; i < seg->nscope; i++)
-	{
+		for (int j = 0; j < seg->scope_journals[i]; j++)
+		{
 #ifdef SIFT_TESTING
-		if (entry->flags & SIFT_SEG_SCOPE)
-			seg->scope[i].reserved |= (uint32) sift_test_scope_unit_kind << 8;
+			if (entry->flags & SIFT_SEG_SCOPE)
+				seg->scope[i][j].reserved |= (uint32) sift_test_scope_unit_kind << 8;
 #endif
-		if (SIFT_SCOPE_KIND(seg->scope[i].reserved) != 0)
-			scope_refuse(index, entry);
-	}
+			if (SIFT_SCOPE_KIND(seg->scope[i][j].reserved) != 0)
+				scope_refuse(index, entry);
+		}
 	seg->nsb = h->dictroot_n;
 	seg->sbdir = head->sbdir;
 	pv->vers_at = ALIGN8(h->dictroot_off) + (Size) seg->nsb * sizeof(SiftColSBRef);

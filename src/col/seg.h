@@ -66,6 +66,8 @@ typedef struct SiftColFill
 {
 	void		(*batch) (struct SiftColFill *f, SiftColBatch *view);			/* fills the found flags of the rows of the view */
 	SiftConnStamp (*stamp) (const struct SiftColFill *f, int i);			/* the stamp connection i was filled under (lineage 0: none) */
+	int			(*scope_journals) (const struct SiftColFill *f, int scope);	/* the stamps of a scope (1, or 3 for one of two paths); NULL: a fill of connections only, no scopes */
+	SiftConnStamp (*scope_stamp) (const struct SiftColFill *f, int scope, int journal);	/* the stamp of journal j of the scope */
 	void		(*end) (struct SiftColFill *f);									/* the owner is done with it (sift_conn_fill_end) */
 } SiftColFill;
 extern void sift_colw_set_fill(SiftColSegWriter *w, SiftColFill *fill);
@@ -103,8 +105,9 @@ typedef struct SiftColSegment
 	void	   *priv;			/* zone arrays, dictionaries, liveness: loaded on demand */
 	int			nconn;			/* connections of the schema (col/conn.h) and the stamp of each (lineage 0: the segment holds no value of the parent for it) */
 	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];
-	int			nscope;			/* scopes of the schema (col/scope.h) and the stamp of each: the relation's snapshot the segment's entries were expanded under */
-	SiftConnStamp scope[SIFT_SCOPE_MAX];
+	int			nscope;			/* scopes of the schema (col/scope.h) and the stamps of each, one for each journal of the scope (lineage 0: none): the snapshot of the relations the segment's entries were expanded under */
+	SiftConnStamp scope[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];
+	int			scope_journals[SIFT_SCOPE_MAX];	/* the stamps the segment holds for each scope: 1, or one for each journal of a scope of two paths */
 } SiftColSegment;
 
 /* Reads the header, SCHEMA and SBDIR; ERRCODE_INDEX_CORRUPTED on inconsistencies (type/gen checks included). Everything lives in mcxt. */

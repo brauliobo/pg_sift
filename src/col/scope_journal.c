@@ -1,10 +1,12 @@
 /*
- * col/scope_journal.c - the journal of the scope relation of a scope index (col/scope.h, docs/COL-CONNECT.md "The rule")
+ * col/scope_journal.c - the journals of the scope relations of a scope index (col/scope.h, docs/COL-CONNECT.md "The rule")
  *
- * The scope segments hold the pairs (member, scope key) of the scope relation as of the stamp they were written under. What changed in the relation since is in its journal: a sift_col
- * index of the relation with track_changes = 'ctid' whose first column is the member key keeps, in its tombstone log, a record of kind KEYCHG for the member of every pair an UPDATE, DELETE
- * or key change ended and one of kind KEYADD for the member of every pair inserted (col/conn.c). The rule, the stamp, the verdicts and the set of changed keys are those of the connections of
- * 4.3; this file only finds the journal of a scope and applies them to it.
+ * The scope segments hold the pairs (member, scope key) as of the stamps they were written under. What changed in the relations since is in their journals: a sift_col
+ * index of a relation with track_changes = 'ctid' whose first column is the journaled key keeps, in its tombstone log, a record of kind KEYCHG for the key of every row an UPDATE,
+ * DELETE or key change ended and one of kind KEYADD for the key of every row inserted (col/conn.c). The rule, the stamp, the verdicts and the set of changed keys are those of the
+ * connections of 4.3; this file finds the journals of a scope and applies them to each. A scope of one path has one (the pairs relation keyed by its member); one of two paths has
+ * three, and a member's pairs depend on its direct rows (J1), on its rows in the via relation (J3) and on the rows of the joined relation of each of its groups (J2: its journal
+ * names the groups that changed, and the members of a group are the via relation's rows of it).
  */
 #include "postgres.h"
 
@@ -12,103 +14,238 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/xact.h"
+#include "executor/tuptable.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
 #include "col/scope.h"
 
-/* The scope relation of the scope and the index that journals it, both open and locked AccessShare; false: the scope is not declared now, its relation has no journal index, or it has two paths (no journal yet) */
+/* The relations of the journals of a scope, and the btree of the via relation that lists the members of a group, open and locked */
+typedef struct ScopeJournals
+{
+	int			n;
+	Relation	rel[SIFT_SCOPE_JOURNALS];
+	Relation	jidx[SIFT_SCOPE_JOURNALS];
+	Oid			via_btree;		/* two paths: the unique btree of the via relation, probed by its via column for the members of a group */
+	AttrNumber	via;
+	AttrNumber	member;
+} ScopeJournals;
+
+/*
+ * The relations and journal indexes of the journals of the scope, locked AccessShare (lock on the index: lock); false: the scope is not declared now, or one of its relations has no
+ * journal index. Journal j: 0 the pairs relation keyed by its member, 1 the joined relation keyed by its via column, 2 the via relation keyed by its member column.
+ */
 static bool
-journal_open(Relation index, int scope, LOCKMODE lock, Relation *rel, Relation *jidx)
+journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
+	const SiftScopeSpec *s;
 	Relation	heap;
-	AttrNumber	member,
-				key;
-	Oid			joid,
-				btree;
+	bool		ok = true;
 
-	if (specs == NULL || scope < 0 || scope >= specs->n || specs->s[scope]->joined != NULL)
+	*J = (ScopeJournals) {0};
+	if (specs == NULL || scope < 0 || scope >= specs->n)
 		return false;
+	s = specs->s[scope];
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	btree = sift_scope_relation_index(heap, index, specs->s[scope], rel, &member, &key);
-	table_close(heap, NoLock);
-	joid = sift_scope_journal_index(*rel, member, key, btree);
-	if (!OidIsValid(joid))
+	J->n = sift_scope_njournals(s);
+	for (int j = 0; j < J->n && ok; j++)
 	{
-		table_close(*rel, NoLock);
-		return false;
+		AttrNumber	a,
+					b;
+		Oid			btree = j == 0 ? sift_scope_relation_index(heap, index, s, &J->rel[j], &a, &b) : sift_scope_hop_index(heap, index, s, j, &J->rel[j], &a, &b);
+		Oid			joid = sift_scope_hop_journal(J->rel[j], j, a, b, btree);
+
+		if (j == 2)
+		{
+			J->via_btree = btree;
+			J->via = a;
+			J->member = b;
+		}
+		ok = OidIsValid(joid);
+		if (ok)
+			J->jidx[j] = index_open(joid, lock);
+		else
+			J->n = j + 1;
 	}
-	*jidx = index_open(joid, lock);
-	return true;
+	table_close(heap, NoLock);
+	return ok;
 }
 
 static void
-journal_close(Relation rel, Relation jidx)
+journals_close(ScopeJournals *J)
 {
-	index_close(jidx, NoLock);
-	table_close(rel, NoLock);
+	for (int j = 0; j < J->n; j++)
+	{
+		if (J->jidx[j] != NULL)
+			index_close(J->jidx[j], NoLock);
+		table_close(J->rel[j], NoLock);
+	}
+}
+
+bool
+sift_scope_two_paths(Relation index)
+{
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+
+	for (int i = 0; specs != NULL && i < specs->n; i++)
+		if (specs->s[i]->joined != NULL)
+			return true;
+	return false;
 }
 
 bool
 sift_scope_has_journal(Relation index, int scope)
 {
-	Relation	rel,
-				jidx;
+	ScopeJournals J;
+	bool		ok = journals_open(index, scope, AccessShareLock, &J);
 
-	if (!journal_open(index, scope, AccessShareLock, &rel, &jidx))
-		return false;
-	journal_close(rel, jidx);
-	return true;
+	journals_close(&J);
+	return ok;
 }
 
 SiftConnWhy
 sift_scope_take(Relation index, int scope, Snapshot snap, SiftConnStamp *stamp)
 {
-	Relation	rel,
-				jidx;
-	SiftConnWhy why;
+	ScopeJournals J;
+	SiftConnWhy why = SIFT_CONN_NO_JOURNAL;
 
-	*stamp = (SiftConnStamp) {0};
-	if (!journal_open(index, scope, AccessShareLock, &rel, &jidx))
-		return SIFT_CONN_NO_JOURNAL;
-	why = sift_conn_take(rel, jidx, snap, stamp, NULL);
-	journal_close(rel, jidx);
+	memset(stamp, 0, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
+	if (journals_open(index, scope, AccessShareLock, &J))
+		for (int j = 0; j < J.n && (j == 0 || why == SIFT_CONN_OK); j++)
+			why = sift_conn_take(J.rel[j], J.jidx[j], snap, &stamp[j], NULL);
+	journals_close(&J);
+	if (why != SIFT_CONN_OK)
+		memset(stamp, 0, SIFT_SCOPE_JOURNALS * sizeof(SiftConnStamp));
+	return why;
+}
+
+static SiftConnWhy
+journals_vouch(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap)
+{
+	SiftConnWhy why = SIFT_CONN_OK;
+
+	for (int j = 0; j < J->n && why == SIFT_CONN_OK; j++)
+		why = sift_conn_vouches(J->rel[j], J->jidx[j], &stamp[j], snap);
 	return why;
 }
 
 SiftConnWhy
 sift_scope_vouch(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap)
 {
-	Relation	rel,
-				jidx;
-	SiftConnWhy why;
+	ScopeJournals J;
+	SiftConnWhy why = SIFT_CONN_NO_JOURNAL;
 
-	if (!journal_open(index, scope, AccessShareLock, &rel, &jidx))
-		return SIFT_CONN_NO_JOURNAL;
-	why = sift_conn_vouches(rel, jidx, stamp, snap);
-	journal_close(rel, jidx);
+	if (journals_open(index, scope, AccessShareLock, &J))
+		why = journals_vouch(&J, stamp, snap);
+	journals_close(&J);
+	return why;
+}
+
+/* The members the changed groups have, with those of the journals of the members, as a growing array: compacted when it doubles the cap, so that it never holds many more than the cap */
+typedef struct MemberSet
+{
+	int64	   *m;
+	uint32		n;
+	uint32		space;
+	uint32		cap;
+	bool		over;
+} MemberSet;
+
+static void
+members_add(MemberSet *ms, int64 member)
+{
+	if (ms->n == ms->space)
+	{
+		ms->n = sift_conn_keys_sort_unique(ms->m, ms->n);
+		ms->over |= ms->n > ms->cap;
+		if (ms->n * 2 > ms->space)
+			ms->m = repalloc(ms->m, (ms->space = Max(ms->space * 2, 64)) * sizeof(int64));
+	}
+	ms->m[ms->n++] = member;
+}
+
+static bool
+member_of_group(void *arg, TupleTableSlot *slot)
+{
+	const ScopeJournals *J = ((void **) arg)[0];
+	MemberSet  *ms = ((void **) arg)[1];
+	int64		member;
+
+	if (sift_conn_slot_key(slot, J->member, &member))
+		members_add(ms, member);
+	return !ms->over;
+}
+
+/* The members of each group of keys that the via relation lists under snap, in ms */
+static void
+group_members(const ScopeJournals *J, const SiftConnKeys *groups, Snapshot snap, MemberSet *ms)
+{
+	SiftConnProbe *p;
+	SiftConnProbeScan s;
+	void	   *arg[2] = {(void *) J, ms};
+
+	if (groups->n == 0)
+		return;
+	p = sift_conn_probe_begin_on(CurrentMemoryContext, J->rel[2], J->via_btree, J->via, snap);
+	sift_conn_probe_open(p, &s);
+	for (uint32 i = 0; i < groups->n && !ms->over; i++)
+		sift_conn_probe_key(p, &s, groups->keys[i], member_of_group, arg);
+	sift_conn_probe_close(&s);
+}
+
+/* The union of the changed keys of the journals in k[0..n) and the members of the groups of k[1] */
+static SiftConnWhy
+journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
+{
+	SiftConnKeys k[SIFT_SCOPE_JOURNALS] = {{0}};
+	SiftConnWhy why = SIFT_CONN_OK;
+	MemberSet	ms = {.cap = cap};
+
+	for (int j = 0; j < J->n && why == SIFT_CONN_OK; j++)
+		why = sift_conn_changed_by(J->rel[j], J->jidx[j], &stamp[j], snap, cap, true, &k[j]);
+	if (why == SIFT_CONN_OK && J->n == 1)
+	{
+		*out = k[0];
+		return why;
+	}
+	if (why == SIFT_CONN_OK)
+	{
+		ms.m = palloc(64 * sizeof(int64));
+		ms.space = 64;
+		for (int j = 0; j < J->n; j += 2)
+			for (uint32 i = 0; i < k[j].n; i++)
+				members_add(&ms, k[j].keys[i]);
+		group_members(J, &k[1], snap, &ms);
+		ms.n = sift_conn_keys_sort_unique(ms.m, ms.n);
+		if (ms.over || ms.n > cap)
+			why = SIFT_CONN_OVERFLOW;
+		else
+			*out = (SiftConnKeys) {.keys = ms.m,.kept = palloc0(Max(ms.n, 1) * sizeof(bool)),.n = ms.n,.cap = ms.n};
+	}
+	for (int j = 0; j < J->n; j++)
+		sift_conn_keys_free(&k[j]);
+	if (why != SIFT_CONN_OK && ms.m != NULL)
+		pfree(ms.m);
 	return why;
 }
 
 SiftConnWhy
 sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {
-	Relation	rel,
-				jidx;
-	SiftConnWhy why;
+	ScopeJournals J;
+	SiftConnWhy why = SIFT_CONN_NO_JOURNAL;
 
 	*out = (SiftConnKeys) {0};
-	if (!journal_open(index, scope, AccessShareLock, &rel, &jidx))
-		return SIFT_CONN_NO_JOURNAL;
-	why = sift_conn_changed_by(rel, jidx, stamp, snap, cap, true, out);
-	journal_close(rel, jidx);
+	if (journals_open(index, scope, AccessShareLock, &J))
+		why = journals_changed(&J, stamp, snap, cap, out);
+	journals_close(&J);
 	return why;
 }
 
 /*
- * The journals of the scopes of the index, made when the build has read the table, as those of the parents of a connected child are (sift_conn_start): the writers of the scope relation
+ * The journals of the scopes of the index, made when the build has read the table, as those of the parents of a connected child are (sift_conn_start): the writers of the scope relations
  * are held out from here to the end of the statement, and an index that has one already is not locked at all.
  */
 void
@@ -119,23 +256,24 @@ sift_scope_start(Relation heap, Relation index)
 
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
-		Relation	rel,
-					jidx;
+		ScopeJournals J;
+		bool		ok = journals_open(index, i, ShareUpdateExclusiveLock, &J);
 
-		if (!journal_open(index, i, ShareUpdateExclusiveLock, &rel, &jidx))
-			continue;
-		if (!list_member_oid(seen, RelationGetRelid(jidx)))
-			(void) sift_conn_enable(rel, jidx);
-		seen = lappend_oid(seen, RelationGetRelid(jidx));
-		journal_close(rel, jidx);
+		for (int j = 0; ok && j < J.n; j++)
+		{
+			if (!list_member_oid(seen, RelationGetRelid(J.jidx[j])))
+				(void) sift_conn_enable(J.rel[j], J.jidx[j]);
+			seen = lappend_oid(seen, RelationGetRelid(J.jidx[j]));
+		}
+		journals_close(&J);
 	}
 	list_free(seen);
 }
 
 /*
- * Refresh: is a scope segment worth a rewrite for what its stamps say? The rule of sift_conn_stale for each scope whose journal vouches now: never filled (lineage 0), filled under a journal
- * the relation has since lost (REINDEX, TRUNCATE), the journal cannot tell what changed, or the members changed since the stamp are sift.col_connect_refresh_pct percent of the pairs of the
- * relation (an upper bound of its distinct members: below that a read patches them).
+ * Refresh: is a scope segment worth a rewrite for what its stamps say? The rule of sift_conn_stale for each scope whose journals vouch now: never filled (lineage 0), filled under a journal
+ * a relation has since lost (REINDEX, TRUNCATE) or without the journals the scope has now, a journal cannot tell what changed, or the members changed since the stamps are
+ * sift.col_connect_refresh_pct percent of the rows of the pairs relation, and for two paths of its via relation too (an upper bound of the distinct members: below that a read patches them).
  */
 struct SiftScopeStale
 {
@@ -143,9 +281,8 @@ struct SiftScopeStale
 	Snapshot	snap;
 	struct
 	{
-		Relation	rel,
-					jidx;
-		SiftConnStamp now;
+		ScopeJournals J;
+		SiftConnStamp now[SIFT_SCOPE_JOURNALS];
 		bool		vouches;
 		double		members;
 	}			s[SIFT_SCOPE_MAX];
@@ -162,10 +299,12 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 	st->n = sift_col_rel(index)->nscope;
 	st->snap = IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	for (int i = 0; i < st->n; i++)
-		if (journal_open(index, i, AccessShareLock, &st->s[i].rel, &st->s[i].jidx))
+		if (journals_open(index, i, AccessShareLock, &st->s[i].J))
 		{
-			st->s[i].vouches = sift_conn_take(st->s[i].rel, st->s[i].jidx, st->snap, &st->s[i].now, NULL) == SIFT_CONN_OK;
-			st->s[i].members = Max(sift_conn_rows_of(st->s[i].rel), 1);
+			const ScopeJournals *J = &st->s[i].J;
+
+			st->s[i].vouches = sift_scope_take(index, i, st->snap, st->s[i].now) == SIFT_CONN_OK;
+			st->s[i].members = Max(sift_conn_rows_of(J->rel[0]) + (J->n > 1 ? sift_conn_rows_of(J->rel[2]) : 0), 1);
 		}
 	return st;
 }
@@ -177,16 +316,20 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 		return false;
 	for (int i = 0; i < st->n; i++)
 	{
-		SiftConnStamp stamp = i < seg->nscope ? seg->scope[i] : (SiftConnStamp) {0};
+		const ScopeJournals *J = &st->s[i].J;
+		SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {{0}};
 		double		limit = st->s[i].members * sift_col_connect_refresh_pct / 100;
 		SiftConnKeys keys;
 		bool		many;
 
 		if (!st->s[i].vouches)
 			continue;
-		if (stamp.lineage != st->s[i].now.lineage)
-			return true;
-		if (sift_conn_changed_by(st->s[i].rel, st->s[i].jidx, &stamp, st->snap, (uint32) Max(limit, 1), true, &keys) != SIFT_CONN_OK)
+		if (i < seg->nscope && seg->scope_journals[i] == J->n)
+			memcpy(stamp, seg->scope[i], J->n * sizeof(SiftConnStamp));
+		for (int j = 0; j < J->n; j++)
+			if (stamp[j].lineage != st->s[i].now[j].lineage)
+				return true;
+		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
 		many = keys.n >= limit;
 		sift_conn_keys_free(&keys);
@@ -200,6 +343,5 @@ void
 sift_scope_stale_end(SiftScopeStale *st)
 {
 	for (int i = 0; i < st->n; i++)
-		if (st->s[i].jidx != NULL)
-			journal_close(st->s[i].rel, st->s[i].jidx);
+		journals_close(&st->s[i].J);
 }

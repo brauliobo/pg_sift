@@ -551,9 +551,14 @@ CREATE FUNCTION sift._test_scope_take(index regclass, scope int, OUT lineage int
 CREATE FUNCTION sift._test_scope_legs(index regclass, scope int, OUT leg int, OUT rel regclass, OUT member text, OUT key text, OUT btree regclass, OUT pred text,
 	OUT via_rel regclass, OUT via_join text, OUT via_member text, OUT via_btree regclass, OUT via_pred text) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_legs' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid) RETURNS text
+CREATE FUNCTION sift._test_scope_stamps(index regclass, scope int, OUT journal int, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_stamps' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_scope_journal_stamps(index regclass, OUT gen int8, OUT family text, OUT scope int, OUT journal int, OUT lineage int8, OUT horizon xid) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_scope_journal_stamps' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_scope_vouch(index regclass, scope int, lineage int8, horizon xid, lineage2 int8 DEFAULT 0, lineage3 int8 DEFAULT 0) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_scope_vouch' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, OUT why text, OUT key int8) RETURNS SETOF record
+CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, lineage int8, horizon xid, cap int DEFAULT 1000000, lineage2 int8 DEFAULT 0, lineage3 int8 DEFAULT 0,
+	OUT why text, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_journal_changes' LANGUAGE C STRICT;
 
 -- sets or clears the by-reference flag in the directory entry of every scope segment of an index, as a later release would write it

@@ -403,7 +403,7 @@ sift_test_col_conn_stamps(PG_FUNCTION_ARGS)
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 		for (int c = 0; c < seg->nconn + seg->nscope; c++)
 		{
-			const SiftConnStamp *st = c < seg->nconn ? &seg->conn[c] : &seg->scope[c - seg->nconn];
+			const SiftConnStamp *st = c < seg->nconn ? &seg->conn[c] : &seg->scope[c - seg->nconn][0];
 			Datum		v[4] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(c), Int64GetDatum((int64) st->lineage),
 							TransactionIdGetDatum(st->xmin)};
 			bool		nulls[4] = {false};

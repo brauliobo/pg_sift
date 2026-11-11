@@ -39,6 +39,55 @@ sift_col_write_minor(const SiftColSchema *schema, int setting, bool kinds_exact)
 	return minor;
 }
 
+/* The stamps a scope of the segment has: one for each journal of its fill, one empty one without */
+static int
+segw_scope_journals(const SiftColSegWriter *w, int s)
+{
+	return w->fill && w->fill->scope_journals ? w->fill->scope_journals(w->fill, s) : 1;
+}
+
+/* Does a scope of the segment have a stamp for each journal of two paths (column format 49), the layout of seg.c head_stamps */
+static bool
+segw_scope_multi(const SiftColSegWriter *w)
+{
+	for (int s = 0; s < sift_cschema_nscope(w->schema); s++)
+		if (segw_scope_journals(w, s) > 1)
+			return true;
+	return false;
+}
+
+/* The stamps of the connections and then those of the scopes follow the schema, and a tail of the count, where a reader of the schema looks at no more than it needs */
+static void
+segw_put_stamps(const SiftColSegWriter *w, StringInfo schema)
+{
+	int			nconn = sift_cschema_nconn(w->schema),
+				nscope = sift_cschema_nscope(w->schema);
+	bool		multi = segw_scope_multi(w);
+	uint32		tail[2] = {nconn, multi ? SEG_STAMPS_JOURNALS_MAGIC : SEG_STAMPS_MAGIC};
+	uint32		counts[SIFT_SCOPE_MAX];
+
+	for (int i = 0; i < nconn; i++)
+	{
+		SiftConnStamp st = w->fill ? w->fill->stamp(w->fill, i) : (SiftConnStamp) {0};
+
+		appendBinaryStringInfo(schema, (char *) &st, sizeof(st));
+	}
+	for (int s = 0; s < nscope; s++)
+	{
+		counts[s] = segw_scope_journals(w, s);
+		tail[0] += counts[s];
+		for (int j = 0; j < counts[s]; j++)
+		{
+			SiftConnStamp st = w->fill && w->fill->scope_stamp ? w->fill->scope_stamp(w->fill, s, j) : (SiftConnStamp) {0};
+
+			appendBinaryStringInfo(schema, (char *) &st, sizeof(st));
+		}
+	}
+	if (multi)
+		appendBinaryStringInfo(schema, (char *) counts, nscope * sizeof(uint32));
+	appendBinaryStringInfo(schema, (char *) tail, sizeof(tail));
+}
+
 SiftColSegWriter *
 sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, const SiftCcPolicy *pol, int format, MemoryContext mcxt)
 {
@@ -548,7 +597,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->schema->connected)
 		w->format = Max(w->format, SIFT_COL_FORMAT_CONN);
 	if (w->schema->scoped)
-		w->format = Max(w->format, SIFT_COL_FORMAT_SCOPE);
+		w->format = Max(w->format, segw_scope_multi(w) ? SIFT_COL_FORMAT_TWOHOP : SIFT_COL_FORMAT_SCOPE);
 	if (w->anymeaslen)
 		w->format = Max(w->format, SIFT_COL_FORMAT_MEASLEN);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
@@ -605,19 +654,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	sift_cschema_serialize(w->schema, &schema);
 	segw_sw_pad8(w->sw);
 	if (w->schema->connected || w->schema->scoped)
-	{
-		/* the stamps of the connections and then those of the scopes follow the schema: [n stamps][n][magic], where a reader of the schema looks at no more than it needs */
-		int			nstamps = sift_cschema_nconn(w->schema) + sift_cschema_nscope(w->schema);
-		uint32		tail[2] = {(uint32) nstamps, SEG_STAMPS_MAGIC};
-
-		for (int i = 0; i < nstamps; i++)
-		{
-			SiftConnStamp st = w->fill ? w->fill->stamp(w->fill, i) : (SiftConnStamp) {0};
-
-			appendBinaryStringInfo(&schema, (char *) &st, sizeof(st));
-		}
-		appendBinaryStringInfo(&schema, (char *) tail, sizeof(tail));
-	}
+		segw_put_stamps(w, &schema);
 	h.sections[SIFT_SEC_DOCMAP].off = sift_sw_tell(w->sw);
 	h.dictroot_off = schema.len;
 	segw_write_mirrored(w, MIR_HEAD, schema.data, schema.len);

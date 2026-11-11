@@ -130,7 +130,7 @@ NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
 NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
-NOTICE:  sift_col index "facts_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+NOTICE:  sift_col index "facts_col" has a scope: column format minor 49, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS edges;

@@ -563,7 +563,8 @@ extern bool seg_mirror_copy(const SiftColSegment *seg, uint64 off, Size len, voi
 extern void seg_read_stream(SiftColSegment *seg, uint64 off, Size len, void *dst);
 
 /* What sift_cseg_open checks and parses from the header page (the schema and the unit directory), with the header it was made under */
-#define SEG_STAMPS_MAGIC	0x50545343	/* "CSTP" */
+#define SEG_STAMPS_MAGIC	0x50545343	/* "CSTP": the stamps are those of the connections, then one for each scope */
+#define SEG_STAMPS_JOURNALS_MAGIC	0x4A545343	/* "CSTJ": ... a scope has a stamp for each of its journals, the number of each (SIFT_SCOPE_MAX bytes) before the count */
 
 typedef struct SegHead
 {
@@ -574,7 +575,8 @@ typedef struct SegHead
 	int			nconn;
 	SiftConnStamp conn[SIFT_CONN_MAX_CONNECTIONS];	/* the stamps after the schema of a segment with connection flags, then those of its scopes */
 	int			nscope;
-	SiftConnStamp scope[SIFT_SCOPE_MAX];
+	SiftConnStamp scope[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];
+	int			scope_journals[SIFT_SCOPE_MAX];	/* the stamps each scope has in the segment (1: the stamp of its relation; 3: one for each journal of two paths) */
 	bool		mirror_sound;	/* the checksum of the mirror of the header it was made under was checked: the backend does not again for each statement */
 } SegHead;
 

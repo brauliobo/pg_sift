@@ -97,19 +97,31 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
  * that holds the scope key (the journal index; the lowest oid that qualifies). Its tombstone log keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended
  * and a KEYADD record for the member of every pair inserted; the rule that reads them is the one of the connections (col/conn.h, docs/COL-CONNECT.md). The scope is the ordinal of the
  * scope in the declaration of the fact index; a scope whose relation has no journal index vouches for nothing (SIFT_CONN_NO_JOURNAL).
+ *
+ * A scope of two paths depends on three journals, each with a stamp of its own (column format minor 49): J1, the pairs relation keyed by its member; J2, the joined relation keyed by its via
+ * column (the groups whose keys changed); J3, the via relation keyed by its member column (the members whose groups changed). The members whose pairs changed are those of J1 and J3 and the
+ * members of every group of J2, read from the recorded btree of the via relation under the reader's snapshot. The stamps of a scope are an array of its journals (sift_scope_njournals).
  */
+#define sift_scope_njournals(s) ((s)->joined != NULL ? SIFT_SCOPE_JOURNALS : 1)
 /* The journal index of the relation for the pairs defined by pair_btree: a plain index, or one whose predicate the predicate of pair_btree implies (every pair is in it); InvalidOid when it has none */
 extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
 /* ... and the one whose leaves list exactly the pairs, InvalidOid when there is none */
 extern Oid	sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
+/* ... of relation hop of the declaration (0 the pairs relation, 1 the joined one, 2 the via one) with the columns (a, b) it names and the btree that defines its rows: the journaled column is a, and b for the via relation (its member) */
+extern Oid	sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumber b, Oid btree);
 extern bool sift_scope_has_journal(Relation index, int scope);
+/* Does the index declare a scope of two paths (column format minor 49) */
+extern bool sift_scope_two_paths(Relation index);
 /* The journals of the scopes of the index, made when its build has read the table (the writers of the scope relation are held out to the end of the statement) */
 extern void sift_scope_start(Relation heap, Relation index);
-/* The stamp of the scope relation's journal at snap: fill, promotion and merge take it before they read the relation (lineage 0 and the reason when the journal cannot vouch) */
+/* The stamps of the journals of the scope at snap (the journals of the scope, SIFT_SCOPE_JOURNALS at most): fill, promotion and merge take them before they read the relations (lineage 0 and the reason when a journal cannot vouch) */
 extern SiftConnWhy sift_scope_take(Relation index, int scope, Snapshot snap, SiftConnStamp *stamp);
-/* May a derivation stamped so be read by snap */
+/* May a derivation stamped so be read by snap: every journal vouches for its stamp */
 extern SiftConnWhy sift_scope_vouch(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap);
-/* The members whose pairs changed in (X, S], ended or inserted: sorted, unique, at most cap (SIFT_CONN_OVERFLOW), the keys palloc'd in the current context (sift_conn_keys_free) */
+/*
+ * The members whose pairs changed in (X, S], ended or inserted: sorted, unique, at most cap (SIFT_CONN_OVERFLOW), the keys palloc'd in the current context (sift_conn_keys_free). Of two paths: those of
+ * the journals of the pairs relation and of the via relation and the members of every group of the joined relation's journal that the via relation lists under snap.
+ */
 extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 
 /*
@@ -129,10 +141,9 @@ extern void sift_scope_stale_end(SiftScopeStale *st);
 struct SiftScopeFill;
 extern struct SiftScopeFill *sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows);
 extern void sift_scope_fill_end(struct SiftScopeFill *f);
-/* A fill that expands nothing and gives the n scopes the stamps it is told (the writers of a merge); sift_scope_stamp_older: the stamp of a merge of segments stamped a and b */
-extern struct SiftScopeFill *sift_scope_fill_carry(MemoryContext mcxt, int n, const SiftConnStamp *stamp);
+/* A fill that expands nothing and gives the scopes of the index the stamps it is told (the writers of a merge); sift_scope_stamp_older: the stamp of a merge of segments stamped a and b */
+extern struct SiftScopeFill *sift_scope_fill_carry(Relation index, MemoryContext mcxt, const SiftConnStamp (*stamp)[SIFT_SCOPE_JOURNALS]);
 extern SiftConnStamp sift_scope_stamp_older(SiftConnStamp a, SiftConnStamp b);
-extern SiftConnStamp sift_scope_fill_stamp(const struct SiftScopeFill *f, int scope);
 /* The leaf of the fact index that holds the member key of the scope */
 extern int	sift_scope_fill_fk_leaf(const struct SiftScopeFill *f, int scope);
 /* The fill the writers of segments of the index are given: its stamps are those of the connections (conn, nconn of them: NULL and 0 for none, whose fill it also fills and ends) and then those of the scopes */

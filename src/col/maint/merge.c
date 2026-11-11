@@ -450,7 +450,7 @@ typedef struct MergeOut
 	bool		scoped;			/* entities: every segment merged has SIFT_SEG_SCOPED, so the one written has */
 	int			cut0;			/* the leaf the units of the output are cut by, -1 for none */
 	int			nconn;
-	SiftConnStamp carry[SIFT_SCOPE_MAX];	/* the stamps of the scopes of the output: the oldest of the segments merged, whose entries it holds */
+	SiftConnStamp carry[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];	/* the stamps of the scopes of the output, one for each journal: the oldest of the segments merged, whose entries it holds */
 } MergeOut;
 
 /* The latest of the stamps of the segments, none when one has no stamp: a row of it may have an inserter that did not commit */
@@ -493,7 +493,7 @@ out_begin(MergeOut *o)
 	sift_colw_set_index_rows(o->w, o->index_rows);
 	o->fill = sift_conn_fill_begin(o->index, o->pcx, (o->live_rows - o->rows_done) / Max(o->parts - o->nneu, 1));
 	if (o->schema->scoped)
-		o->fill = sift_scope_fill_hook(sift_scope_fill_carry(o->pcx, sift_cschema_nscope(o->schema), o->carry), o->fill, o->nconn);
+		o->fill = sift_scope_fill_hook(sift_scope_fill_carry(o->index, o->pcx, o->carry), o->fill, o->nconn);
 	sift_colw_set_fill(o->w, o->fill);
 	if (o->pagg) sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
@@ -628,7 +628,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		live_rows += sift_cseg_live_rows(seg[i]);
 		o.scoped &= (in[i].flags & SIFT_SEG_SCOPED) != 0;
 		for (int k = 0; k < nscope; k++)
-			o.carry[k] = i == 0 ? seg[i]->scope[k] : sift_scope_stamp_older(o.carry[k], seg[i]->scope[k]);
+			for (int j = 0; j < SIFT_SCOPE_JOURNALS; j++)
+				o.carry[k][j] = i == 0 ? seg[i]->scope[k][j] : sift_scope_stamp_older(o.carry[k][j], seg[i]->scope[k][j]);
 	}
 	/*
 	 * Equal partitions (a short last one would be an overlay of every later rewrite): as many as the live bytes of the inputs make of part_bytes, cut by

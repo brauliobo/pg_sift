@@ -106,6 +106,7 @@ typedef struct SiftColIndexMeta
  */
 #define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
 #define SIFT_SCOPE_MAX				4		/* scopes of one index (col/scope.h) */
+#define SIFT_SCOPE_JOURNALS			3		/* journals a scope depends on: the pairs relation, and for two paths the joined relation and the via relation */
 
 typedef struct SiftConnStamp
 {

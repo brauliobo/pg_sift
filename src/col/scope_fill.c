@@ -3,7 +3,8 @@
  *
  * For each scope the fill knows the pairs (member, scope key) of the relation under a snapshot the way the fill of the found flags knows a parent (col/conn_fill.c): by reading the relation
  * once into the pairs sorted by member, or by asking its unique btree for the members of each batch, whichever the rows to fill make cheaper (the same price rule and the same btree probe). The stamp is taken before the
- * relation is read, from the journal of the relation (col/scope_journal.c): lineage 0 (and the snapshot's xmin) when the relation has no journal that vouches for the snapshot.
+ * relation is read, from the journal of the relation (col/scope_journal.c): lineage 0 (and the snapshot's xmin) when the relation has no journal that vouches for the snapshot. A scope
+ * of two paths has a stamp for each of its three journals.
  * A scope of two paths has the DISTINCT union of the pairs of its relation and of the joined ones, (member, key) for each row of the second relation (via, key) and each member of the third
  * (via, member) with the same via: the three are read, or asked, in the way of one, and a member's keys are the keys of its pairs and of the keys of each of its via values.
  */
@@ -81,7 +82,8 @@ typedef struct ScopeProbe
 
 typedef struct ScopeMap
 {
-	SiftConnStamp stamp;
+	int			njournals;		/* the stamps of the scope: 1, or one for each journal of two paths */
+	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 	int			fk_leaf;		/* the leaf of the fact index that holds the member key */
 	ScopePair  *pairs;			/* the key set: every pair, sorted and distinct (NULL: the probes) */
 	uint64		npairs;
@@ -253,16 +255,17 @@ probe_begin(ScopeProbe *p, MemoryContext cx, const ScopeSrc *src, AttrNumber by,
 
 /*
  * The sources are open (AccessShare, held to the end of the transaction), each with its unique btree on its two columns, in either order: the pairs relation, and for two paths the joined
- * relation (via, key) and the via relation (via, member). stamp is the stamp of the journal of the pairs relation taken before it is read (lineage 0: the journal cannot vouch, the
- * entries are written all the same and a reader will not take them for the relation's).
+ * relation (via, key) and the via relation (via, member). stamp is the stamp of each journal taken before the relations are read (lineage 0: the journal cannot vouch, the
+ * entries are written all the same and a reader will not take them for the relations').
  */
 static void
-map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot snap, uint64 rows, SiftConnStamp stamp)
+map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot snap, uint64 rows, const SiftConnStamp *stamp)
 {
 	double		parent_rows = 0;
 
 	m->cx = f->cx;
-	m->stamp = stamp;
+	m->njournals = nsrc == 3 ? SIFT_SCOPE_JOURNALS : 1;
+	memcpy(m->stamp, stamp, m->njournals * sizeof(SiftConnStamp));
 	m->hops = nsrc == 3;
 	for (int i = 0; i < nsrc; i++)
 		parent_rows += sift_conn_rows_of(src[i].rel);
@@ -279,6 +282,8 @@ map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot
 
 static void hook_batch(SiftColFill *hook, SiftColBatch *view);
 static SiftConnStamp hook_stamp(const SiftColFill *hook, int i);
+static int	hook_scope_journals(const SiftColFill *hook, int scope);
+static SiftConnStamp hook_scope_stamp(const SiftColFill *hook, int scope, int journal);
 static void hook_end(SiftColFill *hook);
 
 static SiftScopeFill *
@@ -288,7 +293,7 @@ fill_new(MemoryContext mcxt, int n)
 
 	f->cx = mcxt;
 	f->n = n;
-	f->hook = (SiftColFill) {.batch = hook_batch,.stamp = hook_stamp,.end = hook_end};
+	f->hook = (SiftColFill) {.batch = hook_batch,.stamp = hook_stamp,.scope_journals = hook_scope_journals,.scope_stamp = hook_scope_stamp,.end = hook_end};
 	return f;
 }
 
@@ -333,14 +338,15 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		const SiftScopeSpec *sp = specs->s[i];
 		int			nsrc = sp->joined ? 3 : 1;
 		ScopeSrc	src[3];
-		SiftConnStamp stamp;
+		SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 
 		src[0].btree = sift_scope_relation_index(heap, index, sp, &src[0].rel, &src[0].a, &src[0].b);
 		for (int h = 1; h < nsrc; h++)
 			src[h].btree = sift_scope_hop_index(heap, index, sp, h, &src[h].rel, &src[h].a, &src[h].b);
-		/* the stamp comes before the first read of the relation */
-		if (sift_scope_take(index, i, f->snap, &stamp) != SIFT_CONN_OK)
-			stamp.xmin = f->snap->xmin;
+		/* the stamps come before the first read of the relations */
+		if (sift_scope_take(index, i, f->snap, stamp) != SIFT_CONN_OK)
+			for (int j = 0; j < nsrc; j++)
+				stamp[j].xmin = f->snap->xmin;
 		f->m[i].fk_leaf = r->first[r->schema->cols[r->scope_leaf[i]].attno];
 		map_begin(f, &f->m[i], src, nsrc, f->snap, rows, stamp);
 		for (int h = 0; h < nsrc; h++)
@@ -359,20 +365,24 @@ sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumbe
 	ScopeSrc	src = {rel, btree, member, key};
 
 	fill_snapshot(f);
-	map_begin(f, &f->m[0], &src, 1, f->snap, rows, (SiftConnStamp) {.xmin = f->snap->xmin});
+	map_begin(f, &f->m[0], &src, 1, f->snap, rows, &(SiftConnStamp) {.xmin = f->snap->xmin});
 	fill_done(f);
 	return f;
 }
 #endif
 
-/* A fill that expands nothing and stamps the scopes as it is told: what the merge of segments writes, whose entries are copies of the inputs' */
+/* A fill that expands nothing and stamps the scopes of the index as it is told: what the merge of segments writes, whose entries are copies of the inputs' */
 SiftScopeFill *
-sift_scope_fill_carry(MemoryContext mcxt, int n, const SiftConnStamp *stamp)
+sift_scope_fill_carry(Relation index, MemoryContext mcxt, const SiftConnStamp (*stamp)[SIFT_SCOPE_JOURNALS])
 {
-	SiftScopeFill *f = fill_new(mcxt, n);
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+	SiftScopeFill *f = fill_new(mcxt, specs->n);
 
-	for (int i = 0; i < n; i++)
-		f->m[i].stamp = stamp[i];
+	for (int i = 0; i < f->n; i++)
+	{
+		f->m[i].njournals = sift_scope_njournals(specs->s[i]);
+		memcpy(f->m[i].stamp, stamp[i], f->m[i].njournals * sizeof(SiftConnStamp));
+	}
 	return f;
 }
 
@@ -397,19 +407,13 @@ sift_scope_fill_end(SiftScopeFill *f)
 		f->snap = NULL;
 }
 
-SiftConnStamp
-sift_scope_fill_stamp(const SiftScopeFill *f, int scope)
-{
-	return f->m[scope].stamp;
-}
-
 int
 sift_scope_fill_fk_leaf(const SiftScopeFill *f, int scope)
 {
 	return f->m[scope].fk_leaf;
 }
 
-/* The stamps of a segment of a scope index are those of its connections, then those of its scopes; only the found flags are filled per batch */
+/* The stamps of a segment of a scope index are those of its connections, then those of the journals of each scope; only the found flags are filled per batch */
 static void
 hook_batch(SiftColFill *hook, SiftColBatch *view)
 {
@@ -423,7 +427,19 @@ hook_stamp(const SiftColFill *hook, int i)
 {
 	const SiftScopeFill *f = (const SiftScopeFill *) hook;
 
-	return i < f->nconn ? f->conn->stamp(f->conn, i) : f->m[i - f->nconn].stamp;
+	return f->conn->stamp(f->conn, i);
+}
+
+static int
+hook_scope_journals(const SiftColFill *hook, int scope)
+{
+	return ((const SiftScopeFill *) hook)->m[scope].njournals;
+}
+
+static SiftConnStamp
+hook_scope_stamp(const SiftColFill *hook, int scope, int journal)
+{
+	return ((const SiftScopeFill *) hook)->m[scope].stamp[journal];
 }
 
 static void

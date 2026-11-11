@@ -376,6 +376,12 @@ sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, 
 	return OidIsValid(journal) && predicate_implied_by(index_predicate(pair_btree), index_predicate(journal), false) ? journal : InvalidOid;
 }
 
+Oid
+sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumber b, Oid btree)
+{
+	return hop == 2 ? journal_scan(rel, b, a, btree, false) : journal_scan(rel, a, b, btree, false);
+}
+
 /* Relation i of the declaration: 0 the pairs (member, scope key), 1 the joined path (via, scope key), 2 the members of the via column (via, member) */
 static const SiftScopeRel *
 decl_rel(const SiftScopeSpec *s, int i)
@@ -694,9 +700,16 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 			btree[h] = choose_btree(index, s, h, rel[h], att[h][0], att[h][1], sticky);
 			keep = list_append_unique_oid(keep, btree[h]);
 		}
-		/* a scope of two paths has no journal yet: its reads say so and read the entity rows */
+		/* a scope of one path needs its journal; one of two paths vouches for nothing without the three it finds, which a later REINDEX of this index finds as well */
 		if (npath == 1)
 			keep = list_append_unique_oid(keep, require_journal(s, rel[0], att[0][0], att[0][1], btree[0]));
+		for (int h = 0; npath == 3 && h < npath; h++)
+		{
+			Oid			journal = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
+
+			if (OidIsValid(journal))
+				keep = list_append_unique_oid(keep, journal);
+		}
 		for (int h = 0; h < npath; h++)
 			table_close(rel[h], NoLock);
 	}

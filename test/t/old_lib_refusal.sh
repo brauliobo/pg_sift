@@ -48,6 +48,8 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	done
 	# and the scope index of 5.0 (column format 45): the 4.3 release refuses it with the format error and the standard hint, and reads an index without a scope
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-scope" SIFT_PORT=$((SIFT_PORT + 23)) "$REPO/scripts/old-lib-check.sh" scope 2>&1)
+	# and a scope of two paths (column format 49): the same release refuses it, and the index with a scope of one path stays at 45
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-twohop" SIFT_PORT=$((SIFT_PORT + 24)) "$REPO/scripts/old-lib-check.sh" twohop 2>&1)
 fi
 if ((rc == 77)); then
 	echo "1..0 # SKIP $(grep -h '^SKIP ' <<<"$out" | head -1 | sed 's/^SKIP //')"

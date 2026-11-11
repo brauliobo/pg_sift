@@ -60,6 +60,9 @@ typedef struct SiftConnGen
 
 #define SIFT_CONN_GEN_COMPLETE	0x0001
 
+/* The distinct values of a[0..n), ascending: sorts in place and returns how many */
+extern uint32 sift_conn_keys_sort_unique(int64 *a, uint32 n);
+
 /* The changed keys of changed(S, X): sorted, unique, as int64 (the value of the parent key column widened) */
 typedef struct SiftConnKeys
 {

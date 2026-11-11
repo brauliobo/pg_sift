@@ -163,6 +163,19 @@ cmp_key(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
+uint32
+sift_conn_keys_sort_unique(int64 *a, uint32 n)
+{
+	uint32		k = 0;
+
+	if (n > 0)
+		qsort(a, n, sizeof(int64), cmp_key);
+	for (uint32 i = 0; i < n; i++)
+		if (k == 0 || a[i] != a[k - 1])
+			a[k++] = a[i];
+	return k;
+}
+
 /* The keys of the parent under snap, or NULL when they need more than `limit` bytes (a bit a slot of the range, or 9 bytes a key) */
 SiftConnKeySet *
 sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit)

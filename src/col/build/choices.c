@@ -627,7 +627,7 @@ derive(Relation heap, Relation index, int kinds, bool build, int *minor)
 			derive_fn[i].fn(&d);
 	}
 	if (sift_scope_specs(index) != NULL)
-		need_minor(&d, SIFT_COL_FORMAT_SCOPE);
+		need_minor(&d, sift_scope_two_paths(index) ? SIFT_COL_FORMAT_TWOHOP : SIFT_COL_FORMAT_SCOPE);
 	if (minor)
 		*minor = d.minor;
 	return d.out;

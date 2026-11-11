@@ -26,6 +26,7 @@
 #                                                       writes the layout it reads, and this tree then reads that index as it reads its own (answers, verify) and writes the leaf again at the next REINDEX
 #   scripts/old-lib-check.sh scope                      the scope index of 5.0 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
 #                                                       with the format error and the standard hint (use a newer pg_sift), reads the second and the heap, and reads a plain index made in its place of the scope index
+#   scripts/old-lib-check.sh twohop                     the same for a scope of two paths (column format minor 49): the older library refuses it, an index with a scope of one path stays at 45
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -355,12 +356,26 @@ include() {
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 }
 
-# the scope index (column format 45): the older library must refuse it, and read what has no scope
+# the scope index (column format 45; a scope of two paths: 49): the older library must refuse it, and read what has no scope
 scope() {
-	local root log want
+	local root log want mode=${1:-scope} fmt decl setup
 	OLD_REF=${SIFT_OLD_REF:-v4.3.0}
-	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-scope}
+	export SIFT_TMP=${SIFT_TMP:-$([[ -d /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}")/sift-old-lib-$mode}
 	export SIFT_PORT=${SIFT_PORT:-56146}
+	if [[ $mode == twohop ]]; then
+		fmt=$(colfmt TWOHOP)
+		decl='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'
+		setup=(-c "CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int)" -c "CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id)"
+			-c "CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id)" -c "CREATE TABLE memberships (group_id int, dim_a_id int, PRIMARY KEY (group_id, dim_a_id))"
+			-c "INSERT INTO grants SELECT m, 1 + m % 9, m, NULL FROM generate_series(1, 200) m" -c "INSERT INTO grants SELECT 200 + g, 1 + g % 9, NULL, g FROM generate_series(1, 20) g"
+			-c "INSERT INTO memberships SELECT 1 + m % 20, m FROM generate_series(1, 210) m")
+	else
+		fmt=$(colfmt SCOPE)
+		decl='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'
+		setup=(-c "CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id))"
+			-c "INSERT INTO tenant_scope SELECT m, 1 + (m * 7 + j) % 9 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4"
+			-c "CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')")
+	fi
 	root=$(build) || exit $?
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
 	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
@@ -368,22 +383,21 @@ scope() {
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
 	local q="SELECT count(*) || ':' || sum(v) FROM events" qp="SELECT count(*) || ':' || sum(v) FROM events_plain"
 	"$PG" start >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
-	psql_new -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id))" \
-		-c "INSERT INTO tenant_scope SELECT m, 1 + (m * 7 + j) % 9 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4" \
+	psql_new -c "CREATE EXTENSION pg_sift" "${setup[@]}" \
 		-c "CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int)" \
 		-c "INSERT INTO events SELECT i, 1 + i % 210, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(1, 20000) i" \
 		-c "CREATE TABLE events_plain AS SELECT * FROM events" \
-		-c "CREATE INDEX scope_ix ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
+		-c "CREATE INDEX scope_ix ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = '$decl')" \
 		-c "CREATE INDEX plain_ix ON events_plain USING sift_col (id, dim_a_id, created_at, v)" -c "VACUUM (FREEZE, ANALYZE) events, events_plain" >/dev/null ||
 		{ fail "this tree writes the indexes"; "$PG" stop >/dev/null; return; }
 	want=$(psql_new -c "SET sift.enable_agg = off" -c "$q" | tail -1)
-	[[ $(psql_new -c "SELECT max(format) FROM sift.col_segments('scope_ix') WHERE kind = 'immutable'") == "$(colfmt SCOPE)" && \
-		$(psql_new -c "SELECT max(format) < $(colfmt SCOPE) FROM sift.col_segments('plain_ix') WHERE kind = 'immutable'") == t ]] &&
-		pass "this tree writes column format $(colfmt SCOPE) for the index with a scope and an older one for the index without" ||
-		fail "this tree writes column format $(colfmt SCOPE) for the index with a scope and an older one for the index without"
+	[[ $(psql_new -c "SELECT max(format) FROM sift.col_segments('scope_ix') WHERE kind = 'immutable'") == "$fmt" && \
+		$(psql_new -c "SELECT max(format) < $fmt FROM sift.col_segments('plain_ix') WHERE kind = 'immutable'") == t ]] &&
+		pass "this tree writes column format $fmt for the index with a scope and an older one for the index without" ||
+		fail "this tree writes column format $fmt for the index with a scope and an older one for the index without"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
-	FORMAT_ERROR="column format 1\\.$(colfmt SCOPE)"
+	FORMAT_ERROR="column format 1\\.$fmt"
 	expect_refused "the older library refuses the index with a scope with the format error" "SET sift.agg_force = on; SET sift.enable_agg = on; SELECT count(*) FROM events WHERE v = 3"
 	[[ $ERR == *'Use a newer pg_sift'* ]] && pass "... and the standard hint" || fail "... and the standard hint (got [$ERR])"
 	expect_refused "... as it does a plain read of the table: the planner opens the indexes of the table" "SET sift.enable_agg = off; $q"
@@ -528,5 +542,6 @@ case ${1:-} in
 	track) track; exit $FAILED ;;
 	present) present; exit $FAILED ;;
 	scope) scope; exit $FAILED ;;
+	twohop) scope twohop; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac
