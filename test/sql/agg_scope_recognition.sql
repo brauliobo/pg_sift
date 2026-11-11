@@ -137,10 +137,8 @@ RESET sift.agg_scope;
 SELECT count(*) > 0 AS members_in_two_keys FROM (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 5, 9) GROUP BY dim_a_id HAVING count(*) > 1) t;
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, two keys', 'IN, three keys', 'IN, ANY array', 'EXISTS, two keys') ORDER BY name;
 
--- a parameter of a generic plan is not known: the join; the custom plan has the constant
+-- a parameter of a generic plan is a key the scan evaluates when it starts (agg_scope_param_keys); the custom plan has the constant
 PREPARE by_param(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind;
-SET plan_cache_mode = force_generic_plan;
-SELECT label('EXECUTE by_param(3)') AS generic_plan;
 SET plan_cache_mode = force_custom_plan;
 SELECT label('EXECUTE by_param(3)') AS custom_plan, same('EXECUTE by_param(3)') AS same_rows;
 RESET plan_cache_mode;

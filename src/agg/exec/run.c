@@ -615,6 +615,13 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 
 	ex->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
 	ex->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
+	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
+	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
+	ex->lutcx = CreateStandaloneExprContext();
+	MemoryContextSwitchTo(ex->cxt);
+	ex->lutcx->ecxt_param_list_info = params;
+	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
+	scope_keys_init(ex);
 	if (ex->kept)
 		ex->src = ex->kept;
 	else if (ex->param_scan && ex->spec->topn && ex->spec->nparts == 0)
@@ -629,12 +636,6 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	extend_layout(ex);
 	if (!ex->open_deferred)
 		open_vectors(ex);
-	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
-	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
-	ex->lutcx = CreateStandaloneExprContext();
-	MemoryContextSwitchTo(ex->cxt);
-	ex->lutcx->ecxt_param_list_info = params;
-	ex->lutcx->ecxt_param_exec_vals = ex->lutparams;
 	part_prune_init(ex);
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);

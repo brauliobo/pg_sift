@@ -146,7 +146,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  miss: another column read                | join, the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give | t
  miss: condition on a pair column         | join, the scope relation has another condition: (tenant_scope.valid_until IS NULL)                                                | t
  miss: group by the key                   | join, the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give | t
- miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants                                                        | t
+ miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                          | t
  miss: keys sub-select                    | join, the scope relation is joined to other tables inside the sub-select of the semi join                                         | t
  miss: range on the key                   | join, the scope relation has another condition: (tenant_scope.tenant_id < 3)                                                      | t
  miss: table of keys                      | join, a condition reads the scope relation and another table (a table of keys, a join): (k.tenant_id = s.tenant_id)               | t
@@ -188,15 +188,8 @@ SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, two keys', 'IN, thr
  IN, two keys     | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
 (4 rows)
 
--- a parameter of a generic plan is not known: the join; the custom plan has the constant
+-- a parameter of a generic plan is a key the scan evaluates when it starts (agg_scope_param_keys); the custom plan has the constant
 PREPARE by_param(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind;
-SET plan_cache_mode = force_generic_plan;
-SELECT label('EXECUTE by_param(3)') AS generic_plan;
- generic_plan 
---------------
- join
-(1 row)
-
 SET plan_cache_mode = force_custom_plan;
 SELECT label('EXECUTE by_param(3)') AS custom_plan, same('EXECUTE by_param(3)') AS same_rows;
     custom_plan     | same_rows 

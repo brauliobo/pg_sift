@@ -302,12 +302,9 @@ typedef struct ScopeTake
 	int			skip;
 	bool		flip;
 	Index		rti;			/* what the pass took out: the scope relation, or the view over it (0: nothing yet) */
-	const char *key_name;
 	Var		   *fk;				/* the member key of the scanned table the join equated to the scope relation's member column */
-	bool		once;			/* a semi join: a row counts once whichever of the keys it has */
-	int			nkeys;
-	int64	   *keys;
-	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them */
+	SiftAggScope sc;			/* the conjunct as the join states it: all but fk (the leaf, which the scan's layout gives) */
+	double		pairs;			/* the rows of the scope relation the keys leave, as PostgreSQL expects them (for a parameter, those of the average key) */
 } ScopeTake;
 
 typedef struct FromScan

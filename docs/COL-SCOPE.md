@@ -75,8 +75,16 @@ rows are those of the join in every case; whether the index may be read at execu
 | the same through a view, a security barrier view that projects the two columns, an inlined `STABLE` SQL function | as written | yes |
 | `JOIN` with several keys | once for each pair | no: a member whose pairs changed needs the join, which counts them |
 | `GROUP BY` the scope key or any other column of the relation read | | no: the units give the rows, not the pair |
-| a table or sub-select of keys, a parameter of a generic plan (the custom plan has the constant) | | no: the keys are constants |
+| the scope key bound by a parameter: `= $1`, `= ANY ($1)`, `IN ($1, $2)`, a stable expression (`current_setting(..)::int`), the output of an InitPlan (`= (SELECT ..)`, `= ANY (ARRAY(SELECT ..))`) | as written | yes: the keys are those of the execution (below); a join (a row for each pair) only for a scalar, an array may hold several keys |
+| a table of keys joined to the scope relation (`JOIN keys k ON k.key = s.key`, `s.key IN (SELECT key FROM keys ..)`) | | no: the keys of the table are not known when the plan is made (`= ANY (ARRAY(SELECT key FROM keys ..))` is) |
 | another condition on the relation, a view with a condition, `DISTINCT` or a join inside the sub-select, `NOT EXISTS`, an outer join, row-level security on the relation | | no |
+
+**Parameters.** A key that is a parameter of a prepared statement (or the output of an InitPlan, or a stable expression) is read when the scan starts, so a generic plan has the scope read for every value: the plan
+is made once, and each execution has the keys, the verdict of the reader and the changed pairs of its own snapshot (a cached plan stays exact when the pairs change between two executions; NULL and the NULLs of an
+array match nothing, an empty set reads no unit). `EXPLAIN` shows `Scope Keys: $1`, and a run `Scope Keys: $1 (2 keys)`; more keys than the dedupe lists or than `work_mem` read the entity rows
+(`Scope Fallback: dedupe keys`, `dedupe over work_mem`) as for constants. A custom plan has the constants and is priced for them. A generic plan has no value to price: a scalar is the pairs of the average key
+(the rows `pg_stats` expect for an equality on the key column), an array that is not a list the 10 keys PostgreSQL assumes for an array it does not know, and the choice between the scope read and the join is made
+once for all values, so a tenant far above the average pays the plan the average chose (the scope read grows with the tenant, the join with the table).
 
 A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
 `ORDER BY .. LIMIT` and the aggregates are the scan's as ever.
@@ -174,7 +182,7 @@ copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.
 
 ## Limits
 
-EXPERIMENTAL; one constant key or a list of constants per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join; a key that is a parameter of a generic plan, a table of keys and a `GROUP BY` the key are not recognised; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+EXPERIMENTAL; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
+rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds; a join to a table of keys and a `GROUP BY` the key are not recognised; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
 by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

@@ -1,0 +1,259 @@
+-- The keys of the scope conjunct may be the parameters of a prepared statement (a $n, an array $n, a list of them), the output of an InitPlan (a scalar sub-select, ARRAY(SELECT ..))
+-- or a stable expression: the plan has the scope read of every value, the scan evaluates the keys when it starts and the reader's verdict is made for them, under the snapshot of
+-- each execution (EXPLAIN: Scope Keys: $1, and in a run the number of keys it had). A generic plan prices the key by the average pairs a key has (an array by the 10 keys PostgreSQL
+-- assumes). The rows are those of the join in every form, mode and state: after the pairs change between two executions of one cached plan, with a NULL, an empty array, more keys
+-- than the dedupe lists (Scope Fallback: dedupe keys) or than work_mem holds (dedupe over work_mem). Every near miss keeps the join and names its reason.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET default_statistics_target = 1000;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET scope.tenant = '4';
+
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
+-- entities 1 to 360 are members of tenant 1 + id % 10, one in seven of a second tenant; the others are in no tenant
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT i, 1 + i % 10 FROM generate_series(1, 360) i;
+INSERT INTO tenant_scope SELECT i, 1 + (i * 3 + 1) % 10 FROM generate_series(1, 360) i WHERE i % 7 = 0 ON CONFLICT DO NOTHING;
+CREATE TABLE user_tenants (user_id int, tenant_id int);
+INSERT INTO user_tenants VALUES (1, 2), (1, 5), (1, 9), (2, 3);
+CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+VACUUM (FREEZE, ANALYZE) events, tenant_scope, user_tenants;
+
+-- 80 groups, a member in two or three of them: the dedupe of a read of many keys keeps lists of the members of several keys, bounded by 64 keys and by work_mem
+CREATE TABLE membership (dim_a_id int NOT NULL, group_id int NOT NULL, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
+INSERT INTO membership SELECT m, 1 + (m * 13) % 80 FROM generate_series(1, 2000) m;
+INSERT INTO membership SELECT m, 1 + (m * 7 + 3) % 80 FROM generate_series(1, 2000) m ON CONFLICT DO NOTHING;
+INSERT INTO membership SELECT m, 1 + (m * 11 + 5) % 80 FROM generate_series(1, 2000, 3) m ON CONFLICT DO NOTHING;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + (i::bigint * 7919) % 2100, 'k' || i % 4, i % 100 FROM generate_series(1, 10000) i;
+CREATE INDEX membership_journal ON membership USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id)');
+REINDEX INDEX facts_col;
+VACUUM (FREEZE, ANALYZE) facts, membership;
+
+-- a prepared statement: its name, parameter types, body and the arguments of its call
+CREATE TABLE pforms (name text PRIMARY KEY, types text, body text, args text);
+INSERT INTO pforms VALUES
+ ('join, $1', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = $1 GROUP BY kind$q$, '3'),
+ ('join, bigint $1', 'bigint', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = $1 GROUP BY kind$q$, '3'),
+ ('join, $1 in the first position', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM tenant_scope s JOIN events e ON e.dim_a_id = s.dim_a_id WHERE $1 = s.tenant_id GROUP BY kind$q$, '3'),
+ ('join, other conditions', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = $1 AND e.created_at >= date '2025-03-01' AND e.amount > 10 GROUP BY kind$q$, '3'),
+ ('join, stable function', NULL, $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = current_setting('scope.tenant')::int GROUP BY kind$q$, NULL),
+ ('IN, $1', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind$q$, '3'),
+ ('IN, a text $1 cast', 'text', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1::int) GROUP BY kind$q$, '''3'''),
+ ('IN, ($1, $2)', 'int, int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ($1, $2)) GROUP BY kind$q$, '2, 5'),
+ ('IN, ANY ($1)', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY ($1)) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
+ ('IN, ANY ($1) of bigint', 'bigint[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY ($1)) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
+ ('EXISTS, $1', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = $1) GROUP BY kind$q$, '3'),
+ ('EXISTS, ANY ($1)', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = ANY ($1)) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
+ ('CTE, $1', 'int', $q$WITH ids AS (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM ids) GROUP BY kind$q$, '3'),
+ ('top 5 ids, ANY ($1)', 'int[]', $q$SELECT e.dim_a_id, sum(amount) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY ($1)) GROUP BY e.dim_a_id ORDER BY total DESC, e.dim_a_id LIMIT 5$q$, $a$'{2,5,9}'$a$),
+ ('latest 5, $1', 'int', $q$SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) ORDER BY created_at DESC, id LIMIT 5$q$, '3'),
+ ('IN, scalar sub-select', NULL, $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = (SELECT max(tenant_id) FROM user_tenants WHERE user_id = 1)) GROUP BY kind$q$, NULL),
+ ('IN, table of keys as ARRAY(SELECT ..)', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1))) GROUP BY kind$q$, '1'),
+ ('groups, ANY ($1)', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = ANY ($1)) GROUP BY kind$q$, $a$'{1,2,3}'$a$),
+ -- near misses: each keeps the join
+ ('miss: join, ANY ($1), a row for each pair', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY ($1) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
+ ('miss: join, ANY (ARRAY(SELECT ..)), a row for each pair', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1)) GROUP BY kind$q$, '2'),
+ ('miss: join, IN ($1, $2), a row for each pair', 'int, int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ($1, $2) GROUP BY kind$q$, '2, 5'),
+ ('miss: numeric $1', 'numeric', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind$q$, '3'),
+ ('miss: $1 and a column', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1 + dim_a_id % 2) GROUP BY kind$q$, '3'),
+ ('miss: range on the key', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id < $1) GROUP BY kind$q$, '3'),
+ ('miss: keys by a join to the table of keys', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN user_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = $1 GROUP BY kind$q$, '2');
+
+CREATE FUNCTION prepared(f pforms, stmt text) RETURNS text LANGUAGE sql AS
+$$ SELECT 'PREPARE ' || quote_ident(stmt) || coalesce('(' || f.types || ')', '') || ' AS ' || f.body $$;
+CREATE FUNCTION called(f pforms, stmt text, extra text DEFAULT NULL) RETURNS text LANGUAGE sql AS
+$$ SELECT 'EXECUTE ' || quote_ident(stmt) || CASE WHEN f.types IS NULL THEN '' ELSE '(' || coalesce(extra, f.args) || ')' END $$;
+
+-- the plan: the scope read (its keys: the number, or the expression of the parameters; and the semantics), else the join
+CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; keys text; plan text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF plan ~ 'Scope Index: ' THEN
+		keys := substring(plan from 'Scope Keys: ([^\n]*)');
+		RETURN 'scope read, ' || CASE WHEN keys ~ '^\d+$' THEN keys || ' keys' ELSE 'keys ' || keys END || ', ' || substring(plan from 'Scope Semantics: ([^\n]*)');
+	END IF;
+	RETURN CASE WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+END $$;
+
+-- what the run did: the keys it had, the reader's refusal, or the keys it patched
+CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Scope (Keys|Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
+	END LOOP;
+	RETURN CASE WHEN r = '' THEN 'no scope read' ELSE rtrim(r, '; ') END;
+END $$;
+
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS scope_rows;
+	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM scope_rows t;
+	DROP TABLE scope_rows;
+	RETURN r;
+END $$;
+
+-- the rows of a statement prepared under the settings given: the plan of its first execution is the one that runs
+CREATE FUNCTION rows_of(f pforms, mode text, agg_scope text, enable_agg text, extra text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('plan_cache_mode', mode, false);
+	PERFORM set_config('sift.agg_scope', agg_scope, false);
+	PERFORM set_config('sift.enable_agg', enable_agg, false);
+	DEALLOCATE ALL;
+	EXECUTE prepared(f, 'q');
+	r := rows_md5(called(f, 'q', extra));
+	DEALLOCATE ALL;
+	PERFORM set_config('sift.agg_scope', 'on', false);
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	RETURN r;
+END $$;
+
+-- the rows of the scope read, of the join (sift.agg_scope off) and of the normal plan are one
+CREATE FUNCTION same_rows(f pforms, mode text, extra text DEFAULT NULL) RETURNS boolean LANGUAGE sql AS $$
+	SELECT rows_of(f, mode, 'on', 'on', extra) = rows_of(f, mode, 'off', 'on', extra) AND rows_of(f, mode, 'off', 'on', extra) = rows_of(f, mode, 'off', 'off', extra)
+$$;
+
+CREATE FUNCTION plan_of(f pforms, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('plan_cache_mode', mode, false);
+	DEALLOCATE ALL;
+	EXECUTE prepared(f, 'q');
+	r := label(called(f, 'q'));
+	DEALLOCATE ALL;
+	RETURN r;
+END $$;
+
+-- every form, with the generic plan and with the custom plan (which has the constants of the call)
+SELECT f.name, m.mode, plan_of(f, m.mode) AS plan, same_rows(f, m.mode) AS same_rows
+FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) ORDER BY f.name COLLATE "C", m.mode;
+RESET plan_cache_mode;
+
+-- the reason of each near miss, as the planning says it
+CREATE FUNCTION miss_run(f pforms) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RAISE NOTICE '%', f.name;
+	RETURN plan_of(f, 'force_generic_plan');
+END $$;
+SET client_min_messages = notice;
+SET sift.explain_refusals = on;
+SELECT name, miss_run(f) AS plan FROM pforms f WHERE name LIKE 'miss:%' ORDER BY name COLLATE "C";
+RESET sift.explain_refusals;
+SET client_min_messages = warning;
+DROP FUNCTION miss_run(pforms);
+
+-- a statement run with the arguments given: the keys of the run and the reader's refusal
+CREATE FUNCTION arg_run(f pforms, extra text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('plan_cache_mode', 'force_generic_plan', false);
+	DEALLOCATE ALL;
+	EXECUTE prepared(f, 'q');
+	r := run_of(called(f, 'q', extra));
+	DEALLOCATE ALL;
+	RETURN r;
+END $$;
+
+-- the values a parameter may have: the keys of the run, and the rows of the join. A NULL and the NULLs of an array match nothing; an array is a set
+CREATE TABLE pargs (form text, extra text);
+INSERT INTO pargs VALUES
+ ('IN, $1', 'NULL'), ('IN, $1', '3'), ('IN, $1', '11'),
+ ('join, $1', 'NULL'), ('join, $1', '3'),
+ ('IN, ANY ($1)', 'NULL'), ('IN, ANY ($1)', $a$'{}'$a$), ('IN, ANY ($1)', $a$'{NULL}'$a$), ('IN, ANY ($1)', $a$'{3,NULL}'$a$), ('IN, ANY ($1)', $a$'{3,3,4}'$a$), ('IN, ANY ($1)', $a$'{11,12}'$a$),
+ ('latest 5, $1', 'NULL'), ('latest 5, $1', '4'),
+ ('IN, ($1, $2)', 'NULL, 3'), ('IN, ($1, $2)', '3, 3');
+SELECT a.form, a.extra, arg_run(f, a.extra) AS run, same_rows(f, 'force_generic_plan', a.extra) AS same_rows FROM pargs a JOIN pforms f ON f.name = a.form ORDER BY a.form COLLATE "C", a.extra COLLATE "C";
+DROP TABLE pargs;
+
+-- the caps of the dedupe of many keys: the entity rows of the members the pairs list answer (EXPLAIN says it), the rows are the join's
+SELECT c.note, arg_run(f, c.keys) AS run, same_rows(f, 'force_generic_plan', c.keys) AS same_rows
+FROM (VALUES ('keys that have lists', $a$'{1,2,3}'$a$),
+			 ('more keys than the dedupe lists', quote_literal('{' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 80) g) || '}'))) c(note, keys), pforms f
+WHERE f.name = 'groups, ANY ($1)' ORDER BY c.note COLLATE "C";
+SET work_mem = '64kB';
+SELECT 'lists over work_mem' AS note, arg_run(f, k.keys) AS run, same_rows(f, 'force_generic_plan', k.keys) AS same_rows
+FROM pforms f, (SELECT quote_literal('{' || string_agg(g::text, ',') || '}') AS keys FROM generate_series(1, 80) g) k WHERE f.name = 'groups, ANY ($1)';
+RESET work_mem;
+
+-- one cached generic plan run with other arguments each time (the keys are those of the execution, the plan is the same)
+CREATE FUNCTION cached_args(f pforms, args text[]) RETURNS TABLE (extra text, run text, same_rows boolean) LANGUAGE plpgsql AS $$
+DECLARE a text;
+BEGIN
+	PERFORM set_config('plan_cache_mode', 'force_generic_plan', false);
+	DEALLOCATE ALL;
+	EXECUTE prepared(f, 'q');
+	FOREACH extra IN ARRAY args LOOP
+		run := run_of(called(f, 'q', extra));
+		a := rows_md5(called(f, 'q', extra));
+		PERFORM set_config('sift.enable_agg', 'off', false);
+		EXECUTE prepared(f, 'plain');
+		same_rows := a = rows_md5(called(f, 'plain', extra));
+		DEALLOCATE "plain";
+		PERFORM set_config('sift.enable_agg', 'on', false);
+		RETURN NEXT;
+	END LOOP;
+	DEALLOCATE ALL;
+END $$;
+SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY['3', '4', 'NULL', '3', '0', '10']) c WHERE f.name = 'IN, $1';
+SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY[$a$'{3}'$a$, $a$'{4,5}'$a$, $a$'{}'$a$, $a$'{3,4,5,6}'$a$, 'NULL']) c WHERE f.name = 'IN, ANY ($1)';
+DROP FUNCTION cached_args(pforms, text[]);
+
+-- the pairs change between two executions of one cached generic plan: the reader patches the members that changed, and the rows are the join's
+CREATE FUNCTION states(note text) RETURNS TABLE (state text, form text, run text, same_rows boolean) LANGUAGE plpgsql AS $$
+DECLARE f pforms; a text;
+BEGIN
+	FOR f IN SELECT * FROM pforms p WHERE p.name IN ('join, $1', 'IN, $1', 'IN, ANY ($1)', 'latest 5, $1') ORDER BY p.name COLLATE "C" LOOP
+		state := note;
+		form := f.name;
+		run := run_of(called(f, f.name));
+		a := rows_md5(called(f, f.name));
+		PERFORM set_config('sift.enable_agg', 'off', false);
+		EXECUTE prepared(f, 'plain');
+		same_rows := a = rows_md5(called(f, 'plain'));
+		DEALLOCATE "plain";
+		PERFORM set_config('sift.enable_agg', 'on', false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SET plan_cache_mode = force_generic_plan;
+SELECT prepared(f, f.name) FROM pforms f WHERE f.name IN ('join, $1', 'IN, $1', 'IN, ANY ($1)', 'latest 5, $1') ORDER BY f.name COLLATE "C" \gexec
+SELECT * FROM states('built');
+DELETE FROM tenant_scope WHERE dim_a_id = 10 AND tenant_id = 1;
+SELECT * FROM states('an ended pair');
+INSERT INTO tenant_scope VALUES (370, 3), (371, 2), (371, 5), (371, 3);
+SELECT * FROM states('inserted pairs');
+UPDATE events SET dim_a_id = 371 WHERE id <= 40;
+SELECT * FROM states('facts of a member of three keys moved, write buffer');
+DELETE FROM tenant_scope WHERE dim_a_id = 20;
+SELECT * FROM states('every pair of a member ended');
+SET sift.scope_patch_keys = 1;
+SELECT * FROM states('more changed pairs than the cap');
+RESET sift.scope_patch_keys;
+REINDEX INDEX events_col;
+SELECT * FROM states('rebuilt');
+DEALLOCATE ALL;
+RESET plan_cache_mode;
+
+-- the switch: with sift.agg_scope off nothing is taken out
+SET sift.agg_scope = off;
+SELECT f.name, plan_of(f, 'force_generic_plan') AS plan FROM pforms f WHERE f.name IN ('join, $1', 'IN, $1', 'IN, ANY ($1)') ORDER BY f.name COLLATE "C";
+RESET sift.agg_scope;
+RESET plan_cache_mode;
+
+DROP FUNCTION states(text), arg_run(pforms, text), plan_of(pforms, text), same_rows(pforms, text, text), rows_of(pforms, text, text, text, text), rows_md5(text), run_of(text), label(text),
+	prepared(pforms, text), called(pforms, text, text);
+DROP TABLE pforms, events, tenant_scope, user_tenants, facts, membership;
+DROP EXTENSION pg_sift;

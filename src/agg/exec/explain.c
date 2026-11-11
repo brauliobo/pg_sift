@@ -396,7 +396,12 @@ explain_scope(AggExec *ex, ExplainState *es)
 	if (ex->spec->scope_why != NULL)
 		ExplainPropertyText("Scope Filter Left", ex->spec->scope_why, es);
 	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
-	ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
+	if (sc->param == NULL)
+		ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
+	else if (es->analyze && ex->started)
+		ExplainPropertyText("Scope Keys", psprintf("%s (%d keys)", sc->param_desc, sc->nkeys), es);
+	else
+		ExplainPropertyText("Scope Keys", sc->param_desc, es);
 	/* a plain EXPLAIN has not opened the index */
 	index = ex->index ? ex->index : index_open(ex->spec->indexoid, AccessShareLock);
 	sift_scope_columns(index, sc->key_name, &kept, &all);

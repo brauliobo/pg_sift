@@ -29,10 +29,15 @@ typedef struct SiftAggScope
 {
 	const char *key_name;		/* the scope of the index: the leaf "<key_name>#scope" holds its key */
 	int			fk;				/* the leaf of the member key (the entity rows of the fallback are read by it) */
-	int			nkeys;
-	int64	   *keys;
+	int			nkeys;			/* with param: what the planner expects of it, until the scan starts */
+	int64	   *keys;			/* sorted, each once */
+	Node	   *param;			/* the keys are the value of this expression of the statement's parameters when the scan starts (scope_keys_init); NULL: they are constants */
+	const char *param_desc;		/* EXPLAIN: the expression, as text */
 	bool		once;			/* a row counts once whichever of the keys it has (IN, EXISTS); false: once for each pair of its member, as a join and GROUP BY the key count it */
 } SiftAggScope;
+
+/* The keys of a value of an integer type or of an array of one (int2, int4, int8), sorted and each once */
+extern int64 *sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n);
 
 typedef struct SiftAggSpec
 {

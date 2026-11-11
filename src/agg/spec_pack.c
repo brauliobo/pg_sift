@@ -116,8 +116,10 @@ codec_scope(Codec *c, SiftAggScope **sc)
 		*sc = palloc0(sizeof(SiftAggScope));
 	PKS((c), (*sc)->key_name);
 	PK(c, (*sc)->fk);
+	PKN(c, (*sc)->param);
+	PKS_OPT(c, (*sc)->param_desc);
 	PK_COUNT(c, (*sc)->nkeys, (*sc)->keys);
-	for (int i = 0; i < (*sc)->nkeys; i++)
+	for (int i = 0; (*sc)->param == NULL && i < (*sc)->nkeys; i++)
 		pk_i64(c, &(*sc)->keys[i]);
 	PK(c, (*sc)->once);
 }

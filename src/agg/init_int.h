@@ -38,6 +38,7 @@ bool join_none(AggExec *ex);
 bool join_found(AggExec *ex, int ci, int *total, List **add);
 SiftAggPred *pred_node(AggExec *ex, SiftAggPredKind kind, int *total, int leaf, int op, int nchild, const char *desc);
 SiftAggPred *pred_in(AggExec *ex, int *total, int leaf, bool not_in, const int64 *keys, uint32 n, const char *desc);
+void scope_keys_init(AggExec *ex);
 bool scope_open(AggExec *ex, Snapshot snapshot);
 void scope_filter(AggExec *ex, int *total, List **add);
 List *scope_prune(AggExec *ex, List *tests);

@@ -11,11 +11,13 @@
  *
  * The proof that the scope read gives the rows of the join, all of it at plan time:
  *  (a) the relation and its columns are the index's declared scope, and the join is the equality of its member column and the declared column of the scanned table;
- *  (b) the scope key is bound by one equality or IN list of constants, and the scope relation has no other condition and no other table joined to it;
+ *  (b) the scope key is bound by one equality or IN list of constants or of parameters (a $n, an InitPlan's output, a stable expression: the scan evaluates them when it starts), and the
+ *      scope relation has no other condition and no other table joined to it;
  *  (c) the statement reads no column of the scope relation (a group key, an aggregate argument): the declaration needs a unique btree on (member, key), so a row of the scanned table
  *      has at most one pair with a key and the join, the semi join and the scope read count it the same;
  *  (d) a semi join (IN, EXISTS) counts a row once whichever keys it has, which the reader does (Scope Semantics: once); a join counts it once for each pair, which the reader reads
- *      per pair only for one key: of several, a member whose pairs changed needs the join (docs/COL-SCOPE.md), so the plan keeps it;
+ *      per pair only for one key: of several, a member whose pairs changed needs the join (docs/COL-SCOPE.md), so the plan keeps it (an array or a list of parameters may hold several: a
+ *      join takes a scalar parameter only);
  *  (e) the other conjuncts and the aggregates are the scan's as ever.
  * Whether the index may be read at execution (its stamps, the journal, the write buffers) is the reader's verdict, and EXPLAIN says it (Scope Fallback). Every near miss is reported
  * (slug scope) with its reason, and the join runs as it is written. A marker that stays an ordinary filter says why in the spec (scope_why: EXPLAIN prints it as Scope Fallback), so that a scope
@@ -55,61 +57,14 @@ scope_miss(const char *why)
 	agg_report("scope", AGG_REFUSE_SCOPE, why, false, 0, 0);
 }
 
-/* the scope key leaf's keys: sorted, each once */
-static int
-unique_keys(int64 *keys, int n)
-{
-	int			k = 0;
-
-	sift_sort_i64(keys, n);
-	for (int i = 0; i < n; i++)
-		if (k == 0 || keys[i] != keys[k - 1])
-			keys[k++] = keys[i];
-	return k;
-}
-
-/* the keys of a Const of an integer type or an array of one (the NULLs of an array match nothing); NULL when it is neither */
-static int64 *
-const_keys(Const *k, int *n)
-{
-	Oid			elem = type_is_array(k->consttype) ? get_element_type(k->consttype) : k->consttype;
-	Datum	   *vals = &k->constvalue;
-	bool	   *nulls = &k->constisnull;
-	int			nvals = 1;
-	int64	   *keys;
-
-	if (elem != INT2OID && elem != INT4OID && elem != INT8OID)
-		return NULL;
-	if (type_is_array(k->consttype))
-	{
-		int16		len;
-		bool		byval;
-		char		align;
-
-		get_typlenbyvalalign(elem, &len, &byval, &align);
-		deconstruct_array(DatumGetArrayTypeP(k->constvalue), elem, len, byval, align, &vals, &nulls, &nvals);
-	}
-	keys = palloc(Max(nvals, 1) * sizeof(int64));
-	*n = 0;
-	for (int i = 0; i < nvals; i++)
-		if (!nulls[i])
-			keys[(*n)++] = elem == INT2OID ? DatumGetInt16(vals[i]) : elem == INT4OID ? DatumGetInt32(vals[i]) : DatumGetInt64(vals[i]);
-	*n = unique_keys(keys, *n);
-	return keys;
-}
-
-/* the scope of the SiftAggScope of keys of the scope key_name, read by the member key in leaf fk */
+/* the scope of the template (key_name, keys or param, once), read by the member key in leaf fk */
 static SiftAggScope *
-scope_make(AggCtx *c, const char *key_name, int fk, const int64 *keys, int nkeys, bool once)
+scope_make(AggCtx *c, const SiftAggScope *proto, int fk)
 {
-	SiftAggScope *sc = palloc0(sizeof(SiftAggScope));
+	SiftAggScope *sc = memcpy(palloc(sizeof(SiftAggScope)), proto, sizeof(SiftAggScope));
 
-	sc->key_name = pstrdup(key_name);
+	sc->key_name = pstrdup(proto->key_name);
 	sc->fk = fk;
-	sc->nkeys = nkeys;
-	sc->keys = palloc(Max(nkeys, 1) * sizeof(int64));
-	memcpy(sc->keys, keys, nkeys * sizeof(int64));
-	sc->once = once;
 	use_leaf(c, fk);
 	return sc;
 }
@@ -189,9 +144,8 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 	Const	   *idx = arg_const(f, 0, REGCLASSOID),
 			   *name = arg_const(f, 1, TEXTOID),
 			   *key = arg_const(f, 3, INT8OID);
-	int			leaf,
-				n;
-	int64	   *keys;
+	int			leaf;
+	SiftAggScope proto = {0};
 
 	if (key == NULL)
 		key = arg_const(f, 3, INT8ARRAYOID);
@@ -203,8 +157,10 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 		return NULL;
 	if (key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
 		return no_scope(why, "a scope key is NULL");
-	keys = const_keys(key, &n);
-	return scope_make(c, TextDatumGetCString(name->constvalue), leaf, keys, n, strcmp(get_func_name(f->funcid), "in_scope") == 0);
+	proto.key_name = TextDatumGetCString(name->constvalue);
+	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
+	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
+	return scope_make(c, &proto, leaf);
 }
 
 /* ---- the join to the scope relation ---- */
@@ -308,8 +264,8 @@ member_equality(AggCtx *c, Index rti, Node *q, Var **theirs, Var **ours)
 }
 
 /*
- * q binds the key column of the item: `key = value`, `value = key` or `key = ANY (array)` (IN (list)). The value, a Const when the statement knows it; NULL when q is not such a
- * condition.
+ * q binds the key column of the item: `key = value`, `value = key` or `key = ANY (array)` (IN (list)). The value, a Const when the statement knows it, else an expression of its
+ * parameters; NULL when q is not such a condition.
  */
 static Node *
 key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
@@ -341,6 +297,53 @@ key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
 	return strip_relabel(val);
 }
 
+/* the keys a generic plan expects of an array it does not know: the estimate of PostgreSQL's own for an ANY (array parameter) */
+#define SCOPE_PARAM_KEYS	10
+
+/* the keys of ARRAY(SELECT key FROM keys WHERE ..): the rows its sub-select is expected to give, at least two (an array may hold several whatever the plan expects: a join that counts a row for each pair refuses it) */
+static int
+initplan_rows(AggCtx *c, Param *prm)
+{
+	foreach_ptr(SubPlan, sp, c->root->init_plans)
+		if (list_member_int(sp->setParam, prm->paramid))
+			return (int) Min(Max(((Plan *) list_nth(c->root->glob->subplans, sp->plan_id - 1))->plan_rows, 2.0), 1000000.0);
+	return 2;
+}
+
+/*
+ * The keys the value of a key condition gives, into sc: its constants, or, for a statement with parameters, the expression the scan evaluates when it starts (sc->param: a $n, a list
+ * of them, an InitPlan's output, a stable function; none that reads a row or an executor parameter of an outer loop, which change while the scan runs) with the number of keys the plan
+ * expects of it (1 for an integer, the elements of a list, the rows of an InitPlan's sub-select, SCOPE_PARAM_KEYS for any other array). false: the value is neither.
+ */
+static bool
+key_source(AggCtx *c, Node *val, SiftAggScope *sc)
+{
+	Oid			type = exprType(val);
+	Oid			elem = type_is_array(type) ? get_element_type(type) : type;
+
+	if (elem != INT2OID && elem != INT4OID && elem != INT8OID)
+		return false;
+	if (IsA(val, Const))
+	{
+		sc->keys = sift_agg_scope_keys(type, ((Const *) val)->constvalue, ((Const *) val)->constisnull, &sc->nkeys);
+		return !((Const *) val)->constisnull;
+	}
+	sc->param_desc = expr_text(c, val);
+	if (pseudo_const(val))
+	{
+		sc->param = val;
+		sc->nkeys = elem == type ? 1 : IsA(val, ArrayExpr) ? list_length(((ArrayExpr *) val)->elements) : SCOPE_PARAM_KEYS;
+	}
+	else if (IsA(val, Param) && ((Param *) val)->paramkind == PARAM_EXEC && initplan_ok(c, (Param *) val))
+	{
+		sc->nkeys = elem == type ? 1 : initplan_rows(c, (Param *) val);
+		sc->param = (Node *) initplan_param(c, (Param *) val);
+	}
+	else
+		return false;
+	return true;
+}
+
 /* does the statement read a column of the item above the scan: a group key, an aggregate argument, the select list (the conditions that bind it are not read above) */
 static bool
 read_above(PlannerInfo *root, Index rti)
@@ -357,8 +360,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 {
 	PlannerInfo *root = c->root;
 	AttrNumber *map = NULL;
-	int			nmap = 0,
-				nkeys = 0;
+	int			nmap = 0;
 	const char *why = NULL;
 	Oid			relid = scope_table(root, rti, &map, &nmap, &why);
 	const SiftScopeSpec *sp = OidIsValid(relid) ? declared_scope(c->heapoid, specs, relid) : NULL;
@@ -366,7 +368,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	Node	   *joinq = NULL,
 			   *keyq = NULL;
 	Var		   *fk = NULL;
-	int64	   *keys = NULL;
+	SiftAggScope sc = {0};
 	Relids		own;
 
 	if (sp == NULL)
@@ -412,9 +414,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		}
 		else if ((val = key_operand(rti, map, nmap, get_attnum(relid, sp->scope_key), q)) != NULL)
 		{
-			if (IsA(val, Param))
-				return "the scope key is a parameter, which a generic plan does not know";
-			if (!IsA(val, Const) || ((Const *) val)->constisnull || (keys = const_keys((Const *) val, &nkeys)) == NULL)
+			if (!key_source(c, val, &sc))
 				return psprintf("the scope relation has another condition: %s", expr_text(c, q));
 			if (keyq != NULL && !equal(q, keyq))
 				return "the scope key is bound more than once";
@@ -426,15 +426,14 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	if (joinq == NULL)
 		return psprintf("the scope relation is not joined by its member column %s to the column %s of the scanned table", sp->member, sp->fk);
 	if (keyq == NULL)
-		return "the scope key is not bound by an equality or an IN list of constants";
-	if (nkeys > 1 && lj == NULL)
+		return "the scope key is not bound by an equality or an IN list of constants or parameters";
+	if (sc.nkeys > 1 && lj == NULL)
 		return "several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
 	t->rti = rti;
-	t->key_name = sp->key_name;
 	t->fk = (Var *) copyObject(fk);
-	t->once = lj != NULL;
-	t->nkeys = nkeys;
-	t->keys = keys;
+	sc.key_name = sp->key_name;
+	sc.once = lj != NULL;
+	t->sc = sc;
 	t->pairs = root->simple_rel_array[rti]->rows;
 	return NULL;
 }
@@ -573,9 +572,9 @@ sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		scope_scan(c, s, fs, why);
 		return true;
 	}
-	if (why == NULL && (leaf = fk_leaf(c, (Node *) t->fk, t->key_name, &why)) >= 0)
+	if (why == NULL && (leaf = fk_leaf(c, (Node *) t->fk, t->sc.key_name, &why)) >= 0)
 	{
-		s->scope = scope_make(c, t->key_name, leaf, t->keys, t->nkeys, t->once);
+		s->scope = scope_make(c, &t->sc, leaf);
 		return true;
 	}
 	scope_miss(why);
