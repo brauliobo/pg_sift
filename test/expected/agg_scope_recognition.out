@@ -255,21 +255,21 @@ SELECT * FROM states('every pair of a member ended');
  every pair of a member ended | top 5 ids        | Changed Keys: 4; Patched Keys: 1                   | t
 (7 rows)
 
--- more changed members than the reader patches: it reads the entity rows of the members the pairs list
-SET sift.scope_patch_keys = 1;
-SELECT * FROM states('more changed pairs than the cap');
-              state              |       name       |                         run                          | same_rows 
----------------------------------+------------------+------------------------------------------------------+-----------
- more changed pairs than the cap | EXISTS, two keys | Fallback: too many changed keys; Members Listed: 78  | t
- more changed pairs than the cap | IN               | Fallback: too many changed keys; Members Listed: 43  | t
- more changed pairs than the cap | IN, three keys   | Fallback: too many changed keys; Members Listed: 119 | t
- more changed pairs than the cap | barrier view, IN | Fallback: too many changed keys; Members Listed: 43  | t
- more changed pairs than the cap | join             | Fallback: too many changed keys; Members Listed: 43  | t
- more changed pairs than the cap | latest 5         | Fallback: too many changed keys; Members Listed: 43  | t
- more changed pairs than the cap | top 5 ids        | Fallback: too many changed keys; Members Listed: 43  | t
+-- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
+SET sift.test_scope_patch = off;
+SELECT * FROM states('more changed pairs than the bound');
+               state               |       name       |                               run                                | same_rows 
+-----------------------------------+------------------+------------------------------------------------------------------+-----------
+ more changed pairs than the bound | EXISTS, two keys | Fallback: patch dearer than the entity path; Members Listed: 78  | t
+ more changed pairs than the bound | IN               | Fallback: patch dearer than the entity path; Members Listed: 43  | t
+ more changed pairs than the bound | IN, three keys   | Fallback: patch dearer than the entity path; Members Listed: 119 | t
+ more changed pairs than the bound | barrier view, IN | Fallback: patch dearer than the entity path; Members Listed: 43  | t
+ more changed pairs than the bound | join             | Fallback: patch dearer than the entity path; Members Listed: 43  | t
+ more changed pairs than the bound | latest 5         | Fallback: top-n, changed pairs; Members Listed: 43               | t
+ more changed pairs than the bound | top 5 ids        | Fallback: patch dearer than the entity path; Members Listed: 43  | t
 (7 rows)
 
-RESET sift.scope_patch_keys;
+RESET sift.test_scope_patch;
 -- the changed pairs reach the reader as a verdict on a rewrite of the units
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');

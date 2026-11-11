@@ -156,10 +156,10 @@ UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of two keys moved, write buffer');
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
--- more changed members than the reader patches: it reads the entity rows of the members the pairs list
-SET sift.scope_patch_keys = 1;
-SELECT * FROM states('more changed pairs than the cap');
-RESET sift.scope_patch_keys;
+-- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
+SET sift.test_scope_patch = off;
+SELECT * FROM states('more changed pairs than the bound');
+RESET sift.test_scope_patch;
 -- the changed pairs reach the reader as a verdict on a rewrite of the units
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');
