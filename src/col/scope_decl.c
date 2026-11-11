@@ -246,25 +246,32 @@ pair_index(Relation rel, AttrNumber member, AttrNumber key)
 	return found;
 }
 
-/* The journal index of the scope relation: a ready sift_col index with track_changes = 'ctid' whose first column is the member and that holds the scope key; the lowest oid when several do */
+/*
+ * The journal indexes of the scope relation: ready sift_col indexes with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid among the
+ * plain ones (partial: the ones with a predicate). A journal records the pairs a statement ends and inserts, so it must see every row: a partial one never hears of a pair inserted
+ * outside its predicate, and a read would take the member for unchanged.
+ */
+static Oid
+journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, bool partial)
+{
+	foreach_oid(ioid, RelationGetIndexList(rel))
+	{
+		Relation	idx = index_open(ioid, AccessShareLock);
+		bool		ok = sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
+			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber &&
+			heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) != partial;
+
+		index_close(idx, AccessShareLock);
+		if (ok)
+			return ioid;
+	}
+	return InvalidOid;
+}
+
 Oid
 sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key)
 {
-	Oid			found = InvalidOid;
-
-	foreach_oid(ioid, RelationGetIndexList(rel))
-	{
-		Relation	idx;
-
-		if (OidIsValid(found))
-			break;
-		idx = index_open(ioid, AccessShareLock);
-		if (sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
-			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber)
-			found = ioid;
-		index_close(idx, AccessShareLock);
-	}
-	return found;
+	return journal_scan(rel, member, scope_key, false);
 }
 
 /*
@@ -394,6 +401,10 @@ sift_scope_resolve(Relation heap, Relation index)
 		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
 		Oid			journal = sift_scope_journal_index(rel, member, key);
 
+		if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, true)))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", specs->s[i]->key_name, specs->s[i]->rel_name),
+							errhint("A partial index never hears of a pair inserted outside its predicate: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
+									specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
 		if (!OidIsValid(journal))
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", specs->s[i]->key_name, specs->s[i]->rel_name),
 							errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",

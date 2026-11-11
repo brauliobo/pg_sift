@@ -17,8 +17,8 @@ scope_key)` in either order (a primary key or a unique constraint), both columns
 of it, or `DROP TABLE` of the relation, needs `CASCADE`, which drops the index. `ALTER INDEX .. SET (scope = 'off')` or `RESET (scope)` removes the declaration; `REINDEX` drops the scope segments.
 The time cut of the scope units is the first `date`, `timestamp` or `timestamptz` column of the index, else none.
 
-**The journal index.** The relation of pairs must have a `sift_col` index with `track_changes = 'ctid'` whose first column is the member and that holds the scope key. Without one `CREATE INDEX`
-is refused with a hint. The first scope index declared on a relation starts its journal at the end of its build, so its segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the
+**The journal index.** The relation of pairs must have a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
+outside its predicate, so it does not qualify). Without one `CREATE INDEX` is refused with a hint. The first scope index declared on a relation starts its journal at the end of its build, so its segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the
 scope index (or the rewrite the maintenance makes) takes it; the indexes built after it are stamped by their build.
 
 **`cols(..)`.** `scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(created_at, kind, value_num)'`: the scope segments of that scope keep only the listed columns of the index,
