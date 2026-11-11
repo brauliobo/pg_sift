@@ -270,6 +270,7 @@ TESTING_REGRESS += col_scope_fill
 TESTING_REGRESS += col_scope_groupkey
 TESTING_REGRESS += col_scope_journal
 TESTING_REGRESS += col_scope_journal_partial
+TESTING_REGRESS += col_scope_keyed_patch
 TESTING_REGRESS += col_scope_maint
 TESTING_REGRESS += col_scope_manymany
 TESTING_REGRESS += col_scope_manymany_edit

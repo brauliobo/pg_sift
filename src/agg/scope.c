@@ -49,15 +49,26 @@ sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 
 static SiftSrcPrune *values_prune(int leaf, const int64 *vals, uint32 n);
 
-/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); vals NULL: of every unit */
+/* The units that have a value in the leaf: those of the scope the leaf is the derived key of (another scope's units and the entity units hold NULL there) */
+static SiftSrcPrune *
+not_null_prune(int leaf)
+{
+	SiftSrcPrune *z = palloc0(sizeof(SiftSrcPrune));
+
+	z->leaf = leaf;
+	z->nulltest = SSN_NOTNULL;
+	return z;
+}
+
+/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); NULL: of every unit */
 static uint64
-unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n, uint64 *units)
+unit_rows(SiftSrcSource *src, SiftSrcPrune *prune, uint64 *units)
 {
 	SiftSrcUnit u;
 	uint64		rows = 0;
 
 	*units = 0;
-	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), vals ? values_prune(leaf, vals, n) : NULL, vals ? 1 : 0);
+	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), prune, prune ? 1 : 0);
 	while (sift_colsrc_next(src, &u))
 	{
 		rows += u.nrow;
@@ -144,8 +155,9 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
 	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
+	int			leaf = sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name);
 
-	c.entries = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->all ? NULL : sc->keys, sc->nkeys, &c.units);
+	c.entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c.units);
 	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
@@ -202,7 +214,7 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 	c = unit_counts(ex, snapshot);
 	read_counts(sc, &c, ex->scope_rd);
 	pair_counts(ex, &c);
-	c.path_rows = unit_rows(entity, sc->fk, NULL, 0, &c.path_units);
+	c.path_rows = unit_rows(entity, NULL, &c.path_units);
 	sift_colsrc_close(entity);
 	MemoryContextDelete(cx);
 	return sift_scope_entity_cheaper(&c);
