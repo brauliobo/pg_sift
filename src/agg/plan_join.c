@@ -190,6 +190,7 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	LeftJoin   *tree = NULL;
 
 	jc->rti = rti;
+	jc->probe = e->rtekind == RTE_SUBQUERY && strcmp(e->eref->aliasname, SIFT_PROBE_ALIAS) == 0;
 	jc->j.child = -1;
 	jc->j.fslot = -1;
 	/* the rows of a table of a FULL JOIN that a condition of its sub-select or view left out are no rows of the join: its plan reads them */

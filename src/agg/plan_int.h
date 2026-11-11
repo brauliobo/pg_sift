@@ -42,6 +42,7 @@ typedef struct JoinCtx
 	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
 	int			dense;			/* the executor keeps the table as classes of its keys (map_load_dense): 0 not asked, 1 yes, 2 no (join_dense) */
 	double		classes;		/* ... the most classes the statistics allow */
+	bool		probe;			/* the child is a lateral probe the planner made of a sublink (agg/flat/probe.c): rti is its sub-select in the query's range table */
 	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
 	List	   *iexprs;			/* the expressions of the sift_col indexes of the table (join_of_expr); read once */
 	bool		iexprs_done;

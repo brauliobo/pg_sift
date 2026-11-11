@@ -878,15 +878,6 @@ child_probe_ops(const JoinCtx *jc)
 	return run + entries * (AGG_PROBE_FETCH + nfilter * AGG_PROBE_QUAL + (1.0 - corr * corr) * AGG_PROBE_VISIT * heap_visit_ops(rel->pages));
 }
 
-/* is the child a lateral probe that the planner hook made of a sublink (agg/flat/probe.c)? */
-static bool
-probe_made(AggCtx *c, const JoinCtx *jc)
-{
-	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
-
-	return rte->rtekind == RTE_SUBQUERY && rte->eref != NULL && strcmp(rte->eref->aliasname, SIFT_PROBE_ALIAS) == 0;
-}
-
 void
 cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
@@ -910,7 +901,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
 			/* a lateral probe the planner made (agg/flat/probe.c) is priced by what a probe takes: the rows of its table are not loaded for it */
-			f->use = f->ok && !probe_made(c, jc) && jc->frows * AGG_LOAD_ROW * cpu_operator_cost < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
+			f->use = f->ok && !jc->probe && jc->frows * AGG_LOAD_ROW * cpu_operator_cost < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
@@ -919,7 +910,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			else
 			{
 				k->child_cost += native;
-				if (probe_made(c, jc) && jc->cvars == NIL)
+				if (jc->probe && jc->cvars == NIL)
 					k->scan_cost += k->sel_rows * (s->group >= 0 ? k->elems : 1.0) * AGG_PROBE_SEMI_ROW;
 			}
 			continue;
