@@ -58,33 +58,33 @@ BEGIN
 END $$;
 -- the dimension only filters: one country, half of the table, its own conditions on several columns, a second condition on the events
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = 7 GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country < 30 GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           4 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           4 |           0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country < 30 AND d.tier >= 2 AND d.active AND day >= ''2025-01-01'' GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           4 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           4 |           0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT count(*) AS n, min(day) AS d0 FROM ev JOIN dims d ON d.id = ev.dim_a_id AND d.country = 7');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = 999');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 -- two dimensions, one of them only filters (PostgreSQL 17 plans one semi table more than 18: the label is not printed)
@@ -108,16 +108,16 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id =
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.dim_a_id WHERE d.country = 13 GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 -- the rows that hold the condition have no repeated key although the table has (the table is unique among the kept rows)
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.dim_a_id WHERE d.country = 12 AND d.tier = 2 GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 -- a column the query reads, as a key, an aggregate argument or an aggregate filter
@@ -153,9 +153,9 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_text d ON d.id 
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims8 d ON d.id = ev.dim_a_id WHERE d.country = 7 GROUP BY kind');
-                plan                 | result_rows | vs_no_table | vs_normal_plan 
--------------------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
+                plan                | result_rows | vs_no_table | vs_normal_plan 
+------------------------------------+-------------+-------------+----------------
+ SiftAgg,1 key filters,1 key passes |           1 |           0 |              0
 (1 row)
 
 -- a prepared statement with a generic plan

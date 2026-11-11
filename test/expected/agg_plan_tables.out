@@ -26,6 +26,7 @@ BEGIN
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Lookup Joins:%' THEN j := ' ' || trim(split_part(l, ':', 2)); END IF;
 		IF l LIKE '%semi tables%' THEN j := j || ', semi table'; END IF;
+		IF l LIKE '%key passes%' THEN j := j || ', key pass'; END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
 	RETURN r || j;
@@ -96,9 +97,9 @@ SELECT * FROM same($$SELECT s.id, count(*) AS n FROM ev e JOIN (SELECT id FROM t
 
 -- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there and enforces the condition, which the scan does not test again
 SELECT * FROM same($$SELECT e.kind, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
-               plan               | result_rows | vs_normal_plan 
-----------------------------------+-------------+----------------
- SiftAgg s (subquery), semi table |           3 |              0
+              plan              | result_rows | vs_normal_plan 
+--------------------------------+-------------+----------------
+ SiftAgg s (subquery), key pass |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, max(s.n) AS busiest, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
@@ -128,9 +129,9 @@ SELECT * FROM same($$SELECT g.n % 3 AS b, count(*) AS n FROM ev e JOIN generate_
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev e WHERE e.tenant_id IN (SELECT g FROM generate_series(1, 10) g)$$);
-                  plan                   | result_rows | vs_normal_plan 
------------------------------------------+-------------+----------------
- SiftAgg g (function) (semi), semi table |           1 |              0
+                 plan                  | result_rows | vs_normal_plan 
+---------------------------------------+-------------+----------------
+ SiftAgg g (function) (semi), key pass |           1 |              0
 (1 row)
 
 -- no rows in the child, and key types that differ from the leaves (bigint against int, varchar against text)
@@ -160,9 +161,9 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT region:
 
 -- an aggregate over a ranked top-k: IN a BM25 scan ordered by score (the SiftScan stays the child), and the scan as a join with its score
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
-                        plan                        | result_rows | vs_normal_plan 
-----------------------------------------------------+-------------+----------------
- SiftAgg ANY_subquery (subquery) (semi), semi table |           3 |              0
+                       plan                       | result_rows | vs_normal_plan 
+--------------------------------------------------+-------------+----------------
+ SiftAgg ANY_subquery (subquery) (semi), key pass |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'cable wire' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
@@ -185,9 +186,9 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM te
 (1 row)
 
 SELECT plan_of($$SELECT count(*) FROM ev WHERE tenant_id IN (SELECT id FROM tenants ORDER BY id LIMIT 5)$$) AS semi_limit;
-                     semi_limit                     
-----------------------------------------------------
- SiftAgg ANY_subquery (subquery) (semi), semi table
+                    semi_limit                    
+--------------------------------------------------
+ SiftAgg ANY_subquery (subquery) (semi), key pass
 (1 row)
 
 SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$) AS function_join;
