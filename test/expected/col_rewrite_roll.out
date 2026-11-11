@@ -1,0 +1,176 @@
+-- The automatic rewrite of a key_cut sift_col index in partitions rolls: each step is a transaction of the maintenance worker and writes the partition it takes into the
+-- blocks the step before it freed, so the file stays within two partitions of the live bytes when the rewrite is done and the VACUUM after it has no segment to move (a rewrite that
+-- wrote all its output above the segments it replaced left the file twice the live bytes, and the VACUUM copied the output down into the blocks they left). The answers
+-- never change and the index verifies.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_col_net = off;	-- the dirty units are what asks for the rewrite (col_net_agg is of the sidecar VACUUM writes for them)
+SELECT current_database() AS db \gset
+ALTER DATABASE :"db" SET sift.col_auto_merge = on;
+ALTER DATABASE :"db" SET sift.col_auto_merge_partition_kb = 1024;
+SET sift.col_auto_merge = on;
+SET sift.col_auto_merge_partition_kb = 1024;
+SET sift.async_maintenance = off;
+CREATE TABLE rr (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO rr SELECT i, (i::bigint * 7919) % 600, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) FROM generate_series(1, 200000) i;
+CREATE INDEX rr_idx ON rr USING sift_col (id, cust, d, amount, pad) WITH (key_cut = 'cust', dict_lookup = off, dead_rewrite_pct = 100);
+-- the first rewrite of the index may leave a partition of several units, which the next one cuts
+UPDATE rr SET amount = amount + 1 WHERE id % 5 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) rr;
+SELECT sift.col_maintain('rr_idx') AS partitioned;
+ partitioned 
+-------------
+ t
+(1 row)
+
+UPDATE rr SET amount = amount + 1 WHERE id % 5 = 2;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) rr;
+SELECT sift.col_maintain('rr_idx') AS cut_again;
+ cut_again 
+-----------
+ t
+(1 row)
+
+VACUUM rr;
+SELECT count(*) >= 5 AS partitions, max(bytes) < 1024 * 1024 * 3 / 2 AS within_a_partition FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
+ partitions | within_a_partition 
+------------+--------------------
+ t          | t
+(1 row)
+
+ALTER TABLE rr RESET (autovacuum_enabled);
+-- the file is within a tenth of the live bytes, and two partitions of them, and a tenth of the file again: the blocks of the last step of the rewrite and the short runs of the ones before it
+CREATE FUNCTION rr_file_ok() RETURNS bool LANGUAGE sql AS $$
+	SELECT i.relation_blocks * 8192 <= 1.2 * (SELECT sum(bytes) FROM sift.col_sections('rr_idx') WHERE section <> 'free')
+		+ 2 * (SELECT max(bytes) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable')
+	FROM sift.col_index_info('rr_idx') i $$;
+CREATE FUNCTION rr_gens() RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable' $$;
+CREATE FUNCTION rr_same() RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+	SELECT x::text INTO a FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rr WHERE cust BETWEEN 10 AND 400) x;
+	SET LOCAL enable_indexscan = off; SET LOCAL enable_seqscan = on;
+	SELECT x::text INTO b FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rr WHERE cust BETWEEN 10 AND 400) x;
+	RETURN a = b;
+END $$;
+-- the worker is done: no segment is dirty and no maintenance worker is at work in the database
+CREATE PROCEDURE rr_wait() LANGUAGE plpgsql AS $$
+DECLARE idle int = 0;
+BEGIN
+	FOR i IN 1..600 LOOP
+		COMMIT;
+		PERFORM pg_sleep(0.1);
+		IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND datname = current_database()) THEN idle = 0; ELSE idle = idle + 1; END IF;
+		EXIT WHEN idle >= 20 AND NOT EXISTS (SELECT 1 FROM sift.col_segments('rr_idx') WHERE dirty);
+	END LOOP;
+END $$;
+-- rounds of churn: new rows promoted into overlays over every partition, a few rows of the table updated, and the VACUUM that leaves the dirty units to the worker
+CREATE PROCEDURE rr_round(n int) LANGUAGE plpgsql AS $$
+BEGIN
+	FOR k IN 1..6 LOOP
+		INSERT INTO rr SELECT 1000000 * n + 10000 * k + g, (g * 7919) % 600, date '2026-02-01', g % 100, md5(g::text) FROM generate_series(1, 4000) g;
+		PERFORM sift.col_promote('rr_idx');
+	END LOOP;
+	UPDATE rr SET amount = amount + 1 WHERE id % 40 = n;
+	COMMIT;
+END $$;
+SELECT sift.col_verify('rr_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT rr_same();
+ rr_same 
+---------
+ t
+(1 row)
+
+-- a round, the rewrite by the worker, and the VACUUM after it
+CALL rr_round(1);
+SET sift.async_maintenance = on;
+VACUUM rr;
+CALL rr_wait();
+SELECT bool_and(NOT dirty) AS none_dirty, count(*) FILTER (WHERE bytes * 2 >= 1024 * 1024) >= 5 AS partitions FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
+ none_dirty | partitions 
+------------+------------
+ t          | t
+(1 row)
+
+SELECT rr_file_ok() AS file_within_bound;
+ file_within_bound 
+-------------------
+ t
+(1 row)
+
+SELECT rr_gens() AS gens \gset before_
+VACUUM rr;
+SELECT rr_gens() = :'before_gens' AS vacuum_moved_nothing, rr_file_ok() AS file_within_bound;
+ vacuum_moved_nothing | file_within_bound 
+----------------------+-------------------
+ t                    | t
+(1 row)
+
+SELECT sift.col_verify('rr_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT rr_same();
+ rr_same 
+---------
+ t
+(1 row)
+
+-- the next rounds do the same on the blocks the rewrite before them left
+SET sift.async_maintenance = off;
+CALL rr_round(2);
+SET sift.async_maintenance = on;
+VACUUM rr;
+CALL rr_wait();
+SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
+ none_dirty 
+------------
+ t
+(1 row)
+
+SELECT rr_file_ok() AS file_within_bound;
+ file_within_bound 
+-------------------
+ t
+(1 row)
+
+SELECT rr_gens() AS gens \gset before_
+VACUUM rr;
+SELECT rr_gens() = :'before_gens' AS vacuum_moved_nothing, rr_file_ok() AS file_within_bound;
+ vacuum_moved_nothing | file_within_bound 
+----------------------+-------------------
+ t                    | t
+(1 row)
+
+SELECT sift.col_verify('rr_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT rr_same();
+ rr_same 
+---------
+ t
+(1 row)
+
+ALTER DATABASE :"db" RESET sift.col_auto_merge;
+ALTER DATABASE :"db" RESET sift.col_auto_merge_partition_kb;
+DROP TABLE rr;
+DROP PROCEDURE rr_round(int);
+DROP PROCEDURE rr_wait();
+DROP FUNCTION rr_same();
+DROP FUNCTION rr_gens();
+DROP FUNCTION rr_file_ok();
+DROP EXTENSION pg_sift;

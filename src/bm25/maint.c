@@ -506,6 +506,9 @@ sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid)
 
 bool		sift_maint_own_xacts = false;
 
+#define FREED_WAIT_MS		10
+#define FREED_WAIT_TRIES	50
+
 /*
  * The end of a step of a background worker: its transaction commits and the next step runs in a new one. What a step frees carries its transaction's xid and the
  * worker's snapshot holds the horizon at that xid for as long as the transaction lasts, so a step could not reuse what the one before freed (the file grew by
@@ -523,7 +526,11 @@ sift_maint_step_boundary(Relation index)
 	CommitTransactionCommand();
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
-	return sift_try_open_index(indexoid, RowExclusiveLock);
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	/* a read that began while the step ran ends within moments; one that outlasts the wait holds the blocks of every step of the pass, which then writes where it can */
+	for (int i = 0; index != NULL && i < FREED_WAIT_TRIES && sift_store_held_blocks(index) > 0; i++)
+		sift_nap(FREED_WAIT_MS);
+	return index;
 }
 
 /* Seals the active segment and promotes every sealed one; returns the number promoted */

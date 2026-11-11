@@ -94,6 +94,31 @@ maint_vacuum_truncates(Relation index)
 }
 
 /*
+ * The rolling rewrite of a key-cut index (roll.c) ends with the blocks of its last step free (the partition it took and the overlay rows that waited for it) and the runs
+ * shorter than a writer takes off the free list (RUN_MIN) that every step leaves: at most two of the largest segment and a tenth of the file. The promotions and the first
+ * step of the next pass write into them, and a copy of a partition down into them would write it again, so the VACUUM leaves them (and cuts the free tail).
+ */
+static bool
+maint_holes_of_a_step(Relation index)
+{
+	SiftDirSnapshot *snap;
+	uint64		largest = 0;
+	int64		holes;
+
+	if (!sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+		return false;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	maint_use_partitions(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			largest = Max(largest, snap->segs[i].bytes);
+	pfree(snap);
+	holes = sift_store_free_stats(index).blocks - sift_store_tail_blocks(index);
+	return maint_part_kb > 0 && (uint64) holes * BLCKSZ <= 2 * largest + (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ / 10;
+}
+
+/*
  * VACUUM moves the segments that end the file down into free blocks, a copy of each (its WAL is the segment's bytes) that also makes the segment new: the
  * WAL budget of the automatic rewrite counts from the write of the oldest large segment, so every move put it off by another 100 / sift.col_auto_merge_wal_pct
  * times the segment, and the churn it was to answer went on. An index that is due for a rewrite gets the segments written into those free blocks by it, when the
@@ -107,6 +132,8 @@ maint_space_deferred(Relation index)
 {
 	const char *why;
 
+	if (maint_holes_of_a_step(index))
+		return true;
 	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return false;
 	why = maint_rewrite_check(index, true, NULL);

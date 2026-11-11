@@ -513,6 +513,7 @@ typedef struct MergeIn
 	uint32		n;
 	uint32		pos;
 	bool		done;
+	bool		bounded;		/* the lo and hi of the merge cut its rows */
 } MergeIn;
 
 /* The rows of a chunk stay where they were decoded until the window of the cut has copied them into a unit: a chunk is reused when no row of it is pinned by the window and its input has loaded another */
@@ -730,7 +731,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	old = MemoryContextSwitchTo(m->scratch);
 	if (in->keyed)
 	{
-		if (m->lo && prev < 0)
+		if (m->lo && in->bounded && prev < 0)
 			in->next_unit = first_unit(m, seg, m->lo);
 		while (b->nrows == 0 && in->next_unit < seg->nsb)
 			sift_cseg_decode_unit_freeze(seg, in->next_unit++, b, m->freeze, m->freeze_arg);
@@ -785,7 +786,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	m->chunk[cur].held = !in->done;
 	if (prev >= 0)
 		m->chunk[prev].held = false;
-	if (m->lo && !in->done)
+	if (m->lo && in->bounded && !in->done)
 	{
 		while (in->pos < in->n && bound_cmp(m, in->ord[in->pos].b, in->ord[in->pos].r, m->lo) < 0)
 			in->pos++;
@@ -842,7 +843,7 @@ merge_next(void *state, RowRef *r)
 		if (m->nheap == 0)
 			return false;
 		best = m->heap[0];
-		if (m->hi == NULL || bound_cmp(m, best->ord[best->pos].b, best->ord[best->pos].r, m->hi) < 0)
+		if (m->hi == NULL || !best->bounded || bound_cmp(m, best->ord[best->pos].b, best->ord[best->pos].r, m->hi) < 0)
 			break;
 		/* the rest of this input is in the slices above */
 		m->chunk[best->chunk].held = false;
@@ -878,15 +879,34 @@ merge_done(void *state, const RowRef *refs, uint64 n)
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, bool resort)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg, int slice, int nslices, uint32 unit_base, bool resort, const SiftColWindow *win)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
 					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024};
+	BoundKey	wlo = {{0, PG_INT64_MIN}},
+				whi = {{0, PG_INT64_MIN}};
 	int			units;
 
 	for (int i = 0; i < n; i++)
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 || sift_cseg_keyed(&ent[i])), .chunk = -1};
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = !resort && (nleaf == 0 || sift_cseg_keyed(&ent[i])), .chunk = -1, .bounded = win ? win->bounded[i] : true};
+	if (win)
+	{
+		const SiftColDef *col = &schema->cols[leaf[0]];
+
+		Assert(nleaf > 0 && nslices == 1);
+		/* the bounds are on the first leaf alone: the rows of a key are all in or all out */
+		if (win->has_lo)
+		{
+			wlo.k[0] = sift_crun_key(col, win->lo);
+			m.lo = &wlo;
+		}
+		if (win->has_hi)
+		{
+			whi.k[0] = sift_crun_key(col, win->hi);
+			m.hi = &whi;
+		}
+	}
 	if (nslices > 1)
 	{
 		uint64		nb;

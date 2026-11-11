@@ -12,6 +12,7 @@
 double		sift_col_auto_merge_buffer_pct = 1.0;
 int			sift_col_auto_merge_pass_mb = 1024;
 uint64		maint_pass_bytes = 0;	/* the bytes of overlapping runs the rewrite pass in hand has rewritten */
+uint64		maint_pass_gen = 0;		/* the newest generation the rolling rewrite pass in hand started from (0: not begun): the partitions of it are the ones still to rewrite */
 
 /* The worker was started because the reads of a backend owe the rewrite (maint_read_due) */
 bool		maint_read_asked = false;
@@ -287,7 +288,8 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 			d = maint_dirty_units(seg);
 			dirty += d;
 		}
-		if (!v->over[i] && !v->kover[i])
+		/* the partitions of a key-cut index are told by size: what a rolling pass writes has superblocks in common with its neighbours, and the density does not say it is no partition */
+		if (partitioned && sift_col_key_cut(sift_col_rel(index)) ? maint_is_partition(e) : !v->over[i] && !v->kover[i])
 			part_dirty |= (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * seg->nsb;
 		else
 		{
@@ -362,6 +364,7 @@ const char *
 maint_rewrite_due(Relation index, bool automatic)
 {
 	maint_pass_bytes = 0;
+	maint_pass_gen = 0;
 	return maint_rewrite_check(index, automatic, NULL);
 }
 

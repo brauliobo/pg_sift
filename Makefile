@@ -248,6 +248,7 @@ TESTING_REGRESS += col_range_order
 TESTING_REGRESS += col_read_ahead
 TESTING_REGRESS += col_refresh
 TESTING_REGRESS += col_rewrite_cut
+TESTING_REGRESS += col_rewrite_roll
 TESTING_REGRESS += col_rollup_auto
 TESTING_REGRESS += col_rollup_refresh
 TESTING_REGRESS += col_run_heads

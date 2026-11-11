@@ -110,8 +110,8 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 }
 
 /* The partitions the live bytes make of part_bytes (a key-cut partition is under three quarters of the size: the VACUUM space step moves a segment whole, within the bytes of a partition) */
-static uint64
-part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
+uint64
+maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
 {
 	uint64		share = key_cut ? part_bytes / 4 * 3 : part_bytes;
 
@@ -147,7 +147,7 @@ at_minimum(Relation index, const SiftMergePolicy *pol, const SiftSegEntry *sel, 
 		bytes += sel[i].bytes;
 		rows += sel[i].ndocs;
 	}
-	return (uint64) n <= Max(part_count(bytes, (uint64) maint_part_kb * 1024, false), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS);
+	return (uint64) n <= Max(maint_part_count(bytes, (uint64) maint_part_kb * 1024, false), (rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS);
 }
 
 static int
@@ -267,7 +267,7 @@ pick_key_window(const RewriteView *v, bool *take)
  * leaves nothing of what it picked for the next one, so the steps end. cut: the output is cut into partitions.
  */
 static int
-pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced)
+pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced, RollStep *rs)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite pick", ALLOCSET_SMALL_SIZES);
 	RewriteView *v;
@@ -323,8 +323,13 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	if (keyed)
 	{
 		OverlayEv	ev;
+		RollPick	roll = ROLL_NO;
 
-		if (maint_overlay_asked)
+		if (!maint_overlay_asked && maint_part_kb > 0 && !maint_after_build && (work || maint_pass_gen != 0))
+			roll = maint_roll_pick(v, take, rs);
+		if (roll != ROLL_NO)
+			rs->on = roll == ROLL_STEP;
+		else if (maint_overlay_asked)
 		{
 			/* the overlays alone, whatever else holds a dead row or has no cut, and nothing after them: the pass ends when they are one (the rule asks again when the next ones pile up) */
 			memset(take, false, v->n);
@@ -354,6 +359,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	for (int i = 0; i < v->n; i++)
 		if (take[i])
 		{
+			rs->bounded[nsel] = rs->over[i] && rs->on;
 			sel[nsel++] = v->imm[i];
 			refresh |= v->stale[i];
 		}
@@ -377,7 +383,9 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	for (int i = 0; i < v->n; i++)
 		sift_cseg_close(v->seg[i]);
 	MemoryContextDelete(cx);
-	/* one clean segment is the end state (and segments no unit is in two of, above) */
+	/* one clean segment is the end state (and segments no unit is in two of, above); a step of the rolling rewrite is a partition, clean or not */
+	if (rs->on)
+		return nsel;
 	return nsel > 1 || (nsel == 1 && ((sel[0].flags & SIFT_SEG_DIRTY) || refresh)) ? nsel : 0;
 }
 
@@ -638,7 +646,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	 * the bytes of units written, which are the part of a segment that grows with its rows (the dictionaries and the like grow with them)
 	 */
 	if (part_bytes > 0)
-		o.parts = Max(1, Min(Min(part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts));
+		o.parts = Max(1, Min(Min(maint_part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts));
 	o.live_rows = live_rows;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
@@ -692,7 +700,8 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, o.cx, out_next, &o,
 							slice ? slice->i : 0, slice ? slice->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
-							slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort);
+							slice && slice->win ? slice->win->unit_base : slice && key_cut ? live_rows * slice->i / slice->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, resort,
+							slice ? slice->win : NULL);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
@@ -885,6 +894,9 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	int			nimm = 0;
 	bool		cut = false,
 				paced = false;
+	RollStep	rs = {0};
+	SiftSegEntry all[SIFT_MAX_SEGMENTS];
+	int			nall = 0;
 
 	sift_dir_read(index, snap);
 	int total = snap->nsegs;
@@ -898,7 +910,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 				snap->segs[keep++] = snap->segs[i];
 		snap->nsegs = keep;
 	}
-	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut, &paced) : pick_merge(index, snap, force, sel);
+	n = goal == SIFT_GOAL_REWRITE ? pick_rewrite(index, snap, sel, &cut, &paced, &rs) : pick_merge(index, snap, force, sel);
 	/* a pass of the rewrite of overlapping runs does about sift.col_auto_merge_pass_mb of them: the next VACUUM, worker or sift.col_maintain call goes on from the directory this one left */
 	if (paced && n > 0)
 	{
@@ -921,24 +933,22 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	 * when the key changes. It needs the heap lock, which a VACUUM or the worker holds at times and which is not waited for (the merge holds the metapage a VACUUM waits for):
 	 * the step is left to the next call then, not made without the choice.
 	 */
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			all[nall++] = snap->segs[i];
 	if (n > 0 && goal == SIFT_GOAL_REWRITE && !maint_after_build && !maint_redecided)
 	{
-		SiftSegEntry all[SIFT_MAX_SEGMENTS];
-		int			nall = 0;
-
 		if (sift_col_redecide_busy(index))
 		{
 			pfree(snap);
 			return SIFT_STEP_IDLE;
 		}
 		maint_redecided = true;
-		for (int i = 0; i < snap->nsegs; i++)
-			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-				all[nall++] = snap->segs[i];
 		if ((recut = sift_col_auto_redecide(index, all, nall)))
 		{
 			memcpy(sel, all, nall * sizeof(SiftSegEntry));
 			n = nimm = nall;
+			rs.on = false;
 		}
 	}
 	/* the new segments must fit the directory beside the others, with the room the inserters keep */
@@ -948,13 +958,15 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 	{
 		/* the cached schema is read after the option is written: the write reloads it. The rewrite that follows a parallel build merges the segments of its participants: the
 		 * build has just chosen from the same data, and choosing again took 40% of a build of 1,000,000 rows */
-		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
+		bool		keyed = rs.on ? rs.first && sift_col_auto_keys_merge(index, all, nall) : n == nimm && sift_col_auto_keys_merge(index, sel, n);
 
 		merge_recut = recut || (goal != SIFT_GOAL_REWRITE && n == nimm && !maint_after_build && sift_col_auto_redecide(index, sel, n));
 
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
-		if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
+		if (rs.on)
+			maint_roll_merge(index, sel, n, &rs);
+		else if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
 			maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 						   cut ? (uint64) maint_part_kb * 1024 : 0, Max(room, 1), NULL);
 		if (keyed)

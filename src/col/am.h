@@ -298,9 +298,23 @@ extern uint64 sift_colk_heap_sbs(Relation index);
 /* Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one) */
 typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx, uint32 unit_base);
+/*
+ * A window of the key range of a merge: the rows of the inputs flagged in bounded that are below lo (when has_lo) or from hi on (when has_hi) of the first leaf of the
+ * cut are left out, for another merge to write; the rows of the other inputs are all taken. unit_base: the number of its first unit.
+ */
+typedef struct SiftColWindow
+{
+	bool		has_lo;
+	bool		has_hi;
+	int64		lo;
+	int64		hi;
+	const bool *bounded;
+	uint32		unit_base;
+} SiftColWindow;
+
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
-							int slice, int nslices, uint32 unit_base, bool resort);
+							int slice, int nslices, uint32 unit_base, bool resort, const SiftColWindow *win);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with

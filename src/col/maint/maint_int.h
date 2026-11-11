@@ -61,6 +61,7 @@ typedef struct RewriteView
 
 extern int maint_merge_workers;
 extern uint64 maint_pass_bytes;
+extern uint64 maint_pass_gen;
 extern bool maint_after_build;
 extern bool maint_redecided;
 
@@ -116,10 +117,36 @@ typedef struct MergeSlice
 	int			i;
 	int			nslices;
 	SiftSegEntry *out;
+	const SiftColWindow *win;	/* the rows are those of the window (i 0, nslices 1) */
 } MergeSlice;
 
 extern void maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int max_parts, const MergeSlice *slice);
+
+/* The rolling rewrite of a key-cut index in partitions (roll.c) */
+typedef enum RollPick
+{
+	ROLL_NO,					/* the index is not in partitions that do not overlap: the other rules */
+	ROLL_STEP,
+	ROLL_DONE					/* every partition of the pass is rewritten */
+} RollPick;
+
+#define ROLL_PIECES	8
+
+typedef struct RollStep
+{
+	bool		on;
+	bool		first;			/* the first step of the pass */
+	SiftColWindow win;
+	int			nhigh;			/* the overlay rows above the window are written as nhigh + 1 pieces, each as far as the windows of the partitions of its share go (the last, all the rest) */
+	int64		high[ROLL_PIECES];
+	bool		over[SIFT_MAX_SEGMENTS];	/* of the segments of the view: the overlays, which hold rows of the key range of other segments */
+	bool		bounded[SIFT_MAX_SEGMENTS];	/* of the segments the step takes: the overlays, whose rows the window cuts */
+} RollStep;
+
+extern uint64 maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut);
+extern RollPick maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
+extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs);
 extern bool maint_scope_merge_step(Relation index, bool force);
 extern bool maint_scope_refill(Relation index);
 extern bool maint_scope_refill_due(Relation index);
