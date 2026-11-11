@@ -31,7 +31,7 @@ journal_open(Relation index, int scope, LOCKMODE lock, Relation *rel, Relation *
 	if (specs == NULL || scope < 0 || scope >= specs->n)
 		return false;
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	(void) sift_scope_relation_index(heap, index, specs->s[scope], rel, &member, &key);
+	sift_scope_relation(heap, index, specs->s[scope], rel, &member, &key);
 	table_close(heap, NoLock);
 	joid = sift_scope_journal_index(*rel, member, key);
 	if (!OidIsValid(joid))

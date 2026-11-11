@@ -44,10 +44,12 @@ extern SiftScopeSpecs *sift_scope_specs(Relation index);
 extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope, bool (*kept)[SIFT_COL_MAX_COLS]);
 /* The leaf the units of a scope are cut by after its key: the first date, timestamp or timestamptz column of the index, -1 when there is none */
 extern int	sift_scope_time_leaf(const SiftColDef *defs, int n);
-/* The scope relation and its unique btree on (member, scope_key) of a declared scope (ERROR with a hint when the relation does not qualify); the relation is left open in *rel, AccessShare */
+/* The checks of a declared scope's relation (ERROR with a hint when it does not qualify); left open in *rel, AccessShare */
+extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
+/* ... and the unique btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
-/* CREATE INDEX, REINDEX and ALTER INDEX: resolves the declaration, writes the dependency on the unique btree, or removes it */
-extern void sift_scope_resolve(Relation heap, Relation index);
+/* CREATE INDEX, REINDEX (sticky false: chooses the unique btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
+extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */

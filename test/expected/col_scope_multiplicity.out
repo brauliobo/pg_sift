@@ -87,6 +87,7 @@ EXCEPTION WHEN OTHERS THEN
 	GET STACKED DIAGNOSTICS h = PG_EXCEPTION_HINT;
 	RAISE NOTICE 'hint: %', h;
 END $$;
+NOTICE:  scope "tenant_id": the pairs of "pairs_60" are the rows of its unique btree "pairs_60_pkey"
 NOTICE:  hint: Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). SET sift.scope_max_multiplicity raises the limit.
 SET client_min_messages = warning;
 DROP TABLE events;

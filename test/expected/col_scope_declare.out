@@ -144,6 +144,7 @@ SELECT try('SET sift.scope_patch_keys = 1048577');
 -- the declaration: a dependency on the btree, the derived leaf, minor 45
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "tenant_id": 3,432 entries for 3,000 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
@@ -257,6 +258,7 @@ LINE 1: SELECT edges('events_col') AS after_drop;
                      ^
 SELECT :'ddl' AS restore \gexec
 CREATE INDEX events_col ON public.events USING sift_col (id, dim_a_id, created_at, kind, label, value_num) WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)', key_columns='auto: dim_a_id', track_changes=id, point_tid_columns='auto: id')
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
@@ -277,6 +279,7 @@ SELECT leaf, path FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
 
 -- REINDEX, REINDEX CONCURRENTLY and ALTER INDEX of another option keep one dependency; the scope index and the btree can both be rebuilt
 REINDEX INDEX events_col;
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
@@ -290,6 +293,7 @@ SELECT edges('events_col') AS after_reindex;
 (1 row)
 
 REINDEX INDEX CONCURRENTLY events_col;
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": track_changes log is not complete after a concurrent build
 HINT:  The next VACUUM completes the log; REINDEX INDEX events_col without CONCURRENTLY does it now.
@@ -319,6 +323,7 @@ SELECT edges('events_col') AS after_btree_reindex_concurrently;
 (1 row)
 
 REINDEX INDEX events_col;
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 NOTICE:  scope "tenant_id": 3,546 entries for 3,100 rows (1.14 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
@@ -341,6 +346,7 @@ SELECT edges('events_col') AS after_off;
 (1 row)
 
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 SELECT edges('events_col') AS after_set;
                after_set                
 ----------------------------------------
@@ -383,6 +389,7 @@ SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LI
 (1 row)
 
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
 -- the btree and the relation cannot go under the index; CASCADE takes the index with them
 SELECT try('DROP INDEX tenant_scope_pkey');
                                                                                           try                                                                                          
@@ -446,6 +453,8 @@ SELECT try('CREATE INDEX bad ON events USING sift_col (id, dim_a_id, kind) WITH 
 CREATE INDEX events_two ON events USING sift_col (id, dim_a_id, kind, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id); "Region Key": dim_a_id -> other.region_scope(dim_a_id, region_id)',
 		  connect = 'dim_a_id -> dim_a(id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "Region Key": the pairs of "region_scope" are the rows of its unique btree "region_scope_region_id_dim_a_id_key"
 NOTICE:  scope "tenant_id": 3,100 entries for 3,100 rows (1.00 per row)
 NOTICE:  scope "Region Key": 3,100 entries for 3,100 rows (1.00 per row)
 NOTICE:  sift_col index "events_two": 2 automatic choices (key_columns, track_changes)

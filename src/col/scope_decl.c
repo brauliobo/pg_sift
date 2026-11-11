@@ -16,6 +16,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
+#include "catalog/index.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_depend.h"
@@ -222,28 +223,31 @@ check_cols(Relation index, const SiftScopeSpec *s)
 								errhint("Name each column once.")));
 }
 
-/* The unique btree of the relation on exactly the two columns, in either order; the lowest oid when several do */
+/* Does the index serve as the unique btree of the pairs (member, scope_key): a plain, immediate, unique btree on exactly those two columns, in either order */
+static bool
+is_pair_btree(Relation idx, AttrNumber member, AttrNumber key)
+{
+	const FormData_pg_index *i = idx->rd_index;
+
+	return idx->rd_rel->relam == BTREE_AM_OID && i->indisunique && i->indimmediate && i->indisvalid && i->indisready && i->indnatts == 2 && i->indnkeyatts == 2 &&
+		heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+		((i->indkey.values[0] == member && i->indkey.values[1] == key) || (i->indkey.values[0] == key && i->indkey.values[1] == member));
+}
+
+/* The unique btree the rule picks for the pairs of the relation: the lowest oid of those that qualify. The scope index records it (a dependency) when it is built; see sift_scope_relation_index */
 static Oid
 pair_index(Relation rel, AttrNumber member, AttrNumber key)
 {
-	Oid			found = InvalidOid;
-
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
-		Relation	idx;
-		const FormData_pg_index *i;
+		Relation	idx = index_open(ioid, AccessShareLock);
+		bool		ok = is_pair_btree(idx, member, key);
 
-		if (OidIsValid(found))
-			break;
-		idx = index_open(ioid, AccessShareLock);
-		i = idx->rd_index;
-		if (idx->rd_rel->relam == BTREE_AM_OID && i->indisunique && i->indimmediate && i->indisvalid && i->indisready && i->indnatts == 2 && i->indnkeyatts == 2 &&
-			heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-			((i->indkey.values[0] == member && i->indkey.values[1] == key) || (i->indkey.values[0] == key && i->indkey.values[1] == member)))
-			found = ioid;
 		index_close(idx, AccessShareLock);
+		if (ok)
+			return ioid;
 	}
-	return found;
+	return InvalidOid;
 }
 
 /*
@@ -274,15 +278,11 @@ sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key)
 	return journal_scan(rel, member, scope_key, false);
 }
 
-/*
- * The checks of one scope and the unique btree of its relation that serves it. The relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with the
- * declaration.
- */
-Oid
-sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)
+/* The checks of one scope's declaration; the relation is left open in *rel, locked AccessShare. ERROR with a hint for what is wrong with it */
+void
+sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)
 {
-	Oid			roid,
-				btree;
+	Oid			roid;
 	AttrNumber	fk = get_attnum(RelationGetRelid(heap), s->fk),
 				named;
 
@@ -310,10 +310,67 @@ sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s,
 	if (*member == *scope_key)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
 						errhint("A scope relation has two columns: the member key and the scope key.")));
-	btree = pair_index(*rel, *member, *scope_key);
+}
+
+/* The indexes this index depends on (normal edges to an index): the unique btrees and journal indexes of its scopes and the parent indexes of its connections */
+static List *
+dependent_indexes(Oid index)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	List	   *edges = NIL;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(index));
+	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL && d->objsubid == 0 && d->refobjsubid == 0 && get_rel_relkind(d->refobjid) == RELKIND_INDEX)
+			edges = lappend_oid(edges, d->refobjid);
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return edges;
+}
+
+/* The unique btree of rel that the index depends on and that still qualifies: the one that defined the pairs when the scope segments were written; InvalidOid when none */
+static Oid
+recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
+{
+	foreach_oid(edge, dependent_indexes(index))
+	{
+		Relation	idx;
+		bool		ok;
+
+		if (IndexGetRelation(edge, true) != RelationGetRelid(rel))
+			continue;
+		idx = index_open(edge, AccessShareLock);
+		ok = is_pair_btree(idx, member, key);
+		index_close(idx, AccessShareLock);
+		if (ok)
+			return edge;
+	}
+	return InvalidOid;
+}
+
+/*
+ * The checks of one scope and the unique btree of its relation that defines its pairs: the one the index records (its dependency), never one chosen again by the rule: a btree made or rebuilt
+ * after the scope segments were written must not change which rows are pairs under them. CREATE INDEX and REINDEX record it (sift_scope_resolve). The relation is left open in *rel.
+ */
+Oid
+sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key)
+{
+	Oid			btree;
+
+	sift_scope_relation(heap, index, s, rel, member, scope_key);
+	btree = recorded_btree(RelationGetRelid(index), *rel, *member, *scope_key);
 	if (!OidIsValid(btree))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no unique btree index on (%s, %s)", s->key_name, s->rel_name, s->member, s->scope_key),
-						errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.", s->rel_name, s->member, s->scope_key)));
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": index \"%s\" has no recorded unique btree on (%s, %s) of \"%s\"", s->key_name, RelationGetRelationName(index), s->member, s->scope_key, s->rel_name),
+						errhint("REINDEX INDEX %s records it again.", RelationGetRelationName(index))));
 	return btree;
 }
 
@@ -335,30 +392,12 @@ is_journal_index(Oid oid)
 static void
 sync_edges(Oid index, List *keep)
 {
-	Relation	drel;
-	ScanKeyData key[2];
-	SysScanDesc scan;
-	HeapTuple	tup;
 	List	   *stale = NIL,
-			   *present = NIL,
-			   *edges = NIL;
+			   *present = NIL;
 	ObjectAddress from;
 
 	CommandCounterIncrement();
-	drel = table_open(DependRelationId, RowExclusiveLock);
-	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(index));
-	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
-	while (HeapTupleIsValid(tup = systable_getnext(scan)))
-	{
-		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (d->refclassid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL && d->objsubid == 0 && d->refobjsubid == 0 && get_rel_relkind(d->refobjid) == RELKIND_INDEX)
-			edges = lappend_oid(edges, d->refobjid);
-	}
-	systable_endscan(scan);
-	table_close(drel, RowExclusiveLock);
-	foreach_oid(edge, edges)
+	foreach_oid(edge, dependent_indexes(index))
 	{
 		if (sift_col_is_index_oid(edge) && !is_journal_index(edge))
 			continue;
@@ -382,10 +421,12 @@ sync_edges(Oid index, List *keep)
 
 /*
  * CREATE INDEX, REINDEX and ALTER INDEX: finds the unique btree of the relation of each scope the option names and makes the dependency of the index on it, so that DROP INDEX of
- * the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the option is off or not set.
+ * the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the option is off or not set. The dependency
+ * is the record of which btree defines the pairs: CREATE INDEX and REINDEX (which write the scope segments) choose it by the rule and say which in a NOTICE; ALTER INDEX (sticky) leaves the
+ * one recorded, as the segments were written under it.
  */
 void
-sift_scope_resolve(Relation heap, Relation index)
+sift_scope_resolve(Relation heap, Relation index, bool sticky)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	List	   *keep = NIL;
@@ -398,8 +439,20 @@ sift_scope_resolve(Relation heap, Relation index)
 		Relation	rel;
 		AttrNumber	member,
 					key;
-		Oid			btree = sift_scope_relation_index(heap, index, specs->s[i], &rel, &member, &key);
-		Oid			journal = sift_scope_journal_index(rel, member, key);
+		Oid			btree,
+					journal;
+
+		sift_scope_relation(heap, index, specs->s[i], &rel, &member, &key);
+		btree = sticky ? recorded_btree(RelationGetRelid(index), rel, member, key) : InvalidOid;
+		if (!OidIsValid(btree))
+		{
+			btree = pair_index(rel, member, key);
+			if (!OidIsValid(btree))
+				ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no unique btree index on (%s, %s)", specs->s[i]->key_name, specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key),
+								errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.", specs->s[i]->rel_name, specs->s[i]->member, specs->s[i]->scope_key)));
+			ereport(NOTICE, (errmsg("scope \"%s\": the pairs of \"%s\" are the rows of its unique btree \"%s\"", specs->s[i]->key_name, specs->s[i]->rel_name, get_rel_name(btree))));
+		}
+		journal = sift_scope_journal_index(rel, member, key);
 
 		if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, true)))
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", specs->s[i]->key_name, specs->s[i]->rel_name),
@@ -424,7 +477,7 @@ sift_scope_alter(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
-	sift_scope_resolve(heap, index);
+	sift_scope_resolve(heap, index, true);
 	sift_scope_start(heap, index);
 	table_close(heap, NoLock);
 }
