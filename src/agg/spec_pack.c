@@ -18,14 +18,14 @@ typedef struct Codec
 	bool		rd;
 } Codec;
 
-static Node *
+static pg_attribute_always_inline Node *
 pk_item(Codec *c)
 {
 	SIFT_INVARIANT(c->pos < list_length(c->items), "sift: truncated aggregate plan");
 	return list_nth(c->items, c->pos++);
 }
 
-static void
+static pg_attribute_always_inline void
 pk_int(Codec *c, int *v)
 {
 	if (c->rd)
@@ -59,7 +59,7 @@ pk_str(Codec *c, const char **s)
 	do { PKS(c, f); if ((c)->rd && !*(f)) (f) = NULL; } while (0)
 
 /* Node or NULL */
-static void
+static pg_attribute_always_inline void
 pk_node(Codec *c, Node **n)
 {
 	int			has = !c->rd && *n != NULL;
