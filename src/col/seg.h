@@ -541,6 +541,7 @@ extern int64 sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, voi
  * (dirty flag first, then the bits, generic WAL, at most 4 pages per record). Caller holds the maintenance lock. Returns rows removed,
  * adds to stats like sift_seg_bulkdelete.
  */
+extern int64 sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n);
 extern int64 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats);
 
 /*

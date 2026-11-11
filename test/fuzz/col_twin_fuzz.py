@@ -5,7 +5,7 @@
 
 A seed fills a table with keys of a chosen shape (many equal keys, a NULL region, scattered or arriving in order), builds two sift_col indexes (order arrays on four columns, and
 grouped by an entity) and b-tree twins, and draws steps: batches of INSERTs, DELETEs and UPDATEs of a random, newest or oldest window, upserts, updates that change a key and
-updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, merge, REINDEX and ANALYZE. After every step a sample of the queries (top-N both ways, OFFSET small and deep,
+updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs, merge, REINDEX and ANALYZE. After every step a sample of the queries (top-N both ways, OFFSET small and deep,
 ranges with LIMIT, IN lists, group top-N, NULL regions, text keys) must give the same ordered rows through the forced sift plan, the planned one, a forced b-tree plan and a
 forced heap plan, and col_verify must pass. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The
 seed also draws track_changes on or off, sift.col_wbuf_ref, key_cut, the segment size and, in a testing build, sift.test_col_gorder_seek (every chunk seekable).
@@ -209,8 +209,8 @@ class Churn:
 
     def step(self, reader):
         r = self.rng
-        kind = r.choices(['ins', 'del', 'upd_key', 'upd_pad', 'upsert', 'aborted', 'chain', 'promote', 'vacuum', 'merge', 'reindex', 'analyze'],
-                         [14, 14, 14, 8, 8, 6, 6, 8, 10, 8, 2, 2])[0]
+        kind = r.choices(['ins', 'del', 'upd_key', 'upd_pad', 'upsert', 'aborted', 'chain', 'promote', 'vacuum', 'merge', 'reindex', 'analyze', 'fold'],
+                         [14, 14, 14, 8, 8, 6, 6, 8, 10, 8, 2, 2, 10])[0]
         pct = r.choice([1, 3, 10, 30, 60])
         if kind == 'reindex' and reader:   # its lock waits for the reader's transaction
             kind = 'analyze'
@@ -240,6 +240,8 @@ class Churn:
             return kind, "SELECT sift.col_promote('ct_i'), sift.col_promote('ct_g')"
         if kind == 'vacuum':
             return kind, 'VACUUM ct'
+        if kind == 'fold':
+            return kind, "SELECT sift._test_col_fold_marks('ct_i'), sift._test_col_fold_marks('ct_g')"
         if kind == 'merge':
             return kind, "SELECT sift.col_merge('ct_i', true), sift.col_merge('ct_g', true)"
         if kind == 'reindex':

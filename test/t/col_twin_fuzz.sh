@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The order arrays of a sift_col index against its b-tree and heap twins under churn (test/fuzz/col_twin_fuzz.py): INSERT, DELETE, UPDATE (of a key and not), upsert,
-# an aborted transaction, repeated updates of one row, promotion, VACUUM, merge and REINDEX in a random order, with track_changes on and off, seekable chunks of the build's
+# an aborted transaction, repeated updates of one row, promotion, VACUUM, the fold of the marks of the log, merge and REINDEX in a random order, with track_changes on and off, seekable chunks of the build's
 # choice and all of them, and a long snapshot reader; after every step the ordered rows of top-N, OFFSET, range, IN list, group and NULL-region queries must be the same
 # through the forced sift plan, the planned one, a b-tree and the heap. Quick tier: seeds 1-2 of 6 steps on 12,000 rows; full: 24 seeds of 10 steps on 30,000, as two jobs of 12 (this file: seeds 1-12; col_twin_fuzz_b.sh: 13-24, full tier only: 24 seeds took 1350 s on a hosted runner).
 # SIFT_FUZZ_SEEDS / SIFT_FUZZ_ROWS / SIFT_FUZZ_STEPS override.

@@ -11,6 +11,7 @@
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "col/ver.h"
+#include "core/cmp.h"
 #include "core/live.h"
 
 /* want: the scalar leaves to decode (NULL: all, with the versions of the rows): only their chunks and the directory of the rows are read from the unit, and only their dictionaries; rows: the m rows (ascending, live) to decode (NULL: all the live ones) */
@@ -251,6 +252,74 @@ sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbst
 	pfree(keys);
 	pfree(live);
 	stats->tuples_removed += scope ? 0 : removed;
+	return removed;
+}
+
+/* The first of the keys (ascending) at or after the first address of heap block blk */
+static uint32
+keys_from_block(const SiftKey *keys, uint32 n, uint64 blk)
+{
+	uint32		lo = 0,
+				hi = n;
+
+	SIFT_BISECT(uint32, m, lo, hi, keys[m] < blk << 16);
+	return lo;
+}
+
+/* The live rows of the unit among those at the heap addresses keys (ascending): their ranks in dead; the count */
+static int
+unit_find_live(SiftColSegment *seg, uint32 u, const SiftKey *keys, uint32 n, uint32 *rows, uint64 *live, uint64 *dead)
+{
+	const SiftColSBRef *r = &seg->sbdir[u];
+	SiftCUnitView v;
+	uint32		lo,
+				hi,
+				nr;
+	int			nd = 0;
+
+	if (!sift_cseg_unit_view(seg, u, &v))
+		corrupt(seg, "Unit %u (SB %u) does not parse.", u, r->id);
+	/* the keys of the heap blocks the unit spans */
+	lo = keys_from_block(keys, n, v.keyed ? v.kblk0 : (uint64) r->id * SIFT_SB_PAGES);
+	hi = keys_from_block(keys, n, v.keyed ? (uint64) v.kblk1 + 1 : (uint64) (r->id + 1) * SIFT_SB_PAGES);
+	if (lo == hi)
+		return 0;
+	nr = sift_cunit_find_keys(&v, r->id, keys + lo, hi - lo, rows);
+	sift_cseg_live(seg, u, live);
+	for (uint32 i = 0; i < nr; i++)
+		if (live[rows[i] / 64] >> (rows[i] % 64) & 1)
+			dead[nd++] = r->rank_base + rows[i];
+	return nd;
+}
+
+/*
+ * Clears the live rows at the heap addresses keys (ascending, once each): what the index pass of a VACUUM does for the rows it reports dead, for rows the caller knows
+ * (the tombstone log's marks) without reading the keys of every row of every unit. The units whose heap blocks hold no key are not read past their head.
+ */
+int64
+sift_cseg_clear_keys(SiftColSegment *seg, const SiftKey *keys, uint32 n)
+{
+	uint64	   *dead = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+	uint32	   *rows = palloc(Min(n, SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint32));
+	uint64	   *live = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
+	int64		removed = 0;
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		const SiftColSBRef *r = &seg->sbdir[u];
+		int			nd = unit_find_live(seg, u, keys, n, rows, live, dead);
+
+		if (nd == 0)
+			continue;
+		sift_seg_mark_dirty(seg->index, &seg->entry);
+		sift_live_clear(&PRIV(seg)->live, r->id - seg->hdr->sb_lo, dead, nd);
+		removed += nd;
+		CHECK_FOR_INTERRUPTS();
+	}
+	sift_cseg_close(seg);
+	pfree(dead);
+	pfree(rows);
+	pfree(live);
 	return removed;
 }
 

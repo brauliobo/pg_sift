@@ -409,6 +409,13 @@ extern bool sift_col_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern void sift_col_maint_after_seal(Relation index);
 extern bool sift_col_maint_make_room(Relation index);
 extern int	sift_col_maint_promote(Relation index, bool wait);
+/* A maintenance step counts at half the price of what the reads owe for it (the weighted formula): a step is asked for when the reads owe half of its cost */
+#define MAINT_HALF		0.5
+/* The rows whose delete or update every snapshot sees as committed are cleared in the segments and the write buffer and their tombstones dropped, without waiting for a VACUUM (maintenance lock free) */
+extern uint64 sift_col_fold_marks(Relation index);
+/* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
+extern bool sift_col_fold_due(Relation index);
+extern bool sift_col_fold_tick(Relation index);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);

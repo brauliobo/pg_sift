@@ -638,6 +638,7 @@ extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
 extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs);
 extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
+extern uint32 sift_cunit_find_keys(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);

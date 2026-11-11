@@ -1,0 +1,111 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2d s3f s1q s1c s3f s1n
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+20000|200010000|t    
+(1 row)
+
+step s2d: DELETE FROM iso_fold WHERE id % 100 = 7;
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+     0
+(1 row)
+
+step s1q: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+20000|200010000|t    
+(1 row)
+
+step s1c: COMMIT;
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+   200
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+19800|198018600|t    
+(1 row)
+
+
+starting permutation: s2b s2dd s3f s1n s2c s3f s1n
+step s2b: BEGIN;
+step s2dd: DELETE FROM iso_fold WHERE id % 100 = 9;
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+     0
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+20000|200010000|t    
+(1 row)
+
+step s2c: COMMIT;
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+   200
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+19800|198018200|t    
+(1 row)
+
+
+starting permutation: s2b s2dd s2a s3f s1n
+step s2b: BEGIN;
+step s2dd: DELETE FROM iso_fold WHERE id % 100 = 9;
+step s2a: ROLLBACK;
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+     0
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+20000|200010000|t    
+(1 row)
+
+
+starting permutation: s2b s2dd s2p s3f s1n s2cp s3f s1n
+step s2b: BEGIN;
+step s2dd: DELETE FROM iso_fold WHERE id % 100 = 9;
+step s2p: PREPARE TRANSACTION 'iso_fold';
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+     0
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+20000|200010000|t    
+(1 row)
+
+step s2cp: COMMIT PREPARED 'iso_fold';
+step s3f: SELECT sift._test_col_fold_marks('iso_fold_c') AS folded;
+folded
+------
+   200
+(1 row)
+
+step s1n: SELECT n, total, agree FROM iso_fold_q();
+    n|    total|agree
+-----+---------+-----
+19800|198018200|t    
+(1 row)
+

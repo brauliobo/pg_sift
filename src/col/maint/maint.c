@@ -385,6 +385,32 @@ col_worker_step(Oid indexoid, TimestampTz start, bool last)
 	return r;
 }
 
+/* The marks of the log folded into the liveness runs when the reads have paid for it (sift_col_fold_tick asks for the worker, and any worker looks): judged here, the log may have been rewritten since */
+static void
+fold_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
+{
+	Relation	index;
+
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	index = sift_try_open_index(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		*name = MemoryContextStrdup(cx, RelationGetRelationName(index));
+		if (sift_col_is_index(index) && sift_col_fold_due(index))
+		{
+			TimestampTz start = GetCurrentTimestamp();
+			uint64		rows = sift_col_fold_marks(index);
+
+			if (rows > 0)
+				sift_log_maint(index, "folded the marks of the log into", start, rows, -1);
+		}
+		index_close(index, RowExclusiveLock);
+	}
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
 /* seal: the open write buffer is sealed first */
 static void
 maint_worker(Datum main_arg, bool seal)
@@ -404,6 +430,7 @@ maint_worker(Datum main_arg, bool seal)
 			rebaseline_step(indexoid, cx, &name);
 		if (seal)
 			seal_step(indexoid, cx, &name);
+		fold_step(indexoid, cx, &name);
 	}
 	PG_CATCH();
 	{

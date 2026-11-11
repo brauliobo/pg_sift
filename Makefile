@@ -158,6 +158,7 @@ TESTING_REGRESS += col_document_present
 TESTING_REGRESS += col_dsm_write_caches
 TESTING_REGRESS += col_dsm_write_statements
 TESTING_REGRESS += col_enc
+TESTING_REGRESS += col_fold_marks
 TESTING_REGRESS += col_format4
 TESTING_REGRESS += col_format5
 TESTING_REGRESS += col_gorder

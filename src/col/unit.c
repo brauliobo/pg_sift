@@ -7,6 +7,7 @@
 #include "col/enc.h"
 #include "col/enc_int.h"
 #include "col/kern.h"
+#include "core/cmp.h"
 #include "core/popcount.h"
 
 /* ---------------------------------------------------------------------------
@@ -734,6 +735,37 @@ sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uin
 			rows[found++] = v->rowstart[p] + below;
 		}
 	}
+	return found;
+}
+
+/*
+ * The rows of a unit (superblock sb for a unit that is not key-cut) that are at the heap addresses keys (ascending), ascending and once each: the pages are bisected
+ * by block, the offsets of only the pages that hold a key are decoded. rows has room for n.
+ */
+uint32
+sift_cunit_find_keys(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows)
+{
+	uint32		found = 0;
+
+	if (!v->keyed)
+		return sift_cunit_find_rows(v, sb, keys, n, rows);
+	sift_cunit_keyed_load(v);
+	for (uint32 k = 0; k < n; k++)
+	{
+		uint32		lo = 0,
+					hi = v->npages,
+					blk = (uint32) (keys[k] >> 16);
+		const uint16 *ko;
+
+		SIFT_BISECT(uint32, mid, lo, hi, v->blocks[mid] < blk);
+		if (lo == v->npages || v->blocks[lo] != blk)
+			continue;
+		ko = keyed_page_offsets(v, lo);
+		for (uint32 r = v->rowstart[lo]; r < v->rowstart[lo + 1]; r++)
+			if (ko[r - v->rowstart[lo]] == (keys[k] & 0xFFFF))
+				rows[found++] = r;
+	}
+	sift_sort_u32(rows, found);
 	return found;
 }
 

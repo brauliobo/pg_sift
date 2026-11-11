@@ -19,9 +19,12 @@
 #include "utils/rel.h"
 #include "col/am.h"
 #include "col/conn.h"
+#include "col/wbuf.h"
 #include "core/tomb.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_log_create);
+PG_FUNCTION_INFO_V1(sift_test_col_fold_marks);
+PG_FUNCTION_INFO_V1(sift_test_col_marks_paid);
 PG_FUNCTION_INFO_V1(sift_test_col_log_append);
 PG_FUNCTION_INFO_V1(sift_test_col_log_entries);
 PG_FUNCTION_INFO_V1(sift_test_col_log_cache);
@@ -41,6 +44,29 @@ PG_FUNCTION_INFO_V1(sift_test_conn_changed);
 PG_FUNCTION_INFO_V1(sift_test_conn_gen);
 PG_FUNCTION_INFO_V1(sift_test_conn_inserted_since);
 PG_FUNCTION_INFO_V1(sift_test_col_conn_stamps);
+
+/* sift._test_col_fold_marks(index): the rows the marks of the log folded into the liveness runs, now */
+Datum
+sift_test_col_fold_marks(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	uint64		n = sift_col_fold_marks(index);
+
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_INT64(n);
+}
+
+/* sift._test_col_marks_paid(index): the instructions the reads of the server paid for the marks of the log in hand (the weight of the fold) */
+Datum
+sift_test_col_marks_paid(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTombLog *log = sift_col_log(index);
+	int64		paid = log == NULL ? 0 : (int64) sift_col_marks_paid(index, log->gen);
+
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT64(paid);
+}
 
 /* sift._test_col_log_create(index): adds the tombstone log to an index that has none */
 Datum
@@ -68,7 +94,7 @@ sift_test_col_log_append(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* sift._test_col_log_entries(index): the entries of the log in log order: heap address, transaction, command, kind */
+/* sift._test_col_log_entries(index): the entries of the log in log order: heap address, transaction, command, kind, flags */
 Datum
 sift_test_col_log_entries(PG_FUNCTION_ARGS)
 {
@@ -99,8 +125,8 @@ sift_test_col_log_entries(PG_FUNCTION_ARGS)
 			}
 		for (uint32 i = 0; i < n; i++)
 		{
-			Datum		v[4];
-			bool		nulls[4] = {false};
+			Datum		v[5];
+			bool		nulls[5] = {false};
 			ItemPointer tid = palloc(sizeof(ItemPointerData));
 
 			sift_key_to_tid(all[i].key, tid);
@@ -108,6 +134,7 @@ sift_test_col_log_entries(PG_FUNCTION_ARGS)
 			v[1] = TransactionIdGetDatum(all[i].xid);
 			v[2] = Int32GetDatum((int32) all[i].cid);
 			v[3] = Int32GetDatum(all[i].kind);
+			v[4] = Int32GetDatum(all[i].flags);
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 		}
 	}
