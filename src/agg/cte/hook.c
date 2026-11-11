@@ -366,7 +366,7 @@ plan_beats(const Plan *plan, double margin, double extra, const Plan *other)
  * runs in the scan and costs less. Both are plans of the same query.
  */
 static PlannedStmt *
-plan_flat_pair(SIFT_PLANNER_PARAMS)
+plan_flat_pair(SIFT_PLANNER_PARAMS, bool wanted)
 {
 	Query	   *flat = NULL;
 	PlannedStmt *plain,
@@ -383,7 +383,7 @@ plan_flat_pair(SIFT_PLANNER_PARAMS)
 				shared_cte = false;
 
 	first_plan.set = planning_second = false;
-	if (flat_pair_wanted(parse))
+	if (wanted)
 	{
 		/* the two forms are both planned where the flat plan is no better in every scan (a statement with no aggregate to push down plans twice for a plan that is the first one's): their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
 		shared_cte = has_shared_cte(parse);
@@ -531,13 +531,18 @@ plan_beside(SIFT_PLANNER_PARAMS, PlannedStmt *stmt, double margin)
  * groups, 9,500 entities of the request).
  */
 static PlannedStmt *
-plan_flat(SIFT_PLANNER_PARAMS)
+plan_flat(SIFT_PLANNER_PARAMS, bool owned)
 {
 	Query	   *first = NULL,
 			   *rows = NULL;
 	PlannedStmt *stmt,
 			   *alt;
 	CteVerdict	rv = {0};
+	bool		pair = flat_pair_wanted(parse);
+
+	/* a pair's plain plan is made in place and may lose, leaving the tree with nodes of a deleted context that CREATE TABLE AS copies afterwards */
+	if (pair && !owned)
+		parse = copyObject(parse);
 
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse))
 	{
@@ -552,7 +557,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			verdict_lookup(rows, VERDICT_ROWS, &rv);
 		}
 	}
-	stmt = plan_flat_pair(SIFT_PLANNER_ARGS(parse));
+	stmt = plan_flat_pair(SIFT_PLANNER_ARGS(parse), pair);
 	/* a verdict that the join lost is kept like the ones of verdict.c: the plan beside it is made again when the request has another size and every few hits */
 	if (rows != NULL && !(rv.known && !rv.won && verdict_accept(&rv, cte_size(stmt)) == VERDICT_TAKE))
 	{
@@ -583,7 +588,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 				nests,
 				swap,
 				casef,
-				split_exists;
+				split_exists,
+				owned;
 	Query	   *written = NULL;
 	PlannedStmt *stmt;
 
@@ -593,15 +599,15 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	/*
 	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
 	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards). A statement that
-	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy. A statement
- * planned as it is and pulled up has a plan that loses, and the tree it was planned in is left with nodes of the context that is deleted.
+	 * reads no table with a column index and has no shared CTE is planned once, in place, as without the extension: no plan loses, no copy.
 	 */
 	reads = sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse);
 	split_exists = sift_enable_agg && parse->commandType == CMD_SELECT && parse->hasSubLinks && parse->rowMarks == NIL && sift_agg_exists_or_candidate(parse);
 	nests = reads && (query_nests(parse) || sift_agg_probe_joins(parse, false));
 	swap = reads && sift_json_build_object_calls(parse);
 	casef = reads && sift_agg_case_filter_calls(parse);
-	if (nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse)) || flat_pair_wanted(parse))
+	owned = nests || swap || casef || split_exists || (sift_enable_agg && has_shared_cte(parse));
+	if (owned)
 		parse = copyObject(parse);
 	/* the statement as written is planned when the rewritten one does not run in the scan: its plan is the one PostgreSQL makes of what the user wrote */
 	if (casef)
@@ -623,9 +629,9 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	}
 	PG_TRY();
 	{
-		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+		stmt = plan_flat(SIFT_PLANNER_ARGS(parse), owned);
 		if (written != NULL && !uses_sift_agg(stmt->planTree) && !any_sift_agg(stmt->subplans))
-			stmt = plan_flat(SIFT_PLANNER_ARGS(written));
+			stmt = plan_flat(SIFT_PLANNER_ARGS(written), true);
 	}
 	PG_FINALLY();
 	{
