@@ -90,6 +90,7 @@ INSERT INTO forms VALUES
  ('miss: sub-select of the table of keys and a third table', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT k.tenant_id FROM my_tenants k, users u WHERE u.id = k.user_id AND u.email = 'a@example.com')) GROUP BY kind$q$),
  ('miss: table joined to a third table, join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN user_home k ON k.tenant_id = s.tenant_id JOIN users u ON u.id = k.user_id WHERE u.email = 'a@example.com' GROUP BY kind$q$),
  ('miss: key of an expression', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id + 0 FROM my_tenants WHERE user_id = 1)) GROUP BY kind$q$),
+ ('miss: key of an enclosing query level', $q$SELECT k, (SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k) AS n FROM generate_series(1, 3) k$q$),
  ('miss: the key bound twice', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2 AND tenant_id IN (SELECT tenant_id FROM my_tenants WHERE user_id = 1)) GROUP BY kind$q$);
 
 -- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan

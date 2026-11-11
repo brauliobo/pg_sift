@@ -139,9 +139,29 @@ short_array_const(Const *k)
 	return (Node *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(psprintf("%s,...} (%d elements)", txt, ARR_DIMS(a)[0])), false, false);
 }
 
+static void
+add_generated(SubPlan *sp, Bitmapset **ids)
+{
+	foreach_int(id, sp->paramIds)
+		*ids = bms_add_member(*ids, id);
+	foreach_int(id, sp->setParam)
+		*ids = bms_add_member(*ids, id);
+}
+
+/* the executor parameters of a SubPlan inside the expression: the deparser names them after the sub-plan */
+static bool
+generated_walker(Node *n, void *ids)
+{
+	if (n != NULL && IsA(n, SubPlan))
+		add_generated((SubPlan *) n, ids);
+	return n != NULL && expression_tree_walker(n, generated_walker, ids);
+}
+
 /*
- * a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows); a
- * parameter of an enclosing query level shows as `$n`, as an external one does (the deparser asserts on an executor parameter no plan node sets)
+ * a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows); an
+ * executor parameter that no sub-plan of the query or the expression generates (the rows an enclosing query level passes down, a correlated reference) shows as `$n`,
+ * as an external one does: the deparser finds the referent of such a parameter in the plan nodes above the expression, which expr_text does not have, and asserts
+ * otherwise; context is the set of the generated parameters
  */
 static Node *
 display_expr_mutator(Node *n, void *context)
@@ -156,19 +176,15 @@ display_expr_mutator(Node *n, void *context)
 		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
 	if ((arm = null_guarded_arm(n)) != NULL)
 		return display_expr_mutator(arm, context);
-	if (level_param(n))
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !bms_is_member(((Param *) n)->paramid, (Bitmapset *) context))
 	{
 		Param	   *shown = copyObject((Param *) n);
 
-		shown->paramkind = PARAM_EXTERN;
-		return (Node *) shown;
-	}
-	/* the output of an InitPlan is named as the plan names it */
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= SIFT_AGG_INIT_PARAM)
-	{
-		Param	   *shown = copyObject((Param *) n);
-
-		shown->paramid -= SIFT_AGG_INIT_PARAM;
+		/* the output of an InitPlan is named as the plan names it */
+		if (shown->paramid >= SIFT_AGG_INIT_PARAM)
+			shown->paramid -= SIFT_AGG_INIT_PARAM;
+		else
+			shown->paramkind = PARAM_EXTERN;
 		return (Node *) shown;
 	}
 	return expression_tree_mutator(n, display_expr_mutator, context);
@@ -178,6 +194,8 @@ display_expr_mutator(Node *n, void *context)
 char *
 expr_text(AggCtx *c, Node *n)
 {
+	Bitmapset  *generated = NULL;
+
 	if (c->dpctx == NIL)
 	{
 		PlannedStmt *stmt = makeNode(PlannedStmt);
@@ -199,7 +217,10 @@ expr_text(AggCtx *c, Node *n)
 		plan->plan.initPlan = c->root->init_plans;
 		c->dpctx = set_deparse_context_plan(c->dpctx, (Plan *) plan, NIL);
 	}
-	return deparse_expression(display_expr_mutator(n, NULL), c->dpctx, true, false);
+	foreach_ptr(SubPlan, sp, c->root->init_plans)
+		add_generated(sp, &generated);
+	generated_walker(n, &generated);
+	return deparse_expression(display_expr_mutator(n, generated), c->dpctx, true, false);
 }
 
 const char *
