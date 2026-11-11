@@ -185,7 +185,7 @@ sift_col_value_store_usage(PG_FUNCTION_ARGS)
 	if (!sift_vstore_is_store(store))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a shared value store", get_rel_name(store))));
 	heap = sift_vstore_table(store);
-	if (!OidIsValid(heap) || object_aclcheck(RelationRelationId, heap, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
+	if (!OidIsValid(heap) || pg_class_aclcheck(heap, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("permission denied for the table of the shared value store \"%s\"", get_rel_name(store))));
 	InitMaterializedSRF(fcinfo, 0);
 	rel = table_open(store, AccessShareLock);

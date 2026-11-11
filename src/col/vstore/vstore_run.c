@@ -14,6 +14,7 @@
 
 #include "access/htup_details.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "access/table.h"
 #include "catalog/pg_class.h"
 #include "lib/stringinfo.h"
@@ -503,6 +504,15 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
+/* Under the extension lock nothing may take a heavyweight lock: the catalog is warmed (the directory update reads the format minor of the segments) and the xid assigned first */
+static void
+lock_extend(SiftVStore *vs)
+{
+	(void) sift_catalog();
+	(void) GetCurrentTransactionId();
+	LockRelationForExtension(vs->rel, ExclusiveLock);
+}
+
 static void
 epoch_edit(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
@@ -518,8 +528,7 @@ sift_vstore_bump_epoch(SiftVStore *vs)
 {
 	SiftDirChange chg = {.fn = epoch_edit};
 
-	(void) sift_catalog();
-	LockRelationForExtension(vs->rel, ExclusiveLock);
+	lock_extend(vs);
 	pfree(view_refresh(vs));
 	if (vs->view->total > 0)
 		sift_dir_update(vs->rel, &chg);
@@ -722,8 +731,7 @@ retry:
 		missing += map[i] == PG_UINT32_MAX;
 	if (missing > 0)
 	{
-		(void) sift_catalog();	/* a catalog lookup under the extension lock would take a lock (the directory update reads the format minor of the segments) */
-		LockRelationForExtension(vs->rel, ExclusiveLock);
+		lock_extend(vs);
 		snap = view_refresh(vs);
 		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{

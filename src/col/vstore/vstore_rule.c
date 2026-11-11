@@ -305,7 +305,7 @@ sift_col_value_store_members(PG_FUNCTION_ARGS)
 			continue;
 		index = index_open(c->oid, AccessShareLock);
 		heap = table_open(index->rd_index->indrelid, AccessShareLock);
-		if (object_aclcheck(RelationRelationId, RelationGetRelid(heap), GetUserId(), ACL_SELECT) == ACLCHECK_OK)
+		if (pg_class_aclcheck(RelationGetRelid(heap), GetUserId(), ACL_SELECT) == ACLCHECK_OK)
 		{
 			const SiftColSchema *schema = sift_col_rel(index)->schema;
 
