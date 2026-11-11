@@ -1,0 +1,91 @@
+-- A scope above sift.scope_max_multiplicity is refused, and a build of millions of rows should not write its scope segments first: the build estimates the multiplicity from a sample of the table
+-- (src/col/scope_sample.c) and refuses at once a scope whose estimate less 3.5 standard errors is over the limit. The sample is taken from 2,048 blocks of a table; sift.test_scope_sample_blocks lowers it.
+-- Every scope not clearly over the limit is built and the exact figure after the build decides, so a borderline scope is never refused by a sample.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+-- events of a member are stored together (100 members of 200 events): a run of blocks sees a few members, so the sample is a noisy ratio
+CREATE TABLE events (id int, dim_a_id int, created_at timestamptz, kind int, value_num numeric);
+INSERT INTO events SELECT i, (i - 1) / 200 + 1, timestamptz '2026-01-01' + (i || ' min')::interval, i % 5, i FROM generate_series(1, 20000) i;
+-- member m is in keys(m) scope keys: k_low for the members below the share of 100 that is `low`, k_high for the rest
+CREATE FUNCTION make_scope(rel text, k_low int, k_high int, low int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TABLE %I (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))', rel);
+	EXECUTE format('INSERT INTO %I SELECT m, k FROM generate_series(1, 100) m, LATERAL generate_series(1, CASE WHEN (m * 7) %% 100 < %s THEN %s ELSE %s END) k', rel, low, k_low, k_high);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (dim_a_id, tenant_id) WITH (track_changes = ''ctid'')', rel || '_journal', rel);
+END $$;
+-- the message with its figures masked: what the sample or the build said is told by "from a sample"
+CREATE FUNCTION try(rel text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE INDEX %I ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> %I(dim_a_id, tenant_id)'')', 'events_' || rel, rel);
+	RETURN 'built';
+EXCEPTION WHEN OTHERS THEN RETURN regexp_replace(sqlerrm, '[0-9][0-9.,]*[kMG]?', 'N', 'g'); END $$;
+SELECT make_scope('pairs_6', 6, 6, 50), make_scope('pairs_mixed_30', 1, 5, 50), make_scope('pairs_mixed_32', 1, 5, 45), make_scope('pairs_1', 1, 1, 50);
+ make_scope | make_scope | make_scope | make_scope 
+------------+------------+------------+------------
+            |            |            | 
+(1 row)
+
+SELECT pg_relation_size('events') / 8192 > 16 AS events_over_16_blocks;
+ events_over_16_blocks 
+-----------------------
+ t
+(1 row)
+
+SELECT 'default: the table is below 2,048 blocks, so the build says it' AS step, try('pairs_6');
+                              step                              |                                             try                                             
+----------------------------------------------------------------+---------------------------------------------------------------------------------------------
+ default: the table is below 2,048 blocks, so the build says it | scope "tenant_id": N entries for N rows (N per row) is over sift.scope_max_multiplicity (N)
+(1 row)
+
+SET sift.test_scope_sample_blocks = 16;
+SELECT 'sampled: over the limit' AS step, try('pairs_6');
+          step           |                                                          try                                                           
+-------------------------+------------------------------------------------------------------------------------------------------------------------
+ sampled: over the limit | scope "tenant_id": about N entries for about N rows (N per row, from a sample) is over sift.scope_max_multiplicity (N)
+(1 row)
+
+SELECT 'sampled: on the limit builds' AS step, try('pairs_mixed_30');
+             step             |  try  
+------------------------------+-------
+ sampled: on the limit builds | built
+(1 row)
+
+SELECT 'sampled: a little over the limit is left to the build' AS step, try('pairs_mixed_32');
+                         step                          |                                             try                                             
+-------------------------------------------------------+---------------------------------------------------------------------------------------------
+ sampled: a little over the limit is left to the build | scope "tenant_id": N entries for N rows (N per row) is over sift.scope_max_multiplicity (N)
+(1 row)
+
+SELECT 'sampled: below the limit builds' AS step, try('pairs_1');
+              step               |  try  
+---------------------------------+-------
+ sampled: below the limit builds | built
+(1 row)
+
+SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY indexrelid::regclass::text;
+         built         
+-----------------------
+ events_pairs_1
+ events_pairs_mixed_30
+(2 rows)
+
+-- the override builds what the sample refused
+SET sift.scope_max_multiplicity = 8;
+SELECT 'override' AS step, try('pairs_6');
+   step   |  try  
+----------+-------
+ override | built
+(1 row)
+
+RESET sift.scope_max_multiplicity;
+SELECT sift.col_verify('events_pairs_6'::regclass, true) AS verify_6;
+ verify_6 
+----------
+ 
+(1 row)
+
+RESET sift.test_scope_sample_blocks;
+DROP TABLE events;
+DROP TABLE pairs_6, pairs_mixed_30, pairs_mixed_32, pairs_1;
+DROP FUNCTION make_scope(text, int, int, int), try(text);
+DROP EXTENSION pg_sift;

@@ -403,6 +403,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_scope_sample_blocks",
+							"Testing: the blocks a table needs for the build of a scope index to estimate the multiplicity of its scopes from a sample first (0 = 2,048).",
+							NULL, &sift_test_scope_sample_blocks, 0, 0, 1048576, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_scope_unit_kind",
 							"Testing: the unit kind (bits 8..15 of the stamp) the scope segments of an index are read as having: a segment of a later release, which this build refuses.",
 							NULL, &sift_test_scope_unit_kind, 0, 0, 255, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

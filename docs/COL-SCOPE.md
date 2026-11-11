@@ -84,6 +84,9 @@ G is 17 to 19% of the footprint and W 23% plus 16% for each entry a row has: the
 a row has (the reads follow the rows of a key) and grows with the table (the join is linear in it): B = C at m = 2.0 (100,000 events), 2.5 (500,000) and 3.0 (2,000,000), and above those the index loses
 (500,000 events at 2.7: B 26.7 against C 28.7; at 5.4: 24.4 against 52). So CREATE INDEX and REINDEX refuse above 3 entries a row, the break-even of a table where the join starts to cost,
 and the refusal says the entries, the rows, and the size and growth the index would have had; `sift.scope_max_multiplicity` is the override for the members that are in many keys and whose reads are worth it.
+A table of 2,048 blocks (16 MB) or more is estimated before its build, so a scope that is clearly over the limit does not spend the build on its segments: 32 runs of 8 consecutive blocks at fixed random
+places give the entries of their rows as a ratio of their rows, and the build is refused ("about N entries for about N rows (N per row, from a sample)", without the growth) only when the ratio less 3.5 standard
+errors of that ratio of 32 runs (about 99.9% one-sided) is over the limit. Every other scope is built and the exact figure after the build decides, so a scope near the limit is never refused by a sample.
 Above the limit the join answers (the entity path), and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A scope copy flips at 1.84 copies a fact because it carries
 the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity, and a table of 100,000,000 events moves the break-even
 up (the join is linear in the table), which this limit does not price: raise it for such a table, from the figures of the NOTICE.

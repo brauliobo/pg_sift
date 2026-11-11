@@ -149,4 +149,12 @@ extern PGDLLIMPORT bool sift_agg_scope;
 extern PGDLLIMPORT int sift_scope_patch_keys;
 extern PGDLLIMPORT double sift_scope_max_multiplicity;
 
+/* Refuses a scope of more than sift.scope_max_multiplicity entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */
+extern void sift_scope_refuse(const char *what, uint64 entries, uint64 rows, bool estimated, double before, double added);
+/* Before the build of an index with a scope: refuses a table whose sample is clearly above the limit */
+extern void sift_scope_precheck(Relation heap, Relation index);
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_scope_sample_blocks;
+#endif
+
 #endif							/* SIFT_COL_SCOPE_H */
