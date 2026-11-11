@@ -183,9 +183,14 @@ create table scope_pairs (dim_a_id int not null, tenant_id int not null, primary
 insert into scope_pairs select id, tenant_id from dim_a;
 insert into scope_pairs select id, 1 + (tenant_id * 7) % 50 from dim_a where id % 7 = 0 on conflict do nothing;
 create index scope_pairs_journal on scope_pairs using sift_col (dim_a_id, tenant_id) with (track_changes = 'ctid');
+-- the same pairs with a soft delete: the rows not soft deleted are the pairs of the second scope
+create table scope_grants (dim_a_id int not null, tenant_id int not null, deleted_at timestamptz, primary key (dim_a_id, tenant_id));
+insert into scope_grants select dim_a_id, tenant_id, case when dim_a_id % 5 = 0 then now() end from scope_pairs;
+create unique index scope_grants_active on scope_grants (dim_a_id, tenant_id) where deleted_at is null;
+create index scope_grants_journal on scope_grants using sift_col (dim_a_id, tenant_id) with (track_changes = 'ctid') where deleted_at is null;
 create table scope_events (id bigint primary key, dim_a_id int not null, status text not null, amount float8, d date not null);
 insert into scope_events select id, dim_a_id, status, amount, d from events;
-create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id)');
+create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id); soft_tenant_id: dim_a_id -> scope_grants(dim_a_id, tenant_id)');
 reindex index scope_events_col;
 -- the tables of keys of a user: its tenants (users 1 and 2 have three and one, user 3 none), one home tenant a user (user 3 has a NULL one)
 create table scope_user_keys (user_id int not null, tenant_id int not null, primary key (user_id, tenant_id));

@@ -1,12 +1,13 @@
 # The scope family: the facts cut by the scope key of item_scope (events.parent_id -> tenant_id) in every form the planner recognises
-# (join, IN, EXISTS, GROUP BY the key, a keys table, a table of keys of a user in the IN, EXISTS and join forms) and in the near misses it refuses; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
+# (join, IN, EXISTS, GROUP BY the key, a keys table, a table of keys of a user in the IN, EXISTS and join forms) and in the near misses it refuses; item_grants is a scope relation of
+# soft deleted pairs (the pairs are its rows not soft deleted): the statements that state the predicate and those that do not; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
 # array of 1 to 70 keys (the runtime choice between the scope read and the join as written is made for the keys of each execution), a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
 
 from .columns import EVENTS, aggs, keys, preds
 from .fam_basic import grouped
 
 PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany']
-SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin', 'ktexists', 'ktjoin', 'ktmany', 'ktloose', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered'] + PARAM_FORMS
+SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin', 'ktexists', 'ktjoin', 'ktmany', 'ktloose', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered', 'softjoin', 'softin', 'softexists', 'softbare', 'softinbare'] + PARAM_FORMS
 
 
 def gen_scope(r, ctx):
@@ -24,6 +25,8 @@ def render_scope_parts(p):
     one, u = p['tenants'][0], p['user']
     mine = f'SELECT tenant_id FROM user_keys WHERE user_id = {u}'
     j = 'events e JOIN item_scope s ON s.item_id = e.parent_id'
+    g = 'events e JOIN item_grants s ON s.item_id = e.parent_id'
+    live = 'deleted_at IS NULL'
     return {
         'join': (j, [f's.tenant_id = {one}'], []),
         'in': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id IN ({ts}))'], []),
@@ -47,6 +50,11 @@ def render_scope_parts(p):
         'notin': ('events e', [f'e.parent_id NOT IN (SELECT item_id FROM item_scope WHERE tenant_id = {one})'], []),
         'other': (j, [f's.tenant_id = {one}', "e.kind <> 'k0'"], []),
         'filtered': (j, [f's.tenant_id = {one}', f's.item_id < {p["cut"]}'], []),
+        'softjoin': (g, [f's.tenant_id = {one}', f's.{live}'], []),
+        'softbare': (g, [f's.tenant_id = {one}'], []),
+        'softin': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_grants WHERE tenant_id IN ({ts}) AND {live})'], []),
+        'softinbare': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_grants WHERE tenant_id IN ({ts}))'], []),
+        'softexists': ('events e', [f'EXISTS (SELECT 1 FROM item_grants s WHERE s.item_id = e.parent_id AND s.tenant_id = {one} AND s.{live})'], []),
     }[p['form']]
 
 
@@ -78,4 +86,7 @@ def dml_scope(r, ctx):
         f'INSERT INTO item_scope SELECT i, {t} FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
         f'INSERT INTO item_scope SELECT i, {u} FROM item_scope WHERE tenant_id = {t} AND item_id % {m} = {k} ON CONFLICT DO NOTHING',
         f'UPDATE item_scope s SET tenant_id = (tenant_id + 1) % 6 WHERE item_id % {m} = {k} AND NOT EXISTS (SELECT 1 FROM item_scope o WHERE o.item_id = s.item_id AND o.tenant_id = (s.tenant_id + 1) % 6)',
-        'VACUUM item_scope', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])
+        f'UPDATE item_grants SET deleted_at = now() WHERE item_id % {m} = {k} AND tenant_id = {t}', f'UPDATE item_grants SET deleted_at = NULL WHERE item_id % {m * 3} = {k}',
+        f'INSERT INTO item_grants SELECT i, {t}, CASE WHEN i % 2 = 0 THEN now() END FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
+        f'DELETE FROM item_grants WHERE item_id % {m * 5} = {k}',
+        'VACUUM item_scope', 'VACUUM item_grants', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])
