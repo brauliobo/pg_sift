@@ -6,10 +6,11 @@
 # standby takes fact and pair writes and its scope reads are the join. The reads are under the real verdict of the reader (the journal of the pairs says which entities changed; the first scope index of a relation
 # is made again by a REINDEX to take its stamps). SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
 . "$(dirname "$0")/lib.bash"
+. "$(dirname "$0")/lib_twohop.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 14
+plan 19
 node_init scp 49 "sift.scope_max_multiplicity = 8
 wal_level = replica
 max_wal_senders = 4
@@ -126,6 +127,35 @@ check "after a REINDEX of the primary the scope entries of the standby are the j
 check "... and its reads are the join's" test "$(sql scs "$SC")" == t
 check "the index verifies on the standby after the REINDEX" test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)"
 
+# the scope of two paths (lib_twohop.bash), made on the primary after the standby exists: edits of the three tables on the primary while readers of the standby compare the scope path and the join of the
+# union inside each REPEATABLE READ snapshot
+twohop_setup scp || bail "the fixtures of the scope of two paths failed"
+catchup scp scs
+FILES=($(twohop_files scp))
+cat >"$P/hop_read.sql" <<'EOF'
+\set k random(1, 17)
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT 1 / hop_same(:k)::int;
+SELECT 1 / hop_same(1 + (:k * 3) % 16)::int;
+COMMIT;
+EOF
+pgbench_bg scp 5 "$SECS" "${FILES[@]}"
+PRIMARY_PID=$PGBENCH_PID
+pgbench -n -h "$(dir scs)/sock" -p "$(port scs)" -U postgres -c 2 -j 2 -T "$SECS" -f "$P/hop_read.sql" postgres >"$P/hop_reader.log" 2>&1 &
+READER=$!
+wait "$PRIMARY_PID"; PRC=$?
+wait "$READER"; RRC=$?
+check "two paths: edits of the grants, the memberships and the facts on the primary had no failed transaction" clean_run "$PRC" "$P/pgbench.log"
+check "two paths: readers on the standby, the scope path and the join of the union agree inside each snapshot, no failed transaction" clean_run "$RRC" "$P/hop_reader.log"
+catchup scp scs
+check "two paths: the standby reads as the join of the union, and as the primary does" test "$(twohop_reads scs)|$(sql scs "SELECT bool_and(hop_same(k)) FROM generate_series(1, 17) k")" == "same|t" \
+	-a "$(sql scs "$TWOHOP_Q_PAIR")" == "$(sql scp "$TWOHOP_Q_PAIR")"
+diag "two paths: the standby says $(twohop_why scs); stamps $(twohop_vouch scs)"
+sql scp "SET sift.scope_max_multiplicity = 64" "REINDEX INDEX hop_col" >/dev/null   # the edits of the groups raised the entries of a row above the limit of the build
+catchup scp scs
+check "two paths: after a REINDEX of the primary the entries of the standby are the join, its reads are the join's and the indexes verify" test "$(sql scs "$TWOHOP_ENTRIES")|$(twohop_reads scs)" == "t|same" \
+	-a -z "$(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+
 node_promote scs
 for _ in $(seq 100); do [[ $(sql scs "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done
 sql scs "INSERT INTO events (dim_a_id, created_at, v, pad) SELECT 1 + i % 600, timestamptz '2026-07-01' + i * interval '1 minute', i % 10, 'z' FROM generate_series(1, 700) i" \
@@ -134,4 +164,9 @@ sql scs "INSERT INTO events (dim_a_id, created_at, v, pad) SELECT 1 + i % 600, t
 	"SELECT sift.col_promote('events_col')" "SELECT sift.col_merge('events_col', true)" "VACUUM events" >/dev/null
 check "the promoted standby takes writes: its index verifies and its scope reads are the join" \
 	test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)" -a "$(sql scs "$SC")" == t
+sql scs "INSERT INTO grants (tenant_id, group_id) VALUES (3, 6), (4, 7) ON CONFLICT DO NOTHING" "UPDATE memberships SET deleted_at = now() WHERE group_id = 6 AND dim_a_id % 3 = 0" \
+	"UPDATE grants SET deleted_at = now() WHERE dim_a_id % 11 = 0" "INSERT INTO hop_events SELECT 200000 + i, 1 + i % 210, now(), i % 10, 'p' FROM generate_series(1, 300) i" \
+	"SELECT sift.col_promote('hop_col')" "SELECT sift.col_merge('hop_col', true)" >/dev/null
+check "the promoted standby takes writes of the three relations of the scope of two paths: its reads are the join and its indexes verify" test "$(twohop_reads scs)" == same \
+	-a -z "$(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" 2>&1)"
 finish

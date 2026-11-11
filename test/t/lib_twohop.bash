@@ -36,6 +36,21 @@ TWOHOP_STMTS=(
 		JOIN sift._test_col_scope_journal_stamps('hop_col') b ON b.gen = a.gen AND b.family = a.family AND b.scope = a.scope AND b.journal = 1
 		JOIN sift._test_col_scope_journal_stamps('hop_col') c ON c.gen = a.gen AND c.family = a.family AND c.scope = a.scope AND c.journal = 2
 		WHERE a.family = 'scope' AND a.scope = 0 AND a.journal = 0 \$\$"
+	"CREATE FUNCTION hop_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
+		DECLARE a text; b text; c text; d text;
+		BEGIN
+			PERFORM set_config('sift.agg_force', 'on', true);
+			PERFORM set_config('sift.enable_agg', 'on', true);
+			SELECT count(*) || ':' || coalesce(sum(v), 0) || ':' || count(DISTINCT dim_a_id) INTO a FROM hop_events e WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, k);
+			SELECT string_agg(id::text, ',' ORDER BY created_at DESC, id DESC) INTO c FROM (SELECT id, created_at FROM hop_events e
+				WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, k) ORDER BY created_at DESC, id DESC LIMIT 20) t;
+			PERFORM set_config('sift.enable_agg', 'off', true);
+			SELECT count(*) || ':' || coalesce(sum(v), 0) || ':' || count(DISTINCT e.dim_a_id) INTO b FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k;
+			SELECT string_agg(id::text, ',' ORDER BY created_at DESC, id DESC) INTO d FROM (SELECT id, created_at FROM hop_events e
+				WHERE e.dim_a_id IN (SELECT dim_a_id FROM hop_pairs WHERE tenant_id = k) ORDER BY created_at DESC, id DESC LIMIT 20) t;
+			IF a <> b OR c IS DISTINCT FROM d THEN RAISE EXCEPTION 'hop_same(%): scope % join %; top20 scope % join %', k, a, b, left(c, 60), left(d, 60); END IF;
+			RETURN true;
+		END \$\$"
 )
 
 # twohop_setup NODE: the extensions and the fixtures
@@ -92,7 +107,7 @@ BEGIN;
 INSERT INTO grants (tenant_id, dim_a_id) VALUES (:t, :m) ON CONFLICT DO NOTHING;
 UPDATE grants SET deleted_at = now() WHERE dim_a_id = :m AND tenant_id = :t + 1 AND deleted_at IS NULL;
 INSERT INTO grants (tenant_id, group_id) VALUES (:t, :g) ON CONFLICT DO NOTHING;
-UPDATE grants SET deleted_at = CASE WHEN deleted_at IS NULL THEN now() END WHERE group_id = :g AND tenant_id = :t + 2;
+UPDATE grants SET deleted_at = now() WHERE group_id = :g AND tenant_id = :t + 2 AND deleted_at IS NULL;
 COMMIT;
 EOF
 	cat >"$d/hm.sql" <<'EOF'
