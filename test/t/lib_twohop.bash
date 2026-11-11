@@ -9,7 +9,7 @@ TWOHOP_SCOPE="tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_
 TWOHOP_CONF="sift.scope_max_multiplicity = 8
 autovacuum = off"
 
-TWOHOP_STMTS=(
+TWOHOP_BASE=(
 	"CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz, CHECK (dim_a_id IS NULL OR group_id IS NULL)) WITH (autovacuum_enabled = false)"
 	"CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL"
 	"CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL"
@@ -27,16 +27,20 @@ TWOHOP_STMTS=(
 		repeat('x', 60) FROM generate_series(1, $TWOHOP_ROWS) i"
 	"CREATE VIEW hop_pairs (dim_a_id, tenant_id) AS SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
 		UNION SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL"
+)
+TWOHOP_INDEX=(
 	"CREATE INDEX hop_col ON hop_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = '$TWOHOP_SCOPE')"
 	"REINDEX INDEX hop_col"
 	"VACUUM (FREEZE, ANALYZE) hop_events, grants, memberships"
-	"CREATE FUNCTION hop_vouch() RETURNS text LANGUAGE sql AS \$\$
-		SELECT string_agg(DISTINCT sift._test_scope_vouch('hop_col', 0, a.lineage, a.horizon, b.lineage, c.lineage), ',')
-		FROM sift._test_col_scope_journal_stamps('hop_col') a
-		JOIN sift._test_col_scope_journal_stamps('hop_col') b ON b.gen = a.gen AND b.family = a.family AND b.scope = a.scope AND b.journal = 1
-		JOIN sift._test_col_scope_journal_stamps('hop_col') c ON c.gen = a.gen AND c.family = a.family AND c.scope = a.scope AND c.journal = 2
-		WHERE a.family = 'scope' AND a.scope = 0 AND a.journal = 0 \$\$"
-	"CREATE FUNCTION hop_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
+)
+TWOHOP_FUNCS=(
+	"CREATE OR REPLACE FUNCTION hop_vouch() RETURNS text LANGUAGE plpgsql AS \$\$
+		BEGIN RETURN (SELECT string_agg(DISTINCT sift._test_scope_vouch('hop_col', 0, a.lineage, a.horizon, b.lineage, c.lineage), ',')
+			FROM sift._test_col_scope_journal_stamps('hop_col') a
+			JOIN sift._test_col_scope_journal_stamps('hop_col') b ON b.gen = a.gen AND b.family = a.family AND b.scope = a.scope AND b.journal = 1
+			JOIN sift._test_col_scope_journal_stamps('hop_col') c ON c.gen = a.gen AND c.family = a.family AND c.scope = a.scope AND c.journal = 2
+			WHERE a.family = 'scope' AND a.scope = 0 AND a.journal = 0); END \$\$"
+	"CREATE OR REPLACE FUNCTION hop_same(k int) RETURNS bool LANGUAGE plpgsql AS \$\$
 		DECLARE a text; b text; c text; d text;
 		BEGIN
 			PERFORM set_config('sift.agg_force', 'on', true);
@@ -52,6 +56,7 @@ TWOHOP_STMTS=(
 			RETURN true;
 		END \$\$"
 )
+TWOHOP_STMTS=("${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" "${TWOHOP_FUNCS[@]}")
 
 # twohop_setup NODE: the extensions and the fixtures
 twohop_setup() { sql "$1" "CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE" "${TWOHOP_STMTS[@]}" >/dev/null; }
@@ -63,7 +68,8 @@ TWOHOP_P_SET="SELECT count(*), sum(v) FROM hop_events e WHERE EXISTS (SELECT 1 F
 TWOHOP_Q_TOP="SELECT id FROM hop_events e WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, 7) ORDER BY created_at DESC, id DESC LIMIT 20"
 TWOHOP_P_TOP="SELECT id FROM hop_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM hop_pairs WHERE tenant_id = 7) ORDER BY created_at DESC, id DESC LIMIT 20"
 TWOHOP_Q_PAIR="SELECT k, (SELECT count(*) FROM hop_events e WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, k)) FROM generate_series(1, 17) k ORDER BY k"
-TWOHOP_P_PAIR="SELECT k, (SELECT count(*) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k) FROM generate_series(1, 17) k ORDER BY k"
+# a join that is not a correlated sub-select: the SiftAgg plan of a sub-select over a view with a UNION that reads the parameter of its outer level (SELECT k, (SELECT count(*) FROM .. JOIN hop_pairs s .. WHERE s.tenant_id = k)) reads the child once and answers every k with the first one, with or without a scope index
+TWOHOP_P_PAIR="SELECT k, count(e.id) FROM generate_series(1, 17) k LEFT JOIN hop_pairs s ON s.tenant_id = k LEFT JOIN hop_events e ON e.dim_a_id = s.dim_a_id GROUP BY k ORDER BY k"
 TWOHOP_ENTRIES="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('hop_col'))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id)"
 
