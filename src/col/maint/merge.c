@@ -178,7 +178,9 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftSegEntry
 	overlays->nsegs = k;
 	n = sift_merge_pick(index, &pol, overlays, false, sel);
 	pfree(overlays);
-	return n > 0 && !clean_apart(index, snap, sel, n) ? n : sift_merge_pick_dead(index, &pol, snap, sel);
+	if (n > 0 && !clean_apart(index, snap, sel, n))
+		return n;
+	return (n = maint_pick_big_overlays(index, snap, sel)) > 0 ? n : sift_merge_pick_dead(index, &pol, snap, sel);
 }
 
 /* Units of the segment that hold a dead row its net pre-aggregates do not answer for (col/seg/net.c): the rest read as clean ones */

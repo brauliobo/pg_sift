@@ -86,6 +86,8 @@ typedef struct OverlayEv
 } OverlayEv;
 
 extern bool	maint_overlay_set(Relation index, RewriteView *v, bool *take, OverlayEv *ev);
+/* The big overlays (merge outputs the size of a partition that meet an older segment) that meet at a key: the ones to merge into pieces disjoint in the key; 0 when fewer meet */
+extern int	maint_pick_big_overlays(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel);
 /* A segment is an overlay when it holds under half of the rows of the largest of the index (the size rule of maint_overlay_set): it is written lean, and gets no net sidecar */
 #define maint_is_overlay(rows, largest_rows)	((uint64) (rows) * 2 < (uint64) (largest_rows))
 /*

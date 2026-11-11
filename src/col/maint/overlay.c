@@ -190,3 +190,49 @@ maint_mark_key_overlap(Relation index, RewriteView *v)
 	for (int i = 0; i < v->n; i++)
 		v->nkover += v->kover[i];
 }
+
+/*
+ * The merges of the overlays grow to a partition and then hold rows of every key like the overlays they took: a read of a key opens a unit in each of them besides the
+ * partition that holds it. They are no partition of the key where an older segment meets their key range. When BIG_OVERLAYS_DEPTH of them or more meet at a key, the ones
+ * that do merge into pieces disjoint in the key (a read opens one of them): the rewrite of the whole index waits for the WAL budget of the churn (rewrite.c, KEY_RUNS_SHARE)
+ * and the reads do not pay for the wait. The pieces meet none of each other, so the merge ends when it has made them.
+ */
+#define BIG_OVERLAYS_DEPTH 3
+
+int
+maint_pick_big_overlays(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col big overlay pick", ALLOCSET_SMALL_SIZES);
+	RewriteView *v;
+	bool		big[SIFT_MAX_SEGMENTS] = {false};
+	int			deepest = -1,
+				depth = 0,
+				n = 0;
+
+	if (maint_part_kb == 0 || maint_after_build || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+		return 0;
+	v = maint_view_open(index, snap, cx);
+	for (int i = 0; i < v->n; i++)
+		for (int j = 0; j < v->n && v->kover[i] && !big[i]; j++)
+			big[i] = v->kover[j] && v->imm[j].gen < v->imm[i].gen && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
+	/* the key where the most of them meet: the lowest key of one of them */
+	for (int i = 0; i < v->n; i++)
+	{
+		int			d = 0;
+
+		for (int j = 0; j < v->n && big[i]; j++)
+			d += big[j] && v->klo[j] <= v->klo[i] && v->klo[i] < v->khi[j];
+		if (d > depth)
+		{
+			depth = d;
+			deepest = i;
+		}
+	}
+	for (int j = 0; j < v->n && depth >= BIG_OVERLAYS_DEPTH; j++)
+		if (big[j] && v->klo[j] <= v->klo[deepest] && v->klo[deepest] < v->khi[j])
+			sel[n++] = v->imm[j];
+	for (int i = 0; i < v->n; i++)
+		sift_cseg_close(v->seg[i]);
+	MemoryContextDelete(cx);
+	return n;
+}
