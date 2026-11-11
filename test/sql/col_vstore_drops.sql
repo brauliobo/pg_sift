@@ -1,4 +1,4 @@
--- Dropping, rebuilding or altering one index that shares a value store (docs/COL-VSTORE.md) never touches what the other members read: after each step every
+-- Dropping, rebuilding or altering one index that shares a value store (docs/COL-VSTORE.md) never touches what the other peers read: after each step every
 -- shape answers as the heap does, the store still has the values it had, and it goes with the last member and not before. The steps are rows of a table.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
@@ -47,8 +47,8 @@ CREATE FUNCTION vd_values(store regclass) RETURNS text LANGUAGE sql AS $$
 
 CREATE TABLE vd_base AS SELECT vd_values('vd_uid_sift_values') AS uid, vd_values('vd_url_sift_values') AS url;
 
--- what a step leaves: the stores and who uses them, whether the values are the ones of the start, and what vd_c does with its strings
-CREATE FUNCTION vd_state(label text) RETURNS TABLE (step text, stores text, values_same boolean, vd_c text) LANGUAGE sql AS $$
+-- what a step leaves: the vstores and who uses them, whether the values are the ones of the start, and what vd_c does with its strings
+CREATE FUNCTION vd_state(label text) RETURNS TABLE (step text, vstores text, values_same boolean, vd_c text) LANGUAGE sql AS $$
 	SELECT label, coalesce(string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name), 'none'),
 	       coalesce(bool_and(vd_values(store) = CASE column_name WHEN 'uid' THEN (SELECT uid FROM vd_base) ELSE (SELECT url FROM vd_base) END), true),
 	       (SELECT coalesce(string_agg(DISTINCT state, ','), '-') FROM sift.col_value_store_members() WHERE index_name::text = 'vd_c')
@@ -75,10 +75,10 @@ INSERT INTO vd_steps VALUES
  (130, 'vacuum of the table',                              'VACUUM vd'),
  (140, 'a column type changes',                            'ALTER TABLE vd ALTER COLUMN url TYPE varchar(80)'),
  (150, 'drop a member: the last but one',                  'DROP INDEX vd_c'),
- (160, 'drop the last member: the stores go with it',      'DROP INDEX vd_d'),
- (170, 'a build after it makes new stores',                'CREATE INDEX vd_e ON vd USING sift_col (id, uid, url)'),
+ (160, 'drop the last member: the vstores go with it',      'DROP INDEX vd_d'),
+ (170, 'a build after it makes new vstores',                'CREATE INDEX vd_e ON vd USING sift_col (id, uid, url)'),
  (180, 'a second one shares them',                         'CREATE INDEX vd_f ON vd USING sift_col (uid, id, url)'),
- (190, 'drop one of two members',                         'DROP INDEX vd_e');
+ (190, 'drop one of two peers',                         'DROP INDEX vd_e');
 
 SELECT unnest(ARRAY[sql, format('SELECT * FROM vd_check(%L), vd_state(%L)', label, label)]) FROM vd_steps ORDER BY n \gexec
 
@@ -87,7 +87,7 @@ DROP MATERIALIZED VIEW vd_uid_sift_values;
 DROP MATERIALIZED VIEW vd_url_sift_values;
 SELECT * FROM vd_check('after the refused drops');
 
--- a column that goes drops the indexes that hold it, and the stores that only they used; a member without it stays whole
+-- a column that goes drops the indexes that hold it, and the vstores that only they used; a member without it stays whole
 CREATE INDEX vd_g ON vd USING sift_col (id, uid);
 SELECT * FROM vd_state('a member of the uid only');
 ALTER TABLE vd DROP COLUMN url;
@@ -100,7 +100,7 @@ SELECT sift.col_verify('vd_g', true);
 DROP INDEX vd_g;
 SELECT * FROM vd_state('the last member of the last store dropped');
 
--- an owner without rights on the sift schema drops the last member and the stores go with it
+-- an owner without rights on the sift schema drops the last member and the vstores go with it
 CREATE ROLE vd_owner;
 CREATE SCHEMA vd_s AUTHORIZATION vd_owner;
 CREATE TABLE vd_s.r (id int, uid uuid, url text);

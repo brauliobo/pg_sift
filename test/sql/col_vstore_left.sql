@@ -1,5 +1,5 @@
 -- The only index left on a shared value store goes back to its own strings by itself (docs/COL-VSTORE.md, the only index left): DROP INDEX says which index it is,
--- its next rewrite puts the strings back into its segments (the size is of the index and the stores of the table, against an index that never shared), the VACUUM after it lets the store go, and the index is then as large as one that never shared.
+-- its next rewrite puts the strings back into its segments (the size is of the index and the vstores of the table, against an index that never shared), the VACUUM after it lets the store go, and the index is then as large as one that never shared.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
@@ -24,7 +24,7 @@ BEGIN
 	RETURN QUERY SELECT label, a = b;
 END $$;
 
-CREATE FUNCTION lf_state(label text) RETURNS TABLE (step text, stores bigint, users int, with_stores text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION lf_state(label text) RETURNS TABLE (step text, vstores bigint, users int, with_stores text) LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN QUERY SELECT label, (SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'lf'::regclass),
 	       (SELECT coalesce(max(indexes_using), 0)::int FROM sift.col_value_store_status WHERE table_name = 'lf'::regclass),
@@ -36,7 +36,7 @@ END $$;
 CREATE INDEX lf_a ON lf USING sift_col (id, url);
 CREATE INDEX lf_b ON lf USING sift_col (url, id);
 REINDEX INDEX lf_a;
-SELECT * FROM lf_check('two members');
+SELECT * FROM lf_check('two peers');
 SELECT index_name::text, state FROM sift.col_value_store_members() WHERE table_name = 'lf'::regclass AND column_name = 'url' ORDER BY 1;
 
 SET client_min_messages = notice;

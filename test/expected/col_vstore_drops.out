@@ -1,4 +1,4 @@
--- Dropping, rebuilding or altering one index that shares a value store (docs/COL-VSTORE.md) never touches what the other members read: after each step every
+-- Dropping, rebuilding or altering one index that shares a value store (docs/COL-VSTORE.md) never touches what the other peers read: after each step every
 -- shape answers as the heap does, the store still has the values it had, and it goes with the last member and not before. The steps are rows of a table.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
@@ -41,14 +41,14 @@ CREATE FUNCTION vd_values(store regclass) RETURNS text LANGUAGE sql AS $$
 	SELECT count(*) || ':' || md5(string_agg(sift._test_vstore_value(store, c), ',' ORDER BY c))
 	  FROM generate_series(0, (SELECT view_values FROM sift._test_vstore_info(store)) - 1) c $$;
 CREATE TABLE vd_base AS SELECT vd_values('vd_uid_sift_values') AS uid, vd_values('vd_url_sift_values') AS url;
--- what a step leaves: the stores and who uses them, whether the values are the ones of the start, and what vd_c does with its strings
-CREATE FUNCTION vd_state(label text) RETURNS TABLE (step text, stores text, values_same boolean, vd_c text) LANGUAGE sql AS $$
+-- what a step leaves: the vstores and who uses them, whether the values are the ones of the start, and what vd_c does with its strings
+CREATE FUNCTION vd_state(label text) RETURNS TABLE (step text, vstores text, values_same boolean, vd_c text) LANGUAGE sql AS $$
 	SELECT label, coalesce(string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name), 'none'),
 	       coalesce(bool_and(vd_values(store) = CASE column_name WHEN 'uid' THEN (SELECT uid FROM vd_base) ELSE (SELECT url FROM vd_base) END), true),
 	       (SELECT coalesce(string_agg(DISTINCT state, ','), '-') FROM sift.col_value_store_members() WHERE index_name::text = 'vd_c')
 	  FROM sift.col_value_store_status WHERE table_name = 'vd'::regclass $$;
 SELECT * FROM vd_check('built'), vd_state('built');
- step  | shapes | same | step  |   stores    | values_same |  vd_c  
+ step  | shapes | same | step  |   vstores   | values_same |  vd_c  
 -------+--------+------+-------+-------------+-------------+--------
  built |      9 |    9 | built | uid=3 url=3 | t           | shared
 (1 row)
@@ -72,156 +72,156 @@ INSERT INTO vd_steps VALUES
  (130, 'vacuum of the table',                              'VACUUM vd'),
  (140, 'a column type changes',                            'ALTER TABLE vd ALTER COLUMN url TYPE varchar(80)'),
  (150, 'drop a member: the last but one',                  'DROP INDEX vd_c'),
- (160, 'drop the last member: the stores go with it',      'DROP INDEX vd_d'),
- (170, 'a build after it makes new stores',                'CREATE INDEX vd_e ON vd USING sift_col (id, uid, url)'),
+ (160, 'drop the last member: the vstores go with it',      'DROP INDEX vd_d'),
+ (170, 'a build after it makes new vstores',                'CREATE INDEX vd_e ON vd USING sift_col (id, uid, url)'),
  (180, 'a second one shares them',                         'CREATE INDEX vd_f ON vd USING sift_col (uid, id, url)'),
- (190, 'drop one of two members',                         'DROP INDEX vd_e');
+ (190, 'drop one of two peers',                         'DROP INDEX vd_e');
 SELECT unnest(ARRAY[sql, format('SELECT * FROM vd_check(%L), vd_state(%L)', label, label)]) FROM vd_steps ORDER BY n \gexec
 DROP INDEX vd_a
 SELECT * FROM vd_check('drop the first member (its build made the store)'), vd_state('drop the first member (its build made the store)')
-                       step                       | shapes | same |                       step                       |   stores    | values_same |  vd_c  
+                       step                       | shapes | same |                       step                       |   vstores   | values_same |  vd_c  
 --------------------------------------------------+--------+------+--------------------------------------------------+-------------+-------------+--------
  drop the first member (its build made the store) |      9 |    9 | drop the first member (its build made the store) | uid=2 url=2 | t           | shared
 (1 row)
 
 CREATE INDEX vd_d ON vd USING sift_col (id, uid, url)
 SELECT * FROM vd_check('a member made after it takes the store again'), vd_state('a member made after it takes the store again')
-                     step                     | shapes | same |                     step                     |   stores    | values_same |  vd_c  
+                     step                     | shapes | same |                     step                     |   vstores   | values_same |  vd_c  
 ----------------------------------------------+--------+------+----------------------------------------------+-------------+-------------+--------
  a member made after it takes the store again |      9 |    9 | a member made after it takes the store again | uid=3 url=3 | t           | shared
 (1 row)
 
 DROP INDEX CONCURRENTLY vd_b
 SELECT * FROM vd_check('drop a middle member concurrently'), vd_state('drop a middle member concurrently')
-               step                | shapes | same |               step                |   stores    | values_same |  vd_c  
+               step                | shapes | same |               step                |   vstores   | values_same |  vd_c  
 -----------------------------------+--------+------+-----------------------------------+-------------+-------------+--------
  drop a middle member concurrently |      9 |    9 | drop a middle member concurrently | uid=2 url=2 | t           | shared
 (1 row)
 
 REINDEX INDEX vd_c
 SELECT * FROM vd_check('reindex a member'), vd_state('reindex a member')
-       step       | shapes | same |       step       |   stores    | values_same |  vd_c  
+       step       | shapes | same |       step       |   vstores   | values_same |  vd_c  
 ------------------+--------+------+------------------+-------------+-------------+--------
  reindex a member |      9 |    9 | reindex a member | uid=2 url=2 | t           | shared
 (1 row)
 
 REINDEX INDEX CONCURRENTLY vd_d
 SELECT * FROM vd_check('reindex a member concurrently'), vd_state('reindex a member concurrently')
-             step              | shapes | same |             step              |   stores    | values_same |  vd_c  
+             step              | shapes | same |             step              |   vstores   | values_same |  vd_c  
 -------------------------------+--------+------+-------------------------------+-------------+-------------+--------
  reindex a member concurrently |      9 |    9 | reindex a member concurrently | uid=2 url=2 | t           | shared
 (1 row)
 
 RESET sift.test_vstore_columns
 SELECT * FROM vd_check('only the rule shares from here'), vd_state('only the rule shares from here')
-              step              | shapes | same |              step              |   stores    | values_same |  vd_c  
+              step              | shapes | same |              step              |   vstores   | values_same |  vd_c  
 --------------------------------+--------+------+--------------------------------+-------------+-------------+--------
  only the rule shares from here |      9 |    9 | only the rule shares from here | uid=2 url=2 | t           | shared
 (1 row)
 
 ALTER INDEX vd_c SET (key_order = 'tenant')
 SELECT * FROM vd_check('its order option changes'), vd_state('its order option changes')
-           step           | shapes | same |           step           |   stores    | values_same |  vd_c  
+           step           | shapes | same |           step           |   vstores   | values_same |  vd_c  
 --------------------------+--------+------+--------------------------+-------------+-------------+--------
  its order option changes |      9 |    9 | its order option changes | uid=2 url=2 | t           | shared
 (1 row)
 
 REINDEX INDEX vd_c
 SELECT * FROM vd_check('reindex: it has another order, its own strings'), vd_state('reindex: it has another order, its own strings')
-                      step                      | shapes | same |                      step                      |   stores    | values_same |           vd_c           
+                      step                      | shapes | same |                      step                      |   vstores   | values_same |           vd_c           
 ------------------------------------------------+--------+------+------------------------------------------------+-------------+-------------+--------------------------
  reindex: it has another order, its own strings |      9 |    9 | reindex: it has another order, its own strings | uid=1 url=1 | t           | own: different key order
 (1 row)
 
 ALTER INDEX vd_c RESET (key_order)
 SELECT * FROM vd_check('the order is the same again'), vd_state('the order is the same again')
-            step             | shapes | same |            step             |   stores    | values_same |         vd_c         
+            step             | shapes | same |            step             |   vstores   | values_same |         vd_c         
 -----------------------------+--------+------+-----------------------------+-------------+-------------+----------------------
  the order is the same again |      9 |    9 | the order is the same again | uid=1 url=1 | t           | own: not yet rebuilt
 (1 row)
 
 REINDEX INDEX vd_c
 SELECT * FROM vd_check('reindex: it shares again'), vd_state('reindex: it shares again')
-           step           | shapes | same |           step           |   stores    | values_same |  vd_c  
+           step           | shapes | same |           step           |   vstores   | values_same |  vd_c  
 --------------------------+--------+------+--------------------------+-------------+-------------+--------
  reindex: it shares again |      9 |    9 | reindex: it shares again | uid=2 url=2 | t           | shared
 (1 row)
 
 SET sift.test_vstore_columns = 'uid,url'
 SELECT * FROM vd_check('every string column shares again'), vd_state('every string column shares again')
-               step               | shapes | same |               step               |   stores    | values_same |  vd_c  
+               step               | shapes | same |               step               |   vstores   | values_same |  vd_c  
 ----------------------------------+--------+------+----------------------------------+-------------+-------------+--------
  every string column shares again |      9 |    9 | every string column shares again | uid=2 url=2 | t           | shared
 (1 row)
 
 VACUUM FULL vd
 SELECT * FROM vd_check('vacuum full of the table'), vd_state('vacuum full of the table')
-           step           | shapes | same |           step           |   stores    | values_same |  vd_c  
+           step           | shapes | same |           step           |   vstores   | values_same |  vd_c  
 --------------------------+--------+------+--------------------------+-------------+-------------+--------
  vacuum full of the table |      9 |    9 | vacuum full of the table | uid=2 url=2 | t           | shared
 (1 row)
 
 CLUSTER vd USING vd_pkey
 SELECT * FROM vd_check('cluster of the table'), vd_state('cluster of the table')
-         step         | shapes | same |         step         |   stores    | values_same |  vd_c  
+         step         | shapes | same |         step         |   vstores   | values_same |  vd_c  
 ----------------------+--------+------+----------------------+-------------+-------------+--------
  cluster of the table |      9 |    9 | cluster of the table | uid=2 url=2 | t           | shared
 (1 row)
 
 VACUUM FULL vd_url_sift_values
 SELECT * FROM vd_check('vacuum full of a store'), vd_state('vacuum full of a store')
-          step          | shapes | same |          step          |   stores    | values_same |  vd_c  
+          step          | shapes | same |          step          |   vstores   | values_same |  vd_c  
 ------------------------+--------+------+------------------------+-------------+-------------+--------
  vacuum full of a store |      9 |    9 | vacuum full of a store | uid=2 url=2 | t           | shared
 (1 row)
 
 VACUUM vd
 SELECT * FROM vd_check('vacuum of the table'), vd_state('vacuum of the table')
-        step         | shapes | same |        step         |   stores    | values_same |  vd_c  
+        step         | shapes | same |        step         |   vstores   | values_same |  vd_c  
 ---------------------+--------+------+---------------------+-------------+-------------+--------
  vacuum of the table |      9 |    9 | vacuum of the table | uid=2 url=2 | t           | shared
 (1 row)
 
 ALTER TABLE vd ALTER COLUMN url TYPE varchar(80)
 SELECT * FROM vd_check('a column type changes'), vd_state('a column type changes')
-         step          | shapes | same |         step          |   stores    | values_same |  vd_c  
+         step          | shapes | same |         step          |   vstores   | values_same |  vd_c  
 -----------------------+--------+------+-----------------------+-------------+-------------+--------
  a column type changes |      9 |    9 | a column type changes | uid=2 url=2 | t           | shared
 (1 row)
 
 DROP INDEX vd_c
 SELECT * FROM vd_check('drop a member: the last but one'), vd_state('drop a member: the last but one')
-              step               | shapes | same |              step               |   stores    | values_same | vd_c 
+              step               | shapes | same |              step               |   vstores   | values_same | vd_c 
 ---------------------------------+--------+------+---------------------------------+-------------+-------------+------
  drop a member: the last but one |      9 |    9 | drop a member: the last but one | uid=1 url=1 | t           | -
 (1 row)
 
 DROP INDEX vd_d
-SELECT * FROM vd_check('drop the last member: the stores go with it'), vd_state('drop the last member: the stores go with it')
-                    step                     | shapes | same |                    step                     | stores | values_same | vd_c 
----------------------------------------------+--------+------+---------------------------------------------+--------+-------------+------
- drop the last member: the stores go with it |      9 |    9 | drop the last member: the stores go with it | none   | t           | -
+SELECT * FROM vd_check('drop the last member: the vstores go with it'), vd_state('drop the last member: the vstores go with it')
+                     step                     | shapes | same |                     step                     | vstores | values_same | vd_c 
+----------------------------------------------+--------+------+----------------------------------------------+---------+-------------+------
+ drop the last member: the vstores go with it |      9 |    9 | drop the last member: the vstores go with it | none    | t           | -
 (1 row)
 
 CREATE INDEX vd_e ON vd USING sift_col (id, uid, url)
-SELECT * FROM vd_check('a build after it makes new stores'), vd_state('a build after it makes new stores')
-               step                | shapes | same |               step                |   stores    | values_same | vd_c 
------------------------------------+--------+------+-----------------------------------+-------------+-------------+------
- a build after it makes new stores |      9 |    9 | a build after it makes new stores | uid=1 url=1 | t           | -
+SELECT * FROM vd_check('a build after it makes new vstores'), vd_state('a build after it makes new vstores')
+                step                | shapes | same |                step                |   vstores   | values_same | vd_c 
+------------------------------------+--------+------+------------------------------------+-------------+-------------+------
+ a build after it makes new vstores |      9 |    9 | a build after it makes new vstores | uid=1 url=1 | t           | -
 (1 row)
 
 CREATE INDEX vd_f ON vd USING sift_col (uid, id, url)
 SELECT * FROM vd_check('a second one shares them'), vd_state('a second one shares them')
-           step           | shapes | same |           step           |   stores    | values_same | vd_c 
+           step           | shapes | same |           step           |   vstores   | values_same | vd_c 
 --------------------------+--------+------+--------------------------+-------------+-------------+------
  a second one shares them |      9 |    9 | a second one shares them | uid=2 url=2 | t           | -
 (1 row)
 
 DROP INDEX vd_e
-SELECT * FROM vd_check('drop one of two members'), vd_state('drop one of two members')
-          step           | shapes | same |          step           |   stores    | values_same | vd_c 
--------------------------+--------+------+-------------------------+-------------+-------------+------
- drop one of two members |      9 |    9 | drop one of two members | uid=1 url=1 | t           | -
+SELECT * FROM vd_check('drop one of two peers'), vd_state('drop one of two peers')
+         step          | shapes | same |         step          |   vstores   | values_same | vd_c 
+-----------------------+--------+------+-----------------------+-------------+-------------+------
+ drop one of two peers |      9 |    9 | drop one of two peers | uid=1 url=1 | t           | -
 (1 row)
 
 -- nobody can drop a store under a member, by its name or by the table
@@ -239,19 +239,19 @@ SELECT * FROM vd_check('after the refused drops');
  after the refused drops |      9 |    9
 (1 row)
 
--- a column that goes drops the indexes that hold it, and the stores that only they used; a member without it stays whole
+-- a column that goes drops the indexes that hold it, and the vstores that only they used; a member without it stays whole
 CREATE INDEX vd_g ON vd USING sift_col (id, uid);
 SELECT * FROM vd_state('a member of the uid only');
-           step           |   stores    | values_same | vd_c 
+           step           |   vstores   | values_same | vd_c 
 --------------------------+-------------+-------------+------
  a member of the uid only | uid=2 url=1 | t           | -
 (1 row)
 
 ALTER TABLE vd DROP COLUMN url;
 SELECT * FROM vd_state('the url column dropped');
-          step          | stores | values_same | vd_c 
-------------------------+--------+-------------+------
- the url column dropped | uid=1  | t           | -
+          step          | vstores | values_same | vd_c 
+------------------------+---------+-------------+------
+ the url column dropped | uid=1   | t           | -
 (1 row)
 
 SELECT count(*), count(DISTINCT uid), sum(id) FROM vd WHERE uid = md5('5')::uuid;
@@ -276,12 +276,12 @@ SELECT sift.col_verify('vd_g', true);
 
 DROP INDEX vd_g;
 SELECT * FROM vd_state('the last member of the last store dropped');
-                   step                    | stores | values_same | vd_c 
--------------------------------------------+--------+-------------+------
- the last member of the last store dropped | none   | t           | -
+                   step                    | vstores | values_same | vd_c 
+-------------------------------------------+---------+-------------+------
+ the last member of the last store dropped | none    | t           | -
 (1 row)
 
--- an owner without rights on the sift schema drops the last member and the stores go with it
+-- an owner without rights on the sift schema drops the last member and the vstores go with it
 CREATE ROLE vd_owner;
 CREATE SCHEMA vd_s AUTHORIZATION vd_owner;
 CREATE TABLE vd_s.r (id int, uid uuid, url text);

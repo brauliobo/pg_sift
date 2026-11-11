@@ -4,10 +4,10 @@
 # exists, and goes in the transaction of the last member: after each of these, on the primary and on a hot standby, every shape answers as the heap does, every remaining member
 # verifies, and the store has the values it had.
 #  1. plain steps: drop the first member, a new member adopts the store, DROP INDEX CONCURRENTLY, REINDEX (CONCURRENTLY), a key_order that differs and returns, VACUUM FULL and CLUSTER
-#     of the table, VACUUM FULL of a store, a column type change, the drop of the last but one member, of the last one (the stores go) and a build after it (new stores)
+#     of the table, VACUUM FULL of a store, a column type change, the drop of the last but one member, of the last one (the vstores go) and a build after it (new vstores)
 #  2. races: a build that waits for the drop of the last member makes a fresh store; a drop of the last old member that waits for a build that adopted the store leaves the store;
-#     DROP TABLE and DROP SCHEMA .. CASCADE take their stores and no other table's
-#  3. a reader that compares the indexes with the heap all the while members are dropped concurrently, reindexed concurrently, and promoted and merged after rows with new strings
+#     DROP TABLE and DROP SCHEMA .. CASCADE take their vstores and no other table's
+#  3. a reader that compares the indexes with the heap all the while peers are dropped concurrently, reindexed concurrently, and promoted and merged after rows with new strings
 #  4. kill -9: an uncommitted drop, a committed drop, REINDEX and col_promote killed in the leader at a directory update
 #  5. pg_dump and pg_restore (serially and in parallel): one store for each column, every member adopts it
 # SIFT_VD_ROWS (60000, 20000 quick)
@@ -82,17 +82,17 @@ equal_answers() {
 	out="primary indexes/heap: $pv; standby indexes: $sv; verify primary: $vp; verify standby: $vs"
 	[[ ${pv%/*} == "${pv#*/}" && $sv == "${pv#*/}" && -z $vp && -z $vs ]]
 }
-# the stores of the table and the members that use each, on a node
-stores() { dbq "$1" "${2:-postgres}" "SELECT coalesce(string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name), 'none')
+# the vstores of the table and the peers that use each, on a node
+vstores() { dbq "$1" "${2:-postgres}" "SELECT coalesce(string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name), 'none')
 	FROM sift.col_value_store_status WHERE table_name = 't'::regclass"; }
 stores_are() { # WANT [DB]
 	local p s
 	catchup primary standby || return 1
-	p=$(stores primary "${2:-postgres}" 2>&1) s=$(stores standby "${2:-postgres}" 2>&1)
+	p=$(vstores primary "${2:-postgres}" 2>&1) s=$(vstores standby "${2:-postgres}" 2>&1)
 	out="want $1; primary $p; standby $s"
 	[[ $p == "$1" && $s == "$1" ]]
 }
-# the values of the stores by code, one fingerprint of each: the same as in $BASE, or $BASE's codes with later ones appended (prefix)
+# the values of the vstores by code, one fingerprint of each: the same as in $BASE, or $BASE's codes with later ones appended (prefix)
 fp() { sql primary "SELECT coalesce(string_agg(column_name || ':' || vd_fp(store), ' ' ORDER BY column_name), 'none')
 	FROM sift.col_value_store_status WHERE table_name = 't'::regclass"; }
 values_same() { out="start $BASE; now $(fp)"; [[ $(fp) == "$BASE" ]]; }
@@ -114,7 +114,7 @@ exists_on_both() { # INDEX WANT(t|f)
 }
 
 BASE=$(fp)
-check "built: the three members share one store for the uid and one for the url" test "$(stores primary)" == "uid=3 url=3"
+check "built: the three peers share one store for the uid and one for the url" test "$(vstores primary)" == "uid=3 url=3"
 served() {
 	out=$(sql primary "SET sift.enable_agg = on" "SET sift.agg_force = on" "EXPLAIN SELECT count(*), sum(id) FROM t WHERE url = 'https://example.com/p/' || md5('77')")
 	[[ $out == *SiftAgg* ]]
@@ -122,7 +122,7 @@ served() {
 check "built: a shape on the shared url column is served by a member" served
 check "built: equal answers" equal_answers
 
-# --- 1. plain steps. label|statement|stores after it; '>' makes the stores new (the values are taken again), 'rule:' lets the rule decide in that session
+# --- 1. plain steps. label|statement|vstores after it; '>' makes the vstores new (the values are taken again), 'rule:' lets the rule decide in that session
 STEPS=(
 	'drop the first member (its build made the store)|DROP INDEX t_a|uid=2 url=2'
 	'a member made after it adopts the store again|CREATE INDEX t_d ON t USING sift_col (id, uid, url)|uid=3 url=3'
@@ -139,10 +139,10 @@ STEPS=(
 	'vacuum of the table|VACUUM t|uid=2 url=2'
 	'a column type changes|ALTER TABLE t ALTER COLUMN url TYPE varchar(80)|uid=2 url=2'
 	'drop a member: the last but one, the store stays|DROP INDEX t_c|uid=1 url=1'
-	'>drop the last member: the stores go with it|DROP INDEX t_d|none'
-	'>a build after it makes new stores|CREATE INDEX t_e ON t USING sift_col (id, uid, url)|uid=1 url=1'
+	'>drop the last member: the vstores go with it|DROP INDEX t_d|none'
+	'>a build after it makes new vstores|CREATE INDEX t_e ON t USING sift_col (id, uid, url)|uid=1 url=1'
 	'a second member shares them|CREATE INDEX t_f ON t USING sift_col (uid, id, url)|uid=2 url=2'
-	'drop one of two members|DROP INDEX t_e|uid=1 url=1'
+	'drop one of two peers|DROP INDEX t_e|uid=1 url=1'
 )
 for row in "${STEPS[@]}"; do
 	IFS='|' read -r label stmt want <<<"$row"
@@ -150,8 +150,8 @@ for row in "${STEPS[@]}"; do
 	pre=(); [[ $label == rule:* ]] && { pre=("SET sift.test_vstore_columns = ''"); label=${label#rule:}; }
 	check "$label: the statement runs" sql primary "${pre[@]}" "$stmt"
 	check "$label: equal answers" equal_answers
-	check "$label: stores: $want" stores_are "$want"
-	if [[ -n $new ]]; then BASE=$(fp); else check "$label: the values of the stores are the same" values_same; fi
+	check "$label: vstores: $want" stores_are "$want"
+	if [[ -n $new ]]; then BASE=$(fp); else check "$label: the values of the vstores are the same" values_same; fi
 done
 check "the drops left no dependency to a relation that is gone" test "$(dangling primary)" == 0
 
@@ -181,8 +181,8 @@ check "race: DROP INDEX of the last member, a build waits for the lock, the drop
 	race "DROP INDEX t_f" "CREATE INDEX t_g ON t USING sift_col (id, uid, url)"
 check "race: the build waited for the lock of the drop" test -n "$WAITED"
 new=$(store_oids)
-check "race: the newcomer made fresh stores (the old ones went with the last member)" test "$new" != "$old" -a "${new%/*}" != "${old%/*}" -a "${new#*/}" != "${old#*/}"
-check "race: the newcomer is the only member of the new stores" stores_are "uid=1 url=1"
+check "race: the newcomer made fresh vstores (the old ones went with the last member)" test "$new" != "$old" -a "${new%/*}" != "${old%/*}" -a "${new#*/}" != "${old#*/}"
+check "race: the newcomer is the only member of the new vstores" stores_are "uid=1 url=1"
 check "race: equal answers" equal_answers
 check "race: no dependency to a relation that is gone" test "$(dangling primary)" == 0
 BASE=$(fp)
@@ -192,15 +192,15 @@ old=$(store_oids)
 check "race: a build adopts the store, the drop of the last old member waits for it, the build commits: both succeed" \
 	race "CREATE INDEX t_h ON t USING sift_col (id, uid, url)" "DROP INDEX t_g"
 check "race: the drop waited for the lock of the build" test -n "$WAITED"
-check "race: the stores stayed (the newcomer uses them)" test "$(store_oids)" == "$old"
+check "race: the vstores stayed (the newcomer uses them)" test "$(store_oids)" == "$old"
 check "race: the newcomer is the only member" stores_are "uid=1 url=1"
-check "race: the values of the stores are the same" values_same
+check "race: the values of the vstores are the same" values_same
 check "race: equal answers" equal_answers
 check "race: no dependency to a relation that is gone" test "$(dangling primary)" == 0
 
-# --- 3. a reader while members are dropped, reindexed and promoted: the indexes answer as the heap in every transaction (repeatable read: the rows that are inserted
+# --- 3. a reader while peers are dropped, reindexed and promoted: the indexes answer as the heap in every transaction (repeatable read: the rows that are inserted
 # meanwhile are in both or in none)
-new_rows() { # COUNT TAG: rows with strings that the stores do not have
+new_rows() { # COUNT TAG: rows with strings that the vstores do not have
 	sql primary "INSERT INTO t SELECT m.v + g, g % 7, md5('$2' || g)::uuid, 'https://example.com/n/' || md5('$2' || g)
 		FROM (SELECT max(id) AS v FROM t) m, generate_series(1, $1) g"
 }
@@ -213,8 +213,8 @@ reader() {
 	done
 }
 sql primary "CREATE INDEX t_i ON t USING sift_col (id, uid, url)" "CREATE INDEX t_j ON t USING sift_col (id, tenant, uid, url)" \
-	"CREATE INDEX t_k ON t USING sift_col (uid, url, tenant)" >/dev/null || bail "members for the reader failed"
-check "reader: four members share the stores" stores_are "uid=4 url=4"
+	"CREATE INDEX t_k ON t USING sift_col (uid, url, tenant)" >/dev/null || bail "peers for the reader failed"
+check "reader: four peers share the vstores" stores_are "uid=4 url=4"
 BASE=$(fp)
 rm -f "$D/stop" "$D/reader.fail" "$D/reader.n"
 reader &
@@ -223,15 +223,15 @@ wait_for "[[ -s $D/reader.n ]]" 120
 check "reader: DROP INDEX CONCURRENTLY of a member" sql primary "DROP INDEX CONCURRENTLY t_i"
 check "reader: REINDEX INDEX CONCURRENTLY of another" sql primary "REINDEX INDEX CONCURRENTLY t_j"
 check "reader: rows with new strings" new_rows $((ROWS / 20)) n1
-check "reader: sift.col_promote of a third member (appends codes to the stores)" sql primary "SELECT sift.col_promote('t_k')"
+check "reader: sift.col_promote of a third member (appends codes to the vstores)" sql primary "SELECT sift.col_promote('t_k')"
 check "reader: sift.col_merge of it" sql primary "SELECT sift.col_merge('t_k', true)"
 n=$(cat "$D/reader.n"); wait_for "[[ \$(cat $D/reader.n) -ge $((n + 2)) ]]" 120
 touch "$D/stop"
 wait "$READER"
 check "reader: the indexes answered as the heap in all $(cat "$D/reader.n") rounds, no error" test ! -s "$D/reader.fail"
 [[ ! -s $D/reader.fail ]] || diag "$(head -n 5 "$D/reader.fail")"
-check "reader: the three members left share the stores" stores_are "uid=3 url=3"
-check "reader: the codes of the start are still the same ones (the stores only grew)" values_kept
+check "reader: the three peers left share the vstores" stores_are "uid=3 url=3"
+check "reader: the codes of the start are still the same ones (the vstores only grew)" values_kept
 check "reader: equal answers" equal_answers
 check "reader: no dependency to a relation that is gone" test "$(dangling primary)" == 0
 
@@ -240,11 +240,11 @@ PM=
 restart() { # the primary is down (restart_after_crash is off): up again, the standby streaming
 	wait_for '! kill -0 "$PM" 2>/dev/null' 120 && node_start primary && catchup primary standby
 }
-# after the kill: LABEL, the stores wanted
+# after the kill: LABEL, the vstores wanted
 recovered() {
 	if restart; then ok "$1: the primary restarts and the standby streams again"; else not_ok "$1: the primary restarts and the standby streams again"; return 1; fi
 	check "$1: equal answers after recovery" equal_answers
-	check "$1: stores: $2" stores_are "$2"
+	check "$1: vstores: $2" stores_are "$2"
 }
 BASE=$(fp)
 PM=$(head -1 "$D/data/postmaster.pid")
@@ -256,14 +256,14 @@ crash primary
 wait "$HELD"
 recovered "an uncommitted DROP INDEX, killed" "uid=3 url=3"
 check "an uncommitted DROP INDEX, killed: the member is still there" exists_on_both t_h t
-check "an uncommitted DROP INDEX, killed: the values of the stores are the same" values_same
+check "an uncommitted DROP INDEX, killed: the values of the vstores are the same" values_same
 
 PM=$(head -1 "$D/data/postmaster.pid")
 sql primary "DROP INDEX t_k" >/dev/null
 crash primary
 recovered "a committed DROP INDEX, killed at once" "uid=2 url=2"
 check "a committed DROP INDEX, killed at once: the member is gone" exists_on_both t_k f
-check "a committed DROP INDEX, killed at once: the values of the stores are the same" values_same
+check "a committed DROP INDEX, killed at once: the values of the vstores are the same" values_same
 sql primary "CREATE INDEX t_k ON t USING sift_col (uid, url, tenant)" >/dev/null
 
 # REINDEX of a member, the leader killed before and after its first directory update
@@ -273,7 +273,7 @@ for k in 1 -1; do
 	SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
 	if sql primary "SET sift.test_crash_dir = $k" "REINDEX INDEX t_j" >/dev/null 2>&1; then not_ok "$what: the process was not killed"; continue; fi
 	recovered "$what" "uid=3 url=3" || continue
-	check "$what: the values of the stores are the same" values_same
+	check "$what: the values of the vstores are the same" values_same
 	check "$what: the same REINDEX run again succeeds" sql primary "REINDEX INDEX t_j"
 	check "$what: equal answers after it" equal_answers
 done
@@ -295,15 +295,15 @@ for k in 1 -1 2 -2; do
 done
 check "the kills left no dependency to a relation that is gone" test "$(dangling primary)" == 0
 
-# --- 5. pg_dump and pg_restore: the store relation of the dump (empty, access method sift_values) and the members that adopt it
+# --- 5. pg_dump and pg_restore: the store relation of the dump (empty, access method sift_values) and the peers that adopt it
 MEMBERS=$(sql primary "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam
 	WHERE a.amname = 'sift_col' AND i.indrelid = 't'::regclass")
-check "dump: the source has three members on two stores" test "$MEMBERS" == 3 -a "$(stores primary)" == "uid=3 url=3"
+check "dump: the source has three peers on two vstores" test "$MEMBERS" == 3 -a "$(vstores primary)" == "uid=3 url=3"
 PGARGS=(-h "$D/sock" -p "$(port primary)" -U postgres)
 pg_dump "${PGARGS[@]}" -Fc -f "$D/src.custom" postgres 2>"$D/dump.err"
 check "dump: pg_dump -Fc succeeds" test $? -eq 0 -a ! -s "$D/dump.err"
 dumped() { pg_restore -f - "$D/src.custom" | grep -c "$1"; }
-check "dump: the stores are created without data" test "$(dumped 'CREATE MATERIALIZED VIEW .*sift_values')|$(dumped 'WITH NO DATA')" == "2|2"
+check "dump: the vstores are created without data" test "$(dumped 'CREATE MATERIALIZED VIEW .*sift_values')|$(dumped 'WITH NO DATA')" == "2|2"
 check "dump: no store is refreshed" test "$(dumped 'REFRESH MATERIALIZED VIEW')" == 0
 restore() { # DB [pg_restore flags]: a new database on the primary, the archive restored into it
 	local db=$1
@@ -320,7 +320,7 @@ restored() { # DB: the restored table as the source was
 		JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND i.indrelid = 't'::regclass")" == "$MEMBERS"
 	names=$(dbq primary "$db" "SELECT string_agg(c.relname || ':' || c.relkind::text, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relname LIKE '%sift_values%'")
 	out=; check "restore $db: exactly one store relation for each shared column (no copies of a name)" test "$names" == "t_uid_sift_values:m,t_url_sift_values:m"
-	out=; check "restore $db: the stores serve all the members" stores_are "uid=$MEMBERS url=$MEMBERS" "$db"
+	out=; check "restore $db: the vstores serve all the peers" stores_are "uid=$MEMBERS url=$MEMBERS" "$db"
 	out=; check "restore $db: equal answers, on both nodes and every member verified" equal_answers "$db"
 	out=; check "restore $db: no dependency to a relation that is gone" test "$(dbq primary "$db" "SELECT count(*) FROM pg_depend d
 		WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = d.refobjid)")" == 0
@@ -328,18 +328,18 @@ restored() { # DB: the restored table as the source was
 restored r1
 restored r2 -j4
 
-# --- 2c. DROP TABLE and DROP SCHEMA .. CASCADE take the stores of their table and no other
+# --- 2c. DROP TABLE and DROP SCHEMA .. CASCADE take the vstores of their table and no other
 cnt_stores() { sql "$1" "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_values' ${2:-}"; }
 sql primary "CREATE SCHEMA sx" "CREATE TABLE sx.t (LIKE public.t)" "INSERT INTO sx.t SELECT * FROM public.t WHERE id <= $((ROWS / 4))" "ANALYZE sx.t" \
 	"CREATE INDEX sx_a ON sx.t USING sift_col (id, uid, url)" "CREATE INDEX sx_b ON sx.t USING sift_col (uid, url, tenant)" >/dev/null || bail "schema failed"
 BASE=$(fp)
-check "schema: both tables have their two stores, under the same names" test "$(cnt_stores primary)" == 4 -a "$(cnt_stores primary "AND c.relnamespace = 'sx'::regnamespace")" == 2
-check "schema: the other schema's stores are used by its own members" test "$(sql primary "SET search_path = sx, public" \
+check "schema: both tables have their two vstores, under the same names" test "$(cnt_stores primary)" == 4 -a "$(cnt_stores primary "AND c.relnamespace = 'sx'::regnamespace")" == 2
+check "schema: the other schema's vstores are used by its own peers" test "$(sql primary "SET search_path = sx, public" \
 	"SELECT string_agg(column_name || '=' || indexes_using, ' ' ORDER BY column_name) FROM sift.col_value_store_status WHERE table_name = 'sx.t'::regclass")" == "uid=2 url=2"
 check "schema: DROP SCHEMA .. CASCADE" sql primary "DROP SCHEMA sx CASCADE"
-check "schema: its stores went, the other table's stayed" test "$(cnt_stores primary)" == 2 -a "$(catchup primary standby; cnt_stores standby)" == 2
-check "schema: the table left keeps its stores and members" stores_are "uid=$MEMBERS url=$MEMBERS"
-check "schema: the values of its stores are the same" values_same
+check "schema: its vstores went, the other table's stayed" test "$(cnt_stores primary)" == 2 -a "$(catchup primary standby; cnt_stores standby)" == 2
+check "schema: the table left keeps its vstores and peers" stores_are "uid=$MEMBERS url=$MEMBERS"
+check "schema: the values of its vstores are the same" values_same
 check "schema: equal answers" equal_answers
 check "table: DROP TABLE" sql primary "DROP TABLE t"
 check "table: no relation of a store is left, on both nodes" test "$(catchup primary standby; sql primary "SELECT count(*) FROM pg_class WHERE relname LIKE '%sift_values%'")" == 0 \

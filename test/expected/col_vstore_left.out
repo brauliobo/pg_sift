@@ -1,5 +1,5 @@
 -- The only index left on a shared value store goes back to its own strings by itself (docs/COL-VSTORE.md, the only index left): DROP INDEX says which index it is,
--- its next rewrite puts the strings back into its segments (the size is of the index and the stores of the table, against an index that never shared), the VACUUM after it lets the store go, and the index is then as large as one that never shared.
+-- its next rewrite puts the strings back into its segments (the size is of the index and the vstores of the table, against an index that never shared), the VACUUM after it lets the store go, and the index is then as large as one that never shared.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
@@ -25,7 +25,7 @@ BEGIN
 	SELECT count(*) || ':' || md5(string_agg(url, ',' ORDER BY url)) INTO b FROM lf WHERE url > 'https://example.com/p/5';
 	RETURN QUERY SELECT label, a = b;
 END $$;
-CREATE FUNCTION lf_state(label text) RETURNS TABLE (step text, stores bigint, users int, with_stores text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION lf_state(label text) RETURNS TABLE (step text, vstores bigint, users int, with_stores text) LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN QUERY SELECT label, (SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'lf'::regclass),
 	       (SELECT coalesce(max(indexes_using), 0)::int FROM sift.col_value_store_status WHERE table_name = 'lf'::regclass),
@@ -49,10 +49,10 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "lf_a": 2 automatic choices (track_changes, value store)
 DETAIL:  track_changes = id; value store = url
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lf_a');
-SELECT * FROM lf_check('two members');
-    step     | same 
--------------+------
- two members | t
+SELECT * FROM lf_check('two peers');
+   step    | same 
+-----------+------
+ two peers | t
 (1 row)
 
 SELECT index_name::text, state FROM sift.col_value_store_members() WHERE table_name = 'lf'::regclass AND column_name = 'url' ORDER BY 1;
@@ -69,9 +69,9 @@ DETAIL:  Its next merge, rewrite or VACUUM stores the strings of the column in i
 HINT:  REINDEX INDEX lf_a does it now.
 RESET client_min_messages;
 SELECT * FROM lf_check('lf_b dropped'), lf_state('lf_b dropped');
-     step     | same |     step     | stores | users | with_stores 
---------------+------+--------------+--------+-------+-------------
- lf_b dropped | t    | lf_b dropped |      1 |     1 | larger
+     step     | same |     step     | vstores | users | with_stores 
+--------------+------+--------------+---------+-------+-------------
+ lf_b dropped | t    | lf_b dropped |       1 |     1 | larger
 (1 row)
 
 -- the strings of rows written now go into the segments; the copy gets the same rows
@@ -90,9 +90,9 @@ SELECT sift.col_merge('lf_a', true) >= 0 AS merged, sift.col_merge('lf0_a', true
 (1 row)
 
 SELECT * FROM lf_check('rows added'), lf_state('rows added');
-    step    | same |    step    | stores | users | with_stores 
-------------+------+------------+--------+-------+-------------
- rows added | t    | rows added |      1 |     1 | larger
+    step    | same |    step    | vstores | users | with_stores 
+------------+------+------------+---------+-------+-------------
+ rows added | t    | rows added |       1 |     1 | larger
 (1 row)
 
 SELECT sift.col_maintain('lf_a') AS rewrote;
@@ -102,9 +102,9 @@ SELECT sift.col_maintain('lf_a') AS rewrote;
 (1 row)
 
 SELECT * FROM lf_check('rewritten'), lf_state('rewritten');
-   step    | same |   step    | stores | users | with_stores 
------------+------+-----------+--------+-------+-------------
- rewritten | t    | rewritten |      1 |     1 | larger
+   step    | same |   step    | vstores | users | with_stores 
+-----------+------+-----------+---------+-------+-------------
+ rewritten | t    | rewritten |       1 |     1 | larger
 (1 row)
 
 SELECT sift.col_maintain('lf_a') AS nothing_more;
@@ -115,9 +115,9 @@ SELECT sift.col_maintain('lf_a') AS nothing_more;
 
 VACUUM lf;
 SELECT * FROM lf_check('vacuumed'), lf_state('vacuumed');
-   step   | same |   step   | stores | users |        with_stores        
-----------+------+----------+--------+-------+---------------------------
- vacuumed | t    | vacuumed |      0 |     0 | within 5% of never shared
+   step   | same |   step   | vstores | users |        with_stores        
+----------+------+----------+---------+-------+---------------------------
+ vacuumed | t    | vacuumed |       0 |     0 | within 5% of never shared
 (1 row)
 
 SELECT count(*) AS relations_left FROM pg_class WHERE relname LIKE 'lf%sift\_values%';

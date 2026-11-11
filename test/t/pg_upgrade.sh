@@ -66,7 +66,7 @@ if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"
 # the options of this tree's column index; a released library has none of them (cube_minmax and key_columns are 3.3's, hll_columns 3.4's)
 FACTS_OPTS="WITH (cube_minmax = true, key_columns = 'g', hll_columns = 'id')"
 [[ -z $OLD_REF ]] || FACTS_OPTS=
-# 4.3 still honors the three options that 5.0 removed and keeps accepting: an index that stores them must come through pg_upgrade
+# 4.3 still honors the three options that 5.0 removed and keeps accepting: an index that holds them must come through pg_upgrade
 [[ ! ${OLD_REF#v} =~ ^4\.3\. ]] || FACTS_OPTS="WITH (key_cut_rows = 500, point_columns = 'id', order_columns = 'ts')"
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'
@@ -94,7 +94,7 @@ SELECT sift.projection_create('pwide', 'pev', ARRAY['a', 'k', '(q / 10)', 's'], 
 SELECT sift.projection_create('pnarrow', 'pev', ARRAY['a', 'k']);
 SELECT sift.projection_index('pev_wide', ARRAY['pwide'], '{\"track_changes\": \"off\"}');
 SELECT sift.projection_index('pev_again', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}');"
-# two indexes of one table that share the value stores of their string columns (5.0's; the sharing is forced: the table is small)
+# two indexes of one table that share the value vstores of their string columns (5.0's; the sharing is forced: the table is small)
 VSSQL=
 [[ -n $OLD_REF ]] || VSSQL="SET sift.test_vstore_columns = 'uid,url';
 CREATE TABLE vs (id int PRIMARY KEY, uid uuid, url text) WITH (autovacuum_enabled = false);
@@ -276,14 +276,14 @@ if [[ -z $OLD_REF ]]; then
 	check "the guard and the one call work after pg_upgrade" test "$(q new postgres "DELETE FROM sift.projections WHERE name = 'pwide'" 2>&1 | grep -c 'is held by pev_wide')$(q new postgres "SELECT sift.projection_index('pev_other', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}')")" == 1pev_wide
 else skip 2 "a release has no projections"; fi
 
-# the value stores: relations with their own access method, restored by pg_upgrade with their files, and the dependencies of the indexes on them
+# the value vstores: relations with their own access method, restored by pg_upgrade with their files, and the dependencies of the indexes on them
 if [[ -z $OLD_REF ]]; then
-	check "the two shared stores came through pg_upgrade, each with its two members" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status")" == "uid=2,url=2"
-	check "the members answer as the normal plan and verify" test "$(q new postgres "SELECT vsq_on() = vsq_off()")" == t -a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('vs_a', true), sift.col_verify('vs_b', true)) v")" == 1
+	check "the two shared vstores came through pg_upgrade, each with its two peers" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status")" == "uid=2,url=2"
+	check "the peers answer as the normal plan and verify" test "$(q new postgres "SELECT vsq_on() = vsq_off()")" == t -a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('vs_a', true), sift.col_verify('vs_b', true)) v")" == 1
 	q new postgres "DROP INDEX vs_b" >/dev/null
-	check "a dropped member leaves the other whole and the stores in place, the last one takes them along" test "$(q new postgres "SELECT vsq_on() = vsq_off()")$(q new postgres "SELECT count(*) FROM sift.col_value_store_status")" == t2 \
+	check "a dropped member leaves the other whole and the vstores in place, the last one takes them along" test "$(q new postgres "SELECT vsq_on() = vsq_off()")$(q new postgres "SELECT count(*) FROM sift.col_value_store_status")" == t2 \
 		-a "$(q new postgres "DROP INDEX vs_a" "SELECT count(*) FROM sift.col_value_store_status" | tail -n 1)" == 0
-else skip 3 "a release has no value stores"; fi
+else skip 3 "a release has no value vstores"; fi
 # a new pair of indexes of the upgraded cluster shares the strings
 q new postgres "SET sift.test_vstore_columns = 'uid,url'" "CREATE TABLE vs2 (id int PRIMARY KEY, uid uuid, url text)" "INSERT INTO vs2 SELECT g, md5((g % 70)::text)::uuid, 'https://example.com/' || md5((g % 90)::text) FROM generate_series(1, 3000) g" \
 	"ANALYZE vs2" "CREATE INDEX vs2_a ON vs2 USING sift_col (id, uid, url)" "CREATE INDEX vs2_b ON vs2 USING sift_col (uid, id, url)" >/dev/null

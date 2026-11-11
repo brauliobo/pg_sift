@@ -30,22 +30,22 @@ VACUUM vs_t_uid_sift_values;
 -- it cannot be dropped under an index; it goes with the last index
 DROP MATERIALIZED VIEW vs_t_uid_sift_values;
 DROP INDEX vs_a;
-SELECT count(*) AS stores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
+SELECT count(*) AS vstores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
 REINDEX TABLE vs_t;
 CREATE INDEX CONCURRENTLY vs_c ON vs_t USING sift_col (id, uid);
 REINDEX INDEX CONCURRENTLY vs_b;
 ALTER TABLE vs_t ALTER COLUMN url TYPE varchar(40);
 SELECT store, column_name, indexes_using FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass ORDER BY 1;
 DROP INDEX vs_b, vs_c;
-SELECT count(*) AS stores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
+SELECT count(*) AS vstores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
 
 -- a build after the last drop makes a new one, and DROP TABLE takes it
 CREATE INDEX vs_d ON vs_t USING sift_col (id, uid);
-SELECT count(*) AS stores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
+SELECT count(*) AS vstores FROM sift.col_value_store_status WHERE table_name = 'vs_t'::regclass;
 DROP TABLE vs_t;
-SELECT count(*) AS stores FROM sift.col_value_store_status WHERE store::text LIKE 'vs\_t\_%';
+SELECT count(*) AS vstores FROM sift.col_value_store_status WHERE store::text LIKE 'vs\_t\_%';
 
--- the roles: the owner of the table owns the stores (the creator of the index may be another role that can create it) and follows ALTER TABLE OWNER;
+-- the roles: the owner of the table owns the vstores (the creator of the index may be another role that can create it) and follows ALTER TABLE OWNER;
 -- nobody else can read one; the store holds no row security of its own and no row data
 CREATE ROLE vs_owner1 NOLOGIN;
 CREATE ROLE vs_owner2 NOLOGIN;
@@ -88,7 +88,7 @@ CREATE INDEX vs_pi ON vs_p USING sift_col (id, tenant, url);
 CREATE INDEX vs_pj ON vs_p USING sift_col (id, url);
 SELECT store, table_name, indexes_using FROM sift.col_value_store_status WHERE table_name::text LIKE 'vs\_p%' ORDER BY 1;
 
--- a publication of all tables does not list the stores (they are not tables), so a subscriber that lacks them is not broken by an index
+-- a publication of all tables does not list the vstores (they are not tables), so a subscriber that lacks them is not broken by an index
 SET client_min_messages = error;
 CREATE PUBLICATION vs_pub FOR ALL TABLES;
 SET client_min_messages = warning;
@@ -96,7 +96,7 @@ INSERT INTO vs_p VALUES (1000, 1, 'x');
 SELECT count(*) FROM pg_publication_tables WHERE pubname = 'vs_pub' AND tablename LIKE 'vs\_p%\_sift\_values';
 DROP PUBLICATION vs_pub;
 
--- the stores of a dropped table and schema go with them
+-- the vstores of a dropped table and schema go with them
 DROP TABLE vs_p;
 DROP TABLE vs_app.t;
 DROP TABLE "Vs Odd".longtable_with_a_very_long_name_that_goes_past_limits;
