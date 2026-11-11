@@ -4,6 +4,7 @@
 # long snapshot reader; after every step a battery (one key, sets of keys counted once, per pair, count/sum/distinct/top-N, the SQL forms) must be the plain join through the scope path, the planned plan
 # and the plain plan, and every read is either stored or says a documented fallback reason. The planner forms are probed by the
 # script (the planner's recognition of the join forms is not in every tree). Quick tier: seeds 1-2 of 5 steps on 6,000 rows; full: 24 seeds of 8 steps on 12,000 (about 3 minutes).
+# Every third seed is a union seed (the scope of a direct and a joined path: grants of a member, grants of a group, memberships; see the docstring of the script for --twohop-strict).
 # SIFT_FUZZ_SEEDS / SIFT_FUZZ_ROWS / SIFT_FUZZ_STEPS override.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
