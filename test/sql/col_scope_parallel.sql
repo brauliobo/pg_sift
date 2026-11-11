@@ -97,6 +97,50 @@ SELECT c.relname AS partition, p.* FROM pg_class c, LATERAL check_index(c.oid, (
 	WHERE c.relname = 'pevents_4';
 SELECT sift.col_verify(i.indexrelid, true) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid WHERE c.relname LIKE 'pevents\_%' AND c.relkind = 'r' ORDER BY c.relname;
 
+-- a scope of two paths (the grants of a member, of a group, and the memberships): the participants write the pairs of the union, each once, whatever the segment boundaries; the entries are those of the serial
+-- build and the join of the facts with the union, and the stamps are the three journals'
+CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz);
+CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+INSERT INTO memberships (group_id, dim_a_id) SELECT 1 + m % 12, m FROM generate_series(1, 320) m;
+INSERT INTO memberships (group_id, dim_a_id) SELECT 1 + (m * 5) % 12, m FROM generate_series(1, 320) m WHERE m % 4 = 0 ON CONFLICT DO NOTHING;
+INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + (m * 5 + j * 7) % 12, m FROM generate_series(1, 320) m, generate_series(0, 1) j WHERE m % 25 <> 0 ON CONFLICT DO NOTHING;
+INSERT INTO grants (tenant_id, group_id) SELECT 1 + (g * 5 + j * 3) % 12, g FROM generate_series(1, 12) g, generate_series(0, 1) j ON CONFLICT DO NOTHING;
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE VIEW pair_set (dim_a_id, tenant_id) AS SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+	UNION SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+VACUUM (ANALYZE) grants, memberships;
+CREATE FUNCTION union_entries(idx regclass, OUT same_as_join boolean, OUT entries_md5 text) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(tid::text || '':'' || key, '','' ORDER BY tid, key)) FROM sift._test_col_scope_entries(%L)', idx) INTO entries_md5;
+	EXECUTE format('SELECT NOT EXISTS (SELECT e.ctid, s.tenant_id FROM events e JOIN pair_set s USING (dim_a_id) EXCEPT SELECT tid, key::int FROM sift._test_col_scope_entries(%L))
+		AND NOT EXISTS (SELECT tid, key::int FROM sift._test_col_scope_entries(%L) EXCEPT SELECT e.ctid, s.tenant_id FROM events e JOIN pair_set s USING (dim_a_id))', idx, idx) INTO same_as_join;
+END $$;
+SET maintenance_work_mem = '128MB';
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX hop_ser ON events USING sift_col (id, dim_a_id, created_at, v)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT 'serial' AS build, current_setting('sift.test_col_workers')::int AS workers, u.same_as_join FROM union_entries('hop_ser') u;
+SELECT entries_md5 AS serial_entries FROM union_entries('hop_ser') \gset
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX hop_par ON events USING sift_col (id, dim_a_id, created_at, v)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT 'parallel' AS build, current_setting('sift.test_col_workers')::int > 0 AS workers, u.same_as_join, u.entries_md5 = :'serial_entries' AS same_entries_as_serial FROM union_entries('hop_par') u;
+REINDEX INDEX hop_par;
+SELECT 'reindex' AS build, current_setting('sift.test_col_workers')::int > 0 AS workers, u.same_as_join, u.entries_md5 = :'serial_entries' AS same_entries_as_serial FROM union_entries('hop_par') u;
+SELECT journal, count(DISTINCT lineage) AS lineages, count(DISTINCT horizon::text) AS horizons, count(*) FILTER (WHERE lineage = 0) AS unfilled
+	FROM sift._test_col_scope_journal_stamps('hop_par') WHERE family = 'scope' GROUP BY journal ORDER BY journal;
+SELECT sift.col_verify('hop_par', true);
+DROP INDEX hop_ser, hop_par;
+DROP VIEW pair_set;
+DROP TABLE grants, memberships;
+DROP FUNCTION union_entries(regclass);
+
 DROP TABLE pevents, events, tenant_scope;
 DROP FUNCTION check_index(regclass, regclass);
 DROP EXTENSION pg_sift_test;

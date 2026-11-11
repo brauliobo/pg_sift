@@ -177,7 +177,28 @@ SELECT 'merged' AS state, c.*, v.* FROM changed() c, verdict() v;
 SELECT journal, count(DISTINCT lineage) AS lineages, count(DISTINCT horizon::text) AS horizons FROM sift._test_col_scope_journal_stamps('facts_col') GROUP BY journal ORDER BY journal;
 SELECT sift.col_verify('facts_col', true);
 
-DROP TABLE facts, grants, memberships, shapes, key_sets, reads, states CASCADE;
+-- workers allowed and the price of a Gather at zero: a scope read is decided once, by the leader (the verdict, the changed members and the patch are made from the snapshot of the statement), so a read with
+-- the patch of each of the three journals is one process, and answers as the join
+SET max_parallel_workers_per_gather = 4;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE TABLE parallel_states (n int, label text, edit text);
+INSERT INTO parallel_states VALUES
+	(1, 'a grant to a member, workers allowed', 'INSERT INTO grants VALUES (201, 5, 33, NULL, NULL)'),
+	(2, 'a grant to a group, workers allowed', 'INSERT INTO grants VALUES (202, 5, NULL, 1, NULL)'),
+	(3, 'a membership soft deleted, workers allowed', 'UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id = 1'),
+	(4, 'the three at once, workers allowed', 'INSERT INTO grants VALUES (203, 6, 34, NULL, NULL); INSERT INTO grants VALUES (204, 6, NULL, 5, NULL); UPDATE memberships SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id = 1');
+SELECT stmt FROM (SELECT n, 0 AS k, 'REINDEX INDEX facts_col' AS stmt FROM parallel_states
+	UNION ALL SELECT n, 1, edit FROM parallel_states
+	UNION ALL SELECT n, 2, format('SELECT %s AS n, %L AS state, c.*, v.* FROM changed() c, verdict() v', n, label) FROM parallel_states) t ORDER BY n, k \gexec
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+SELECT sift.col_verify('facts_col', true);
+
+DROP TABLE facts, grants, memberships, shapes, key_sets, reads, states, parallel_states CASCADE;
 DROP FUNCTION verdict(), changed(), read_run(text, text), scope_run(text, text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
