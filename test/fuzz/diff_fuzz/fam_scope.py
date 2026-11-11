@@ -2,6 +2,7 @@
 # (join, IN, EXISTS, GROUP BY the key, a keys table, a table of keys of a user in the IN, EXISTS and join forms) and in the near misses it refuses; item_grants is a scope relation of
 # soft deleted pairs (the pairs are its rows not soft deleted): the statements that state the predicate and those that do not; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
 # array of 1 to 70 keys (the runtime choice between the scope read and the join as written is made for the keys of each execution), a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
+# The btree of the pairs is unique in an even seed and not unique in an odd one, where the joins run as written (a pair may be several rows) and IN and EXISTS count a fact once.
 
 from .columns import EVENTS, aggs, keys, preds
 from .fam_basic import grouped
@@ -85,6 +86,9 @@ def dml_scope(r, ctx):
         f'DELETE FROM item_scope WHERE item_id % {m} = {k} AND tenant_id = {t}', f'DELETE FROM item_scope WHERE item_id % {m * 5} = {k}',
         f'INSERT INTO item_scope SELECT i, {t} FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',
         f'INSERT INTO item_scope SELECT i, {u} FROM item_scope WHERE tenant_id = {t} AND item_id % {m} = {k} ON CONFLICT DO NOTHING',
+        f'INSERT INTO item_scope SELECT item_id, tenant_id FROM item_scope WHERE item_id % {m} = {k} ON CONFLICT DO NOTHING',   # a duplicate row of a pair: none when the btree is unique
+        f'DELETE FROM item_scope WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY item_id, tenant_id ORDER BY ctid) n FROM item_scope '
+        f'WHERE item_id % {m} = {k}) x WHERE n = 2)',   # one of two rows of a pair
         f'UPDATE item_scope s SET tenant_id = (tenant_id + 1) % 6 WHERE item_id % {m} = {k} AND NOT EXISTS (SELECT 1 FROM item_scope o WHERE o.item_id = s.item_id AND o.tenant_id = (s.tenant_id + 1) % 6)',
         f'UPDATE item_grants SET deleted_at = now() WHERE item_id % {m} = {k} AND tenant_id = {t}', f'UPDATE item_grants SET deleted_at = NULL WHERE item_id % {m * 3} = {k}',
         f'INSERT INTO item_grants SELECT i, {t}, CASE WHEN i % 2 = 0 THEN now() END FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING',

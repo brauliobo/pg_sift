@@ -60,9 +60,17 @@ CREATE FUNCTION fz.gen_events(lo bigint, hi bigint, salt int) RETURNS SETOF even
 	                                              ELSE make_interval(0, fz.h(i, 57 + salt) % 4, 0, fz.h(i, 58 + salt) % 40, fz.h(i, 59 + salt) % 30, 0, fz.h(i, 60 + salt) % 100 / 4.0) END END
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO events SELECT * FROM fz.gen_events(1, @ROWS@, 0);
--- the scope relation of the scope family: (member, scope key) pairs, unique, a member in none, one or several scopes; its journal, and the scope of events by parent_id
-CREATE TABLE item_scope (item_id int NOT NULL, tenant_id int NOT NULL, UNIQUE (item_id, tenant_id)) WITH (autovacuum_enabled = false);
+-- the scope relation of the scope family: (fact id, scope key) pairs, a fact id in none, one or several scopes; its journal, and the scope of events by parent_id. The btree of the pairs is
+-- unique in an even seed and not unique in an odd one, whose pairs are several rows for every fourth fact id (the pairs are the distinct rows)
+CREATE TABLE item_scope (item_id int NOT NULL, tenant_id int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO item_scope SELECT i, t FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 200 + t) % 100 < 22 AND i % 17 <> 3;
+SELECT @SEED@ % 2 = 1 AS multiset \gset
+\if :multiset
+INSERT INTO item_scope SELECT item_id, tenant_id FROM item_scope WHERE item_id % 4 = 0;
+CREATE INDEX item_scope_pairs ON item_scope (item_id, tenant_id);
+\else
+CREATE UNIQUE INDEX item_scope_pairs ON item_scope (item_id, tenant_id);
+\endif
 -- the tables of keys of the scope family: the tenants of a user (unique), one home tenant a user (a primary key, some NULL), loose keys (repeated)
 CREATE TABLE user_keys (user_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (user_id, tenant_id));
 INSERT INTO user_keys SELECT u, t FROM generate_series(0, 3) u, generate_series(0, 5) t WHERE fz.h(u, 210 + t) % 100 < 40;
