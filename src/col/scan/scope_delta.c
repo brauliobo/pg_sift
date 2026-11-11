@@ -93,16 +93,20 @@ sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *buf
 	return m;
 }
 
-static int
-delta_cmp(const void *a, const void *b)
-{
-	const DeltaRow *x = a,
-			   *y = b;
+#define DELTA_LESS(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->addr < (y)->addr)
+SIFT_DEFINE_SORT(delta_sort_cmp, DeltaRow, DELTA_LESS)
 
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return SIFT_CMP3(x->addr, y->addr);
+static void *
+delta_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
 }
+
+#define DELTA_KEY(x) ((x)->key)
+#define DELTA_NOKEY(x) 0
+#define DELTA_ADDR(x) ((x)->addr)
+/* the copies come in the order of their rows, which the buffers keep in the order of their addresses: the radix sort by key is stable, and the comparison sort takes any other order */
+SIFT_DEFINE_RADIX_SORT(delta_sort, DeltaRow, DELTA_KEY, DELTA_NOKEY, DELTA_ADDR, delta_copy, pfree, delta_sort_cmp)
 
 /* The first pair of the member in the pairs (ascending by member), n if it has none */
 static uint32
@@ -213,7 +217,7 @@ sift_scope_delta_select(Relation index, int scope, const SiftScopeBuffer *bufs, 
 			}
 		}
 		if (d->n[s] > 0)
-			qsort(d->row[s], d->n[s], sizeof(DeltaRow), delta_cmp);
+			delta_sort(d->row[s], d->n[s]);
 		*rows += d->n[s];
 	}
 	return d;

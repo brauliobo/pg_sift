@@ -14,6 +14,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "common/int.h"
+#include "core/cmp.h"
 #include "core/compat.h"
 #include "executor/tuptable.h"
 #include "optimizer/optimizer.h"
@@ -89,23 +90,22 @@ cmp_i64(const void *a, const void *b)
 	return pg_cmp_s64(*(const int64 *) a, *(const int64 *) b);
 }
 
-static int
-cmp_by_member(const void *a, const void *b)
-{
-	const SiftScopePair *x = a,
-			   *y = b;
+#define PAIR_BY_MEMBER(x, y) ((x)->member != (y)->member ? (x)->member < (y)->member : (x)->key < (y)->key)
+#define PAIR_BY_KEY(x, y) ((x)->key != (y)->key ? (x)->key < (y)->key : (x)->member < (y)->member)
+SIFT_DEFINE_SORT(pairs_by_member_cmp, SiftScopePair, PAIR_BY_MEMBER)
+SIFT_DEFINE_SORT(pairs_by_key, SiftScopePair, PAIR_BY_KEY)
 
-	return x->member != y->member ? pg_cmp_s64(x->member, y->member) : pg_cmp_s64(x->key, y->key);
+static void *
+pairs_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
 }
 
-static int
-cmp_by_key(const void *a, const void *b)
-{
-	const SiftScopePair *x = a,
-			   *y = b;
-
-	return x->key != y->key ? pg_cmp_s64(x->key, y->key) : pg_cmp_s64(x->member, y->member);
-}
+#define PAIR_MEMBER(x) ((x)->member)
+#define PAIR_KEY(x) ((x)->key)
+#define PAIR_NOTIE(x) 0
+/* a pair list by (member, key): the radix sort takes a few passes over thousands of pairs, where the comparison sort takes a call for each of some twenty steps of each */
+SIFT_DEFINE_RADIX_SORT(pairs_by_member, SiftScopePair, PAIR_MEMBER, PAIR_KEY, PAIR_NOTIE, pairs_copy, pfree, pairs_by_member_cmp)
 
 /* the distinct values of a, ascending: sorts in place and returns how many */
 static uint32
@@ -114,7 +114,7 @@ sort_unique(int64 *a, uint32 n)
 	uint32		k = 0;
 
 	if (n > 0)
-		qsort(a, n, sizeof(int64), cmp_i64);
+		sift_sort_i64(a, n);
 	for (uint32 i = 0; i < n; i++)
 		if (k == 0 || a[i] != a[k - 1])
 			a[k++] = a[i];
@@ -278,7 +278,7 @@ pairs_of_keys(PairScan *ps)
 	else if (!leaf_pairs(ps))
 		sift_conn_scan_keys(ps->rel, ps->btree, ps->member, ps->skey, ps->snap, scan_pair, ps);
 	if (ps->out.n > 0)
-		qsort(ps->out.p, ps->out.n, sizeof(SiftScopePair), cmp_by_member);
+		pairs_by_member(ps->out.p, ps->out.n);
 }
 
 /* The pairs of the members with one of the keys: the btree asked for each member when it leads with the member and that is cheaper than reading the pairs of the keys (the fill's price rule), else the pairs of the keys filtered */
@@ -291,7 +291,7 @@ pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
 	{
 		probe_all(ps, ps->member, members, n, probe_of_member);
 		if (ps->out.n > 0)
-			qsort(ps->out.p, ps->out.n, sizeof(SiftScopePair), cmp_by_member);
+			pairs_by_member(ps->out.p, ps->out.n);
 		return;
 	}
 	pairs_of_keys(ps);
@@ -402,9 +402,9 @@ pairs_distinct(ScopePairs *ps)
 	uint32		k = 0;
 
 	if (ps->n > 0)
-		qsort(ps->p, ps->n, sizeof(SiftScopePair), cmp_by_member);
+		pairs_by_member(ps->p, ps->n);
 	for (uint32 i = 0; i < ps->n; i++)
-		if (k == 0 || cmp_by_member(&ps->p[k - 1], &ps->p[i]) != 0)
+		if (k == 0 || PAIR_BY_MEMBER(&ps->p[k - 1], &ps->p[i]))
 			ps->p[k++] = ps->p[i];
 	ps->n = k;
 }
@@ -578,7 +578,7 @@ dedupe_drops(const ScopePairs *all, const int64 *except, uint32 nexcept, SiftSco
 	if ((Size) drops.n * sizeof(SiftScopePair) > (Size) work_mem * 1024)
 		return false;
 	if (drops.n > 0)
-		qsort(drops.p, drops.n, sizeof(SiftScopePair), cmp_by_key);
+		pairs_by_key(drops.p, drops.n);
 	start = 0;
 	for (uint32 i = 1; i <= drops.n; i++)
 	{
