@@ -336,9 +336,43 @@ SELECT label('EXECUTE kept_live') AS stricter_stated, same('EXECUTE kept_live') 
  scope read, 1 keys | t
 (1 row)
 
+-- a scope of two paths: its pairs are the direct grants and those of the groups of its members, the rows of none of its relations, so a join to one is no scope read whatever it states
+CREATE TABLE events2 (LIKE events INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO events2 SELECT * FROM events;
+CREATE TABLE grants2 (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX grants2_direct ON grants2 (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants2_group ON grants2 (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE members2 (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX members2_active ON members2 (group_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants2_by_member ON grants2 USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants2_by_group ON grants2 USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX members2_by_member ON members2 USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+INSERT INTO grants2 SELECT m, 1 + m % 5, m, NULL, CASE WHEN m % 9 = 0 THEN now() END FROM generate_series(1, 60) m;
+INSERT INTO grants2 SELECT 100 + g, g, NULL, g, NULL FROM generate_series(1, 5) g;
+INSERT INTO members2 SELECT 1 + m % 5, m, NULL FROM generate_series(61, 120) m;
+CREATE INDEX events2_col ON events2 USING sift_col (id, dim_a_id, created_at, kind, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants2(dim_a_id, tenant_id) | grants2(group_id, tenant_id) via members2(group_id, dim_a_id)');
+REINDEX INDEX events2_col;
+VACUUM (FREEZE, ANALYZE) events2, grants2, members2;
+CREATE TABLE forms2 (name text PRIMARY KEY, q text);
+INSERT INTO forms2 VALUES
+ ('first relation, join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events2 e JOIN grants2 g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 2 GROUP BY kind$q$),
+ ('first relation, join, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events2 e JOIN grants2 g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 2 AND g.deleted_at IS NULL GROUP BY kind$q$),
+ ('first relation, IN, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events2 e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants2 WHERE tenant_id = 2 AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('joined relation, IN, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events2 e WHERE e.dim_a_id IN (SELECT group_id FROM grants2 WHERE tenant_id = 2 AND deleted_at IS NULL) GROUP BY kind$q$);
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms2 ORDER BY name;
+              name               |                                                    plan                                                     | same_rows 
+---------------------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ first relation, IN, predicate   | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set | t
+ first relation, join            | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set | t
+ first relation, join, predicate | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set | t
+ joined relation, IN, predicate  | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set | t
+(4 rows)
+
 DEALLOCATE ALL;
 DROP FUNCTION label(text), rows_md5(text), same(text), states(text), events_of(int), events_of_active(int);
-DROP TABLE forms;
+DROP TABLE forms, forms2;
+DROP TABLE events2, grants2, members2;
 DROP VIEW grants_view, grants_active_view, grants_barrier, grants_barrier_active;
 DROP TABLE events, grants, grants_live, grants_all, my_tenants;
 DROP EXTENSION pg_sift;

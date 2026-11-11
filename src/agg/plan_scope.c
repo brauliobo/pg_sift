@@ -200,20 +200,34 @@ integer_eq(Oid opno)
 	return op_in_opfamily(opno, INTEGER_BTREE_FAM_OID) && get_op_opfamily_strategy(opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber;
 }
 
-/* the declared scope of the index that names the relation, else NULL */
+/* the relation r of a declaration is the table relid */
+static bool
+names_relation(Oid heapoid, const SiftScopeRel *r, Oid relid)
+{
+	Oid			nsp = r->schema ? get_namespace_oid(r->schema, true) : get_rel_namespace(heapoid);
+
+	return OidIsValid(nsp) && get_relname_relid(r->name, nsp) == relid;
+}
+
+/*
+ * The declared scope of the index whose pairs relation is relid; else the scope of two paths that has it as a relation of a path (its first or its joined one), whose pairs are not the rows of
+ * either; else NULL.
+ */
 static const SiftScopeSpec *
 declared_scope(Oid heapoid, const SiftScopeSpecs *specs, Oid relid)
 {
+	const SiftScopeSpec *two = NULL;
+
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
 		const SiftScopeSpec *sp = specs->s[i];
-		Oid			nsp = sp->rel.schema ? get_namespace_oid(sp->rel.schema, true) : get_rel_namespace(heapoid);
 
-		/* the pairs of a scope of two paths are not the rows of its first relation: a join to it is not the scope */
-		if (sp->joined == NULL && OidIsValid(nsp) && get_relname_relid(sp->rel.name, nsp) == relid)
+		if (sp->joined == NULL && names_relation(heapoid, &sp->rel, relid))
 			return sp;
+		if (sp->joined != NULL && two == NULL && (names_relation(heapoid, &sp->rel, relid) || names_relation(heapoid, sp->joined, relid)))
+			two = sp;
 	}
-	return NULL;
+	return two;
 }
 
 /*
@@ -438,6 +452,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return NOT_SCOPE;
 	if (why != NULL)
 		return why;
+	if (sp->joined != NULL)
+		return "the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set";
 	foreach_ptr(LeftJoin, o, fs->lefts)
 		if (o->rti == rti)
 			lj = o;
@@ -543,7 +559,7 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 		RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
 		const SiftScopeSpec *sp = rte->rtekind == RTE_RELATION ? declared_scope(c->heapoid, specs, rte->relid) : NULL;
 
-		if (sp != NULL)
+		if (sp != NULL && sp->joined == NULL)
 		{
 			*rti = jc->rti;
 			*key = get_attnum(rte->relid, sp->rel.b);
