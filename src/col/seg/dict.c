@@ -616,6 +616,42 @@ look_ref(SiftColSegment *seg, int col, uint64 off, uint64 len)
 	return l;
 }
 
+/* The codes of the store that the dictionary of leaf col names, in the order of the codes of the segment (NULL when it is not a reference); *n of them */
+uint32 *
+sift_cseg_ref_codes(SiftColSegment *seg, int col, uint32 *store, uint32 *epoch, uint32 *n)
+{
+	uint64		off,
+				len,
+				at,
+				nbytes;
+	uint32		head[DICT_REF_WORDS];
+	uint8	   *packed;
+	uint32	   *codes;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return NULL;
+	dict_region(seg, col, &off, &len);
+	at = seg_sec(seg, SIFT_SEC_DICT)->off + off;
+	if (len < sizeof(head))
+		return NULL;
+	seg_read(seg, at, sizeof(head), head);
+	if (head[0] != DICT_REF)
+		return NULL;
+	*n = head[1];
+	*store = head[3];
+	*epoch = head[4];
+	nbytes = sift_cdict_perm_bytes(head[1], head[2]);
+	if (head[1] == 0 || head[2] < 1 || head[2] > 32 || sizeof(head) + nbytes > len)
+		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+	packed = palloc0(nbytes + sizeof(uint64));
+	seg_read(seg, at + sizeof(head), nbytes, packed);
+	codes = palloc(head[1] * sizeof(uint32));
+	for (uint32 i = 0; i < head[1]; i++)
+		codes[i] = sift_ckeyed_get(packed, nbytes + sizeof(uint64), (uint64) i * head[2], head[2]);
+	pfree(packed);
+	return codes;
+}
+
 /*
  * The searchable form of the dictionary at stream offset off, len bytes (the forms 0, 2, 3 and 5), NULL for the compact form, which is read whole. The segment is whatever
  * the stream belongs to: a segment, or a run of a shared value store (col/vstore/vstore_run.c), whose dictionary starts after its header

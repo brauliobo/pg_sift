@@ -333,6 +333,56 @@ sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
 	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap));
 }
 
+/* The indexes that depend on the store (the members that hold references to it) */
+List *
+sift_vstore_members(Oid store)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	List	   *members = NIL;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(store));
+	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->classid == RelationRelationId && d->deptype == DEPENDENCY_NORMAL)
+			members = lappend_oid(members, d->objid);
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return members;
+}
+
+/* The table whose values the store holds (the one it depends on) */
+Oid
+sift_vstore_table(Oid store)
+{
+	Relation	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	Oid			heap = InvalidOid;
+
+	ScanKeyInit(&key[0], Anum_pg_depend_classid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_objid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(store));
+	scan = systable_beginscan(drel, DependDependerIndexId, true, NULL, 2, key);
+	while (!OidIsValid(heap) && HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (d->deptype == DEPENDENCY_AUTO && d->refclassid == RelationRelationId)
+			heap = d->refobjid;
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	return heap;
+}
+
 /* A store that no index depends on */
 static bool
 unused_visit(Oid store, void *arg)

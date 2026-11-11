@@ -251,6 +251,7 @@ extern const SiftCLens *sift_cseg_lens_find(SiftColSegment *seg, uint32 unit, in
 extern void sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const uint32 *counts, uint32 nelems);
 /* The bytes the dictionary of a STR leaf takes in the stream (0 for other leaves), as stored: smaller than its parsed size when it is compressed */
 extern uint64 sift_cseg_dict_stored(SiftColSegment *seg, int col);
+extern uint32 *sift_cseg_ref_codes(SiftColSegment *seg, int col, uint32 *store, uint32 *epoch, uint32 *n);
 
 /* The zone of leaf col in unit u (the zone arrays of the leaf are read on first use) */
 extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z);

@@ -354,6 +354,24 @@ sift_vstore_forget_views(void)
 }
 #endif
 
+/* The codes of the newest epoch of the store and the epoch, read from its directory (no run is read) */
+uint64
+sift_vstore_dir_codes(Relation rel, uint64 *epoch)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
+	int			n;
+	uint64		codes = 0;
+
+	sift_dir_read(rel, snap);
+	n = dir_runs(snap, runs, epoch);
+	for (int i = 0; i < n; i++)
+		codes = Max(codes, runs[i].sum_dl + runs[i].ndocs);
+	pfree(runs);
+	pfree(snap);
+	return codes;
+}
+
 bool
 sift_vstore_have(SiftVStore *vs, uint64 ncodes, uint32 epoch)
 {

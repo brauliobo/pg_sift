@@ -55,6 +55,8 @@ extern void sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
 extern void sift_vstore_auto(Relation heap, Relation index);
 /* Whether a relation is a value store */
 extern bool sift_vstore_is_store(Oid relid);
+extern List *sift_vstore_members(Oid store);
+extern Oid	sift_vstore_table(Oid store);
 /* Drops the stores of the table that no index depends on any more (VACUUM of the table) */
 extern void sift_vstore_drop_unused(Relation heap);
 /* The owner of the stores of the table follows the table's */
@@ -74,6 +76,7 @@ extern SiftVStore *sift_vstore_open(Oid store, LOCKMODE lock);
 extern void sift_vstore_close(SiftVStore *vs);
 extern uint64 sift_vstore_ncodes(SiftVStore *vs);
 extern uint64 sift_vstore_epoch(SiftVStore *vs);
+extern uint64 sift_vstore_dir_codes(Relation rel, uint64 *epoch);
 /* map[i] = the code in the store of the value i of the batch; the values it has not got are appended as one run; returns how many were */
 extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map);
 
