@@ -41,6 +41,9 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 	b->keyed = false;
 	b->unsorted = false;
 	b->hasver = false;
+	if (b->ndead > 0)
+		memset(b->dead, 0, (b->deadrows / 64) * sizeof(uint64));
+	b->ndead = 0;
 	for (int i = 0; i < b->schema->ncols; i++)
 	{
 		SiftCVals  *v = &b->col[i];

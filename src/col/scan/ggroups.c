@@ -81,7 +81,7 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 		const SiftCVals *gv = &b->col[gcol];
 
 		for (uint32 r = 0; r < b->nrows; r++)
-			if (sift_col_bit_test(gv->ovf, r) || sift_col_bit_test(gv->nulls, r))
+			if (!sift_cbatch_dead(b, r) && (sift_col_bit_test(gv->ovf, r) || sift_col_bit_test(gv->nulls, r)))
 				return NULL;
 		memrows += b->nrows;
 	}
@@ -116,7 +116,8 @@ sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 
 			const SiftColBatch *b = src->mem[i].b;
 
 			for (uint32 r = 0; r < b->nrows; r++)
-				c->mem[m++] = b->col[gcol].key[r];
+				if (!sift_cbatch_dead(b, r))
+					c->mem[m++] = b->col[gcol].key[r];
 		}
 		for (int j = 0; j < src->nseg; j++)
 			if (!sift_cseg_gorder_has(src->seg[j].seg, kcol) && !gord_free_group_values(src->seg[j].seg, gcol, c->mem, &m))

@@ -22,6 +22,7 @@
 
 int			sift_test_col_jitter_us = 0;
 int			sift_test_col_open_gate = 0;
+uint64		sift_col_mem_encodes = 0;	/* the units a scan made of a batch of the write buffer (load_memory), in this backend: sift._test_col_mem_encodes */
 
 bool		sift_test_col_paranoid = false;
 
@@ -642,6 +643,9 @@ load_memory(ColUnit *cu, const ColMem *m)
 
 		im = palloc(sizeof(SiftColImage));
 		im->zones = palloc(b->schema->ncols * sizeof(SiftCZone));
+#ifdef SIFT_TESTING
+		sift_col_mem_encodes++;
+#endif
 		sift_cunit_encode(b, NULL, NULL, NULL, true, false, NULL, buf, &start, im->zones);
 		im->buf = buf->data;
 		im->off = start;
@@ -658,7 +662,18 @@ load_memory(ColUnit *cu, const ColMem *m)
 	cu->lane = m->lane;
 	cu->xstamp = m->xstamp;
 	cu->roots = m->roots;
-	cu->clean = cu->clean_ready = true;
+	/* the rows of the batch flagged dead since its image was made stay in it: they are out of the selection, as the dead rows of a stored unit are */
+	cu->clean_ready = true;
+	cu->clean = b->ndead == 0;
+	if (!cu->clean)
+	{
+		uint32		nw = SIFT_COL_NWORDS(cu->v.nrows);
+
+		cu->live = palloc0(nw * sizeof(uint64));
+		set_ones(cu->live, cu->v.nrows);
+		for (uint32 w = 0; w < nw && w < b->deadrows / 64; w++)
+			cu->live[w] &= ~b->dead[w];
+	}
 }
 
 /*

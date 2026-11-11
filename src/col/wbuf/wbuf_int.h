@@ -199,6 +199,7 @@ typedef struct WbufLane
 } WbufLane;
 
 extern uint32 wbuf_page_dead(Relation index, Page page, Size from, Size upto);
+extern uint32 wbuf_page_dead_list(Relation index, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap);
 
 extern void	wbuf_read_lane(SiftCWbufReader *r, BlockNumber head, WbufLane *l, void (*fn) (void *arg, const RawRec *rec), void *arg);
 

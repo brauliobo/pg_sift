@@ -195,6 +195,9 @@ CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bo
 -- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
 CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;
+-- the units this backend's scans made of the batches of the write buffers; a kept batch keeps its unit until it changes
+CREATE FUNCTION sift._test_col_mem_encodes() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_mem_encodes' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_gkept_stats(OUT hits int8, OUT extends int8, OUT builds int8, OUT drops int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_gkept_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_gdead_stats(OUT hits int8, OUT builds int8, OUT cut int8, OUT blocks int8) RETURNS record

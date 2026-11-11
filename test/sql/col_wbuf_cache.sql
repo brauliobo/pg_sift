@@ -163,6 +163,95 @@ SELECT wn_blocks() < 60 AS appended_read_blocks;
 DROP TABLE wn;
 DROP FUNCTION wn_blocks();
 
+-- a kept set that holds records VACUUM flagged dead marks those rows dead and keeps the others, for every kind of leaf (integers, strings, a numeric, a document with an
+-- array of objects): no record is decoded again (the rows decoded by the server stay the same) and no batch is encoded again (the units this backend made of the batches stay)
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE wp (id int PRIMARY KEY, g int NOT NULL, amount int NOT NULL, label text, price numeric(30, 10), doc jsonb, pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
+CREATE FUNCTION wp_fill(lo int, hi int) RETURNS void LANGUAGE sql AS $$
+	INSERT INTO wp (id, g, amount, label, price, doc)
+	SELECT i, i % 7, i % 100, CASE WHEN i % 9 = 0 THEN NULL ELSE md5(i::text) END, CASE WHEN i % 11 = 0 THEN NULL ELSE i * 1.0000000001 END,
+		   jsonb_build_object('lang', (ARRAY['en', 'es', 'pt'])[1 + i % 3], 'parts', (SELECT jsonb_agg(jsonb_build_object('k', x, 'v', i % 13 + x)) FROM generate_series(0, i % 4) x))
+	FROM generate_series($1, $2) i
+$$;
+SELECT wp_fill(1, 3000);
+CREATE INDEX wp_col ON wp USING sift_col (id, g, amount, label, price, doc) WITH (track_changes = 'id');
+VACUUM (FREEZE, ANALYZE) wp;
+SELECT wp_fill(3001, 5000);
+CREATE FUNCTION wp_agg(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', use_col::text, true);
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(string_agg(g::text, '','' ORDER BY g)) FROM (SELECT g, count(*) AS c, sum(amount) AS s, sum(price) AS p, min(label) AS lo, max(label) AS hi, count(DISTINCT label) AS d, count(*) FILTER (WHERE doc->>''lang'' = ''pt'') AS pt FROM wp GROUP BY g) g' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wp_rows(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(coalesce(string_agg(id::text || coalesce(label, '''') || coalesce(price::text, '''') || doc::text, '','' ORDER BY id), '''')) FROM wp WHERE g = 3 AND amount > 40' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wp_top(use_col bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', use_col::text, true);
+	PERFORM set_config('sift.enable_col_scan', use_col::text, true);
+	PERFORM set_config('enable_seqscan', (NOT use_col)::text, true);
+	EXECUTE 'SELECT md5(string_agg(a, '','' ORDER BY n)) FROM (SELECT row_number() OVER () AS n, id::text || '':'' || amount AS a FROM (SELECT id, amount FROM wp WHERE g IN (1, 2, 3) ORDER BY amount DESC, id LIMIT 40) t) u' INTO r;
+	RETURN r || (SELECT md5(string_agg(g::text || ':' || c, ',' ORDER BY g)) FROM (SELECT g, count(*) AS c FROM wp GROUP BY g ORDER BY g LIMIT 5) t);
+END $$;
+CREATE FUNCTION wp_same() RETURNS TABLE (aggregate bool, rows bool, top bool) LANGUAGE sql AS $$ SELECT wp_agg(true) = wp_agg(false), wp_rows(true) = wp_rows(false), wp_top(true) = wp_top(false) $$;
+SELECT * FROM wp_same() AS built;
+DELETE FROM wp WHERE id > 3000 AND id % 5 = 0;
+SELECT * FROM wp_same() AS deleted;
+SELECT decoded AS before, sift._test_col_mem_encodes() AS encodes_before FROM sift._test_col_wbuf_reads('wp_col') \gset
+VACUUM wp;
+SELECT * FROM wp_same() AS after_vacuum;
+SELECT decoded = :before AS none_decoded_again, sift._test_col_mem_encodes() = :encodes_before AS none_encoded_again, nrows >= 1600 AS buffered FROM sift._test_col_wbuf_reads('wp_col');
+SELECT wp_fill(5001, 5100);
+SELECT * FROM wp_same() AS appended;
+-- the states a kept set meets, each one a row of a table: a delete or an update of the first, the middle or the last rows of the buffer, settled by a VACUUM, by the fold of
+-- the marks, by both, or not at all (the rows are read through the log). Each state reads the set, makes the change, settles it and reads again: the answers equal the
+-- heap's and nothing is decoded or encoded again. A reader that holds a snapshot is in col_fold_marks (isolation) and the cursor above, a standby without feedback in
+-- col_fold_marks_standby.
+CREATE TABLE wd_state (n serial, state text, change text, settle text);
+INSERT INTO wd_state (state, change, settle)
+SELECT p.pos || ' ' || c.kind || ' ' || s.settle, format(c.dml, format('SELECT id FROM wp WHERE id > 3000 ORDER BY id %s LIMIT 40', p.pick)), s.settle
+FROM (VALUES ('first', ''), ('middle', 'OFFSET 700'), ('last', 'DESC')) p (pos, pick),
+	 (VALUES ('delete', 'DELETE FROM wp WHERE id IN (%s)'), ('update', 'UPDATE wp SET amount = amount + 1, label = ''u'' WHERE id IN (%s)')) c (kind, dml),
+	 (VALUES ('vacuum'), ('fold'), ('both'), ('none')) s (settle)
+ORDER BY array_position(ARRAY['first', 'middle', 'last'], p.pos), c.kind, array_position(ARRAY['vacuum', 'fold', 'both', 'none'], s.settle);
+CREATE TABLE wd_seen (state text, decoded int8, encodes int8, folded int8);
+CREATE FUNCTION wd_snap(s text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM wp_same();
+	INSERT INTO wd_seen SELECT s, (SELECT decoded FROM sift._test_col_wbuf_reads('wp_col')), sift._test_col_mem_encodes(), 0;
+END $$;
+CREATE FUNCTION wd_fold(s text) RETURNS void LANGUAGE sql AS $$ UPDATE wd_seen SET folded = sift._test_col_fold_marks('wp_col') WHERE state = s $$;
+CREATE FUNCTION wd_check(s text, OUT state text, OUT aggregate bool, OUT rows bool, OUT top bool, OUT folded bool, OUT none_decoded_again bool, OUT none_encoded_again bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+	state := s;
+	SELECT * INTO aggregate, rows, top FROM wp_same();
+	SELECT w.folded > 0 INTO folded FROM wd_seen w WHERE w.state = s;
+	SELECT decoded = (SELECT w.decoded FROM wd_seen w WHERE w.state = s) INTO none_decoded_again FROM sift._test_col_wbuf_reads('wp_col');
+	none_encoded_again := sift._test_col_mem_encodes() = (SELECT w.encodes FROM wd_seen w WHERE w.state = s);
+END $$;
+\set ECHO none
+SELECT change, format('DO $d$ BEGIN PERFORM wd_snap(%L); END $d$', state),
+	   CASE WHEN settle IN ('vacuum', 'both') THEN 'VACUUM wp' END,
+	   CASE WHEN settle IN ('fold', 'both') THEN format('DO $d$ BEGIN PERFORM wd_fold(%L); END $d$', state) END,
+	   format('SELECT * FROM wd_check(%L)', state)
+FROM wd_state ORDER BY n \gexec
+\set ECHO all
+DROP TABLE wp, wd_state, wd_seen;
+DROP FUNCTION wp_fill(int, int), wp_agg(bool), wp_rows(bool), wp_top(bool), wp_same(), wd_snap(text), wd_fold(text), wd_check(text);
+DROP EXTENSION pg_sift_test;
+
 DROP TABLE wc CASCADE;
 DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
 DROP EXTENSION pg_sift;
