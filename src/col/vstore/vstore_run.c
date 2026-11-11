@@ -268,7 +268,7 @@ view_index(SiftVStore *vs)
 	if (v->slots == NULL || v->nslots < v->total * 2)
 	{
 		uint32		nslots = pg_nextpower2_32(Max(1024, v->total * 2));
-		uint64	   *slots = MemoryContextAllocZero(v->cx, (Size) nslots * sizeof(uint64));
+		uint64	   *slots = MemoryContextAllocExtended(v->cx, (Size) nslots * sizeof(uint64), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 		for (uint32 i = 0; i < v->nslots; i++)
 			if (v->slots[i])
@@ -884,6 +884,7 @@ sift_vstore_read_match(void *handle, SiftColOp op, const SiftColValue *c, int nv
 	for (int i = 0; i < r->nruns; i++)
 	{
 		RunRead    *run = run_open(r, rel, &r->run[i]);
+		/* check-memory: allow one bit a string of one run: an eighth of a byte a string */
 		uint64	   *lut = palloc0((run->e.ndocs / 64 + 1) * sizeof(uint64));
 
 		run->look->look.match(&run->look->look, op, c, nvals, lut);

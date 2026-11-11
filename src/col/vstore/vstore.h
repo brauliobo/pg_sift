@@ -48,6 +48,7 @@ typedef struct SiftVStoreVerdict
 } SiftVStoreVerdict;
 
 extern void sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *leaf, SiftVStoreVerdict *v);
+extern void sift_vstore_choice_texts(Relation heap, Relation index, const SiftColIndexMeta *defs, char **texts);
 /* The order of an index as the rule compares it ("key_cut = a, b; key_order = c", "table order") */
 extern char *sift_vstore_order(Relation index);
 extern bool sift_vstore_pays(Relation heap, Relation index, const SiftColDef *leaf);

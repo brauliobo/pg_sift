@@ -344,6 +344,14 @@ typedef struct DictLook
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
 
+/* col/seg/dict.c, for the dictionaries that refer to a shared value store (col/seg/dict_ref.c) */
+extern void seg_dict_region(SiftColSegment *seg, int col, uint64 *off, uint64 *len);
+extern DictLook *seg_look_alloc(SiftColSegment *seg);
+extern int64 seg_look_find(const SiftCDictLook *look, const char *s, uint32 len);
+extern SiftCDict *seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt);
+extern const char *seg_ref_code_str(DictLook *l, uint32 code, uint32 *len, char *buf);
+extern DictLook *seg_look_ref(SiftColSegment *seg, int col, uint64 off, uint64 len);
+
 extern void sift_cseg_look_load(DictLook *l, uint32 b);
 /* The dictionary at a stream offset of a segment, or of a run of a shared value store (a pseudo segment over its stream): NULL for the compact form; the string of a code of it */
 extern DictLook *sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bisect);

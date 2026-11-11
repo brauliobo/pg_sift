@@ -403,42 +403,17 @@ d_track(Derive *d)
 		add(d, "sift-col-index-does-not-track-changes", pstrdup(why), NULL);
 }
 
-/*
- * The shared value store (col/vstore/, docs/COL-VSTORE.md): the string columns the segments of the index refer to the store for, and those the index stores again
- * because another index of the table holds them with another key_cut or key_order
- */
+/* The shared value store (docs/COL-VSTORE.md): the string columns it holds for the index, and those the index stores again */
 static void
 d_vstore(Derive *d)
 {
-	StringInfoData shared,
-				other;
-
-	if (d->heap == NULL)
-		return;
-	initStringInfo(&shared);
-	initStringInfo(&other);
-	for (int c = 0; c < d->defs.ncols; c++)
-	{
-		const SiftColDef *def = &d->defs.cols[c];
-		const char *col;
-		SiftVStoreVerdict v;
-
-		if (sift_vstore_leaf_attno(d->index, def) == InvalidAttrNumber)
-			continue;
-		col = NameStr(TupleDescAttr(RelationGetDescr(d->index), def->attno - 1)->attname);
-		if (OidIsValid(sift_vstore_leaf_store(d->index, def)))
-			appendStringInfo(&shared, "%s%s", shared.len ? ", " : "", col);
-		else
-		{
-			sift_vstore_verdict(d->heap, d->index, def, &v);
-			if (v.state == SIFT_VSTORE_OTHER_ORDER)
-				appendStringInfo(&other, "%s%s: %.1f MB again, %s has %s", other.len ? "; " : "", col, v.duplicate_bytes / (1024 * 1024), v.other, v.other_order);
-		}
-	}
-	if (shared.len > 0)
-		add(d, "shared-value-store", shared.data, NULL);
-	if (other.len > 0)
-		add(d, "value-store-other-order", other.data, NULL);
+	char	   *t[2] = {NULL, NULL};
+	if (d->heap != NULL)
+		sift_vstore_choice_texts(d->heap, d->index, &d->defs, t);
+	if (t[0] != NULL)
+		add(d, "shared-value-store", t[0], NULL);
+	if (t[1] != NULL)
+		add(d, "value-store-other-order", t[1], NULL);
 }
 
 static void

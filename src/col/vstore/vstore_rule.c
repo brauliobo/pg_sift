@@ -45,7 +45,7 @@
 char *
 sift_vstore_order(Relation index)
 {
-	const SiftColRel *r = sift_col_rel(index);
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 	const char *ko = sift_col_options_key_order(index);
 	StringInfoData sig;
 
@@ -265,4 +265,36 @@ sift_col_value_store_members(PG_FUNCTION_ARGS)
 	table_endscan(scan);
 	table_close(cls, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* texts[0]: the string columns the segments of the index refer to the store for; texts[1]: those it stores again because another index holds them
+ * with another order; NULL for none */
+void
+sift_vstore_choice_texts(Relation heap, Relation index, const SiftColIndexMeta *defs, char **texts)
+{
+	StringInfoData sh,
+				ot;
+
+	initStringInfo(&sh);
+	initStringInfo(&ot);
+	for (int c = 0; c < defs->ncols; c++)
+	{
+		const SiftColDef *def = &defs->cols[c];
+		const char *col;
+		SiftVStoreVerdict v;
+
+		if (sift_vstore_leaf_attno(index, def) == InvalidAttrNumber)
+			continue;
+		col = NameStr(TupleDescAttr(RelationGetDescr(index), def->attno - 1)->attname);
+		if (OidIsValid(sift_vstore_leaf_store(index, def)))
+			appendStringInfo(&sh, "%s%s", sh.len ? ", " : "", col);
+		else
+		{
+			sift_vstore_verdict(heap, index, def, &v);
+			if (v.state == SIFT_VSTORE_OTHER_ORDER)
+				appendStringInfo(&ot, "%s%s: %.1f MB again, %s has %s", ot.len ? "; " : "", col, v.duplicate_bytes / (1024 * 1024), v.other, v.other_order);
+		}
+	}
+	texts[0] = sh.len > 0 ? sh.data : NULL;
+	texts[1] = ot.len > 0 ? ot.data : NULL;
 }
