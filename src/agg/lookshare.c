@@ -41,6 +41,7 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
 	memcpy(l->knull, m->knull, sizeof(l->knull));
 	l->lazy = m->lazy;
+	l->tested = m->tested;
 	if (m->dcls)
 	{
 		l->dn = m->dn;
@@ -189,6 +190,7 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
 	memcpy(m->knull, l->knull, sizeof(m->knull));
 	m->lazy = l->lazy;
+	m->tested = l->tested;
 	if (l->dn > 0)
 	{
 		m->dcls = (uint16 *) (src + l->dcls);

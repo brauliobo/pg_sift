@@ -175,6 +175,7 @@ typedef struct MapShared
 	Size		dcls;
 	bool		keep;			/* the side is preserved: each participant keeps its own hit[] */
 	bool		lazy;
+	bool		tested;			/* MapTab.tested */
 	Size		rkey;			/* a table that is only its keys (MapTab.rkey): the one array, and 0 in the others */
 	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
