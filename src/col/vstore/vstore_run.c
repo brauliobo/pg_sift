@@ -388,16 +388,6 @@ sift_vstore_dir_codes(Relation rel, uint64 *epoch)
 	return codes;
 }
 
-bool
-sift_vstore_have(SiftVStore *vs, uint64 ncodes, uint32 epoch)
-{
-	VStoreView *v = vs->view;
-
-	if (!v->loaded || v->total < ncodes || (uint32) v->epoch != epoch)
-		pfree(view_refresh(vs));
-	return v->total >= ncodes && (uint32) v->epoch == epoch;
-}
-
 const char *
 sift_vstore_string(SiftVStore *vs, uint32 code, uint32 *len)
 {
@@ -865,6 +855,45 @@ sift_vstore_read_str(void *handle, uint32 code, uint32 *len, char *buf)
 	sift_sr_release(&run->seg->sr);
 	RelationClose(rel);
 	return str;
+}
+
+/*
+ * The strings of codes[0..n) appended to all, their offsets in off[0..n]: one open of each run for the whole pass. The codes of a segment climb (its index
+ * meets the rows in the order of the store's first member), so each block of a run is decompressed once
+ */
+void
+sift_vstore_read_strs(void *handle, const uint32 *codes, uint32 n, StringInfo all, uint32 *off)
+{
+	StoreRead  *r = handle;
+	Relation	rel = RelationIdGetRelation(r->store);
+	RunRead    *run = NULL;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint32		cnt;
+
+		if (run == NULL || codes[i] < run->e.sum_dl || codes[i] - run->e.sum_dl >= run->e.ndocs)
+		{
+			if (run != NULL)
+				sift_sr_release(&run->seg->sr);
+			run = NULL;
+			for (int j = 0; run == NULL && j < r->nruns; j++)
+				if (codes[i] >= r->run[j].e.sum_dl && codes[i] - r->run[j].e.sum_dl < r->run[j].e.ndocs)
+					run = run_open(r, rel, &r->run[j]);
+			if (run == NULL)
+				vs_corrupt(rel, "a segment names a code that no run holds");
+		}
+		cnt = 1;
+		while (i + cnt < n && codes[i + cnt] == codes[i] + cnt && codes[i + cnt] - run->e.sum_dl < run->e.ndocs &&
+			   (codes[i] - run->e.sum_dl + cnt) % DICT_BLOCK != 0)
+			cnt++;
+		seg_look_strs(run->look, codes[i] - run->e.sum_dl, cnt, all, off + i);
+		i += cnt - 1;
+	}
+	off[n] = (uint32) all->len;
+	if (run != NULL)
+		sift_sr_release(&run->seg->sr);
+	RelationClose(rel);
 }
 
 uint64

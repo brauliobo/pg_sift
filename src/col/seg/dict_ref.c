@@ -161,3 +161,31 @@ sift_cseg_names_old_epoch(SiftColSegment *seg)
 	}
 	return false;
 }
+
+/*
+ * The strings of cnt consecutive codes from code, appended to all with their offsets in off[0..cnt): a dictionary in blocks gives those of one block with one
+ * copy (cnt strings of one block at most), the other forms one string at a time
+ */
+void
+seg_look_strs(DictLook *l, uint32 code, uint32 cnt, StringInfo all, uint32 *off)
+{
+	uint32		i = code % DICT_BLOCK;
+
+	if (l->blocked && i + cnt <= DICT_BLOCK && code + cnt <= l->n)
+	{
+		if (l->blkno != code / DICT_BLOCK)
+			sift_cseg_look_block(l, code / DICT_BLOCK);
+		for (uint32 j = 0; j < cnt; j++)
+			off[j] = (uint32) all->len + l->blkoff[i + j] - l->blkoff[i];
+		appendBinaryStringInfo(all, (const char *) l->blkraw + l->blkoff[i], l->blkoff[i + cnt] - l->blkoff[i]);
+		return;
+	}
+	for (uint32 j = 0; j < cnt; j++)
+	{
+		uint32		len;
+		const char *s = sift_cseg_look_str(l, code + j, &len, l->buf);
+
+		off[j] = (uint32) all->len;
+		appendBinaryStringInfo(all, s, len);
+	}
+}

@@ -42,64 +42,20 @@ sift_vstore_ref_serialize(Oid store, const SiftCDict *dict, const SiftCcPolicy *
 	sift_vstore_close(vs);
 }
 
-/* The dictionary of a reference whose epoch is the one the view of this backend holds: its strings are in memory */
+/* The dictionary of a reference: the strings of the codes the segment holds, read from the runs of its epoch in place (the view of an appender is not needed) */
 static SiftCDict *
-from_view(MemoryContext mcxt, SiftVStore *vs, const uint32 *codes, uint32 n)
-{
-	uint64		nbytes = 0;
-	SiftCDict  *d = sift_cdict_plain_begin(mcxt, n);
-
-	for (uint32 i = 0; i < n; i++)
-	{
-		uint32		slen;
-
-		(void) sift_vstore_string(vs, codes[i], &slen);
-		d->off[i] = (uint32) nbytes;
-		nbytes += slen;
-	}
-	if (nbytes > UINT32_MAX)
-		return NULL;
-	d->off[n] = (uint32) nbytes;
-	(void) sift_cdict_plain_bytes(d, mcxt, nbytes);
-	for (uint32 i = 0; i < n; i++)
-	{
-		uint32		slen;
-		const char *s = sift_vstore_string(vs, codes[i], &slen);
-
-		memcpy(d->bytes + d->off[i], s, slen);
-	}
-	return d;
-}
-
-/* ... of an epoch before the current one (kept until no segment names it): its strings are read from its runs in place */
-static SiftCDict *
-from_epoch(MemoryContext mcxt, Oid store, uint32 epoch, const uint32 *codes, uint32 n)
+from_runs(MemoryContext mcxt, Oid store, uint32 epoch, const uint32 *codes, uint32 n)
 {
 	void	   *h = sift_vstore_read_open(NULL, store, epoch, CurrentMemoryContext);
+	SiftCDict  *d = sift_cdict_plain_begin(mcxt, n);
 	StringInfoData all;
-	char		buf[SIFT_COL_DICT_MAX_ENTRY];
-	uint32	   *off;
-	SiftCDict  *d;
 
 	initStringInfo(&all);
-	off = palloc(((Size) n + 1) * sizeof(uint32));
-	for (uint32 i = 0; i < n; i++)
-	{
-		uint32		slen;
-		const char *s = sift_vstore_read_str(h, codes[i], &slen, buf);
-
-		off[i] = (uint32) all.len;
-		appendBinaryStringInfo(&all, s, slen);
-	}
-	if (all.len > UINT32_MAX)
+	sift_vstore_read_strs(h, codes, n, &all, d->off);
+	if (all.len > UINT32_MAX || !sift_cdict_plain_bytes(d, mcxt, all.len))
 		return NULL;
-	off[n] = (uint32) all.len;
-	d = sift_cdict_plain_begin(mcxt, n);
-	memcpy(d->off, off, ((Size) n + 1) * sizeof(uint32));
-	(void) sift_cdict_plain_bytes(d, mcxt, all.len);
 	memcpy(d->bytes, all.data, all.len);
 	pfree(all.data);
-	pfree(off);
 	return d;
 }
 
@@ -111,8 +67,6 @@ sift_vstore_ref_parse(MemoryContext mcxt, Oid store, const char *data, uint64 le
 				bits;
 	const uint8 *packed = (const uint8 *) data + REF_HEAD;
 	uint32	   *codes;
-	uint64		need = 0;
-	SiftVStore *vs;
 	SiftCDict  *d;
 
 	if (len < REF_HEAD || head[0] != DICT_REF)
@@ -123,16 +77,8 @@ sift_vstore_ref_parse(MemoryContext mcxt, Oid store, const char *data, uint64 le
 		return NULL;
 	codes = palloc(Max(n, 1) * sizeof(uint32));
 	for (uint32 i = 0; i < n; i++)
-	{
 		codes[i] = sift_ckeyed_get(packed, sift_cdict_perm_bytes(n, bits), (uint64) i * bits, bits);
-		need = Max(need, (uint64) codes[i] + 1);
-	}
-	vs = sift_vstore_open(store, AccessShareLock);
-	if (sift_vstore_have(vs, need, head[4]))
-		d = from_view(mcxt, vs, codes, n);
-	else
-		d = from_epoch(mcxt, store, head[4], codes, n);
-	sift_vstore_close(vs);
+	d = from_runs(mcxt, store, head[4], codes, n);
 	pfree(codes);
 	return d;
 }

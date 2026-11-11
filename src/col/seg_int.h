@@ -357,6 +357,7 @@ extern void sift_cseg_look_load(DictLook *l, uint32 b);
 extern DictLook *sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bisect);
 extern const char *sift_cseg_look_str(DictLook *l, uint32 code, uint32 *len, char *buf);
 extern void sift_cseg_look_block(DictLook *l, uint32 b);
+extern void seg_look_strs(DictLook *l, uint32 code, uint32 cnt, StringInfo all, uint32 *off);
 
 /* The block of a leaf's point directory (col/point.h): stream offset of its table, slots, distinct keys, rows listed, words of the lists after the table */
 typedef struct PointLeaf

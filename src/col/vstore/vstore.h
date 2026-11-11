@@ -91,7 +91,6 @@ extern void sift_vstore_usage(Oid store, uint64 *epoch, uint64 *total, uint64 *l
 extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map, uint64 *epoch, uint64 *ncodes);
 
 /* Whether the store has at least ncodes codes of the epoch (low 32 bits), after reading its runs again when the view has fewer or is of another; the string of a code of it, valid until the store is read again */
-extern bool sift_vstore_have(SiftVStore *vs, uint64 ncodes, uint32 epoch);
 extern const char *sift_vstore_string(SiftVStore *vs, uint32 code, uint32 *len);
 
 /*
@@ -105,6 +104,7 @@ extern void sift_vstore_ref_install(void);
 /* The strings of a store by code, read in place from its runs (SiftCRefHost.open and .str); the handle goes with mcxt */
 extern void *sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext mcxt);
 extern const char *sift_vstore_read_str(void *handle, uint32 code, uint32 *len, char *buf);
+extern void sift_vstore_read_strs(void *handle, const uint32 *codes, uint32 n, StringInfo all, uint32 *off);
 extern uint64 sift_vstore_read_ncodes(void *handle);
 extern void sift_vstore_read_match(void *handle, SiftColOp op, const SiftColValue *c, int nvals, uint64 *bits);
 
