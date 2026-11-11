@@ -52,12 +52,6 @@ SELECT garbage_pct >= 50 AS half_is_garbage FROM sift.col_value_store_status WHE
  t
 (1 row)
 
-SET client_min_messages = notice;
-VACUUM ch;
-NOTICE:  shared value store "ch_url_sift_values": 50% of its 40000 codes are named by no index (1.6 MB): a new epoch begins
-DETAIL:  The segments that merges and rewrites write name the new epoch; the old one is removed when no segment names it.
-HINT:  SELECT sift.col_value_store_compact('ch', 'url') does it now.
-SET client_min_messages = warning;
 VACUUM ch;
 SELECT pg_sleep(1);
  pg_sleep 

@@ -89,7 +89,9 @@ CREATE INDEX vs_pj ON vs_p USING sift_col (id, url);
 SELECT store, table_name, indexes_using FROM sift.col_value_store_status WHERE table_name::text LIKE 'vs\_p%' ORDER BY 1;
 
 -- a publication of all tables does not list the stores (they are not tables), so a subscriber that lacks them is not broken by an index
+SET client_min_messages = error;
 CREATE PUBLICATION vs_pub FOR ALL TABLES;
+SET client_min_messages = warning;
 INSERT INTO vs_p VALUES (1000, 1, 'x');
 SELECT count(*) FROM pg_publication_tables WHERE pubname = 'vs_pub' AND tablename LIKE 'vs\_p%\_sift\_values';
 DROP PUBLICATION vs_pub;
