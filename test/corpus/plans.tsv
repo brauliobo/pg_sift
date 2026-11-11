@@ -437,3 +437,4 @@ scope_union_param	-	n/a(prepared)
 scope_refused_nested_in	SiftAgg	scope:f:scope,single:t
 scope_refused_not_in	SiftAgg	scope:f:scope,single:t
 scope_refused_two_in	SiftAgg	scope:f:scope,single:t
+scope_refused_array_any	SiftAgg	scope:f:scope,single:t

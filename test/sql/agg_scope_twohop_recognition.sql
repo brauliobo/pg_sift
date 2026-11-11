@@ -123,6 +123,7 @@ INSERT INTO forms VALUES
  ('join, group by the key', $q$SELECT v.tenant_id, sum(amount) AS total, count(*) AS n FROM facts f JOIN tenant_pairs v ON v.member = f.dim_a_id GROUP BY v.tenant_id$q$),
  ('join, a left join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f LEFT JOIN tenant_pairs v ON v.member = f.dim_a_id AND v.tenant_id = 1 GROUP BY kind$q$),
  -- a union that is not the two paths of the scope
+ ('= ANY (ARRAY(SELECT ..)), view of the two paths', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id = ANY (ARRAY(SELECT member FROM tenant_pairs WHERE tenant_id = 1)) GROUP BY kind$q$),
  ('IN, one path', in_stmt(direct_arm('m', ' AND g.tenant_id = 1'))),
  ('IN, one path, the joined one', in_stmt(joined_arm('m', ' AND g.tenant_id = 1'))),
  ('IN, a key in one arm only', in_stmt(direct_arm('m', ' AND g.tenant_id = 1') || ' UNION ' || joined_arm('m'))),

@@ -708,13 +708,21 @@ static const char *
 scope_strays(AggCtx *c, const FromScan *fs, const SiftScopeSpecs *specs)
 {
 	ScopeSeen	seen = {c->heapoid, specs};
+	int			plan = 0;
 
 	for (int rti = -1; (rti = bms_next_member(fs->hidden, rti)) >= 0;)
 		if (scope_seen_walker((Node *) planner_rt_fetch(rti, c->root), &seen))
 			return "the scope relation is a table inside a join in the sub-select of a semi join: only a semi join to the scope relation itself is read from the units";
 	foreach_ptr(PlannerInfo, sub, c->root->glob->subroots)
-		if (sub->parent_root == c->root && scope_seen_walker((Node *) sub->parse, &seen))
-			return "a sub-select over the scope relation is a plan of its own (NOT IN, OR, a scalar sub-select, a MATERIALIZED CTE, the select list): only a join, IN or EXISTS that PostgreSQL pulls up into the join is read from the units";
+	{
+		plan++;
+		if (sub->parent_root != c->root || !scope_seen_walker((Node *) sub->parse, &seen))
+			continue;
+		foreach_ptr(SubPlan, sp, c->root->init_plans)
+			if (sp->plan_id == plan && sp->subLinkType == ARRAY_SUBLINK)
+				return "ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan: write it as IN (SELECT ..) or EXISTS";
+		return "a sub-select over the scope relation is a plan of its own (NOT IN, OR, a scalar sub-select, a MATERIALIZED CTE, the select list): only a join, IN or EXISTS that PostgreSQL pulls up into the join is read from the units";
+	}
 	return NULL;
 }
 

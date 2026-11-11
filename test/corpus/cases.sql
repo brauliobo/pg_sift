@@ -956,3 +956,5 @@ select status, count(*), sum(amount) from scope_events where dim_a_id in (select
 select status, count(*), sum(amount) from scope_events where dim_a_id not in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) group by 1;
 -- @case scope_refused_two_in | scope | two IN over the pairs: one is read from the units, the other stays a join
 select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) and dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50)) group by 1;
+-- @case scope_refused_array_any | join | the members as = ANY (ARRAY(SELECT ..)) are an InitPlan: the join as written
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) group by 1;
