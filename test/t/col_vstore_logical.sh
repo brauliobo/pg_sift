@@ -39,8 +39,7 @@ sql p "INSERT INTO lv SELECT i, md5((i % 500)::text)::uuid, 'https://example.com
 stores() { sql "$1" "SELECT count(*) FROM sift.col_value_store_status"; }
 check "the publisher has a store for each string column, the subscriber with indexes too, the other none" test "$(stores p)|$(stores s)|$(stores n)" == "2|2|0"
 
-# the table of the extension that the event trigger of a drop deletes from has no key: a publication of all tables needs an identity for its deletes
-sql p "ALTER TABLE sift.table_option_values REPLICA IDENTITY FULL" "CREATE PUBLICATION pall FOR ALL TABLES" >/dev/null || bail "publications failed"
+sql p "CREATE PUBLICATION pall FOR ALL TABLES" >/dev/null || bail "publications failed"
 sql s "CREATE SUBSCRIPTION s1 CONNECTION '$(conninfo p)' PUBLICATION pall" >/dev/null || bail "subscribe failed"
 sql n "CREATE SUBSCRIPTION s2 CONNECTION '$(conninfo p)' PUBLICATION pall" >/dev/null || bail "second subscribe failed"
 digest() { sql "$1" "SELECT count(*) || ':' || coalesce(sum(id), 0) || ':' || md5(string_agg(url, ',' ORDER BY id)) FROM lv"; }
