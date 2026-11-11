@@ -71,8 +71,13 @@ INSERT INTO home_keys SELECT u, CASE WHEN u = 3 THEN NULL ELSE fz.h(u, 220) % 6 
 CREATE TABLE loose_keys (tenant_id int);
 INSERT INTO loose_keys SELECT t FROM generate_series(0, 5) t, generate_series(1, 2) c WHERE fz.h(t, 230 + c) % 100 < 50;
 CREATE INDEX item_scope_journal ON item_scope USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
+-- a second scope relation, whose pairs are the rows not soft deleted (the rows of its partial unique btree): a statement states the predicate or counts the soft deleted rows too
+CREATE TABLE item_grants (item_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz, PRIMARY KEY (item_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO item_grants SELECT i, t, CASE WHEN fz.h(i, 240 + t) % 100 < 25 THEN now() END FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 250 + t) % 100 < 22 AND i % 13 <> 4;
+CREATE UNIQUE INDEX item_grants_active ON item_grants (item_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE INDEX item_grants_journal ON item_grants USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv, ivl)
-	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id)');
+	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id); soft_tenant_id: parent_id -> item_grants(item_id, tenant_id)');
 -- @heap
 -- the journal of the pairs starts at the build of the first scope index: a rebuild stamps its scope segments
 REINDEX INDEX events_col;

@@ -906,3 +906,13 @@ execute sc2(array[1 + @K@ % 50, 1 + @K2@ % 50, 7]);
 -- @case scope_choice_pairs_many | scope | the same with thirty tenants, and a custom plan
 -- @pre set plan_cache_mode = force_custom_plan; prepare sc2(int[]) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = any ($1) group by 1;
 execute sc2(array[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]);
+
+-- ===================== scope index over a partial unique btree: the statement states the predicate of the pairs (rows not soft deleted) or counts the rows that are not
+-- @case scope_pairs_predicate_join | scope | a join to the pairs of a partial unique btree that states its predicate
+select e.status, count(*), sum(e.amount) from scope_events e join scope_grants s on s.dim_a_id = e.dim_a_id where s.tenant_id = 1 + @K@ % 50 and s.deleted_at is null group by 1;
+-- @case scope_pairs_predicate_in | scope | IN over the pairs of a partial unique btree that states its predicate
+select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select dim_a_id from scope_grants where tenant_id = 1 + @K@ % 50 and deleted_at is null) group by 1;
+-- @case scope_pairs_predicate_missing | join | the same join without the predicate counts the soft deleted rows: the join as written
+select e.status, count(*), sum(e.amount) from scope_events e join scope_grants s on s.dim_a_id = e.dim_a_id where s.tenant_id = 1 + @K@ % 50 group by 1;
+-- @case scope_pairs_predicate_in_missing | join | IN over the rows of the relation without the predicate: the join as written
+select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select dim_a_id from scope_grants where tenant_id = 1 + @K@ % 50) group by 1;

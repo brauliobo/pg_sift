@@ -206,11 +206,11 @@ NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index 
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: numeric $1
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope relation has another condition: ((tenant_scope.tenant_id)::numeric = $1))
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope key is not bound by an equality or an IN list of constants or parameters)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
 NOTICE:  miss: range on the key
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope relation has another condition: (tenant_scope.tenant_id < $1))
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope key is not bound by an equality or an IN list of constants or parameters)
 DETAIL:  arm: scope
 HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
                           name                           | plan 

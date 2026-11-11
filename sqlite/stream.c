@@ -101,6 +101,7 @@ sift_sr_release(SiftStreamReader *sr)
 struct SiftWriteTarget
 {
 	SqStore    *st;
+	Relation	index;
 	BlockNumber first;
 	BlockNumber next;
 	int64_t		cur;					/* unit being filled, -1 none */
@@ -115,10 +116,17 @@ sift_wt_begin(Relation index, SiftWriteMode mode)
 	SqStore    *st = index->store;
 
 	wt->st = st;
+	wt->index = index;
 	wt->first = wt->next = (st->hw + st->P - 1) / st->P * st->P;
 	wt->cur = -1;
 	wt->buf = MemoryContextAllocAligned(CurrentMemoryContext, st->unit, 64, 0);
 	return wt;
+}
+
+Relation
+sift_wt_index(const SiftWriteTarget *wt)
+{
+	return wt->index;
 }
 
 static void

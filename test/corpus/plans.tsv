@@ -417,3 +417,7 @@ scope_choice_array_one	-	n/a(prepared)
 scope_choice_array_many	-	n/a(prepared)
 scope_choice_pairs_few	-	n/a(prepared)
 scope_choice_pairs_many	-	n/a(prepared)
+scope_pairs_predicate_join	SiftAgg	single:t
+scope_pairs_predicate_in	SiftAgg	distinct:f:distinct_set,distinct:f:distinct_set,single:t
+scope_pairs_predicate_missing	SiftAgg	scope:f:scope,single:t
+scope_pairs_predicate_in_missing	SiftAgg	distinct:f:distinct_set,scope:f:scope,single:t

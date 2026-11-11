@@ -40,6 +40,7 @@ col/seg/verify.c
 col/seg/mirror.c
 col/seg/vers.c
 col/seg/dict.c
+col/seg/dict_ref.c
 col/seg/dictkeep.c
 col/seg/pagg.c
 col/seg/points.c

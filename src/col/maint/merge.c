@@ -118,13 +118,14 @@ maint_part_count(uint64 live_bytes, uint64 part_bytes, bool key_cut)
 	return key_cut ? (live_bytes + share - 1) / share : (live_bytes + part_bytes / 2) / part_bytes;
 }
 
-/* The index whose last merge wrote as many segments as it read: a merge of the same segments writes them again (the cuts of its writer are the same), so they are its end state */
+/* The index whose last merge of entity segments wrote as many segments as it read: a merge of the same segments writes them again (the cuts of its writer are the same), so they are its end state; the merges of scope segments say nothing of the entities */
 static Oid	settled_index = InvalidOid;
 
 static void
-merge_settles(Relation index, int nin, int nout)
+merge_settles(Relation index, const SiftSegEntry *in, int nin, int nout)
 {
-	settled_index = nout >= nin ? RelationGetRelid(index) : InvalidOid;
+	if (!(in[0].flags & SIFT_SEG_SCOPE))
+		settled_index = nout >= nin ? RelationGetRelid(index) : InvalidOid;
 }
 
 /*
@@ -363,8 +364,8 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 			sel[nsel++] = v->imm[i];
 			refresh |= v->stale[i];
 		}
-	/* without partitions the end state of a key-cut index is segments no dead row and no unit in common keep apart that a merge writes again as they are: the slices of a merge by workers, the cuts of a writer */
-	if (keyed && maint_part_kb == 0 && nsel > 1 && nsel == v->n)
+	/* without partitions the end state of an index is segments no dead row and no unit in common keep apart that a merge writes again as they are: the slices of a merge by workers, the cuts of a writer */
+	if (maint_part_kb == 0 && nsel > 1 && nsel == v->n)
 	{
 		uint64		bytes = 0;
 		bool		apart;
@@ -783,7 +784,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			docs += o.neu[i].ndocs;
 		sift_maint_replace_n(index, mi.gens, n, o.neu, o.nneu, mi.release, mi.nrelease,
 							 psprintf("merged %d column segments into %d of", n, o.nneu), start, docs);
-		merge_settles(index, n, o.nneu);
+		merge_settles(index, in, n, o.nneu);
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -824,7 +825,7 @@ sift_col_merge_switch(Relation index, const SiftSegEntry *in, int n, const SiftS
 	for (int i = 0; i < nout; i++)
 		docs += out[i].ndocs;
 	sift_maint_replace_n(index, mi.gens, n, out, nout, mi.release, mi.nrelease, psprintf("merged %d column segments into %d of", n, nout), start, docs);
-	merge_settles(index, n, nout);
+	merge_settles(index, in, n, nout);
 }
 
 /*
