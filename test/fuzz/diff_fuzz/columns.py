@@ -24,6 +24,15 @@ def _dates(r):
     return a, b
 
 
+RAISING = set()
+
+
+def raising(pred):
+    """a predicate that raises on a row the DML gave another JSON type; whether a plan evaluates it on the rows a join leaves out is up to the plan"""
+    RAISING.add(pred[1])
+    return pred
+
+
 PREDS = [
     ({'id'}, lambda r, e, n: f'{e}.id < {r.randrange(1, n)}'),
     ({'id'}, lambda r, e, n: f'{e}.id % {r.choice([2, 3, 7, 16])} = {r.randrange(2)}'),
@@ -59,18 +68,18 @@ PREDS = [
     ({'doc'}, lambda r, e, n: f'''{e}.doc @> '{{"parts": [{{"cat": "cat_{r.randrange(7)}"}}]}}' '''),
     ({'doc'}, lambda r, e, n: f"{e}.doc ? 'parts'"),
     ({'doc'}, lambda r, e, n: f"jsonb_array_length({e}.doc -> 'parts') {r.choice(['>', '<=', '='])} {r.randrange(4)}"),
-    ({'metrics'}, lambda r, e, n: f"({e}.metrics ->> 'm1')::int {r.choice(['>', '<', '='])} {r.randrange(20)}"),
+    raising(({'metrics'}, lambda r, e, n: f"({e}.metrics ->> 'm1')::int {r.choice(['>', '<', '='])} {r.randrange(20)}")),
     ({'metrics'}, lambda r, e, n: f"jsonb_typeof({e}.metrics -> 'm3') = '{r.choice(['number', 'string', 'null'])}'"),
-    ({'metrics'}, lambda r, e, n: f"({e}.metrics -> 'm2')::float8 {r.choice(['>', '<'])} {r.randrange(7)}"),
+    raising(({'metrics'}, lambda r, e, n: f"({e}.metrics -> 'm2')::float8 {r.choice(['>', '<'])} {r.randrange(7)}")),
 ]
 COLUMNS = {'id', 'kind', 'grp', 'ts', 'amount', 'val', 'parent_id'}
 EVENTS = COLUMNS | {'a', 'b', 'big', 'num', 'flag', 'doc', 'metrics'}
 
 
-def preds(r, e, n, cols, k):
+def preds(r, e, n, cols, k, safe=False):
     out = []
     for _ in range(k):
-        need, f = r.choice([p for p in PREDS if p[0] <= cols])
+        need, f = r.choice([p for p in PREDS if p[0] <= cols and not (safe and p[1] in RAISING)])
         out.append(f(r, e, n))
     if len(out) > 1 and r.random() < 0.25:
         out[:2] = [f'({out[0]} OR {out[1]})']

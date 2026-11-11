@@ -10,10 +10,11 @@ SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin'
 
 
 def gen_scope(r, ctx):
+    # safe predicates: a plan driven by the scope relation never evaluates one that raises on the rows of the keys it leaves out, the join's plan does
     ks = r.sample(range(6), r.choice([1, 1, 2, 3]))
     form = r.choice(SCOPE_FORMS)
     return dict(table='events', form=form, tenants=ks, keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])),
-                aggs=aggs(r, 'e', EVENTS, r.randrange(1, 5)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True,
+                aggs=aggs(r, 'e', EVENTS, r.randrange(1, 5)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3), safe=True), having=[], ordered=True,
                 cut=r.randrange(100, 600), prep=form in PARAM_FORMS, pid=r.randrange(10 ** 9), user=r.randrange(4), nullarg=r.choice(['NULL', "'{NULL}'", "'{}'", "'{%d,NULL}'" % ks[0]]))
 
 
