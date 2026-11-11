@@ -96,10 +96,14 @@ CREATE UNIQUE INDEX item_members_active ON item_members (group_id, item_id) WHER
 CREATE INDEX item_links_by_item ON item_links USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX item_links_by_group ON item_links USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX item_members_by_item ON item_members USING sift_col (item_id, group_id) WITH (track_changes = 'ctid');
--- the union as an application keeps it: the pairs of the scope in a view, and through a security barrier view
+-- the union as an application keeps it: the pairs of the scope in a view, with UNION (the pair set a join counts) and UNION ALL, and through a security barrier view
 CREATE VIEW item_pairs AS
 	SELECT l.item_id AS member, l.tenant_id FROM item_links l WHERE l.deleted_at IS NULL
 	UNION
+	SELECT m.item_id, l.tenant_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE VIEW item_pairs_all AS
+	SELECT l.item_id AS member, l.tenant_id FROM item_links l WHERE l.deleted_at IS NULL
+	UNION ALL
 	SELECT m.item_id, l.tenant_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.deleted_at IS NULL AND m.deleted_at IS NULL;
 CREATE VIEW item_pairs_barrier WITH (security_barrier) AS
 	SELECT l.item_id AS member, l.tenant_id FROM item_links l WHERE l.deleted_at IS NULL

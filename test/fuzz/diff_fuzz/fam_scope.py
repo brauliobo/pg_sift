@@ -1,16 +1,16 @@
 # The scope family: the facts cut by the scope key of item_scope (events.parent_id -> tenant_id) in every form the planner recognises
 # (join, IN, EXISTS, GROUP BY the key, a keys table, a table of keys of a user in the IN, EXISTS and join forms) and in the near misses it refuses; item_grants is a scope relation of
 # soft deleted pairs (the pairs are its rows not soft deleted): the statements that state the predicate and those that do not; item_links, item_members are a scope of two paths (the
-# direct grants of a tenant on an item and the grants on its groups): its pairs written as the UNION of the two, in IN and EXISTS forms, through views, in the near misses (a path alone, other keys in the
-# arms, a path without its predicate) that keep the join; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
+# direct grants of a tenant on an item and the grants on its groups): its pairs written as the UNION of the two, in IN, EXISTS and join forms, through views, in the near misses (a path alone, other keys in the
+# arms, a path without its predicate, UNION ALL under a join) that keep the join; the key may be a parameter of a prepared statement (run under the generic and the custom plan: a scalar, an
 # array of 1 to 70 keys (the runtime choice between the scope read and the join as written is made for the keys of each execution), a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
 # The btree of the pairs is unique in an even seed and not unique in an odd one, where the joins run as written (a pair may be several rows) and IN and EXISTS count a fact once.
 
 from .columns import EVENTS, aggs, keys, preds
 from .fam_basic import grouped
 
-PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany', 'upin', 'upany']
-UNION_FORMS = ['uin', 'uin', 'uinall', 'uexists', 'uview', 'ubarrier', 'ubranch', 'ukeys', 'ubare']
+PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany', 'upin', 'upjoin', 'upany']
+UNION_FORMS = ['uin', 'uin', 'uinall', 'uexists', 'uview', 'ubarrier', 'ujoin', 'ujoin', 'ujoinm', 'ujoinall', 'ujoinkeys', 'ubranch', 'ukeys', 'ubare']
 SCOPE_FORMS = ['join', 'join', 'in', 'in', 'exists', 'group', 'keytable', 'ktin', 'ktexists', 'ktjoin', 'ktmany', 'ktloose', 'anyarray', 'joinin', 'left', 'notin', 'other', 'filtered', 'softjoin', 'softin', 'softexists', 'softbare', 'softinbare'] + UNION_FORMS + PARAM_FORMS
 
 
@@ -34,6 +34,7 @@ def render_scope_parts(p):
     kin, other = f'IN ({ts})', (one + 1) % 6
     direct = lambda k: f'SELECT l.item_id FROM item_links l WHERE l.{live} AND l.tenant_id {k}'
     groups = lambda k: f'SELECT m.item_id FROM item_links l JOIN item_members m ON m.group_id = l.group_id WHERE l.{live} AND m.{live} AND l.tenant_id {k}'
+    uj = 'events e JOIN item_pairs v ON v.member = e.parent_id'
     return {
         'join': (j, [f's.tenant_id = {one}'], []),
         'in': ('events e', [f'e.parent_id IN (SELECT item_id FROM item_scope WHERE tenant_id IN ({ts}))'], []),
@@ -67,10 +68,15 @@ def render_scope_parts(p):
         'uexists': ('events e', [f'EXISTS (SELECT 1 FROM item_pairs v WHERE v.member = e.parent_id AND v.tenant_id = {one})'], []),
         'uview': ('events e', [f'e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id {kin})'], []),
         'ubarrier': ('events e', [f'e.parent_id IN (SELECT member FROM item_pairs_barrier WHERE tenant_id {kin})'], []),
+        'ujoin': (uj, [f'v.tenant_id = {one}'], []),
+        'ujoinm': (f'events e JOIN ({direct(kin)} UNION {groups(kin)}) v ON v.item_id = e.parent_id', [], []),
+        'ujoinall': ('events e JOIN item_pairs_all v ON v.member = e.parent_id', [f'v.tenant_id = {one}'], []),
+        'ujoinkeys': (uj, [f'v.tenant_id {kin}'], []),
         'ubranch': ('events e', [f'e.parent_id IN ({(direct, groups)[one % 2](f"= {one}")})'], []),
         'ukeys': ('events e', [f'e.parent_id IN ({direct(f"= {one}")} UNION {groups(f"= {other}")})'], []),
         'ubare': ('events e', [f'e.parent_id IN (SELECT l.item_id FROM item_links l WHERE l.tenant_id = {one} UNION {groups(f"= {one}")})'], []),
         'upin': ('events e', ['e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id = $1)'], []),
+        'upjoin': (uj, ['v.tenant_id = $1'], []),
         'upany': ('events e', ['e.parent_id IN (SELECT member FROM item_pairs WHERE tenant_id = ANY ($1))'], []),
     }[p['form']]
 
@@ -79,7 +85,7 @@ def param_of(p):
     """(type, argument) of the parameter of a prepared form"""
     return {'pjoin': ('int', str(p['tenants'][0])), 'pin': ('int', str(p['tenants'][0])), 'pany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants']))),
             'pnull': ('int[]', p['nullarg']), 'pmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many']))), 'pjoinmany': ('int[]', "'{%s}'" % ','.join(map(str, p['many']))),
-            'upin': ('int', str(p['tenants'][0])), 'upany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants'])))}[p['form']]
+            'upin': ('int', str(p['tenants'][0])), 'upjoin': ('int', str(p['tenants'][0])), 'upany': ('int[]', "'{%s}'" % ','.join(map(str, p['tenants'])))}[p['form']]
 
 
 def render_scope(p):

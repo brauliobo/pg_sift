@@ -538,8 +538,6 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	if (lj == NULL && scope_multiset(c->indexoid, sp->key_name))
 		return SCOPE_MULTISET;
 	once = lj != NULL || it.member_only;
-	if (it.is_union && lj == NULL && !it.member_only)
-		return "a join to the union of the two paths of the scope that reads its key is not read from the scope yet";
 	if (it.all && lj == NULL)
 		return "a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION";
 	pool = list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? list_concat_copy(lj->quals, lj->inner) : NIL);

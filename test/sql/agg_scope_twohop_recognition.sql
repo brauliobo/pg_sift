@@ -1,7 +1,7 @@
 -- The pairs of a scope of two paths (the grants a tenant has on a member and on the groups of the member) are written by a statement as the union of the two: the direct grants and the members
--- of the groups granted, as the sub-select of IN or EXISTS, through a view or an inlined function. The scan reads them from the scope units when the union is exactly the pair set:
--- two selects, each over the relation of its path with the predicate of the btree that defines its rows and the key binding and no other condition, both for the same key.
--- Every other union keeps the plan that was always exact, and says why. Each statement returns the rows of the
+-- of the groups granted, as the sub-select of IN or EXISTS, as a join, through a view or an inlined function. The scan reads them from the scope units when the union is exactly the pair set:
+-- two selects, each over the relation of its path with the predicate of the btree that defines its rows and the key binding and no other condition, both for the same key; a join counts a
+-- member once for each pair, so only a UNION (distinct) is a join's pair set. Every other union keeps the plan that was always exact, and says why. Each statement returns the rows of the
 -- join as written (sift.agg_scope = off) and of the normal plan, after the build and after each change of the pairs.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -83,6 +83,8 @@ CREATE FUNCTION joined_arm(cols text, k text DEFAULT '', xg text DEFAULT '', xm 
 $$ SELECT 'SELECT m.dim_a_id' || CASE cols WHEN 'mk' THEN ', g.tenant_id' ELSE '' END || ' FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL' || k || xg || xm $$;
 CREATE FUNCTION in_stmt(u text) RETURNS text LANGUAGE sql IMMUTABLE AS
 $$ SELECT 'SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (' || u || ') GROUP BY kind' $$;
+CREATE FUNCTION join_stmt(u text, k text DEFAULT '') RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT 'SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f JOIN ' || u || ' v ON v.member = f.dim_a_id' || k || ' GROUP BY kind' $$;
 
 CREATE TABLE forms (name text PRIMARY KEY, q text);
 INSERT INTO forms VALUES
@@ -103,6 +105,23 @@ INSERT INTO forms VALUES
  ('IN, table of keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id IN (SELECT tenant_id FROM my_tenants)) GROUP BY kind$q$),
  ('function', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts_of(1) GROUP BY kind$q$),
  ('top 5, view', $q$SELECT f.dim_a_id, sum(amount) AS total FROM facts f WHERE f.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = 1) GROUP BY f.dim_a_id ORDER BY total DESC, f.dim_a_id LIMIT 5$q$),
+ -- a join counts a member once for each pair: the UNION (distinct) is the pair set, for one key
+ ('join, view', join_stmt('tenant_pairs', ' WHERE v.tenant_id = 1')),
+ ('join, union', join_stmt('(' || direct_arm('mk') || ' UNION ' || joined_arm('mk') || ')', ' WHERE v.tenant_id = 1')),
+ ('join, key in the arms', join_stmt('(' || direct_arm('mk', ' AND g.tenant_id = 1') || ' UNION ' || joined_arm('mk', ' AND g.tenant_id = 1') || ')')),
+ ('join, key in an arm and above', join_stmt('(' || direct_arm('mk', ' AND g.tenant_id = 1') || ' UNION ' || joined_arm('mk') || ')', ' WHERE v.tenant_id = 1')),
+ ('join, barrier view', join_stmt('tenant_pairs_barrier', ' WHERE v.tenant_id = 1')),
+ ('join, view with the key first', join_stmt('tenant_pairs_keyfirst', ' WHERE v.tenant_id = 1')),
+ ('join, member alone, two keys', join_stmt('(' || direct_arm('m', ' AND g.tenant_id IN (2, 5)') || ' UNION ' || joined_arm('m', ' AND g.tenant_id IN (2, 5)') || ')')),
+ ('join, a tenant with no pair', join_stmt('tenant_pairs', ' WHERE v.tenant_id = 9')),
+ -- what a join does not take: another number of rows per member, other keys than one, a condition on the pairs
+ ('join, UNION ALL', join_stmt('tenant_pairs_all', ' WHERE v.tenant_id = 1')),
+ ('join, UNION ALL, member alone', join_stmt('(' || direct_arm('m', ' AND g.tenant_id = 1') || ' UNION ALL ' || joined_arm('m', ' AND g.tenant_id = 1') || ')')),
+ ('join, two keys', join_stmt('tenant_pairs', ' WHERE v.tenant_id IN (2, 5)')),
+ ('join, every key', join_stmt('tenant_pairs')),
+ ('join, a condition on the pairs', join_stmt('tenant_pairs', ' WHERE v.tenant_id = 1 AND v.member > 10')),
+ ('join, group by the key', $q$SELECT v.tenant_id, sum(amount) AS total, count(*) AS n FROM facts f JOIN tenant_pairs v ON v.member = f.dim_a_id GROUP BY v.tenant_id$q$),
+ ('join, a left join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f LEFT JOIN tenant_pairs v ON v.member = f.dim_a_id AND v.tenant_id = 1 GROUP BY kind$q$),
  -- a union that is not the two paths of the scope
  ('IN, one path', in_stmt(direct_arm('m', ' AND g.tenant_id = 1'))),
  ('IN, one path, the joined one', in_stmt(joined_arm('m', ' AND g.tenant_id = 1'))),
@@ -128,6 +147,7 @@ INSERT INTO forms VALUES
  ('IN, DISTINCT in an arm', in_stmt('SELECT DISTINCT g.dim_a_id FROM grants g WHERE g.deleted_at IS NULL AND g.tenant_id = 1 UNION ' || joined_arm('m', ' AND g.tenant_id = 1'))),
  ('IN, LIMIT in an arm', in_stmt('(' || direct_arm('m', ' AND g.tenant_id = 1') || ' LIMIT 100) UNION ' || joined_arm('m', ' AND g.tenant_id = 1'))),
  ('IN, an arm that aggregates', in_stmt('SELECT max(g.dim_a_id) FROM grants g WHERE g.deleted_at IS NULL AND g.tenant_id = 1 UNION ' || joined_arm('m', ' AND g.tenant_id = 1'))),
+ ('join, other columns projected', join_stmt('(SELECT g.dim_a_id AS member, g.tenant_id, g.id FROM grants g WHERE g.deleted_at IS NULL UNION SELECT m.dim_a_id, g.tenant_id, m.id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL)', ' WHERE v.tenant_id = 1')),
  ('IN, a column that is not the member', in_stmt('SELECT g.id FROM grants g WHERE g.deleted_at IS NULL AND g.tenant_id = 1 UNION SELECT m.id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL AND g.tenant_id = 1')),
  ('IN, three selects', in_stmt(direct_arm('m', ' AND g.tenant_id = 1') || ' UNION ' || joined_arm('m', ' AND g.tenant_id = 1') || ' UNION SELECT 7')),
  ('IN, INTERSECT', in_stmt(direct_arm('m', ' AND g.tenant_id = 1') || ' INTERSECT ' || joined_arm('m', ' AND g.tenant_id = 1'))),
@@ -180,6 +200,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
 -- the key by a parameter: a generic plan reads it when the scan starts; a condition that reads a parameter is no proof that an arm takes the rows of its btree
 PREPARE by_key(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = $1) GROUP BY kind;
 PREPARE by_keys(int[]) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = ANY ($1)) GROUP BY kind;
+PREPARE join_by_key(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f JOIN tenant_pairs v ON v.member = f.dim_a_id WHERE v.tenant_id = $1 GROUP BY kind;
 PREPARE arms_by_key(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN
 	(SELECT g.dim_a_id FROM grants g WHERE g.tenant_id = $1 AND g.deleted_at IS NULL UNION SELECT m.dim_a_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
 		WHERE g.tenant_id = $1 AND g.deleted_at IS NULL AND m.deleted_at IS NULL) GROUP BY kind;
@@ -187,21 +208,21 @@ PREPARE arms_by_status(text) AS SELECT kind, sum(amount) AS total, count(*) AS n
 	(SELECT g.dim_a_id FROM grants g WHERE g.tenant_id = 1 AND g.deleted_at IS NULL AND g.status = $1 UNION SELECT m.dim_a_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
 		WHERE g.tenant_id = 1 AND g.deleted_at IS NULL AND m.deleted_at IS NULL) GROUP BY kind;
 SET plan_cache_mode = force_generic_plan;
-SELECT label('EXECUTE by_key(1)') AS by_key, label('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys,
+SELECT label('EXECUTE by_key(1)') AS by_key, label('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys, label('EXECUTE join_by_key(1)') AS join_by_key,
 	label('EXECUTE arms_by_key(1)') AS arms_by_key, label('EXECUTE arms_by_status(''live'')') AS arms_by_status;
-SELECT same('EXECUTE by_key(1)') AS by_key, same('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys,
+SELECT same('EXECUTE by_key(1)') AS by_key, same('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys, same('EXECUTE join_by_key(1)') AS join_by_key,
 	same('EXECUTE arms_by_key(1)') AS arms_by_key, same('EXECUTE arms_by_status(''live'')') AS arms_by_status;
 SET plan_cache_mode = force_custom_plan;
-SELECT label('EXECUTE by_key(1)') AS by_key, label('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys,
+SELECT label('EXECUTE by_key(1)') AS by_key, label('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys, label('EXECUTE join_by_key(1)') AS join_by_key,
 	label('EXECUTE arms_by_key(1)') AS arms_by_key, label('EXECUTE arms_by_status(''live'')') AS arms_by_status;
-SELECT same('EXECUTE by_key(1)') AS by_key, same('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys,
+SELECT same('EXECUTE by_key(1)') AS by_key, same('EXECUTE by_keys(ARRAY[2, 5])') AS by_keys, same('EXECUTE join_by_key(1)') AS join_by_key,
 	same('EXECUTE arms_by_key(1)') AS arms_by_key, same('EXECUTE arms_by_status(''live'')') AS arms_by_status;
 RESET plan_cache_mode;
 
 -- the pairs change after the build: the reader patches the member ids whose pairs changed (each of the three journals says which) and the rows are the join's in every state
 CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool) LANGUAGE sql AS $$
 	SELECT note, f.name, label(f.q), same(f.q) FROM forms f
-	WHERE f.name IN ('IN', 'IN, two keys', 'IN, view', 'IN, a tenant with no pair', 'function', 'top 5, view') ORDER BY f.name
+	WHERE f.name IN ('IN', 'IN, two keys', 'IN, view', 'IN, a tenant with no pair', 'function', 'top 5, view', 'join, view', 'join, key in the arms', 'join, member alone, two keys') ORDER BY f.name
 $$;
 SELECT * FROM states('built');
 INSERT INTO grants (id, tenant_id, dim_a_id) VALUES (20, 1, 30), (21, 9, 31), (22, 9, 32);
@@ -238,7 +259,7 @@ BEGIN
 EXCEPTION WHEN insufficient_privilege THEN RETURN sqlerrm;
 END $$;
 CREATE TABLE roles_forms (name text PRIMARY KEY, q text);
-INSERT INTO roles_forms SELECT name, q FROM forms WHERE name IN ('IN', 'IN, view', 'IN, one path');
+INSERT INTO roles_forms SELECT name, q FROM forms WHERE name IN ('IN', 'IN, view', 'join, union', 'join, view', 'IN, one path');
 GRANT SELECT ON facts, tenant_pairs, roles_forms TO twohop_reader;
 SET ROLE twohop_reader;
 SELECT name, denied(q) AS no_privilege_on_the_tables FROM roles_forms ORDER BY name;
@@ -287,8 +308,43 @@ SELECT label('EXECUTE kept') AS stricter_btree, same('EXECUTE kept') AS same_row
 DROP INDEX facts_col;
 SELECT label('EXECUTE kept') AS no_scope_index, same('EXECUTE kept') AS same_rows;
 
+-- the legs on non-unique btrees (a pair in several rows of its relation): the UNION of the statement is the distinct pair set the units hold, so a join over it counts a fact once for each pair
+CREATE TABLE grants_m (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE INDEX grants_m_direct ON grants_m (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants_m_group ON grants_m (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE memberships_m (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE INDEX memberships_m_active ON memberships_m (group_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants_m_by_member ON grants_m USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_m_by_group ON grants_m USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_m_by_member ON memberships_m USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+INSERT INTO memberships_m (group_id, dim_a_id) SELECT 1 + m % 6, m FROM generate_series(1, 58) m;
+INSERT INTO memberships_m (group_id, dim_a_id) SELECT 1 + m % 6, m FROM generate_series(5, 58, 5) m;
+INSERT INTO grants_m VALUES (1, 1, 5, NULL, NULL), (2, 1, 5, NULL, NULL), (3, 1, NULL, 6, NULL), (4, 1, NULL, 6, NULL), (5, 2, NULL, 3, NULL), (6, 2, 8, NULL, NULL), (7, 2, 8, NULL, NULL);
+CREATE TABLE facts_m (id int PRIMARY KEY, dim_a_id int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts_m SELECT i, 1 + (i * 7) % 60, i % 10 FROM generate_series(1, 3000) i;
+CREATE INDEX facts_m_col ON facts_m USING sift_col (id, dim_a_id, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants_m(dim_a_id, tenant_id) | grants_m(group_id, tenant_id) via memberships_m(group_id, dim_a_id)');
+VACUUM (FREEZE, ANALYZE) facts_m, grants_m, memberships_m;
+CREATE VIEW tenant_pairs_m AS
+	SELECT g.dim_a_id AS member, g.tenant_id FROM grants_m g WHERE g.deleted_at IS NULL
+	UNION
+	SELECT m.dim_a_id, g.tenant_id FROM grants_m g JOIN memberships_m m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE VIEW tenant_pairs_m_all AS
+	SELECT g.dim_a_id AS member, g.tenant_id FROM grants_m g WHERE g.deleted_at IS NULL
+	UNION ALL
+	SELECT m.dim_a_id, g.tenant_id FROM grants_m g JOIN memberships_m m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+DELETE FROM forms;
+INSERT INTO forms VALUES
+ ('IN', $q$SELECT sum(amount) AS total, count(*) AS n FROM facts_m f WHERE f.dim_a_id IN (SELECT member FROM tenant_pairs_m WHERE tenant_id = 1)$q$),
+ ('EXISTS', $q$SELECT sum(amount) AS total, count(*) AS n FROM facts_m f WHERE EXISTS (SELECT 1 FROM tenant_pairs_m v WHERE v.member = f.dim_a_id AND v.tenant_id = 2)$q$),
+ ('join', $q$SELECT sum(amount) AS total, count(*) AS n FROM facts_m f JOIN tenant_pairs_m v ON v.member = f.dim_a_id WHERE v.tenant_id = 1$q$),
+ ('join, UNION ALL', $q$SELECT sum(amount) AS total, count(*) AS n FROM facts_m f JOIN tenant_pairs_m_all v ON v.member = f.dim_a_id WHERE v.tenant_id = 1$q$);
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
+DROP VIEW tenant_pairs_m, tenant_pairs_m_all;
+DROP TABLE facts_m, grants_m, memberships_m;
+
 DEALLOCATE ALL;
-DROP FUNCTION label(text), rows_md5(text), same(text), states(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text);
+DROP FUNCTION label(text), rows_md5(text), same(text), states(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text), join_stmt(text, text);
 DROP TABLE forms;
 DROP VIEW tenant_pairs, tenant_pairs_all, tenant_pairs_barrier, tenant_pairs_keyfirst;
 DROP TABLE facts, grants, memberships, my_tenants;
