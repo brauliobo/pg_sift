@@ -242,8 +242,9 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
  *, whatever point_tid_columns says, and a lookup reads the unit of each row.
  *
  * A scope segment (cut by a derived scope key) holds a unit for each scope key, most of them small, and is read by key: what a unit costs outside its rows is cut. No superunit
- * (its units are of different keys, so a group of them answers no read of one key), no histogram of groups of a few rows, no point directory (the entity segments have them
- * and find a row by its value; the orders of the leaves stay).
+ * (its units are of different keys, so a group of them answers no read of one key), no histogram of groups of a few rows, no point directory and no global order (the entity
+ * segments have them and find a row by its value or its place in the order). An order lists each row of its segment once, by (key, address), and a scope segment holds a fact once
+ * for each of its scope keys: its entries repeat an address, and no entry names the scope key a walk would have to stay in.
  */
 void
 sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
@@ -260,7 +261,7 @@ sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
 		w->pagg.super = 0;
 		w->pagg.dim_rows = SIFT_PAGG_SCOPE_DIM_ROWS;
 		for (int c = 0; w->pt && c < w->schema->ncols; c++)
-			w->pt[c].want = false;
+			w->pt[c].want = w->pt[c].ord = false;
 	}
 }
 

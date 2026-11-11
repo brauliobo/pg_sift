@@ -10,7 +10,8 @@ After every step a battery is the plain join: through the scope path (sift.in_sc
 (a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason
 (scope_reason_ok in test/scope_helpers.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
-entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size and track_changes.
+entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size, track_changes, key_cut by the member column and order arrays named for the columns
+(the entries of a fact repeat its address in the scope segments, which keep no order arrays, and the verification after every step covers both).
 
 A third of the seeds make the pairs SOFT deleted: the pair table has a deleted_at column, its pairs are the rows of a partial unique btree WHERE deleted_at IS NULL (the primary key over all rows stays),
 the journal index is plain or partial on the same predicate, and the steps soft delete, restore, insert soft deleted pairs and update a column no index holds besides the others; the plain join
@@ -133,6 +134,8 @@ class Seed:
         if r.random() < 0.5:   # an own stream, so that the other draws of a seed stay: a subset of the columns, with or without the primary key, the member key and the time column
             self.cols = [c for c in INDEX_COLS if random.Random(f'{seed}cols{c}').random() < 0.5] or ['v']
         self.kept = None if self.cols is None else set(self.cols) | {'created_at'}   # the units are cut by the time column, which they keep
+        self.cut = r.choice([None, None, 'dim_a_id'])
+        self.gord = r.random() < 0.5
         self.next_id = self.n + 1
         sr = random.Random(seed * 7919 + 13)   # its own stream: the seeds that are not soft draw what they drew before
         self.soft = seed % 3 == 2   # a third of the seeds, and seed 2 of the quick tier
@@ -143,6 +146,8 @@ class Seed:
 
     def setup_sql(self):
         trk = ", track_changes = 'off'" if self.track == 'off' else ''
+        trk += f", key_cut = '{self.cut}'" if self.cut else ''
+        trk += ", order_array_columns = 'id, created_at, kind, v'" if self.gord else ''
         text = "tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)" + (f" cols({', '.join(self.cols)})" if self.cols else '')
         jr = ("CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
               + (" WHERE deleted_at IS NULL" if self.jpartial else "") + ";\n")

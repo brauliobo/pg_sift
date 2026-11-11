@@ -144,7 +144,8 @@ them again when the journal says that many members changed (`sift.col_connect_re
 
 The test table of 100,000 events, 5,000 entities and 40 tenants (one scope, a 5-column index): the index is 2,523,136 bytes without the scope and 4,489,216 with it (4,358,144 with `cols(created_at, kind,
 value_num)`), the build takes 250 ms without and 406 ms with it, and writes 2.9 MB of WAL without and 5.2 MB with it. Keys of fewer than 2,048 entries share the units of the scope segments, and the
-scope segments have no point directory, which the reads of a key do not use.
+scope segments have no point directory and no global order (`order_array_columns` writes its arrays in the entity segments only: an array lists each row of a segment once, a scope segment holds a
+fact once for each of its keys, and the reads of a key go by unit), which the reads of a key do not use.
 
 **Building at the same time.** The build of a `sift_col` index that tracks changes installs the two triggers of its log on the table when it has read it, which takes `ShareRowExclusiveLock`
 while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
