@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: listing -> category (leaf) -> category (branch) -> category (root): a chain through one self-referencing table
