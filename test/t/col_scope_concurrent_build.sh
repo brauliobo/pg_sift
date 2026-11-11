@@ -3,9 +3,13 @@
 # options it decides (key_columns, key_cut, point_tid_columns, ...) with a catalog update of its index, which must not ask for a stronger lock on the table than the other session's ShareLock allows:
 # the two builds were a deadlock (the restore of two indexes of one table in parallel ran into it). The indexes do not track changes: the triggers that tracking installs ask the table for ShareRowExclusiveLock,
 # which two builds that hold ShareLock cannot both get (PostgreSQL takes that lock for CREATE TRIGGER). Both indexes are made, verify, and read as the join does.
+# The same under writers on the three relations of a scope of two paths (lib_twohop.bash): REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY of the scope index and REINDEX CONCURRENTLY of each of its three
+# journal indexes run in a loop while grants, memberships and facts change in transactions. No statement of the writers fails, no deadlock is detected, no invalid index is left, the scope index still depends on
+# the three btrees and the three journals, and its reads are the join over the union (after the writers: stored, with the three stamps vouching, once the scope index is rebuilt).
 . "$(dirname "$0")/lib.bash"
+. "$(dirname "$0")/lib_twohop.bash"
 
-plan 6
+plan 14
 node_init scb 52 "sift.scope_max_multiplicity = 8
 autovacuum = off"
 node_start scb || bail "start failed"
@@ -55,4 +59,38 @@ check "two concurrent builds that track changes: no error, no deadlock" test "$R
 diag "$(cat "$D/events_c.out" "$D/events_d.out" | grep -i "error\|deadlock\|waits" | head -4)"
 check "both verify, and the log of each is complete" test -z "$(sql scb "SELECT sift.col_verify('events_c', true)" "SELECT sift.col_verify('events_d', true)" 2>&1)" -a \
 	"$(sql scb "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'events'::regclass AND tgname LIKE 'sift%'")" -ge 4
+
+# the scope of two paths under concurrent writers
+SECS=$(knob SIFT_SCB_SECS 12 6)
+sql scb "ALTER DATABASE postgres SET sift.scope_max_multiplicity = 64" >/dev/null
+twohop_setup scb || bail "the fixtures of the scope of two paths failed"
+check "two paths: built, the three stamps vouch and the reads are the join" test "$(twohop_vouch scb)|$(twohop_reads scb)" == "ok|same"
+FILES=($(twohop_files scb))
+d0=$(grep -c 'deadlock detected' "$D/postgres.log")
+pgbench_bg scb 6 "$((SECS + 2))" "${FILES[@]}"
+ROUNDS=0 FAILED=0
+ops=("REINDEX INDEX CONCURRENTLY hop_col" "CREATE INDEX CONCURRENTLY hop_col2 ON hop_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = '$TWOHOP_SCOPE')" "DROP INDEX hop_col2"
+	"REINDEX INDEX CONCURRENTLY grants_by_member" "REINDEX INDEX CONCURRENTLY grants_by_group" "REINDEX INDEX CONCURRENTLY memberships_by_member")
+end=$((SECONDS + SECS))
+while ((SECONDS < end)); do
+	for op in "${ops[@]}"; do
+		if sql scb "$op" >"$D/op.out" 2>&1; then ROUNDS=$((ROUNDS + 1)); else FAILED=$((FAILED + 1)); diag "$op: $(head -n 2 "$D/op.out")"; fi
+	done
+done
+wait "$PGBENCH_PID"; PRC=$?
+check "two paths: the writers had no failed transaction ($ROUNDS statements of the loop done)" test "$PRC" == 0 -a "$ROUNDS" -ge 12
+check "two paths: no statement of the loop failed and no deadlock was detected" test "$FAILED" == 0 -a "$(($(grep -c 'deadlock detected' "$D/postgres.log") - d0))" == 0
+sql scb "DROP INDEX IF EXISTS hop_col2" >/dev/null
+check "two paths: no invalid index is left, and the scope index depends on the three btrees and the three journals" \
+	test "$(sql scb "SELECT count(*) FROM pg_index WHERE NOT indisvalid")" == 0 \
+	-a "$(sql scb "SELECT count(*) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'hop_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'")" == 6
+check "two paths: the reads after the writers are the join, whatever the verdict ($(twohop_why scb))" test "$(twohop_reads scb)" == same
+check "two paths: the four indexes verify" test -z "$(sql scb "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+sql scb "VACUUM grants, memberships" "REINDEX INDEX hop_col" >/dev/null   # the log of an index made by REINDEX CONCURRENTLY is complete after the next VACUUM
+diag "after the REINDEX: $(twohop_why scb) | stamps $(twohop_vouch scb) | reads $(twohop_reads scb) | entries $(sql scb "$TWOHOP_ENTRIES")"
+check "two paths: a VACUUM and a REINDEX of the scope index read its units again, the three stamps vouch and the entries are the join" test "$(twohop_why scb)|$(twohop_vouch scb)|$(twohop_reads scb)|$(sql scb "$TWOHOP_ENTRIES")" == "stored|ok|same|t"
+# a journal rebuilt concurrently after the scope index: the stamps of the segments name the old one, and the scope says so until its own REINDEX
+sql scb "REINDEX INDEX CONCURRENTLY grants_by_group" "VACUUM grants" >/dev/null
+check "two paths: after REINDEX CONCURRENTLY of a journal the reads are the join, and the scope index is vouched again by its REINDEX" test "$(twohop_reads scb)" == same -a "$(twohop_why scb)" != stored \
+	-a "$(sql scb "REINDEX INDEX hop_col" >/dev/null; twohop_why scb)|$(twohop_vouch scb)" == "stored|ok"
 finish
