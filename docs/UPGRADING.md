@@ -230,6 +230,7 @@ scripts/upgrade-check.sh --to 4.2 app
 psql -d app -c "SELECT sift.col_verify('events_col', true)"
 ```
 
+- **An index with a `scope` (5.0) cannot go back to a release before 5.0:** it refuses the option and the scope segments, and `sift.col_format_minor = 14` cannot write them (the `REINDEX` is refused, naming the reason). The preflight (`sift.upgrade_check('4.3')`) advises `ALTER INDEX x RESET (scope)`, then `SET sift.col_format_minor = 14` and `REINDEX INDEX x`, which writes the entity segments the older release reads; the reads of the scope go through the join again (the scope copy of `sift.scope_create` is a table and needs nothing).
 - The `REINDEX` under `sift.col_format_minor = 14` writes no seekable chunk and no section of minors 15 and above (so no minor 44), and an index built so does not track changes (its `NOTICE` says it), so its reads check the heap. After the 4.2 files run, `ALTER SYSTEM RESET sift.col_format_minor` and `REINDEX` the index again to log its changes again; keep `sift.col_format_minor = 14` while any 4.3 library still writes.
 - `ALTER INDEX x SET (connect = 'off')` drops the dependency on the parent index, and the parent keeps its journal (minor 44) until its own `REINDEX`, which is why step 3 rebuilds the parent too. `sift.col_wbuf_ref = off` does not turn a buffer that holds references into one that does not: the `REINDEX` of step 3 does, or its promotion.
 - A standby that stays on 4.2 needs steps 2 and 3 on its primary before anything is written, and `sift.col_format_minor` set there for every later write.

@@ -234,6 +234,34 @@ SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) F
  t
 (1 row)
 
+-- a lowered sift.col_format_minor cannot write the scope segments (the REINDEX that the rollback advice used to give for a scope failed on a duplicate segment generation): it is refused,
+-- the index stays as it was, and the advice that works is RESET (scope) first
+SET sift.col_format_minor = 14;
+REINDEX INDEX small_col;
+ERROR:  sift_col index "small_col" has a scope, which sift.col_format_minor 14 cannot write
+DETAIL:  A scope needs the units cut by key, written at sift.col_format_minor 15 or more, and a release before 5.0 cannot read it.
+HINT:  Build it at the normal setting, or give up the scope (ALTER INDEX .. RESET (scope)) to write an index that an older library reads.
+CREATE INDEX small_low ON small_events USING sift_col (id, dim_a_id, kind) WITH (scope = 'tenant_id: dim_a_id -> small_scope(dim_a_id, tenant_id)');
+ERROR:  sift_col index "small_low" has a scope, which sift.col_format_minor 14 cannot write
+DETAIL:  A scope needs the units cut by key, written at sift.col_format_minor 15 or more, and a release before 5.0 cannot read it.
+HINT:  Build it at the normal setting, or give up the scope (ALTER INDEX .. RESET (scope)) to write an index that an older library reads.
+RESET sift.col_format_minor;
+SELECT sift.col_verify('small_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+ALTER INDEX small_col RESET (scope);
+SET sift.col_format_minor = 14;
+REINDEX INDEX small_col;
+RESET sift.col_format_minor;
+SELECT max((to_jsonb(s)->>'format')::int) AS column_format FROM sift.col_segments('small_col') s;
+ column_format 
+---------------
+            14
+(1 row)
+
 DROP TABLE small_events;
 DROP TABLE small_scope;
 DROP TABLE events;

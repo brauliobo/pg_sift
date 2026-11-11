@@ -12,7 +12,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 112
+plan 118
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -312,4 +312,16 @@ out=$(uc --to 5.0 hop)
 check "to 5.0: neither is a blocker" test -z "$(row "$out" blocker one_col)" -a -z "$(row "$out" blocker hop_col)"
 check "the preflight lists no REINDEX for the scope indexes or their journals" test "$(q hop "SELECT count(*) FROM sift.upgrade_commands()")" == 0
 check "a scope of two paths the older library cannot read is a finding with an advice, not an error" test "$(uc --to 4.3 hop | grep -c -E '^blocker +hop_col .+')" == 1
+check "the advice for a scope names RESET (scope), the setting 14 and the REINDEX" grep -q -E '^blocker +one_col .*ALTER INDEX one_col RESET \(scope\), then SET sift\.col_format_minor = 14 and REINDEX INDEX one_col ' <<<"$(uc --to 4.3 hop)"
+# the setting alone cannot write a scope (it used to fail with "duplicate segment generation"): the build says so and names the RESET
+err=$(q hop "SET sift.col_format_minor = 14" "REINDEX INDEX one_col" 2>&1)
+check "the setting 14 with the scope on refuses the REINDEX and names the RESET" grep -q -E 'has a scope, which sift.col_format_minor 14 cannot write' <<<"$err"
+# the advised commands, as written
+q hop "ALTER INDEX one_col RESET (scope)" "SET sift.col_format_minor = 14" "REINDEX INDEX one_col" >/dev/null || bail "the advised commands for a scope fail"
+out=$(uc --to 4.3 hop)
+check "after the advice the index is column format 14" grep -q -E '^ok +one_col +index +format 1\.[0-9]+, column format 14' <<<"$out"
+check "... and no blocker to 4.3" test -z "$(row "$out" blocker one_col)"
+check "... and it answers like the table" test "$(q hop "SELECT sum(v) FROM one_events WHERE id < 500")" == "$(q hop "SET sift.enable_agg = off" "SELECT sum(v) FROM one_events WHERE id < 500")"
+q hop "ALTER INDEX hop_col RESET (scope)" "SET sift.col_format_minor = 14" "REINDEX INDEX hop_col" >/dev/null || bail "the advised commands for a scope of two paths fail"
+check "the same for a scope of two paths: no blocker to 4.3" test -z "$(row "$(uc --to 4.3 hop)" blocker hop_col)"
 finish
