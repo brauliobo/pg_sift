@@ -31,7 +31,7 @@ settings, since the WAL is what they test.
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
 `SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
-The regression tests in `TESTING_REGRESS` (Makefile) need those functions and are skipped by a release build; every other one
+The regression tests in `TESTING_REGRESS` (Makefile; one name for each line, `TESTING_REGRESS += name`, in byte order inside its block: add a new test in its place, never at the end, so that branches adding tests merge without a conflict, `scripts/check-testing-regress.sh` checks it) need those functions and are skipped by a release build; every other one
 (except the slow ones of `SLOW_REGRESS` in `scripts/ci/plan.sh`) runs against the testing build, and the deep tier runs it against the release library too (`SIFT_TESTING` unset, built in a copy of the tree,
 job `release-library-regress`, `scripts/release-library-check.sh`; the quick tier runs a smoke of it and the tests that refer to a test-only name behind a guard). Tests of limits, privileges and the planner belong in the second group (do not use
 `sift._test_*` or the `sift.test_*` settings in them), so they run against the library users get. `SIFT_TESTING= scripts/pgtest.sh install`

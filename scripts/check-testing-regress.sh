@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A regress test that calls a sift._test_ function, creates the test-only extension (pg_sift_test) or sets a test-only setting (sift.test_*) needs the test-only build: its name matches
 # TESTING_REGRESS of the Makefile, or release-library-regress (the stock build) runs it and fails on a missing function or setting (needs no PostgreSQL and no build). The setting the stock
-# library has (sift.test_search_chunk_sbs, sift.test_col_unit_rows, sift.test_scope_patch) and a test that probes a setting with current_setting(name, true) are exempt.
+# library has (sift.test_search_chunk_sbs, sift.test_col_unit_rows) and a test that probes a setting with current_setting(name, true) are exempt.
 #
 #   scripts/check-testing-regress.sh
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -10,9 +10,15 @@ cd "$(dirname "$0")/.."
 
 mapfile -t pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' Makefile | tr ' ' '\n')
 bad=0
+# the list is one name for each line, in byte order inside a block (the lines up to the next comment), no name twice: concurrent additions merge cleanly
+grep -nE '^TESTING_REGRESS \+?= .* ' Makefile && { echo "TESTING_REGRESS: one name or pattern for each line"; bad=1; }
+dups=$(printf '%s\n' "${pats[@]}" | sort | uniq -d)
+[[ -z $dups ]] || { echo "TESTING_REGRESS: listed twice: $dups"; bad=1; }
+unsorted=$(awk '/^TESTING_REGRESS \+= / { if (prev != "" && $3 < prev) print $3 " after " prev; prev = $3; next } { prev = "" }' Makefile | LC_ALL=C sort)
+[[ -z $unsorted ]] || { echo "TESTING_REGRESS: not in byte order (LC_ALL=C sort): $unsorted"; bad=1; }
 needs_testing() {
 	grep -q -i -E 'sift\._test_|^create extension (if not exists )?pg_sift_test' "$1" ||
-		{ ! grep -q "current_setting('sift\.test_" "$1" && grep -o -E 'sift\.test_[a-z_]+' "$1" | grep -qvE '^sift\.test_(search_chunk_sbs|col_unit_rows|scope_patch)$'; }
+		{ ! grep -q "current_setting('sift\.test_" "$1" && grep -o -E 'sift\.test_[a-z_]+' "$1" | grep -qvE '^sift\.test_(search_chunk_sbs|col_unit_rows)$'; }
 }
 for f in test/sql/*.sql; do
 	needs_testing "$f" || continue
