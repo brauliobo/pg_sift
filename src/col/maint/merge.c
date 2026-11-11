@@ -378,7 +378,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 		for (int i = 0; i < v->n && apart; i++)
 			for (int j = i + 1; j < v->n && apart; j++)
 				apart = !maint_share_superblock(&v->span[i], &v->span[j], 1);
-		if (apart)
+		if (apart && !refresh)
 			nsel = 0;
 	}
 	for (int i = 0; i < v->n; i++)
