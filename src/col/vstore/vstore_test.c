@@ -35,6 +35,8 @@ sift_test_vstore_intern(PG_FUNCTION_ARGS)
 			   *map;
 	Datum	   *out;
 	SiftCcPolicy pol;
+	uint64		epoch,
+				ncodes;
 
 	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT, &vals, &nulls, &n);
 	codes = palloc(Max(n, 1) * sizeof(uint32));
@@ -46,7 +48,7 @@ sift_test_vstore_intern(PG_FUNCTION_ARGS)
 	}
 	map = palloc(Max(batch->n, 1) * sizeof(uint32));
 	sift_cc_policy_default(&pol);
-	(void) sift_vstore_intern(vs, batch, &pol, map);
+	(void) sift_vstore_intern(vs, batch, &pol, map, &epoch, &ncodes);
 	out = palloc(Max(n, 1) * sizeof(Datum));
 	for (int i = 0; i < n; i++)
 		out[i] = Int64GetDatum(map[codes[i]]);
@@ -54,7 +56,7 @@ sift_test_vstore_intern(PG_FUNCTION_ARGS)
 	PG_RETURN_ARRAYTYPE_P(construct_array(out, n, INT8OID, 8, FLOAT8PASSBYVAL, TYPALIGN_DOUBLE));
 }
 
-/* sift._test_vstore_info(store): the runs of the newest epoch and the values the view of this backend holds */
+/* sift._test_vstore_info(store): the runs of the current epoch and of all, and the values the view of this backend holds */
 Datum
 sift_test_vstore_info(PG_FUNCTION_ARGS)
 {
@@ -63,9 +65,10 @@ sift_test_vstore_info(PG_FUNCTION_ARGS)
 	Relation	rel = table_open(store, NoLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	TupleDesc	td;
-	Datum		v[4];
-	bool		nl[4] = {false, false, false, false};
-	int			runs = 0;
+	Datum		v[5];
+	bool		nl[5] = {false, false, false, false, false};
+	int			runs = 0,
+				all = 0;
 
 	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -73,9 +76,13 @@ sift_test_vstore_info(PG_FUNCTION_ARGS)
 	v[3] = Int64GetDatum(sift_vstore_ncodes(vs));
 	sift_dir_read(rel, snap);
 	for (int i = 0; i < snap->nsegs; i++)
+	{
 		runs += snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved == DatumGetInt64(v[2]);
+		all += snap->segs[i].kind == SIFT_SEG_VALRUN;
+	}
 	v[0] = Int32GetDatum(runs);
 	v[1] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
+	v[4] = Int32GetDatum(all);
 	table_close(rel, NoLock);
 	sift_vstore_close(vs);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(td), v, nl)));

@@ -55,6 +55,8 @@ typedef struct SiftCRefHost
 	void		(*serialize) (uint32 store, const struct SiftCDict *dict, const SiftCcPolicy *pol, StringInfo out);
 	/* the dictionary, in the code order of the segment, of a form DICT_REF; NULL when malformed */
 	struct SiftCDict *(*parse) (MemoryContext mcxt, uint32 store, const char *data, uint64 len);
+	/* the current epoch of the store (low 32 bits): a segment that names another is rewritten by maintenance, so that the old epoch can be retired */
+	uint32		(*epoch) (uint32 store);
 } SiftCRefHost;
 extern const SiftCRefHost *sift_cref_host;
 

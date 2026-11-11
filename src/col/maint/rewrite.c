@@ -247,7 +247,8 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	int			nseg,
 				key_overlap;
 	OverlayEv	ev;
-	bool		stale = false;
+	bool		stale = false,
+				old_epoch = false;
 
 	maint_overlay_asked = false;
 	maint_redecided = false;
@@ -279,6 +280,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		lsn[i] = automatic ? maint_header_lsn(index, e) : InvalidXLogRecPtr;
 		listed += seg->nsb;
 		stale |= v->stale[i];
+		old_epoch |= v->old_epoch[i];
 		if (e->flags & SIFT_SEG_DIRTY)
 		{
 			d = maint_dirty_units(seg);
@@ -323,6 +325,8 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	}
 	else if (maint_read_asked && dirty > 0)
 		why = "dirty units";
+	else if (old_epoch)
+		why = "value store epoch";
 	else if (stale || maint_scope_refill_due(index))
 		why = "stale connection";
 	else if (sift_col_rel(index)->nscope > 0 && maint_scope_merge_due(index, maint_after_build))

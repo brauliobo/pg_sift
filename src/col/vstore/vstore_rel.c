@@ -20,6 +20,7 @@
 #include "catalog/heap.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
@@ -229,6 +230,8 @@ store_name(Relation heap, const char *col, int pass)
 	return makeObjectName(RelationGetRelationName(heap), col, label);
 }
 
+static void init_store(Oid store);
+
 /* A restored dump has the relation and not its dependency on the table: the relation of the first name that holds the column is the store */
 static Oid
 adopt_by_name(Relation heap, const char *col)
@@ -243,9 +246,26 @@ adopt_by_name(Relation heap, const char *col)
 		{
 			depend_on(RelationRelationId, cand, RelationGetRelid(heap), DEPENDENCY_AUTO);
 			CommandCounterIncrement();
+			init_store(cand);
 			return cand;
 		}
 	}
+}
+
+/* The metapage of a store that has none: a new store, or one a restored dump made (the relation without its pages) */
+static void
+init_store(Oid store)
+{
+	Relation	rel = table_open(store, AccessExclusiveLock);
+
+	if (RelationGetNumberOfBlocks(rel) == 0)
+	{
+		SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+
+		sift_store_init_meta_ex(wt, 0, 0, 0, SIFT_VSTORE_META_FLAG);
+		sift_wt_finish(wt);
+	}
+	table_close(rel, NoLock);
 }
 
 static Oid
@@ -254,8 +274,6 @@ create_store(Relation heap, const char *col)
 	char	   *name = ChooseRelationName(RelationGetRelationName(heap), col, SIFT_VSTORE_LABEL, RelationGetNamespace(heap), false);
 	TupleDesc	td = CreateTemplateTupleDesc(1);
 	Oid			store;
-	Relation	rel;
-	SiftWriteTarget *wt;
 
 	TupleDescInitEntry(td, 1, col, TEXTOID, -1, 0);
 	store = heap_create_with_catalog(name, RelationGetNamespace(heap), InvalidOid, InvalidOid, InvalidOid, InvalidOid, heap->rd_rel->relowner, vstore_am(),
@@ -265,11 +283,7 @@ create_store(Relation heap, const char *col)
 	depend_on(RelationRelationId, store, RelationGetRelid(heap), DEPENDENCY_AUTO);
 	CreateComments(store, RelationRelationId, 0,
 				   psprintf(vstore_comment, col, RelationGetRelationName(heap)));
-	rel = table_open(store, AccessExclusiveLock);
-	wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
-	sift_store_init_meta_ex(wt, 0, 0, 0, SIFT_VSTORE_META_FLAG);
-	sift_wt_finish(wt);
-	table_close(rel, NoLock);
+	init_store(store);
 	return store;
 }
 
@@ -425,6 +439,52 @@ sift_vstore_drop_unused(Relation heap)
 		ObjectAddressSet(obj, RelationRelationId, store);
 		performDeletion(&obj, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
 	}
+}
+
+PG_FUNCTION_INFO_V1(sift_col_value_store_drop_unused);
+
+/*
+ * sift._col_value_store_drop_unused(): the stores that no index uses, in every table of the database, are dropped. It is what the event trigger of the extension
+ * runs after a DROP that took an index: a session that dropped the last index of a store without loading the library (DROP INDEX needs none) leaves nobody
+ * to drop it (gone_xact is the library's)
+ */
+Datum
+sift_col_value_store_drop_unused(PG_FUNCTION_ARGS)
+{
+	Oid			am = get_table_am_oid(SIFT_VSTORE_AM_NAME, true);
+	Relation	drel;
+	ScanKeyData key[2];
+	SysScanDesc scan;
+	HeapTuple	tup;
+	List	   *heaps = NIL;
+
+	if (!OidIsValid(am))
+		PG_RETURN_VOID();
+	drel = table_open(DependRelationId, AccessShareLock);
+	ScanKeyInit(&key[0], Anum_pg_depend_refclassid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(AccessMethodRelationId));
+	ScanKeyInit(&key[1], Anum_pg_depend_refobjid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(am));
+	scan = systable_beginscan(drel, DependReferenceIndexId, true, NULL, 2, key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend d = (Form_pg_depend) GETSTRUCT(tup);
+		Oid			heap = d->classid == RelationRelationId ? sift_vstore_table(d->objid) : InvalidOid;
+
+		if (OidIsValid(heap))
+			heaps = list_append_unique_oid(heaps, heap);
+	}
+	systable_endscan(scan);
+	table_close(drel, AccessShareLock);
+	foreach_oid(heapoid, heaps)
+	{
+		Relation	heap = try_table_open(heapoid, AccessShareLock);
+
+		if (heap != NULL)
+		{
+			sift_vstore_drop_unused(heap);
+			table_close(heap, NoLock);
+		}
+	}
+	PG_RETURN_VOID();
 }
 
 /* The tables an index that was dropped in this transaction was on, to look at their stores before the commit (col/vstore/vstore_rel.c gone_xact) */

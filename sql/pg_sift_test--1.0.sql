@@ -630,7 +630,7 @@ CREATE FUNCTION sift._test_col_sections(index regclass, gen int8, OUT section te
 -- The shared value store (src/col/vstore/vstore_test.c): the codes of values (new ones are appended as a run), the runs and view of the store, one value, and the view forgotten
 CREATE FUNCTION sift._test_vstore_intern(store regclass, vals text[]) RETURNS int8[]
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_intern' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_vstore_info(store regclass, OUT runs int4, OUT blocks int8, OUT epoch int8, OUT view_values int8)
+CREATE FUNCTION sift._test_vstore_info(store regclass, OUT runs int4, OUT blocks int8, OUT epoch int8, OUT view_values int8, OUT all_runs int4)
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_info' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vstore_value(store regclass, code int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_value' LANGUAGE C STRICT;

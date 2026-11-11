@@ -100,6 +100,26 @@ SELECT sift.col_verify('vd_g', true);
 DROP INDEX vd_g;
 SELECT * FROM vd_state('the last member of the last store dropped');
 
+-- an owner without rights on the sift schema drops the last member and the stores go with it
+CREATE ROLE vd_owner;
+CREATE SCHEMA vd_s AUTHORIZATION vd_owner;
+CREATE TABLE vd_s.r (id int, uid uuid, url text);
+ALTER TABLE vd_s.r OWNER TO vd_owner;
+INSERT INTO vd_s.r SELECT i, md5((i % 50)::text)::uuid, 'https://example.com/' || md5((i % 90)::text) FROM generate_series(1, 3000) i;
+ANALYZE vd_s.r;
+SET ROLE vd_owner;
+CREATE INDEX r1 ON vd_s.r USING sift_col (id, uid, url);
+CREATE INDEX r2 ON vd_s.r USING sift_col (uid, id, url);
+RESET ROLE;
+SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'vd_s.r'::regclass;
+SET ROLE vd_owner;
+DROP INDEX vd_s.r1;
+DROP INDEX vd_s.r2;
+RESET ROLE;
+SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'vd_s.r'::regclass;
+DROP SCHEMA vd_s CASCADE;
+DROP ROLE vd_owner;
+
 DROP TABLE vd_q, vd_steps, vd_base;
 DROP FUNCTION vd_check(text), vd_state(text), vd_values(regclass);
 DROP TABLE vd;

@@ -160,7 +160,8 @@ vs_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo 
 static void
 vs_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence, TransactionId *freezeXid, MultiXactId *minmulti)
 {
-	if (!RelFileLocatorEquals(rel->rd_locator, *newrlocator))
+	/* a store that has no pages is a restored dump's: its TRUNCATE before the COPY of no rows loses nothing */
+	if (!RelFileLocatorEquals(rel->rd_locator, *newrlocator) && RelationGetNumberOfBlocks(rel) > 0)
 		vs_refuse(rel);
 	sift_tbl_routine()->relation_set_new_filelocator(rel, newrlocator, persistence, freezeXid, minmulti);
 }

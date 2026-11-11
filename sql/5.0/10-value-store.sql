@@ -8,6 +8,41 @@ CREATE FUNCTION sift.col_value_store_usage(store regclass, OUT epoch int8, OUT m
 RETURNS SETOF record LANGUAGE c STABLE AS 'MODULE_PATHNAME', 'sift_col_value_store_usage';
 COMMENT ON FUNCTION sift.col_value_store_usage(regclass) IS 'The codes of a shared value store that the segments of its indexes refer to: for each index and epoch its segments and the distinct codes they name, and for each epoch a row of member NULL with the codes any index names (the live ones); total_codes is what the store holds. Reads the dictionaries of every segment of the indexes that use the store.';
 
+CREATE FUNCTION sift._col_value_store_begin(tbl regclass, col name) RETURNS regclass
+	AS 'MODULE_PATHNAME', 'sift_col_value_store_begin' LANGUAGE C STRICT;
+CREATE FUNCTION sift._col_value_store_end(store regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_col_value_store_end' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._col_value_store_drop_unused() RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_col_value_store_drop_unused' LANGUAGE C STRICT;
+-- DROP INDEX of the last index that uses a store loads no library: this drops the store after any DROP that took an index
+-- the role that drops the index has no right on the sift schema: the trigger runs as the owner of the extension
+CREATE FUNCTION sift._col_value_store_sql_drop() RETURNS event_trigger LANGUAGE plpgsql
+	SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+	IF EXISTS (SELECT 1 FROM pg_event_trigger_dropped_objects() WHERE object_type = 'index') THEN
+		PERFORM sift._col_value_store_drop_unused();
+	END IF;
+END $$;
+CREATE EVENT TRIGGER sift_col_value_store_sql_drop ON sql_drop EXECUTE FUNCTION sift._col_value_store_sql_drop();
+
+CREATE FUNCTION sift.col_value_store_compact(tbl regclass, col name) RETURNS int8 LANGUAGE plpgsql AS $$
+DECLARE
+	st regclass := sift._col_value_store_begin(tbl, col);
+	m regclass;
+BEGIN
+	IF st IS NULL THEN
+		RETURN 0;
+	END IF;
+	FOR m IN SELECT DISTINCT u.member FROM sift.col_value_store_usage(st) u
+	          WHERE u.member IS NOT NULL AND u.epoch < (SELECT max(v.epoch) FROM sift.col_value_store_usage(st) v)
+	LOOP
+		PERFORM sift.col_maintain(m);
+	END LOOP;
+	RETURN sift._col_value_store_end(st);
+END $$;
+COMMENT ON FUNCTION sift.col_value_store_compact(regclass, name) IS 'Frees the garbage of the shared value store of a column: begins a new epoch, rewrites the segments that name the old one so that they name the new, and retires the old epoch (VACUUM removes its runs once no reader can need them). Returns the runs removed now. Waits for the writers of the store and blocks them while it runs.';
+
 CREATE VIEW sift.col_value_store_status AS
 SELECT s.oid::regclass AS store, t.oid::regclass AS table_name, a.attname AS column_name,
        pg_relation_size(s.oid) AS bytes,

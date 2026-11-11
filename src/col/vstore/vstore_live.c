@@ -132,6 +132,38 @@ store_uses(Oid store)
 	return uses;
 }
 
+/*
+ * What the segments of the members refer to: the codes of the current epoch that any of them names (*live) of those the store holds (*total), and the epochs
+ * any of them names (a Bitmapset of the low 32 bits). Reads the dictionaries of every segment of the members
+ */
+void
+sift_vstore_usage(Oid store, uint64 *epoch, uint64 *total, uint64 *live, Bitmapset **epochs)
+{
+	Relation	rel = table_open(store, AccessShareLock);
+	List	   *uses;
+	uint8	   *any = NULL;
+	uint64		nbits = 0;
+
+	*total = sift_vstore_dir_codes(rel, epoch);
+	table_close(rel, AccessShareLock);
+	*epochs = NULL;
+	uses = store_uses(store);
+	foreach_ptr(Use, u, uses)
+	{
+		*epochs = bms_add_member(*epochs, (int) u->epoch);
+		if (u->epoch != (uint32) *epoch)
+			continue;
+		if (u->nbits > nbits)
+		{
+			any = any ? repalloc0(any, (nbits + 7) / 8, (u->nbits + 7) / 8) : palloc0((u->nbits + 7) / 8);
+			nbits = u->nbits;
+		}
+		for (uint64 i = 0; i < (u->nbits + 7) / 8; i++)
+			any[i] |= u->bits[i];
+	}
+	*live = any ? use_count(any, nbits) : 0;
+}
+
 PG_FUNCTION_INFO_V1(sift_col_value_store_usage);
 
 /*
@@ -201,7 +233,7 @@ sift_col_value_store_usage(PG_FUNCTION_ARGS)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, vals, nulls);
 		}
 	}
-	if (epochs == NIL)
+	if (!list_member_int(epochs, (int) (uint32) epoch))
 	{
 		Datum		vals[5] = {Int64GetDatum(epoch), 0, 0, Int64GetDatum(0), Int64GetDatum(total)};
 		bool		nulls[5] = {false, true, true, false, false};

@@ -652,6 +652,28 @@ sift_cseg_ref_codes(SiftColSegment *seg, int col, uint32 *store, uint32 *epoch, 
 	return codes;
 }
 
+/* Whether a leaf of the segment refers to an epoch of its shared value store that is not the store's current one */
+bool
+sift_cseg_names_old_epoch(SiftColSegment *seg)
+{
+	for (int c = 0; sift_cref_host != NULL && c < seg->schema->ncols; c++)
+	{
+		uint64		off,
+					len;
+		uint32		head[DICT_REF_WORDS];
+
+		if (seg->schema->cols[c].store != SIFT_COLS_STR)
+			continue;
+		dict_region(seg, c, &off, &len);
+		if (len < sizeof(head))
+			continue;
+		seg_read(seg, seg_sec(seg, SIFT_SEC_DICT)->off + off, sizeof(head), head);
+		if (head[0] == DICT_REF && sift_cref_host->epoch(head[3]) != head[4])
+			return true;
+	}
+	return false;
+}
+
 /*
  * The searchable form of the dictionary at stream offset off, len bytes (the forms 0, 2, 3 and 5), NULL for the compact form, which is read whole. The segment is whatever
  * the stream belongs to: a segment, or a run of a shared value store (col/vstore/vstore_run.c), whose dictionary starts after its header

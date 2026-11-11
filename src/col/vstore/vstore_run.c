@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/transam.h"
 #include "access/table.h"
 #include "catalog/pg_class.h"
 #include "lib/stringinfo.h"
@@ -34,6 +35,7 @@
 #define VRUN_MAGIC			0x4e555256	/* 'VRUN' */
 #define VRUN_MERGE_ABOVE	12			/* runs of an epoch above which the appender merges the smallest adjacent ones */
 #define VRUN_MERGE_WIDTH	4
+#define VRUN_RETIRED		0x0100		/* flag of a run of an epoch no segment names: removed when the transaction id in sb_lo/sb_hi is below the horizon */
 
 typedef struct VRunHead
 {
@@ -101,7 +103,7 @@ view_get(Oid store)
 	v = hash_search(views, &store, HASH_ENTER, &found);
 	if (!found)
 	{
-		v->cx = AllocSetContextCreate(TopMemoryContext, "sift value store view", ALLOCSET_DEFAULT_SIZES);
+		v->cx = AllocSetContextCreate(TopMemoryContext, "sift cache value store view", ALLOCSET_DEFAULT_SIZES);
 		v->slots = NULL;
 		v->nslots = 0;
 		v->indexed = 0;
@@ -168,16 +170,14 @@ cmp_base(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The runs of the newest epoch in code order; their epoch */
+/* The runs of an epoch in code order (UINT64_MAX in *epoch: the current epoch of the store, which is returned in it) */
 static int
 dir_runs(const SiftDirSnapshot *snap, SiftSegEntry *runs, uint64 *epoch)
 {
 	int			n = 0;
 
-	*epoch = 0;
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].kind == SIFT_SEG_VALRUN)
-			*epoch = Max(*epoch, snap->segs[i].reserved);
+	if (*epoch == UINT64_MAX)
+		*epoch = snap->meta.sum_dl;
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved == *epoch)
 			runs[n++] = snap->segs[i];
@@ -320,7 +320,7 @@ view_refresh(SiftVStore *vs)
 {
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
-	uint64		epoch;
+	uint64		epoch = UINT64_MAX;
 	int			n;
 
 	sift_dir_read(vs->rel, snap);
@@ -354,6 +354,21 @@ sift_vstore_forget_views(void)
 }
 #endif
 
+/* The current epoch of a store (the low 32 bits, the way a segment names it), from the metapage of its relation */
+uint32
+sift_vstore_current_epoch(uint32 store)
+{
+	Relation	rel = RelationIdGetRelation(store);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	uint32		epoch;
+
+	sift_dir_read(rel, snap);
+	epoch = (uint32) snap->meta.sum_dl;
+	RelationClose(rel);
+	pfree(snap);
+	return epoch;
+}
+
 /* The codes of the newest epoch of the store and the epoch, read from its directory (no run is read) */
 uint64
 sift_vstore_dir_codes(Relation rel, uint64 *epoch)
@@ -363,6 +378,7 @@ sift_vstore_dir_codes(Relation rel, uint64 *epoch)
 	int			n;
 	uint64		codes = 0;
 
+	*epoch = UINT64_MAX;
 	sift_dir_read(rel, snap);
 	n = dir_runs(snap, runs, epoch);
 	for (int i = 0; i < n; i++)
@@ -496,12 +512,140 @@ write_run(SiftVStore *vs, const SiftCDict *src, uint32 from, uint32 lo, uint32 n
 	pfree(out.data);
 }
 
+static void
+epoch_edit(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	meta->sum_dl++;
+}
+
+/*
+ * A new epoch of the store: the codes begin again at 0 and the runs of the epochs before are kept for the segments that name them (until no segment does,
+ * sift_vstore_retire). Nothing is written but the metapage; the strings a segment needs are appended to the new epoch when the segment is written
+ */
+void
+sift_vstore_bump_epoch(SiftVStore *vs)
+{
+	SiftDirChange chg = {.fn = epoch_edit};
+
+	LockRelationForExtension(vs->rel, ExclusiveLock);
+	pfree(view_refresh(vs));
+	if (vs->view->total > 0)
+		sift_dir_update(vs->rel, &chg);
+	UnlockRelationForExtension(vs->rel, ExclusiveLock);
+	pfree(view_refresh(vs));
+}
+
+/* Whether the store has runs of an epoch before the current one */
+bool
+sift_vstore_old_epochs(SiftVStore *vs)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	bool		old = false;
+
+	sift_dir_read(vs->rel, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		old |= snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved < snap->meta.sum_dl;
+	pfree(snap);
+	return old;
+}
+
+typedef struct RetireEdit
+{
+	uint64	   *mark;			/* generations of the runs that are marked retired */
+	int			nmark;
+	uint64	   *gone;			/* generations of the runs that are removed */
+	int			ngone;
+	FullTransactionId xid;
+} RetireEdit;
+
+static bool
+gen_in(const uint64 *gens, int n, uint64 gen)
+{
+	for (int i = 0; i < n; i++)
+		if (gens[i] == gen)
+			return true;
+	return false;
+}
+
+static void
+retire_edit(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	RetireEdit *ed = arg;
+	int			k = 0;
+
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		if (gen_in(ed->gone, ed->ngone, dir->segs[i].gen))
+			continue;
+		if (gen_in(ed->mark, ed->nmark, dir->segs[i].gen))
+		{
+			dir->segs[i].flags |= VRUN_RETIRED;
+			dir->segs[i].sb_lo = (uint32) U64FromFullTransactionId(ed->xid);
+			dir->segs[i].sb_hi = (uint32) (U64FromFullTransactionId(ed->xid) >> 32);
+		}
+		dir->segs[k++] = dir->segs[i];
+	}
+	dir->nsegs = k;
+}
+
+/*
+ * The epochs before the current one that no segment names (in_use holds the others, by their low 32 bits): their runs are marked retired with the transaction
+ * id after which no reader can hold a directory that has a segment naming them, and removed (their extents released) once that id is below the horizon.
+ * The caller holds the store in ShareRowExclusiveLock (no writer is between its codes and its segment) and the members against maintenance. Returns the
+ * runs removed
+ */
+int
+sift_vstore_retire(SiftVStore *vs, const Bitmapset *in_use)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	RetireEdit	ed = {0};
+	SiftExtent *rel_ext;
+	int			nrel = 0;
+	SiftDirChange chg = {0};
+
+	sift_dir_read(vs->rel, snap);
+	ed.mark = palloc(snap->nsegs * sizeof(uint64) + 1);
+	ed.gone = palloc(snap->nsegs * sizeof(uint64) + 1);
+	ed.xid = ReadNextFullTransactionId();
+	rel_ext = palloc((Size) snap->nsegs * (SIFT_MAX_EXTENTS + 1) * sizeof(SiftExtent));
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind != SIFT_SEG_VALRUN || e->reserved >= snap->meta.sum_dl)
+			continue;
+		if (e->flags & VRUN_RETIRED)
+		{
+			FullTransactionId at = FullTransactionIdFromU64((uint64) e->sb_hi << 32 | e->sb_lo);
+
+			if (sift_store_removable(vs->rel, at))
+			{
+				ed.gone[ed.ngone++] = e->gen;
+				nrel += seg_extents(vs->rel, e, rel_ext + nrel);
+				sift_extent_push(rel_ext, &nrel, e->header_blk, 1);
+			}
+		}
+		else if (!bms_is_member((int) e->reserved, in_use))
+			ed.mark[ed.nmark++] = e->gen;
+	}
+	if (ed.nmark + ed.ngone > 0)
+	{
+		chg.fn = retire_edit;
+		chg.arg = &ed;
+		chg.release = rel_ext;
+		chg.nrelease = nrel;
+		sift_dir_update(vs->rel, &chg);
+	}
+	pfree(snap);
+	return ed.ngone;
+}
+
 /* The smallest window of adjacent runs, merged into one (the codes do not change) */
 static void
 merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 {
 	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
-	uint64		epoch;
+	uint64		epoch = UINT64_MAX;
 	int			n = dir_runs(snap, runs, &epoch),
 				best = 0;
 	uint64		best_bytes = UINT64_MAX;
@@ -563,51 +707,66 @@ map_codes(SiftVStore *vs, SiftCDict *batch, uint32 *map)
 	}
 }
 
-/* map[i]: the code of the value i of the batch (batch->n entries); the values the store has not got are appended as one run. Returns how many were */
+/*
+ * map[i]: the code of the value i of the batch (batch->n entries) in the current epoch of the store, which is returned in *epoch with the codes it holds in *ncodes;
+ * the values the store has not got are appended as one run. Returns how many were. The caller holds the store in RowExclusiveLock to the end of its transaction,
+ * which keeps the epoch from being retired under the segment it writes
+ */
 uint32
-sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch_in, const SiftCcPolicy *pol, uint32 *map)
+sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch_in, const SiftCcPolicy *pol, uint32 *map, uint64 *epoch, uint64 *ncodes)
 {
 	SiftCDict  *batch = (SiftCDict *) batch_in;
-	uint32		missing = 0,
+	uint32		missing,
 				appended = 0;
 	SiftDirSnapshot *snap;
 
+retry:
+	missing = 0;
 	memset(map, 0xff, batch->n * sizeof(uint32));
 	pfree(view_refresh(vs));
+	*epoch = vs->view->epoch;
 	map_codes(vs, batch, map);
 	for (uint32 i = 0; i < batch->n; i++)
 		missing += map[i] == PG_UINT32_MAX;
-	if (missing == 0)
-		return 0;
-	LockRelationForExtension(vs->rel, ExclusiveLock);
-	snap = view_refresh(vs);
-	map_codes(vs, batch, map);
+	if (missing > 0)
 	{
-		SiftCDict  *fresh = sift_cdict_create(vs->view->cx);
-		uint32		lo = vs->view->total;
-
-		for (uint32 i = 0; i < batch->n; i++)
+		LockRelationForExtension(vs->rel, ExclusiveLock);
+		snap = view_refresh(vs);
+		if (vs->view->epoch != *epoch)	/* a new epoch began since: the codes found are the old one's */
 		{
-			uint32		len;
-			const char *s;
-
-			if (map[i] != PG_UINT32_MAX)
-				continue;
-			s = sift_cdict_str(batch, i, &len);
-			map[i] = lo + sift_cdict_intern(fresh, s, len);
-		}
-		if (fresh->n > 0)
-		{
-			write_run(vs, fresh, 0, lo, fresh->n, pol, NULL, 0);
-			/* published: the view has the run as it was made (the directory update is logged after the pages of the run) */
-			view_add(vs->view, lo, lo, fresh);
-			appended = fresh->n;
+			UnlockRelationForExtension(vs->rel, ExclusiveLock);
 			pfree(snap);
-			snap = view_refresh(vs);
+			goto retry;
 		}
+		map_codes(vs, batch, map);
+		{
+			SiftCDict  *fresh = sift_cdict_create(vs->view->cx);
+			uint32		lo = vs->view->total;
+
+			for (uint32 i = 0; i < batch->n; i++)
+			{
+				uint32		len;
+				const char *s;
+
+				if (map[i] != PG_UINT32_MAX)
+					continue;
+				s = sift_cdict_str(batch, i, &len);
+				map[i] = lo + sift_cdict_intern(fresh, s, len);
+			}
+			if (fresh->n > 0)
+			{
+				write_run(vs, fresh, 0, lo, fresh->n, pol, NULL, 0);
+				/* published: the view has the run as it was made (the directory update is logged after the pages of the run) */
+				view_add(vs->view, lo, lo, fresh);
+				appended = fresh->n;
+				pfree(snap);
+				snap = view_refresh(vs);
+			}
+		}
+		merge_runs(vs, pol, snap);
+		UnlockRelationForExtension(vs->rel, ExclusiveLock);
 	}
-	merge_runs(vs, pol, snap);
-	UnlockRelationForExtension(vs->rel, ExclusiveLock);
+	*ncodes = vs->view->total;
 	return appended;
 }
 
@@ -639,16 +798,16 @@ sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext 
 	Relation	rel;
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
 	SiftSegEntry *runs = palloc(SIFT_MAX_SEGMENTS * sizeof(SiftSegEntry));
-	uint64		ep;
+	uint64		ep = epoch;
 
 	if (!sift_vstore_is_store(store))
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("a segment of index \"%s\" names relation %u as its shared value store, which is none",
-														 RelationGetRelationName(index), store)));
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("a segment names relation %u as its shared value store, which is none", store)));
 	LockRelationOid(store, AccessShareLock);
 	rel = RelationIdGetRelation(store);
 	sift_dir_read(rel, snap);
+	/* the epoch is the segment's: the store keeps those it names until no segment does (vstore_gc) */
 	r->nruns = dir_runs(snap, runs, &ep);
-	if ((uint32) ep != epoch)
+	if (r->nruns == 0 && (uint32) snap->meta.sum_dl != epoch)
 		vs_corrupt(rel, "a segment names an epoch of the store that is gone");
 	r->store = store;
 	r->cx = mcxt;

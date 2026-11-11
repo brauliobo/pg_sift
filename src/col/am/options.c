@@ -6,6 +6,7 @@
 #include "postgres.h"
 #include "access/reloptions.h"
 #include "utils/varlena.h"
+#include "col/vstore/vstore.h"
 #include "col/dictshm.h"
 #include "col/leafshm.h"
 #include "col/point.h"
@@ -463,6 +464,8 @@ sift_col_init(void)
 							 NULL, &sift_test_col_point_unrooted, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomStringVariable("sift.test_vstore_columns", "testing: columns whose values the indexes built next share through a value store",
 							NULL, &sift_test_vstore_columns, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_vstore_gc_kb", "Testing: the size (kB) of a shared value store from which VACUUM looks for codes that no index names.",
+							NULL, &sift_vstore_gc_kb, 8192, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

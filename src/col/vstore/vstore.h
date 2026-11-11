@@ -8,6 +8,7 @@
 
 #include "postgres.h"
 
+#include "nodes/bitmapset.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
@@ -76,9 +77,16 @@ extern SiftVStore *sift_vstore_open(Oid store, LOCKMODE lock);
 extern void sift_vstore_close(SiftVStore *vs);
 extern uint64 sift_vstore_ncodes(SiftVStore *vs);
 extern uint64 sift_vstore_epoch(SiftVStore *vs);
+extern void sift_vstore_bump_epoch(SiftVStore *vs);
+extern bool sift_vstore_old_epochs(SiftVStore *vs);
+extern uint32 sift_vstore_current_epoch(uint32 store);
+extern void sift_vstore_vacuum(Relation index);
+extern PGDLLIMPORT int sift_vstore_gc_kb;
+extern int	sift_vstore_retire(SiftVStore *vs, const Bitmapset *in_use);
 extern uint64 sift_vstore_dir_codes(Relation rel, uint64 *epoch);
+extern void sift_vstore_usage(Oid store, uint64 *epoch, uint64 *total, uint64 *live, Bitmapset **epochs);
 /* map[i] = the code in the store of the value i of the batch; the values it has not got are appended as one run; returns how many were */
-extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map);
+extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map, uint64 *epoch, uint64 *ncodes);
 
 /* Whether the store has at least ncodes codes of the epoch (low 32 bits), after reading its runs again when the view has fewer or is of another; the string of a code of it, valid until the store is read again */
 extern bool sift_vstore_have(SiftVStore *vs, uint64 ncodes, uint32 epoch);

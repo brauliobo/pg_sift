@@ -4,7 +4,9 @@
  * the WAL budget of a vacuum
  */
 #include "postgres.h"
+#include "access/parallel.h"
 #include "col/maint/maint_int.h"
+#include "col/vstore/vstore.h"
 
 double		sift_col_auto_merge_wal_pct = 5.0;
 
@@ -156,5 +158,9 @@ sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, Index
 IndexBulkDeleteResult *
 sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	return sift_mops_vacuumcleanup(&maint_col_ops, info, stats);
+	IndexBulkDeleteResult *result = sift_mops_vacuumcleanup(&maint_col_ops, info, stats);
+
+	if (!IsParallelWorker() && !RecoveryInProgress())
+		sift_vstore_vacuum(info->index);
+	return result;
 }
