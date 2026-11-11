@@ -207,9 +207,10 @@ declared_scope(Oid heapoid, const SiftScopeSpecs *specs, Oid relid)
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
 		const SiftScopeSpec *sp = specs->s[i];
-		Oid			nsp = sp->rel_schema ? get_namespace_oid(sp->rel_schema, true) : get_rel_namespace(heapoid);
+		Oid			nsp = sp->rel.schema ? get_namespace_oid(sp->rel.schema, true) : get_rel_namespace(heapoid);
 
-		if (OidIsValid(nsp) && get_relname_relid(sp->rel_name, nsp) == relid)
+		/* the pairs of a scope of two paths are not the rows of its first relation: a join to it is not the scope */
+		if (sp->joined == NULL && OidIsValid(nsp) && get_relname_relid(sp->rel.name, nsp) == relid)
 			return sp;
 	}
 	return NULL;
@@ -433,14 +434,14 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			return psprintf("a condition reads the scope relation and another table (a table of keys, a join): %s", expr_text(c, q));
 		if (member_equality(c, rti, q, &theirs, &ours))
 		{
-			if (item_attno(map, nmap, theirs->varattno) != get_attnum(relid, sp->member) || ours->varattno != get_attnum(c->heapoid, sp->fk))
-				return psprintf("the join is not by the declared member column %s and the declared column %s of the scanned table", sp->member, sp->fk);
+			if (item_attno(map, nmap, theirs->varattno) != get_attnum(relid, sp->rel.a) || ours->varattno != get_attnum(c->heapoid, sp->fk))
+				return psprintf("the join is not by the declared member column %s and the declared column %s of the scanned table", sp->rel.a, sp->fk);
 			if (joinq != NULL && !equal(q, joinq))
 				return "the scope relation is joined by more than one equality";
 			joinq = q;
 			fk = ours;
 		}
-		else if ((val = key_operand(rti, map, nmap, get_attnum(relid, sp->scope_key), q)) != NULL)
+		else if ((val = key_operand(rti, map, nmap, get_attnum(relid, sp->rel.b), q)) != NULL)
 		{
 			if (!key_source(c, val, &sc))
 				return psprintf("the scope relation has another condition: %s", expr_text(c, q));
@@ -452,7 +453,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			return psprintf("the scope relation has another condition: %s", expr_text(c, q));
 	}
 	if (joinq == NULL)
-		return psprintf("the scope relation is not joined by its member column %s to the column %s of the scanned table", sp->member, sp->fk);
+		return psprintf("the scope relation is not joined by its member column %s to the column %s of the scanned table", sp->rel.a, sp->fk);
 	if (keyq == NULL)
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
 	if (sc.nkeys > 1 && lj == NULL)

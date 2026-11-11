@@ -188,6 +188,24 @@ SELECT * FROM reads();
 DROP INDEX facts_col;
 DROP INDEX grants_direct_rev, grants_group_rev, memberships_rev;
 
+-- a join to the direct relation alone is not the pair set of a scope of two paths: the planner keeps it a join and its rows are the plain ones
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+CREATE FUNCTION direct_join() RETURNS TABLE (scope_read bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE q text := 'SELECT count(*), sum(f.amount) FROM facts f JOIN grants g ON g.dim_a_id = f.dim_a_id WHERE g.tenant_id = 1 AND g.deleted_at IS NULL';
+	p jsonb; a text; b text;
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE q INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE q INTO b;
+	RETURN QUERY SELECT jsonb_path_exists(p, '$.**."Scope Index"'), a = b;
+END $$;
+SELECT * FROM direct_join();
+DROP FUNCTION direct_join();
+DROP INDEX facts_col;
+
 -- the multiplicity limit is the one of the distinct pairs: a member reached by several paths adds no entry (all rows of this table are of member 5, reached by 2 paths here, of one pair)
 CREATE TABLE facts_hot AS SELECT i AS id, 5 AS dim_a_id, timestamptz '2026-01-01' + i * interval '9 minutes' AS created_at, 1 AS amount FROM generate_series(1, 3000) i;
 SELECT count(*) AS paths_per_row FROM (SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
