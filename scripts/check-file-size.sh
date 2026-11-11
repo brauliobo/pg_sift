@@ -8,8 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 LIMIT=1000
 
-# Allowed for good: the full install script of a released minor (sql/pg_sift--X.Y.sql) is frozen (scripts/released-sql.sha256) and cannot be split; a new minor adds only its update script.
-FROZEN='^sql/pg_sift--[0-9]+[.][0-9]+[.]sql$'
+# Allowed for good: the full install script of a released minor (sql/pg_sift--X.Y.sql) is frozen (scripts/released-sql.sha256) and cannot be split; an update script (sql/pg_sift--X.Y--X.Z.sql) is one file for PostgreSQL and cannot be split either.
+FROZEN='^sql/pg_sift--[0-9]+[.][0-9]+([.]sql|--[0-9.]+[.]sql)$'
 
 bad=0
 while IFS=$'\t' read -r f n; do
