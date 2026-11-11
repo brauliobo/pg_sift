@@ -24,6 +24,8 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "nodes/makefuncs.h"
+#include "optimizer/optimizer.h"
 
 #include "agg/agg.h"
 #include "agg/lookup/int.h"
@@ -295,7 +297,12 @@ map_scan_entries(AggExec *ex, MapTab *m, Relation rel, Relation idx, IndexScanDe
 	int			natts = RelationGetDescr(rel)->natts;
 	Datum		ivals[INDEX_MAX_KEYS];
 	bool		inulls[INDEX_MAX_KEYS];
+	int			keycol = -1;
 
+	if (map_keys_only(m, own))
+		for (int i = 0; i < idx->rd_index->indnatts && keycol < 0; i++)
+			if (idx->rd_index->indkey.values[i] == j->keyatt[0])
+				keycol = i + 1;
 	for (ItemPointer tid; (tid = index_getnext_tid(iscan, ForwardScanDirection)) != NULL;)
 	{
 		BlockNumber blk = ItemPointerGetBlockNumber(tid);
@@ -308,6 +315,14 @@ map_scan_entries(AggExec *ex, MapTab *m, Relation rel, Relation idx, IndexScanDe
 			continue;
 		}
 		PredicateLockPage(rel, blk, ex->snap);
+		if (keycol > 0)
+		{
+			bool		knull;
+			Datum		kd = index_getattr(iscan->xs_itup, keycol, iscan->xs_itupdesc, &knull);
+
+			map_add_key(ex, m, j, kd, knull);
+			continue;
+		}
 		index_deform_tuple(iscan->xs_itup, iscan->xs_itupdesc, ivals, inulls);
 		ExecClearTuple(vs);
 		memset(vs->tts_isnull, true, natts * sizeof(bool));
@@ -385,7 +400,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ScanKeyData keys[SIFT_AGG_MAX_JIDX];
 	Datum		val[SIFT_AGG_MAX_JIDX];
 	int			nkeys = 0;
-	bool		none = false;
+	bool		none = false,
+				cond_keys = false;	/* the keys of the scan are the table's own conditions (map_index; map_probe's are the join key and trailing equalities) */
 	Relation	idx;
 	KeptTry		kept = {.cx = cxt};
 	SiftAggJoin lj = *j;
@@ -406,7 +422,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		val[k] = isnull ? (Datum) 0 : datumCopy(d, get_typbyval(t), get_typlen(t));
 	}
 	ResetExprContext(ex->lutcx);
-	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
+	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys, &cond_keys) : NULL;
 	if (idx == NULL && !none && sift_agg_lookup_pushdown)
 		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL);
 	if (idx == NULL && !none && own == NULL && (m = lookdim_load(ex, ci, rel, cxt)) != NULL)
@@ -450,8 +466,20 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		firstq = ExecInitQual(j->first.qual, NULL);
 		firstcx = CreateStandaloneExprContext();
 	}
+	/*
+	 * Every condition of the table's own is a key of the btree scan (a keys-only table read through `scope_key = k`): the entries it returns pass it, so they are not tested
+	 * again and the column of the condition is not kept
+	 */
+	bool		filtered = own != NULL;
+
+	if (cond_keys && own != NULL && kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase) &&
+		list_length(make_ands_implicit((Expr *) cb->slot[j->fslot].expr)) == j->nidx)
+	{
+		own = NULL;
+		lj.ncol = 0;			/* the rows are those the keys of the scan pass: the map is filtered all the same */
+	}
 	MemoryContextSwitchTo(kept.cx);
-	m = map_new(&lj, own != NULL, kept.cx);
+	m = map_new(&lj, filtered, kept.cx);
 	m->lazy = kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase);
 	/* the key expressions live for the load, not in the context a cache keeps */
 	MemoryContextSwitchTo(old);

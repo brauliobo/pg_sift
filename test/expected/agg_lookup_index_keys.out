@@ -1,0 +1,127 @@
+-- A lookup table that is only the keys of its rows (a membership list: agg_lookup_keys_only), read through a btree whose scan keys are all the conditions of
+-- the join (`grp = 2`, `grp = 2 AND k < 3000`), takes the key of each row from the index entry: the entry is not deformed, tested again or kept as a column. Every
+-- other table keeps the read it had: a condition that is not a scan key (`NOT gone`, a second equality on a column of the index, a column the index does not
+-- hold), a key that is not an integer, a join that keeps the table (LEFT, an inner join with a repeated key, a byte table that is refused), and the rows of pages the
+-- visibility map does not hold all-visible (read from the heap) or an insert of the transaction. Every statement is run with the scan (serial, with workers) and with
+-- sift.enable_agg = off: the rows must be the same; the Lookup line of EXPLAIN shows the rows read and loaded (a NULL key is read and not loaded) and the heap fetches.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ev (id int PRIMARY KEY, k int, tk text, kind int2, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 1 + (i::bigint * 7919) % 6000, 't' || (1 + (i::bigint * 7919) % 6000), (i % 12)::int2, (i % 1000) / 10.0 FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (k, tk, kind, amount);
+CREATE TABLE pair (grp int, k int, tk text, gone boolean);
+INSERT INTO pair SELECT g, 1 + (g * 331 + i * 13) % 6000, 't' || (1 + (g * 331 + i * 13) % 6000), i % 9 = 0 FROM generate_series(1, 6) g, generate_series(1, 1500) i;
+INSERT INTO pair VALUES (2, 77, 't77', false), (2, 77, 't77', false), (2, NULL, NULL, false);
+CREATE INDEX pair_gk ON pair (grp, k);
+CREATE INDEX pair_gt ON pair (grp, tk);
+-- the same rows with the group twice in the index, and with an index that has the group alone
+CREATE TABLE pair2 AS TABLE pair;
+CREATE INDEX pair2_ggk ON pair2 (grp, grp, k);
+CREATE TABLE pair3 AS TABLE pair;
+CREATE INDEX pair3_g ON pair3 (grp);
+VACUUM (FREEZE, ANALYZE) ev;
+VACUUM (FREEZE, ANALYZE) pair, pair2, pair3;
+CREATE FUNCTION same(setup text, q text) RETURNS TABLE (pushed bool, lookup text, differing bigint, workers bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	EXECUTE 'SET LOCAL sift.agg_force = on';
+	EXECUTE 'SET LOCAL sift.agg_lookup_cache_kb = 0';
+	EXECUTE 'SET LOCAL sift.agg_lookup_shared_kb = 0';
+	EXECUTE setup;
+	pushed := false;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+		IF l LIKE '%Lookup: %' THEN lookup := regexp_replace(trim(l), ', [0-9]+ rows shared|, [0-9]+ % of the lookup tables'' pages all-visible| \(.*', '', 'g'); END IF;
+	END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_scan ON COMMIT DROP AS %s', q);
+	SET LOCAL parallel_setup_cost = 0;
+	SET LOCAL parallel_tuple_cost = 0;
+	SET LOCAL min_parallel_table_scan_size = 0;
+	SET LOCAL max_parallel_workers_per_gather = 2;
+	EXECUTE format('CREATE TEMP TABLE r_par ON COMMIT DROP AS %s', q);
+	RESET max_parallel_workers_per_gather;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	differing := (SELECT count(*) FROM ((TABLE r_scan EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_scan)) d);
+	workers := (SELECT count(*) FROM ((TABLE r_par EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_par)) d);
+	DROP TABLE r_scan, r_par, r_off;
+	RESET sift.enable_agg;
+	RETURN NEXT;
+END $$;
+CREATE TABLE cases (id serial, name text, setup text, q text);
+INSERT INTO cases (name, setup, q) VALUES
+	-- every condition is a scan key: the keys come from the index entries
+	('scan keys: equality',     'SELECT 1', $$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
+	('scan keys: anti',         'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
+	('scan keys: equality, range', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2 AND k < 3000) GROUP BY kind$$),
+	('scan keys: equality ANY', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = ANY ('{2,5}')) GROUP BY kind$$),
+	-- a condition that is not a scan key: the rows are tested
+	('not a key: boolean',      'SELECT 1', $$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2 AND NOT gone) GROUP BY kind$$),
+	('not a key: second column', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2 AND tk = 't77') GROUP BY kind$$),
+	('not a key: two ANY on one column', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair2 WHERE grp = ANY ('{2,5}') AND grp = ANY ('{3,6}')) GROUP BY kind$$),
+	('not a key: two equalities on one column', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair2 WHERE grp = 2 AND grp = 3) GROUP BY kind$$),
+	('not a key: two ANY, index of the column', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair3 WHERE grp = ANY ('{2,5}') AND grp = ANY ('{3,6}')) GROUP BY kind$$),
+	('not a key: key not in the index', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair3 WHERE grp = 2) GROUP BY kind$$),
+	-- a key that is not an integer: its table is not the keys of the rows
+	('text key',                'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE tk IN (SELECT tk FROM pair WHERE grp = 2) GROUP BY kind$$),
+	-- a table the join keeps: its rows are not only keys
+	('inner, repeated key',     'SELECT 1', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
+	('inner, repeated key, no key filters', 'SET LOCAL sift.agg_join_filter = off', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
+	('left',                    'SELECT 1', $$SELECT kind, count(p.k) AS n FROM ev LEFT JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
+	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
+	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$);
+SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s ORDER BY c.id;
+                  name                   | pushed |                                        lookup                                         | differing | workers 
+-----------------------------------------+--------+---------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
+ scan keys: anti                         | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables                |         0 |       0
+ scan keys: equality, range              | t      | Lookup: 809 rows read, 809 rows loaded, 1 index scans, 1 key filters, 1 semi tables   |         0 |       0
+ scan keys: equality ANY                 | t      | Lookup: 9003 rows read, 3002 rows loaded, 1 key filters, 1 semi tables                |         0 |       0
+ not a key: boolean                      | t      | Lookup: 1503 rows read, 1336 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
+ not a key: second column                | t      | Lookup: 3 rows read, 3 rows loaded, 1 index scans, 1 key filters, 1 semi tables       |         0 |       0
+ not a key: two ANY on one column        | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
+ not a key: two equalities on one column | t      | Lookup: 1503 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
+ not a key: two ANY, index of the column | t      | Lookup: 3000 rows read, 0 rows loaded, 1 index scans, 1 key filters, 1 semi tables    |         0 |       0
+ not a key: key not in the index         | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
+ text key                                | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 text key filters           |         0 |       0
+ inner, repeated key                     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans, 1 key filters                |         0 |       0
+ inner, repeated key, no key filters     | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
+ left                                    | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
+ byte table refused                      | t      | Lookup: 1503 rows read, 1502 rows loaded, 1 index scans                               |         0 |       0
+ byte table refused, anti                | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans                               |         0 |       0
+(16 rows)
+
+-- pages that are not all-visible (new versions, deleted rows) and an insert of the transaction: their rows come from the heap, the others from the index entries
+UPDATE pair SET gone = NOT gone WHERE k % 10 = 0;
+DELETE FROM pair WHERE grp = 2 AND k % 7 = 0;
+INSERT INTO pair SELECT 2, 1 + i * 17 % 6000, NULL, false FROM generate_series(1, 300) i;
+SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 2, 12) ORDER BY c.id;
+        name         | pushed |                                                  lookup                                                  | differing | workers 
+---------------------+--------+----------------------------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1953 heap fetches, 1 key filters, 1 semi tables |         0 |       0
+ scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1650 heap fetches, 1 semi tables                |         0 |       0
+ inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1710 heap fetches, 1 key filters                |         0 |       0
+(3 rows)
+
+VACUUM pair;
+SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 12) ORDER BY c.id;
+        name         | pushed |                                        lookup                                         | differing | workers 
+---------------------+--------+---------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters, 1 semi tables |         0 |       0
+ inner, repeated key | t      | Lookup: 1587 rows read, 1586 rows loaded, 1 index scans, 1 key filters                |         0 |       0
+(2 rows)
+
+BEGIN;
+INSERT INTO pair SELECT 2, 2 + i * 19 % 6000, NULL, false FROM generate_series(1, 50) i;
+SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 2) ORDER BY c.id;
+        name         | pushed |                                                 lookup                                                 | differing | workers 
+---------------------+--------+--------------------------------------------------------------------------------------------------------+-----------+---------
+ scan keys: equality | t      | Lookup: 1637 rows read, 1636 rows loaded, 1 index scans, 50 heap fetches, 1 key filters, 1 semi tables |         0 |       0
+ scan keys: anti     | t      | Lookup: 1500 rows read, 1500 rows loaded, 1 index scans, 1 semi tables                                 |         0 |       0
+(2 rows)
+
+ROLLBACK;
+DROP FUNCTION same(text, text);
+DROP TABLE cases, ev, pair, pair2, pair3;
+DROP EXTENSION pg_sift;

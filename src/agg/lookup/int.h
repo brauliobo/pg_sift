@@ -184,7 +184,7 @@ extern MapTab * map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext c
 extern void map_kept_keep(AggExec *ex, Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt);
 extern int map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ);
 
-extern Relation map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys);
+extern Relation map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys, bool *all);
 extern MapTab * map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt);
 
 #endif							/* SIFT_AGG_LOOKUP_DIR_INT_H */

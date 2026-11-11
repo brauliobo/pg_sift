@@ -196,6 +196,8 @@ combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint3
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
+	/* the load tested the table's own condition and kept no column (map_load_table): the condition, the one slot, holds for every row it has */
+	bool		tested = m->ncol < j->ncol;
 
 	combo_grow_out(ex, cs, cb->nslots, nout);
 	ent->nout = nout;
@@ -203,15 +205,15 @@ combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint3
 	for (uint32 o = 0; o < nout; o++)
 	{
 		cs->maprow[cs->nout] = nm > 0 ? rows[o] : UINT32_MAX;
-		for (int c = 0; c < j->ncol; c++)
+		for (int c = 0; c < j->ncol && !tested; c++)
 			if (nm > 0)
 				map_bind(ex, cb->nleaves + c, m, rows[o], c);
 			else
 				bind_param(ex, cb->nleaves + c, (Datum) 0, true);
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
-			bool		isnull;
-			Datum		d = ExecEvalExprSwitchContext(cs->slot[sl], ex->lutcx, &isnull);
+			bool		isnull = false;
+			Datum		d = tested ? BoolGetDatum(nm > 0) : ExecEvalExprSwitchContext(cs->slot[sl], ex->lutcx, &isnull);
 			uint32		r;
 
 			if (!cb->slot[sl].is_key)

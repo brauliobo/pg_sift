@@ -197,10 +197,10 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 	if (!combo_keys(ex, ci, NULL, ptr, len, iv, nul))
 		return false;
 	nm = map_find(ex->cs[ci].map, ptr, len, iv, &rows);
-	return j->fslot >= 0 && !ex->cs[ci].map->filtered && nm > 0 ? combo_filter_rows(ex, ci, rows, nm) > 0 : nm > 0;
+	return j->fslot >= 0 && nm > 0 ? combo_filter_rows(ex, ci, rows, nm) > 0 : nm > 0;
 }
 
-/* the rows that hold the rest of the ON clause, moved to the front: how many */
+/* the rows that hold the rest of the ON clause, moved to the front: how many (a filtered table loaded only rows that hold it, and may keep no column to test it with) */
 int
 combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm)
 {
@@ -208,6 +208,9 @@ combo_filter_rows(AggExec *ex, int ci, uint32 *rows, int nm)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	int			keep = 0;
+
+	if (cs->map->filtered)
+		return nm;
 
 	for (int r = 0; r < nm; r++)
 	{

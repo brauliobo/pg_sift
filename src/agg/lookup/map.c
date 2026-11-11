@@ -240,6 +240,24 @@ map_eval_cols(MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 		}
 }
 
+/* a table kept as the keys of its rows (m->lazy: one key, no column, no expression): a row is its key, the index entry has it */
+bool
+map_keys_only(const MapTab *m, const ExprState *own)
+{
+	return m->lazy && own == NULL && m->nkey == 1 && m->ncol == 0 && m->kx[0] == NULL && m->kcx == NULL;
+}
+
+void
+map_add_key(AggExec *ex, MapTab *m, const SiftAggJoin *j, Datum key, bool isnull)
+{
+	ex->lookup_read++;
+	if (isnull && !m->knull[0] && !m->keep)
+		return;					/* NULL equals nothing */
+	if (m->nrow == m->cap)
+		map_grow(m);
+	m->rkey[m->nrow++] = sift_aggspec_operand_int(j->keytype[0], key);
+}
+
 /* a row the scan of the table returned: into the table when it holds the ON clause's own conditions (`own`, when they read no leaf: a row that fails them matches no tuple) */
 void
 map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own)
@@ -283,19 +301,22 @@ index_cond(const SiftAggJoin *j, int k, Relation idx, int col, Oid *rt)
 /*
  * The btree of the joined table that starts with columns the table's `column = value` and `column = ANY (array)` conditions give (the planner found them, join_index_quals),
  * opened, with the keys of its scan: the rows that can match are those it returns. The column that follows the points may be bounded (`column < value`, `>=`, both bounds
- * of a range are keys), which ends the keys. NULL when no index fits; *none when a value is NULL (no row).
+ * of a range are keys), which ends the keys. NULL when no index fits; *none when a value is NULL (no row). *all: every condition is a key of the scan (a second equality
+ * on a column of the index is not: it gets no key), so that the rows it returns need no test of their own.
  */
 Relation
-map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys)
+map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *keys, int *nkeys, bool *all)
 {
 	Relation	best = NULL;
 	int			nbest = 0;
+	uint32		bused = 0;
 
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
 		ScanKeyData ik[SIFT_AGG_MAX_JIDX];
 		int			n = 0;
+		uint32		used = 0;
 
 		if (idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL))
 			for (int col = 0; col < idx->rd_index->indnkeyatts && n < SIFT_AGG_MAX_JIDX; col++)
@@ -310,6 +331,7 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 				{
 					index_cond(j, point, idx, col, &rt);
 					ScanKeyEntryInitialize(&ik[n++], j->idxany[point] ? SK_SEARCHARRAY : 0, col + 1, BTEqualStrategyNumber, rt, j->idxcoll[point], get_opcode(j->idxop[point]), val[point]);
+					used |= 1U << point;
 					continue;
 				}
 				for (int k = 0; k < j->nidx && n < SIFT_AGG_MAX_JIDX; k++)
@@ -317,7 +339,10 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 					int			strategy = index_cond(j, k, idx, col, &rt);
 
 					if (strategy > 0)
+					{
 						ScanKeyEntryInitialize(&ik[n++], 0, col + 1, strategy, rt, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+						used |= 1U << k;
+					}
 				}
 				break;
 			}
@@ -327,12 +352,14 @@ map_index(Relation rel, const SiftAggJoin *j, const Datum *val, ScanKeyData *key
 				index_close(best, AccessShareLock);
 			best = idx;
 			nbest = n;
+			bused = used;
 			memcpy(keys, ik, n * sizeof(ScanKeyData));
 		}
 		else
 			index_close(idx, AccessShareLock);
 	}
 	*nkeys = nbest;
+	*all = bused == (1U << j->nidx) - 1;
 	return best;
 }
 
