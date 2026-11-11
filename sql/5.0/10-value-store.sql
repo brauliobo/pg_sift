@@ -1,4 +1,3 @@
-
 -- The shared value store of a column: one relation for each (table, column) that several sift_col indexes of the table share (docs/COL-VSTORE.md)
 CREATE FUNCTION sift.values_handler(internal) RETURNS table_am_handler
 	AS 'MODULE_PATHNAME', 'sift_values_handler' LANGUAGE C STRICT;
