@@ -21,6 +21,7 @@
 #include "access/xlog.h"
 #include "catalog/pg_type_d.h"
 #include "storage/lmgr.h"
+#include "port/pg_bitutils.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -28,6 +29,7 @@
 
 #include "col/am.h"
 #include "col/conn.h"
+#include "core/cmp.h"
 #include "core/rowmem.h"
 #include "core/tomb.h"
 
@@ -351,15 +353,18 @@ typedef struct KeyRec
 {
 	int64		key;
 	bool		kept;
+	bool		used;
 } KeyRec;
 
-static int
-cmp_keyrec(const void *a, const void *b)
+/* The slot of the key in an open-addressing table of KeyRec (at most half full) */
+static KeyRec *
+key_slot(KeyRec *tab, uint32 mask, int64 key)
 {
-	int64		x = ((const KeyRec *) a)->key,
-				y = ((const KeyRec *) b)->key;
+	uint32		h = (uint32) (((uint64) key * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & mask;
 
-	return x < y ? -1 : x > y;
+	while (tab[h].used && tab[h].key != key)
+		h = (h + 1) & mask;
+	return &tab[h];
 }
 
 bool
@@ -402,7 +407,8 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 	SiftConnWhy why = sift_conn_vouches(heap, index, stamp, snap);
 	const SiftTomb *rec;
 	int			n;
-	KeyRec	   *recs;
+	KeyRec	   *tab;
+	uint32		mask;
 	int64	   *keys;
 	bool	   *kept;
 	uint32		nk = 0;
@@ -414,9 +420,15 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 		return why;
 	log = sift_col_log(index);
 	rec = sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n);
-	recs = n > 0 ? sift_rows_alloc(n * sizeof(KeyRec)) : NULL;
+	/* the distinct keys are at most cap + 1 before the read refuses: the table of a log that overflows is no larger, and the records past the one that overflows it are not looked at */
+	mask = pg_nextpower2_32(2 * Max(Min((uint64) n, (uint64) cap + 1), 1)) - 1;
+	tab = sift_rows_alloc((mask + 1) * sizeof(KeyRec));
+	memset(tab, 0, (mask + 1) * sizeof(KeyRec));
 	for (int i = 0; i < n; i++)
 	{
+		KeyRec	   *slot;
+		bool		keeps = (rec[i].flags & SIFT_TOMB_KEPT) != 0;
+
 		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin))
 			continue;
 		if (rec[i].xid != last)
@@ -424,36 +436,31 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 			last = rec[i].xid;
 			last_void = sift_xid_state(last) == SIFT_XID_ABORTED;
 		}
-		if (!last_void)
-			recs[nk++] = (KeyRec) {(int64) rec[i].succ, (rec[i].flags & SIFT_TOMB_KEPT) != 0};
-	}
-	if (nk > 1)
-	{
-		uint32		w = 1;
-
-		qsort(recs, nk, sizeof(KeyRec), cmp_keyrec);
-		for (uint32 i = 1; i < nk; i++)
-			if (recs[i].key != recs[w - 1].key)
-				recs[w++] = recs[i];
-			else
-				recs[w - 1].kept &= recs[i].kept;
-		nk = w;
-	}
-	if (nk > cap)
-	{
-		if (recs)
-			pfree(recs);
-		return SIFT_CONN_OVERFLOW;
+		if (last_void)
+			continue;
+		slot = key_slot(tab, mask, (int64) rec[i].succ);
+		if (slot->used)
+			slot->kept &= keeps;
+		else
+		{
+			*slot = (KeyRec) {(int64) rec[i].succ, keeps, true};
+			if (++nk > cap)
+			{
+				pfree(tab);
+				return SIFT_CONN_OVERFLOW;
+			}
+		}
 	}
 	keys = nk > 0 ? palloc(nk * sizeof(int64)) : NULL;
 	kept = nk > 0 ? palloc(nk * sizeof(bool)) : NULL;
+	for (uint32 i = 0, w = 0; w < nk; i++)
+		if (tab[i].used)
+			keys[w++] = tab[i].key;
+	if (nk > 1)
+		sift_sort_i64(keys, nk);
 	for (uint32 i = 0; i < nk; i++)
-	{
-		keys[i] = recs[i].key;
-		kept[i] = recs[i].kept;
-	}
-	if (recs)
-		pfree(recs);
+		kept[i] = key_slot(tab, mask, keys[i])->kept;
+	pfree(tab);
 	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.n = nk,.cap = nk};
 	return SIFT_CONN_OK;
 }
