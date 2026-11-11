@@ -124,24 +124,6 @@ SHOW sift.agg_scope;
  on
 (1 row)
 
-SHOW sift.scope_patch_keys;
- sift.scope_patch_keys 
------------------------
- 4096
-(1 row)
-
-SELECT try('SET sift.scope_patch_keys = 0');
-                                         try                                          
---------------------------------------------------------------------------------------
- 0 is outside the valid range for parameter "sift.scope_patch_keys" (1 .. 1048576) []
-(1 row)
-
-SELECT try('SET sift.scope_patch_keys = 1048577');
-                                            try                                             
---------------------------------------------------------------------------------------------
- 1048577 is outside the valid range for parameter "sift.scope_patch_keys" (1 .. 1048576) []
-(1 row)
-
 -- the declaration: a dependency on the btree, the derived leaf, minor 45
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');

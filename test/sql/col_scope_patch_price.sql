@@ -1,0 +1,118 @@
+-- A read of a scope key leaves the members whose pairs changed since the stamp out of the units and reads their entity rows (the patch). The patch is priced at read time against the entity path
+-- (the members the relation lists for the keys, read through the entity rows): a member that has a pair now (a restore, a new pair) makes the patch read the entity units that may hold it,
+-- which an index whose units are cut by time holds in every unit. Every read is md5 equal to the plain join; the route is the cheaper one, and a patch reads the units of its members, not the table.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.agg_force = on;
+SET sift.test_scope_patch = off;
+SET sift.test_col_unit_rows = 1000;
+
+-- 30 groups; member m is in group 1 + m % 30 (and in one more for each fifth member); 3,000 members with 20 facts each over 300 days, in two tables so that each read has one index to take:
+-- by_member cuts the units of its entity rows by the member key, by_time by time (every unit holds rows of every member)
+CREATE TABLE membership (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
+INSERT INTO membership SELECT m, 1 + m % 30 FROM generate_series(1, 3000) m;
+INSERT INTO membership SELECT m, 1 + (m + 7) % 30 FROM generate_series(1, 3000, 5) m;
+CREATE INDEX membership_journal ON membership USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE TABLE facts_member (id int PRIMARY KEY, dim_a_id int, at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO facts_member SELECT i, 1 + (i * 7919) % 3000, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 40) FROM generate_series(1, 60000) i;
+CREATE TABLE facts_time (LIKE facts_member INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO facts_time SELECT * FROM facts_member;
+CREATE INDEX by_member ON facts_member USING sift_col (id, dim_a_id, at, v) WITH (key_cut = 'dim_a_id', scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id)');
+CREATE INDEX by_time ON facts_time USING sift_col (id, dim_a_id, at, v) WITH (key_cut = 'at', scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id)');
+REINDEX INDEX by_member;
+REINDEX INDEX by_time;
+VACUUM (FREEZE, ANALYZE) facts_member;
+VACUUM (FREEZE, ANALYZE) facts_time;
+VACUUM (ANALYZE) membership;
+
+-- the read of key k of the table's index, the plain join's answer to compare, the route it took and the rows of a patch as a share of the table's
+CREATE FUNCTION scope_run(tbl text, idx text, k int, OUT same boolean, OUT route text, OUT patched_keys int, OUT patched_rows int)
+LANGUAGE plpgsql AS $$
+DECLARE
+	q text := format('SELECT count(*), sum(v), min(id), max(id) FROM %I f WHERE sift.in_scope(%L::regclass, ''group_id'', f.dim_a_id, %s)', tbl, idx, k);
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT json_agg(t)::text FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(v), min(id), max(id) FROM %I f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = %s)) t', tbl, k) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}', CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'units' END);
+	patched_keys := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Keys"')::text::int, 0);
+	patched_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Rows"')::text::int, 0) * 100 / 60000;
+END $$;
+
+CREATE FUNCTION probe(k int) RETURNS TABLE (idx text, verdict text, route text, patched_keys int, patched_percent_of_table int) LANGUAGE sql AS $$
+	SELECT i.idx, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route, r.patched_keys, r.patched_rows
+	FROM (VALUES ('facts_member', 'by_member'), ('facts_time', 'by_time')) i (tbl, idx), LATERAL scope_run(i.tbl, i.idx, k) r ORDER BY i.idx
+$$;
+
+SELECT * FROM probe(1);
+
+-- pairs of group 1 restored for members that had none: they have facts and no pair in the units
+CREATE TEMP TABLE fresh AS SELECT m AS dim_a_id, row_number() OVER (ORDER BY m) AS n FROM generate_series(1, 3000) m WHERE m % 7 = 3 AND NOT EXISTS (SELECT 1 FROM membership x WHERE x.dim_a_id = m AND x.group_id = 1);
+
+INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n <= 1;
+SELECT '1 member' AS state, * FROM probe(1);
+
+INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n BETWEEN 2 AND 10;
+SELECT '10 dim_b' AS state, * FROM probe(1);
+
+INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n BETWEEN 11 AND 100;
+SELECT '100 dim_b' AS state, * FROM probe(1);
+SELECT '100 dim_b, other group' AS state, * FROM probe(2);
+
+-- the patch is only taken when it is cheaper: the testing setting takes it whatever it costs, and the answer is the same
+SET sift.test_scope_patch = on;
+SELECT '100 dim_b, patch forced' AS state, * FROM probe(1);
+SET sift.test_scope_patch = off;
+
+-- the pairs deleted again: the members left out of the units, nothing to patch
+DELETE FROM membership WHERE group_id = 1 AND dim_a_id IN (SELECT dim_a_id FROM fresh WHERE n <= 100);
+SELECT 'restored pairs deleted' AS state, * FROM probe(1);
+
+-- random edits of the pairs (restores, new pairs, deletes, moves) and of the facts with a read of a random key on both indexes after each: every read is the join's, whichever route it takes
+SELECT setseed(0.42);
+CREATE TABLE fuzz_result (reads int, mismatches int, patched int, priced_out int);
+DO $$
+DECLARE
+	reads int := 0;
+	mism int := 0;
+	patched int := 0;
+	priced int := 0;
+	r record;
+BEGIN
+	FOR i IN 1..24 LOOP
+		CASE floor(random() * 4)::int
+			WHEN 0 THEN INSERT INTO membership SELECT 1 + floor(random() * 3000)::int, 1 + floor(random() * 30)::int FROM generate_series(1, 1 + floor(random() * 150)::int) ON CONFLICT DO NOTHING;
+			WHEN 1 THEN DELETE FROM membership WHERE group_id = 1 + floor(random() * 30)::int AND dim_a_id % 40 = floor(random() * 40)::int;
+			WHEN 2 THEN WITH d AS (DELETE FROM membership WHERE dim_a_id % 211 = floor(random() * 211)::int RETURNING dim_a_id, group_id)
+				INSERT INTO membership SELECT dim_a_id, 1 + (group_id + floor(random() * 29)::int) % 30 FROM d ON CONFLICT DO NOTHING;
+			ELSE
+				INSERT INTO facts_member SELECT 300000 + i * 100 + j, 1 + floor(random() * 3000)::int, timestamptz '2026-03-01', j % 7, 'f' FROM generate_series(1, 30) j;
+				INSERT INTO facts_time SELECT * FROM facts_member WHERE id BETWEEN 300000 + i * 100 AND 300000 + i * 100 + 99;
+		END CASE;
+		COMMIT;
+		FOR r IN SELECT * FROM scope_run('facts_member', 'by_member', 1 + floor(random() * 30)::int) UNION ALL SELECT * FROM scope_run('facts_time', 'by_time', 1 + floor(random() * 30)::int)
+		LOOP
+			reads := reads + 1;
+			mism := mism + (NOT r.same)::int;
+			patched := patched + (r.patched_keys > 0)::int;
+			priced := priced + (r.route IS NOT DISTINCT FROM 'patch dearer than the entity path')::int;
+		END LOOP;
+	END LOOP;
+	INSERT INTO fuzz_result VALUES (reads, mism, patched, priced);
+	COMMIT;
+END $$;
+SELECT reads, mismatches, patched > 0 AS some_patched, priced_out > 0 AS some_priced_out FROM fuzz_result;
+
+DROP TABLE fuzz_result, facts_member, facts_time, membership;
+DROP FUNCTION probe(int), scope_run(text, text, int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

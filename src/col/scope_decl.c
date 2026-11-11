@@ -34,8 +34,8 @@
 #include "col/scope.h"
 
 bool		sift_agg_scope = true;
-int			sift_scope_patch_keys = 4096;
 double		sift_scope_max_multiplicity = 3.0;
+bool		sift_test_scope_patch = false;
 #ifdef SIFT_TESTING
 int			sift_test_scope_unit_kind = 0;
 #endif

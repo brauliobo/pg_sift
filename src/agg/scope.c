@@ -13,26 +13,105 @@
 /* check-memory: allow-allocs the arrays follow the keys of one scope conjunct and the members the caps of the statement allow, not the rows of the table */
 #include "postgres.h"
 
+#include "access/table.h"
 #include "utils/lsyscache.h"
 
 #include "core/cmp.h"
 #include "col/scope.h"
 #include "agg/agg_int.h"
+#include "agg/lookcol_int.h"
 
 /* the leaf of the scope key: the one whose path is "<key_name>#scope" (agg/col.c); -1 when the source has none */
 static int
-scope_leaf(const AggExec *ex, const char *key_name)
+scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 {
 	const char *path = psprintf("%s#scope", key_name);
 
-	for (int i = 0; i < ex->lay->nleaves; i++)
+	for (int i = 0; i < lay->nleaves; i++)
 	{
-		const SiftSrcLeaf *lf = &ex->lay->leaf[i];
+		const SiftSrcLeaf *lf = &lay->leaf[i];
 
 		if (lf->kind == SCL_SCALAR && lf->parent < 0 && list_length(lf->path) == 1 && strcmp(strVal(linitial(lf->path)), path) == 0)
 			return i;
 	}
 	return -1;
+}
+
+static SiftSrcPrune *values_prune(int leaf, int fam, const int64 *vals, uint32 n);
+
+/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them) */
+static uint64
+unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n)
+{
+	SiftSrcUnit u;
+	uint64		rows = 0;
+
+	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), values_prune(leaf, SSF_ANY, vals, n), 1);
+	while (sift_colsrc_next(src, &u))
+		rows += u.nrow;
+	return rows;
+}
+
+/*
+ * The members the scope relation lists for the keys under the snapshot, ascending: from the leaves of the journal index of the relation (the index holds the member and the scope key,
+ * which are all a listing reads, and the join of the planner reads them there), else from the relation.
+ */
+static int64 *
+listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	int64	   *sorted = palloc(Max(sc->nkeys, 1) * sizeof(int64)),
+			   *members;
+	Relation	rel;
+	AttrNumber	member,
+				skey;
+	Oid			journal = sift_scope_pairs_index(ex->heap, ex->index, sc->key_name, &rel, &member, &skey);
+	uint32		nk;
+
+	memcpy(sorted, sc->keys, sc->nkeys * sizeof(int64));
+	sift_sort_i64(sorted, sc->nkeys);
+	nk = 0;
+	for (int i = 0; i < sc->nkeys; i++)
+		if (nk == 0 || sorted[nk - 1] != sorted[i])
+			sorted[nk++] = sorted[i];
+	if (pairs)
+		*pairs = Max(rel->rd_rel->reltuples, 0);
+	if (!OidIsValid(journal) || !lookcol_members(rel, journal, snapshot, member, skey, sorted, nk, &members, n))
+		members = sift_scope_members(ex->heap, ex->index, sc->key_name, snapshot, sc->keys, sc->nkeys, n);
+	table_close(rel, NoLock);
+	return members;
+}
+
+/*
+ * Is the entity path cheaper than the units with the patch? The patch reads the scope entries of the keys and the units of the entity rows that may hold a member to patch, each row
+ * dearer than the entity path's (one conjunct for two sources). The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
+ * which the planner's semi join does the same way: both are counted from the zones and set summaries of the units, as the scan prunes them. The list the entity path takes is kept.
+ */
+static bool
+patch_dearer(AggExec *ex, Snapshot snapshot)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	SiftScopeRead *rd = ex->scope_rd;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
+	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
+	double		pairs;
+	double		patch;
+	double		path;
+
+	rd->members = listed_members(ex, snapshot, &rd->nmembers, &pairs);
+	patch = SIFT_SCOPE_ENTRY_INSTR * (double) unit_rows(units, scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys) +
+		SIFT_SCOPE_PATCH_INSTR * (double) unit_rows(entity, sc->fk, rd->patch, rd->npatch);
+	path = SIFT_SCOPE_PAIR_INSTR * pairs + SIFT_SCOPE_ENTITY_INSTR * (double) unit_rows(entity, sc->fk, rd->members, rd->nmembers);
+	sift_colsrc_close(entity);
+	sift_colsrc_close(units);
+	MemoryContextDelete(cx);
+	if (patch <= path)
+	{
+		pfree(rd->members);
+		rd->members = NULL;
+	}
+	return patch > path;
 }
 
 /*
@@ -43,14 +122,17 @@ bool
 scope_open(AggExec *ex, Snapshot snapshot)
 {
 	const SiftAggScope *sc = ex->spec->scope;
+	SiftScopeRead *rd;
 
 	ex->scope_rd = NULL;
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
-	ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL,
-									   ex->spec->leaves, ex->spec->nleaves);
-	ex->scope_why = ex->scope_rd->why;
+	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL,
+										ex->spec->leaves, ex->spec->nleaves);
+	if (rd->why == NULL && rd->npatch > 0 && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+		rd->why = "patch dearer than the entity path";
+	ex->scope_why = rd->why;
 	return ex->scope_why == NULL;
 }
 
@@ -197,7 +279,7 @@ List *
 scope_prune(AggExec *ex, List *tests)
 {
 	const SiftAggScope *sc = ex->spec->scope;
-	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? scope_leaf(ex, sc->key_name) : -1;
+	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? scope_leaf(ex->lay, sc->key_name) : -1;
 
 	if (sleaf < 0 || ex->scope_rd->npatch == 0)
 		return tests;
@@ -212,7 +294,7 @@ scope_filter(AggExec *ex, int *total, List **add)
 	const SiftAggScope *sc = ex->spec->scope;
 	int64	   *members;
 	uint32		n;
-	int			leaf = ex->scope_why == NULL ? scope_leaf(ex, sc->key_name) : sc->fk;
+	int			leaf = ex->scope_why == NULL ? scope_leaf(ex->lay, sc->key_name) : sc->fk;
 
 	SIFT_INVARIANT(leaf >= 0, "sift: the scope segments of index \"%s\" have no leaf for scope \"%s\"", get_rel_name(ex->spec->indexoid), sc->key_name);
 	ex->scope_preds = 0;
@@ -225,7 +307,10 @@ scope_filter(AggExec *ex, int *total, List **add)
 	if (!sc->once && sc->nkeys > 1)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
 						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));
-	members = sift_scope_members(ex->heap, ex->index, sc->key_name, ex->snap, sc->keys, sc->nkeys, &n);
+	members = ex->scope_rd->members;
+	n = ex->scope_rd->nmembers;
+	if (members == NULL)
+		members = listed_members(ex, ex->snap, &n, NULL);
 	ex->scope_members = n;
 	ex->scope_preds = 1;
 	if (n == 0)

@@ -299,6 +299,18 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot
 	return out;
 }
 
+Oid
+sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey)
+{
+	PairScan	ps = {0};
+
+	scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), &ps, NULL, 0, NULL);
+	*rel = ps.rel;
+	*member = ps.member;
+	*skey = ps.skey;
+	return sift_scope_journal_index(ps.rel, ps.member, ps.skey, ps.btree);
+}
+
 /* ---- what the segments of the index say ---- */
 
 /*
@@ -350,6 +362,21 @@ sift_scope_covered(Relation index, int scope)
 		covered = dir->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&dir->segs[i]) || sift_seg_is_scoped(&dir->segs[i]);
 	pfree(dir);
 	return covered;
+}
+
+/*
+ * The most changed members worth a patch: each costs its probe, and past the entity rows of the index read whole the entity path is cheaper. A read that only the patch can answer (a row
+ * for each pair of several keys: the entity path has one row each) and sift.test_scope_patch take the bound of the journal read.
+ */
+static uint32
+patch_cap(const SiftDirSnapshot *dir, bool entity_path)
+{
+	uint64		rows = 0;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
+			rows += dir->segs[i].ndocs;
+	return sift_test_scope_patch || !entity_path ? SIFT_SCOPE_CHANGED_MAX : Min(SIFT_SCOPE_CHANGED_MAX, rows * SIFT_SCOPE_ENTITY_INSTR / SIFT_SCOPE_MEMBER_INSTR);
 }
 
 /* The distinct member keys of the live records of the write buffers, which no scope entry describes; false when they are more than cap */
@@ -463,6 +490,7 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 	SiftConnKeys changed = {0};
 	SiftConnWhy verdict;
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	uint32		cap = patch_cap(dir, once || nkeys == 1);
 	int64	   *wbuf;
 	uint32		nwbuf;
 	PairScan	ps = {0};
@@ -476,12 +504,12 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 		return;
 	}
 	if ((verdict = sift_scope_vouch(index, ord, &stamp, snap)) != SIFT_CONN_OK ||
-		(verdict = sift_scope_changed(index, ord, &stamp, snap, sift_scope_patch_keys, &changed)) != SIFT_CONN_OK)
+		(verdict = sift_scope_changed(index, ord, &stamp, snap, cap, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
 		return;
 	}
-	if (!wbuf_members(index, dir, r->schema, r->first[r->schema->cols[r->scope_leaf[ord]].attno], sift_scope_patch_keys, &wbuf, &nwbuf))
+	if (!wbuf_members(index, dir, r->schema, r->first[r->schema->cols[r->scope_leaf[ord]].attno], cap, &wbuf, &nwbuf))
 	{
 		rd->why = "write buffer";
 		sift_conn_keys_free(&changed);

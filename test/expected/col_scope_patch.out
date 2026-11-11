@@ -300,26 +300,26 @@ SELECT sift.col_verify('facts_col', true);
  
 (1 row)
 
--- more changed members than sift.scope_patch_keys: the entity rows of the members of the keys are read
-SET sift.scope_patch_keys = 3;
+-- the patch priced against the entity path (the cluster of the tests patches whatever it costs): the same answers, from whichever route is cheaper
+SET sift.test_scope_patch = off;
 SELECT * FROM probe();
- n  |    verdict     | stored |                                                     why                                                     | patched_keys | patched_rows_read 
-----+----------------+--------+-------------------------------------------------------------------------------------------------------------+--------------+-------------------
-  1 | same           | f      | too many changed keys                                                                                       |            0 | f
-  2 | same           | f      | too many changed keys                                                                                       |            0 | f
-  3 | same           | f      | too many changed keys                                                                                       |            0 | f
-  4 | same           | f      | too many changed keys                                                                                       |            0 | f
-  5 | same           | f      | too many changed keys                                                                                       |            0 | f
-  6 | same           | f      | too many changed keys                                                                                       |            0 | f
-  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "too many changed keys" |              | 
-  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "too many changed keys" |              | 
-  9 | same           | f      | too many changed keys                                                                                       |            0 | f
- 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "too many changed keys" |              | 
- 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "too many changed keys" |              | 
- 12 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "too many changed keys" |              | 
+ n  |    verdict     | stored |                                                      why                                                      | patched_keys | patched_rows_read 
+----+----------------+--------+---------------------------------------------------------------------------------------------------------------+--------------+-------------------
+  1 | same           | f      | too many changed keys                                                                                         |            0 | f
+  2 | same           | f      | too many changed keys                                                                                         |            0 | f
+  3 | same           | f      | too many changed keys                                                                                         |            0 | f
+  4 | same           | f      | too many changed keys                                                                                         |            0 | f
+  5 | same           | f      | too many changed keys                                                                                         |            0 | f
+  6 | same           | f      | too many changed keys                                                                                         |            0 | f
+  7 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  8 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+  9 | same           | f      | too many changed keys                                                                                         |            0 | f
+ 10 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 11 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
+ 12 | needs the join | f      | error: a scope read of several keys that counts a row for each pair needs the join: "per pair, changed pairs" |              | 
 (12 rows)
 
-RESET sift.scope_patch_keys;
+RESET sift.test_scope_patch;
 -- the rows of the buffer promoted: the entity segment of a later generation has no scope entries, the entity rows are read
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;
  promoted 

@@ -55,6 +55,7 @@ typedef bool (*UnitClaim) (void *carg, uint32 nsb, uint32 *lo, uint32 *hi);
 
 extern bool lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2, ColNeed *need, int nneed, UnitFn fn, void *arg);
 extern void lookcol_close(Relation ix, Relation ix2);
+extern bool lookcol_members(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, int64 **out, uint32 *n);
 extern Datum lookcol_cell_datum(ColNeed *nd, int64 i, bool *isnull);
 extern int64 lookcol_scalar_value(const ColNeed *nd, int64 i);
 extern Datum lookcol_scalar_datum(const SiftSrcLeaf *lf, int64 v);

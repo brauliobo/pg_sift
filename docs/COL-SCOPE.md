@@ -95,12 +95,23 @@ builds from the pairs, bounded by `work_mem` and by 64 keys that have a list (`d
 (`Scope Semantics: per pair`). A read per pair of several keys that has changed members cannot be patched from the entity rows (one row each); it is not a fallback to the entity rows, it needs
 the join, which the planner keeps (only the testing marker `sift.in_scope_pairs` reaches it, and raises an error that says so).
 
+**The patch is priced.** A member that has a pair now (a restore, a new pair) has its facts read through the entity rows, and an index whose units are cut by time holds some of them in every unit: the
+patch then reads most of the table beside the scope units. On 1,000,000 events, 20,000 members and 500 keys (a key of 995 members; instructions of the backend) one restored member reads 53,752 entity
+rows and costs 7.4 million, 10 members 645,046 rows and 33.2 million, 30 or more the whole table and 49.3 to 61.3 million for 30 to 1,000, where the join costs 20.6 to 24.3. So each read counts what its
+two routes would read, from the zones and set summaries of the units as the scan prunes them, and takes the cheaper: the patch (the scope units of the keys at 20 instructions an entry, the entity rows
+of the members to patch at 47 a row) or the entity path (the members the relation lists for the keys, read from the leaves of its journal index, and the entity rows that may hold one of them at 21 a row,
+the price of the join), which says `Scope Fallback: patch dearer than the entity path`. An index whose units are cut by the member key reads only the units of the members it patches and stays a patch (a
+hundred restored members read 9% of the test table); an index cut by time keeps the patch for a member or two and takes the entity path from about ten (10 to 1,000 members: 19.7 to 32.0 million, against 20.6
+to 24.3 for the join; 100 members 20.7 against 20.8). Pricing costs 1.9 million on a patch of one member (9.3 million against 7.4). The changed members one read lists are bounded by the same price (the entity
+rows of the index at 21 over 5,600 for a changed member's probe): more read the entity path (`too many changed keys`). The setting `sift.scope_patch_keys` is gone; the testing setting `sift.test_scope_patch`
+takes the patch whatever it costs.
+
 ## EXPLAIN
 
 `Scope Index`, `Scope Keys`, `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
 Keys`, `Scope Patched Rows`, `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
 `no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer`, `top-n, changed pairs` (a top-N cannot take the patch),
-`dedupe over work_mem`, `dedupe keys`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
+`dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
 the scope index fills it again), `trimmed`, `snapshot` (a serializable or non-MVCC snapshot), `snapshot older than the stamp`, `stamp aged`, `too many changed keys`. A scope read is decided once, by the
 leader (the verdict, the changed members and the patch are made from the snapshot of the statement): it has no workers.
 
@@ -117,7 +128,6 @@ the scan cannot do: the statement keeps the normal plan (`sift.explain_refusals`
 | Setting | Default | Gain | Impact | Why the default | Off |
 |---|---|---|---|---|---|
 | `sift.agg_scope` | on | a read of one key from the units: 0.7 to 1.0 million instructions where the entity rows of the members cost 2.6 to 3.4 (100,000 events, 5,000 entities, 40 tenants, the largest tenant); two keys 1.9 million against 2.0 to 3.1 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
-| `sift.scope_patch_keys` | 4096 | the changed members are read through the entity path for a few keys, not by a rewrite | each patched key is a probe of the entity path | a few hundred changed keys cost less than a rewrite of the units | `SET sift.scope_patch_keys = 1`: more than one changed key reads the entity rows; no `REINDEX` |
 | `sift.scope_max_multiplicity` | 3 | `CREATE INDEX` refuses a scope whose members are in more keys than this on average, with the size and growth it would have had; the join answers the reads (see Break-even) | none | the units break even with the join at 2.5 (500,000 events) to 3.0 (2,000,000) entries a row | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
 
 ## Break-even: the multiplicity limit

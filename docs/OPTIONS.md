@@ -36,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
-| [diagnostic](#diagnostic) | 42 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
 
@@ -2354,20 +2354,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Off keeps the statement as written; it applies to the scans of an index that declares a scope.
 - **Sources:** benchmark `test:col_scope_read`; [FORMATS](FORMATS.md)
 
-#### sift.scope_patch_keys
-
-`sift_col` · diagnostic · since 5.0 · default 4096
-
-- **What it does:** the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole
-- **Gain:** n/a: a bound on a fallback, not a speed choice
-- **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; each patched key is a probe of the entity path
-- **When:** Reads of a scope key after the scope relation changed.
-- **Default:** 4096 — 4,096: the most keys a statement patches before the entity path is cheaper (the cap of the found flag of 4.3 is 16,384 keys of one parent).
-- **Turn off:** SET sift.scope_patch_keys = 1 patches one key and falls back to the join for more. No REINDEX.
-- **Upgrade from 4.3:** New in 5.0.
-- **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to read the entity rows of all the members earlier.
-- **Sources:** benchmark `test:col_scope_patch`; [FORMATS](FORMATS.md)
-
 #### sift.scope_max_multiplicity
 
 `sift_col` · diagnostic · since 5.0 · default 3
@@ -2765,7 +2751,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2785,7 +2771,6 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 5.0. |
-| `sift.scope_patch_keys` | new | 4096 |  | New in 5.0. |
 | `sift.scope_max_multiplicity` | new | 3 |  | New in 5.0. |
 <!-- sift-upgrade:end -->
 

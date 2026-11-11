@@ -96,6 +96,8 @@ conf() {
 	echo "sift.col_auto_merge = off"
 	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
 	echo "sift.col_auto_merge_wal_pct = 0"
+	# the tests of the scope index patch the members that changed whatever the patch costs; the test of the price says SET sift.test_scope_patch = off
+	echo "sift.test_scope_patch = on"
 	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
 	# partitions took 5.6 s to compile and 11 ms to run (PostgreSQL 17 of the CI runners has the library in its package, 18 in another one)
 	echo "jit = off"

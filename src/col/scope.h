@@ -150,7 +150,22 @@ typedef struct SiftScopeRead
 	uint32		nchanged;		/* the members whose pairs changed since the stamp, of except */
 	SiftScopeDrop *drop;
 	int			ndrop;
+	int64	   *members;		/* the members the scope relation lists for the keys, when the read listed them to price the patch: the entity path takes them */
+	uint32		nmembers;
 } SiftScopeRead;
+
+/*
+ * What a read of a scope key costs, in instructions of the backend (one cluster, 1,000,000 events, 20,000 members, 500 keys, units cut by time: every unit holds every member): a scope
+ * entry read and aggregated, an entity row of the units that hold a member to patch (the conjunct is an OR over the two sources), an entity row read for a list of members (the semi
+ * join's key filter), a pair read from the leaves of the journal index of the scope relation, and a changed member (its journal record, its probe in the btree of pairs and the heap row it finds).
+ */
+#define SIFT_SCOPE_ENTRY_INSTR		20
+#define SIFT_SCOPE_PATCH_INSTR		47
+#define SIFT_SCOPE_ENTITY_INSTR		21
+#define SIFT_SCOPE_PAIR_INSTR		25
+#define SIFT_SCOPE_MEMBER_INSTR		5600
+/* the changed members one read lists, at most (8 MB of keys) */
+#define SIFT_SCOPE_CHANGED_MAX		(1 << 20)
 
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
 								   const int *leaves, int nleaves);
@@ -158,13 +173,15 @@ extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot sn
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+/* The relation of pairs of the scope (open, AccessShare) with its member and scope key columns, and the journal index of the relation: a sift_col index that holds both columns */
+extern Oid	sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey);
 
 #ifdef SIFT_TESTING
 /* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
-extern PGDLLIMPORT int sift_scope_patch_keys;
+extern PGDLLIMPORT bool sift_test_scope_patch;	/* sift.test_scope_patch: a read patches the changed members whatever it costs */
 extern PGDLLIMPORT double sift_scope_max_multiplicity;
 
 /* Refuses a scope of more than sift.scope_max_multiplicity entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */

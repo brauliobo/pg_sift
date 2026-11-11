@@ -287,10 +287,6 @@ sift_col_init(void)
 							 "EXPERIMENTAL: a scan of an index with the option scope answers the rows of a scope key (a join to its scope relation, or IN, EXISTS over it, by that key) from the scope segments of the index.",
 							 "Off: the planner does not recognise the scope forms, and a scan that carries one reads the entity path (the join as written).",
 							 &sift_agg_scope, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.scope_patch_keys",
-							"The most member keys changed in a scope relation since the stamp of its scope segments that a statement patches through the entity path before it reads the entity path whole.",
-							"A read of a scope key reads its scope units less the rows of the members that changed since the stamp, which it reads from the entity path; more changed keys than this make the read fall back to the join.",
-							&sift_scope_patch_keys, 4096, 1, 1048576, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.scope_max_multiplicity",
 							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts.",
 							 "The scope segments hold a row once for each scope key of its member, so the index grows by about 17 percent of the table and its indexes for each entry a row has (its writes cost about 16 percent more for each) "
@@ -365,6 +361,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_unit_rows",
 							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages), to get several units out of a small table.",
 							NULL, &sift_col_test_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_scope_patch",
+							 "Testing: a read of a scope key patches the members that changed, however many and whatever it costs, where it reads the entity path when that costs less.",
+							 NULL, &sift_test_scope_patch, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",

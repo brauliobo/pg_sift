@@ -76,9 +76,6 @@ SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
 CREATE INDEX bad ON events USING sift_col (id, dim_a_id) WITH (scope = 'off');
 DROP INDEX bad;
 SHOW sift.agg_scope;
-SHOW sift.scope_patch_keys;
-SELECT try('SET sift.scope_patch_keys = 0');
-SELECT try('SET sift.scope_patch_keys = 1048577');
 
 -- the declaration: a dependency on the btree, the derived leaf, minor 45
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)

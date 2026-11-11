@@ -154,10 +154,10 @@ END $$;
 SELECT reads, stored >= reads / 2 AS mostly_stored, mismatches, errors > 0 AS per_pair_needs_join FROM fuzz_result;
 SELECT sift.col_verify('facts_col', true);
 
--- more changed members than sift.scope_patch_keys: the entity rows of the members of the keys are read
-SET sift.scope_patch_keys = 3;
+-- the patch priced against the entity path (the cluster of the tests patches whatever it costs): the same answers, from whichever route is cheaper
+SET sift.test_scope_patch = off;
 SELECT * FROM probe();
-RESET sift.scope_patch_keys;
+RESET sift.test_scope_patch;
 
 -- the rows of the buffer promoted: the entity segment of a later generation has no scope entries, the entity rows are read
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;
