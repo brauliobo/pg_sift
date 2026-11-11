@@ -119,6 +119,7 @@ def setup_sql(seed, one_key):
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 INSERT INTO pairs VALUES {pairs};
 INSERT INTO facts SELECT i, 1 + (i * 13) % {ABSENT}, timestamptz '2026-01-01' + i * interval '1 hour', i % 5, i % 97, 'n' || i % 7 FROM generate_series(1, {n}) i;

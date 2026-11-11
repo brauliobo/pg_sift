@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97 FROM generate_series(1, 6000) i;
 CREATE TABLE group_members (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz, PRIMARY KEY (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
 CREATE TABLE links_a (id serial PRIMARY KEY, tenant_id int NOT NULL, group_id int, dim_a_id int, deleted_at timestamptz, expires_at timestamptz,
@@ -93,7 +94,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "facts_by_tenant_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.facts_by_tenant: 9150 rows, 1.56 copies per row of "public.facts" that reaches a key
-DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 0.8 MB with its indexes, +177% over the table and its indexes.
+DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 0.8 MB with its indexes, +154% over the table and its indexes.
 NOTICE:  scope copy public.facts_by_tenant: no sift_col index on "public.facts", all 5 columns carried, table of 0.5 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.

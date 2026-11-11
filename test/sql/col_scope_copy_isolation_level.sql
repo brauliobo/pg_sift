@@ -2,6 +2,7 @@
 -- statement fails and changes nothing), and the same statement succeeds in READ COMMITTED and leaves the copy exact. Every change of the facts and of the pairs, TRUNCATE too.
 CREATE EXTENSION pg_sift;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+CREATE INDEX ON facts (dim_a_id);
 CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
 INSERT INTO scope_pairs VALUES (1, 1), (2, 1), (3, 1), (3, 2), (4, 2);
 INSERT INTO facts SELECT i, 1 + i % 5, i % 3, i FROM generate_series(1, 20) i;

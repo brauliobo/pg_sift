@@ -9,6 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE facts (id bigserial PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 -- 260 ids of 100 facts each: ids 1..150 are in tenant 1 (large), 151..180 in tenant 2, 181..183 in tenant 3 (small), tenants 4..9 hold one id each,
 -- id 1 is also in tenant 2 and id 151 in tenant 3 (two keys), ids 241..260 are in no tenant
 INSERT INTO facts (dim_a_id, created_at, kind, amount)

@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at date NOT NULL, metrics_a jsonb, notes jsonb DEFAULT '[]', note text)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, date '2026-01-01' + i % 300, jsonb_build_object('mhead', i % 10, 'service', i % 7), '[]', 'n' FROM generate_series(1, 6000) i;
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 -- member e has 0 (e % 10 = 0), 1, 2, 3, 4 or 6 keys
@@ -15,7 +16,7 @@ SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id')
 ERROR:  the jsonb column "notes" of a sift_col index needs paths
 HINT:  Declare them with the paths option: WITH (paths = 'notes.* float4'), or REINDEX to read them from the documents.
 CONTEXT:  SQL statement "CREATE INDEX by_options_col ON public.by_options USING sift_col (scope_id, id, dim_a_id, created_at, metrics_a, notes, note) WITH (key_order = 'scope_id, created_at')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 114 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 120 at EXECUTE
 SELECT sift.scope_create('by_options', 'facts', 'dim_a_id', 'pairs', 'scope_id', options => 'paths = ''metrics_a.* float8, notes.k int4''') AS copy_rows;
  copy_rows 
 -----------
@@ -185,6 +186,7 @@ BEGIN
 	EXECUTE format('CREATE TABLE inh.t%s (id int PRIMARY KEY, entity int NOT NULL, day date, due date, kind text, amt int, qty int, doc jsonb, extra jsonb)', n);
 	EXECUTE format('INSERT INTO inh.t%s SELECT g, 1 + g %% 20, date ''2026-01-01'' + g %% 30, date ''2026-02-01'' + g %% 30, ''k'' || g %% 5, g, g %% 7, ''{"a": 1.5}'',
 					''[{"k": "x", "n": 1}]'' FROM generate_series(1, 200) g', n);
+	EXECUTE format('CREATE INDEX ON inh.t%s (entity)', n);
 	EXECUTE format('CREATE INDEX t%s_col ON inh.t%s USING sift_col (id, entity, day, due, kind, amt, qty, doc, extra) WITH (paths = %L%s)', n, n,
 				   CASE WHEN opt = 'paths' THEN val ELSE 'doc.a float8, extra[]{k text, n int4}' END, CASE WHEN opt = 'paths' THEN '' ELSE format(', %s = %L', opt, val) END);
 	PERFORM sift.scope_create(format('inh.t%s_c', n), format('inh.t%s', n)::regclass, 'entity', 'inh.pairs', 'tenant', columns => cols);
@@ -260,7 +262,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "notice_c_col" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy inh.notice_c: 200 rows, 1.00 copies per row of "inh.t4" that reaches a key
-DETAIL:  0% of those rows have 2 or more copies, at most 1; the copy takes 0.2 MB with its indexes, +150% over the table and its indexes.
+DETAIL:  0% of those rows have 2 or more copies, at most 1; the copy takes 0.2 MB with its indexes, +135% over the table and its indexes.
 NOTICE:  scope copy inh.notice_c: run VACUUM inh.notice_c now
 DETAIL:  VACUUM cannot run inside a function. A copy that is not vacuumed has an empty visibility map: a read checks every row it keeps in the heap.
 HINT:  sift.scope_status shows whether a copy was vacuumed.
@@ -273,6 +275,7 @@ SET client_min_messages = warning;
 -- the case of a path of a jsonb column the copy leaves out
 CREATE TABLE inh.events (id int PRIMARY KEY, entity int, day date, doc jsonb, extra jsonb);
 INSERT INTO inh.events SELECT g, 1 + g % 20, date '2026-01-01' + g % 30, '{"a": 1.5}', '[]' FROM generate_series(1, 500) g;
+CREATE INDEX ON inh.events (entity);
 CREATE INDEX events_col ON inh.events USING sift_col (id, entity, day, doc, extra) WITH (key_order = 'entity, day', paths = 'doc.a float8, extra[]{k text}');
 SELECT sift.scope_create('inh.events_by_tenant', 'inh.events', 'entity', 'inh.pairs', 'tenant', columns => ARRAY['id', 'entity', 'day', 'doc']) AS copy_rows;
  copy_rows 

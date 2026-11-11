@@ -196,14 +196,14 @@ A request often carries a key that lives above the fact table: a tenant, a group
 (EXPERIMENTAL in 5.0, no second table and no triggers on the facts; [COL-SCOPE](COL-SCOPE.md#scope-index-or-scope-copy) says when to use which, with the sizes and the build WAL of both on one fixture).
 
 ```sql
--- facts(id primary key, dim_a_id, created_at, kind, amount); scope_pairs(dim_a_id, tenant_id) with a unique index on both
+-- facts(id primary key, dim_a_id, created_at, kind, amount) with an index on dim_a_id; scope_pairs(dim_a_id, tenant_id) with a unique index on both
 SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id');
 SELECT kind, count(*), sum(amount) FROM facts_by_tenant WHERE tenant_id = 38 GROUP BY kind;
 SELECT * FROM sift.scope_verify('facts_by_tenant');   -- no rows: the copy equals the join
 SELECT sift.scope_drop('facts_by_tenant');
 ```
 
-`sift.scope_create` creates the copy (the scope key first, then the carried columns: those of the table's `sift_col` index, all of them when it has none), the `sift_col` index with `key_order = 'tenant_id, created_at'` (the first date or timestamp column; `order_column` names another), a btree on the copy's primary key (a change of a fact finds all its copies by it; a pair that goes is found by the `sift_col` index on the scope key and the foreign key), and the triggers that keep the copy exact in the transaction of each change: statement triggers with transition tables on the fact table (insert, update, delete, truncate) and on the scope relation (the same). The fact table needs a primary key, and a btree on the foreign key keeps a membership edit from scanning it. `partition => true` makes the copy a LIST partition per scope key. A prepared statement or a driver's Bind (`WHERE tenant_id = $1`) keeps the scan on either form: the partitioned copy reads the one partition the parameter selects when the statement starts and its generic plan is priced for one partition of the average size, so PostgreSQL takes it from the sixth execution as it does for the single copy.
+`sift.scope_create` creates the copy (the scope key first, then the carried columns: those of the table's `sift_col` index, all of them when it has none), the `sift_col` index with `key_order = 'tenant_id, created_at'` (the first date or timestamp column; `order_column` names another), a btree on the copy's primary key (a change of a fact finds all its copies by it; a pair that goes is found by the `sift_col` index on the scope key and the foreign key), and the triggers that keep the copy exact in the transaction of each change: statement triggers with transition tables on the fact table (insert, update, delete, truncate) and on the scope relation (the same). The fact table needs a primary key and a btree index that starts with the foreign key (`sift.scope_create` refuses a table without either): a pair that comes in or goes finds the rows of its member by that index, one probe for each pair, and a table without it would be read once for each. `partition => true` makes the copy a LIST partition per scope key. A prepared statement or a driver's Bind (`WHERE tenant_id = $1`) keeps the scan on either form: the partitioned copy reads the one partition the parameter selects when the statement starts and its generic plan is priced for one partition of the average size, so PostgreSQL takes it from the sixth execution as it does for the single copy.
 
 ### Columns and options of the copy
 
@@ -383,6 +383,21 @@ A scope copy on the pairs deletes the copy's rows of each pair that goes. The st
 | 10,000 | 2,095.8, 1,634.8 | 2,659.5, 1,903.5 | 1,152.0, 118.6 | 1,714.5, 124.3 |
 
 The WAL is the same before and after (a delete writes what it deletes); the buffers rise with the lookup and the plan's probes (1,000 pairs with facts: 32,127 to 65,766) and fall where the whole copy was read for nothing (1,000 pairs without facts: 7,171 to 5,043). A pair that moves to another key (an `UPDATE` of the pair table: the delete, then the insert of the new key) costs 2,563 M instructions (1.14 copies) for 1,000 ids with facts and 1,135 M for 1,000 without before, 2,141 M and 59 M after; for 10,000 ids with facts 11,921 M and 11,221 M, and without 2,216 M and 1,065 M, of which the insert of the new key is most. The delete of a few pairs costs the lookup in addition (1 pair: 2.0 to 3.3 M instructions, 0.3 ms). The lookup reads the fact table by its foreign key: without the index it reads the fact table for each statement.
+
+### What the pairs that come in cost with a copy
+
+A scope copy on the pairs inserts the copy's rows of each pair that comes in: the rows of its id in the fact table, but not those the copy has. The statement used to join the transition table with the fact table, and PostgreSQL has no statistics of the transition table to say that the ids of the pairs have no facts (a plan for 25 facts for each): from about 10,000 pairs it read the whole fact table with a hash join, for no row (10,000 pairs without facts: 807 M instructions, of which the insert of the pairs alone is 204 M). The statement now probes `facts (dim_a_id)` once for each pair, a nested loop that no estimate can turn into a hash join, and inserts the rows in the order of the primary key, as a scan of the table gives them: unsorted, the copy's maintenance btree takes them in random order (10,000 pairs with facts: 10.9 G instructions and 11 s against 8.9 G and 3.6 s). `sift.scope_create` needs the index for that and refuses a table without it. The same fixture as the delete, the same measure; before: M instructions, after: M instructions, the whole statement with the insert of the pairs themselves (alone, without a copy, 1.5, 3.3, 22, 63, 205 and 624 M instructions for 1 to 30,000 pairs).
+
+| pairs that come in | ids with facts, 1.14 copies | ids with facts, 1.75 | ids without facts, 1.14 | ids without facts, 1.75 |
+|---|---|---|---|---|
+| 1 | 12.3, 12.8 | 12.1, 12.6 | 10.0, 10.4 | 10.0, 10.4 |
+| 100 | 136.0, 141.3 | 159.7, 166.8 | 12.7, 13.1 | 12.7, 13.1 |
+| 1,000 | 1,078.0, 982.6 | 1,334.0, 1,135.4 | 38.6, 39.7 | 40.6, 41.9 |
+| 3,000 | 3,405.3, 3,041.3 | 3,890.3, 3,070.5 | 94.5, 98.5 | 98.3, 101.5 |
+| 10,000 | 9,064.9, 9,611.0 | 11,330.1, 11,092.4 | 806.7, 293.9 | 821.3, 308.5 |
+| 30,000 | 25,580.5, 28,124.4 | 32,944.5, 30,755.1 | 1,261.5, 867.5 | 1,297.6, 905.0 |
+
+Past the insert of the pairs themselves, a pair whose id has no fact now costs 9,000 instructions at every size (10,000 pairs: 90 M; 30,000: 244 M), and a pair whose id has facts the rows it inserts (about 40,000 instructions a copy row), within -11% and +10% of what it cost. The WAL is the same (10,000 pairs without facts: 30,068 records before and after), the buffers rise with the probes (10,000 pairs without facts: 51,548 to 81,279; with facts 2.10 to 2.38 million). A pair that moves to another key (an `UPDATE` of the pair table) takes the same two statements: 1,000 ids with facts 1,836 M before and 1,763 M after (1.14 copies; 2,122 and 1,917 M at 1.75), 10,000 ids without facts 993 M and 477 M (1,020 and 529 M). A fact that comes in joins the pair table by its id: 10,000 facts took 598 M instructions for ids with pairs and 312 M for ids with none (the facts alone 257 M and 259 M), and 30,000 took 1,609 M and 834 M (796 M and 784 M), linear in both.
 
 ### What one edit costs
 

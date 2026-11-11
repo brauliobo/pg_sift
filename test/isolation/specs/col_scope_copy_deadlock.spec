@@ -6,6 +6,7 @@
 setup
 {
 	CREATE TABLE iso_dl_facts (id int PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL) WITH (autovacuum_enabled = off);
+	CREATE INDEX ON iso_dl_facts (dim_a_id);
 	CREATE TABLE iso_dl_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_dl_pairs VALUES (1, 1), (2, 1), (3, 1), (3, 2);
 	INSERT INTO iso_dl_facts SELECT i, 1 + i % 4, i % 3, i FROM generate_series(1, 8) i;

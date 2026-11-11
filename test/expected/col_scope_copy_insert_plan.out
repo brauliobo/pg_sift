@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE facts (id serial PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+CREATE INDEX ON facts (dim_a_id);
 CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
 INSERT INTO scope_pairs SELECT d, t FROM generate_series(0, 3999) d, generate_series(1, 2) t WHERE d % 10 <> 0 AND (t = 1 OR d % 2 = 1);
 INSERT INTO facts (dim_a_id, kind, amount) SELECT g % 4000, g % 5, g FROM generate_series(1, 20000) g;

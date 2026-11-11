@@ -1,0 +1,163 @@
+-- The INSERT a scope copy's trigger runs for new pairs finds the facts of each pair's member by the table's index on the foreign key, one probe for each pair, whatever the
+-- planner estimates: a plain join of the pairs with the table was planned as a hash join that reads the whole table (810 M instructions for 10,000 pairs whose ids have no facts,
+-- against 106 M by the probes), because the pairs of a transition table have no statistics to say that their ids have no facts. The cost is counted, not timed: the probes of the
+-- index and the scans of the table that one statement makes, with the default settings, with hash and merge joins off, and with the statistics of both tables stale (one row
+-- estimated for the table, none for the pair table); and the copy equals the join after the edits.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE facts (id serial PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+CREATE TABLE scope_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (tenant_id, dim_a_id));
+CREATE INDEX facts_dim_a ON facts (dim_a_id);
+-- ids 1 to 6,000 have 10 facts each, ids 6,001 to 12,000 none; every id is in one key, every seventh in a second
+INSERT INTO facts (dim_a_id, kind, amount) SELECT 1 + g % 6000, g % 5, g FROM generate_series(1, 60000) g;
+INSERT INTO scope_pairs SELECT d, 1 + d % 50 FROM generate_series(1, 12000) d;
+INSERT INTO scope_pairs SELECT d, 100 + d % 20 FROM generate_series(1, 12000) d WHERE d % 7 = 0;
+ANALYZE facts, scope_pairs;
+SELECT count(*) > 0 AS built FROM (SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id', partition => false)) q;
+ built 
+-------
+ t
+(1 row)
+
+VACUUM ANALYZE facts_by_tenant;
+CREATE TABLE counts (setting text, edit text, size int, probes bigint, table_scans bigint);
+CREATE TABLE edits (n serial, edit text, size int, stmt text);
+INSERT INTO edits (edit, size, stmt) VALUES
+	('ids with facts', 3,    'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(1, 3) d'),
+	('ids with facts', 100,  'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(101, 200) d'),
+	('ids with facts', 3000, 'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(1001, 4000) d'),
+	('ids without facts', 100,  'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(6101, 6200) d'),
+	('ids without facts', 3000, 'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(7001, 10000) d'),
+	('half of them have facts', 2000, 'INSERT INTO scope_pairs SELECT d, 200 FROM generate_series(5001, 7000) d');
+-- the probes and scans are those of the statement and its trigger, read from the counters of the transaction
+CREATE FUNCTION run_edit(setting text, e edits) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	p0 bigint := pg_stat_get_xact_numscans('facts_dim_a'::regclass);
+	s0 bigint := pg_stat_get_xact_numscans('facts'::regclass);
+BEGIN
+	EXECUTE e.stmt;
+	INSERT INTO counts VALUES (setting, e.edit, e.size, pg_stat_get_xact_numscans('facts_dim_a'::regclass) - p0,
+							   pg_stat_get_xact_numscans('facts'::regclass) - s0);
+END $$;
+CREATE FUNCTION run_edits(setting text, joins text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	e edits;
+BEGIN
+	PERFORM set_config('enable_hashjoin', joins, true), set_config('enable_mergejoin', joins, true);
+	FOR e IN SELECT * FROM edits ORDER BY n LOOP
+		PERFORM run_edit(setting, e);
+		DELETE FROM scope_pairs WHERE tenant_id = 200;
+	END LOOP;
+END $$;
+-- the statistics of both tables stale: what a table filled by a bulk load has until autovacuum, or a table that grew since its last ANALYZE
+CREATE FUNCTION stale_statistics() RETURNS void LANGUAGE sql AS $$
+	DELETE FROM pg_statistic WHERE starelid IN ('facts'::regclass, 'scope_pairs'::regclass);
+	UPDATE pg_class SET reltuples = 1, relpages = 1, relallvisible = 0 WHERE oid = 'facts'::regclass;
+	UPDATE pg_class SET reltuples = -1, relpages = 0, relallvisible = 0 WHERE oid = 'scope_pairs'::regclass $$;
+SELECT run_edits('default', 'on');
+ run_edits 
+-----------
+ 
+(1 row)
+
+SELECT run_edits('hash and merge joins off', 'off');
+ run_edits 
+-----------
+ 
+(1 row)
+
+SELECT stale_statistics();
+ stale_statistics 
+------------------
+ 
+(1 row)
+
+SELECT run_edits('stale statistics', 'on');
+ run_edits 
+-----------
+ 
+(1 row)
+
+-- one probe of the index for each pair, and the table is never scanned
+SELECT setting, edit, size, probes = size AS one_probe_for_each_pair, table_scans FROM counts ORDER BY setting DESC, size, edit;
+         setting          |          edit           | size | one_probe_for_each_pair | table_scans 
+--------------------------+-------------------------+------+-------------------------+-------------
+ stale statistics         | ids with facts          |    3 | t                       |           0
+ stale statistics         | ids with facts          |  100 | t                       |           0
+ stale statistics         | ids without facts       |  100 | t                       |           0
+ stale statistics         | half of them have facts | 2000 | t                       |           0
+ stale statistics         | ids with facts          | 3000 | t                       |           0
+ stale statistics         | ids without facts       | 3000 | t                       |           0
+ hash and merge joins off | ids with facts          |    3 | t                       |           0
+ hash and merge joins off | ids with facts          |  100 | t                       |           0
+ hash and merge joins off | ids without facts       |  100 | t                       |           0
+ hash and merge joins off | half of them have facts | 2000 | t                       |           0
+ hash and merge joins off | ids with facts          | 3000 | t                       |           0
+ hash and merge joins off | ids without facts       | 3000 | t                       |           0
+ default                  | ids with facts          |    3 | t                       |           0
+ default                  | ids with facts          |  100 | t                       |           0
+ default                  | ids without facts       |  100 | t                       |           0
+ default                  | half of them have facts | 2000 | t                       |           0
+ default                  | ids with facts          | 3000 | t                       |           0
+ default                  | ids without facts       | 3000 | t                       |           0
+(18 rows)
+
+-- the copy equals the join after the edits, and a pair of an id that has no fact adds no row
+SELECT count(*) AS differs FROM sift.scope_verify('facts_by_tenant');
+ differs 
+---------
+       0
+(1 row)
+
+SELECT (SELECT md5(string_agg(tenant_id || '/' || id || '/' || dim_a_id || '/' || kind || '/' || amount, ',' ORDER BY tenant_id, id)) FROM facts_by_tenant)
+	 = (SELECT md5(string_agg(s.tenant_id || '/' || f.id || '/' || f.dim_a_id || '/' || f.kind || '/' || f.amount, ',' ORDER BY s.tenant_id, f.id))
+		FROM facts f JOIN scope_pairs s USING (dim_a_id)) AS rows_equal_join;
+ rows_equal_join 
+-----------------
+ t
+(1 row)
+
+-- facts and pairs that change in one statement: the facts of the new pair's member that the same statement inserts are in the copy once
+WITH f AS (INSERT INTO facts (dim_a_id, kind, amount) VALUES (6500, 1, 1), (6500, 2, 2) RETURNING 1) INSERT INTO scope_pairs VALUES (6500, 300), (6501, 300);
+SELECT count(*) AS differs FROM sift.scope_verify('facts_by_tenant');
+ differs 
+---------
+       0
+(1 row)
+
+SELECT count(*) AS rows_of_the_new_pair FROM facts_by_tenant WHERE dim_a_id = 6500 AND tenant_id = 300;
+ rows_of_the_new_pair 
+----------------------
+                    2
+(1 row)
+
+-- a partitioned copy: the same insert, one partition for each key
+SELECT sift.scope_drop('facts_by_tenant');
+ scope_drop 
+------------
+ 
+(1 row)
+
+SELECT count(*) > 0 AS built FROM (SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id', partition => true)) q;
+ built 
+-------
+ t
+(1 row)
+
+INSERT INTO scope_pairs SELECT d, 400 + d % 3 FROM generate_series(1001, 1300) d;
+SELECT count(*) AS differs FROM sift.scope_verify('facts_by_tenant');
+ differs 
+---------
+       0
+(1 row)
+
+SELECT sift.scope_drop('facts_by_tenant');
+ scope_drop 
+------------
+ 
+(1 row)
+
+DROP FUNCTION run_edit(text, edits), run_edits(text, text), stale_statistics();
+DROP TABLE counts, edits, facts, scope_pairs;
+DROP EXTENSION pg_sift;

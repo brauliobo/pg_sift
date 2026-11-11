@@ -24,6 +24,7 @@ SCOPE_SAME_SQL="CREATE FUNCTION scope_same(copy text) RETURNS bool LANGUAGE plpg
 scope_setup() {
 	sql "$1" "CREATE EXTENSION pg_sift" \
 		"CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text) WITH (autovacuum_enabled = false)" \
+		"CREATE INDEX ON facts (dim_a_id)" \
 		"CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false)" \
 		"INSERT INTO pairs SELECT e, k FROM generate_series(1, 40) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) k" \
 		"INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 45 ELSE 10 * ((i / 2) % 4) + 1 + (i / 8) % 5 END, timestamptz '2026-01-01' + i * interval '1 hour', i % 5, i % 97, 'n' || i % 7 FROM generate_series(1, $SCOPE_ROWS) i" \

@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97, 'n' FROM generate_series(1, 30000) i;
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 -- member e has 0 (e % 10 = 0), 1, 2, 3, 4 or 6 keys: the keys of a member are 1..n
@@ -20,36 +21,55 @@ SELECT sift.scope_create('dup_copy', 'facts', 'dim_a_id', 'dup_pairs', 'scope_id
 ERROR:  scope_create: table "public.dup_pairs" has no unique index on (dim_a_id, scope_id)
 DETAIL:  A scope relation holds each (member, scope key) pair once: a duplicate pair would give a row two copies in one key.
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 46 at RAISE
+-- a pair that comes in finds the rows of its member by an index that starts with the foreign key: a table without one, with the key not first or with a partial index is refused
+CREATE TABLE no_fk_index (id int PRIMARY KEY, dim_a_id int NOT NULL);
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
+ERROR:  scope_create: table "public.no_fk_index" has no btree index that starts with "dim_a_id"
+DETAIL:  A pair that comes into the scope relation finds the rows of its member by an index on the foreign key; without it each pair would read the whole table.
+HINT:  CREATE INDEX ON public.no_fk_index (dim_a_id)
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 52 at RAISE
+CREATE INDEX ON no_fk_index (id, dim_a_id);
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
+ERROR:  scope_create: table "public.no_fk_index" has no btree index that starts with "dim_a_id"
+DETAIL:  A pair that comes into the scope relation finds the rows of its member by an index on the foreign key; without it each pair would read the whole table.
+HINT:  CREATE INDEX ON public.no_fk_index (dim_a_id)
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 52 at RAISE
+CREATE INDEX ON no_fk_index (dim_a_id) WHERE id > 0;
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
+ERROR:  scope_create: table "public.no_fk_index" has no btree index that starts with "dim_a_id"
+DETAIL:  A pair that comes into the scope relation finds the rows of its member by an index on the foreign key; without it each pair would read the whole table.
+HINT:  CREATE INDEX ON public.no_fk_index (dim_a_id)
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 52 at RAISE
 CREATE TABLE text_pairs (dim_a_id int NOT NULL, scope_id text NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 SELECT sift.scope_create('text_copy', 'facts', 'dim_a_id', 'text_pairs', 'scope_id');
 ERROR:  scope_create: scope key "scope_id" of "public.text_pairs" is not an integer column
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 51 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 57 at RAISE
 SELECT sift.scope_create('facts', 'facts', 'dim_a_id', 'pairs', 'scope_id');
 ERROR:  scope_create: relation "facts" already exists
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 27 at RAISE
 SELECT sift.scope_create('bad_columns', 'facts', 'dim_a_id', 'pairs', 'scope_id', columns => ARRAY['amount', 'nope']);
 ERROR:  scope_create: table "public.facts" has no column "nope"
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 74 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 80 at RAISE
 SELECT sift.scope_create('bad_order', 'facts', 'dim_a_id', 'pairs', 'scope_id', order_column => 'note');
 ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric or float column
 CONTEXT:  SQL statement "CREATE INDEX bad_order_col ON public.bad_order USING sift_col (scope_id, id, dim_a_id, created_at, kind, amount, note) WITH (key_order = 'scope_id, note')"
-PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 114 at EXECUTE
+PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 120 at EXECUTE
 -- a copy holds a row once per key of its member: a member in too many keys is refused with the measured figure
 CREATE TABLE wide_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO wide_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 7) k;
 SELECT sift.scope_create('wide_copy', 'facts', 'dim_a_id', 'wide_pairs', 'scope_id');
 ERROR:  scope_create: a row of "public.facts" would have 7.00 copies on average, above max_copies 1.8
-DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 17 MB, +701% over the table and its indexes.
+DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 17 MB, +622% over the table and its indexes.
 HINT:  A copy suits a multiplicity close to 1 (it stops paying at 1.84): above it the join answers the scope reads (entity path), the scope option of the sift_col index takes up to 3 entries a row (COL-SCOPE.md), counts and sums by key are cheaper from a table of them (INDEX-RECIPES.md), or pass max_copies => 7 to build it anyway.
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 92 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 98 at RAISE
 -- the refusal is a default: max_copies raises it, and the NOTICE gives the same figures
 CREATE TABLE triple_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO triple_pairs SELECT e, k FROM generate_series(1, 60) e, generate_series(1, 3) k;
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id');
 ERROR:  scope_create: a row of "public.facts" would have 3.00 copies on average, above max_copies 1.8
-DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 7 MB, +300% over the table and its indexes.
+DETAIL:  The copy would hold that many times the rows of the table that reach a scope key: about 7 MB, +267% over the table and its indexes.
 HINT:  A copy suits a multiplicity close to 1 (it stops paying at 1.84): above it the join answers the scope reads (entity path), the scope option of the sift_col index takes up to 3 entries a row (COL-SCOPE.md), counts and sums by key are cheaper from a table of them (INDEX-RECIPES.md), or pass max_copies => 3 to build it anyway.
-CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 92 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 98 at RAISE
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 3.1) AS copy_rows;
 NOTICE:  sift_col index "triple_copy_col": 5 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = scope_id, created_at;
@@ -58,7 +78,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "triple_copy_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.triple_copy: 90000 rows, 3.00 copies per row of "public.facts" that reaches a key
-DETAIL:  100% of those rows have 2 or more copies, at most 3; the copy takes 7.6 MB with its indexes, +314% over the table and its indexes.
+DETAIL:  100% of those rows have 2 or more copies, at most 3; the copy takes 7.6 MB with its indexes, +279% over the table and its indexes.
 NOTICE:  scope copy public.triple_copy: no sift_col index on "public.facts", all 6 columns carried, table of 5.9 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.
@@ -92,7 +112,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "facts_by_scope_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.facts_by_scope: 45000 rows, 1.58 copies per row of "public.facts" that reaches a key
-DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 4.1 MB with its indexes, +171% over the table and its indexes.
+DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 4.1 MB with its indexes, +152% over the table and its indexes.
 NOTICE:  scope copy public.facts_by_scope: no sift_col index on "public.facts", all 6 columns carried, table of 2.9 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.

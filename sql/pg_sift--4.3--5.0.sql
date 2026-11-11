@@ -60,20 +60,21 @@ CREATE FUNCTION sift.scope_fact_insert(c sift.scope_copies, src text) RETURNS te
 	SELECT format('INSERT INTO %s (%I, %s) SELECT s.%I, %s FROM %s n JOIN %s s ON s.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = s.%I LIMIT 1) h ON true WHERE h.present IS NULL',
 		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'n'), src, c.scope_relation, c.member, c.fk,
 		c.copy, sift.scope_cmp(c.key_columns, 'x', 'n', '=', ' AND '), c.scope_key, c.scope_key) $$;
+-- The INSERT for new pairs reads the facts of each pair's member by the table's index on the foreign key, one probe for each pair (a lateral sub-select with OFFSET 0 only runs as a nested
+-- loop: a hash join read the whole table from about 10,000 pairs whose members have no facts, 810 M instructions against 106 M), in the order of the primary key, as a scan gives them.
 CREATE FUNCTION sift.scope_pairs_insert(c sift.scope_copies, src text) RETURNS text LANGUAGE sql STABLE AS $$
-	SELECT format('INSERT INTO %s (%I, %s) SELECT n.%I, %s FROM %s n JOIN %s f ON f.%I = n.%I LEFT JOIN LATERAL (SELECT true AS present FROM %s x WHERE %s AND x.%I = n.%I LIMIT 1) h ON true WHERE h.present IS NULL',
-		c.copy, c.scope_key, sift.scope_list(c.columns, ''), c.scope_key, sift.scope_list(c.columns, 'f'), src, c.source, c.fk, c.member,
-		c.copy, sift.scope_cmp(c.key_columns, 'x', 'f', '=', ' AND '), c.scope_key, c.scope_key) $$;
+	SELECT format('INSERT INTO %1$s (%2$I, %3$s) SELECT s.%2$I, %3$s FROM (SELECT n.%2$I, %4$s FROM %5$s n CROSS JOIN LATERAL (SELECT %4$s FROM %6$s f WHERE f.%7$I = n.%8$I OFFSET 0) f ORDER BY %9$s) s LEFT JOIN LATERAL (SELECT true AS present FROM %1$s x WHERE %10$s AND x.%2$I = s.%2$I LIMIT 1) h ON true WHERE h.present IS NULL',
+		c.copy, c.scope_key, sift.scope_list(c.columns, ''), sift.scope_list(c.columns, 'f'), src, c.source, c.fk, c.member,
+		sift.scope_list(c.key_columns, 'f'), sift.scope_cmp(c.key_columns, 'x', 's', '=', ' AND ')) $$;
 COMMENT ON FUNCTION sift.scope_fact_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the table of a scope copy runs for the rows of its transition table (sift.scope_changed)';
 COMMENT ON FUNCTION sift.scope_pairs_insert(sift.scope_copies, text) IS 'Internal: the INSERT of the copy''s rows that the trigger of the scope relation of a scope copy runs for the rows of its transition table (sift.scope_changed)';
 
 -- The DELETE of the copy's rows that a statement trigger of op runs: the rows of the old transition table whose copies go (sift.scope_changed)
 CREATE FUNCTION sift.scope_fact_delete(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
 	SELECT format('DELETE FROM %s d USING %s o WHERE %s', c.copy, sift.scope_changed(c.key_columns, c.columns, op, 'old'), sift.scope_cmp(c.key_columns, 'd', 'o', '=', ' AND ')) $$;
--- The copy's rows of the pairs that go. A pair whose member has no fact in the table has no copy row, and a statement over all the pairs read the whole copy for as few as 1,000 of
--- them (600 M instructions, 1,000 and 10,000 pairs alike): scope_pairs_gone lists the pairs whose member has a fact (a probe of the table's index on the foreign key, 8,000
--- instructions each), in arrays whose length the planner knows, and scope_pairs_delete deletes their copy rows. A semi join, not a join, so that PostgreSQL hashes the pairs and
--- not the copy: from about 400 pairs (1.14 copies per fact, 25 facts for each member) it reads the copy once, below that it probes it for each pair.
+-- The copy's rows of the pairs that go. A pair whose member has no fact has no copy row, and a statement over all the pairs read the whole copy for as few as 1,000 of them (600 M instructions):
+-- scope_pairs_gone lists the pairs whose member has a fact (a probe of the table's index on the foreign key, 8,000 instructions each), in arrays whose length the planner knows, and scope_pairs_delete
+-- deletes their copy rows, by a semi join so that PostgreSQL hashes the pairs and not the copy: from about 400 pairs (25 facts for each member) it reads the copy once, below that it probes it.
 CREATE FUNCTION sift.scope_pairs_gone(c sift.scope_copies, op text) RETURNS text LANGUAGE sql STABLE AS $$
 	SELECT format('SELECT array_agg(o.%1$I)::text, array_agg(o.%2$I)::text FROM %3$s o WHERE EXISTS (SELECT 1 FROM %4$s f WHERE f.%5$I = o.%1$I)',
 		c.member, c.scope_key, sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], op, 'old'), c.source, c.fk) $$;
@@ -116,26 +117,18 @@ CREATE FUNCTION sift.scope_pairs_trg() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	c        sift.scope_copies;
 	src      text;
-	k        bigint;
-	ms       text;
-	ks       text;
+	ms       text; ks text;
 BEGIN
 	IF current_setting('transaction_isolation') <> 'read committed' THEN PERFORM sift.scope_refuse_isolation(TG_ARGV[0]); END IF;
 	SELECT * INTO STRICT c FROM sift.scope_copies WHERE copy = TG_ARGV[0];
 	PERFORM pg_advisory_xact_lock(hashtext('sift.scope_copy'), hashtext(c.copy));
 	IF TG_OP IN ('UPDATE', 'DELETE') THEN
 		EXECUTE sift.scope_pairs_gone(c, TG_OP) INTO ms, ks;
-		IF ms IS NOT NULL THEN
-			EXECUTE sift.scope_pairs_delete(c) USING ms, ks;
-		END IF;
+		IF ms IS NOT NULL THEN EXECUTE sift.scope_pairs_delete(c) USING ms, ks; END IF;
 	END IF;
 	IF TG_OP IN ('INSERT', 'UPDATE') THEN
 		src := sift.scope_changed(ARRAY[c.member, c.scope_key], ARRAY[c.member, c.scope_key], TG_OP, 'new');
-		IF c.partitioned THEN
-			FOR k IN EXECUTE format('SELECT DISTINCT n.%I FROM %s n', c.scope_key, src) LOOP
-				PERFORM sift.scope_partition(c.copy, k);
-			END LOOP;
-		END IF;
+		IF c.partitioned THEN EXECUTE format('SELECT sift.scope_partition(%L, k) FROM (SELECT DISTINCT n.%I AS k FROM %s n) q', c.copy, c.scope_key, src); END IF;
 		EXECUTE sift.scope_pairs_insert(c, src);
 	END IF;
 	RETURN NULL;
@@ -253,6 +246,12 @@ BEGIN
 				   = ARRAY[LEAST(member::text, scope_key::text), GREATEST(member::text, scope_key::text)]) THEN
 		RAISE EXCEPTION 'scope_create: table "%" has no unique index on (%, %)', rel, member, scope_key
 			USING DETAIL = 'A scope relation holds each (member, scope key) pair once: a duplicate pair would give a row two copies in one key.', ERRCODE = 'feature_not_supported';
+	END IF;
+	-- a pair that comes in finds the rows of its member by an index on the foreign key: one probe for each pair, where a table without it would be read once for each
+	IF NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+				   WHERE i.indrelid = source AND i.indisvalid AND i.indpred IS NULL AND am.amname = 'btree' AND a.attname = fk) THEN
+		RAISE EXCEPTION 'scope_create: table "%" has no btree index that starts with "%"', src, fk USING ERRCODE = 'feature_not_supported',
+			DETAIL = 'A pair that comes into the scope relation finds the rows of its member by an index on the foreign key; without it each pair would read the whole table.', HINT = format('CREATE INDEX ON %s (%I)', src, fk);
 	END IF;
 	SELECT format_type(a.atttypid, NULL) INTO key_type FROM pg_attribute a WHERE a.attrelid = scope_relation AND a.attname = scope_key AND NOT a.attisdropped;
 	IF key_type IS NULL OR key_type NOT IN ('smallint', 'integer', 'bigint') THEN
@@ -473,7 +472,7 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION sift.scope_drop(text) IS 'Drops a scope copy with its triggers on the table and on the scope relation';
-COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name, text, numeric) IS 'Creates a copy of a table keyed by a scope key reached through a scope relation of (member, scope key) pairs, with a sift_col index by the scope key and triggers that keep it exact; returns the rows. Takes the columns and options of the table''s sift_col index. Above max_copies copies per row (default 1.8) it refuses; a larger max_copies builds it. VACUUM it afterwards. See INDEX-RECIPES';
+COMMENT ON FUNCTION sift.scope_create(text, regclass, name, regclass, name, name[], boolean, name, name, text, numeric) IS 'Creates a copy of a table keyed by a scope key reached through (member, scope key) pairs, with a sift_col index by the key and triggers that keep it exact; returns the rows. Needs a primary key and a btree index on the foreign key. Refuses above max_copies copies per row (default 1.8). Takes the columns and options of the table''s sift_col index. VACUUM it afterwards. See INDEX-RECIPES';
 
 -- Pairs kept from a view: the scope relation of a copy (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
 -- source tables (assignments, group membership). sift.scope_refresh_pairs recomputes the pairs of named member ids or scope keys from the view and applies the difference;

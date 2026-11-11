@@ -2,6 +2,7 @@
 -- run one after the other on the state after the whole statement, in either order. A partitioned copy gets the partition of a new key in both.
 CREATE EXTENSION pg_sift;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+CREATE INDEX ON facts (dim_a_id);
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 INSERT INTO pairs VALUES (1, 1), (2, 1), (2, 2), (3, 2);
 INSERT INTO facts SELECT i, 1 + i % 4, i % 3, i FROM generate_series(1, 40) i;

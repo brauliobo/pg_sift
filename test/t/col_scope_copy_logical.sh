@@ -23,6 +23,7 @@ node_start s || bail "subscriber start failed"
 export PGOPTIONS="-c client_min_messages=warning"
 
 TABLES="CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text)
+CREATE INDEX ON facts (dim_a_id)
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id))"
 while IFS= read -r q; do sql p "$q" >/dev/null && sql s "$q" >/dev/null || bail "ddl failed: $q"; done <<<"CREATE EXTENSION pg_sift
 $TABLES"

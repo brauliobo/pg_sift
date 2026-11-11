@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL, note text)
 	WITH (autovacuum_enabled = false);
+CREATE INDEX ON facts (dim_a_id);
 INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97, 'n' FROM generate_series(1, 30000) i;
 CREATE TABLE pairs (dim_a_id int NOT NULL, scope_id int NOT NULL, PRIMARY KEY (scope_id, dim_a_id)) WITH (autovacuum_enabled = false);
 -- member e has 0 (e % 10 = 0), 1, 2, 3, 4 or 6 keys: the keys of a member are 1..n
@@ -15,6 +16,13 @@ CREATE TABLE no_pk (dim_a_id int NOT NULL, created_at timestamptz);
 SELECT sift.scope_create('no_pk_copy', 'no_pk', 'dim_a_id', 'pairs', 'scope_id');
 CREATE TABLE dup_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL);
 SELECT sift.scope_create('dup_copy', 'facts', 'dim_a_id', 'dup_pairs', 'scope_id');
+-- a pair that comes in finds the rows of its member by an index that starts with the foreign key: a table without one, with the key not first or with a partial index is refused
+CREATE TABLE no_fk_index (id int PRIMARY KEY, dim_a_id int NOT NULL);
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
+CREATE INDEX ON no_fk_index (id, dim_a_id);
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
+CREATE INDEX ON no_fk_index (dim_a_id) WHERE id > 0;
+SELECT sift.scope_create('no_index_copy', 'no_fk_index', 'dim_a_id', 'pairs', 'scope_id');
 CREATE TABLE text_pairs (dim_a_id int NOT NULL, scope_id text NOT NULL, PRIMARY KEY (scope_id, dim_a_id));
 SELECT sift.scope_create('text_copy', 'facts', 'dim_a_id', 'text_pairs', 'scope_id');
 SELECT sift.scope_create('facts', 'facts', 'dim_a_id', 'pairs', 'scope_id');
