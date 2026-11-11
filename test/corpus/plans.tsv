@@ -398,3 +398,12 @@ partial_probe_not_implied	SiftAgg	single:t
 pair_group_lateral_exists	SiftAgg	single:t
 pair_group_lateral_inner	SiftAgg	single:t
 pair_group_lateral_filter	SiftAgg	single:t
+scope_param_join_generic	-	n/a(prepared)
+scope_param_join_custom	-	n/a(prepared)
+scope_param_in_generic	-	n/a(prepared)
+scope_param_array_generic	-	n/a(prepared)
+scope_param_array_nulls	-	n/a(prepared)
+scope_param_null	-	n/a(prepared)
+scope_param_topn_generic	-	n/a(prepared)
+scope_initplan_array	SiftAgg	single:t
+scope_initplan_scalar	SiftAgg	-

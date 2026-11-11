@@ -853,3 +853,30 @@ select t.id, count(*), sum(v.amount) from events v left join lateral (select ten
 select t.id, count(*), sum(v.amount) from events v join lateral (select tenants.* from tenants where exists (select 1 from dim_b_pairs b where b.deleted_at is null and b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
 -- @case pair_group_lateral_filter | join | a condition on the group table inside the lateral sub-select
 select t.id, count(*) from events v left join lateral (select tenants.* from tenants where tenants.plan = 'pro' and exists (select 1 from dim_b_pairs b where b.set_id = tenants.id and b.dim_a_id = v.dim_a_id)) t on true where v.dim_a_id in (select dim_a_id from dim_b where set_id = 1) group by 1;
+
+-- ===================== scope index: the key is a parameter or the output of an InitPlan
+-- @case scope_param_join_generic | scope | a join to the pairs by a scalar parameter, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sj(int) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = $1 group by 1;
+execute sj(1 + @K@ % 50);
+-- @case scope_param_join_custom | scope | the same, custom plan
+-- @pre set plan_cache_mode = force_custom_plan; prepare sj(int) as select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = $1 group by 1;
+execute sj(1 + @K@ % 50);
+-- @case scope_param_in_generic | scope | IN over the pairs by a scalar parameter, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare si(int) as select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = $1) group by 1;
+execute si(1 + @K@ % 50);
+-- @case scope_param_array_generic | scope | IN over the pairs by an array parameter of three tenants, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sa(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;
+execute sa(array[1 + @K@ % 50, 1 + @K2@ % 50, 7]);
+-- @case scope_param_array_nulls | scope | an array parameter with a NULL element, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sa(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;
+execute sa(array[1 + @K@ % 50, null]);
+-- @case scope_param_null | scope | a NULL parameter keys nothing
+-- @pre set plan_cache_mode = force_generic_plan; prepare si(int) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = $1) group by 1;
+execute si(null);
+-- @case scope_param_topn_generic | scope | the latest rows of a tenant by a parameter, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare st(int) as select id, d from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = $1) order by d desc, id limit 10;
+execute st(1 + @K@ % 50);
+-- @case scope_initplan_array | scope | the keys of a table: ARRAY(SELECT ..) is evaluated when the scan starts
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any (array(select id from tenants where plan = 'pro' and id < 12))) group by 1;
+-- @case scope_initplan_scalar | scope | a scalar sub-select as the key
+select status, count(*), sum(amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = (select max(id) from tenants where plan = 'team' and id < 30) group by 1;

@@ -8,7 +8,7 @@ set client_min_messages = warning;
 select setseed(0.42);
 select :n_events / 4 as n_orders, :n_events / 2 as n_ledger, :n_events * 3 / 4 as n_web, :n_events * 2 / 5 as n_edges, :n_events / 500 + 1 as n_reads, 50000 as n_big \gset
 set sift.col_auto_merge = off;
-drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide cascade;
+drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide, scope_pairs, scope_events cascade;
 
 create table tenants (id int primary key, plan text);
 create table dim_a (id int primary key, tenant_id int not null, type text not null, region text not null);
@@ -178,6 +178,16 @@ order by random();
 create index wide_col on wide using sift_col (id, tenant_id, kind_id, status, created_at, deleted_at, m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12,
   n01, n02, n03, n04, n05, n06, n07, n08, n09, n10, n11, n12);
 
-vacuum (analyze) tenants, dim_a, kinds, dim_b, dim_b_pairs, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide;
+-- a scope index: the facts of an entity reach a tenant through the pairs of the entity (one tenant, a second for one entity in seven)
+create table scope_pairs (dim_a_id int not null, tenant_id int not null, primary key (dim_a_id, tenant_id));
+insert into scope_pairs select id, tenant_id from dim_a;
+insert into scope_pairs select id, 1 + (tenant_id * 7) % 50 from dim_a where id % 7 = 0 on conflict do nothing;
+create index scope_pairs_journal on scope_pairs using sift_col (dim_a_id, tenant_id) with (track_changes = 'ctid');
+create table scope_events (id bigint primary key, dim_a_id int not null, status text not null, amount float8, d date not null);
+insert into scope_events select id, dim_a_id, status, amount, d from events;
+create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id)');
+reindex index scope_events_col;
+
+vacuum (analyze) tenants, dim_a, kinds, dim_b, dim_b_pairs, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide, scope_pairs, scope_events;
 select relname, reltuples::bigint, pg_size_pretty(pg_total_relation_size(oid)) from pg_class where relname in ('events','orders','order_items','readings','weblog','ledger','eav','edges','events_p_2025','lookup_big') order by 1;
 select indexrelid::regclass, pg_size_pretty(pg_relation_size(indexrelid)) from pg_index where indexrelid::regclass::text like '%\_col' or indexrelid::regclass::text like '%\_col%' order by 1;
