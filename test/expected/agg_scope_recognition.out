@@ -145,7 +145,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  miss: condition on a pair column         | join, the scope relation has another condition: (tenant_scope.valid_until IS NULL)                                                | t
  miss: group by the key                   | join, the statement reads a column of the scope relation (a group key, an aggregate argument), which the scope read does not give | t
  miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                          | t
- miss: range on the key                   | join, the scope relation has another condition: (tenant_scope.tenant_id < 3)                                                      | t
+ miss: range on the key                   | join, the scope key is not bound by an equality or an IN list of constants or parameters                                          | t
  miss: view with DISTINCT                 | join, the sub-select over the scope relation is not a plain projection of its columns                                             | t
  miss: view with a condition              | join, the view over the scope relation has a condition of its own                                                                 | t
  miss: wrong fact column                  | join, the join is not by the declared member column dim_a_id and the declared column dim_a_id of the scanned table                | t

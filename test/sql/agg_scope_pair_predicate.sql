@@ -1,0 +1,185 @@
+-- The scope units of a scope over a PARTIAL unique btree hold the rows that satisfy its predicate (WHERE deleted_at IS NULL), so a statement that names the relation is read from them only
+-- when its conditions on the relation are the predicate and nothing else: it must state the predicate (else it counts the rows the units do not hold: the join runs as written, and says
+-- so) and take no other condition. A plain btree has no predicate, hence no other condition. Every statement returns the rows of the join as written (sift.agg_scope = off) and of the normal
+-- plan, after the build and after each change of the pairs, soft deletes included.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET default_statistics_target = 1000;
+-- page costs that keep a SiftAgg plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement and the price of the two SiftAgg plans only
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
+-- entities 1 to 360 are members of tenant 1 + id % 10; every ninth grant is soft deleted, every fourth is on trial
+CREATE TABLE grants (dim_a_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz, status text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO grants SELECT i, 1 + i % 10, CASE WHEN i % 9 = 0 THEN now() END, CASE WHEN i % 4 = 0 THEN 'trial' ELSE 'live' END FROM generate_series(1, 360) i;
+CREATE TABLE grants_live (LIKE grants INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO grants_live SELECT * FROM grants;
+CREATE TABLE grants_all (LIKE grants INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO grants_all SELECT * FROM grants;
+CREATE TABLE my_tenants (tenant_id int PRIMARY KEY);
+INSERT INTO my_tenants VALUES (2), (5), (9);
+-- the btrees that define the pairs: the rows not soft deleted, those not soft deleted and live, and (the primary key) every row
+CREATE UNIQUE INDEX grants_active ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_live_active ON grants_live (dim_a_id, tenant_id) WHERE deleted_at IS NULL AND status = 'live';
+CREATE INDEX grants_journal ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL;
+CREATE INDEX grants_live_journal ON grants_live USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL;
+CREATE INDEX grants_all_journal ON grants_all USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH
+	(scope = 'active: dim_a_id -> grants(dim_a_id, tenant_id); live: dim_a_id -> grants_live(dim_a_id, tenant_id); every: dim_a_id -> grants_all(dim_a_id, tenant_id)');
+-- the first scope index starts the journal of the pairs at its build: a rebuild stamps the scope segments
+REINDEX INDEX events_col;
+VACUUM (FREEZE, ANALYZE) events, grants, grants_live, grants_all, my_tenants;
+
+CREATE VIEW grants_view AS SELECT dim_a_id, tenant_id FROM grants;
+CREATE VIEW grants_active_view AS SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL;
+CREATE VIEW grants_barrier WITH (security_barrier) AS SELECT dim_a_id, tenant_id, deleted_at FROM grants;
+CREATE VIEW grants_barrier_active WITH (security_barrier) AS SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL;
+CREATE FUNCTION events_of(t int) RETURNS SETOF events LANGUAGE sql STABLE AS
+$$ SELECT * FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = t) $$;
+CREATE FUNCTION events_of_active(t int) RETURNS SETOF events LANGUAGE sql STABLE AS
+$$ SELECT * FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = t AND deleted_at IS NULL) $$;
+
+-- the fixture has soft deleted pairs in the key and trial grants among them: what a statement that does not state the predicate would count more
+SELECT (SELECT count(*) FROM grants WHERE tenant_id = 4) AS rows_of_key, (SELECT count(*) FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL) AS pairs_of_key,
+	(SELECT count(*) FROM grants_live WHERE tenant_id = 4 AND deleted_at IS NULL AND status = 'live') AS live_pairs_of_key;
+
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+ -- the statement states the predicate
+ ('join, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 AND g.deleted_at IS NULL GROUP BY kind$q$),
+ ('join, predicate in ON', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id AND g.deleted_at IS NULL WHERE g.tenant_id = 4 GROUP BY kind$q$),
+ ('IN, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('IN, predicate, two keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id IN (2, 5) AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('EXISTS, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM grants g WHERE g.dim_a_id = e.dim_a_id AND g.tenant_id = 4 AND g.deleted_at IS NULL) GROUP BY kind$q$),
+ ('CTE, predicate', $q$WITH ids AS (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL) SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM ids) GROUP BY kind$q$),
+ ('view with the predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_active_view s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 GROUP BY kind$q$),
+ ('barrier view, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_barrier s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 AND s.deleted_at IS NULL GROUP BY kind$q$),
+ ('function, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events_of_active(4) GROUP BY kind$q$),
+ ('table of keys, predicate', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id IN (SELECT tenant_id FROM my_tenants) AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('top 5 ids, predicate', $q$SELECT e.dim_a_id, sum(amount) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL) GROUP BY e.dim_a_id ORDER BY total DESC, e.dim_a_id LIMIT 5$q$),
+ -- the statement does not: its rows are those of the join, soft deleted ones included
+ ('join', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 GROUP BY kind$q$),
+ ('IN', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4) GROUP BY kind$q$),
+ ('IN, two keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id IN (2, 5)) GROUP BY kind$q$),
+ ('EXISTS', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM grants g WHERE g.dim_a_id = e.dim_a_id AND g.tenant_id = 4) GROUP BY kind$q$),
+ ('CTE', $q$WITH ids AS (SELECT dim_a_id FROM grants WHERE tenant_id = 4) SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM ids) GROUP BY kind$q$),
+ ('plain view', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_view s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 GROUP BY kind$q$),
+ ('barrier view', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_barrier s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 GROUP BY kind$q$),
+ ('function', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events_of(4) GROUP BY kind$q$),
+ ('table of keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id IN (SELECT tenant_id FROM my_tenants)) GROUP BY kind$q$),
+ -- the predicate is stated and something else too, or something else instead
+ ('predicate and a condition', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL AND status = 'live') GROUP BY kind$q$),
+ ('a condition instead', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND status = 'live') GROUP BY kind$q$),
+ ('the rows that are not pairs', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NOT NULL) GROUP BY kind$q$),
+ ('a condition reading the facts', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 AND g.deleted_at IS NULL AND e.amount < g.tenant_id * 25 GROUP BY kind$q$),
+ ('barrier view with the predicate of its own', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_barrier_active s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 GROUP BY kind$q$),
+ -- a btree with two conditions in its predicate: both are stated, or the statement counts rows that are not pairs
+ ('two conditions, both', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants_live WHERE tenant_id = 4 AND status = 'live' AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('two conditions, one', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants_live WHERE tenant_id = 4 AND deleted_at IS NULL) GROUP BY kind$q$),
+ ('two conditions, none', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants_live WHERE tenant_id = 4) GROUP BY kind$q$),
+ ('two conditions, a third', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants_live WHERE tenant_id = 4 AND status = 'live' AND deleted_at IS NULL AND dim_a_id > 100) GROUP BY kind$q$),
+ -- a plain btree has no predicate: no other condition
+ ('plain btree', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_all g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 GROUP BY kind$q$),
+ ('plain btree, a condition', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants_all g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 AND g.deleted_at IS NULL GROUP BY kind$q$);
+
+-- the plan: the scope read (keys), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
+CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; keys text; r text; plan text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF plan ~ 'Scope Index: ' THEN
+		keys := substring(plan from 'Scope Keys: ([^\n]*)');
+		RETURN 'scope read, ' || keys || ' keys' || CASE WHEN keys = '1' THEN '' ELSE ', ' || substring(plan from 'Scope Semantics: ([^\n]*)') END;
+	END IF;
+	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
+	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+END $$;
+
+-- the rows of the statement as planned, with sift.agg_scope off and on the normal plan
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS scope_rows;
+	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
+	SELECT md5(string_agg(t::text, '|' ORDER BY t::text)) INTO r FROM scope_rows t;
+	DROP TABLE scope_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text;
+BEGIN
+	a := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'off', false);
+	b := rows_md5(q);
+	PERFORM set_config('sift.enable_agg', 'off', false);
+	c := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'on', false);
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	RETURN a = b AND b = c;
+END $$;
+
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
+
+-- the statements without the predicate count more than the pairs, so a scope read of them would be wrong
+SELECT (SELECT count(*) FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4) <>
+	(SELECT count(*) FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = 4 AND g.deleted_at IS NULL) AS predicate_matters;
+
+-- a parameter is no value a generic plan can prove implies the predicate: it keeps the join (the reason is that of the custom plan EXPLAIN WHY plans, which has the constant); a custom plan has it and reads the units
+PREPARE by_status(text) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants_live WHERE tenant_id = 4 AND deleted_at IS NULL AND status = $1) GROUP BY kind;
+-- the key is a parameter and the predicate is stated: the scope read for every value
+PREPARE by_key(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = $1 AND g.deleted_at IS NULL GROUP BY kind;
+PREPARE by_key_bare(int) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN grants g ON g.dim_a_id = e.dim_a_id WHERE g.tenant_id = $1 GROUP BY kind;
+SET plan_cache_mode = force_generic_plan;
+SELECT label('EXECUTE by_status(''live'')') AS generic_status, label('EXECUTE by_key(4)') AS generic_key, label('EXECUTE by_key_bare(4)') AS generic_key_bare;
+SELECT same('EXECUTE by_status(''live'')') AS same_status, same('EXECUTE by_key(4)') AS same_key, same('EXECUTE by_key_bare(4)') AS same_key_bare;
+SET plan_cache_mode = force_custom_plan;
+SELECT label('EXECUTE by_status(''live'')') AS custom_status, label('EXECUTE by_key(4)') AS custom_key, label('EXECUTE by_key_bare(4)') AS custom_key_bare;
+SELECT same('EXECUTE by_status(''live'')') AS same_status, same('EXECUTE by_key(4)') AS same_key, same('EXECUTE by_key_bare(4)') AS same_key_bare;
+RESET plan_cache_mode;
+
+-- the pairs change after the build: the reader patches the members that changed (the journal says which); the statements that state the predicate read the active pairs, the others
+-- the join, and the rows are the join's in every state
+CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool) LANGUAGE sql AS $$
+	SELECT note, f.name, label(f.q), same(f.q) FROM forms f
+	WHERE f.name IN ('join, predicate', 'IN, predicate', 'IN, predicate, two keys', 'view with the predicate', 'top 5 ids, predicate', 'join', 'IN', 'two conditions, both', 'plain btree') ORDER BY f.name
+$$;
+-- tenant 4 holds the members 3, 13, 23, 33 ..: 9, 99, 189 .. are the soft deleted ones
+UPDATE grants SET deleted_at = now() WHERE dim_a_id = 33;
+SELECT * FROM states('a soft deleted pair');
+UPDATE grants SET deleted_at = NULL WHERE dim_a_id = 99;
+SELECT * FROM states('a restored pair');
+INSERT INTO grants VALUES (370, 4, NULL, 'live'), (371, 4, now(), 'live');
+SELECT * FROM states('an active and a soft deleted pair inserted');
+UPDATE grants SET status = 'trial' WHERE dim_a_id = 43;
+SELECT * FROM states('a column the btree does not hold');
+UPDATE grants_live SET status = 'trial' WHERE dim_a_id = 3 AND tenant_id = 4;
+UPDATE grants_live SET deleted_at = now() WHERE dim_a_id = 13 AND tenant_id = 4;
+UPDATE grants_all SET deleted_at = now() WHERE dim_a_id = 23 AND tenant_id = 4;
+SELECT * FROM states('pairs ended in the relations of the other scopes');
+UPDATE events SET dim_a_id = 370 WHERE id <= 40;
+SELECT * FROM states('facts moved to an inserted member, write buffer');
+REINDEX INDEX events_col;
+SELECT * FROM states('rebuilt');
+
+-- the plan holds the btree the scope index records: a prepared statement is planned again with the btree of the index that replaces it
+PREPARE kept AS SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL);
+SELECT label('EXECUTE kept') AS recorded_btree, same('EXECUTE kept') AS same_rows;
+CREATE UNIQUE INDEX grants_active_live ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL AND status = 'live';
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'active: dim_a_id -> grants(dim_a_id, tenant_id) using grants_active_live');
+REINDEX INDEX events_col;
+SELECT label('EXECUTE kept') AS stricter_btree, same('EXECUTE kept') AS same_rows;
+PREPARE kept_live AS SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = 4 AND deleted_at IS NULL AND status = 'live');
+SELECT label('EXECUTE kept_live') AS stricter_stated, same('EXECUTE kept_live') AS same_rows;
+
+DEALLOCATE ALL;
+DROP FUNCTION label(text), rows_md5(text), same(text), states(text), events_of(int), events_of_active(int);
+DROP TABLE forms;
+DROP VIEW grants_view, grants_active_view, grants_barrier, grants_barrier_active;
+DROP TABLE events, grants, grants_live, grants_all, my_tenants;
+DROP EXTENSION pg_sift;

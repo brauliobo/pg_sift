@@ -614,6 +614,12 @@ extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);
 /* the item of the FROM list that is the scope relation of the index, and its key column (false: the scan has none) */
 extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key);
+/* the column of the table that column att of the item is, through the column map of a view over it (plan_scope.c); InvalidAttrNumber: none */
+extern AttrNumber item_attno(const AttrNumber *map, int nmap, AttrNumber att);
+/* scope_legs.c: NULL when the conditions rest of the statement on the scope relation take the pairs of the scope and no other row; else why not */
+struct SiftScopeSpec;
+struct SiftScopeSpecs;
+extern const char *scope_pairs_proof(AggCtx *c, const struct SiftScopeSpecs *specs, const struct SiftScopeSpec *sp, Index rti, const AttrNumber *map, int nmap, List *rest);
 /* cost/scope.c: a serial path of the first pass leaves the join it priced (scope_alt_record) for the node of the second to run instead; the path of the second pass takes the one of its order (scope_alt_attach: false, a join the units cannot answer) */
 extern void scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List *pathkeys);
 extern bool scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys);

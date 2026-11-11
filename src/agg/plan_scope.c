@@ -11,8 +11,8 @@
  *
  * The proof that the scope read gives the rows of the join, all of it at plan time:
  *  (a) the relation and its columns are the index's declared scope, and the join is the equality of its member column and the declared column of the scanned table;
- *  (b) the scope key is bound by one equality or IN list of constants or of parameters (a $n, an InitPlan's output, a stable expression: the scan evaluates them when it starts), and the
- *      scope relation has no other condition and no other table joined to it;
+ *  (b) the scope key is bound by one equality or IN list of constants or of parameters (a $n, an InitPlan's output, a stable expression: the scan evaluates them when it starts), the
+ *      scope relation has no other table joined to it and no condition but the predicate of the unique btree that defines its pairs, which the statement must state (agg/scope_legs.c);
  *  (c) the statement reads no column of the scope relation (a group key, an aggregate argument): the declaration needs a unique btree on (member, key), so a row of the scanned table
  *      has at most one pair with a key and the join, the semi join and the scope read count it the same;
  *  (d) a semi join (IN, EXISTS) counts a row once whichever keys it has, which the reader does (Scope Semantics: once); a join counts it once for each pair, which the reader reads
@@ -259,7 +259,7 @@ scope_table(PlannerInfo *root, Index rti, AttrNumber **map, int *nmap, const cha
 }
 
 /* the column of the table that column att of the item is (InvalidAttrNumber: none) */
-static AttrNumber
+AttrNumber
 item_attno(const AttrNumber *map, int nmap, AttrNumber att)
 {
 	return map == NULL ? att : att > 0 && att < nmap ? map[att] : InvalidAttrNumber;
@@ -429,7 +429,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	Var		   *fk = NULL,
 			   *kvar = NULL;
 	SiftAggScope sc = {0};
-	List	   *pool;
+	List	   *pool,
+			   *rest = NIL;
 	Relids		own,
 				tables = NULL;
 
@@ -496,6 +497,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 				return "the scope key is bound more than once";
 			keyq = q;
 		}
+		else if (bms_membership(v) == BMS_SINGLETON)
+			rest = lappend(rest, q);
 		else
 			return psprintf("the scope relation has another condition: %s", expr_text(c, q));
 	}
@@ -516,6 +519,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 	/* several keys counted for each pair: where the units cannot (a member's pairs changed) the node runs the join the first pass priced, so it needs one */
 	if (sc.nkeys > 1 && lj == NULL && t->alts == NIL)
 		return "several keys, and a row counts once for each pair: a member whose pairs changed needs the join, which counts them";
+	if ((why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
+		return why;
 	t->rti = rti;
 	t->fk = (Var *) copyObject(fk);
 	sc.key_name = sp->key_name;
