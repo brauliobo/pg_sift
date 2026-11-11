@@ -17,7 +17,7 @@ RESET ROLE;
 SELECT count(*) AS options FROM sift.table_options('ot');
  options 
 ---------
-      16
+      17
 (1 row)
 
 SELECT name, value, source, default_value FROM sift.table_options('ot') WHERE name IN ('write_buffer_limit', 'compression', 'hot_update') ORDER BY name;
@@ -44,7 +44,7 @@ SELECT sift.table_get_option(tbl => 'ot', name => 'hot_update');
 SELECT count(*) AS options_named FROM sift.table_options(tbl => 'ot');
  options_named 
 ---------------
-            16
+            17
 (1 row)
 
 -- set, read back in the canonical text of the setting, reset
@@ -139,10 +139,10 @@ ERROR:  parameter "sift.table_hot_update" requires a Boolean value
 CONTEXT:  while checking the option "hot_update" of a sift_table
 SELECT sift.table_set_option('ot', 'nope', '1');
 ERROR:  "nope" is not a per-table option of a sift_table
-HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes.
+HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes, key_order.
 SELECT sift.table_set_option('ot', 'auto_defrag_delay', '1s');
 ERROR:  "auto_defrag_delay" is not a per-table option of a sift_table
-HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes.
+HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes, key_order.
 SELECT sift.table_set_option('heap_t', 'hot_update', 'on');
 ERROR:  "heap_t" is not a sift_table
 SELECT sift.table_set_option('ot', 'hot_update', NULL);
@@ -150,7 +150,7 @@ ERROR:  the value of an option must not be NULL
 HINT:  sift.table_reset_option takes the option off the table.
 SELECT sift.table_get_option('ot', 'nope');
 ERROR:  "nope" is not a per-table option of a sift_table
-HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes.
+HINT:  The options are: write_buffer_limit, wide_rows, inline_promote, async_promote, backpressure, hot_update, bulk_groups, dict_lookup, key_table, compression, dead_rewrite_pct, auto_defrag, auto_defrag_free_pct, auto_defrag_budget, auto_defrag_coalesce, auto_defrag_indexes, key_order.
 RESET ROLE;
 -- who may set and who may read
 SET ROLE opt_other;

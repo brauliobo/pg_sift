@@ -204,6 +204,19 @@ leaf_clustering(SiftColSegment **seg, int nseg, int c, int64 units, double width
 	pfree(pr);
 }
 
+/* Units an equality on the integer leaf c reads on average over the units of the segments (1 when the leaf is sorted across them); false when no unit has a usable zone */
+bool
+sift_col_zone_point(SiftColSegment **seg, int nseg, int c, int64 units, double *point)
+{
+	LeafClust	lc;
+
+	leaf_clustering(seg, nseg, c, units, 0.01, &lc);
+	if (!lc.has_range)
+		return false;
+	*point = lc.point;
+	return true;
+}
+
 Datum
 sift_col_clustering(PG_FUNCTION_ARGS)
 {

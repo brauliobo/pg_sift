@@ -585,8 +585,36 @@ typedef enum SiftTblOptId
 	SIFT_TBLOPT_AUTO_DEFRAG_BUDGET,
 	SIFT_TBLOPT_AUTO_DEFRAG_COALESCE,
 	SIFT_TBLOPT_AUTO_DEFRAG_INDEXES,
+	SIFT_TBLOPT_KEY_ORDER,
 	SIFT_TBLOPT_N
 } SiftTblOptId;
+
+#define SIFT_TBL_KEY_MAX	8		/* columns of a key_order */
+
+/*
+ * key_order (table/keyorder.c): the order the rewrites of the table (VACUUM FULL) write its rows in. The columns come back as attribute numbers, n of them
+ * (0 when the table has no key_order); each sorts as its type's default btree operator, nulls last.
+ */
+extern int	sift_tbl_key_order(Relation rel, const SiftTblRel *st, AttrNumber *att);
+/* The canonical text of a key_order for the table (names as it has them, quoted where needed); ERROR for a column it lacks, a repeated one, a type with no btree order */
+extern char *sift_tbl_key_order_check(Relation rel, const char *spec);
+/* sift.table_key_order is a per-table option only: the setting refuses a value */
+extern PGDLLIMPORT char *sift_tbl_key_order_spec;
+
+/* How far the rows of the table are from its key_order, read from the zones of the first key column of every unit (no chunk is read) */
+typedef struct SiftTblKeyState
+{
+	bool		known;			/* the first key column has zones: an integer, date or timestamp column */
+	int64		rows;			/* live rows of the column groups */
+	int64		units;
+	double		units_per_key;	/* units an equality on the first key column reads on average: 1 for a sorted table, units for a scattered one */
+	double		out_of_order_pct;	/* 100 * (units_per_key - 1) / (units - 1) */
+} SiftTblKeyState;
+extern void sift_tbl_key_state(Relation rel, SiftTblRel *st, SiftTblKeyState *ks);
+#define SIFT_TBL_KEY_DECAY_PCT	5		/* the out-of-order share of the units from which VACUUM says the key_order has drifted */
+/* NOTICE: the key_order just set, the table's present order and what the rewrite that sorts it writes; and the one VACUUM raises when the order has drifted */
+extern void sift_tbl_key_order_notice(Relation rel, const char *spec);
+extern void sift_tbl_key_order_vacuum(Relation rel, SiftTblRel *st);
 
 extern bool sift_tbl_opt_bool(const SiftTblRel *st, SiftTblOptId id);
 extern int	sift_tbl_opt_int(const SiftTblRel *st, SiftTblOptId id);

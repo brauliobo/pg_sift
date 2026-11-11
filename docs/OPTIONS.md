@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
+| [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 42 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 7 | an older spelling that is still accepted |
@@ -1729,6 +1729,22 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave 0 (a writer waits only when the directory is nearly full). Set a percent above 50 for steady heavy writers so they merge before the directory fills, at the cost of the wait.
 - **Sources:** benchmark `test:tbl_cap`; [COL-TAM 7](COL-TAM.md#7-maintenance)
 
+#### sift.table_key_order
+
+`sift_table` · opt-in · since 5.0 · default ''
+
+- **What it does:** VACUUM FULL writes the rows in the order of the key, so an equality or range on the first column reads the one unit that holds it: 0.74 against 12.04 million instructions (27 against 597 buffers) at 1,000,000 rows, 1.04 against 57.6 at 5,000,000
+- **Gain:** entity aggregate 12.04 to 0.74 M instructions, 597 to 27 buffers; entity with a value filter 12.26 to 0.86 M (1,000,000 rows, 12 columns, key dim_a_id, created_at, warm); 57.6 to 1.04 M at 5,000,000 rows; over nine classes (entity, tenant, window, top 20, whole table; unsorted against sorted) the geometric mean speedup is 1.14 and the mean saving -2,044 thousand instructions a query, because the time-window classes read 3 to 9 times more
+- **Gain and cost:** 1.14x fewer instructions (-2044k saved a query), index +24.5%, build +37.0%, opt-in (fails: gain, cost)
+- **Impact:** index size: +24.5% (13.3 to 16.6 MB at 1,000,000 rows, 12 columns), +30.5% for a key of 50 values; +11% at 100,000 rows; build, merge and writes: VACUUM FULL of 1,000,000 rows 7.9 to 10.8 G instructions (+37%), WAL 13.1 to 16.0 MB (+22%); a table without the option is rewritten as before; other: the table is 11 to 30% larger than in load order, a sorted rewrite is 37% more instructions than an unsorted one, the time-window classes read 3 to 9 times more, and the order drifts as unsorted rows arrive
+- **When:** A table whose queries filter or group by one key (a tenant, an entity, a date) and whose rows are loaded sorted or rewritten now and then. A table read by time in load order, or written all day in random key order, leaves it unset.
+- **Default:** '' — Unset: the order of the load. A sorted table is 11 to 30% larger, a sorted rewrite costs 37% more, the window classes of the load order read 3 to 9 times more (3.74 against 10.13 M instructions), and rows added in another order double an entity aggregate at 8% (0.74 to 1.41 M).
+- **Why not the default:** the speedup is under 1.05, or saves under 100k instructions a query, the gain does not pay for the growth and the build, not run on real workloads
+- **Turn off:** sift.table_reset_option(table, 'key_order'): the next VACUUM FULL rewrites in load order again. The rows already sorted stay as they are.
+- **Upgrade from 4.3:** A sift_table of 4.3 reads unchanged: no table is sorted until the option is set and VACUUM FULL has rewritten it. Segments written by a rewrite are the usual column format.
+- **Advice:** Leave unset for a table read mostly by time or in load order (its window classes read 3 to 9 times more when sorted by another key). Set it for a table whose reads go by one key; load it with ORDER BY or run VACUUM FULL, and run VACUUM FULL again when sift.table_layouts or the VACUUM notice says the rows have drifted.
+- **Sources:** benchmark `test:tbl_key_order`; [COL-TAM 8.2](COL-TAM.md#82-the-order-of-a-sift_table-key_order)
+
 #### sift_col(connect)
 
 `sift_col` · opt-in · since 4.3 · default ''
@@ -2749,7 +2765,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2761,6 +2777,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift.agg_connect_found` | on | on |  | New in 4.3. |
 | `sift.agg_child_first` | on | on |  | New in 4.3. |
 | `sift.tomb_log_limit` | 8388608 kB | 8388608 kB |  | A new setting: nothing to do. The limit was 2 GB in the 4.2.0 sources of this change and none before. |
+| `sift.table_key_order` | new | '' |  | A sift_table of 4.3 reads unchanged: no table is sorted until the option is set and VACUUM FULL has rewritten it. Segments written by a rewrite are the usual column format. |
 | `sift.eval_methods` | '' | '' |  | 4.2 removed four names, so naming one is an error (the sign of -name is refused too): skip_trigger_lookup (always on: the statement trigger of track_changes leaves out the look at an UPDATE that kept the key), snapshot_masks (it had no code), latest_hint (it won nothing) and unit_rewrite (its writer is gone; segments an earlier release wrote with it stay readable and are vacuumed like the others, the automatic merge and rewrite leave them alone, and a forced sift.col_merge folds them): invalid value for parameter "sift.eval_methods": "snapshot_masks", DETAIL: Unknown evaluation method: snapshot_masks. Remove a removed name from ALTER DATABASE .. SET, ALTER SYSTEM and postgresql.conf before updating. Available after the extension library is loaded. Use the selection in the VACUUM session as well. |
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |

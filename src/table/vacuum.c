@@ -561,6 +561,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	PG_END_TRY();
 	sift_maint_unlock(rel);
 	vacuum_report(rel, &v, &cutoffs, v.nindexes > 0, start, elevel);
+	sift_tbl_key_order_vacuum(rel, st);
 }
 
 bool		sift_tbl_auto_defrag = true;

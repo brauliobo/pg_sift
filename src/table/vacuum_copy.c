@@ -3,6 +3,9 @@
  */
 #include "vacuum_int.h"
 
+#include "executor/executor.h"
+#include "utils/typcache.h"
+
 typedef struct CopyState
 {
 	SiftTblRel *st;
@@ -57,9 +60,39 @@ copy_index_order(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopySt
 	index_endscan(iscan);
 }
 
-/* The versions as a scan returns them, as tuples, into the new table or into sort: column segments of another layout are read by attribute */
+/* Where the versions of a rewrite go: the new table, or a sort in front of it */
+typedef void (*TupleSink) (void *arg, HeapTuple tup);
+
 static void
-copy_scan(Relation OldTable, SiftTblBulk *bulk, Tuplesortstate *sort, CopyState *c)
+put_bulk(void *arg, HeapTuple tup)
+{
+	sift_tbl_bulk_tuple(arg, tup);
+}
+
+static void
+put_cluster(void *arg, HeapTuple tup)
+{
+	tuplesort_putheaptuple(arg, tup);
+}
+
+typedef struct KeySort
+{
+	Tuplesortstate *sort;
+	TupleTableSlot *slot;
+} KeySort;
+
+static void
+put_key(void *arg, HeapTuple tup)
+{
+	KeySort    *k = arg;
+
+	ExecForceStoreHeapTuple(tup, k->slot, false);
+	tuplesort_puttupleslot(k->sort, k->slot);
+}
+
+/* The versions as a scan returns them, as tuples, into the new table or into a sort: column segments of another layout are read by attribute */
+static void
+copy_scan(Relation OldTable, TupleSink put, void *arg, CopyState *c)
 {
 	TableScanDesc scan = sift_table_beginscan(OldTable, SnapshotAny, 0, NULL);
 	SiftTblRowVer rv;
@@ -68,12 +101,7 @@ copy_scan(Relation OldTable, SiftTblBulk *bulk, Tuplesortstate *sort, CopyState 
 	{
 		CHECK_FOR_INTERRUPTS();
 		if (copy_keep(&rv, c))
-		{
-			if (sort)
-				tuplesort_putheaptuple(sort, rv.tuple);
-			else
-				sift_tbl_bulk_tuple(bulk, rv.tuple);
-		}
+			put(arg, rv.tuple);
 		heap_freetuple(rv.tuple);
 	}
 	table_endscan(scan);
@@ -86,7 +114,7 @@ copy_sorted(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *
 	Tuplesortstate *sort = tuplesort_begin_cluster(RelationGetDescr(OldTable), OldIndex, maintenance_work_mem, NULL, TUPLESORT_NONE);
 	HeapTuple	tup;
 
-	copy_scan(OldTable, NULL, sort, c);
+	copy_scan(OldTable, put_cluster, sort, c);
 	tuplesort_performsort(sort);
 	while ((tup = tuplesort_getheaptuple(sort, true)) != NULL)
 	{
@@ -94,6 +122,44 @@ copy_sorted(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *
 		sift_tbl_bulk_tuple(bulk, tup);
 	}
 	tuplesort_end(sort);
+}
+
+/* The table's key_order: the kept versions sorted by its columns (default btree order, nulls last) before they get their dense TIDs */
+static void
+copy_key_sorted(Relation OldTable, SiftTblBulk *bulk, CopyState *c, int nkeys, const AttrNumber *att)
+{
+	TupleDesc	desc = RelationGetDescr(OldTable);
+	Oid			ops[SIFT_TBL_KEY_MAX],
+				colls[SIFT_TBL_KEY_MAX];
+	bool		nulls_first[SIFT_TBL_KEY_MAX] = {false};
+	KeySort		k;
+	TupleTableSlot *out;
+
+	for (int i = 0; i < nkeys; i++)
+	{
+		Form_pg_attribute a = TupleDescAttr(desc, att[i] - 1);
+
+		ops[i] = lookup_type_cache(a->atttypid, TYPECACHE_LT_OPR)->lt_opr;
+		colls[i] = a->attcollation;
+	}
+	k.sort = tuplesort_begin_heap(desc, nkeys, (AttrNumber *) att, ops, colls, nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	k.slot = MakeSingleTupleTableSlot(desc, &TTSOpsHeapTuple);
+	copy_scan(OldTable, put_key, &k, c);
+	ExecDropSingleTupleTableSlot(k.slot);
+	tuplesort_performsort(k.sort);
+	out = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	while (tuplesort_gettupleslot(k.sort, true, false, out, NULL))
+	{
+		bool		shouldfree;
+		HeapTuple	tup = ExecFetchSlotHeapTuple(out, false, &shouldfree);
+
+		CHECK_FOR_INTERRUPTS();
+		sift_tbl_bulk_tuple(bulk, tup);
+		if (shouldfree)
+			heap_freetuple(tup);
+	}
+	ExecDropSingleTupleTableSlot(out);
+	tuplesort_end(k.sort);
 }
 
 /*
@@ -110,6 +176,8 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 	SiftTblRel *new_st = sift_tbl_rel(NewTable);
 	CopyState	c = {sift_tbl_rel(OldTable), OldestXmin, num_tuples, tups_vacuumed, tups_recently_dead};
 	SiftTblBulk *bulk;
+	AttrNumber	att[SIFT_TBL_KEY_MAX];
+	int			nkeys;
 
 	*num_tuples = *tups_vacuumed = *tups_recently_dead = 0;
 	new_st->fresh = true;
@@ -122,8 +190,10 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 		copy_sorted(OldTable, OldIndex, bulk, &c);
 	else if (OldIndex != NULL)
 		copy_index_order(OldTable, OldIndex, bulk, &c);
+	else if ((nkeys = sift_tbl_key_order(OldTable, c.st, att)) > 0)
+		copy_key_sorted(OldTable, bulk, &c, nkeys, att);
 	else if (!sift_tbl_bulk_copy(bulk, OldTable, c.st, copy_keep, &c))
-		copy_scan(OldTable, bulk, NULL, &c);
+		copy_scan(OldTable, put_bulk, bulk, &c);
 	sift_tbl_bulk_finish(bulk);
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();

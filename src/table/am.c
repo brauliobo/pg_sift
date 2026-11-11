@@ -39,6 +39,7 @@ bool		sift_tbl_inline_promote = true;
 bool		sift_tbl_hot_update = true;
 int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
+char	   *sift_tbl_key_order_spec = NULL;
 
 /* The directory is half full from the first merge on (dir_pressure), so a threshold at or under that is no backpressure */
 static bool
@@ -63,6 +64,19 @@ static bool
 compression_check_hook(char **newval, void **extra, GucSource source)
 {
 	check_compression(*newval);
+	return true;
+}
+
+/* The columns of a key_order belong to one table, and sift.table_set_option checks them against it without the setting: the setting itself holds no value */
+static bool
+key_order_check_hook(char **newval, void **extra, GucSource source)
+{
+	if (*newval != NULL && (*newval)[0] != '\0')
+	{
+		GUC_check_errdetail("The columns of a key_order belong to one table.");
+		GUC_check_errhint("Use sift.table_set_option(table, 'key_order', 'column, ...').");
+		return false;
+	}
 	return true;
 }
 
@@ -146,6 +160,10 @@ sift_tbl_define_gucs(void)
 	DefineCustomStringVariable("sift.table_compression",
 							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
 							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
+	DefineCustomStringVariable("sift.table_key_order",
+							   "The columns a sift_table is sorted by when VACUUM FULL rewrites it; a per-table option, empty here.",
+							   "Set it for one table with sift.table_set_option(table, 'key_order', 'column, ...'); the setting itself holds no value.",
+							   &sift_tbl_key_order_spec, "", PGC_USERSET, 0, key_order_check_hook, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
 							&sift_tbl_max_segments, SIFT_MAX_SEGMENTS, 8, SIFT_MAX_SEGMENTS, PGC_USERSET, 0, NULL, NULL, NULL);

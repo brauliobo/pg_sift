@@ -254,6 +254,8 @@ extern uint64 sift_cseg_dict_stored(SiftColSegment *seg, int col);
 
 /* The zone of leaf col in unit u (the zone arrays of the leaf are read on first use) */
 extern void sift_cseg_zone(SiftColSegment *seg, int col, uint32 u, SiftCZone *z);
+/* Units an equality on the integer leaf col reads on average over the units of the n segments (1 when the leaf is sorted across them), from their zones; false when no unit has a usable zone (col/cluster.c) */
+extern bool sift_col_zone_point(SiftColSegment **seg, int n, int col, int64 units, double *point);
 
 /* Adds what the zones and the dictionary of the segment say about leaf col to acc (sift_col_leaf_stats_init first). Reads the leaf's zone arrays and four bytes of its dictionary, no chunk */
 extern void sift_col_leaf_stats_init(SiftColLeafStats *acc);

@@ -64,6 +64,7 @@ static const OptDesc opt_desc[SIFT_TBLOPT_N] = {
 	[SIFT_TBLOPT_AUTO_DEFRAG_BUDGET] = {"auto_defrag_budget", OPT_INT, &sift_tbl_auto_defrag_budget, GUC_UNIT_MB},
 	[SIFT_TBLOPT_AUTO_DEFRAG_COALESCE] = {"auto_defrag_coalesce", OPT_BOOL, &sift_tbl_auto_defrag_coalesce, 0},
 	[SIFT_TBLOPT_AUTO_DEFRAG_INDEXES] = {"auto_defrag_indexes", OPT_BOOL, &sift_tbl_auto_defrag_indexes, 0},
+	[SIFT_TBLOPT_KEY_ORDER] = {"key_order", OPT_STRING, &sift_tbl_key_order_spec, 0},
 };
 
 /* What the table sets: a bit and a value per option, and the text as stored (the canonical text of the setting) */
@@ -398,7 +399,9 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	rel = opt_open(relid, ShareUpdateExclusiveLock);
 	opt_require_owner(rel);
 	id = opt_require(text_to_cstring(PG_GETARG_TEXT_PP(1)));
-	canon = opt_check(id, text_to_cstring(PG_GETARG_TEXT_PP(2)));
+	/* the columns of a key_order are the table's: checked against it, not by the setting */
+	canon = id == SIFT_TBLOPT_KEY_ORDER ? sift_tbl_key_order_check(rel, text_to_cstring(PG_GETARG_TEXT_PP(2))) :
+		opt_check(id, text_to_cstring(PG_GETARG_TEXT_PP(2)));
 	cfg = config_open();
 	(void) config_delete(cfg, relid, opt_desc[id].name);
 	values[0] = ObjectIdGetDatum(relid);
@@ -407,6 +410,8 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	CatalogTupleInsert(cfg, heap_form_tuple(RelationGetDescr(cfg), values, nulls));
 	table_close(cfg, NoLock);
 	opt_changed(relid);
+	if (id == SIFT_TBLOPT_KEY_ORDER)
+		sift_tbl_key_order_notice(rel, canon);
 	relation_close(rel, NoLock);
 	PG_RETURN_VOID();
 }

@@ -22,6 +22,7 @@
 
 PG_FUNCTION_INFO_V1(sift_table_segments);
 PG_FUNCTION_INFO_V1(sift_table_space);
+PG_FUNCTION_INFO_V1(sift_table_layouts);
 
 /* One row per segment of the table: buffer (row format write buffers), sealed buffer (waiting for promotion), columns, tombstones */
 Datum
@@ -89,6 +90,51 @@ sift_table_segments(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	UnregisterSnapshot(snap);
+	table_close(rel, AccessShareLock);
+	return (Datum) 0;
+}
+
+/*
+ * One row per layout of the table: its own order (primary) and, when it has a key_order, how far its rows are from it. Reads the zones of the first key
+ * column of every unit, no chunk. restore says what puts the rows back in order and what that writes.
+ */
+Datum
+sift_table_layouts(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftTblKeyState ks;
+	AttrNumber	att[SIFT_TBL_KEY_MAX];
+	Datum		v[8] = {0};
+	bool		nulls[8] = {0};
+	const char *order;
+	bool		keyed;
+
+	sift_tbl_require(rel);
+	InitMaterializedSRF(fcinfo, 0);
+	order = sift_tbl_opt_str(st, SIFT_TBLOPT_KEY_ORDER);
+	keyed = sift_tbl_key_order(rel, st, att) > 0;
+	sift_tbl_key_state(rel, st, &ks);
+	v[0] = CStringGetTextDatum("table");
+	v[1] = CStringGetTextDatum("primary");
+	v[2] = CStringGetTextDatum(keyed ? order : "load order");
+	v[3] = Int64GetDatum(RelationGetNumberOfBlocks(rel) * (int64) BLCKSZ);
+	nulls[4] = nulls[5] = nulls[6] = nulls[7] = true;
+	if (ks.known)
+	{
+		nulls[4] = nulls[5] = nulls[6] = false;
+		v[4] = Int64GetDatum(ks.rows);
+		v[5] = Int64GetDatum(ks.units);
+		v[6] = Float8GetDatum(ks.units_per_key);
+		if (ks.out_of_order_pct >= SIFT_TBL_KEY_DECAY_PCT)
+		{
+			nulls[7] = false;
+			v[7] = CStringGetTextDatum(psprintf("VACUUM FULL sorts the table again: it rewrites %.1f MB and the indexes (new TIDs); %.0f%% of the rows are out of order",
+												(double) RelationGetNumberOfBlocks(rel) * BLCKSZ / (1024.0 * 1024.0), ks.out_of_order_pct));
+		}
+	}
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	table_close(rel, AccessShareLock);
 	return (Datum) 0;
 }

@@ -350,6 +350,8 @@ CREATE INDEX zkf_idx ON zkf USING sift_col (id sift.col_int4_ops, org sift.col_i
 ALTER TABLE events SET ACCESS METHOD sift_table;
 SELECT sift.table_set_paths('events', 'doc', 'doc.parts[]{cat text, dir_a text, score float8}');
 SELECT sift.table_set_paths('events', 'metrics', 'metrics.* float8');
+-- the rewrites of the fuzz (VACUUM FULL among its statements) sort the rows by a key with NULLs
+SELECT sift.table_set_option('events', 'key_order', 'parent_id, ts');
 VACUUM FULL events;
 ALTER TABLE kc SET ACCESS METHOD sift_table;
 ALTER TABLE nzf SET ACCESS METHOD sift_table;
