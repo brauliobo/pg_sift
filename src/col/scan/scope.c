@@ -268,14 +268,14 @@ leaf_pairs(PairScan *ps)
 
 /*
  * The pairs with one of the keys (any key: keys NULL), ascending by member: the btree asked for each key when it leads with the scope key and the keys are few, else the leaves of the relation's journal index
- * (a sift_col index of both columns), else the relation read once
+ * (a sift_col index of both columns; a pair with a NULL in a column is no pair), else the relation read once
  */
 static void
 pairs_of_keys(PairScan *ps)
 {
 	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
-	else if (ps->keys == NULL || !leaf_pairs(ps))
+	else if (!leaf_pairs(ps))
 		sift_conn_scan_keys(ps->rel, ps->btree, ps->member, ps->skey, ps->snap, scan_pair, ps);
 	if (ps->out.n > 0)
 		qsort(ps->out.p, ps->out.n, sizeof(SiftScopePair), cmp_by_member);
@@ -636,13 +636,12 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 				patch,
 				delta;
 
-	if (!sift_scope_has_journal(index, ord))
+	if ((rd->why = segments_stamp(index, dir, ord, stamp)) != NULL)
 	{
-		rd->why = sift_conn_why_name(SIFT_CONN_NO_JOURNAL);
+		if (!sift_scope_has_journal(index, ord))
+			rd->why = sift_conn_why_name(SIFT_CONN_NO_JOURNAL);
 		return;
 	}
-	if ((rd->why = segments_stamp(index, dir, ord, stamp)) != NULL)
-		return;
 	if (!sift_scope_covered(index, ord))
 	{
 		rd->why = "scope segments do not cover the rows";

@@ -794,6 +794,8 @@ key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uin
 			int64		i = (int64) w * 64 + __builtin_ctzll(bits),
 						key = lookcol_scalar_value(&need[1], i);
 
+			if ((need[0].vec.isnull != NULL && need[0].vec.isnull[i]) || (need[1].vec.isnull != NULL && need[1].vec.isnull[i]))
+				continue;
 			if (kp->keys != NULL && (key < kp->keys[0] || key > kp->keys[kp->nkeys - 1] || !bsearch(&key, kp->keys, kp->nkeys, sizeof(int64), sift_cmp_i64)))
 				continue;
 			if (kp->n == kp->cap)
