@@ -238,8 +238,6 @@ typedef struct SiftScopeRead
 	uint64		pairs;			/* the pairs of the keys the read listed (to dedupe a member in several keys, or to give the delta its pairs): 0 where it listed none */
 	SiftScopeDrop *drop;
 	int			ndrop;
-	int64	   *members;		/* the members the scope relation lists for the keys, when the read listed them to price the patch: the entity path takes them */
-	uint32		nmembers;
 	uint64		buffer_rows;	/* the live rows of the write buffers */
 	struct SiftScopeDelta *delta;	/* the rows of the buffers and the segment rows of the patched members, copied for each of the pairs their member has with the keys: what the source reads of them */
 	uint64		delta_rows;		/* ... and how many copies they are */
@@ -268,8 +266,10 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_EXCEPT_INSTR		20
 #define SIFT_SCOPE_PATCH_UNIT_INSTR	266000
 #define SIFT_SCOPE_SCAN_INSTR		15
-#define SIFT_SCOPE_ENTITY_INSTR		10
-#define SIFT_SCOPE_MATCH_INSTR		35
+#define SIFT_SCOPE_ENTITY_INSTR		25
+#define SIFT_SCOPE_MATCH_INSTR		70
+/* a row of a relation of pairs read through its btree (an index only scan) where no journal index lists its pairs, which every scan of the keys and the entity path need: 255 to 305 */
+#define SIFT_SCOPE_SCAN_PAIR_INSTR	300
 #define SIFT_SCOPE_PAIR_INSTR		25
 #define SIFT_SCOPE_MEMBER_INSTR		3300
 /* an entity row of an index read whole, against which the changed members one read lists are capped (the figures of a table of 1,000,000 rows and 20,000 members) */
@@ -305,7 +305,8 @@ typedef struct SiftScopeCounts
 	uint64		patch_units;	/* the units of the entity segments the rows of the changed members that have a pair now are read from */
 	uint64		patch_scan_rows;	/* the entity rows looked at to find them (no point directory of the member leaf tells where they are) */
 	uint64		delta_rows;		/* the copies of the rows of the buffers and of the members to patch the delta reads */
-	uint64		pairs;			/* the pairs of the relation, which the entity path lists the members of the keys from and a read of several keys counted once reads whole to list those of its keys */
+	uint64		pairs;			/* the pairs of the relations whose journal index lists them (the leaves hold only pairs), which the entity path lists the members of the keys from and a read of several keys counted once reads whole to list those of its keys */
+	uint64		scan_pairs;		/* ... and the rows of those whose pairs only their btree lists (a partial btree over a plain journal index) */
 	uint64		path_rows;		/* the entity rows that may hold a member the relation lists for the keys */
 	uint64		path_units;		/* ... and the units of the entity segments they are in */
 } SiftScopeCounts;
@@ -321,7 +322,7 @@ sift_scope_patch_price(const SiftScopeCounts *c)
 static inline double
 sift_scope_list_price(const SiftScopeCounts *c)
 {
-	return c->once && c->nkeys > 1 ? SIFT_SCOPE_LIST_INSTR * (double) c->pairs + SIFT_SCOPE_KEY_PAIR_INSTR * (double) c->key_pairs : 0.0;
+	return c->once && c->nkeys > 1 ? SIFT_SCOPE_LIST_INSTR * (double) c->pairs + SIFT_SCOPE_SCAN_PAIR_INSTR * (double) c->scan_pairs + SIFT_SCOPE_KEY_PAIR_INSTR * (double) c->key_pairs : 0.0;
 }
 
 /* What the scope units cost, with the listing of the pairs, the changed members, the patch and the delta (pure) */
@@ -340,7 +341,7 @@ sift_scope_units_price(const SiftScopeCounts *c)
 static inline double
 sift_scope_entity_price(const SiftScopeCounts *c)
 {
-	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_UNIT_INSTR * (double) c->path_units + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows +
+	return SIFT_SCOPE_PAIR_INSTR * (double) c->pairs + SIFT_SCOPE_SCAN_PAIR_INSTR * (double) c->scan_pairs + SIFT_SCOPE_UNIT_INSTR * (double) c->path_units + SIFT_SCOPE_ENTITY_INSTR * (double) c->path_rows +
 		SIFT_SCOPE_MATCH_INSTR * (double) c->entries;
 }
 
@@ -360,6 +361,8 @@ extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot sn
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+/* The rows of the relations a read lists the pairs of the scope from (the estimate of each): the pairs relation, and for two paths the joined and the via relations; *scanned of them those whose pairs the leaves of no journal index list */
+extern double sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned);
 /* The relation of pairs of the scope (open, AccessShare) with its member and scope key columns, and the journal index of the relation: a sift_col index that holds both columns */
 extern Oid	sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey);
 

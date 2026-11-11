@@ -495,6 +495,31 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 	return sift_scope_specs(index)->s[ord]->joined != NULL ? InvalidOid : sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
+double
+sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned)
+{
+	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
+	const SiftScopeSpec *s = sift_scope_specs(index)->s[ord];
+	double		rows = 0;
+	PairScan	ps = {0};
+
+	*scanned = 0;
+	for (int hop = 0; hop <= (s->joined != NULL ? 2 : 0); hop++)
+	{
+		double		n;
+
+		if (hop == 0)
+			scope_relation(heap, index, ord, &ps, NULL, 0, NULL);
+		else
+			hop_scan(heap, index, s, hop, &ps, NULL, NULL, 0);
+		n = sift_conn_rows_of(ps.rel);
+		rows += n;
+		*scanned += OidIsValid(sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree)) ? 0 : n;
+		table_close(ps.rel, NoLock);
+	}
+	return rows;
+}
+
 /* ---- what the segments of the index say ---- */
 
 /*

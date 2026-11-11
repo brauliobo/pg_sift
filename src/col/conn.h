@@ -231,7 +231,7 @@ extern bool sift_conn_journal_cheaper(uint64 rows, double parent_rows);
 typedef struct SiftConnKeySet SiftConnKeySet;
 extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit);
 extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
-/* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation */
+/* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation. pred_index: a btree of rel that holds both columns, whose entries are the rows (a partial one: those of its predicate), read as an index only scan; InvalidOid: every row, read from the heap */
 extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
 extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
