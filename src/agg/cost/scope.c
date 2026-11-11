@@ -145,6 +145,8 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	ScopeTake  *t = c->scope_pass;
 	ScopeAlt   *best = NULL;
 	SiftAggScope *sc;
+	SiftAggScope one_scope;
+	SiftAggSpec one;
 
 	if (t == NULL || !t->second || s->scope == NULL)
 		return true;
@@ -163,8 +165,13 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 		sc->knot_instr[i] += AGG_ALT_JOIN * (sc->knot_k[i] - sc->knot_k[0]) * best->knot_rows;
 	sc->knot_rows = best->knot_rows;
 	sc->entry_instr = best->entry_instr;
-	/* a read per pair has no dedupe: its units answer from their pre-aggregates, where the spec can use them (a unit with a changed member does not) */
-	sc->rowwise = s->scope->once ? 1.0 : 1.0 - preagg_share(c, s);
+	/* the units answer from their pre-aggregates, where the spec can use them (a unit with a changed member does not): a read per pair always, a read counted once of one key, which the execution may have of the many the plan was
+	 * priced for (a read of several keys counted once leaves rows out of its units by the dedupe and reads them: sift_aggspec_preagg_why) */
+	one = *s;
+	one_scope = *s->scope;
+	one_scope.nkeys = 1;
+	one.scope = &one_scope;
+	sc->rowwise = 1.0 - preagg_share(c, &one);
 	s->scope = sc;
 	/* the node costs what the cheaper of its two ways does, and a hair less than the join it holds: the plan that can only be that join has no reason to win */
 	p->total_cost = Min(p->total_cost, best->total * (1.0 - 1e-6));

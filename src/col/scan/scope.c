@@ -630,12 +630,13 @@ typedef struct ScopeFill
  * of a valid pair describes, expanded by the pairs of their member. Sets rd->why when the stored read is not exact.
  */
 static void
-stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves, SiftScopeRead *rd)
+stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves, uint32 max_changed,
+			SiftScopeRead *rd)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 	SiftConnKeys changed = {0};
 	SiftConnWhy verdict;
-	uint32		cap = patch_cap(dir, once || nkeys == 1);
+	uint32		cap = Min(patch_cap(dir, once || nkeys == 1), max_changed);
 	bool		several = once && nkeys > 1;
 	SiftScopeBuffer *bufs;
 	int			nbufs;
@@ -690,6 +691,7 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 
 		all = scope_pairs(heap, index, ord, snap, keys, nkeys, both, nboth, max);
 	}
+	rd->pairs = all.n;
 	if (all.over)
 		rd->why = several ? "dedupe over work_mem" : "write buffer";
 	else if (several && !dedupe_drops(&all, rd->except, rd->nexcept, rd))
@@ -736,7 +738,8 @@ sift_scope_read_rows(SiftScopeRead *rd)
 }
 
 SiftScopeRead *
-sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves)
+sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves,
+				uint32 max_changed)
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
@@ -759,6 +762,6 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
-	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, rd);
+	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
 	return rd;
 }
