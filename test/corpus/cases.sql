@@ -893,6 +893,23 @@ select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s 
 -- @case scope_keytable_join_many | scope | JOIN keys of a user with three keys counts a row for each pair: the scope read, or the join as written where it costs less
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_user_keys k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;
 
+-- ===================== scope index: GROUP BY the key of the pairs (every tenant at once)
+-- @case scope_group_key | scope | the join to the pairs grouped by the key: every key read from the scope units
+select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+-- @case scope_group_key_status | scope | the key and a column of the facts, HAVING and ORDER BY the key
+select s.tenant_id, e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1, 2 having count(*) > 50 order by 1, 2;
+-- @case scope_group_key_keys | scope | four tenants grouped by the key (the join as written is held for the execution)
+select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id in (1, 2, 3, 4) group by 1;
+-- @case scope_group_key_distinct | scope | count(DISTINCT) of the facts' entity for every tenant
+select s.tenant_id, count(distinct e.dim_a_id), max(e.d) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+-- @case scope_group_key_topn | scope | the five tenants with the most amount
+select s.tenant_id, sum(e.amount) a from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1 order by a desc, 1 limit 5;
+-- @case scope_group_key_param | scope | the keys by an array parameter, grouped by the key, generic plan
+-- @pre set plan_cache_mode = force_generic_plan; prepare sg(int[]) as select s.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = any ($1) group by 1;
+execute sg(array[3, 9, 20]);
+-- @case scope_group_key_expr | scope | the key in an expression keeps the join
+select s.tenant_id / 5, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id group by 1;
+
 -- ===================== scope index: the scope read or the join as written, chosen for the keys of the execution
 -- @case scope_choice_array_one | scope | an array parameter of one tenant: the scope read costs less than the join the plan holds, generic plan
 -- @pre set plan_cache_mode = force_generic_plan; prepare sc1(int[]) as select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any ($1)) group by 1;

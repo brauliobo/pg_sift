@@ -413,6 +413,13 @@ scope_keytable_empty	SiftAgg	single:t
 scope_keytable_join_one	SiftAgg	single:t
 scope_keytable_join_null	SiftAgg	single:t
 scope_keytable_join_many	SiftAgg	single:t
+scope_group_key	SiftAgg	single:t
+scope_group_key_status	SiftAgg	single:t
+scope_group_key_keys	SiftAgg	single:t
+scope_group_key_distinct	SiftAgg	distinct:f:distinct_set,distinct:f:distinct_set,single:t
+scope_group_key_topn	SiftAgg	single:t
+scope_group_key_param	-	n/a(prepared)
+scope_group_key_expr	SiftAgg	scope:f:scope,single:t
 scope_choice_array_one	-	n/a(prepared)
 scope_choice_array_many	-	n/a(prepared)
 scope_choice_pairs_few	-	n/a(prepared)
