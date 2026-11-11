@@ -663,7 +663,8 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 	}
 	rd->nchanged = rd->nexcept = changed.n;
 	rd->except = palloc(Max(changed.n, 1) * sizeof(int64));
-	memcpy(rd->except, changed.keys, changed.n * sizeof(int64));
+	if (changed.n > 0)
+		memcpy(rd->except, changed.keys, changed.n * sizeof(int64));
 	sift_conn_keys_free(&changed);
 	bufs = sift_scope_buffers(index, dir, &nbufs);
 	rd->buffer_rows = nbuf = sift_scope_buffers_rows(bufs, nbufs);
