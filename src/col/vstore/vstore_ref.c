@@ -14,6 +14,7 @@
 
 #include "col/enc.h"
 #include "col/enc_int.h"
+#include "col/seg.h"
 #include "col/vstore/vstore.h"
 
 #define REF_HEAD	(DICT_REF_WORDS * sizeof(uint32))
@@ -67,8 +68,9 @@ sort_by_code(CodePos *by_code, CodePos *tmp, uint32 n)
 }
 
 /*
- * The dictionary of a reference: the strings of the codes the segment holds, read from the runs of its epoch in place. The codes of a segment whose index has the
- * order of the store's first member climb and are read as they come; others are read in the order of the store, so that a block is decompressed once, and put back
+ * The dictionary of a reference: the strings of the codes the segment holds, read from the runs of its epoch in place. The codes of a segment climb in pieces (its index
+ * met the rows in the order of the store's first member, in other chunks) and are read as they come; when they jump between blocks more often than the blocks they
+ * touch could need, they are read in the order of the store, so that a block is decompressed once, and put back
  */
 static SiftCDict *
 from_runs(MemoryContext mcxt, Oid store, uint32 epoch, const uint32 *codes, uint32 n)
@@ -80,15 +82,15 @@ from_runs(MemoryContext mcxt, Oid store, uint32 epoch, const uint32 *codes, uint
 	CodePos	   *tmp = palloc(Max(n, 1) * sizeof(CodePos));
 	uint32	   *sorted = palloc(Max(n, 1) * sizeof(uint32));
 	uint32	   *soff = palloc(((Size) n + 1) * sizeof(uint32));
-	bool		climbs = true;
+	uint32		jumps = 0;
 
 	initStringInfo(&all);
 	for (uint32 i = 0; i < n; i++)
 	{
 		by_code[i] = (CodePos) {codes[i], i};
-		climbs &= i == 0 || codes[i] > codes[i - 1];
+		jumps += i > 0 && codes[i] / DICT_BLOCK != codes[i - 1] / DICT_BLOCK;
 	}
-	if (climbs)
+	if (jumps <= 4 * (n / DICT_BLOCK + 1))
 		sift_vstore_read_strs(h, codes, n, &all, d->off);
 	else
 	{
