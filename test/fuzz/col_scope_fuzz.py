@@ -17,8 +17,8 @@ the journal index is plain or partial on the same predicate, and the steps soft 
 reads the active rows.
 
 The journal index of the pairs is made first and the scope index is made again (REINDEX) after its first build, which starts the journal. 'planner' (probed: the SQL forms IN and EXISTS have a
-scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset (a read of another column must fall back with the
-column reason).
+scope conjunct; the planner's recognition of the join forms is not in every tree) asserts that, and half of the seeds declare a cols(..) subset drawn per seed from the columns of the index (with or without the primary key,
+the member key and the time column; a read of a column the scope units do not keep must fall back with the column reason).
 """
 import argparse, collections, os, random, re, sys, time
 
@@ -109,6 +109,7 @@ KEYS_PER = {
     'real': "CASE WHEN h < 130 THEN 0 WHEN h < 910 THEN 1 WHEN h < 970 THEN 2 WHEN h < 990 THEN 3 WHEN h < 997 THEN 4 WHEN h < 999 THEN 5 ELSE 6 END",
     'heavy': "2 + m % 5",
 }
+INDEX_COLS = ['id', 'dim_a_id', 'created_at', 'kind', 'v']
 STEPS = [('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 4), ('pair_ins', 11), ('pair_del', 9), ('pair_move', 11), ('pair_upd', 6), ('aborted', 5),
          ('savepoints', 5), ('in_txn', 5), ('promote', 7), ('merge', 5), ('vacuum', 6), ('vacuum_pairs', 3), ('reindex', 3), ('pair_reload', 2), ('analyze', 1)]
 SOFT_STEPS = [('pair_soft', 9), ('pair_restore', 6), ('pair_ins_deleted', 3), ('pair_note', 3)]   # added to the steps of a seed whose pairs are soft deleted
@@ -128,7 +129,10 @@ class Seed:
         self.profile = r.choice(list(KEYS_PER))
         self.track = r.choice(['on', 'on', 'off'])
         self.seg_kb = r.choice([None, None, None, 96])
-        self.cols = ['created_at', 'v'] if r.random() < 0.5 else None
+        self.cols = None
+        if r.random() < 0.5:   # an own stream, so that the other draws of a seed stay: a subset of the columns, with or without the primary key, the member key and the time column
+            self.cols = [c for c in INDEX_COLS if random.Random(f'{seed}cols{c}').random() < 0.5] or ['v']
+        self.kept = None if self.cols is None else set(self.cols) | {'created_at'}   # the units are cut by the time column, which they keep
         self.next_id = self.n + 1
         sr = random.Random(seed * 7919 + 13)   # its own stream: the seeds that are not soft draw what they drew before
         self.soft = seed % 3 == 2   # a third of the seeds, and seed 2 of the quick tier
@@ -263,12 +267,13 @@ VACUUM (ANALYZE) tenant_scope;"""
         qs = []
 
         def add(cls, cols, q, ks, stored):
-            subset = self.cols is None or cols <= set(self.cols)
+            subset = self.kept is None or cols <= self.kept
             stored = stored and subset and all(k in keys for k in ks)
             qs.append((cls, q.replace('@', mark(ks)), q.replace('@', plain(ks)), False, stored, False, None if subset else '^column .* not in the scope units$'))
 
         for name, cols, q in r.sample(shapes, 3):
             add('one key', cols, q, [pick()], True)
+        add('one key', set(), "SELECT count(*) FROM events e WHERE @", [pick()], True)   # reads no column: stored whatever cols(..) keeps
         for name, cols, q in r.sample(shapes[:3], 2):
             add('set', cols, q, [pick() for _ in range(r.randint(2, 5))], False)
         add('set top', shapes[3][1], shapes[3][2], [pick(), pick()], False)

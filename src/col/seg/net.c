@@ -264,18 +264,29 @@ net_unit(SiftColSegment *seg, uint32 u, const uint64 *live, uint32 ndead, String
 		int64	   *vals;
 		uint64	   *nulls;
 		uint32		k = 0;
+		bool		absent = false;
 		SiftCZone	z;
 		SiftCAgg	orig;
 
-		if (!sift_cunit_chunk(&v, c, &ch))
-			corrupt(seg, "Unit %u has no chunk for leaf %d.", u, c);
+		if (!sift_cunit_chunk(&v, c, &ch))	/* a leaf the family of segments keeps no values of (cols(..) of a scope): all NULL */
+		{
+			/* check-memory: allow the rows of one unit, at most SIFT_COL_UNIT_MAX_ROWS */
+			uint64	   *allnull = palloc((SIFT_COL_NWORDS(r->nrows) + 1) * sizeof(uint64));
+
+			memset(allnull, 0xFF, (SIFT_COL_NWORDS(r->nrows) + 1) * sizeof(uint64));
+			ch = (SiftCChunk) {.n = r->nrows,.nulls = allnull};
+			absent = true;
+		}
 		if (ch.ovf != NULL || ch.n != r->nrows)
 		{
 			ok = false;
 			break;
 		}
 		vals = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
-		sift_cchunk_decode(&ch, vals);
+		if (absent)
+			memset(vals, 0, (Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
+		else
+			sift_cchunk_decode(&ch, vals);
 		for (uint32 j = 0, prev = 0; j <= ndead; prev = dead[j++] + 1)
 		{
 			if (k != prev)
