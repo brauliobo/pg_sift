@@ -16,7 +16,7 @@ At CREATE INDEX and REINDEX a string leaf is shared when all of these hold:
 - another sift_col index of the table holds the same column **with the same key order and key cut** (the order the index meets the rows in: its `key_cut` and `key_order`, or the table order);
 - sharing spares at least 5 bytes a row and more than 25% of what the leaf takes in the index, from the statistics of the column (distinct values, width).
 
-There is no option to turn it on or off for one index. An index whose column another index holds with a **different** key order keeps its own strings, and says so: the NOTICE of CREATE INDEX names the index that holds the column, how much this one stores again and that the same `key_order` would share it; `sift.col_value_store_members()` reports `own: different key order` with the duplicate size. The first member of a column keeps its own strings until it is rebuilt (`own: not yet rebuilt`).
+There is no option to turn it on or off for one index. An index whose column another index holds with a **different** key order keeps its own strings, and says so: the NOTICE of CREATE INDEX says how much this one stores again and how much less it would be with the order of the index that holds the column (`sift.index_choices(index)` gives the command that shares it: the same `key_order`), and `sift.col_value_store_members()` reports `own: different key order` with the duplicate size. The first member of a column keeps its own strings until it is rebuilt (`own: not yet rebuilt`).
 
 Off switch: `SET sift.col_format_minor = 14` before the build writes strings in the segments (as before 5.0).
 
@@ -43,6 +43,16 @@ Compaction is lazy and does not rewrite anything by itself:
 
 A writer of a member holds the store in `RowExclusiveLock` to the end of its transaction, from the codes it takes to the segment it publishes; a reader takes `AccessShareLock` when it first needs a string. The retirement of an epoch takes the members (`ShareUpdateExclusiveLock`, as maintenance does) and then the store in `ShareRowExclusiveLock`, so that no segment is written between its codes and its publication while the segments of the members are read for the epochs they name. The append of a run takes the relation-extension lock of the store for the append only.
 
+## What each type shares
+
+Only a column whose index segments hold a dictionary of strings has something to share. Lab figures of a table of 1,000,000 rows (leaf bytes in one index):
+
+| column type | in the segments | shared |
+| --- | --- | --- |
+| text, varchar | dictionary of 13.0 MB, chunks of 6.8 kB | yes |
+| uuid | dictionary of 10.6 MB, chunks of 6.8 kB | yes |
+| bigint, integer, timestamp, float, enum, interval, numeric | chunks of 0.2 to 4.0 MB, no dictionary | no (nothing to spare) |
+
 ## Numbers
 
 Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct values (a row each), three sift_col indexes: A (`id, tenant, uid, url, amount`), B (`url, id`) and C (`uid, tenant`). Shared: the rule's choice. Own: `sift.col_format_minor = 14`. Instructions are of the backend (`perf stat`), cold the first statement of a session and warm the second.
@@ -55,7 +65,17 @@ Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct
 
 The gain grows with the indexes that hold the column and with the rows (the codes of an index are a few bits a distinct string, its strings are 60 bytes). An index that is the only one left holds the store as well as its codes: a REINDEX of it (no other index holds the column) takes its strings back and the store goes.
 
-Reads, 2,000,000 rows (millions of instructions, own -> shared, cold / warm): equality on the URL 4.8 -> 4.9 / 1.2 -> 1.2; IN of 100 URLs 125 -> 127 / 114 -> 116; range on the URL 2,698 -> 2,788 / 2,245 -> 2,273; group by the URL 951 -> 1,044 / 439 -> 466 (one index), up to 1,165 / 506 when the codes of the segments do not climb in the store; distinct 2,331 -> 2,332 / 1,814 -> 1,811. At 100,000 and 500,000 rows the same shapes are equal or cheaper (equality 70 -> 3.7 cold at 500,000: the segment's dictionary is not read for a code lookup). Blocks touched fall for group, distinct and range (15,216 -> 4,700 + 269 at 2M for the range), the store's own blocks are read only for the strings that are output.
+Four indexes on the same table (the three above and D, `url, uid, tenant` with `key_order = 'tenant'`), all indexes and stores in MB:
+
+| rows | own strings | the rule (same key order only) | every order (what a different `key_order` costs) |
+| ---: | ---: | ---: | ---: |
+| 100,000 | 13.8 | 13.1 (-5%) | 10.3 (-25%) |
+| 500,000 | 70.4 | 64.2 (-9%) | 51.1 (-27%) |
+| 2,000,000 | 337.7 | 295.3 (-13%) | 254.4 (-25%) |
+
+D keeps its own strings under the rule, and its CREATE INDEX says how much it stores again and what the order of the index that holds the column would spare it (at 2,000,000 rows D's strings are 72.5 MB of the 295.3 MB). Sharing across orders is not done: the codes of an index that meets the rows in another order do not climb in the store, and its strings are read block by block in the order of the store.
+
+Reads, 2,000,000 rows (millions of instructions, own -> shared, cold / warm): equality on the URL 4.8 -> 4.9 / 1.2 -> 1.2; IN of 100 URLs 125 -> 127 / 114 -> 116; range on the URL 2,698 -> 2,788 / 2,245 -> 2,273; group by the URL 951 -> 1,044 / 439 -> 466 (one index), 1,076 / 484 with three indexes, whose parallel builds cut the segments differently and the codes climb in pieces; distinct 2,331 -> 2,332 / 1,814 -> 1,811. At 100,000 and 500,000 rows the same shapes are equal or cheaper (equality 70 -> 3.7 cold at 500,000: the segment's dictionary is not read for a code lookup). Blocks touched fall for group, distinct and range (15,216 -> 4,700 + 269 at 2M for the range), the store's own blocks are read only for the strings that are output.
 
 Builds, 2,000,000 rows: an index that adopts a store builds in 1.0 to 1.45 times the time of one with its strings (B 3.7-5.0 s -> 4.3-7.1 s, C 2.0-2.1 s -> 2.0-2.9 s on a loaded host); the index that creates the stores pays for them once (5.4-7.0 s -> 11.5-13.4 s for two stores of two million strings). WAL of a build is the same.
 

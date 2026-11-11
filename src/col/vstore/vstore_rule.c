@@ -138,6 +138,7 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 				v->other = pstrdup(RelationGetRelationName(o));
 				v->other_order = theirs;
 				v->duplicate_bytes = nd * (width + VSTORE_ENTRY_BYTES);
+				v->saving_bytes = per_row * rows;
 			}
 		}
 		index_close(o, AccessShareLock);
@@ -378,7 +379,8 @@ sift_vstore_choice_texts(Relation heap, Relation index, const SiftColIndexMeta *
 		{
 			sift_vstore_verdict(heap, index, def, &v);
 			if (v.state == SIFT_VSTORE_OTHER_ORDER)
-				appendStringInfo(&ot, "%s%s: %.1f MB again, %s has %s", ot.len ? "; " : "", col, v.duplicate_bytes / (1024 * 1024), v.other, v.other_order);
+				appendStringInfo(&ot, "%s%s: %.1f MB again (%.1f MB less)", ot.len ? "; " : "", col, v.duplicate_bytes / (1024 * 1024),
+								 v.saving_bytes / (1024 * 1024));
 		}
 	}
 	texts[0] = sh.len > 0 ? sh.data : NULL;

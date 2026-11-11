@@ -46,6 +46,7 @@ typedef struct SiftVStoreVerdict
 	char	   *other_order;	/* its order, as the build resolved it ("key_cut = a, b; key_order = c", "table order") */
 	char	   *order;			/* this index's, when it differs */
 	double		duplicate_bytes;	/* the strings the index stores again, estimated from the statistics of the column */
+	double		saving_bytes;		/* what the order of the other index would spare it: those strings less the references that would take their place */
 } SiftVStoreVerdict;
 
 extern void sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *leaf, SiftVStoreVerdict *v);
