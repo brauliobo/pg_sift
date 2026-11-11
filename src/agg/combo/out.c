@@ -196,8 +196,7 @@ combo_emit(AggExec *ex, int ci, ComboEnt *ent, const uint32 *rows, int nm, uint3
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	/* the load tested the table's own condition and kept no column (map_load_table): the condition, the one slot, holds for every row it has */
-	bool		tested = m->ncol < j->ncol;
+	bool		tested = m->tested;
 
 	combo_grow_out(ex, cs, cb->nslots, nout);
 	ent->nout = nout;

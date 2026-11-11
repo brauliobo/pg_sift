@@ -1,7 +1,7 @@
 -- A lookup table that is only the keys of its rows (a membership list: agg_lookup_keys_only), read through a btree whose scan keys are all the conditions of
 -- the join (`grp = 2`, `grp = 2 AND k < 3000`), takes the key of each row from the index entry: the entry is not deformed, tested again or kept as a column. Every
 -- other table keeps the read it had: a condition that is not a scan key (`NOT gone`, a second equality on a column of the index, a column the index does not
--- hold), a key that is not an integer, a join that keeps the table (LEFT, an inner join with a repeated key, a byte table that is refused), and the rows of pages the
+-- hold, a partial index, an INCLUDE column, a collation that is not the index's), a key that is not an integer, a join that keeps the table (LEFT), a byte table that is refused, and the rows of pages the
 -- visibility map does not hold all-visible (read from the heap) or an insert of the transaction. Every statement is run with the scan (serial, with workers) and with
 -- sift.enable_agg = off: the rows must be the same; the Lookup line of EXPLAIN shows the rows read and loaded (a NULL key is read and not loaded) and the heap fetches.
 CREATE EXTENSION pg_sift;
@@ -21,8 +21,19 @@ CREATE TABLE pair2 AS TABLE pair;
 CREATE INDEX pair2_ggk ON pair2 (grp, grp, k);
 CREATE TABLE pair3 AS TABLE pair;
 CREATE INDEX pair3_g ON pair3 (grp);
+-- a partial index, an INCLUDE column, the key before the group, a collation of the index that is not the default, a key that repeats many times
+CREATE TABLE pair_part AS TABLE pair;
+CREATE INDEX pair_part_gk ON pair_part (grp, k) WHERE NOT gone;
+CREATE TABLE pair_inc AS TABLE pair;
+CREATE INDEX pair_inc_gk ON pair_inc (grp, k) INCLUDE (tk);
+CREATE TABLE pair_kg AS TABLE pair;
+CREATE INDEX pair_kg_kg ON pair_kg (k, grp);
+CREATE TABLE pair_c AS TABLE pair;
+CREATE INDEX pair_c_gt ON pair_c (grp, tk COLLATE "C");
+CREATE TABLE pair_dup AS SELECT g AS grp, 1 + i % 5 AS k FROM generate_series(1, 30) g, generate_series(1, 200) i;
+CREATE INDEX pair_dup_gk ON pair_dup (grp, k);
 VACUUM (FREEZE, ANALYZE) ev;
-VACUUM (FREEZE, ANALYZE) pair, pair2, pair3;
+VACUUM (FREEZE, ANALYZE) pair, pair2, pair3, pair_part, pair_inc, pair_kg, pair_c, pair_dup;
 
 CREATE FUNCTION same(setup text, q text) RETURNS TABLE (pushed bool, lookup text, differing bigint, workers bigint) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -73,7 +84,23 @@ INSERT INTO cases (name, setup, q) VALUES
 	('inner, repeated key, no key filters', 'SET LOCAL sift.agg_join_filter = off', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
 	('left',                    'SELECT 1', $$SELECT kind, count(p.k) AS n FROM ev LEFT JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
 	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
-	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$);
+	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
+	-- the shapes of the index: the rows are the join's
+	('partial index',           'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2 AND NOT gone) GROUP BY kind$$),
+	('partial index, predicate not asked', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2) GROUP BY kind$$),
+	('INCLUDE column condition', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_inc WHERE grp = 2 AND tk = 't77') GROUP BY kind$$),
+	('key before the group',    'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_kg WHERE grp = 2) GROUP BY kind$$),
+	('key before the group, anti', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair_kg p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
+	('ANY with a NULL',         'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = ANY ('{2,NULL}')) GROUP BY kind$$),
+	('ANY of NULL',             'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = ANY ('{NULL}'::int[])) GROUP BY kind$$),
+	('ANY with a NULL, anti',   'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = ANY ('{3,NULL}')) GROUP BY kind$$),
+	('collation of the index',  'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_c WHERE grp = 2 AND tk = 't77' COLLATE "C") GROUP BY kind$$),
+	('collation not the index''s', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_c WHERE grp = 2 AND tk = 't77') GROUP BY kind$$),
+	('collation not the index''s, other side', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2 AND tk = 't77' COLLATE "C") GROUP BY kind$$),
+	-- a non-unique btree: the keys repeat in the entries
+	('duplicate keys',          'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_dup WHERE grp = 2) GROUP BY kind$$),
+	('duplicate keys, anti',    'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair_dup p WHERE p.k = ev.k AND p.grp = 2) GROUP BY kind$$),
+	('duplicate keys, inner',   'SELECT 1', $$SELECT kind, count(*) AS n FROM ev JOIN pair_dup p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$);
 
 SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s ORDER BY c.id;
 
@@ -90,5 +117,5 @@ SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s WHERE c.id IN (1, 
 ROLLBACK;
 
 DROP FUNCTION same(text, text);
-DROP TABLE cases, ev, pair, pair2, pair3;
+DROP TABLE cases, ev, pair, pair2, pair3, pair_part, pair_inc, pair_kg, pair_c, pair_dup;
 DROP EXTENSION pg_sift;

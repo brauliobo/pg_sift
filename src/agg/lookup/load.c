@@ -471,15 +471,18 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	 * again and the column of the condition is not kept
 	 */
 	bool		filtered = own != NULL;
+	bool		tested = false;
 
 	if (cond_keys && own != NULL && kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase) &&
 		list_length(make_ands_implicit((Expr *) cb->slot[j->fslot].expr)) == j->nidx)
 	{
 		own = NULL;
+		tested = true;
 		lj.ncol = 0;			/* the rows are those the keys of the scan pass: the map is filtered all the same */
 	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, filtered, kept.cx);
+	m->tested = tested;
 	m->lazy = kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase);
 	/* the key expressions live for the load, not in the context a cache keeps */
 	MemoryContextSwitchTo(old);

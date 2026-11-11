@@ -96,6 +96,7 @@ typedef struct MapTab
 	uint32	   *head;
 	MemoryContext cxt;			/* where the rows live: the scan's, or the statement's for a table its arms share (map_load_shared) */
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
+	bool		tested;			/* the load kept no column: the table's own conditions were scan keys, and the rows hold them */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
 	SemiSet		sset;			/* the membership test of semi_lut_build over the keys, kept with the rows for the next statement (slut_kind: the join kind it answers) */

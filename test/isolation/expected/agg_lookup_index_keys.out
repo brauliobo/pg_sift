@@ -1,0 +1,121 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1run s2begin s2ins s1run s2commit s1run s2vacuum s1run
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_lk_pair SELECT 2, 400 + i FROM generate_series(0, 49) i;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1410 events, 0 differences from the normal plan
+(1 row)
+
+step s2vacuum: VACUUM iso_lk_pair;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1410 events, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2begin s2ins s1run s2abort s1run s2vacuum s1run
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2begin: BEGIN;
+step s2ins: INSERT INTO iso_lk_pair SELECT 2, 400 + i FROM generate_series(0, 49) i;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2vacuum: VACUUM iso_lk_pair;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2begin s2del s1run s2commit s1run s2vacuum s1run
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2begin: BEGIN;
+step s2del: DELETE FROM iso_lk_pair WHERE grp = 2 AND k < 200;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2commit: COMMIT;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                     
+---------------------------------------------------------------
+1 SiftAgg nodes, 550 events, 0 differences from the normal plan
+(1 row)
+
+step s2vacuum: VACUUM iso_lk_pair;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                     
+---------------------------------------------------------------
+1 SiftAgg nodes, 550 events, 0 differences from the normal plan
+(1 row)
+
+
+starting permutation: s1run s2begin s2upd s1run s2abort s1run s2vacuum s1run
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2begin: BEGIN;
+step s2upd: UPDATE iso_lk_pair SET k = k + 1 WHERE grp = 2;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
+step s2vacuum: VACUUM iso_lk_pair;
+step s1run: SELECT iso_lk_run();
+iso_lk_run                                                      
+----------------------------------------------------------------
+1 SiftAgg nodes, 1000 events, 0 differences from the normal plan
+(1 row)
+
