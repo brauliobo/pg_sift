@@ -39,6 +39,30 @@ Compaction is lazy and does not rewrite anything by itself:
 
 A writer of a member holds the store in `RowExclusiveLock` to the end of its transaction, from the codes it takes to the segment it publishes; a reader takes `AccessShareLock` when it first needs a string. The retirement of an epoch takes the members (`ShareUpdateExclusiveLock`, as maintenance does) and then the store in `ShareRowExclusiveLock`, so that no segment is written between its codes and its publication while the segments of the members are read for the epochs they name. The append of a run takes the relation-extension lock of the store for the append only.
 
+## Numbers
+
+Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct values (a row each), three sift_col indexes: A (`id, tenant, uid, url, amount`), B (`url, id`) and C (`uid, tenant`). Shared: the rule's choice. Own: `sift.col_format_minor = 14`. Instructions are of the backend (`perf stat`), cold the first statement of a session and warm the second.
+
+| rows | all indexes, own strings | all indexes, shared | the only member left |
+| ---: | ---: | ---: | ---: |
+| 100,000 | 9.2 MB | 8.4 MB (-8%) | 4.7 -> 6.5 MB (+38%) |
+| 500,000 | 47.0 MB | 41.5 MB (-12%) | 24.3 -> 31.9 MB (+31%) |
+| 2,000,000 | 229.6 MB | 187.5 MB (-18%) | 116.8 -> 147.5 MB (+26%) |
+
+The gain grows with the indexes that hold the column and with the rows (the codes of an index are a few bits a distinct string, its strings are 60 bytes). An index that is the only one left holds the store as well as its codes: a REINDEX of it (no other index holds the column) takes its strings back and the store goes.
+
+Reads, 2,000,000 rows (millions of instructions, own -> shared, cold / warm): equality on the URL 4.8 -> 4.9 / 1.2 -> 1.2; IN of 100 URLs 125 -> 127 / 114 -> 116; range on the URL 2,698 -> 2,788 / 2,245 -> 2,273; group by the URL 951 -> 1,044 / 439 -> 466 (one index), up to 1,165 / 506 when the codes of the segments do not climb in the store; distinct 2,331 -> 2,332 / 1,814 -> 1,811. At 100,000 and 500,000 rows the same shapes are equal or cheaper (equality 70 -> 3.7 cold at 500,000: the segment's dictionary is not read for a code lookup). Blocks touched fall for group, distinct and range (15,216 -> 4,700 + 269 at 2M for the range), the store's own blocks are read only for the strings that are output.
+
+Builds, 2,000,000 rows: an index that adopts a store builds in 1.0 to 1.45 times the time of one with its strings (B 3.7-5.0 s -> 4.3-7.1 s, C 2.0-2.1 s -> 2.0-2.9 s on a loaded host); the index that creates the stores pays for them once (5.4-7.0 s -> 11.5-13.4 s for two stores of two million strings). WAL of a build is the same.
+
+The stores of the table above take 102.8 MB at 2,000,000 rows (two columns).
+
+Garbage (see above), 200,000 rows and two indexes: with 10% of the rows replaced each round, 63% of the codes are named by no segment after 20 rounds and the store is 42.0 MB where it began with 11.6 MB; with 50% replaced, 86%. A compaction brings the garbage to 0%; the blocks of the retired epoch go to the free list of the store and later runs use them.
+
+## Why on, and the off switch
+
+Default on because the gain is large when two indexes of the table hold the column and the rule shares only then; the reads are as cheap and the builds within 1.5 times. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_format_minor = 14` before the build (the strings stay in the segments), or `REINDEX` an index that has no other index with its key order.
+
 ## Limits
 
 - Only text-like and uuid leaves (numeric types are not shared yet).
