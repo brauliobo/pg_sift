@@ -1,5 +1,5 @@
 -- The relation of pairs of a scope may hold a pair in several rows (a multiset: the application keeps one row for each source of the pair, not one for each pair), declared with a btree on (dim_a_id, tenant_id) that
--- is not unique: a pair exists while at least one visible row, satisfying the predicate of the btree, holds it. The journal names every dim_a_id one of whose rows was inserted or ended, a superset of those whose
+-- is not unique: a pair exists while at least one visible row, satisfying the predicate of the btree, holds it. The journal names every dim_a_id one of whose rows was inserted or ended, a list that holds those whose
 -- distinct pairs changed, so a duplicate that is inserted or deleted costs a patch and never a wrong answer; every place that lists the pairs lists them once. Table-driven: each state of the pairs (the states
 -- accumulate) by each read shape; every cell is md5 equal to the plain statement with sift.enable_agg off, reads the scope units where a top-N does not forbid it, and reads no more rows than the changed dim_a_id
 -- have and the buffers hold. The statements an application writes are planned: a semi join (IN, EXISTS) is the scope read, a join and a read grouped by the key count a fact once for each row and keep the join,

@@ -72,7 +72,7 @@ last one ends it, a soft delete (a partial btree `WHERE deleted_at IS NULL`) of 
 the relation has several btrees on the two columns the choice is: a unique one before a non-unique one, among those the only partial one, else the lowest oid of the plain ones (two partial ones of that kind are an error that asks
 for `using`); `using <index>` names the one, and the `NOTICE` says which.
 
-- **Exact because the journal is a superset.** The journal index records the dim_a_id of every row an `UPDATE` or `DELETE` ended and of every row inserted, whether or not the set of distinct pairs of that dim_a_id changed. A read
+- **Exact because the journal names at least every changed dim_a_id.** The journal index records the dim_a_id of every row an `UPDATE` or `DELETE` ended and of every row inserted, whether or not the set of distinct pairs of that dim_a_id changed. A read
   takes the stored entries of the dim_a_id that did not change and reads the rows of the facts of those that did (the patch), expanded by their pairs under the snapshot of the statement. A duplicate row inserted or deleted
   therefore costs the patch of its dim_a_id, and a pair that did not change is read again from the btree: never a wrong answer. Nothing counts the rows of a pair when it is written (a refinement that skipped the record when
   another live row exists would be wrong under concurrency: two sessions that each delete one of two rows).
