@@ -1,0 +1,63 @@
+-- Every statement that holds a relation of a scope of the index and is not read from the scope units says why (sift.explain_why, arm scope) and returns the rows of the join as written:
+-- the relation behind a view that also reads its child tables, and the ones listed below.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT i, 1 + i % 10 FROM generate_series(1, 360) i;
+CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+
+CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Scope Index: ' THEN RETURN 'scope read'; END IF;
+	END LOOP;
+	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
+	RETURN coalesce('join, ' || r, 'no reason');
+END $$;
+
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS refusal_rows;
+	EXECUTE 'CREATE TEMP TABLE refusal_rows AS ' || q;
+	SELECT md5(string_agg(t::text, '|' ORDER BY t::text)) INTO r FROM refusal_rows t;
+	DROP TABLE refusal_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	a := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'off', false);
+	b := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'on', false);
+	RETURN a = b;
+END $$;
+
+-- a child table of the scope relation, with pairs the units do not hold
+CREATE TABLE tenant_scope_child () INHERITS (tenant_scope);
+INSERT INTO tenant_scope_child VALUES (399, 3), (398, 3);
+VACUUM (ANALYZE) tenant_scope, tenant_scope_child;
+CREATE VIEW scope_barrier WITH (security_barrier) AS SELECT dim_a_id, tenant_id FROM tenant_scope;
+
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+ ('view over a relation with child tables', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN scope_barrier s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$);
+
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
+
+DROP FUNCTION label(text), rows_md5(text), same(text);
+DROP TABLE forms;
+DROP VIEW scope_barrier;
+DROP TABLE tenant_scope_child, events, tenant_scope;
+DROP EXTENSION pg_sift;

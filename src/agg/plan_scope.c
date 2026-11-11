@@ -37,6 +37,7 @@
 #include "access/genam.h"
 #include "access/stratnum.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_opfamily_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
@@ -269,6 +270,8 @@ scope_item(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 			it.why = "the sub-select over the scope relation is not a plain projection of its columns";
 		else if (q->jointree->quals != NULL || base->securityQuals != NIL)
 			it.why = "the view over the scope relation has a condition of its own";
+		else if (has_subclass(base->relid) || base->tablesample != NULL)
+			it.why = "the view over the scope relation reads its child tables or a sample of it: their rows are rows of the join, not pairs";
 		else
 		{
 			it.nmap = list_length(q->targetList) + 1;
