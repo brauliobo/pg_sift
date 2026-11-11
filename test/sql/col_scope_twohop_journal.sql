@@ -108,13 +108,13 @@ SELECT sift._test_scope_vouch('facts_col', 0, :l0, :'hor', :l1, :l2) AS all_thre
 -- the members that changed: those of the first and the third journal, and those the memberships list for each group of the second (under the snapshot of the reader), at most the cap
 SELECT key AS member FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) WHERE key IS NOT NULL;
 UPDATE grants SET deleted_at = now() WHERE id = 3;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
 UPDATE grants SET deleted_at = NULL WHERE id = 3;
 UPDATE memberships SET deleted_at = now() WHERE group_id = 1 AND dim_a_id = 3;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 1 AND dim_a_id = 3;
 UPDATE grants SET deleted_at = now() WHERE id = 5;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 0, :l1, :l2);
 -- a group that has more members than the cap of the journal read is over it, and the patch is then priced against the entity path
 UPDATE grants SET deleted_at = now() WHERE id = 3;

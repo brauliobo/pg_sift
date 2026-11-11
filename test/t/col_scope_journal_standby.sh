@@ -73,7 +73,7 @@ for i in 0 1 2; do
 	catchup primary standby || bail "the standby did not catch up after edit $i"
 	check "two paths, edit of journal $((i + 1)): the reads are the join on both nodes" test "$(twohop_reads primary)|$(twohop_reads standby)" == "same|same"
 	diag "edit $((i + 1)): primary $(twohop_why primary) changed $(twohop_stat primary "Changed Keys"), standby $(twohop_why standby) changed $(twohop_stat standby "Changed Keys")"
-	check "two paths, edit of journal $((i + 1)): the journals name the changed members or the units are not read, on both nodes" both_changed_or_unread
+	check "two paths, edit of journal $((i + 1)): the journals name the changed dim_b or the units are not read, on both nodes" both_changed_or_unread
 done
 sql primary "REINDEX INDEX grants_by_group" >/dev/null
 catchup primary standby || bail "the standby did not catch up after the REINDEX of a journal"

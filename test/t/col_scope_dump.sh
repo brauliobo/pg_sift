@@ -101,7 +101,7 @@ check "pg_dump | psql: no error and the same index" test "$(psql -X -q "${S[@]}"
 
 # the CREATE INDEX of the restore chooses the unique btree of each relation again and says it, the three of each index; the one that using names is the one the dump says
 fresh r3
-NOTICES=$(sed 's/^SET client_min_messages = warning;/SET client_min_messages = notice;/' "$D/src.sql" | psql -X -q "${S[@]}" -d r3 2>&1 | grep -E 'NOTICE:  scope "tenant_id": the (direct pairs|joined pairs|via members) of')
+NOTICES=$(sed 's/^SET client_min_messages = warning;/SET client_min_messages = notice;/' "$D/src.sql" | psql -X -q "${S[@]}" -d r3 2>&1 | grep -E 'NOTICE:  scope "tenant_id": the (direct pairs|joined pairs|via relation) of')
 check "pg_dump | psql: the restore says the btree of each of the three relations of both indexes, 'that satisfy' the predicate" test "$(grep -c . <<<"$NOTICES")" == 6 -a "$(grep -c 'that satisfy' <<<"$NOTICES")" == 5
 check "... one of them is the btree that using names, and the rule's choice of the others is the source's" test "$(grep -c '"grants_direct_all"' <<<"$NOTICES")" == 1 -a "$(grep -c '"grants_direct" ' <<<"$NOTICES")" == 1 \
 	-a "$(hopstate r3)" == "$HOP"

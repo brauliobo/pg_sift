@@ -48,18 +48,18 @@ INSERT INTO bad_scopes SELECT row_number() OVER (), why, opt FROM (VALUES
 	('using without a name', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using via memberships(group_id, dim_a_id)'),
 	('cols not closed', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) cols(amount') ) v(why, opt);
 SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = %L)', opt)) AS result FROM bad_scopes ORDER BY n;
- n  |             why             |                                                                                                                        result                                                                                                                        
-----+-----------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  1 | no via                      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id)": expected 'via' and the relation that lists the members of the via column after the second path []
+ n  |             why             |                                                                                                                        result                                                                                                                         
+----+-----------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  1 | no via                      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id)": expected 'via' and the relation that pairs the via column with the member after the second path []
   2 | nothing after the bar       | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) |": a name is expected here []
   3 | second path not closed      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id via memberships(group_id, dim_a_id)": expected ')' after the scope key column: a scope is a member column and a scope key column []
   4 | second path one column      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id) via memberships(group_id, dim_a_id)": expected ',' and the scope key column after the via column []
   5 | second path three columns   | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id, id) via memberships(group_id, dim_a_id)": expected ')' after the scope key column: a scope is a member column and a scope key column []
-  6 | via without a relation      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via": expected 'via' and the relation that lists the members of the via column after the second path []
+  6 | via without a relation      | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via": expected 'via' and the relation that pairs the via column with the member after the second path []
   7 | via relation one column     | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id)": expected ',' and the member column after the via column []
   8 | via relation not closed     | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id": expected ')' after the member column: a scope is a member column and a scope key column []
   9 | text after the via relation | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) more": unexpected text after the scope []
- 10 | using without a name        | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using via memberships(group_id, dim_a_id)": expected 'via' and the relation that lists the members of the via column after the second path []
+ 10 | using without a name        | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using via memberships(group_id, dim_a_id)": expected 'via' and the relation that pairs the via column with the member after the second path []
  11 | cols not closed             | invalid scope option "tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) cols(amount": expected ',' or ')' in cols(..), the list of the columns the scope segments keep []
 (11 rows)
 
@@ -100,9 +100,9 @@ SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_i
   8 | joined path has no unique btree              | scope "tenant_id": "grants_plain" has no unique btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
   9 | via relation has no unique btree             | scope "tenant_id": "grants_plain" has no unique btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
  10 | same column twice in the joined path         | scope "tenant_id": the member and scope key columns are the same column [A scope relation has two columns: the member key and the scope key.]
- 11 | the two paths are the same                   | scope "tenant_id": the declaration reads "grants" (dim_a_id, tenant_id) twice [The direct pairs, the pairs by the via column and the members of the via column are three different sets of columns.]
- 12 | the joined path is the pairs reversed        | scope "tenant_id": the declaration reads "grants" (tenant_id, dim_a_id) twice [The direct pairs, the pairs by the via column and the members of the via column are three different sets of columns.]
- 13 | the via relation is the pairs                | scope "tenant_id": the declaration reads "grants" (dim_a_id, tenant_id) twice [The direct pairs, the pairs by the via column and the members of the via column are three different sets of columns.]
+ 11 | the two paths are the same                   | scope "tenant_id": the declaration reads "grants" (dim_a_id, tenant_id) twice [The direct pairs, the pairs by the via column and the via relation are three different sets of columns.]
+ 12 | the joined path is the pairs reversed        | scope "tenant_id": the declaration reads "grants" (tenant_id, dim_a_id) twice [The direct pairs, the pairs by the via column and the via relation are three different sets of columns.]
+ 13 | the via relation is the pairs                | scope "tenant_id": the declaration reads "grants" (dim_a_id, tenant_id) twice [The direct pairs, the pairs by the via column and the via relation are three different sets of columns.]
  14 | via columns differ in type                   | scope "tenant_id": the via columns "group_id" of "grants" (integer) and "group_id" of "memberships_via8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
  15 | member columns differ in type                | scope "tenant_id": the member columns "dim_a_id" of "grants" (integer) and "dim_a_id" of "memberships_member8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
  16 | key columns differ in type                   | scope "tenant_id": the scope key columns "tenant_id" of "grants" (integer) and "tenant_id" of "grants_key8" (bigint) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
@@ -125,7 +125,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group" that satisfy (deleted_at IS NULL)
-NOTICE:  scope "tenant_id": the via members of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
+NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
 NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
@@ -218,7 +218,7 @@ SET client_min_messages = notice;
 ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_other via memberships(group_id, dim_a_id)');
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_other" that satisfy (id > 0)
-NOTICE:  scope "tenant_id": the via members of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
+NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS after_using_other;
                after_using_other               

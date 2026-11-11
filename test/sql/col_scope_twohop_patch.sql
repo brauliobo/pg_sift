@@ -109,7 +109,7 @@ CREATE FUNCTION verdict(OUT reads int, OUT differ int, OUT units int, OUT patche
 	FROM reads, LATERAL read_run(reads.q, reads.plain) r
 $$;
 -- the members whose pairs changed since the stamps of the scope segments, as the journals tell them
-CREATE FUNCTION changed(OUT why text, OUT members int8[]) LANGUAGE sql AS $$
+CREATE FUNCTION changed(OUT why text, OUT dim_b int8[]) LANGUAGE sql AS $$
 	SELECT min(c.why), array_agg(c.key ORDER BY c.key) FILTER (WHERE c.key IS NOT NULL)
 	FROM (SELECT * FROM sift._test_col_scope_journal_stamps('facts_col') WHERE family = 'scope' AND journal = 0 LIMIT 1) a,
 		(SELECT * FROM sift._test_col_scope_journal_stamps('facts_col') WHERE family = 'scope' AND journal = 1 LIMIT 1) b,
@@ -147,7 +147,7 @@ INSERT INTO states VALUES
 	(20, 'a rolled back savepoint', NULL, 'BEGIN; SAVEPOINT s; UPDATE memberships SET group_id = 6 WHERE group_id = 4 AND dim_a_id = 3; INSERT INTO grants VALUES (105, 6, NULL, 4, NULL); ROLLBACK TO s; COMMIT'),
 	(21, 'a released savepoint', NULL, 'BEGIN; SAVEPOINT s; INSERT INTO grants VALUES (106, 6, NULL, 4, NULL); RELEASE s; COMMIT'),
 	(22, 'a statement that fails', NULL, 'INSERT INTO grants VALUES (107, 3, 31, NULL, NULL), (108, 3, 31, NULL, NULL)'),
-	(23, 'a grant to a group of members that are also granted directly', NULL, 'INSERT INTO grants VALUES (109, 1, NULL, 1, NULL)');
+	(23, 'a grant to a group of dim_b that are also granted directly', NULL, 'INSERT INTO grants VALUES (109, 1, NULL, 1, NULL)');
 SELECT stmt FROM (SELECT n, 0 AS k, setup AS stmt FROM states WHERE setup IS NOT NULL
 	UNION ALL SELECT n, 1, 'REINDEX INDEX facts_col' FROM states
 	UNION ALL SELECT n, 2, edit FROM states

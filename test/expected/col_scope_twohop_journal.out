@@ -248,26 +248,26 @@ SELECT key AS member FROM sift._test_scope_journal_changes('facts_col', 0, :l0, 
 (0 rows)
 
 UPDATE grants SET deleted_at = now() WHERE id = 3;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
- why | members | min | max 
------+---------+-----+-----
- ok  |      10 |  11 |  20
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+ why | dim_b | min | max 
+-----+-------+-----+-----
+ ok  |    10 |  11 |  20
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 3;
 UPDATE memberships SET deleted_at = now() WHERE group_id = 1 AND dim_a_id = 3;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
- why | members | min | max 
------+---------+-----+-----
- ok  |      11 |   3 |  20
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+ why | dim_b | min | max 
+-----+-------+-----+-----
+ ok  |    11 |   3 |  20
 (1 row)
 
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 1 AND dim_a_id = 3;
 UPDATE grants SET deleted_at = now() WHERE id = 5;
-SELECT why, count(key) AS members, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
- why | members | min | max 
------+---------+-----+-----
- ok  |      12 |   3 |  41
+SELECT why, count(key) AS dim_b, min(key), max(key) FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 1000, :l1, :l2) GROUP BY why;
+ why | dim_b | min | max 
+-----+-------+-----+-----
+ ok  |    12 |   3 |  41
 (1 row)
 
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 0, :l1, :l2);

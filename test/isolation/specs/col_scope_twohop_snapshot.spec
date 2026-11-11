@@ -1,6 +1,6 @@
-# A reader of a scope of two paths whose snapshot is older than an edit another session committed after the scope segments were stamped: the changed members are patched under the reader's snapshot, so
+# A reader of a scope of two paths whose snapshot is older than an edit another session committed after the scope segments were stamped: the changed dim_b are patched under the reader's snapshot, so
 # the reader sees the pairs as they were for it (the answer of its own plain join), and a new reader the pairs as they are after the edit. The edit moves a member to another group and gives a
-# group a grant; the members of the group are those the memberships list for the reader's snapshot.
+# group a grant; the dim_b of the group are those the memberships list for the reader's snapshot.
 # requires: col
 
 setup

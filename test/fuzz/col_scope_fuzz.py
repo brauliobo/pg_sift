@@ -27,7 +27,7 @@ grants of a member and the grants of the groups the member is in. A seed builds 
 a row may be both), a `memberships` table (group, member, deleted_at), the three partial unique btrees (column order drawn) and the scope
 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'. The three journals (grants by member, grants by group, memberships by member)
 are plain or partial on the pairs' predicate; some seeds omit one, and then no read may be stored and every one says a documented reason. The steps: grants inserted, soft deleted, restored, moved
-between direct and group, group grants on and off, memberships inserted, soft deleted, restored, moved to another group, a member reached by both paths, a group whose members all leave and
+between direct and group, group grants on and off, memberships inserted, soft deleted, restored, moved to another group, a member reached by both paths, a group whose dim_b all leave and
 return, HOT updates of a column no btree holds, reload of one table, REINDEX of a journal, besides the steps of the other seeds (aborted, savepoints, reads inside the transaction, promotion,
 merge, VACUUM, REINDEX, the REPEATABLE READ reader). The oracle is the view pair_set, the SQL UNION of the three tables, written once (Seed.pair_set_sql): the plain forms IN, EXISTS and the join
 (one row of a fact for each DISTINCT pair) read it, and the final entries of the scope units must be the join of the facts with it. A scope read of a union seed is accepted as stored, or with a
@@ -366,7 +366,7 @@ FIRST = ['dim_a_id, tenant_id', 'tenant_id, dim_a_id']
 
 
 class UnionSeed(Seed):
-    """The scope of two paths: grants of a member, grants of a group, and the memberships of the members in the groups."""
+    """The scope of two paths: grants of a member, grants of a group, and the memberships of the dim_b in the groups."""
     pairs, tables, union, marker = 'pair_set', 'grants, memberships', True, 'in_scope_pairs'
     pair_kinds = ('pair_ins', 'pair_del', 'pair_move', 'pair_upd', 'pair_reload', 'grant_ins', 'group_grant_on', 'grant_soft', 'group_grant_off', 'grant_restore', 'grant_move',
                   'grant_note', 'member_ins', 'member_soft', 'member_restore', 'member_move', 'member_note', 'group_empty', 'group_return', 'both_paths', 'grant_both')

@@ -47,7 +47,7 @@ CREATE VIEW pair_oracle AS
 	SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
 	UNION
 	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
-SELECT tenant_id, count(*) AS members FROM pair_oracle GROUP BY 1 ORDER BY 1;
+SELECT tenant_id, count(*) AS dim_b FROM pair_oracle GROUP BY 1 ORDER BY 1;
 SELECT count(*) AS member_5_pairs FROM pair_oracle WHERE member = 5 AND tenant_id = 1;
 
 -- plpgsql, so that nothing refers to the index before it exists

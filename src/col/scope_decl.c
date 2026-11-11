@@ -127,7 +127,7 @@ parse_one(const char **pp, const char **err)
 			return NULL;
 		if (strncmp(p, "via", 3) != 0 || !isspace((unsigned char) p[3]))
 		{
-			*err = "expected 'via' and the relation that lists the members of the via column after the second path";
+			*err = "expected 'via' and the relation that pairs the via column with the member after the second path";
 			return NULL;
 		}
 		if ((p = parse_rel(p + 3, s->via, "via", "member", err)) == NULL)
@@ -575,7 +575,7 @@ sync_edges(Oid index, List *keep)
 static void
 notice_btree(const SiftScopeSpec *s, int i, Relation rel, Oid btree)
 {
-	static const char *const what[] = {"direct pairs", "joined pairs", "via members"};
+	static const char *const what[] = {"direct pairs", "joined pairs", "via relation"};
 	const SiftScopeRel *r = decl_rel(s, i);
 	List	   *pred = index_predicate(btree);
 	const char *text = pred == NIL ? NULL : deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(RelationGetRelationName(rel), RelationGetRelid(rel)), false, false);
@@ -618,7 +618,7 @@ check_hops(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2])
 		for (int j = 0; j < i; j++)
 			if (same_columns(rel[i], att[i][0], att[i][1], rel[j], att[j][0], att[j][1]))
 				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the declaration reads \"%s\" (%s, %s) twice", s->key_name, decl_rel(s, i)->name, decl_rel(s, i)->a, decl_rel(s, i)->b),
-								errhint("The direct pairs, the pairs by the via column and the members of the via column are three different sets of columns.")));
+								errhint("The direct pairs, the pairs by the via column and the via relation are three different sets of columns.")));
 	check_same_type(s, "via", rel[1], att[1][0], rel[2], att[2][0]);
 	check_same_type(s, "member", rel[0], att[0][0], rel[2], att[2][1]);
 	check_same_type(s, "scope key", rel[0], att[0][1], rel[1], att[1][1]);
