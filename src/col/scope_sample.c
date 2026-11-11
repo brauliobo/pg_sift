@@ -103,7 +103,7 @@ sift_scope_precheck(Relation heap, Relation index)
 	old = MemoryContextSwitchTo(cx);
 	/* the pairs are probed for the sampled members only (a few thousand rows), or read whole when the relation is that small */
 	fill = sift_scope_fill_begin(index, cx, (uint64) SCOPE_SAMPLE_RUNS * SCOPE_SAMPLE_RUN_BLOCKS * 200);
-	snap = GetTransactionSnapshot();
+	snap = RegisterSnapshot(GetTransactionSnapshot());
 	slot = table_slot_create(heap, NULL);
 	for (int s = 0; s < specs->n; s++)
 	{
@@ -147,6 +147,7 @@ sift_scope_precheck(Relation heap, Relation index)
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	sift_scope_fill_end(fill);
+	UnregisterSnapshot(snap);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
