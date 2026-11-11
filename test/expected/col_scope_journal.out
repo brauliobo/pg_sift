@@ -75,7 +75,7 @@ NOTICE:  scope "tenant_id": 36,517 entries for 20,000 rows (1.83 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SELECT (SELECT string_agg(refobjid::regclass::text, ' ') FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
@@ -522,7 +522,7 @@ NOTICE:  scope "tenant_id": 21,225 entries for 18,462 rows (1.15 per row)
 NOTICE:  sift_col index "events_col": 2 automatic choices (key_columns, track_changes)
 DETAIL:  key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
-NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+NOTICE:  sift_col index "events_col" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SET sift.scope_max_multiplicity = 1.0;

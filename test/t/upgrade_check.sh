@@ -92,7 +92,7 @@ out=$(uc clean)
 check "cube_minmax set after the build warns that the old units scan, with the REINDEX" grep -q -E '^warn +facts_late +option +cube_minmax with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late;' <<<"$out"
 check "key_columns set after the build warns that the old units have no summary, with the REINDEX" grep -q -E '^warn +facts_late_set +option +key_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_set;' <<<"$out"
 check "rollup_columns set after the build warns that the old units have no rollup of their rows, with the REINDEX" grep -q -E '^warn +facts_late_roll +option +rollup_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_roll;' <<<"$out"
-check "order_columns (deprecated in 4.3, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated in 4\.3 and removed in 4\.4 .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
+check "order_columns (deprecated in 4.3, ignored by a build) warns to reset it, and no REINDEX is asked for it" grep -q -E '^warn +facts_late_ord +option +order_columns +deprecated in 4\.3 and removed in 5\.0 .*ALTER INDEX facts_late_ord RESET \(order_columns\)' <<<"$out"
 check "an index built with key_columns and rollup_dims has no warning" test -z "$(grep -E '^(warn|blocker) +scat_new_opts ' <<<"$out")"
 check "sift.upgrade_commands gives the same indexes, one command each, after the text index that queries need" test "$(q clean \
 	"SELECT string_agg(kind || ' ' || required::text || ' ' || command, ' ' ORDER BY ord) FROM (SELECT *, row_number() OVER () ord FROM sift.upgrade_commands()) c WHERE kind = 'reindex'")" == \

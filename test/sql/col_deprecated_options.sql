@@ -1,5 +1,5 @@
 -- The options that 4.3 deprecated are accepted and ignored: the build decides by itself, says so once in its NOTICE (and sift.index_choices), and an index that carries
--- one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor them, which is how the tests of their layouts run until 4.4 removes both.
+-- one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor them, which is how the tests of their layouts run until 5.0 removes both.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;

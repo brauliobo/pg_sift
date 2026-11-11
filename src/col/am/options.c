@@ -365,7 +365,7 @@ sift_col_init(void)
 							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
 							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_legacy_options",
-							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 4.4.",
+							 "Testing: a build honors the options that 4.3 deprecated (key_cut_rows, point_columns, order_columns, order_layout), which are ignored by default and removed in 5.0.",
 							 NULL, &sift_col_legacy_options, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
@@ -556,10 +556,10 @@ sift_col_init(void)
 						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
-					  "Deprecated, ignored and removed in 4.4: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
+					  "Deprecated, ignored and removed in 5.0: the rows a key-cut unit aims at (the units aim at the rows of an average superblock)",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
-						 "Deprecated, ignored and removed in 4.4: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
+						 "Deprecated, ignored and removed in 5.0: the columns whose rows every unit kept in the order of the column (a sorted run); the order arrays of order_array_columns answer what it did (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
@@ -577,7 +577,7 @@ sift_col_init(void)
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
-						 "Deprecated, removed in 4.4: the plain integer, text and uuid columns whose rows every segment written from now on lists by value; a build lists them in the directory of heap addresses of point_tid_columns instead (default none)",
+						 "Deprecated, removed in 5.0: the plain integer, text and uuid columns whose rows every segment written from now on lists by value; a build lists them in the directory of heap addresses of point_tid_columns instead (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "count_columns",
 						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
@@ -592,7 +592,7 @@ sift_col_init(void)
 						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key)' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column; the parent columns that queries read come from the parent's own index. The parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
 						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "scope",
-						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key)' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a unique btree covers; several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 4.4 and later read; default none)",
+						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key)' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a unique btree covers; several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 5.0 and later read; default none)",
 						 "", sift_col_validate_scope, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "projection",
 						 "the named projections (sift.projection_create) this index holds or serves: 'name, name'. sift.projection_index writes it; sift.projection_status says whether the index still holds the columns, the filter and the rollups of each. Only a record: it changes nothing in the segments, ALTER INDEX .. SET (projection = ..) takes effect at once and a definition that is replaced is compared with the index again (default none)",

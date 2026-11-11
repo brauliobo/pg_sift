@@ -14,7 +14,7 @@ Every setting and option has its full row in [docs/OPTIONS.md](OPTIONS.md); the 
 
 An equality, an `IN` list or a short range on a column of many distinct values.
 
-- **`point_columns`** (deprecated in 4.3, removed in 4.4).
+- **`point_columns`** (deprecated in 4.3, removed in 5.0).
   - **What**: the directory of the rows of a key, which an equality, `IN` list or short range reads to find the units that hold the rows. A build now lists the columns it names in the directory of heap addresses (`point_tid_columns`), which reads no unit; the segments already written are read as before.
   - **Why**: the directory of addresses is within 3% of its size and reads fewer instructions in every shape measured (integer equality 0.119 to 0.020 ms on 200,000 rows with the rows form, 0.013 ms with addresses; a b-tree 0.006 ms), case `point_in_100`.
   - **Off**: `ALTER INDEX .. RESET (point_columns)`, and name the columns in `point_tid_columns`. `CREATE INDEX` and `REINDEX` say so once (`point-columns-deprecated`).
@@ -41,7 +41,7 @@ An equality, an `IN` list or a short range on a column of many distinct values.
 
 `ORDER BY .. LIMIT n`, with or without a filter, an offset or a range.
 
-- **`order_columns`** (deprecated in 4.3, removed in 4.4).
+- **`order_columns`** (deprecated in 4.3, removed in 5.0).
   - **What**: each unit kept a sorted run of the column, so `ORDER BY col LIMIT n` read the first rows of each unit only. It is accepted and ignored: a build writes no run, and the order arrays (`order_array_columns`) answer a top-N, a range and an `OFFSET` over any number of units. The runs already written, and their heads, are read as before.
   - **Why**: the runs hold the same bytes as the order array of the column (2.08 against 2.27 bytes a row for a timestamp at 5,000,000 rows) and read 4 to 6 times the instructions beyond a top-N of 32 (`OFFSET` 4.42 M, a range 16.0 M, an `IN` list of two groups 47.8 M against 0.4 to 1.4 M with the array); a top-N of 32 or fewer reads 0.38 M with the heads and 0.46 M with the array.
   - **Off**: `ALTER INDEX .. RESET (order_columns)`. `CREATE INDEX` and `REINDEX` say so once (`order-columns-deprecated`).
@@ -115,7 +115,7 @@ Units that follow a declared key, so a lookup or a range of the key reads the un
   - **Off**: `ALTER INDEX .. SET (key_cut = 'off')` and `REINDEX` (or `CREATE INDEX .. WITH (key_cut = 'off')`).
   - **Measured**: `count/sum` of one key 5.06 to 0.35 ms on 1,500,000 rows, 419 units; case `keycut_customer_agg`.
   - **Message**: `key-cut-chosen`, `key-cut-advised`, `key-order`.
-- **`key_cut_rows`** (deprecated in 4.3, removed in 4.4).
+- **`key_cut_rows`** (deprecated in 4.3, removed in 5.0).
   - **What**: the rows a key-cut unit aims at. It is accepted and ignored: the units aim at the rows of an average superblock, which keeps the number of units and the planner's per-unit costs.
   - **Why**: at 100,000 rows 256 rows is +69.0% of the index and 4,096 is -9.4%, with no query gain; case `keycut_customer_agg`.
   - **Off**: `RESET (key_cut_rows)`. `CREATE INDEX` and `REINDEX` say so once (`key-cut-rows-deprecated`).

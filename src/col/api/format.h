@@ -52,7 +52,7 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_CONN	SIFT_COL_FORMAT_V43	/* 4.3: the leaf list of the index has the found flag of a connection (col/conn.h, SIFT_COLD_FOUND), and the segment says the stamp it was resolved under */
 #define SIFT_COL_FORMAT_REFBUF	SIFT_COL_FORMAT_V43	/* 4.3: the write buffer has records that are references to heap tuples (SIFT_COLR_REF, option sift.col_wbuf_ref): the format of its directory entry, so that an older release refuses the index */
 #define SIFT_COL_FORMAT_SEEKORD	SIFT_COL_FORMAT_V43	/* 4.3: a chunk of a global order may be seekable (SIFT_CGORD_SEEK): a fence key every 32 entries, so that a seek or a cursor decodes 32 entries and not 512; written under sift.col_format_minor 15 or more */
-#define SIFT_COL_FORMAT_SCOPE	45	/* 4.4: the leaf list of the index has the derived key of a scope (col/scope.h, SIFT_COLD_SCOPE, leaf "<key_name>#scope"), and the index may hold scope segments (directory flag SIFT_SEG_SCOPE); written only for an index with the reloption scope */
+#define SIFT_COL_FORMAT_SCOPE	45	/* 5.0: the leaf list of the index has the derived key of a scope (col/scope.h, SIFT_COLD_SCOPE, leaf "<key_name>#scope"), and the index may hold scope segments (directory flag SIFT_SEG_SCOPE); written only for an index with the reloption scope */
 #define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SCOPE	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128

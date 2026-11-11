@@ -106,7 +106,7 @@ after_auto(const char *opt)
 static const char *
 minor_lib(int minor)
 {
-	return minor >= SIFT_COL_FORMAT_SCOPE ? "4.4" : minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
+	return minor >= SIFT_COL_FORMAT_SCOPE ? "5.0" : minor >= SIFT_COL_FORMAT_SEEKORD ? "4.3" : minor >= SIFT_COL_FORMAT_ENDORD ? "4.0" : "3.7";
 }
 
 static void
@@ -565,9 +565,9 @@ d_deprecated(Derive *d)
 		bool		(*set) (Relation index);
 		const char *value;
 	} opts[] = {
-		{"key-cut-rows-deprecated", sift_col_options_key_cut_rows_set, "ignored, removed in 4.4"},
-		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 4.4"},
-		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 4.4"},
+		{"key-cut-rows-deprecated", sift_col_options_key_cut_rows_set, "ignored, removed in 5.0"},
+		{"point-columns-deprecated", point_columns_set, "now point_tid_columns, removed in 5.0"},
+		{"order-columns-deprecated", sift_col_options_order_columns_option, "ignored, removed in 5.0"},
 	};
 
 	if (sift_col_legacy_options)

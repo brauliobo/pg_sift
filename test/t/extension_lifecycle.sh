@@ -63,7 +63,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=108
+UPG_CHECKS=109
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 # no autovacuum (as in the other clusters, scripts/pgtest.sh): a worker vacuuming docs after the first minute of a slow run drops its dead documents from the
 # corpus statistics, and the scores the index answers with move in the fourth digit
@@ -241,6 +241,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg41 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
 	check "ALTER EXTENSION UPDATE takes 4.1 to $EXT" test "$(q life upg41 "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$EXT"
 	check "4.1 updated to $EXT has the objects of a fresh $EXT install" test "$(q life upg41 "$MEMBERS")" == "$(q life freshext "$MEMBERS")"
+	check "every released extension version since 4.0 has an update path to $EXT" test "$(q life upg41 "$PATHSET" "SELECT string_agg(v, ' ' ORDER BY v) FROM unnest(ARRAY['4.0', '4.0.3', '4.1', '4.2', '4.2.1', '4.2.2', '4.3']) v WHERE EXISTS (SELECT 1 FROM pg_extension_update_paths('pg_sift') WHERE source = v AND target = '$EXT')" | tail -n 1)" == "4.0 4.0.3 4.1 4.2 4.2.1 4.2.2 4.3"
 	# what to change for each slug is a function of its own (sift.refusal_actions): refusal_slugs() keeps its three columns, so that a view over it does not fail the update
 	check "a view over sift.refusal_slugs() made with 4.1 survives the update and reads the slugs" test "$(q life upg41 "SELECT count(*) = (SELECT count(*) FROM sift.refusal_slugs()) AND count(*) > 0 FROM slugs41")" == t
 	check "a view over sift.workers made with 4.1 survives the update and lists the sift_table" test "$(q life upg41 "SELECT count(*) FILTER (WHERE kind = 'sift_table') = 1 AND count(*) = (SELECT count(*) FROM sift.workers) FROM workers41")" == t

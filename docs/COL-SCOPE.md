@@ -2,7 +2,7 @@
 
 A scope is a key a `sift_col` index cuts its rows by that the rows do not hold: they reach it through a table of `(member, scope key)` pairs. Events of entities, entities in tenants: the question
 is "the events of tenant 7", and the tenant is in the pairs of the entity, not in the event. The scope index stores the rows replicated by scope key in segments of their own, cut by `(scope key,
-time)`, so a read of one tenant reads the units of that tenant and no others, where the join reads the entity of each member. New in 4.4, column format minor 45, opt-in, and EXPERIMENTAL: the
+time)`, so a read of one tenant reads the units of that tenant and no others, where the join reads the entity of each member. New in 5.0, column format minor 45, opt-in, and EXPERIMENTAL: the
 declaration, the formats and the settings may change in a later release. `sift_table` has no scope.
 
 ## The declaration
@@ -33,7 +33,7 @@ stamp of the units (the journal says which), plus the entity rows of those of th
 that the scope cannot answer reads the entity rows of the members the relation lists for the keys; the answer is the join's in every case (the tests compare md5 against the plain join after every
 state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). In this release the scan takes the scope conjunct from the marker
 `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join); the planner's recognition of the join forms (`JOIN scope_rel USING
-(member) WHERE scope_key = k`, `member IN (SELECT member FROM scope_rel WHERE scope_key = k)`, `EXISTS`, `GROUP BY` the key) is a separate piece of the 4.4 work, and until it lands a release
+(member) WHERE scope_key = k`, `member IN (SELECT member FROM scope_rel WHERE scope_key = k)`, `EXISTS`, `GROUP BY` the key) is a separate piece of the 5.0 work, and until it lands a release
 build has the declaration, the segments and the journal but no statement that reads them.
 
 **Many to many.** A member may be in several keys: a fact has one entry for each. A read of one key counts each fact of a member that has the pair once. A read of several keys with the meaning of
@@ -108,7 +108,7 @@ make; they differ in what they keep.
 | writes to the facts | none beyond the index's (the write buffer of the index; the pairs are read through their journal) | a statement trigger applies the change to the copy in the statement |
 | writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
 | a pair table that is a view | no: the pairs are a table with a unique btree | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
-| the planner uses it | not in this release: the planner's recognition of the join forms is a separate piece of 4.4 | the copy is a table: `WHERE tenant_id = k` on it, today |
+| the planner uses it | not in this release: the planner's recognition of the join forms is a separate piece of 5.0 | the copy is a table: `WHERE tenant_id = k` on it, today |
 | state | EXPERIMENTAL | released API (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
 
 Use the copy today, for a request that names the key and wants the rows of the key by a plain query on a table. Use the index when the facts must stay one table (no second copy to size, to vacuum and to
@@ -118,6 +118,6 @@ copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.
 ## Limits
 
 EXPERIMENTAL; one constant key or a list of constants per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning need the join once a member changed; at most 4 scopes and 8 connections plus scopes on an index; a library before 4.4 refuses the index. The reserved
-by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 4.4: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
+rows; several keys with a per-pair meaning need the join once a member changed; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

@@ -150,7 +150,7 @@ Both pairs were measured side by side (400,000 rows, a table of an `int4` id spr
 | index size (5 columns) | 5.14 MB | 7.39 MB (+43.9%) | 7.50 MB (+45.9%) |
 | `CREATE INDEX`, instructions | 1.45 G | 1.60 G (+10.5%) | 1.63 G (+12.4%) |
 
-**`order_array_columns`** (the global order of a column). The build chooses the columns (`auto`, the default) and the arrays answer `ORDER BY .. LIMIT`, an `OFFSET`, a range and an `IN` list over any number of units. `order_columns`, the sorted run of each unit that earlier releases wrote beside the array, is deprecated (4.3): a build ignores it, the runs already written are read as before, and 4.4 removes it. The run alone read 4 to 6 times the instructions of the array beyond a top-N of 32 for the same bytes.
+**`order_array_columns`** (the global order of a column). The build chooses the columns (`auto`, the default) and the arrays answer `ORDER BY .. LIMIT`, an `OFFSET`, a range and an `IN` list over any number of units. `order_columns`, the sorted run of each unit that earlier releases wrote beside the array, is deprecated (4.3): a build ignores it, the runs already written are read as before, and 5.0 removes it. The run alone read 4 to 6 times the instructions of the array beyond a top-N of 32 for the same bytes.
 
 ## The words that mean several things
 

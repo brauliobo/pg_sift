@@ -1,5 +1,5 @@
 /*
- * col/proj.c - what the named projections of sift.projection_index ask of the server (sql/pg_sift--4.3--4.4.sql, docs/INDEX-RECIPES.md)
+ * col/proj.c - what the named projections of sift.projection_index ask of the server (sql/pg_sift--4.3--5.0.sql, docs/INDEX-RECIPES.md)
  *
  * sift.projection_filter_served(source, filter, index): can the index answer the rows of a projection's filter? It keeps every row of the filter (the filter implies the
  * predicate of the index, which has none or a weaker one) and either keeps no other row (the predicate implies the filter) or holds the columns the filter reads, so that the

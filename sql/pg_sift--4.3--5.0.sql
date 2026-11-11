@@ -1,4 +1,4 @@
-\echo Use "ALTER EXTENSION pg_sift UPDATE TO '4.4'" to load this file. \quit
+\echo Use "ALTER EXTENSION pg_sift UPDATE TO '5.0'" to load this file. \quit
 
 -- Scope copies: a copy of a fact table keyed by a scope key (tenant, group) that the facts reach through a scope relation, a table of unique (member key, scope key) pairs.
 -- The copy carries one row per (fact row, scope key of its foreign key), has a sift_col index keyed by the scope key, and is kept exact by statement triggers

@@ -1,4 +1,4 @@
--- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 4.4), whatever the other choices of the build need, and its hint does not
+-- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0), whatever the other choices of the build need, and its hint does not
 -- offer the setting that cannot lower it; an index without the option is unchanged.
 CREATE EXTENSION pg_sift;
 CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
@@ -15,7 +15,7 @@ NOTICE:  scope "tenant_id": 20,000 entries for 20,000 rows (1.00 per row)
 NOTICE:  sift_col index "events_scope_col": 1 automatic choice (key_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_scope_col');
-NOTICE:  sift_col index "events_scope_col" has a scope: column format minor 45, which a library before 4.4 cannot read
+NOTICE:  sift_col index "events_scope_col" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 CREATE INDEX events_plain_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num);
 NOTICE:  sift_col index "events_plain_col" stores columns id, dim_a_id, created_at, kind, value_num of index "events_scope_col", which has the same layout

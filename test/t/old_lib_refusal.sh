@@ -46,7 +46,7 @@ if ((rc != 77)); then # and the other way: the groups the older library tags und
 	for ref in v3.2.3 v4.0.5 v4.1.4; do
 		out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=$ref SIFT_TMP="$TAPDIR/old-lib-pr-$ref" SIFT_PORT=$((SIFT_PORT + 22)) "$REPO/scripts/old-lib-check.sh" present 2>&1 | sed "s/^\(PASS\|FAIL\) /\1 $ref: /")
 	done
-	# and the scope index of 4.4 (column format 45): the 4.3 release refuses it with the format error and the standard hint, and reads an index without a scope
+	# and the scope index of 5.0 (column format 45): the 4.3 release refuses it with the format error and the standard hint, and reads an index without a scope
 	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v4.3.0 SIFT_TMP="$TAPDIR/old-lib-scope" SIFT_PORT=$((SIFT_PORT + 23)) "$REPO/scripts/old-lib-check.sh" scope 2>&1)
 fi
 if ((rc == 77)); then

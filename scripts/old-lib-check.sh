@@ -24,7 +24,7 @@
 #   scripts/old-lib-check.sh present                    the presence leaf of a jsonb column that may hold a NULL document (4.2; SIFT_OLD_REF, default v4.1.4): this tree writes one index with the leaf and one over a
 #                                                       NOT NULL column without it; the older library refuses the first with the layout error and reads the second, REINDEX under the older library
 #                                                       writes the layout it reads, and this tree then reads that index as it reads its own (answers, verify) and writes the leaf again at the next REINDEX
-#   scripts/old-lib-check.sh scope                      the scope index of 4.4 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
+#   scripts/old-lib-check.sh scope                      the scope index of 5.0 (column format minor 45; SIFT_OLD_REF, default v4.3.0): this tree writes one index with a scope and one without; the older library refuses the first
 #                                                       with the format error and the standard hint (use a newer pg_sift), reads the second and the heap, and reads a plain index made in its place of the scope index
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM

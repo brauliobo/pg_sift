@@ -413,7 +413,7 @@ extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
 extern PGDLLIMPORT int sift_col_unit_floor;
-extern PGDLLIMPORT bool sift_col_legacy_options;	/* sift.test_col_legacy_options: the options 4.3 deprecated are honored (removed in 4.4) */
+extern PGDLLIMPORT bool sift_col_legacy_options;	/* sift.test_col_legacy_options: the options 4.3 deprecated are honored (removed in 5.0) */
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 extern BlockNumber sift_col_build_gap(Relation heap, Relation index);

@@ -1,5 +1,5 @@
 -- The options that 4.3 deprecated are accepted and ignored: the build decides by itself, says so once in its NOTICE (and sift.index_choices), and an index that carries
--- one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor them, which is how the tests of their layouts run until 4.4 removes both.
+-- one keeps reading. sift.test_col_legacy_options (testing only) makes a build honor them, which is how the tests of their layouts run until 5.0 removes both.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;
@@ -29,7 +29,7 @@ SELECT dp_units('dp_rows') = dp_units('dp_plain') AS same_units_as_without;
 SELECT dp_choice('dp_rows', 'key_cut_rows');
             dp_choice            
 ---------------------------------
- advice: ignored, removed in 4.4
+ advice: ignored, removed in 5.0
 (1 row)
 
 SELECT dp_choice('dp_plain', 'key_cut_rows') IS NULL AS no_advice_without;
@@ -80,7 +80,7 @@ SELECT dp_units('dp_legacy') = dp_units('dp_plain') AS reindex_ignores_it;
 SELECT dp_choice('dp_legacy', 'key_cut_rows');
             dp_choice            
 ---------------------------------
- advice: ignored, removed in 4.4
+ advice: ignored, removed in 5.0
 (1 row)
 
 -- point_columns: its leaves are listed as heap addresses, which an equality reads with no unit read, where the rows form reads the unit of each row
@@ -123,7 +123,7 @@ SELECT pg_relation_size('dq_addr') = pg_relation_size('dq_tid') AS same_size_as_
 SELECT dp_choice('dq_addr', 'point_columns');
                    dp_choice                   
 -----------------------------------------------
- advice: now point_tid_columns, removed in 4.4
+ advice: now point_tid_columns, removed in 5.0
 (1 row)
 
 SELECT dp_choice('dq_tid', 'point_columns') IS NULL AS no_advice_without;
@@ -199,7 +199,7 @@ FROM unnest(ARRAY['dr_off', 'dr_arrays', 'dr_list']) i ORDER BY 1;
 SELECT dp_choice('dr_off', 'order_columns');
             dp_choice            
 ---------------------------------
- advice: ignored, removed in 4.4
+ advice: ignored, removed in 5.0
 (1 row)
 
 SELECT dp_choice('dr_list', 'order_columns') IS NULL AS no_advice_without;

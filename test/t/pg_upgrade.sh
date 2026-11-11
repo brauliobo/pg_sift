@@ -84,7 +84,7 @@ CREATE INDEX cdim2_c ON cdim2 USING sift_col (id, zone);
 CREATE INDEX cfact_c ON cfact USING sift_col (id, dim_id, dim2_id, v)
   WITH (connect = 'dim_id -> cdim(id); dim2_id -> cdim2(id)');
 UPDATE cdim SET cat = cat + 1 WHERE id % 50 = 0;"
-# named projections (4.4's): two definitions, one index that serves both; the indexes are created by pg_upgrade before the data of sift.projections is there
+# named projections (5.0's): two definitions, one index that serves both; the indexes are created by pg_upgrade before the data of sift.projections is there
 PROJSQL=
 [[ -n $OLD_REF ]] || PROJSQL="CREATE TABLE pev (id int PRIMARY KEY, a int, k int, q int, s text) WITH (autovacuum_enabled = false);
 INSERT INTO pev SELECT g, g % 40, g % 5, g % 97, (ARRAY['new', 'open', 'held'])[1 + g % 3] FROM generate_series(1, 3000) g;

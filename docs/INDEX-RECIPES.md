@@ -193,7 +193,7 @@ CREATE INDEX parent_col ON parent USING sift_col (id, grp, state, rank);        
 ## Keys above the fact table
 
 A request often carries a key that lives above the fact table: a tenant, a group, a plan. The facts reach it through a *scope relation*, a table of unique `(member key, scope key)` pairs (the ids a tenant sees, the ids of a group). An index keyed by the member answers such a request by expanding the pairs and testing every fact row against the set of ids, so its cost follows the table, not the tenant. A *scope copy* is a copy of the fact table that holds each fact once for every scope key of its member, with a `sift_col` index keyed by the scope key: the cost then follows the rows of the key. The same request can also be answered by a *scope index*, a `sift_col` index that keeps the rows replicated by scope key inside the table's own index
-(EXPERIMENTAL in 4.4, no second table and no triggers on the facts; [COL-SCOPE](COL-SCOPE.md#scope-index-or-scope-copy) says when to use which, with the sizes and the build WAL of both on one fixture).
+(EXPERIMENTAL in 5.0, no second table and no triggers on the facts; [COL-SCOPE](COL-SCOPE.md#scope-index-or-scope-copy) says when to use which, with the sizes and the build WAL of both on one fixture).
 
 ```sql
 -- facts(id primary key, dim_a_id, created_at, kind, amount); scope_pairs(dim_a_id, tenant_id) with a unique index on both

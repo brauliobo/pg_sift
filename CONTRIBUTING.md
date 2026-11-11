@@ -85,7 +85,7 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Removing a deprecated option
 
-The options that a release deprecates (`order_columns`, `point_columns` and `key_cut_rows`, removed in 4.4) go in one commit each, with the setting that keeps them alive in tests (`sift.test_col_legacy_options`, `grep` for it in `src/col/am/` and `scripts/pgtest.sh`), the regression tests that name them or set that setting (`test/sql/`, `grep -l`), the bench cases that name them (`bench/cases/`), the advice rows of `docs/messages.tsv` and the preflight rows of `scripts/upgrade_check.sql` and the option rows of `sift.upgrade_commands()` in `sql/`. A test that checks a layout only the removed option wrote is deleted with it; a test that only passed the option drops the argument and keeps its answers.
+The options that a release deprecates (`order_columns`, `point_columns` and `key_cut_rows`, removed in 5.0) go in one commit each, with the setting that keeps them alive in tests (`sift.test_col_legacy_options`, `grep` for it in `src/col/am/` and `scripts/pgtest.sh`), the regression tests that name them or set that setting (`test/sql/`, `grep -l`), the bench cases that name them (`bench/cases/`), the advice rows of `docs/messages.tsv` and the preflight rows of `scripts/upgrade_check.sql` and the option rows of `sift.upgrade_commands()` in `sql/`. A test that checks a layout only the removed option wrote is deleted with it; a test that only passed the option drops the argument and keeps its answers.
 
 ## Merging
 

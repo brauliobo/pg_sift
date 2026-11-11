@@ -203,7 +203,7 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
 
 - Update as in section 2: install, restart (a standby too), `ALTER EXTENSION pg_sift UPDATE` in each database, then `scripts/upgrade-check.sh` (it warns for the three deprecated options below and for the test setting `sift.test_col_legacy_options`; nothing blocks). **Update the standbys and every node that reads the index before the primary**, or set `sift.col_wbuf_ref = off` and `sift.col_auto_connect = off` (and `sift.col_format_minor = 14` for the other sections of minor 44) on the primary until they are updated.
 - `REINDEX INDEX CONCURRENTLY` is worth it for an index with a serial id, for an index whose table is read by `WHERE col = x ORDER BY ts LIMIT n` through a b-tree you want to drop, and for a child table whose foreign key you want connected; not for the rest. Reset the three deprecated options first (below). A `REINDEX` after `ALTER INDEX x SET (connect = 'off')` leaves an index unconnected.
-- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 4.4: [What 4.3 deprecates and 4.4 removes](#what-43-deprecates-and-44-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
+- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 5.0: [What 4.3 deprecates and 5.0 removes](#what-43-deprecates-and-50-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
 
 ### Going back to 4.2
 
@@ -234,17 +234,17 @@ psql -d app -c "SELECT sift.col_verify('events_col', true)"
 - A standby that stays on 4.2 needs steps 2 and 3 on its primary before anything is written, and `sift.col_format_minor` set there for every later write.
 - Settings the 4.3 library accepts and 4.2 does not know (`sift.col_wbuf_ref`, `sift.col_auto_connect`, `sift.agg_child_first`, `sift.agg_connect_found`, `sift.agg_dimmap_kb`, `sift.col_connect_refresh_pct`): remove them from `postgresql.conf` and from role and database settings when the 4.2 files are installed, as for any setting a release does not define.
 
-## What 4.3 deprecates and 4.4 removes
+## What 4.3 deprecates and 5.0 removes
 
-Three `sift_col` options are accepted and ignored by 4.3 and are removed in 4.4, when an `ALTER INDEX .. SET` or a `CREATE INDEX` that names one is refused. A `CREATE INDEX` or a `REINDEX` that names one says so in its `NOTICE`, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
+Three `sift_col` options are accepted and ignored by 4.3 and are removed in 5.0, when an `ALTER INDEX .. SET` or a `CREATE INDEX` that names one is refused. A `CREATE INDEX` or a `REINDEX` that names one says so in its `NOTICE`, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
 
-| Option | What 4.3 does | What to do before 4.4 |
+| Option | What 4.3 does | What to do before 5.0 |
 |---|---|---|
 | `order_columns` | writes no sorted run; the order arrays (`order_array_columns`, chosen by the build) answer a top-N, a range and an `OFFSET` | `ALTER INDEX .. RESET (order_columns)`; keep `order_array_columns` if you set it |
 | `point_columns` | lists its columns as heap addresses, as `point_tid_columns` does | set `point_tid_columns` to the same columns and reset `point_columns` |
 | `key_cut_rows` | the units aim at the rows of an average superblock | `ALTER INDEX .. RESET (key_cut_rows)` |
 
-`order_layout` and `sift.col_format_minor` stay through 4.4. The setting `sift.test_col_legacy_options`, which makes a build honor the three options and which the test clusters of this project set, is for tests only and goes away with them; do not set it on a server.
+`order_layout` and `sift.col_format_minor` stay through 5.0. The setting `sift.test_col_legacy_options`, which makes a build honor the three options and which the test clusters of this project set, is for tests only and goes away with them; do not set it on a server.
 
 ## 3. A newer PostgreSQL major
 

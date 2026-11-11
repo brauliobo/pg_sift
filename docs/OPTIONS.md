@@ -1201,7 +1201,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. Written only under order_columns, which 4.3 deprecates (4.4 removes it); segments already written keep them.
+- **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit. Written only under order_columns, which 4.3 deprecates (5.0 removes it); segments already written keep them.
 - **Gain:** ORDER BY k LIMIT 10 0.128 to 0.051 ms (800,000 rows; b-tree 0.010), executor 645k to 245k instructions; LIMIT above 32 or a filtered LIMIT gain nothing
 - **Gain and cost:** 2.63x fewer instructions (400k saved a query), index +0.6%, build +0.0%, automatic
 - **Impact:** index size: +0.60% (94,044,160 against 93,478,912 bytes, three order columns, 800,000 rows); +2.4% (narrow index, 353,029 rows); build, merge and writes: Build 1.61 against 1.63 s (800,000 rows), promotion of 100,000 rows 0.052 against 0.052 s, merge of 500,000 rows 0.74 against 0.66 s (noise +-10%); other: format minor 18; Index +0.6% to +2.4% (0.24 B a row at units of 4,096 rows or more); build, promotion and merge within noise. Needs order_columns; none for a unit under 128 rows, a leaf with NULL or overflow, or a key_cut segment. A 3.3 library cannot read minor 18.
@@ -1388,7 +1388,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · default · since 3.4 · default automatic
 
-- **What it does:** A top-N over a table with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. Written only under order_columns, which 4.3 deprecates (4.4 removes it); segments already written keep them.
+- **What it does:** A top-N over a table with order_columns (the sorted run of each unit) reads the sort key of a unit's rows only for the rows it keeps and sizes its candidate buffers by the unit, not by the table's largest. Written only under order_columns, which 4.3 deprecates (5.0 removes it); segments already written keep them.
 - **Gain:** 40 scans ORDER BY a key column LIMIT 10..49, 1,000,000 orders: 48 to 24.8 ms; ORDER BY rnd LIMIT 10, 800,000 rows: 113 to 82 us a scan; LIMIT 1000: 1.23 to 1.05 ms
 - **Impact:** index size: -; build, merge and writes: -; other: Nothing stored: the segment format does not change, no index growth or write cost.
 - **When:** A top-N scan whose first key is a leaf with a run (an index with order_columns) and a unit of at least 2 x (limit + 1) rows passing.
@@ -1567,7 +1567,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · opt-in · since 4.0 · default ''
 
-- **What it does:** one name for the layout of a table whose rows come in the order of a key. One column ('ts'): key_cut and order_array_columns take it while you have not set them (not point_tid_columns from 4.3: its directory made the index 71 to 95% larger). 'group, key' ('tenant, ts'): order_array_columns takes the key and order_array_group the group; the point directory is left out (a cut by the group with its directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) and key_cut is left to the build, which cuts by the group (4.2.1: key_cut = 'auto: group', the key as second key where it costs little) where the group's lookups read many units, whatever the zones of the other leaves: the arrays alone read count, range and group-by like an index with no layout. An option you wrote wins, key_cut = 'off' too. One column, a table sorted by the key (100,000 rows, 11 columns): OFFSET 10,000 reads 5.5M instead of 22.2M instructions (OFFSET 50,000 25.5M instead of 47M; below about 8,000 rows the ends of the default's order are as fast); a table in arrival order: a range of the key 0.53M instead of 2.09M, ORDER BY .. LIMIT and OFFSET what the default costs (top-20 0.25M, OFFSET 10,000 5.4M) where key_cut alone costs 2x and 6.7x as much. 'group, key' (1,000 tenants, 300,000 rows, arrival order): the latest row of each of 100 tenants 4.1M instead of 13.9M (a b-tree 3.3M), the latest 20 of a tenant 0.35M instead of 0.46M to 1.12M, a global ORDER BY ts LIMIT 20 0.29M against 0.27M On a table shaped like a scope copy the build takes the first column of the index for the group by itself (4.4): an integer of 10 to 4,096 values with 100 rows or more each, neither a foreign key nor unique, with another key-shaped column of 8 times its values or more (the column the rows were copied by); the units are cut by it where the cut pays. One key of a copy of 277,389 rows and 60 keys: sum by kind 0.52M instead of 2.64M instructions, the latest 20 0.59M instead of 2.65M.
+- **What it does:** one name for the layout of a table whose rows come in the order of a key. One column ('ts'): key_cut and order_array_columns take it while you have not set them (not point_tid_columns from 4.3: its directory made the index 71 to 95% larger). 'group, key' ('tenant, ts'): order_array_columns takes the key and order_array_group the group; the point directory is left out (a cut by the group with its directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) and key_cut is left to the build, which cuts by the group (4.2.1: key_cut = 'auto: group', the key as second key where it costs little) where the group's lookups read many units, whatever the zones of the other leaves: the arrays alone read count, range and group-by like an index with no layout. An option you wrote wins, key_cut = 'off' too. One column, a table sorted by the key (100,000 rows, 11 columns): OFFSET 10,000 reads 5.5M instead of 22.2M instructions (OFFSET 50,000 25.5M instead of 47M; below about 8,000 rows the ends of the default's order are as fast); a table in arrival order: a range of the key 0.53M instead of 2.09M, ORDER BY .. LIMIT and OFFSET what the default costs (top-20 0.25M, OFFSET 10,000 5.4M) where key_cut alone costs 2x and 6.7x as much. 'group, key' (1,000 tenants, 300,000 rows, arrival order): the latest row of each of 100 tenants 4.1M instead of 13.9M (a b-tree 3.3M), the latest 20 of a tenant 0.35M instead of 0.46M to 1.12M, a global ORDER BY ts LIMIT 20 0.29M against 0.27M On a table shaped like a scope copy the build takes the first column of the index for the group by itself (5.0): an integer of 10 to 4,096 values with 100 rows or more each, neither a foreign key nor unique, with another key-shaped column of 8 times its values or more (the column the rows were copied by); the units are cut by it where the cut pays. One key of a copy of 277,389 rows and 60 keys: sum by kind 0.52M instead of 2.64M instructions, the latest 20 0.59M instead of 2.65M.
 - **Gain:** 100,000 rows, 11 columns, a table sorted by the key against the default layout, instructions of one backend: OFFSET 10,000 22.2M to 5.5M (1.77 to 0.56 ms; 1,000,000 rows 22.2M to 5.6M, 2.02 to 0.54 ms; OFFSET 5,000 4.4M to 3.0M, OFFSET 50,000 47M to 25.5M), a range of the key 0.64M to 0.59M; a table in arrival order against the default: a range of the key 2.09M to 0.53M (1,000,000 rows 17.8M to 0.72M), top-20 0.25M to 0.25M, OFFSET 10,000 5.41M to 5.41M; against key_cut alone: top-20 0.50M to 0.25M, keyset page 0.57M to 0.31M, OFFSET 10,000 36M to 5.4M. 'tenant, ts' (300,000 rows, 1,000 tenants): the latest row of 100 tenants 13.9M to 4.1M (1.93 to 0.51 ms), the latest 5 25.5M to 6.0M, the latest 20 of a tenant 0.47M, 0.46M, 1.12M to 0.35M, 0.36M, 0.36M, a keyset page of the top tenant 1.16M to 0.42M; 'entity, ts' (100,000 rows, 11 columns): 16.7M to 4.2M and 30.4M to 6.3M By default ('auto: entity, ts'; 300,000 rows, instructions of one backend, against the default without the layout, which has the second order by group of 63ed26ed; records 4281a82244c9-20261103T030747Z-e587 (sorted by the entity, 100 entities), ...T022424Z-d491 (1,000), ...T025224Z-87fb (random order, 10 entities), 1dfdbe186fd5-20261103T092357Z-420e, ...T092650Z-fc30 and ...T094823Z-18cd (date grows with the heap, 20 and 40 entities), ...T030616Z-75d9 (tenant_latest_20)): rows sorted by the entity, the latest row of each of 100 entities reads 4.3M instead of 72.7M instructions with 100 entities (0.63 against 5.3 ms), 2.0M instead of 19.0M with 40, 4.8M instead of 22.8M with 1,000, and ORDER BY entity, ts OFFSET 10,000 14.7M instead of 51.0M with 100 (5.5M instead of 48.4M with 1,000); rows in a random order, the same read 0.9M instead of 9.6M with 10 entities (the units cut by the entity); a date that grows with the heap, 20 entities 1.6M instead of 3.0M (OFFSET 55.3M instead of 106.8M), 40 entities 2.8M instead of 5.7M (OFFSET 38.0M instead of 111.4M); 40 tenants of u^2 skew in a random order, the latest 20 of one tenant 0.3M instead of 0.8M (a b-tree 0.2M). From 1,000 entities in a heap that follows the date or is random the layout is the one the plain choice builds (equal reads). A date or timestamp key_cut alone ('auto: ts', a timestamp of distinct values, ...T023523Z-bf3b): OFFSET 10,000 6.2M instead of 51.9M instructions (a b-tree 14.6M), the top 20 0.3M instead of 6.3M, a top 20 with a filter 0.5M instead of 7.5M. Scope copy by default (277,389 rows, 60 keys, one key, instructions of one backend, in arrival order): sum by kind 2.64M to 0.52M (142 to 23 blocks hit; cold 25 to 4 read), the latest 20 2.65M to 0.59M (340 to 82 hit; cold 293 to 32 read), distinct by month 7.34M to 3.92M, top 20 4.71M to 2.46M; sorted by the key and the time: the latest 20 0.97M to 0.55M (cold 65 to 10 read), the other classes equal. The latest 20 of one value of that column costs more: 0.61M to 1.65M in arrival order and 0.56M to 1.12M sorted.
 - **Gain and cost:** 4.04x fewer instructions (16700k saved a query), index +30.0%, build +0.0%, automatic
 - **Impact:** index size: index of 100,000 rows, 11 columns: sorted table 0.58 to 0.75 MB (+30%; 1,000,000 rows 5.4 to 7.8 MB, +45%), table in arrival order 1.60 to 1.37 MB (-14%; 1,000,000 rows 17.2 to 15.4 MB); 'tenant, ts' 300,000 rows 10.5 to 8.4 MB (-21%); 'entity, ts' 1.73 to 2.05 MB (+18%; 300,000 rows 4.25 to 6.25 MB, +47%); after 12 rounds of churn the index of the one-column bundle is 1,808 KB against 1,880 KB by default and 1,536 KB with key_cut alone (random keys) By default: sorted by the entity the index is 24 to 40% smaller (3.19 to 2.12 MB at 100 entities, 300,000 rows); in a random order 7% larger with 10 entities; 9% smaller with 20 and equal with 40 entities in a heap that follows the date; 5% smaller from 1,000 entities (it replaces the second order the plain choice builds there); 9% smaller for the tenant_latest_20 table (4.95 to 4.50 MB) and 3% fewer instructions to build it; a timestamp cut alone +17% (3.78 to 4.42 MB, a b-tree 6.76 MB). The build costs 6% more instructions with 40 entities in a heap that follows the date (9% with 20) and 3 to 14% fewer in the other cells; a timestamp cut alone +1.5% (4,906 to 4,981 Minstr, 1dfdbe186fd5-20261103T041918Z-62a6, index +14% there, 4.51 to 5.14 MB). Scope copy: in arrival order 6.18 to 6.19 MB (+0.3%), sorted by the key 6.18 to 5.44 MB (-12%).; build, merge and writes: 12 rounds of 1% inserts, 1% updates, 0.33% key moves and 1% deletes on 100,000 rows, with maintenance: random keys 5,711M instructions against 6,957M by default (-18%) and 5,661M with key_cut alone, tail keys 4,207M against 5,065M (-17%), monotone keys 5,743M against 9,703M (-41%); WAL 12.3 against 12.1 MB, 8.5 against 8.2, 12.2 against 18.1 MB; REINDEX 593M against 1,045M instructions; CREATE INDEX 0.30 to 0.31 s against 0.40 to 0.46 s by default Scope copy build (maintenance workers 0): in arrival order 2,449M to 3,769M instructions (+54%: the units are cut by the key), sorted 2,489M to 2,390M (-4%); a table that is not a copy builds with the same instructions (4,478M, 4,409M and 2,994M against 4,478M, 4,410M and 2,993M).; other: one column: the index of a sorted table -21% (0.58 to 0.46 MB, 100,000 rows; the point directory it no longer takes was +64%), of a table in arrival order -14% (1.60 to 1.37 MB); 12 rounds of churn (1% inserts, 1% updates, 1% deletes): 18 to 41% fewer instructions than the default and the same WAL, but 10 to 24% more WAL and an index 18 to 57% larger than key_cut alone. 'group, key' (300,000 rows, 1,000 tenants): index -21% (10.5 to 8.4 MB), build -52% (7,144M to 3,437M instructions), VACUUM and the insert into a hot tenant equal; count(*) of one tenant 0.32M to 1.58M (0.13 to 0.21 ms); ORDER BY tenant, ts OFFSET 10,000 4.7M to 95M; an IN list of 60 tenants +12%, of 10 entities over 2,000 (300,000 rows) 3.5M to 12.6M; the index +47% in arrival order (4.25 to 6.25 MB) and -15% on a table sorted by the entity. On a partitioned table it is neutral to worse (hash64: latest 20 of the top tenant 1.52M to 4.17M, OFFSET 1000 4.1M to 15.5M, index +24%): it replaces nothing there
@@ -1746,7 +1746,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift_col(projection)
 
-`sift_col` · opt-in · since 4.4 · default ''
+`sift_col` · opt-in · since 5.0 · default ''
 
 - **What it does:** records the named projections (sift.projection_create: columns, expressions, filter, roll-ups) that this index holds or serves, so that sift.projection_status can say whether it still keeps the columns, the filter and the roll-ups of each. sift.projection_index writes it: it makes the index from the definitions, or, when an index of the table with the same layout already holds them, builds nothing and adds the names to that index. Only a record: the segments and the format do not change
 - **Gain:** an index serves a narrow projection at the cost of an index of its own (1,000,000 rows, 12 columns: 0.70 M against 1.67 M instructions for one entity, 4.01 M against 3.98 M for a range, 10.25 M against 10.23 M for a tenant, 41.38 M against 41.36 M for no condition; the buffers within 5% and the plan names the wide index); the option itself reads nothing
@@ -1762,7 +1762,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift_col(scope)
 
-`sift_col` · opt-in · since 4.4 · default ''
+`sift_col` · opt-in · since 5.0 · default ''
 
 - **What it does:** EXPERIMENTAL: declares a derived key of the rows of this index, the scope key that a table of (member, scope) pairs gives each row through its member key (the column fk of this index); the index depends on the unique btree of that table, and the table must carry a sift_col index with track_changes = 'ctid' and the member first (its journal: which members changed since the scope segments were written). The build, a promotion, a merge and a rewrite write the scope segments, key-cut segments of the rows replicated once for each scope key; a scan of a scope key reads the units of that key less the changed members, whose entity rows it reads besides. An optional cols(a, b) after the relation keeps only those columns in the scope segments
 - **Gain:** a read of one tenant: 0.7 to 1.0 million instructions against 2.6 to 3.4 on the entity rows of its members (100,000 events, 5,000 entities, 40 tenants; two tenants 4.3 against 4.5, three 5.9 against 5.4: no gain for several keys at this size)
@@ -1771,7 +1771,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Not on by default: a scope names a table of pairs, so only the user can say it.
 - **Why not the default:** the history does not say
 - **Turn off:** ALTER INDEX i SET (scope = 'off') or RESET (scope): the dependency goes; REINDEX drops the leaf and the format minor goes back.
-- **Upgrade from 4.3:** A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments.
+- **Upgrade from 4.3:** A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments.
 - **Advice:** Declare it on the index of a fact table whose member key (an integer column of the index) is listed with the scope key in a table of pairs that has a unique btree on exactly those two columns (a primary key, a unique index), both NOT NULL, and a sift_col journal index (CREATE INDEX .. USING sift_col (member, scope_key) WITH (track_changes = 'ctid')). An unqualified relation name is in the schema of this index's table. The first scope index of a relation starts its journal at the end of its build: REINDEX it once to take the stamps. DROP INDEX of the btree needs CASCADE while the declaration exists. Remove it with ALTER INDEX .. SET (scope = 'off').
 - **Sources:** benchmark `test:col_scope_read`; [FORMATS](FORMATS.md)
 
@@ -2326,7 +2326,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift.agg_scope
 
-`sift_col` · diagnostic · since 4.4 · default on
+`sift_col` · diagnostic · since 5.0 · default on
 
 - **What it does:** the scan of an index with a scope answers a join to the scope relation, or IN and EXISTS over it, by the scope key from the scope segments of the index
 - **Gain:** a read of one tenant from the units: 0.7 to 1.0 million instructions against 2.6 to 3.4 on the entity rows of its members (100,000 events, 40 tenants); several tenants about the same as the entity rows
@@ -2334,13 +2334,13 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Statements that carry a scope conjunct (the testing marker; the planner's recognition of the join forms is separate) over an index with a scope.
 - **Default:** on — On: a scope is declared by the user, and the setting only gates what the declaration buys.
 - **Turn off:** SET sift.agg_scope = off (session, role, database or postgresql.conf): the joins are the ordinary ones. No REINDEX.
-- **Upgrade from 4.3:** New in 4.4.
+- **Upgrade from 4.3:** New in 5.0.
 - **Advice:** Leave on. Off keeps the statement as written; it applies to the scans of an index that declares a scope.
 - **Sources:** benchmark `test:col_scope_read`; [FORMATS](FORMATS.md)
 
 #### sift.scope_patch_keys
 
-`sift_col` · diagnostic · since 4.4 · default 4096
+`sift_col` · diagnostic · since 5.0 · default 4096
 
 - **What it does:** the most member keys changed in the scope relation since the stamp of the scope segments that a read patches through the entity path before it reads that path whole
 - **Gain:** n/a: a bound on a fallback, not a speed choice
@@ -2348,13 +2348,13 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Reads of a scope key after the scope relation changed.
 - **Default:** 4096 — 4,096: the most keys a statement patches before the entity path is cheaper (the cap of the found flag of 4.3 is 16,384 keys of one parent).
 - **Turn off:** SET sift.scope_patch_keys = 1 patches one key and falls back to the join for more. No REINDEX.
-- **Upgrade from 4.3:** New in 4.4.
+- **Upgrade from 4.3:** New in 5.0.
 - **Advice:** Leave at 4096. Raise it for a scope relation that changes a lot between rewrites and is read by few statements; lower it to read the entity rows of all the members earlier.
 - **Sources:** benchmark `test:col_scope_patch`; [FORMATS](FORMATS.md)
 
 #### sift.scope_max_multiplicity
 
-`sift_col` · diagnostic · since 4.4 · default 3
+`sift_col` · diagnostic · since 5.0 · default 3
 
 - **What it does:** the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept; a scope above it is refused with its size and growth and the join answers it
 - **Gain:** a refusal that keeps the units where they pay: they read 2 to 9 times cheaper than the join (a total up to 22 times, 100,000 to 2,000,000 events) for an index 17% larger of the table and its indexes for each entry a row has
@@ -2362,7 +2362,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** CREATE INDEX and REINDEX of an index that declares a scope.
 - **Default:** 3 — 3: the units break even with the join at 2.5 entries a row (500,000 events) to 3.0 (2,000,000), and lose above: at 5.4 entries a row the index is 489% larger and the table with its indexes 92%, a fact write costs 107% more, for the same reads; the measured multiplicities of a tenant or a group are 1.0 to 1.1
 - **Turn off:** SET sift.scope_max_multiplicity = 1000000 accepts any figure. No REINDEX.
-- **Upgrade from 4.3:** New in 4.4.
+- **Upgrade from 4.3:** New in 5.0.
 - **Advice:** Leave at 3. Raise it for a scope whose members are in many scope keys and whose reads are worth the growth the refusal states; the join answers the reads of a scope that is refused, and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md).
 - **Sources:** benchmark `test:col_scope_multiplicity`; [FORMATS](FORMATS.md)
 
@@ -2694,12 +2694,12 @@ all · deprecated · since 3.3 · default ''
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** deprecated in 4.3, removed in 4.4: its columns are listed in the directory of heap addresses of point_tid_columns, which answers an equality or a short IN list with no unit read
+- **What it does:** deprecated in 4.3, removed in 5.0: its columns are listed in the directory of heap addresses of point_tid_columns, which answers an equality or a short IN list with no unit read
 - **Gain:** integer equality 0.119 to 0.020 ms, IN of 5 keys 0.193 to 0.028 ms (200,000 rows; a b-tree 0.006 and 0.009)
 - **Impact:** index size: index 29.1 to 93.7 MB (+222%) for five leaves at 1,000,000 rows, 170 MB for six b-trees; 4 bytes a row for repeating keys, 4.2 MB for a unique key (200,000 rows); build, merge and writes: build 66 to 94 ms (+42.7%); insert of 20,000 rows 24 to 23 ms and update of 10% of the rows 53 to 52 ms: within noise (100,000 rows); other: none: the same as point_tid_columns; the directory of rows it replaced took 4 bytes a row for keys that repeat (0.8 MB for 200,000 rows), 4.2 MB for a unique key; a leaf with overflow values or inline strings gets no table
 - **When:** An index that carries the option, from 3.3 to 4.2.x; the segments already written are read as before, and a promotion, merge or REINDEX writes the directory of heap addresses (a library before 3.7 cannot read it).
 - **Default:** '' — Accepted so that dumps and scripts restore; the directory of heap addresses is within 3% of the size of the directory of rows and reads no unit for an equality.
-- **Turn off:** ALTER INDEX .. RESET (point_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the directory of rows until 4.4.
+- **Turn off:** ALTER INDEX .. RESET (point_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the directory of rows until 5.0.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Name the columns in point_tid_columns. A CREATE INDEX or REINDEX that finds point_columns says so in the one NOTICE of the build (point-columns-deprecated); an index that carries it keeps reading, and its next build lists the columns as heap addresses. RESET (point_columns) drops it.
 
@@ -2707,12 +2707,12 @@ all · deprecated · since 3.3 · default ''
 
 all · deprecated · since 3.4 · default 0
 
-- **What it does:** deprecated in 4.3, removed in 4.4: the rows a key-cut unit aims at; the build now uses the rows of an average superblock, whatever the option says
+- **What it does:** deprecated in 4.3, removed in 5.0: the rows a key-cut unit aims at; the build now uses the rows of an average superblock, whatever the option says
 - **Gain:** -
 - **Impact:** index size: -; build, merge and writes: -; other: none: ignored
 - **When:** An index that carries the option, from 3.4 to 4.2.x; the units already written are read as before and the next build, promotion or merge cuts them by superblock.
 - **Default:** 0 — Accepted so that dumps and scripts restore; ignored because no query gained from it at 100,000 rows and it only moved the index size and the number of units.
-- **Turn off:** ALTER INDEX .. RESET (key_cut_rows). The setting sift.test_col_legacy_options (testing only) makes a build honor it until 4.4.
+- **Turn off:** ALTER INDEX .. RESET (key_cut_rows). The setting sift.test_col_legacy_options (testing only) makes a build honor it until 5.0.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave it out. A CREATE INDEX or REINDEX that finds it says so in the one NOTICE of the build (key-cut-rows-deprecated); an index that carries it keeps reading, and its units are cut as the build does. RESET (key_cut_rows) drops it.
 
@@ -2720,12 +2720,12 @@ all · deprecated · since 3.4 · default 0
 
 all · deprecated · since 3.3 · default ''
 
-- **What it does:** deprecated in 4.3, removed in 4.4: a sorted run of the rows of each unit; a build now writes none, and the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
+- **What it does:** deprecated in 4.3, removed in 5.0: a sorted run of the rows of each unit; a build now writes none, and the order arrays (order_array_columns) answer a top-N, a range and an OFFSET over any number of units
 - **Gain:** ORDER BY an integer LIMIT 100 37.9 ms normal plan, 3.5 without runs, 1.4 with (1,000,000 rows); LIMIT 10 0.128 to 0.051 ms with heads (800,000)
 - **Impact:** index size: 2 bytes a row per unordered leaf (+50.8% of a 10-column index with 8 unordered leaves, 1,000,000 rows); heads add 0.6% to 2.4% (three order columns); build, merge and writes: with heads (not the runs themselves): build 1.61 against 1.63 s, promotion of 100,000 rows 0.052 s, merge of 500,000 rows 0.74 against 0.66 s; other: none: ignored; the runs it wrote took the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units)
 - **When:** An index that carries the option, from 3.3 to 4.2.x; the segments already written keep their runs and heads and are read as before, and a promotion, merge or REINDEX writes none.
 - **Default:** '' — Accepted so that dumps and scripts restore; the runs hold the same bytes as the order array of the column and read 4 to 6 times the instructions beyond a top-N of 32, so no class needs them.
-- **Turn off:** ALTER INDEX .. RESET (order_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the runs until 4.4.
+- **Turn off:** ALTER INDEX .. RESET (order_columns). The setting sift.test_col_legacy_options (testing only) makes a build write the runs until 5.0.
 - **Upgrade from 4.3:** unchanged
 - **Advice:** Leave it out and name the columns of the ORDER BY .. LIMIT in order_array_columns (or leave that on auto). A CREATE INDEX or REINDEX that finds order_columns says so in the one NOTICE of the build (order-columns-deprecated); an index that carries it keeps reading the runs it has, and its next build writes none. RESET (order_columns) drops it.
 
@@ -2751,7 +2751,7 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 
 <!-- sift-upgrade:start -->
 No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`.
 
-| Option | 4.3 | 4.4 | Column format | What a 4.3 user gets after the update |
+| Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(rollup_leaves)` | '' | '' |  | An index of 4.1 and older that carries the option `rollup` is read as rollup_leaves, and ALTER INDEX SET or RESET of the old name still works; no REINDEX. |
 | `sift_col(rollup_columns)` | '' | '' | minor 9 | An index of 4.1 and older that carries the option `rollup_dims` is read as rollup_columns, and ALTER INDEX SET or RESET of the old name still works; the next build writes the new name; no REINDEX. |
@@ -2766,10 +2766,10 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_patch_keys`, `s
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
-| `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 4.4 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
-| `sift.agg_scope` | new | on |  | New in 4.4. |
-| `sift.scope_patch_keys` | new | 4096 |  | New in 4.4. |
-| `sift.scope_max_multiplicity` | new | 3 |  | New in 4.4. |
+| `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
+| `sift.agg_scope` | new | on |  | New in 5.0. |
+| `sift.scope_patch_keys` | new | 4096 |  | New in 5.0. |
+| `sift.scope_max_multiplicity` | new | 3 |  | New in 5.0. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
