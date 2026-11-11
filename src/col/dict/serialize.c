@@ -100,6 +100,12 @@ put_hash(const SiftCDict *d, StringInfo out)
 	pfree(slot);
 }
 
+void
+sift_cdict_put_hash(const SiftCDict *d, StringInfo out)
+{
+	put_hash(d, out);
+}
+
 static void
 serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out)
 {

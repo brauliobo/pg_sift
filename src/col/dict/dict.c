@@ -63,6 +63,12 @@ cdict_hash(const char *s, uint32 len)
 	return (uint32) (x ^ x >> 32);
 }
 
+uint32
+sift_cdict_mem_hash(const char *s, uint32 len)
+{
+	return cdict_hash(s, len);
+}
+
 /* a slot holds the hash of the string above its code + 1 (0: free): a probe reads the strings only of the slots with its hash, and a growth reinserts without hashing */
 static uint64 *
 cdict_probe(const SiftCDict *d, const char *s, uint32 len, uint32 hash)

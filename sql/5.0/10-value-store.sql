@@ -17,3 +17,8 @@ SELECT s.oid::regclass AS store, t.oid::regclass AS table_name, a.attname AS col
   LEFT JOIN pg_class t ON t.oid = dt.refobjid;
 COMMENT ON VIEW sift.col_value_store_status IS 'The shared value stores (relations <table>_<column>_sift_values, managed by sift): the table and column each one serves, its size and how many indexes use it';
 
+
+CREATE FUNCTION sift.col_value_store_members(OUT index_name regclass, OUT table_name regclass, OUT column_name text, OUT state text, OUT key_order text,
+                                             OUT duplicate_bytes float8)
+RETURNS SETOF record LANGUAGE c AS 'MODULE_PATHNAME', 'sift_col_value_store_members';
+COMMENT ON FUNCTION sift.col_value_store_members() IS 'The string columns of sift_col indexes that a shared value store serves or could serve: shared (the segments refer to the store), own: different key order (another index holds the column with another key order, so this one stores it again; duplicate_bytes is what it stores, estimated) or own: not yet rebuilt (a REINDEX shares it)';

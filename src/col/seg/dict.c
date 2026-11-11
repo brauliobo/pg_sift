@@ -47,14 +47,11 @@ sift_cseg_dict_stored(SiftColSegment *seg, int col)
 static SiftCDict *
 ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt)
 {
-	uint32		store = sift_cref_host ? sift_cref_host->leaf_store(seg->index, &seg->schema->cols[col]) : 0;
 	char	   *data = palloc(len);
 	SiftCDict  *d;
 
-	if (store == 0)
-		corrupt(seg, "The dictionary of leaf %d names a shared value store that is not there.", col);
 	seg_read(seg, at, len, data);
-	d = sift_cref_host->parse(mcxt, store, data, len);
+	d = sift_cref_host == NULL || len < DICT_REF_WORDS * sizeof(uint32) ? NULL : sift_cref_host->parse(mcxt, ((uint32 *) data)[3], data, len);
 	if (d == NULL)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	pfree(data);
@@ -166,6 +163,22 @@ sift_cseg_look_load(DictLook *l, uint32 b)
 		l->bc->spent += l->blkz[0] == 0 ? DICT_READ_COST : l->blkz[0] == SIFT_CC_ALG_LZ4 ? DICT_LZ4_COST : DICT_ZSTD_COST;
 }
 
+/* The string of a code of a dictionary that refers to a shared value store: the code of the store that the segment holds for it, then the string from the runs of the store (col/vstore/) */
+static const char *
+ref_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
+{
+	uint64		bit = (uint64) code * l->ref_bits;
+	uint8		raw[sizeof(uint64) + 1] = {0};
+	uint32		at;
+
+	if (l->ref == NULL)
+		l->ref = sift_cref_host->open(l->seg->index, l->ref_store, l->ref_epoch, l->seg->mcxt);
+	seg_read(l->seg, l->refs_at + (bit >> 3), Min(sizeof(raw), (l->hash_at - l->refs_at) - (bit >> 3)), raw);
+	at = sift_ckeyed_get(raw, sizeof(raw), bit & 7, l->ref_bits);
+	l->loads++;
+	return sift_cref_host->str(l->ref, at, len, buf);
+}
+
 /* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */
 static const char *
 look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
@@ -174,6 +187,8 @@ look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 
 	if (code >= l->n)
 		corrupt(l->seg, "Code %u is beyond the %u strings of the dictionary of leaf %d.", code, l->n, l->col);
+	if (l->ref_store != 0)
+		return ref_code_str(l, code, len, buf);
 	if (l->blocked)
 	{
 		uint32		i = code % DICT_BLOCK;
@@ -201,6 +216,12 @@ look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 	}
 	seg_read(l->seg, at, *len, buf);
 	return buf;
+}
+
+const char *
+sift_cseg_look_str(DictLook *l, uint32 code, uint32 *len, char *buf)
+{
+	return look_code_str(l, code, len, buf);
 }
 
 static inline BisectSlot *
@@ -472,6 +493,42 @@ look_match_blocks(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c
 	return sift_cdict_match(sift_cseg_dict(l->seg, l->col), op, c, nvals, lut);
 }
 
+/*
+ * A dictionary that refers to a shared value store: the store finds the codes of its strings that pass the test (each run is searched in place, in byte order or block
+ * by block), and the segment's own codes are those whose code of the store is one of them
+ */
+static uint32
+look_match_ref(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut)
+{
+	DictLook   *l = (DictLook *) look;
+	uint64		total,
+				nbytes = sift_cdict_perm_bytes(l->n, l->ref_bits);
+	uint64	   *hit;
+	uint8	   *packed = palloc(nbytes + sizeof(uint64));
+	uint32		count = 0;
+
+	if (l->ref == NULL)
+		l->ref = sift_cref_host->open(l->seg->index, l->ref_store, l->ref_epoch, l->seg->mcxt);
+	total = sift_cref_host->ncodes(l->ref);
+	hit = palloc0((total / 64 + 1) * sizeof(uint64));
+	sift_cref_host->match(l->ref, op, c, nvals, hit);
+	memset(packed + nbytes, 0, sizeof(uint64));
+	seg_read(l->seg, l->refs_at, nbytes, packed);
+	for (uint32 i = 0; i < l->n; i++)
+	{
+		uint32		g = sift_ckeyed_get(packed, nbytes + sizeof(uint64), (uint64) i * l->ref_bits, l->ref_bits);
+
+		if (g < total && (hit[g >> 6] >> (g & 63) & 1))
+		{
+			lut[i >> 6] |= UINT64CONST(1) << (i & 63);
+			count++;
+		}
+	}
+	pfree(packed);
+	pfree(hit);
+	return count;
+}
+
 /* The blocks and the string buffer of a DictLook are written before they are read: only what comes before them is cleared (clearing them costs 34,000 instructions a query and segment) */
 static DictLook *
 look_alloc(SiftColSegment *seg)
@@ -532,13 +589,40 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	return l;
 }
 
-/* Where the dictionary of leaf col lies when it is stored plain or in blocks (forms 0, 2 and 3); NULL for the compact form, which is read whole */
-DictLook *
-seg_dict_look(SiftColSegment *seg, int col)
+/* The dictionary of form DICT_REF (col/enc.h): five words, the form, n, the bits of a code of the store, the store and its epoch, the codes of the store packed, then the hash of the strings */
+static DictLook *
+look_ref(SiftColSegment *seg, int col, uint64 off, uint64 len)
 {
-	SegPriv    *pv = PRIV(seg);
-	uint64		off,
-				len;
+	uint32		head[DICT_REF_WORDS];
+	DictLook   *l = look_alloc(seg);
+
+	if (len < sizeof(head))
+		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+	seg_read(seg, off, sizeof(head), head);
+	l->seg = seg;
+	l->col = col;
+	l->n = head[1];
+	l->ref_bits = head[2];
+	l->ref_store = head[3];
+	l->ref_epoch = head[4];
+	l->refs_at = off + sizeof(head);
+	l->hash_at = l->refs_at + sift_cdict_perm_bytes(l->n, l->ref_bits);
+	if (l->n == 0 || l->ref_bits < 1 || l->ref_bits > 32 || l->ref_store == 0 ||
+		l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32) > off + len)
+		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+	l->look = (SiftCDictLook) {look_find, look_match_ref};
+	l->stub.n = l->n;
+	l->stub.look = &l->look;
+	return l;
+}
+
+/*
+ * The searchable form of the dictionary at stream offset off, len bytes (the forms 0, 2, 3 and 5), NULL for the compact form, which is read whole. The segment is whatever
+ * the stream belongs to: a segment, or a run of a shared value store (col/vstore/vstore_run.c), whose dictionary starts after its header
+ */
+DictLook *
+sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bisect)
+{
 	uint32		head[4];
 	DictLook   *l;
 	uint64		nblk;
@@ -549,19 +633,14 @@ seg_dict_look(SiftColSegment *seg, int col)
 				packed;
 	uint64		perm_len;
 
-	if (pv->look_checked[col])
-		return pv->look[col];
-	pv->look_checked[col] = true;
-	if (HEAD_CACHED() && (bc = sift_cseg_bisect_find(seg, col)) != NULL && bc->have_head)
-		return pv->look[col] = look_from_head(seg, col, bc);
-	dict_region(seg, col, &off, &len);
-	off += seg_sec(seg, SIFT_SEC_DICT)->off;
 	if (len < DICT_HEAD)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	seg_read(seg, off, DICT_HEAD, head);
 	hashed = (head[0] & DICT_HASHED) != 0;
 	packed = (head[0] & DICT_PERM_PACKED) != 0;
 	head[0] &= ~DICT_FLAGS;
+	if (head[0] == DICT_REF)
+		return look_ref(seg, col, off, len);
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = look_alloc(seg);
@@ -636,7 +715,7 @@ seg_dict_look(SiftColSegment *seg, int col)
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
-			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
+			if (bisect && l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
 			{
 				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->perm_bits, l->cum_at, l->hash_at, l->sig_at, l->sig_lg};
 				bc->have_head = true;
@@ -663,8 +742,25 @@ seg_dict_look(SiftColSegment *seg, int col)
 			l->stub.look = &l->look;
 		}
 	}
-	pv->look[col] = l;
 	return l;
+}
+
+/* Where the dictionary of leaf col lies when it is stored plain or in blocks (forms 0, 2, 3 and 5); NULL for the compact form, which is read whole */
+DictLook *
+seg_dict_look(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	uint64		off,
+				len;
+	SiftCBisect *bc;
+
+	if (pv->look_checked[col])
+		return pv->look[col];
+	pv->look_checked[col] = true;
+	if (HEAD_CACHED() && (bc = sift_cseg_bisect_find(seg, col)) != NULL && bc->have_head)
+		return pv->look[col] = look_from_head(seg, col, bc);
+	dict_region(seg, col, &off, &len);
+	return pv->look[col] = sift_cseg_look_at(seg, col, off + seg_sec(seg, SIFT_SEC_DICT)->off, len, true);
 }
 
 /* Whether the dictionary of leaf col holds row counts (sift_cseg_dict_count) */
@@ -939,7 +1035,7 @@ sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want)
 static bool
 look_lazy_left(const DictLook *l)
 {
-	return l->blocked && (uint64) l->loads * DICT_LAZY_LOADS < ((uint64) l->n + DICT_BLOCK - 1) / DICT_BLOCK;
+	return (l->blocked || l->ref_store != 0) && (uint64) l->loads * DICT_LAZY_LOADS < ((uint64) l->n + DICT_BLOCK - 1) / DICT_BLOCK;
 }
 
 static const char *

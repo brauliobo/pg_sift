@@ -30,7 +30,28 @@ extern Oid	sift_vstore_leaf_store(Relation index, const SiftColDef *leaf);
 /* The same for every leaf of the schema, NULL when the index has no store */
 extern Oid *sift_vstore_leaf_stores(Relation index, const SiftColSchema *schema);
 /* The rule (col/vstore/vstore_rule.c): whether sharing the strings of the leaf pays, and the build step that makes the stores of the leaves it does */
+typedef enum SiftVStoreState
+{
+	SIFT_VSTORE_NONE,			/* nothing to share: no other index holds the column, or it is too small a gain */
+	SIFT_VSTORE_SHARED,			/* another index of the table has the same order: the strings are shared */
+	SIFT_VSTORE_OTHER_ORDER		/* the indexes that hold the column have another order: this one keeps its own strings */
+} SiftVStoreState;
+
+typedef struct SiftVStoreVerdict
+{
+	SiftVStoreState state;
+	char	   *other;			/* the index that has the column (the one of the same order, else the first of another) */
+	char	   *other_order;	/* its order, as the build resolved it ("key_cut = a, b; key_order = c", "table order") */
+	char	   *order;			/* this index's, when it differs */
+	double		duplicate_bytes;	/* the strings the index stores again, estimated from the statistics of the column */
+} SiftVStoreVerdict;
+
+extern void sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *leaf, SiftVStoreVerdict *v);
+/* The order of an index as the rule compares it ("key_cut = a, b; key_order = c", "table order") */
+extern char *sift_vstore_order(Relation index);
 extern bool sift_vstore_pays(Relation heap, Relation index, const SiftColDef *leaf);
+/* An index that is rebuilt and no longer shares the column stops depending on its store (the store goes when no index is left) */
+extern void sift_vstore_release(Relation heap, Relation index, AttrNumber attno);
 extern void sift_vstore_auto(Relation heap, Relation index);
 /* Whether a relation is a value store */
 extern bool sift_vstore_is_store(Oid relid);
@@ -51,14 +72,14 @@ typedef struct SiftVStore SiftVStore;
 
 extern SiftVStore *sift_vstore_open(Oid store, LOCKMODE lock);
 extern void sift_vstore_close(SiftVStore *vs);
-/* The values of the store in code order, as a dictionary whose code of a value is its code in the store (do not intern into it) */
-extern SiftCDict *sift_vstore_view(SiftVStore *vs);
+extern uint64 sift_vstore_ncodes(SiftVStore *vs);
 extern uint64 sift_vstore_epoch(SiftVStore *vs);
 /* map[i] = the code in the store of the value i of the batch; the values it has not got are appended as one run; returns how many were */
 extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map);
 
-/* The view with at least ncodes codes of the epoch (low 32 bits), read again when it has fewer or is of another; NULL when the store does not have them */
-extern const SiftCDict *sift_vstore_view_to(SiftVStore *vs, uint64 ncodes, uint32 epoch);
+/* Whether the store has at least ncodes codes of the epoch (low 32 bits), after reading its runs again when the view has fewer or is of another; the string of a code of it, valid until the store is read again */
+extern bool sift_vstore_have(SiftVStore *vs, uint64 ncodes, uint32 epoch);
+extern const char *sift_vstore_string(SiftVStore *vs, uint32 code, uint32 *len);
 
 /*
  * The dictionary of a leaf of a segment as a reference to the store (col/vstore/vstore_ref.c, form DICT_REF): the writer interns the strings of dict
@@ -68,6 +89,11 @@ extern void sift_vstore_ref_serialize(Oid store, const SiftCDict *dict, const Si
 extern SiftCDict *sift_vstore_ref_parse(MemoryContext mcxt, Oid store, const char *data, uint64 len);
 /* The segment reader and writer use the store through the host struct of col/enc.h */
 extern void sift_vstore_ref_install(void);
+/* The strings of a store by code, read in place from its runs (SiftCRefHost.open and .str); the handle goes with mcxt */
+extern void *sift_vstore_read_open(Relation index, uint32 store, uint32 epoch, MemoryContext mcxt);
+extern const char *sift_vstore_read_str(void *handle, uint32 code, uint32 *len, char *buf);
+extern uint64 sift_vstore_read_ncodes(void *handle);
+extern void sift_vstore_read_match(void *handle, SiftColOp op, const SiftColValue *c, int nvals, uint64 *bits);
 
 #ifdef SIFT_TESTING
 extern void sift_vstore_forget_views(void);

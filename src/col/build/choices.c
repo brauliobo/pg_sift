@@ -18,6 +18,7 @@
 #include "col/build/choices_gen.h"
 #include "agg/refuse.h"
 #include "col/scope.h"
+#include "col/vstore/vstore.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
 #define DETAIL_LINE		112		/* ... and of a line of its values (two lines) */
@@ -402,6 +403,44 @@ d_track(Derive *d)
 		add(d, "sift-col-index-does-not-track-changes", pstrdup(why), NULL);
 }
 
+/*
+ * The shared value store (col/vstore/, docs/COL-VSTORE.md): the string columns the segments of the index refer to the store for, and those the index stores again
+ * because another index of the table holds them with another key_cut or key_order
+ */
+static void
+d_vstore(Derive *d)
+{
+	StringInfoData shared,
+				other;
+
+	if (d->heap == NULL)
+		return;
+	initStringInfo(&shared);
+	initStringInfo(&other);
+	for (int c = 0; c < d->defs.ncols; c++)
+	{
+		const SiftColDef *def = &d->defs.cols[c];
+		const char *col;
+		SiftVStoreVerdict v;
+
+		if (sift_vstore_leaf_attno(d->index, def) == InvalidAttrNumber)
+			continue;
+		col = NameStr(TupleDescAttr(RelationGetDescr(d->index), def->attno - 1)->attname);
+		if (OidIsValid(sift_vstore_leaf_store(d->index, def)))
+			appendStringInfo(&shared, "%s%s", shared.len ? ", " : "", col);
+		else
+		{
+			sift_vstore_verdict(d->heap, d->index, def, &v);
+			if (v.state == SIFT_VSTORE_OTHER_ORDER)
+				appendStringInfo(&other, "%s%s: %.1f MB again, %s has %s", other.len ? "; " : "", col, v.duplicate_bytes / (1024 * 1024), v.other, v.other_order);
+		}
+	}
+	if (shared.len > 0)
+		add(d, "shared-value-store", shared.data, NULL);
+	if (other.len > 0)
+		add(d, "value-store-other-order", other.data, NULL);
+}
+
 static void
 d_key_cut_advice(Derive *d)
 {
@@ -583,6 +622,8 @@ static const struct
 	{"sift-col-index-installed-row-triggers", d_track},
 	{"sift-col-index-does-not-track-changes", d_track},
 	{"track-changes-concurrent", d_track},
+	{"shared-value-store", d_vstore},
+	{"value-store-other-order", d_vstore},
 	{"key-cut-advised", d_key_cut_advice},
 	{"key-cut-hot-value", d_key_cut_hot},
 	{"wildcard-keys-overflow", d_key_overflow},

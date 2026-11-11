@@ -319,6 +319,20 @@ sift_vstore_ensure(Relation heap, Relation index, AttrNumber attno)
 	return store;
 }
 
+static void sift_vstore_dropping(Oid index, Oid heap);
+
+void
+sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
+{
+	Oid			store = sift_vstore_find(heap, attno);
+
+	if (!OidIsValid(store) || !index_depends_on(RelationGetRelid(index), store))
+		return;
+	deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, RelationRelationId, store);
+	CommandCounterIncrement();
+	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap));
+}
+
 /* A store that no index depends on */
 static bool
 unused_visit(Oid store, void *arg)

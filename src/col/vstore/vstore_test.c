@@ -70,7 +70,7 @@ sift_test_vstore_info(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	v[2] = Int64GetDatum(sift_vstore_epoch(vs));
-	v[3] = Int64GetDatum(sift_vstore_view(vs)->n);
+	v[3] = Int64GetDatum(sift_vstore_ncodes(vs));
 	sift_dir_read(rel, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 		runs += snap->segs[i].kind == SIFT_SEG_VALRUN && snap->segs[i].reserved == DatumGetInt64(v[2]);
@@ -86,18 +86,17 @@ Datum
 sift_test_vstore_value(PG_FUNCTION_ARGS)
 {
 	SiftVStore *vs = sift_vstore_open(PG_GETARG_OID(0), AccessShareLock);
-	SiftCDict  *view = sift_vstore_view(vs);
 	int64		code = PG_GETARG_INT64(1);
 	uint32		len;
 	const char *s;
 	text	   *res;
 
-	if (code < 0 || code >= view->n)
+	if (code < 0 || code >= sift_vstore_ncodes(vs))
 	{
 		sift_vstore_close(vs);
 		PG_RETURN_NULL();
 	}
-	s = sift_cdict_str(view, (uint32) code, &len);
+	s = sift_vstore_string(vs, (uint32) code, &len);
 	res = cstring_to_text_with_len(s, len);
 	sift_vstore_close(vs);
 	PG_RETURN_TEXT_P(res);

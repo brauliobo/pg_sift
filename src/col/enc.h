@@ -45,8 +45,12 @@ typedef struct SiftCRefHost
 {
 	/* the store of each leaf of the index, palloc'ed [ncols] (0: the leaf holds its strings); NULL when no leaf has one */
 	uint32	   *(*leaf_stores) (Relation index, const SiftColSchema *schema);
-	/* the store that leaf of the index reads its strings from, 0: none */
-	uint32		(*leaf_store) (Relation index, const SiftColDef *leaf);
+	/* the store opened for reading strings by code in place, for as long as mcxt lives; its epoch must be the one the form says */
+	void	   *(*open) (Relation index, uint32 store, uint32 epoch, MemoryContext mcxt);
+	const char *(*str) (void *handle, uint32 code, uint32 *len, char *buf);
+	/* the codes of the store (all runs) whose strings pass op against c (the contract of SiftCDictLook.match), set in bits[ncodes / 64 + 1] */
+	uint64		(*ncodes) (void *handle);
+	void		(*match) (void *handle, SiftColOp op, const SiftColValue *c, int nvals, uint64 *bits);
 	/* interns the strings of dict into the store and appends the form DICT_REF to out */
 	void		(*serialize) (uint32 store, const struct SiftCDict *dict, const SiftCcPolicy *pol, StringInfo out);
 	/* the dictionary, in the code order of the segment, of a form DICT_REF; NULL when malformed */
@@ -146,6 +150,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
+#define DICT_REF_WORDS	5			/* the words before the codes of a DICT_REF dictionary: the form, n, bits, store, epoch */
 #define DICT_REF		5			/* column format minor 46: no strings, the code in the shared value store of the leaf's column of each code, packed (col/vstore/vstore_ref.c) */
 #define DICT_HASHED		0x10		/* or'ed into form 2, 3 or 4: after everything of the form (4-aligned), a hash of the strings to their codes */
 #define DICT_PERM_PACKED	0x20		/* or'ed into form 2 or 4: code[] holds its n codes in sift_cdict_perm_bits(n) bits each, lowest first, the bytes padded to 4 (column format minor 39) */
@@ -192,6 +197,8 @@ sift_cdict_perm_bytes(uint32 n, uint32 bits)
  */
 #define SIFT_CDICT_HASH_SLOTS(n)	((n) + (n) / 4 + 8)
 extern uint64 sift_cdict_hash(const char *s, uint32 len);
+/* the hash of the tables of dictionaries in memory (never stored) */
+extern uint32 sift_cdict_mem_hash(const char *s, uint32 len);
 static inline uint32
 sift_cdict_hash_cb(uint32 n)
 {
@@ -228,6 +235,8 @@ sift_tsig_bit(const uint8 *p, uint32 lg)
 /* The signatures of all the blocks of d, 2^lg bits each, into sig (room for them): what the writer stores and sift.col_verify compares with */
 extern void sift_cdict_tsig_fill(const SiftCDict *d, uint32 lg, uint8 *sig);
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
+/* The hash of the strings to their codes alone (what DICT_HASHED appends), for the form DICT_REF */
+extern void sift_cdict_put_hash(const SiftCDict *d, StringInfo out);
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */

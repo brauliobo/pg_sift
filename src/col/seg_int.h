@@ -322,6 +322,11 @@ typedef struct DictLook
 	uint64		hash_at;		/* DICT_HASHED: the hash after all of the above; 0: none */
 	uint64		sig_at;			/* the trigram signatures of the blocks, 2^sig_lg bits each (col/enc.h); 0: none */
 	uint32		sig_lg;
+	uint32		ref_store;		/* DICT_REF: the shared value store the strings are in (0: none), its epoch, the bits of a code of it, and where the codes of the store lie (refs_at; the hash is at hash_at) */
+	uint32		ref_epoch;
+	uint32		ref_bits;
+	uint64		refs_at;
+	void	   *ref;			/* the open store (SiftCRefHost.open), made by the first string read */
 	uint32		blkno;			/* the block in blkraw (UINT32_MAX: none) */
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
@@ -340,6 +345,9 @@ typedef struct DictLook
 } DictLook;
 
 extern void sift_cseg_look_load(DictLook *l, uint32 b);
+/* The dictionary at a stream offset of a segment, or of a run of a shared value store (a pseudo segment over its stream): NULL for the compact form; the string of a code of it */
+extern DictLook *sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bisect);
+extern const char *sift_cseg_look_str(DictLook *l, uint32 code, uint32 *len, char *buf);
 extern void sift_cseg_look_block(DictLook *l, uint32 b);
 
 /* The block of a leaf's point directory (col/point.h): stream offset of its table, slots, distinct keys, rows listed, words of the lists after the table */
