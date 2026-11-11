@@ -526,6 +526,17 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 	}
 }
 
+/* the packed spec of a path with correlated children: their plans are numbered in a copy of the join list (the path's spec stays as it is: a path may become a plan more than once) */
+static List *
+pack_with_children(PlannerInfo *root, CustomPath *best)
+{
+	SiftAggSpec own = *(const SiftAggSpec *) linitial(best->custom_private);
+
+	own.join = memcpy(palloc(own.njoin * sizeof(*own.join)), own.join, own.njoin * sizeof(*own.join));
+	plan_correlated_children(root, best, &own);
+	return sift_aggspec_pack(&own);
+}
+
 #if PG_VERSION_NUM < 180000
 /*
  * A set without a constant key nulls it. PostgreSQL's Agg reads the key as a column of its input, found by its sort-group reference; the output of a
@@ -563,7 +574,6 @@ Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
-	List	   *pack = sift_aggspec_pack(linitial(best->custom_private));
 	List	   *scan_tlist = lsecond(best->custom_private);
 	const SiftAggSpec *spec = linitial(best->custom_private);
 	GroupPathExtraData *gextra = NULL;
@@ -576,15 +586,7 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	if (root->parse->groupingSets != NIL)
 		const_keys_as_columns(root, cs);
 #endif
-	cs->custom_private = pack;
-	if (has_correlated_children(best))
-	{
-		/* the path's spec is kept as it is: a path may become a plan more than once */
-		SiftAggSpec *own = sift_aggspec_unpack(pack);
-
-		plan_correlated_children(root, best, own);
-		cs->custom_private = sift_aggspec_pack(own);
-	}
+	cs->custom_private = has_correlated_children(best) ? pack_with_children(root, best) : sift_aggspec_pack(spec);
 	/* declared, so that PostgreSQL knows the plan depends on them and rescans it when the enclosing level sets new values (agg_rescan) */
 	if (list_length(best->custom_private) > 2)
 		cs->custom_exprs = copyObject(lthird(best->custom_private));
