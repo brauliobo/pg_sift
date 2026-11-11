@@ -89,6 +89,8 @@ SELECT * FROM phase();
 UPDATE dim_a SET label = 'again' WHERE id IN (20, 21);
 SET sift.col_connect_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
+-- the refresh is done once: a rewrite restamps what was stale, and the end state holds again
+SELECT sift.col_maintain('events_col') AS rewritten_again;
 RESET sift.col_connect_refresh_pct;
 SELECT * FROM phase();
 

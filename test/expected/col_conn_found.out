@@ -188,6 +188,13 @@ SELECT sift.col_maintain('events_col') AS rewritten;
  t
 (1 row)
 
+-- the refresh is done once: a rewrite restamps what was stale, and the end state holds again
+SELECT sift.col_maintain('events_col') AS rewritten_again;
+ rewritten_again 
+-----------------
+ f
+(1 row)
+
 RESET sift.col_connect_refresh_pct;
 SELECT * FROM phase();
  n | same | proofs | keys | why 
