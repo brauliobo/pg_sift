@@ -224,8 +224,9 @@ extern void sift_conn_fill_end(struct SiftColFill *fill);
 /* What a fill prices its two ways to know the keys of a table with: its estimated rows, and whether asking its btree for `rows` keys is cheaper than reading it (the connection fill and the scope fill) */
 extern double sift_conn_rows_of(Relation rel);
 extern bool sift_conn_probe_cheaper(uint64 rows, double parent_rows);
-/* ... and the same for asking a sift_col index of the parent (its journal index) for `rows` keys in one search */
-extern bool sift_conn_journal_cheaper(uint64 rows, double parent_rows);
+/* ... against another way that costs read_ns (a read of the leaves of an index of the parent, say), and for asking a sift_col index of the parent (its journal index) for `rows` keys in one search */
+extern bool sift_conn_probe_cheaper_than(uint64 rows, double read_ns);
+extern bool sift_conn_journal_cheaper_than(uint64 rows, double read_ns);
 
 /* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
 typedef struct SiftConnKeySet SiftConnKeySet;

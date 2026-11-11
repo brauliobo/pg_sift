@@ -273,6 +273,7 @@ probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnPr
 
 /* A pair read from the leaves of the journal index of the relation costs about this (the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is 13 times that), a probe of the btree about 3,500 */
 #define LEAF_PAIR_NS	10
+#define SCAN_NS		130
 #define PROBE_NS		3500
 
 static bool
@@ -317,19 +318,28 @@ probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
 	sift_conn_pred_end(&ps->pred);
 }
 
+/* What the pairs of the keys cost to ask for, in ns: the btree for each key when it leads with the scope key, else the leaves of the relation's journal index, else the relation read (pairs_of_keys) */
+static double
+keys_ns(const PairScan *ps, double rows)
+{
+	double		read = rows * (OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
+
+	return ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) ? Min(read, (double) ps->nkeys * PROBE_NS) : read;
+}
+
 /*
- * The pairs of the members, by asking an index for them: the btree for each member when it leads with the member and that is cheaper than reading the relation (the fill's price rule), else the
- * journal index of the relation in one search (it is led by the member whichever way the btree is) when that is cheaper. False: neither is
+ * The pairs of the members, by asking an index for them: the btree for each member when it leads with the member, else the journal index of the relation in one search (it is led by the member
+ * whichever way the btree is), whichever is cheaper than the pairs of the keys (keys_ns): thousands of changed members cost more to ask for than the leaves of the keys' pairs to read. False: neither is
  */
 static bool
 probe_members(PairScan *ps, const int64 *members, uint32 n)
 {
-	double		rows = sift_conn_rows_of(ps->rel);
+	double		read = keys_ns(ps, sift_conn_rows_of(ps->rel));
 	Oid			journal;
 
-	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper(n, rows))
+	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper_than(n, read))
 		probe_all(ps, ps->member, members, n, probe_of_member);
-	else if (OidIsValid(journal = sift_scope_journal_index(ps->rel, ps->member, ps->skey, ps->btree)) && sift_conn_journal_cheaper(n, rows))
+	else if (OidIsValid(journal = sift_scope_journal_index(ps->rel, ps->member, ps->skey, ps->btree)) && sift_conn_journal_cheaper_than(n, read))
 		probe_journal(ps, journal, members, n);
 	else
 		return false;

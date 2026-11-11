@@ -69,25 +69,33 @@ sift_conn_rows_of(Relation rel)
 	return tuples;
 }
 
+/* Is asking the btree for `rows` keys cheaper than another way to the same keys that costs `read_ns`? */
+bool
+sift_conn_probe_cheaper_than(uint64 rows, double read_ns)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_conn_fill != 0)
+		return sift_test_conn_fill == 2;
+#endif
+	return (double) rows * FILL_PROBE_NS_PER_KEY < read_ns;
+}
+
+/* ... and asking a journal index in one search for them */
+bool
+sift_conn_journal_cheaper_than(uint64 rows, double read_ns)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_conn_fill != 0)
+		return sift_test_conn_fill == 2;
+#endif
+	return FILL_JOURNAL_NS + (double) rows * FILL_JOURNAL_NS_PER_KEY < read_ns;
+}
+
 /* Is asking the btree for `rows` keys cheaper than reading a parent of `parent_rows` rows? */
 bool
 sift_conn_probe_cheaper(uint64 rows, double parent_rows)
 {
-#ifdef SIFT_TESTING
-	if (sift_test_conn_fill != 0)
-		return sift_test_conn_fill == 2;
-#endif
-	return (double) rows * FILL_PROBE_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
-}
-
-bool
-sift_conn_journal_cheaper(uint64 rows, double parent_rows)
-{
-#ifdef SIFT_TESTING
-	if (sift_test_conn_fill != 0)
-		return sift_test_conn_fill == 2;
-#endif
-	return FILL_JOURNAL_NS + (double) rows * FILL_JOURNAL_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
+	return sift_conn_probe_cheaper_than(rows, parent_rows * FILL_SCAN_NS_PER_PARENT_ROW);
 }
 
 SiftColFill *
