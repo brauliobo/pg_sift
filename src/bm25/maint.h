@@ -143,7 +143,7 @@ typedef struct SiftMaintOps
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
 	bool		(*rewrite_all) (const char *why);	/* NULL: every reason rewrites all the segments; else false when the reason is met by promoting the write buffer and the merges of the policy */
-	bool		(*vacuum_space_defer) (Relation index);	/* NULL: the space step may move segments; else true when a rewrite of the index is coming, which moves them: VACUUM then only cuts the free tail */
+	uint64		(*vacuum_space_keep) (Relation index);	/* NULL: the space step may move segments; else the free blocks below the end of the file that VACUUM leaves (PG_UINT64_MAX when a rewrite of the index is coming, which moves the segments: it then only cuts the free tail), and moves segments only past that many */
 	void		(*vacuum_done) (Relation index);	/* NULL: nothing; called at the end of VACUUM's cleanup, the maintenance lock released */
 } SiftMaintOps;
 
@@ -216,6 +216,8 @@ extern void sift_maint_cut_nowait(bool on);
 extern void sift_maint_report_fallback(Relation index, int elevel, uint64 moved, BlockNumber freed);
 extern BlockNumber sift_maint_shrink_target(Relation rel, int64 *movable);
 extern BlockNumber sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
+extern BlockNumber sift_maint_shrink_end(Relation rel, uint64 holes);
+extern void sift_maint_shrink_leaving(BlockNumber end);
 extern void sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget);
 extern BlockNumber sift_maint_cut_released(Relation rel, int elevel);
 extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);

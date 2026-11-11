@@ -480,6 +480,12 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 	return 0;
 }
 
+/*
+ * The end the online shrink moves the file to when a VACUUM asks for it (sift_maint_shrink_leaving), whatever the standby; 0: the end the free runs below allow,
+ * where the cut is wanted online
+ */
+static BlockNumber shrink_end = 0;
+
 /* The directory entry of a generation, or NULL when a step replaced it */
 static const SiftSegEntry *
 space_entry(const SiftDirSnapshot *snap, uint64 gen)
@@ -717,6 +723,8 @@ shrink_keep(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, in
 {
 	BlockNumber keep = shrink_fit(rel, snap, ext, n);
 
+	if (shrink_end > 0)
+		return Max(keep, shrink_end);
 	return space_worth((int64) snap->meta.high_water - keep, snap->meta.high_water) ? keep : snap->meta.high_water;
 }
 
@@ -748,7 +756,7 @@ sift_maint_buffer_above_shrink(Relation rel)
 	BlockNumber keep;
 	bool		above = false;
 
-	if (!online_cut_wanted(rel))
+	if (!online_cut_wanted(rel) && shrink_end == 0)
 	{
 		pfree(snap);
 		return false;
@@ -780,7 +788,7 @@ sift_maint_shrink(Relation rel, int elevel)
 	uint64		total = 0;
 	uint64		budget;
 
-	if (!online_cut_wanted(rel))
+	if (!online_cut_wanted(rel) && shrink_end == 0)
 	{
 		pfree(snap);
 		return 0;
@@ -839,6 +847,28 @@ sift_maint_shrink(Relation rel, int elevel)
 	if (total > 0)
 		ereport(elevel, (errmsg("index \"%s\": moved %llu bytes of the segments that end the file into the holes below them", RelationGetRelationName(rel), (unsigned long long) total)));
 	return total;
+}
+
+/*
+ * The online shrink of a VACUUM that leaves `holes` free blocks inside the file: the segments above the end that holds the live blocks and those are moved down into the runs
+ * below (only the blocks above it are written, not the segments that hold them), and the cut that follows takes the end. The write buffer above it is the caller's (sift_maint_buffer_above_shrink).
+ * Returns the end the file is to have, 0 when the free blocks inside it are no more than that already.
+ */
+BlockNumber
+sift_maint_shrink_end(Relation rel, uint64 holes)
+{
+	int64		inside = sift_store_free_stats(rel).blocks - sift_store_tail_blocks(rel);
+
+	if (inside <= (int64) holes)
+		return 0;
+	/* the end the file has when the live blocks and `holes` are all it holds */
+	return RelationGetNumberOfBlocks(rel) - sift_store_tail_blocks(rel) - (BlockNumber) (inside - (int64) holes);
+}
+
+void
+sift_maint_shrink_leaving(BlockNumber end)
+{
+	shrink_end = end;
 }
 
 /* Is a free run of blocks worth the exclusive lock of the space step (the screen of sift_maint_space) */

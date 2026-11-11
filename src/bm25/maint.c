@@ -429,12 +429,27 @@ sift_mops_vacuumcleanup(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBul
 	sift_maint_orphan_sweep(index);
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
 	{
-		bool		defer = ops->vacuum_space_defer && ops->vacuum_space_defer(index);
+		uint64		keep = ops->vacuum_space_keep ? ops->vacuum_space_keep(index) : 0;
+		bool		leave = keep > 0;
+		bool		defer = keep == PG_UINT64_MAX;
 
-		if (!defer)
+		if (leave && !defer)
+		{
+			/* the segments move only as far as the blocks above the end that keeps `keep` free ones inside the file: the cut after it takes that end, and the VACUUM copied what it cuts, not the segments */
+			BlockNumber end = sift_maint_shrink_end(index, keep);
+
+			if (end > 0)
+			{
+				sift_maint_shrink_leaving(end);
+				(void) online_shrink(ops, index, info->message_level);
+				sift_maint_shrink_leaving(0);
+				(void) sift_maint_cut_released(index, info->message_level);
+			}
+		}
+		else if (!leave)
 			(void) online_shrink(ops, index, info->message_level);
-		sift_maint_space_rounds(index, NULL, info->message_level, defer ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
-		if (!defer)
+		sift_maint_space_rounds(index, NULL, info->message_level, leave ? 0 : (uint64) sift_vacuum_rewrite_limit << 20);
+		if (!leave)
 			online_fallback(ops, index, info->message_level);
 	}
 	sift_maint_unlock(index);

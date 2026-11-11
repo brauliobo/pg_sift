@@ -1,5 +1,5 @@
 -- The automatic rewrite of a key_cut sift_col index in partitions rolls: each step is a transaction of the maintenance worker and writes the partition it takes into the
--- blocks the step before it freed, so the file stays within two partitions of the live bytes when the rewrite is done and the VACUUM after it has no segment to move (a rewrite that
+-- blocks the step before it freed, so the file stays within two partitions of the live bytes when the rewrite is done, and the VACUUM after it moves at most a partition of blocks down and leaves one (a rewrite that
 -- wrote all its output above the segments it replaced left the file twice the live bytes, and the VACUUM copied the output down into the blocks they left). The answers
 -- never change and the index verifies.
 CREATE EXTENSION pg_sift;
@@ -28,11 +28,16 @@ VACUUM rr;
 SELECT count(*) >= 5 AS partitions, max(bytes) < 1024 * 1024 * 3 / 2 AS within_a_partition FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
 ALTER TABLE rr RESET (autovacuum_enabled);
 
--- the file is within a tenth of the live bytes, and two partitions of them, and a tenth of the file again: the blocks of the last step of the rewrite and the short runs of the ones before it
-CREATE FUNCTION rr_file_ok() RETURNS bool LANGUAGE sql AS $$
-	SELECT i.relation_blocks * 8192 <= 1.2 * (SELECT sum(bytes) FROM sift.col_sections('rr_idx') WHERE section <> 'free')
-		+ 2 * (SELECT max(bytes) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable')
+-- the file is within a fifth of the live bytes and two partitions of them when the rewrite is done (the blocks of its last step and the short runs of the ones before it), and within
+-- a tenth and one partition when the VACUUM after it is (it moves down the blocks above the end that leaves a partition free, which the next rewrite writes into)
+CREATE FUNCTION rr_file_ok(pct int, k int) RETURNS bool LANGUAGE sql AS $$
+	SELECT i.relation_blocks * 8192 <= (1 + pct / 100.0) * (SELECT sum(bytes) FROM sift.col_sections('rr_idx') WHERE section <> 'free')
+		+ k * (SELECT max(bytes) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable')
 	FROM sift.col_index_info('rr_idx') i $$;
+-- the segments written since (a VACUUM that moved only the blocks above the end wrote at most a partition of them)
+CREATE FUNCTION rr_moved(before text) RETURNS bool LANGUAGE sql AS $$
+	SELECT coalesce(sum(bytes) FILTER (WHERE NOT gen = ANY (string_to_array(before, ',')::bigint[])), 0) <= max(bytes) FROM sift.col_segments('rr_idx')
+	WHERE kind = 'immutable' $$;
 CREATE FUNCTION rr_gens() RETURNS text LANGUAGE sql AS $$
 	SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable' $$;
 CREATE FUNCTION rr_same() RETURNS bool LANGUAGE plpgsql AS $$
@@ -75,10 +80,10 @@ SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty, count(*) FILTER (WHERE bytes * 2 >= 1024 * 1024) >= 5 AS partitions FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok() AS file_within_bound;
+SELECT rr_file_ok(20, 2) AS file_within_bound;
 SELECT rr_gens() AS gens \gset before_
 VACUUM rr;
-SELECT rr_gens() = :'before_gens' AS vacuum_moved_nothing, rr_file_ok() AS file_within_bound;
+SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition;
 SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
 
@@ -89,10 +94,10 @@ SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok() AS file_within_bound;
+SELECT rr_file_ok(20, 2) AS file_within_bound;
 SELECT rr_gens() AS gens \gset before_
 VACUUM rr;
-SELECT rr_gens() = :'before_gens' AS vacuum_moved_nothing, rr_file_ok() AS file_within_bound;
+SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition;
 SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
 
@@ -103,5 +108,6 @@ DROP PROCEDURE rr_round(int);
 DROP PROCEDURE rr_wait();
 DROP FUNCTION rr_same();
 DROP FUNCTION rr_gens();
-DROP FUNCTION rr_file_ok();
+DROP FUNCTION rr_file_ok(int, int);
+DROP FUNCTION rr_moved(text);
 DROP EXTENSION pg_sift;

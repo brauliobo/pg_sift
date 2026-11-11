@@ -94,19 +94,19 @@ maint_vacuum_truncates(Relation index)
 }
 
 /*
- * The rolling rewrite of a key-cut index (roll.c) ends with the blocks of its last step free (the partition it took and the overlay rows that waited for it) and the runs
- * shorter than a writer takes off the free list (RUN_MIN) that every step leaves: at most two of the largest segment and a tenth of the file. The promotions and the first
- * step of the next pass write into them, and a copy of a partition down into them would write it again, so the VACUUM leaves them (and cuts the free tail).
+ * The rolling rewrite of a key-cut index (roll.c) ends with the blocks of its last step free (the partition it took and the overlay rows that waited for it), and the
+ * promotions and the first step of the next pass write into them. The VACUUM leaves as many free blocks inside the file as the largest segment holds (and cuts the free tail):
+ * it moves down only the blocks above the end that holds no more (the online shrink, bm25/space.c), where a copy of the segments that end the file down into the holes
+ * wrote whole segments to cut a part of one, as the segments of the steps lie in each other's extents.
  */
-static bool
-maint_holes_of_a_step(Relation index)
+static uint64
+maint_rolling_keep(Relation index)
 {
 	SiftDirSnapshot *snap;
 	uint64		largest = 0;
-	int64		holes;
 
-	if (!sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
-		return false;
+	if (maint_part_kb == 0 || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+		return 0;
 	snap = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, snap);
 	maint_use_partitions(index, snap);
@@ -114,30 +114,30 @@ maint_holes_of_a_step(Relation index)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			largest = Max(largest, snap->segs[i].bytes);
 	pfree(snap);
-	holes = sift_store_free_stats(index).blocks - sift_store_tail_blocks(index);
-	return maint_part_kb > 0 && (uint64) holes * BLCKSZ <= 2 * largest + (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ / 10;
+	return largest / BLCKSZ;
 }
 
 /*
  * VACUUM moves the segments that end the file down into free blocks, a copy of each (its WAL is the segment's bytes) that also makes the segment new: the
- * WAL budget of the automatic rewrite counts from the write of the oldest large segment, so every move put it off by another 100 / sift.col_auto_merge_wal_pct
+ * WAL budget of the automatic rewrite counts from the write of the oldest large segment, so every move put it off by another 100 / sift.col_auto_merge_wal_pct_
  * times the segment, and the churn it was to answer went on. An index that is due for a rewrite gets the segments written into those free blocks by it, when the
  * automatic rewrite will start: one that waits for its WAL budget or for the snapshots that hold the blocks of the last rewrite is no reason to leave the file loose,
  * and neither is a write buffer that is due alone (the budget lets its promotion through): promoting it moves no segment. A rewrite that is not coming has
  * nothing to fill the holes of a file the last one made twice the index (the last pass of a build's runs, a horizon that held the blocks of a rewrite and passed),
  * so the VACUUM returns them, whatever the copy costs: it is bounded by sift.vacuum_rewrite_limit a round and happens once.
+ * The result is the free blocks the VACUUM leaves inside the file: what maint_rolling_keep says for a key-cut index in partitions when the rewrite is not coming (it moves
+ * down only what is over it), PG_UINT64_MAX when the rewrite is (it moves nothing), 0 for the rest (the space step as it was).
  */
-bool
-maint_space_deferred(Relation index)
+uint64
+maint_space_keep(Relation index)
 {
 	const char *why;
+	uint64		keep = maint_rolling_keep(index);
 
-	if (maint_holes_of_a_step(index))
-		return true;
 	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-		return false;
+		return keep;
 	why = maint_rewrite_check(index, true, NULL);
-	return why != NULL && maint_rewrite_all(why);
+	return why != NULL && maint_rewrite_all(why) ? PG_UINT64_MAX : keep;
 }
 
 /* The LSN of the write of a segment: its header block, written once with the rest of the segment */
