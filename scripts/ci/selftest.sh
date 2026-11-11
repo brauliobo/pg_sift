@@ -108,7 +108,7 @@ if [[ $MODE == --selftest ]]; then
 		[[ $id =~ ${GROUP[tbl]} && ! $id =~ ${GROUP[agg]} && ! $id =~ ${GROUP[col]} && $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file selects the table-only fast job $id"; bad=1; }
 		[[ $id =~ ${GROUP[agg]} && ! $id =~ $fast_agg ]] && { echo "FAIL: areas: a src/agg file does not select the agg fast job $id"; bad=1; }
 	done <<<"$PLAN_OUT"
-	for f in src/core/ops.c "$REPO"/sql/*.sql; do
+	for f in src/core/ops.c "$REPO"/sql/*.sql "$REPO"/sql/[0-9]*/*.sql; do
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done

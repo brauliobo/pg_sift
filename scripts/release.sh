@@ -208,6 +208,7 @@ preflight() {
 	local notes=docs/releases/$TAG.md f pm ext
 	[[ -z $(g status --porcelain) ]] || { g status --short; die "the tree is not clean"; }
 	g fetch -q --tags origin main
+	( cd "$R" && scripts/sql-parts.sh build )	# the update script of the release in progress is a build product
 	g rev-parse -q --verify "refs/tags/$TAG" >/dev/null && [[ -z $RESUME ]] && die "$TAG exists"
 	[[ $(g rev-parse --abbrev-ref HEAD) == main ]] || soft "not on main"
 	# HEAD is origin/main; a resumed release may be one commit ahead (the bump) or already pushed

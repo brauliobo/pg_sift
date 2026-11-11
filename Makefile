@@ -4,7 +4,9 @@ SIFT_MK := $(lastword $(MAKEFILE_LIST))
 SRC = src
 include $(SRC)/areas.mk
 OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c))
-DATA = $(wildcard sql/pg_sift--*.sql)
+# The update script of the release in progress is built from sql/<version>/NN-<context>.sql (scripts/sql-parts.sh): edit a part, never the generated file.
+SIFT_UPDATE_SQL := $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets)
+DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
 PGFILEDESC = "pg_sift - Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search"
 
 # New SQL tests are registered automatically; the test-only patterns below apply to them too.
@@ -33,7 +35,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = src/*/*.d src/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
+EXTRA_CLEAN = $(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -163,6 +165,12 @@ pg-valgrind:
 else
 include $(PGXS)
 endif
+
+.PHONY: update-sql
+$(SIFT_UPDATE_SQL): $(wildcard sql/[0-9]*/*.sql) scripts/sql-parts.sh
+	scripts/sql-parts.sh build
+update-sql: $(SIFT_UPDATE_SQL)
+all: update-sql
 
 -include $(wildcard src/*/*.d src/*/*/*.d)
 

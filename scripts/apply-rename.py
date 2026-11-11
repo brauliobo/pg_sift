@@ -134,8 +134,8 @@ def reflow(block, ren):
 
 def in_scope(path):
     # everything but the extension source, which names PostgreSQL's own fields (a test build's own files are in scope)
-    if path.startswith('sql/pg_sift'):
-        return False                                     # the released install and upgrade scripts are checksummed
+    if path.startswith('sql/pg_sift') or re.match(r'sql/\d', path):
+        return False                                     # the released install and upgrade scripts are checksummed; the parts of the next one (sql/<version>/) build one
     return not path.startswith('src/') or bool(SRC_TEST.search(path))
 
 

@@ -61,6 +61,8 @@ comment on the call.
 
 **No source file passes 1000 lines.** A longer C file, header, script, SQL or Python file is split into a directory of context files (`src/<area>/<context>/*.c` and a small private header), a pure move first, then the change. `scripts/check-file-size.sh` enforces it in the lint job; documents, expected outputs and result tables are not counted, and the full install scripts of released minors (`sql/pg_sift--X.Y.sql`, frozen) are the one allowance.
 
+**SQL changes of the release in progress go in `sql/<version>/NN-<context>.sql`** (for example `sql/5.0/`, one file for each feature area, a two-digit number that is unique in the directory), never in the generated `sql/pg_sift--<from>--<version>.sql`: the Makefile builds it from the parts in `LC_ALL=C` order (`scripts/sql-parts.sh`, run by `make`, `make install`, `scripts/release.sh` and `scripts/gen-reference.sh`), and git ignores it. A release freezes the generated script as a tracked file and removes its parts.
+
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
 `src/core/host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `core/host.h` (documented at the top of that file) and, when
 it needs something from the host, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails

@@ -18,6 +18,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 mode=${1:-write}
+scripts/sql-parts.sh build
 [[ $mode == write || $mode == --check || $mode == --live ]] || { echo "usage: $0 [--check|--live]" >&2; exit 2; }
 exec python3 -I - "$mode" <<'PY'
 import csv

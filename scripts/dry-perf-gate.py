@@ -804,7 +804,7 @@ def main():
         cand.ensure()
     diff = sorted(o for o in set(base.info['objects']) | set(cand.info['objects']) if base.info['objects'].get(o) != cand.info['objects'].get(o))
     meta = dict(port_note=port_note, base=base.key, cand=cand.key, base_text=base.info['text'], cand_text=cand.info['text'], differing_objects=diff)
-    sql_changed = [p for p in changed_paths(repo, base_sha, cand_sha, patch) if p.startswith('sql/pg_sift--') or p == 'pg_sift.control']
+    sql_changed = [p for p in changed_paths(repo, base_sha, cand_sha, patch) if p.startswith('sql/') or p == 'pg_sift.control']
     if a.cmd == 'run' and not diff and not sql_changed and not port_groups and not a.force_workload:
         line = f"perf-gate {base.key} -> {cand.key}: PASS-IDENTICAL (all {len(base.info['objects'])} stripped object files byte-identical, text {cand.info['text'] - base.info['text']:+d} B{port_note})"
         print(line)
