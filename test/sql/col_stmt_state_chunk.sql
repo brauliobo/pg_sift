@@ -1,0 +1,27 @@
+-- The state of a statement that writes (sift_col_stmt_start, col/am/am.c) lists the tables it changes only when the statement may end row versions: a plain INSERT has no room for
+-- the list. Writing it anyway ran past the end of the statement's chunk in the executor state, which the memory context checking of an assert build reports as a WARNING when the statement ends.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+
+CREATE TABLE sc (id int PRIMARY KEY, v int);
+CREATE INDEX sc_c ON sc USING sift_col (id, v);
+CREATE TABLE sh (id int PRIMARY KEY, v int);
+CREATE TABLE sp (id int, v int) PARTITION BY RANGE (id);
+CREATE TABLE sp1 PARTITION OF sp FOR VALUES FROM (0) TO (100);
+CREATE TABLE sp2 PARTITION OF sp FOR VALUES FROM (100) TO (200);
+
+INSERT INTO sc VALUES (1, 1);
+INSERT INTO sc SELECT i, i FROM generate_series(2, 50) i;
+INSERT INTO sh VALUES (1, 1);
+INSERT INTO sp SELECT i, i FROM generate_series(0, 199) i;
+INSERT INTO sc VALUES (1, 2) ON CONFLICT (id) DO UPDATE SET v = excluded.v;
+INSERT INTO sh SELECT i, i FROM generate_series(2, 5) i RETURNING id;
+WITH ins AS (INSERT INTO sc VALUES (100, 100) RETURNING id) INSERT INTO sh SELECT id, id FROM ins;
+UPDATE sc SET v = v + 1 WHERE id < 10;
+DELETE FROM sc WHERE id > 40;
+UPDATE sp SET v = v + 1;
+
+SELECT (SELECT count(*) FROM sc) AS sc, (SELECT count(*) FROM sh) AS sh, (SELECT count(*) FROM sp) AS sp;
+
+DROP TABLE sc, sh, sp;
+DROP EXTENSION pg_sift;
