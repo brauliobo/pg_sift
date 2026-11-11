@@ -52,30 +52,33 @@ TWOHOP_P_PAIR="SELECT k, (SELECT count(*) FROM hop_events e JOIN hop_pairs s ON 
 TWOHOP_ENTRIES="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('hop_col'))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id)"
 
+# the functions below send their statements through ${TWOHOP_SQL:-sql} (a node name, or a database name for a test that restores into databases) and read the index ${TWOHOP_IX:-hop_col}
 # twohop_reads NODE [SETTING...]: the scope forms (one tenant, a set counted once, a top-N, per pair) in a session with the settings, against the join over the oracle without sift
 twohop_reads() {
-	local n=$1
+	local n=$1 Q=${TWOHOP_SQL:-sql} ix=${TWOHOP_IX:-hop_col} q
 	shift
-	[[ $(sql "$n" "SET sift.agg_force = on" "${@:-SET sift.agg_force = on}" "$TWOHOP_Q_ONE" "$TWOHOP_Q_SET" "$TWOHOP_Q_TOP" "$TWOHOP_Q_PAIR" 2>&1) \
-		== $(sql "$n" "SET sift.enable_agg = off" "$TWOHOP_P_ONE" "$TWOHOP_P_SET" "$TWOHOP_P_TOP" "$TWOHOP_P_PAIR" 2>&1) ]] && echo same || echo DIFFERENT
+	q=("$TWOHOP_Q_ONE" "$TWOHOP_Q_SET" "$TWOHOP_Q_TOP" "$TWOHOP_Q_PAIR")
+	[[ $($Q "$n" "SET sift.agg_force = on" "${@:-SET sift.agg_force = on}" "${q[@]//hop_col/$ix}" 2>&1) \
+		== $($Q "$n" "SET sift.enable_agg = off" "$TWOHOP_P_ONE" "$TWOHOP_P_SET" "$TWOHOP_P_TOP" "$TWOHOP_P_PAIR" 2>&1) ]] && echo same || echo DIFFERENT
 }
 
 # twohop_why NODE [QUERY]: stored when the read of the scope units answered, else the reason of the fallback
 twohop_why() {
-	sql "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
-		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${2:-$TWOHOP_Q_ONE}" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1
+	local Q=${TWOHOP_SQL:-sql} q=${2:-$TWOHOP_Q_ONE}
+	$Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
+		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${q//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1
 }
 
 # twohop_stat NODE LABEL: a number of the plan of the read of one tenant ("Scope Changed Keys": the members the journals say changed since the stamps; "Scope Patched Keys": those with a pair now), 0
 # when the units were not read
 twohop_stat() {
-	local n
-	n=$(sql "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
-		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $TWOHOP_Q_ONE" | sed -n "s/^ *Scope $2: //p" | head -n 1)
+	local n Q=${TWOHOP_SQL:-sql}
+	n=$($Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
+		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${TWOHOP_Q_ONE//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n "s/^ *Scope $2: //p" | head -n 1)
 	echo "${n:-0}"
 }
 
-twohop_vouch() { sql "$1" "SELECT hop_vouch()"; }
+twohop_vouch() { ${TWOHOP_SQL:-sql} "$1" "SELECT hop_vouch()"; }
 
 # twohop_files NODE: the pgbench arguments of scripts that edit the three tables and the facts, each in a transaction that cannot fail on a key
 twohop_files() {
