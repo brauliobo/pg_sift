@@ -561,6 +561,12 @@ CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, line
 	OUT why text, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_journal_changes' LANGUAGE C STRICT;
 
+-- the price of the units of a scope read and of the entity path for the counts of col/scope.h (pure: instructions), the counts as the planner or the executor has them
+CREATE FUNCTION sift._test_scope_price(nkeys int, once bool, units int8, entries int8, preagg float8 DEFAULT 0, entry_instr float8 DEFAULT 0, drops int DEFAULT 0, key_pairs int8 DEFAULT 0,
+	changed int8 DEFAULT 0, patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, path_rows int8 DEFAULT 0, path_units int8 DEFAULT 0,
+	OUT units_price float8, OUT entity_price float8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_scope_price' LANGUAGE C STRICT;
+
 -- sets or clears the by-reference flag in the directory entry of every scope segment of an index, as a later release would write it
 CREATE FUNCTION sift._test_col_scope_mark(index regclass, ref bool) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_scope_mark' LANGUAGE C STRICT;

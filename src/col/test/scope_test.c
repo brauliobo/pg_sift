@@ -358,6 +358,7 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_scope_legs);
+PG_FUNCTION_INFO_V1(sift_test_scope_price);
 PG_FUNCTION_INFO_V1(sift_test_scope_take);
 PG_FUNCTION_INFO_V1(sift_test_scope_journal_changes);
 PG_FUNCTION_INFO_V1(sift_test_scope_vouch);
@@ -453,6 +454,36 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+
+/* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
+Datum
+sift_test_scope_price(PG_FUNCTION_ARGS)
+{
+	SiftScopeCounts c = {
+		.nkeys = PG_GETARG_INT32(0),
+		.once = PG_GETARG_BOOL(1),
+		.units = PG_GETARG_INT64(2),
+		.entries = PG_GETARG_INT64(3),
+		.preagg = PG_GETARG_FLOAT8(4),
+		.entry_instr = PG_GETARG_FLOAT8(5),
+		.drops = PG_GETARG_INT32(6),
+		.key_pairs = PG_GETARG_INT64(7),
+		.changed = PG_GETARG_INT64(8),
+		.patch_units = PG_GETARG_INT64(9),
+		.patch_scan_rows = PG_GETARG_INT64(10),
+		.delta_rows = PG_GETARG_INT64(11),
+		.pairs = PG_GETARG_INT64(12),
+		.path_rows = PG_GETARG_INT64(13),
+		.path_units = PG_GETARG_INT64(14),
+	};
+	TupleDesc	desc;
+	Datum		v[2] = {Float8GetDatum(sift_scope_units_price(&c)), Float8GetDatum(sift_scope_entity_price(&c))};
+	bool		nulls[2] = {false, false};
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
 
 static void
 mark_scope_ref(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)

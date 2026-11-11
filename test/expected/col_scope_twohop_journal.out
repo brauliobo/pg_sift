@@ -276,8 +276,8 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
  too many changed keys |    
 (1 row)
 
--- a group that has more members than the cap of the journal read is over it, and the patch is then priced against the entity path
-UPDATE grants SET deleted_at = now() WHERE id = 3;
+-- two groups that have more members than the cap of the journal read are over it, and the patch is then priced against the entity path
+UPDATE grants SET deleted_at = now() WHERE id IN (3, 4);
 SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor', 5, :l1, :l2);
           why          | key 
 -----------------------+-----
@@ -298,7 +298,7 @@ SELECT * FROM probe();
  t    | t     | 
 (1 row)
 
-UPDATE grants SET deleted_at = NULL WHERE id IN (3, 5);
+UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
 -- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); a few are left to the reads
 VACUUM (ANALYZE) grants, memberships;
 REINDEX INDEX facts_col;

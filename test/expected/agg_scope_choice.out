@@ -115,8 +115,8 @@ ORDER BY f.name COLLATE "C", k.n, m.mode;
 ------------------------------------------+------+--------------------+---------------+-----------------------------+-----------
  IN, ANY ($1)                             |    1 | force_custom_plan  | scope read    |                             | t
  IN, ANY ($1)                             |    1 | force_generic_plan | scope read    |                             | t
- IN, ANY ($1)                             |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
- IN, ANY ($1)                             |   10 | force_generic_plan | join          | join is cheaper for 10 keys | t
+ IN, ANY ($1)                             |   10 | force_custom_plan  | scope read    |                             | t
+ IN, ANY ($1)                             |   10 | force_generic_plan | scope read    |                             | t
  IN, ANY ($1)                             |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
  IN, ANY ($1)                             |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
  IN, table of keys, a plan of its own     |    1 | force_custom_plan  | scope read    |                             | t
@@ -139,14 +139,14 @@ ORDER BY f.name COLLATE "C", k.n, m.mode;
  join, table of keys, a row for each pair |   30 | force_generic_plan | scope read    |                             | t
  latest 5, ANY ($1)                       |    1 | force_custom_plan  | scope read    |                             | t
  latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read    |                             | t
- latest 5, ANY ($1)                       |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
- latest 5, ANY ($1)                       |   10 | force_generic_plan | join          | join is cheaper for 10 keys | t
+ latest 5, ANY ($1)                       |   10 | force_custom_plan  | scope read    |                             | t
+ latest 5, ANY ($1)                       |   10 | force_generic_plan | scope read    |                             | t
  latest 5, ANY ($1)                       |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
  latest 5, ANY ($1)                       |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
  top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | scope read    |                             | t
  top 5 ids, ANY ($1)                      |    1 | force_generic_plan | scope read    |                             | t
- top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | join          | join is cheaper for 10 keys | t
- top 5 ids, ANY ($1)                      |   10 | force_generic_plan | join          | join is cheaper for 10 keys | t
+ top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | scope read    |                             | t
+ top 5 ids, ANY ($1)                      |   10 | force_generic_plan | scope read    |                             | t
  top 5 ids, ANY ($1)                      |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
  top 5 ids, ANY ($1)                      |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
 (36 rows)
@@ -177,7 +177,7 @@ SELECT f.name, c.* FROM cforms f, cached_keys(f, ARRAY[1, 30, 10, 30, 1, 20, 2])
 -------------------------------------+----+------------+-----------
  IN, ANY ($1)                        |  1 | scope read | t
  IN, ANY ($1)                        | 30 | join       | t
- IN, ANY ($1)                        | 10 | join       | t
+ IN, ANY ($1)                        | 10 | scope read | t
  IN, ANY ($1)                        | 30 | join       | t
  IN, ANY ($1)                        |  1 | scope read | t
  IN, ANY ($1)                        | 20 | join       | t
@@ -246,7 +246,7 @@ SELECT * FROM states('built');
  state |                form                 | tenants |   chosen   |             why             | same_rows 
 -------+-------------------------------------+---------+------------+-----------------------------+-----------
  built | IN, ANY ($1)                        | 1 (22)  | scope read |                             | t
- built | IN, ANY ($1)                        | 4       | join       | join is cheaper for 4 keys  | t
+ built | IN, ANY ($1)                        | 4       | scope read |                             | t
  built | IN, ANY ($1)                        | 30      | join       | join is cheaper for 30 keys | t
  built | join, ANY ($1), a row for each pair | 1 (22)  | scope read |                             | t
  built | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
@@ -266,10 +266,10 @@ SELECT * FROM states('20 of 30 items of a tenant changed');
                state                |                form                 | tenants |   chosen   |             why             | same_rows 
 ------------------------------------+-------------------------------------+---------+------------+-----------------------------+-----------
  20 of 30 items of a tenant changed | IN, ANY ($1)                        | 1 (22)  | join       | join is cheaper for 1 key   | t
- 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 4       | join       | join is cheaper for 4 keys  | t
+ 20 of 30 items of a tenant changed | IN, ANY ($1)                        | 4       | scope read |                             | t
  20 of 30 items of a tenant changed | IN, ANY ($1)                        | 30      | join       | join is cheaper for 30 keys | t
  20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join       | join is cheaper for 1 key   | t
- 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 4       | join       | join is cheaper for 4 keys  | t
+ 20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
  20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 30      | join       | join is cheaper for 30 keys | t
  20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join       | top-n, changed pairs        | t
  20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 4       | scope read |                             | t
@@ -289,7 +289,7 @@ SELECT * FROM states('every pair of every tenant changed');
  every pair of every tenant changed | IN, ANY ($1)                        | 4       | join   | too many changed keys       | t
  every pair of every tenant changed | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
  every pair of every tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | too many changed keys       | t
- every pair of every tenant changed | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
+ every pair of every tenant changed | join, ANY ($1), a row for each pair | 4       | join   | too many changed keys       | t
  every pair of every tenant changed | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
  every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | too many changed keys       | t
  every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | too many changed keys       | t
@@ -304,7 +304,7 @@ SELECT * FROM states('items of two tenants');
  items of two tenants | IN, ANY ($1)                        | 4       | join   | too many changed keys       | t
  items of two tenants | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
  items of two tenants | join, ANY ($1), a row for each pair | 1 (22)  | join   | too many changed keys       | t
- items of two tenants | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
+ items of two tenants | join, ANY ($1), a row for each pair | 4       | join   | too many changed keys       | t
  items of two tenants | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
  items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | too many changed keys       | t
  items of two tenants | latest 5, ANY ($1)                  | 4       | join   | too many changed keys       | t
@@ -314,11 +314,11 @@ SELECT * FROM states('items of two tenants');
 RESET plan_cache_mode;
 -- the keys by the rows of a table, and several keys of a row for each pair, over the pairs changed
 SELECT f.name, o.* FROM cforms f, LATERAL outcome(f, 'force_generic_plan', karg(f, 10)) o WHERE f.name IN ('IN, table of keys, a plan of its own', 'join, table of keys, a row for each pair', 'join, ANY ($1), a row for each pair') ORDER BY f.name COLLATE "C";
-                   name                   | chosen |             why             | same_rows 
-------------------------------------------+--------+-----------------------------+-----------
- IN, table of keys, a plan of its own     | join   | too many changed keys       | t
- join, ANY ($1), a row for each pair      | join   | join is cheaper for 10 keys | t
- join, table of keys, a row for each pair | join   | join is cheaper for 10 keys | t
+                   name                   | chosen |          why          | same_rows 
+------------------------------------------+--------+-----------------------+-----------
+ IN, table of keys, a plan of its own     | join   | too many changed keys | t
+ join, ANY ($1), a row for each pair      | join   | too many changed keys | t
+ join, table of keys, a row for each pair | join   | too many changed keys | t
 (3 rows)
 
 RESET plan_cache_mode;
