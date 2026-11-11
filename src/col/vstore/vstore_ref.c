@@ -42,16 +42,78 @@ sift_vstore_ref_serialize(Oid store, const SiftCDict *dict, const SiftCcPolicy *
 	sift_vstore_close(vs);
 }
 
-/* The dictionary of a reference: the strings of the codes the segment holds, read from the runs of its epoch in place (the view of an appender is not needed) */
+typedef struct CodePos
+{
+	uint32		code;
+	uint32		pos;
+} CodePos;
+
+/* by_code ordered by code: four passes of 8 bits (tmp is as large as by_code) */
+static void
+sort_by_code(CodePos *by_code, CodePos *tmp, uint32 n)
+{
+	for (int shift = 0; shift < 32; shift += 8)
+	{
+		uint32		count[257] = {0};
+
+		for (uint32 i = 0; i < n; i++)
+			count[((by_code[i].code >> shift) & 0xff) + 1]++;
+		for (int k = 0; k < 256; k++)
+			count[k + 1] += count[k];
+		for (uint32 i = 0; i < n; i++)
+			tmp[count[(by_code[i].code >> shift) & 0xff]++] = by_code[i];
+		memcpy(by_code, tmp, n * sizeof(CodePos));
+	}
+}
+
+/*
+ * The dictionary of a reference: the strings of the codes the segment holds, read from the runs of its epoch in place. The codes of a segment whose index has the
+ * order of the store's first member climb and are read as they come; others are read in the order of the store, so that a block is decompressed once, and put back
+ */
 static SiftCDict *
 from_runs(MemoryContext mcxt, Oid store, uint32 epoch, const uint32 *codes, uint32 n)
 {
 	void	   *h = sift_vstore_read_open(NULL, store, epoch, CurrentMemoryContext);
 	SiftCDict  *d = sift_cdict_plain_begin(mcxt, n);
 	StringInfoData all;
+	CodePos	   *by_code = palloc(Max(n, 1) * sizeof(CodePos));
+	CodePos	   *tmp = palloc(Max(n, 1) * sizeof(CodePos));
+	uint32	   *sorted = palloc(Max(n, 1) * sizeof(uint32));
+	uint32	   *soff = palloc(((Size) n + 1) * sizeof(uint32));
+	bool		climbs = true;
 
 	initStringInfo(&all);
-	sift_vstore_read_strs(h, codes, n, &all, d->off);
+	for (uint32 i = 0; i < n; i++)
+	{
+		by_code[i] = (CodePos) {codes[i], i};
+		climbs &= i == 0 || codes[i] > codes[i - 1];
+	}
+	if (climbs)
+		sift_vstore_read_strs(h, codes, n, &all, d->off);
+	else
+	{
+		StringInfoData ordered;
+
+		sort_by_code(by_code, tmp, n);
+		for (uint32 k = 0; k < n; k++)
+			sorted[k] = by_code[k].code;
+		initStringInfo(&ordered);
+		sift_vstore_read_strs(h, sorted, n, &ordered, soff);
+		/* the strings of the segment's codes in the segment's order: where each lies in `ordered` is its rank */
+		for (uint32 k = 0; k < n; k++)
+			sorted[by_code[k].pos] = k;
+		for (uint32 i = 0; i < n; i++)
+		{
+			d->off[i] = (uint32) all.len;
+			appendBinaryStringInfo(&all, ordered.data + soff[sorted[i]], soff[sorted[i] + 1] - soff[sorted[i]]);
+		}
+		d->off[n] = (uint32) all.len;
+		pfree(ordered.data);
+	}
+	pfree(by_code);
+	pfree(tmp);
+	pfree(sorted);
+	pfree(soff);
 	if (all.len > UINT32_MAX || !sift_cdict_plain_bytes(d, mcxt, all.len))
 		return NULL;
 	memcpy(d->bytes, all.data, all.len);
