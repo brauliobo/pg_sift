@@ -89,7 +89,7 @@ SELECT count(*) AS pairs, count(DISTINCT dim_a_id) AS ids, max(n) AS max_keys FR
 SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id') AS copy_rows;
 NOTICE:  sift_col index "facts_by_tenant_col": 3 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = tenant_id, created_at;
-rollup_columns = tenant_id, kind; order_array_columns = created_at
+rollup_columns = tenant_id, kind; order_array_columns = created_at (second order only)
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_by_tenant_col');
 NOTICE:  sift_col index "facts_by_tenant_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

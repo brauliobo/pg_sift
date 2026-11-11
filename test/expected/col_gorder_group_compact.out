@@ -206,8 +206,8 @@ SET client_min_messages = notice;
 ALTER INDEX gc_i SET (order_layout = 'compact');
 REINDEX INDEX gc_i;
 NOTICE:  sift_col index "gc_i": 2 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = created;
-order_layout = created compact in 86% of chunks
+DETAIL:  advice: track_changes = the table has no one-column primary key;
+order_array_columns = created (second order only); order_layout = created compact in 86% of chunks
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gc_i');
 NOTICE:  sift_col index "gc_i" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

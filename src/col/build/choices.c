@@ -325,7 +325,8 @@ d_order_arrays(Derive *d)
 			n++;
 		}
 		if (ls[c].gord_rows > 0 || ls[c].gord_ends_rows > 0)
-			appendStringInfo(&names, "%s%s%s", names.len ? ", " : "", sift_col_leaf_name(d->index, &defs->cols[c]), ls[c].gord_rows > 0 ? "" : " (ends only)");
+			appendStringInfo(&names, "%s%s%s", names.len ? ", " : "", sift_col_leaf_name(d->index, &defs->cols[c]),
+							 ls[c].gord_rows > ls[c].gord_grp_rows ? "" : ls[c].gord_ends_rows > 0 ? " (ends only)" : " (second order only)");
 		ne += ls[c].gord_ends_rows > 0;
 	}
 	if (n + ne == 0)

@@ -20,7 +20,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, ts, flag);
 NOTICE:  sift_col index "child_col": 6 automatic choices
 DETAIL:  key_order = parent_id, ts; key_columns = parent_id; rollup_columns = v, flag; key_cut = ts;
-order_array_columns = ts; track_changes = id
+order_array_columns = ts (second order only); track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');
 NOTICE:  sift_col index "child_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

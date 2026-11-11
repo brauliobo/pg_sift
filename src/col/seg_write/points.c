@@ -43,7 +43,8 @@ gord_follows_heap(const PointAcc *a)
 /*
  * Does the order of leaf c keep the ends of the segment only (column format minor 40): the leaf is of the build's own choice ('auto: a, b'), not text, the segment has more values than the two
  * ends hold, and a bound in the middle of its values would not read many units: sift_cgord_pay over the zones of the units, whatever key they are cut by (a range across the keys
- * reads them all, 24 times the cold blocks of the whole order at 1,000,000 rows). A segment that has such a block is of the rooted layout (segw_rooted_ok), which a minor of 37 or more is read as.
+ * reads them all, 24 times the cold blocks of the whole order at 1,000,000 rows). A leaf that has the second order alone (gorder_only: in heap order, or the units are cut by it) keeps the ends: they answer an
+ * ORDER BY .. LIMIT across the units, which the zones cannot when the cut is by another column (each unit holds the whole range of the key); a range in the middle stays with the units. A segment that has such a block is of the rooted layout (segw_rooted_ok), which a minor of 37 or more is read as.
  */
 static bool
 gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
@@ -65,6 +66,8 @@ gord_ends_ok(const SiftColSegWriter *w, const PointAcc *a, int c)
 #endif
 	if (gord_follows_heap(a))
 		return false;
+	if (w->pagg.gorder_only[c])
+		return true;
 	mn = palloc((Size) nsb * 2 * sizeof(int64));
 	mx = mn + nsb;
 	nv = palloc((Size) nsb * sizeof(uint32));

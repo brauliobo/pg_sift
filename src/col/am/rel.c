@@ -186,7 +186,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			}
 			only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
 
-			/* 'auto: g, a, b': the arrays after the group keep the second order only */
+			/* 'auto: g, a, b': the arrays after the group keep the ends of the plain order beside the second order */
 			if (only != NULL)
 			{
 				if ((err = sift_cpagg_leaf_list(only + 1, r->schema, (const char *const *) names, r->pagg.gorder_only, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)

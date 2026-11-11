@@ -174,6 +174,7 @@ TESTING_REGRESS += col_gorder_group_price
 TESTING_REGRESS += col_gorder_group_probe_dead
 TESTING_REGRESS += col_gorder_group_range
 TESTING_REGRESS += col_gorder_group_walk
+TESTING_REGRESS += col_gorder_heap_order_ends
 TESTING_REGRESS += col_gorder_in_walk
 TESTING_REGRESS += col_gorder_layout
 TESTING_REGRESS += col_gorder_mem_segment

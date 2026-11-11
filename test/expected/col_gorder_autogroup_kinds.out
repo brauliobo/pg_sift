@@ -17,7 +17,7 @@ INSERT INTO ak SELECT i, abs(hashint4(i)) % 400, date '2024-01-01' + abs(hashint
 FROM generate_series(1, 120000) i;
 ANALYZE ak;
 CREATE INDEX ak_i ON ak USING sift_col (id, ent_id, d, created, score, amt, pad) WITH (key_cut = 'off', key_order = 'off');
-NOTICE:  sift_col index "ak_i": 3 automatic choices, 1 advice
+NOTICE:  sift_col index "ak_i": 2 automatic choices, 1 advice
 NOTICE:  sift_col index "ak_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak_i';
                                                                             reloptions                                                                             
@@ -42,11 +42,11 @@ GROUP BY 1, 2 ORDER BY 1, 2;
  score   | global order |    12
 (3 rows)
 
--- a timestamp in heap order has the second order only (no plain order beside it): the page of the whole table is the heap's all the same
+-- a timestamp in heap order has the second order and, beside it, the ends of its plain order: the page of the whole table reads the ends
 SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
  whole_table_desc | whole_table_asc 
 ------------------+-----------------
- units            | units
+ global order     | global order
 (1 row)
 
 -- rows written after the build, a promotion and a merge keep the answers
@@ -146,7 +146,7 @@ INSERT INTO ak5 SELECT i, abs(hashint4(i)) % 3000, timestamp '2024-01-01' + abs(
 ANALYZE ak5;
 CREATE INDEX ak5_i ON ak5 USING sift_col (id, ent_id, created, pad) WITH (key_cut = 'created');
 NOTICE:  sift_col index "ak5_i": 3 automatic choices, 1 advice
-NOTICE:  sift_col index "ak5_i" is column format minor 41, which a library before 4.0 cannot read
+NOTICE:  sift_col index "ak5_i" is column format minor 44, which a library before 4.3 cannot read
 SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
                                                            reloptions                                                            
 ---------------------------------------------------------------------------------------------------------------------------------

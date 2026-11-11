@@ -25,7 +25,7 @@ SELECT col, result, count(*) FROM (
 	FROM unnest(ARRAY['d', 'created', 'score']) col, unnest(ARRAY[7, 399, 1000]) e, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
 
--- a timestamp in heap order has the second order only (no plain order beside it): the page of the whole table is the heap's all the same
+-- a timestamp in heap order has the second order and, beside it, the ends of its plain order: the page of the whole table reads the ends
 SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
 
 -- rows written after the build, a promotion and a merge keep the answers

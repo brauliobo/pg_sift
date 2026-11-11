@@ -285,11 +285,11 @@ segw_gorder_grouped(const SiftColSegWriter *w, int c)
 											  (!w->pagg.gorder_listed || w->pagg.gorder_only[c] || w->pagg.gorder_with[c])));
 }
 
-/* ... and the plain order too */
+/* ... and the plain order too (the leaves of gorder_only keep its ends: gord_ends_ok) */
 bool
 segw_gorder_plain(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group == 0 || (w->pagg.gorder_group_auto && !w->pagg.gorder_only[c]) || sift_cgord_leaf_text(&w->schema->cols[c]);
+	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto || sift_cgord_leaf_text(&w->schema->cols[c]);
 }
 
 void

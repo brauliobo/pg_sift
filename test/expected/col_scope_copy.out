@@ -72,7 +72,7 @@ CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,n
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 3.1) AS copy_rows;
 NOTICE:  sift_col index "triple_copy_col": 5 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = scope_id, created_at;
-rollup_columns = scope_id, note; key_cut = scope_id; order_array_columns = created_at; and 1 more
+rollup_columns = scope_id, note; key_cut = scope_id; order_array_columns = created_at (second order only); and 1 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('triple_copy_col');
 NOTICE:  sift_col index "triple_copy_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
@@ -106,7 +106,7 @@ DROP TABLE no_pk, no_fk_index, dup_pairs, text_pairs, wide_pairs;
 SELECT sift.scope_create('facts_by_scope', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
 NOTICE:  sift_col index "facts_by_scope_col": 4 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = scope_id, created_at;
-rollup_columns = scope_id, note; order_array_columns = created_at; and 1 more
+rollup_columns = scope_id, note; order_array_columns = created_at (second order only); and 1 more
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_by_scope_col');
 NOTICE:  sift_col index "facts_by_scope_col" is column format minor 41, which a library before 4.0 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.

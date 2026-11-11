@@ -19,7 +19,7 @@ typedef struct GordCand
 	bool		time;			/* a date or a timestamp: a range or an ORDER BY .. LIMIT is what it is read by */
 	bool		text;			/* a text or varchar column: ORDER BY .. LIMIT is what it is read by */
 	bool		ties;			/* fewer than GORD_AUTO_DISTINCT values: weighed like a text column, by the OFFSET that ends in a group of equal keys */
-	bool		nofit;			/* a date or timestamp in heap order (correlation over GORD_AUTO_CORR) or one the units are cut by: no array of its own, but one for the group */
+	bool		nofit;			/* a date or timestamp in heap order (correlation over GORD_AUTO_CORR) or one the units are cut by: no whole array of its own, but the second order for the group and the ends of its own */
 	bool		grouped;		/* an integer, date or timestamp: the second order sorted by the entity column can be written for it (a numeric or text array has none) */
 	bool		point;			/* a nearly unique integer in heap order (a serial id): its array is runs of consecutive addresses, 0.4 bytes a row, and answers the equality that the point directory (3.3) would */
 	double		corr;
@@ -269,7 +269,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	/*
 	 * the arrays of a date, timestamp or integer column are grouped by the column the table is read by: the one a non-unique b-tree runs the shape of (it and a date or timestamp of the index are its first two key columns) or the user's hint, else the entity column that has the most values (a foreign key or a column named *_id: an integer with none of these is a guess at what a query filters by, 3.5 bytes a row of it): WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain
 	 * order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then. A date or timestamp that
-	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group
+	 * no formula above gives an array (in heap order, or of few values and too little OFFSET to pay) gets one for the group, and the writer keeps the ends of its plain order beside it (ORDER BY .. LIMIT over the whole table: 4.6 M instructions in the units a cut by another column leaves, 0.6 M in the ends)
 	 */
 	for (int c = 0; timepick && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE && strcmp(gopt, "off") != 0 && c < rel->schema->ncols; c++)
 	{
@@ -460,7 +460,7 @@ sift_col_auto_gorder(Relation heap, Relation index, bool layout)
 	{
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", keycols_leaf_name(index, &rel->schema->cols[grp]));
-		/* the arrays that only the second order serves (a time column the units are cut by or that follows the heap): no plain order beside it */
+		/* the arrays that keep the second order and the ends of the plain order (a time column the units are cut by or that follows the heap): no whole plain order beside them */
 		for (int i = 0; i < npick; i++)
 			if (gonly[i])
 				appendStringInfo(&v, ", %s", keycols_leaf_name(index, &rel->schema->cols[pick[i]]));

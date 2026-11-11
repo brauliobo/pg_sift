@@ -336,6 +336,13 @@ CREATE INDEX gof_idx ON gof USING sift_col (id sift.col_int4_ops, a sift.col_int
 CREATE TABLE gog (LIKE gof) WITH (autovacuum_enabled = false);
 INSERT INTO gog SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
 CREATE INDEX gog_idx ON gog USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (order_array_columns = 'b, t', order_array_group = 'a');
+-- ... and the build's own choice of such an index: d and t keep the second order by a and the ends of their plain order (a few entries at each end, as the tests lower them)
+CREATE TABLE goe (LIKE gof) WITH (autovacuum_enabled = false);
+INSERT INTO goe SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
+SET sift.test_col_gorder_ends = 64;
+CREATE INDEX goe_idx ON goe USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, d sift.col_date_ops, t sift.col_timestamp_ops)
+	WITH (order_array_columns = 'auto: b, d, t', order_array_group = 'auto: a, d, t');
+RESET sift.test_col_gorder_ends;
 
 -- instants of a time zone's clock changes (the weeks around the daylight saving time of the northern and the southern zones, the days of the reform, local mean time),
 -- the infinities and NULL, grouped by the day or hour of the session's zone
@@ -488,4 +495,4 @@ INSERT INTO cc_fat SELECT i, i % 50, i % 1000 FROM generate_series(1, 6000) i;
 VACUUM (FREEZE, ANALYZE) cc_docs, cc_fat;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c, kcut_d;
+VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, goe, zkf, ktf, kcut_a, kcut_b, kcut_c, kcut_d;

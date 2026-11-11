@@ -232,6 +232,7 @@ def go_const(r, col):
 
 
 GG_COLS = ['b', 't']
+GE_COLS = ['id', 'a', 'b', 'd', 't']
 
 
 def gen_gorder_group(r, ctx):
@@ -252,7 +253,8 @@ def gen_gorder_group(r, ctx):
 def gen_gorder(r, ctx):
     if r.random() < 0.3:
         return gen_gorder_group(r, ctx)
-    col = r.choice(GO_COLS)
+    tbl = r.choice(['gof', 'gof', 'goe'])
+    col = r.choice(GO_COLS if tbl == 'gof' else GE_COLS)
     cond = ''
     keyset = ''
     if r.random() < 0.3:  # a second key (id, which is unique, so the order is total), with the page after a key as a row comparison or its expansion
@@ -268,7 +270,7 @@ def gen_gorder(r, ctx):
         cond = r.choice([cmp, lambda: f"{cmp()} AND {cmp()}", lambda: f"({cmp()} OR {cmp()})", lambda: f"g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"])()
     return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
                 cond=cond, second=keyset != '' or (col != 'id' and r.random() < 0.15), dir2=r.choice(['', ' DESC']), agg=r.choice(['', '', 'min', 'max']),
-                where=[], keys=[], aggs=[], having=[], ordered=True)
+                where=[], keys=[], aggs=[], having=[], ordered=True, tbl=tbl)
 
 
 def render_gorder(p):
@@ -282,9 +284,10 @@ def render_gorder(p):
 
 
 def dml_gorder(r, ctx):
-    """The same change to gof and to gog (the arrays grouped by a column)."""
+    """The same change to gof, to gog (the arrays grouped by a column) and to goe (the ends of the plain order of d and t beside it)."""
     st = dml_gorder_one(r, ctx)
-    return st + '; ' + st.replace('fz.gen_gof', '@gen@').replace('gof', 'gog').replace('@gen@', 'fz.gen_gof')
+    same = lambda tbl: st.replace('fz.gen_gof', '@gen@').replace('gof', tbl).replace('@gen@', 'fz.gen_gof')
+    return st + '; ' + same('gog') + '; SET sift.test_col_gorder_ends = 64; ' + same('goe') + '; RESET sift.test_col_gorder_ends'
 
 
 def dml_gorder_one(r, ctx):
