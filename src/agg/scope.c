@@ -131,6 +131,33 @@ patch_price(const SiftScopeRead *rd)
 }
 
 /*
+ * The leaves of the index the scope read must carry: those the spec reads, and those the leaves after the index's take their values from (the array of a length, the object of
+ * its members, the lane of a bound, the scalar of a type), which the rows of the patch and of the delta hold only when asked for
+ */
+static int *
+read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
+{
+	int		   *out = palloc((s->nleaves + s->nvleaf * (1 + lay->nleaves)) * sizeof(int));
+
+	*n = 0;
+	for (int i = 0; i < s->nleaves; i++)
+		out[(*n)++] = s->leaves[i];
+	for (int j = 0; j < s->nvleaf; j++)
+	{
+		const SiftAggVLeaf *v = &s->vleaf[j];
+
+		if (v->bound)
+			out[(*n)++] = v->obj + v->bound;
+		else
+			out[(*n)++] = v->obj;
+		for (int i = 0; i < lay->nleaves && sift_aggvleaf_member(v); i++)
+			if (lay->leaf[i].parent == v->obj)
+				out[(*n)++] = i;
+	}
+	return out;
+}
+
+/*
  * Decides how the scan reads the conjunct, before its source is opened (the source of the scope segments is another one); true: the scope segments, and the rows of the entity
  * too when ex->scope_rd->npatch > 0.
  */
@@ -139,13 +166,16 @@ scope_open(AggExec *ex, Snapshot snapshot)
 {
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeRead *rd;
+	int		   *leaves;
+	int			nleaves;
 
 	ex->scope_rd = NULL;
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
+	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
-										ex->spec->topn != NULL, ex->spec->leaves, ex->spec->nleaves);
+										ex->spec->topn != NULL, leaves, nleaves);
 	/* a patch and a delta that cost less than the pricing do not call for it */
 	if (rd->why == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
