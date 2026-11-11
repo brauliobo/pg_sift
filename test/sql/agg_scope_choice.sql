@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
 SET sift.test_scope_patch = off;
 
--- 1200 members, one of 40 tenants each, 100 events each
+-- 1200 items, one of 40 tenants each, 100 events each
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 1200, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 120000) i;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
@@ -156,7 +156,7 @@ BEGIN
 END $$;
 SELECT * FROM rescanned(1) UNION ALL SELECT * FROM rescanned(30) ORDER BY n;
 
--- the pairs change: the keys of a tenant leave and return (the changed pairs of its members, which the units of the scope read patch), the members of many tenants do, the members have
+-- the pairs change: the keys of a tenant leave and return (the changed pairs of its items, which the units of the scope read patch), the items of many tenants do, the items have
 -- pairs of other tenants (a row for each pair is then several rows of the member). The keys of the run: one tenant, four tenants, thirty.
 CREATE FUNCTION churn(n int, only_tenant int DEFAULT NULL) RETURNS void LANGUAGE sql AS $$
 	WITH d AS (DELETE FROM tenant_scope WHERE ctid IN (SELECT ctid FROM (SELECT ctid, row_number() OVER (PARTITION BY tenant_id ORDER BY dim_a_id) r FROM tenant_scope
@@ -182,11 +182,11 @@ BEGIN
 END $$;
 SELECT * FROM states('built');
 SELECT churn(20, 22);
-SELECT * FROM states('20 of 30 members of a tenant changed');
+SELECT * FROM states('20 of 30 items of a tenant changed');
 SELECT churn(30);
 SELECT * FROM states('every pair of every tenant changed');
 INSERT INTO tenant_scope SELECT dim_a_id, 1 + tenant_id % 40 FROM tenant_scope WHERE dim_a_id % 3 = 0 ON CONFLICT DO NOTHING;
-SELECT * FROM states('members of two tenants');
+SELECT * FROM states('items of two tenants');
 RESET plan_cache_mode;
 
 -- the keys by the rows of a table, and several keys of a row for each pair, over the pairs changed
