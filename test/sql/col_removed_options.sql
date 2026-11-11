@@ -37,6 +37,9 @@ SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout_after
 SELECT format('ALTER INDEX ro_plain SET (%s = %s)', opt, val) FROM ro_opts \gexec
 SELECT reloptions FROM pg_class WHERE relname = 'ro_plain';
 
+-- sift.upgrade_commands() lists the RESET of an index that holds one, and no REINDEX for a point_columns that writes nothing
+SELECT object::text, kind, command, required, reason ~ '^removed in 5.0 and ignored' AS says_removed FROM sift.upgrade_commands() WHERE object::text ~ '^ro_' ORDER BY 1;
+
 -- the dump of such an index names the options in its WITH list as stored, and CREATE INDEX accepts it
 SELECT pg_get_indexdef('ro_plain'::regclass) AS dumped \gset
 DROP INDEX ro_plain;

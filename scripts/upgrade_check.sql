@@ -176,7 +176,8 @@ BEGIN
 	-- function; an older one gets these rows after its update)
 	IF to_regprocedure('sift.upgrade_commands()') IS NOT NULL THEN
 		BEGIN
-			FOR r IN SELECT * FROM sift.upgrade_commands() WHERE NOT required LOOP
+			-- the RESET of a removed option is listed above, for a library that has no such row
+			FOR r IN SELECT * FROM sift.upgrade_commands() u WHERE NOT u.required AND u.kind <> 'reset' LOOP
 				object := r.object::text; kind := CASE r.kind WHEN 'rewrite' THEN 'table' ELSE 'option' END; status := 'warn';
 				detected := split_part(r.reason, ': ', 1); advice := substr(r.reason, length(detected) + 3) || '; ' || r.command;
 				RETURN NEXT;

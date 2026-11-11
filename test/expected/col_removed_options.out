@@ -97,6 +97,16 @@ SELECT reloptions FROM pg_class WHERE relname = 'ro_plain';
  {key_cut=tenant_id,point_tid_columns=off,order_array_columns=off,key_columns=auto,cube_minmax=true,key_cut_rows=64,point_columns=uid,order_columns=ts}
 (1 row)
 
+-- sift.upgrade_commands() lists the RESET of an index that holds one, and no REINDEX for a point_columns that writes nothing
+SELECT object::text, kind, command, required, reason ~ '^removed in 5.0 and ignored' AS says_removed FROM sift.upgrade_commands() WHERE object::text ~ '^ro_' ORDER BY 1;
+      object      | kind  |                                     command                                     | required | says_removed 
+------------------+-------+---------------------------------------------------------------------------------+----------+--------------
+ ro_key_cut_rows  | reset | ALTER INDEX public.ro_key_cut_rows RESET (key_cut_rows);                        | f        | t
+ ro_order_columns | reset | ALTER INDEX public.ro_order_columns RESET (order_columns);                      | f        | t
+ ro_plain         | reset | ALTER INDEX public.ro_plain RESET (key_cut_rows, order_columns, point_columns); | f        | t
+ ro_point_columns | reset | ALTER INDEX public.ro_point_columns RESET (point_columns);                      | f        | t
+(4 rows)
+
 -- the dump of such an index names the options in its WITH list as stored, and CREATE INDEX accepts it
 SELECT pg_get_indexdef('ro_plain'::regclass) AS dumped \gset
 DROP INDEX ro_plain;
