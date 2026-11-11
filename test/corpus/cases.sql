@@ -880,3 +880,15 @@ execute st(1 + @K@ % 50);
 select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = any (array(select id from tenants where plan = 'pro' and id < 12))) group by 1;
 -- @case scope_initplan_scalar | scope | a scalar sub-select as the key
 select status, count(*), sum(amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id where s.tenant_id = (select max(id) from tenants where plan = 'team' and id < 30) group by 1;
+-- @case scope_keytable_in | scope | the keys are the rows of a table: s.key IN (SELECT key FROM keys WHERE user_id = 1), read once when the scan starts
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (select tenant_id from scope_user_keys where user_id = 1)) group by 1;
+-- @case scope_keytable_exists | scope | the same under EXISTS, a key of one row
+select status, count(*), sum(amount) from scope_events e where exists (select 1 from scope_pairs s where s.dim_a_id = e.dim_a_id and s.tenant_id in (select tenant_id from scope_user_keys where user_id = 2)) group by 1;
+-- @case scope_keytable_empty | scope | a table of keys that gives no key reads no unit
+select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (select tenant_id from scope_user_keys where user_id = 9)) group by 1;
+-- @case scope_keytable_join_one | scope | JOIN keys k ON k.key = s.key where the table gives one key (a primary key on the user)
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_home k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;
+-- @case scope_keytable_join_null | scope | the home key is NULL: no key
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_home k on k.tenant_id = s.tenant_id where k.user_id = 3 group by 1;
+-- @case scope_keytable_join_many | scope | JOIN keys of a user with three keys counts a row for each pair: the join stays
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs s on s.dim_a_id = e.dim_a_id join scope_user_keys k on k.tenant_id = s.tenant_id where k.user_id = 1 group by 1;

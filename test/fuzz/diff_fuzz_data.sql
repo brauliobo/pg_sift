@@ -63,6 +63,13 @@ INSERT INTO events SELECT * FROM fz.gen_events(1, @ROWS@, 0);
 -- the scope relation of the scope family: (member, scope key) pairs, unique, a member in none, one or several scopes; its journal, and the scope of events by parent_id
 CREATE TABLE item_scope (item_id int NOT NULL, tenant_id int NOT NULL, UNIQUE (item_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO item_scope SELECT i, t FROM generate_series(0, 599) i, generate_series(0, 5) t WHERE fz.h(i, 200 + t) % 100 < 22 AND i % 17 <> 3;
+-- the tables of keys of the scope family: the tenants of a user (unique), one home tenant a user (a primary key, some NULL), loose keys (repeated)
+CREATE TABLE user_keys (user_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (user_id, tenant_id));
+INSERT INTO user_keys SELECT u, t FROM generate_series(0, 3) u, generate_series(0, 5) t WHERE fz.h(u, 210 + t) % 100 < 40;
+CREATE TABLE home_keys (user_id int PRIMARY KEY, tenant_id int);
+INSERT INTO home_keys SELECT u, CASE WHEN u = 3 THEN NULL ELSE fz.h(u, 220) % 6 END FROM generate_series(0, 3) u;
+CREATE TABLE loose_keys (tenant_id int);
+INSERT INTO loose_keys SELECT t FROM generate_series(0, 5) t, generate_series(1, 2) c WHERE fz.h(t, 230 + c) % 100 < 50;
 CREATE INDEX item_scope_journal ON item_scope USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv, ivl)
 	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id)');

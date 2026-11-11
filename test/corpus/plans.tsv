@@ -407,3 +407,9 @@ scope_param_null	-	n/a(prepared)
 scope_param_topn_generic	-	n/a(prepared)
 scope_initplan_array	SiftAgg	single:t
 scope_initplan_scalar	SiftAgg	-
+scope_keytable_in	SiftAgg	single:t
+scope_keytable_exists	SiftAgg	single:t
+scope_keytable_empty	SiftAgg	single:t
+scope_keytable_join_one	SiftAgg	single:t
+scope_keytable_join_null	SiftAgg	single:t
+scope_keytable_join_many	SiftAgg	scope:f:scope,single:t

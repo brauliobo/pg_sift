@@ -8,7 +8,7 @@ set client_min_messages = warning;
 select setseed(0.42);
 select :n_events / 4 as n_orders, :n_events / 2 as n_ledger, :n_events * 3 / 4 as n_web, :n_events * 2 / 5 as n_edges, :n_events / 500 + 1 as n_reads, 50000 as n_big \gset
 set sift.col_auto_merge = off;
-drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide, scope_pairs, scope_events cascade;
+drop table if exists events, dim_a, kinds, dim_b, dim_b_pairs, links_a, orders, order_items, products, customers, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, tenants, spans, wide, scope_pairs, scope_events, scope_user_keys, scope_home cascade;
 
 create table tenants (id int primary key, plan text);
 create table dim_a (id int primary key, tenant_id int not null, type text not null, region text not null);
@@ -187,7 +187,12 @@ create table scope_events (id bigint primary key, dim_a_id int not null, status 
 insert into scope_events select id, dim_a_id, status, amount, d from events;
 create index scope_events_col on scope_events using sift_col (id, dim_a_id, status, amount, d) with (scope = 'tenant_id: dim_a_id -> scope_pairs(dim_a_id, tenant_id)');
 reindex index scope_events_col;
+-- the tables of keys of a user: its tenants (users 1 and 2 have three and one, user 3 none), one home tenant a user (user 3 has a NULL one)
+create table scope_user_keys (user_id int not null, tenant_id int not null, primary key (user_id, tenant_id));
+insert into scope_user_keys values (1, 3), (1, 8), (1, 21), (2, 5);
+create table scope_home (user_id int primary key, tenant_id int);
+insert into scope_home values (1, 3), (2, 5), (3, null);
 
-vacuum (analyze) tenants, dim_a, kinds, dim_b, dim_b_pairs, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide, scope_pairs, scope_events;
+vacuum (analyze) tenants, dim_a, kinds, dim_b, dim_b_pairs, events, customers, products, orders, order_items, readings, weblog, ledger, eav, edges, events_p, lookup_big, link_live, spans, wide, scope_pairs, scope_events, scope_user_keys, scope_home;
 select relname, reltuples::bigint, pg_size_pretty(pg_total_relation_size(oid)) from pg_class where relname in ('events','orders','order_items','readings','weblog','ledger','eav','edges','events_p_2025','lookup_big') order by 1;
 select indexrelid::regclass, pg_size_pretty(pg_relation_size(indexrelid)) from pg_index where indexrelid::regclass::text like '%\_col' or indexrelid::regclass::text like '%\_col%' order by 1;
