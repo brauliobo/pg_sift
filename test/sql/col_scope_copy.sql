@@ -41,7 +41,7 @@ SELECT sift.scope_drop('triple_copy');
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => 0.9);
 SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'scope_id', max_copies => NULL);
 DROP TABLE triple_pairs;
-DROP TABLE no_pk, dup_pairs, text_pairs, wide_pairs;
+DROP TABLE no_pk, no_fk_index, dup_pairs, text_pairs, wide_pairs;
 
 SELECT sift.scope_create('facts_by_scope', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
 SELECT count(*) AS join_rows FROM facts f JOIN pairs p USING (dim_a_id);

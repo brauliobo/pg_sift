@@ -102,7 +102,7 @@ SELECT sift.scope_create('triple_copy', 'facts', 'dim_a_id', 'triple_pairs', 'sc
 ERROR:  scope_create: max_copies must be 1 or more, not NULL
 CONTEXT:  PL/pgSQL function sift.scope_create(text,regclass,name,regclass,name,name[],boolean,name,name,text,numeric) line 25 at RAISE
 DROP TABLE triple_pairs;
-DROP TABLE no_pk, dup_pairs, text_pairs, wide_pairs;
+DROP TABLE no_pk, no_fk_index, dup_pairs, text_pairs, wide_pairs;
 SELECT sift.scope_create('facts_by_scope', 'facts', 'dim_a_id', 'pairs', 'scope_id') AS copy_rows;
 NOTICE:  sift_col index "facts_by_scope_col": 4 automatic choices, 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = scope_id, created_at;
