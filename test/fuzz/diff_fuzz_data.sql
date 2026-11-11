@@ -66,8 +66,10 @@ INSERT INTO item_scope SELECT i, t FROM generate_series(0, 599) i, generate_seri
 CREATE INDEX item_scope_journal ON item_scope USING sift_col (item_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, grp, a, b, ts, amount, big, val, num, flag, doc, metrics, ref, blob, title, wnum, inum, lv, ivl)
 	WITH (paths = 'doc.parts[]{cat text, dir_a text, score float8}, metrics.* float8', scope = 'tenant_id: parent_id -> item_scope(item_id, tenant_id)');
+-- @heap
 -- the journal of the pairs starts at the build of the first scope index: a rebuild stamps its scope segments
 REINDEX INDEX events_col;
+-- @end
 
 -- first-row lookups: a unique key, a key some rows repeat, three versions of a key (unique with the version), versions with a NULL one
 CREATE TABLE dims (a int, b int, label text, score int) WITH (autovacuum_enabled = false);
