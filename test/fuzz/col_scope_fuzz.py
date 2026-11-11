@@ -183,19 +183,15 @@ class Seed:
 
     multiset = False   # a read for each pair is refused: it runs as written
 
-    @property
     def oracle(self):   # the relation of the pairs the final entries are compared with
         return self.pairs
 
-    @property
     def oracle_act(self):
         return 'AND t.deleted_at IS NULL' if self.soft else ''
 
-    @property
     def once_rel(self):   # a fact once for each pair: the rows of the pairs, or the distinct pairs of a multiset
         return self.pairs
 
-    @property
     def once_act(self):
         return self.act
 
@@ -364,7 +360,7 @@ VACUUM (ANALYZE) {self.tables};"""
         ks = [pick() for _ in range(3)]
         pair = "SELECT k, (SELECT count(*) FROM events e %s), (SELECT sum(v) FROM events e %s) FROM unnest(ARRAY[%s]::int8[]) k ORDER BY k"
         scoped = f"WHERE sift.{self.marker}('events_col'::regclass, 'tenant_id', e.dim_a_id, k)"
-        joined = f"JOIN {self.once_rel} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.once_act}"   # the pairs are distinct: a row once for each
+        joined = f"JOIN {self.once_rel()} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.once_act()}"   # the pairs are distinct: a row once for each
         qs.append(('per pair', pair % ((scoped,) * 2 + (lst(ks),)), pair % ((joined,) * 2 + (lst(ks),)), False, False, False, None))
         P = self.pairs
         for cols, aggs, filt in self.grng.sample([({'v'}, "count(*), sum(v)", ''), ({'id', 'v'}, "min(id), max(id), min(v)", ''), (set(), "count(DISTINCT e.dim_a_id), count(*)", ''),
@@ -568,12 +564,17 @@ class DupSeed(Seed):
         self.on = 'deleted_at IS NULL' if self.soft else 'true'
         self.steps = self.steps + DUP_STEPS + (DUP_SOFT_STEPS if self.soft else [])
 
-    @property
     def oracle(self):   # the distinct pairs, the meaning of IN and EXISTS
         return f"(SELECT DISTINCT dim_a_id, tenant_id FROM tenant_scope WHERE {self.on})"
 
-    multiset, oracle_act, once_act = True, '', ''
+    multiset = True
     once_rel = oracle
+
+    def oracle_act(self):
+        return ''
+
+    def once_act(self):
+        return ''
 
     def pair_sql(self):
         part = ' WHERE deleted_at IS NULL' if self.soft else ''
@@ -700,7 +701,7 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
         caps = probe(a) | ({'twohop_strict'} if twohop_strict else set())
         s = make_seed(seed, rows, caps, family, twohop_reason)
         log.write(f'-- seed {seed} planner={"planner" in caps} {type(s).__name__} {vars(s)}\n')
-        a.run(LIB.replace('@ACT_T@', s.oracle_act).replace('@PAIRS@', s.oracle))
+        a.run(LIB.replace('@ACT_T@', s.oracle_act()).replace('@PAIRS@', s.oracle()))
         out = a.run(s.setup_sql())
         if ERR.search(out):
             raise Fail(f'setup: {out.strip()[:1500]}')
