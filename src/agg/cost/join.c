@@ -917,7 +917,11 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 				k->load_cost += jc->frows * AGG_LOAD_ROW;
 			}
 			else
+			{
 				k->child_cost += native;
+				if (probe_made(c, jc) && jc->cvars == NIL)
+					k->scan_cost += k->sel_rows * (s->group >= 0 ? k->elems : 1.0) * AGG_PROBE_SEMI_ROW;
+			}
 			continue;
 		}
 		rows = join_load_rows(c, s, jc, &row_cost);
