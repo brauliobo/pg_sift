@@ -155,10 +155,11 @@ peers_overlap(const RewriteView *v)
 /*
  * Are the segments that overlap each other in the key the runs of a build? Runs overlap each other, and most of the index has to go for none to overlap another: their
  * rewrite is the build's, not churn. A promotion or merge of new rows that grew to the size of a partition overlaps every partition as well, but taking it out
- * leaves none overlapping, and it is a few percent of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
- * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows.
+ * leaves none overlapping, and it is part of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
+ * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows, nor each time the merges of the overlays leave another.
+ * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it.
  */
-#define KEY_RUNS_SHARE	8
+#define KEY_RUNS_SHARE	2
 
 static bool
 key_runs(const RewriteView *v)
