@@ -67,7 +67,9 @@ VERIFY="DO \$\$ DECLARE r record; BEGIN
 		IF r.amname = 'sift' THEN PERFORM sift.verify(r.ix, true); ELSE PERFORM sift.col_verify(r.ix, true); END IF;
 		PERFORM sift._test_check(r.ix);
 	END LOOP;
-	IF to_regclass('docs_sc') IS NOT NULL AND to_regprocedure('scope_missing()') IS NOT NULL AND scope_missing() > 0 THEN RAISE EXCEPTION 'a row of an entity segment has no scope entry'; END IF;
+	IF to_regclass('docs_sc') IS NOT NULL AND to_regprocedure('scope_missing()') IS NOT NULL THEN
+		IF scope_missing() > 0 THEN RAISE EXCEPTION 'a row of an entity segment has no scope entry'; END IF;
+	END IF;
 END \$\$"
 # the answers of everything the scenario created, in a mode
 answers() {
