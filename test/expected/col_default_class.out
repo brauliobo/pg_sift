@@ -90,10 +90,16 @@ SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11 ORDER BY small LIMI
 CREATE INDEX dc_typed ON dc USING sift_col (id sift.col_int4_ops, big sift.col_int8_ops, t sift.col_text_ops, u sift.col_uuid_ops);
 NOTICE:  sift_col index "dc_typed" stores columns id, big, t, u of index "dc_plain", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
-NOTICE:  sift_col index "dc_typed": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
+NOTICE:  sift_col index "dc_typed": 1 automatic choice (value store), 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key; value store = t, u
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_typed');
 DROP INDEX dc_plain;
+NOTICE:  shared value store "dc_t_sift_values": index "dc_typed" is the only one left that uses it
+DETAIL:  Its next merge, rewrite or VACUUM stores the strings of the column in its segments again, and the store is dropped.
+HINT:  REINDEX INDEX dc_typed does it now.
+NOTICE:  shared value store "dc_u_sift_values": index "dc_typed" is the only one left that uses it
+DETAIL:  Its next merge, rewrite or VACUUM stores the strings of the column in its segments again, and the store is dropped.
+HINT:  REINDEX INDEX dc_typed does it now.
 SELECT n, w FROM dc_q WHERE dc_rows(w, true) IS DISTINCT FROM dc_rows(w, false) AND w ~ '^(id|big|t|u) ' ORDER BY n;
  n | w 
 ---+---
