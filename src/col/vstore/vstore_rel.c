@@ -193,6 +193,7 @@ Oid *
 sift_vstore_leaf_stores(Relation index, const SiftColSchema *schema)
 {
 	Oid		   *stores = NULL;
+	Relation	heap = NULL;
 
 	if (index->rd_rel->relkind != RELKIND_INDEX)
 		return NULL;
@@ -200,13 +201,17 @@ sift_vstore_leaf_stores(Relation index, const SiftColSchema *schema)
 	{
 		Oid			store = sift_vstore_leaf_store(index, &schema->cols[c]);
 
-		if (OidIsValid(store))
-		{
-			if (stores == NULL)
-				stores = palloc0(schema->ncols * sizeof(Oid));
-			stores[c] = store;
-		}
+		if (!OidIsValid(store))
+			continue;
+		if (heap == NULL)
+			heap = table_open(index->rd_index->indrelid, AccessShareLock);
+		if (sift_vstore_leaf_left(heap, index, &schema->cols[c]))
+			continue;
+		stores = stores ? stores : palloc0(schema->ncols * sizeof(Oid));
+		stores[c] = store;
 	}
+	if (heap != NULL)
+		table_close(heap, NoLock);
 	return stores;
 }
 
@@ -347,7 +352,7 @@ sift_vstore_ensure(Relation heap, Relation index, AttrNumber attno)
 	return store;
 }
 
-static void sift_vstore_dropping(Oid index, Oid heap);
+static void sift_vstore_dropping(Oid index, Oid heap, bool released);
 
 void
 sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
@@ -358,7 +363,7 @@ sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
 		return;
 	deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, RelationRelationId, store);
 	CommandCounterIncrement();
-	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap));
+	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap), true);
 }
 
 /* The indexes that depend on the store (the members that hold references to it) */
@@ -506,6 +511,7 @@ typedef struct Gone
 {
 	Oid			index;
 	Oid			heap;
+	bool		released;		/* the index stays, it stopped using a store (a rebuild or the rewrite of the one left alone) */
 } Gone;
 
 static Gone *gone;
@@ -513,14 +519,14 @@ static int	ngone,
 			gone_cap;
 
 static void
-sift_vstore_dropping(Oid index, Oid heap)
+sift_vstore_dropping(Oid index, Oid heap, bool released)
 {
 	if (ngone == gone_cap)
 	{
 		gone_cap = gone_cap ? gone_cap * 2 : 16;
 		gone = gone ? repalloc(gone, gone_cap * sizeof(Gone)) : MemoryContextAlloc(TopMemoryContext, gone_cap * sizeof(Gone));
 	}
-	gone[ngone++] = (Gone) {index, heap};
+	gone[ngone++] = (Gone) {index, heap, released};
 }
 
 /* An index of ours is being dropped: its table is looked at for stores that no index uses before the transaction commits */
@@ -539,9 +545,35 @@ sift_vstore_note_drop(Oid relid)
 	tp = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(relid));
 	if (HeapTupleIsValid(tp))
 	{
-		sift_vstore_dropping(relid, ((Form_pg_index) GETSTRUCT(tp))->indrelid);
+		sift_vstore_dropping(relid, ((Form_pg_index) GETSTRUCT(tp))->indrelid, false);
 		ReleaseSysCache(tp);
 	}
+}
+
+/* A store that a single index uses, which nothing else shares: the index is told that its next merge, rewrite or VACUUM stores the strings again */
+static bool
+left_visit(Oid store, void *arg)
+{
+	Relation	heap = arg;
+	List	   *members = sift_vstore_members(store);
+
+	if (list_length(members) == 1)
+	{
+		Relation	index = index_open(linitial_oid(members), AccessShareLock);
+		const SiftColSchema *schema = sift_col_rel(index)->schema;
+		AttrNumber	attno = get_attnum(RelationGetRelid(heap), get_attname(store, 1, false));
+		bool		left = false;
+
+		for (int c = 0; !left && c < schema->ncols; c++)
+			left = sift_vstore_leaf_attno(index, &schema->cols[c]) == attno && sift_vstore_leaf_left(heap, index, &schema->cols[c]);
+		if (left)
+			ereport(NOTICE,
+					(errmsg("shared value store \"%s\": index \"%s\" is the only one left that uses it", get_rel_name(store), RelationGetRelationName(index)),
+					 errdetail("Its next merge, rewrite or VACUUM stores the strings of the column in its segments again, and the store is dropped."),
+					 errhint("REINDEX INDEX %s does it now.", quote_identifier(RelationGetRelationName(index)))));
+		index_close(index, AccessShareLock);
+	}
+	return false;
 }
 
 static void
@@ -556,7 +588,7 @@ gone_xact(XactEvent event, void *arg)
 		return;
 	/* DROP INDEX CONCURRENTLY names its index in the first of its transactions and deletes it in the last: the ones still there wait for the next */
 	for (int i = 0; i < ngone; i++)
-		if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].index)))
+		if (!gone[i].released && SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].index)))
 			gone[kept++] = gone[i];
 		else if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].heap)))
 			heaps = list_append_unique_oid(heaps, gone[i].heap);
@@ -568,6 +600,7 @@ gone_xact(XactEvent event, void *arg)
 		if (heap == NULL)
 			continue;
 		sift_vstore_drop_unused(heap);
+		each_store(heapoid, left_visit, heap);
 		table_close(heap, NoLock);
 	}
 	if (heaps != NIL)

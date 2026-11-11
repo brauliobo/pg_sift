@@ -24,6 +24,10 @@ Off switch: `SET sift.col_format_minor = 14` before the build writes strings in 
 
 A shared leaf answers equality, IN, range, prefix and contains from the store in place: each run is searched like a segment dictionary (hash, sorted order, blocks), and group by and distinct work on the codes, translating only the groups that are output. A segment's dictionary is never materialized for a read that does not need it.
 
+## The only index left
+
+When the other indexes that held the column with the key order of an index are dropped or rebuilt with another order, nothing is left to share with: DROP INDEX says so with a NOTICE that names the index. From then on the segments that the index writes hold their strings, its maintenance (a merge, a rewrite or VACUUM) rewrites the segments that name the store, and once none does the index stops depending on the store, which goes with the transaction of that VACUUM. `REINDEX INDEX` does it at once. An index that waits for a peer to be rebuilt (the first member, `own: not yet rebuilt`) is not left alone: another index holds the column with its order.
+
 ## Garbage and epochs
 
 A string that no segment names any more (its rows were deleted or replaced and the segments that held it were merged or rewritten) keeps its code: the store is append-only inside an epoch. `sift.col_value_store_usage(store)` reads, from the segments of the members, the codes each names by epoch, and `sift.col_value_store_status` shows `total_codes`, `live_codes` and `garbage_pct`.

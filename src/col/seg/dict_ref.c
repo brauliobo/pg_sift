@@ -140,9 +140,9 @@ sift_cseg_ref_codes(SiftColSegment *seg, int col, uint32 *store, uint32 *epoch, 
 	return codes;
 }
 
-/* Whether a leaf of the segment refers to an epoch of its shared value store that is not the store's current one */
+/* Whether a leaf of the segment refers to an epoch of its shared value store that is not the store's current one, or to the store at all when the leaf is left[c] (NULL: none is) */
 bool
-sift_cseg_names_old_epoch(SiftColSegment *seg)
+sift_cseg_names_old_epoch(SiftColSegment *seg, const bool *left)
 {
 	for (int c = 0; sift_cref_host != NULL && c < seg->schema->ncols; c++)
 	{
@@ -156,7 +156,7 @@ sift_cseg_names_old_epoch(SiftColSegment *seg)
 		if (len < sizeof(head))
 			continue;
 		seg_read(seg, seg_sec(seg, SIFT_SEC_DICT)->off + off, sizeof(head), head);
-		if (head[0] == DICT_REF && sift_cref_host->epoch(head[3]) != head[4])
+		if (head[0] == DICT_REF && ((left != NULL && left[c]) || sift_cref_host->epoch(head[3]) != head[4]))
 			return true;
 	}
 	return false;

@@ -174,6 +174,80 @@ test_forced(Relation heap, Relation index, const SiftColDef *d)
 }
 #endif
 
+/* Whether another sift_col index of the table holds the column with the order of this one: the strings can be shared with it */
+static bool
+has_peer(Relation heap, Relation index, AttrNumber hatt)
+{
+	char	   *mine = NULL;
+	bool		found = false;
+
+	foreach_oid(oid, RelationGetIndexList(heap))
+	{
+		Relation	o;
+		bool		holds = false;
+
+		if (oid == RelationGetRelid(index))
+			continue;
+		o = index_open(oid, AccessShareLock);
+		if (o->rd_rel->relam == index->rd_rel->relam && o->rd_index->indisvalid)
+			for (int i = 0; !holds && i < IndexRelationGetNumberOfKeyAttributes(o); i++)
+				holds = o->rd_index->indkey.values[i] == hatt;
+		if (holds)
+		{
+			if (mine == NULL)
+				mine = sift_vstore_order(index);
+			found = strcmp(mine, sift_vstore_order(o)) == 0;
+		}
+		index_close(o, AccessShareLock);
+		if (found)
+			break;
+	}
+	return found;
+}
+
+/*
+ * Whether the leaf names a store that nothing else shares: the index depends on the store of its column and no other index of the table holds the column with its
+ * order (the others were dropped, or rebuilt with another order). Its strings go back into its segments as they are written, the maintenance rewrites the segments
+ * that name the store, and the store goes when none does (sift_vstore_vacuum)
+ */
+bool
+sift_vstore_leaf_left(Relation heap, Relation index, const SiftColDef *d)
+{
+	AttrNumber	hatt = sift_vstore_leaf_attno(index, d);
+
+#ifdef SIFT_TESTING
+	if (hatt != InvalidAttrNumber && test_forced(heap, index, d))
+		return false;
+#endif
+	return hatt != InvalidAttrNumber && !has_peer(heap, index, hatt);
+}
+
+/* The leaves of the schema that are left (see above) and that the index still depends on a store for; NULL when there is none */
+bool *
+sift_vstore_left_leaves(Relation index, const SiftColSchema *schema)
+{
+	Relation	heap = NULL;
+	bool	   *left = NULL;
+
+	if (index->rd_rel->relkind != RELKIND_INDEX)
+		return NULL;
+	for (int c = 0; c < schema->ncols; c++)
+	{
+		if (!OidIsValid(sift_vstore_leaf_store(index, &schema->cols[c])))
+			continue;
+		if (heap == NULL)
+			heap = table_open(index->rd_index->indrelid, AccessShareLock);
+		if (sift_vstore_leaf_left(heap, index, &schema->cols[c]))
+		{
+			left = left ? left : palloc0(schema->ncols * sizeof(bool));
+			left[c] = true;
+		}
+	}
+	if (heap != NULL)
+		table_close(heap, NoLock);
+	return left;
+}
+
 /* The build of an index: the leaves that sharing pays for get their store */
 void
 sift_vstore_auto(Relation heap, Relation index)

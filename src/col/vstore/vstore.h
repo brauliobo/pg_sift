@@ -53,6 +53,8 @@ extern void sift_vstore_choice_texts(Relation heap, Relation index, const SiftCo
 /* The order of an index as the rule compares it ("key_cut = a, b; key_order = c", "table order") */
 extern char *sift_vstore_order(Relation index);
 extern bool sift_vstore_pays(Relation heap, Relation index, const SiftColDef *leaf);
+extern bool sift_vstore_leaf_left(Relation heap, Relation index, const SiftColDef *leaf);
+extern bool *sift_vstore_left_leaves(Relation index, const SiftColSchema *schema);
 /* An index that is rebuilt and no longer shares the column stops depending on its store (the store goes when no index is left) */
 extern void sift_vstore_release(Relation heap, Relation index, AttrNumber attno);
 extern void sift_vstore_auto(Relation heap, Relation index);

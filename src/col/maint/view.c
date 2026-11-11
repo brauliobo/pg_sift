@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 #include "col/maint/maint_int.h"
+#include "col/vstore/vstore.h"
 
 SbSpans
 maint_seg_spans(SiftColSegment *seg)
@@ -58,6 +59,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 	RewriteView *v = MemoryContextAllocZero(cx, sizeof(RewriteView));
 	SiftConnStale *conn = sift_conn_stale_begin(index, cx);
 	SiftScopeStale *scope = sift_scope_stale_begin(index, cx);
+	bool	   *left = sift_vstore_left_leaves(index, sift_col_rel(index)->schema);
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -66,7 +68,7 @@ maint_view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 			v->seg[v->n] = sift_cseg_open(index, &v->imm[v->n], cx);
 			v->span[v->n] = maint_seg_spans(v->seg[v->n]);
 			v->over[v->n] = !maint_is_partition(&v->imm[v->n]);
-			v->old_epoch[v->n] = sift_cseg_names_old_epoch(v->seg[v->n]);
+			v->old_epoch[v->n] = sift_cseg_names_old_epoch(v->seg[v->n], left);
 			v->stale[v->n] = v->old_epoch[v->n] || (conn != NULL && sift_conn_stale(conn, v->seg[v->n])) || (scope != NULL && sift_scope_stale(scope, v->seg[v->n]));
 			v->n++;
 		}

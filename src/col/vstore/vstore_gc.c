@@ -118,7 +118,8 @@ fail:
 
 /*
  * VACUUM of a table with a sift_col index that uses a shared value store, once for each store (by the member with the lowest oid): an old epoch that no segment names
- * is retired, and a store of at least sift.test_vstore_gc_kb whose codes are mostly unused begins a new epoch, so that the segments the merges write move to it
+ * is retired, and a store of at least sift.test_vstore_gc_kb whose codes are mostly unused begins a new epoch, so that the segments that the maintenance of the members
+ * writes name it (the index is then due for a rewrite, why "value store epoch")
  */
 static void
 vacuum_store(Oid store)
@@ -164,7 +165,46 @@ vacuum_store(Oid store)
 	UnlockRelationOid(store, ShareRowExclusiveLock);
 }
 
-/* VACUUM of the table of the index: the stores its leaves use, each looked at by the member with the lowest oid */
+/*
+ * The leaves of the index that use a store nothing else shares (sift_vstore_leaf_left) and none of whose segments names it any more, because the merges and
+ * rewrites have put the strings back: the index stops depending on the store, which goes with the transaction
+ */
+static void
+finish_left(Relation index)
+{
+	const SiftColSchema *schema = sift_col_rel(index)->schema;
+	bool	   *left = sift_vstore_left_leaves(index, schema);
+	Relation	heap;
+
+	if (left == NULL)
+		return;
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	for (int c = 0; c < schema->ncols; c++)
+	{
+		Oid			store = left[c] ? sift_vstore_leaf_store(index, &schema->cols[c]) : InvalidOid;
+		List	   *members,
+				   *locked;
+		uint64		epoch,
+					total,
+					live;
+		Bitmapset  *epochs;
+
+		if (!OidIsValid(store))
+			continue;
+		members = sift_vstore_members(store);
+		if (list_length(members) != 1 || !try_lock_all(store, members, &locked))
+			continue;
+		sift_vstore_usage(store, &epoch, &total, &live, &epochs);
+		if (bms_is_empty(epochs))
+			sift_vstore_release(heap, index, sift_vstore_leaf_attno(index, &schema->cols[c]));
+		foreach_oid(m, locked)
+			UnlockRelationOid(m, ShareUpdateExclusiveLock);
+		UnlockRelationOid(store, ShareRowExclusiveLock);
+	}
+	table_close(heap, NoLock);
+}
+
+/* VACUUM of the table of the index: the stores its leaves use, each looked at by the member with the lowest oid, then the leaves left alone */
 void
 sift_vstore_vacuum(Relation index)
 {
@@ -184,4 +224,5 @@ sift_vstore_vacuum(Relation index)
 		if (!again && low == RelationGetRelid(index))
 			vacuum_store(stores[c]);
 	}
+	finish_left(index);
 }
