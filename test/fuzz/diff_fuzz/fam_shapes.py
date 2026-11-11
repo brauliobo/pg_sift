@@ -350,3 +350,21 @@ def render_unusedlat(p):
     elif p['read'] == 'group':
         q['keys'].append('x.derived_cat')
     return grouped(q, frm), bool(q['keys'])
+
+
+CORR_DERIVED = ['(SELECT kind, cat, derived_cat FROM lookup GROUP BY 1, 2, 3)', '(SELECT DISTINCT kind, cat, derived_cat FROM lookup)',
+                '(SELECT kind, cat, derived_cat FROM lookup UNION SELECT kind, cat, derived_cat FROM lookup)', '(SELECT kind, cat, derived_cat FROM lookup LIMIT 100)',
+                '(SELECT kind, cat, derived_cat FROM (SELECT kind, cat, derived_cat FROM lookup GROUP BY 1, 2, 3) q)']
+CORR_TIES = ["d.cat = 'cat_' || (e.id % 6)", "d.derived_cat = 'm' || (e.id % 3)", "d.kind = 'k' || (e.id % 5)", "d.cat = 'cat_' || (e.grp % 6) AND d.kind = e.kind"]
+
+
+def gen_corrsub(r, ctx):
+    """a scalar sub-select over a join with a derived table PostgreSQL does not pull up, correlated on a column of the derived table: pushed into its plan"""
+    return dict(derived=r.choice(CORR_DERIVED), tie=r.choice(CORR_TIES), agg=r.choice(['count(*)', 'count(f.amount)', 'sum(f.amount)']), lateral=r.random() < 0.3,
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12))
+
+
+def render_corrsub(p):
+    sub = f"SELECT {p['agg']} FROM events f JOIN {p['derived']} d ON d.kind = f.kind WHERE {' AND '.join([p['tie']] + p['inner'])}"
+    frm, out = ('events e LEFT JOIN LATERAL (' + sub + ') x(v) ON true', 'x.v') if p['lateral'] else ('events e', f'({sub})')
+    return f"SELECT e.id, {out} AS v0 FROM {frm} WHERE e.id % {p['pick']} = 0", False

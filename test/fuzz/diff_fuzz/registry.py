@@ -5,7 +5,7 @@ import re
 
 from .db import BASE
 from .fam_basic import gen_colcmp, gen_distleaf, gen_keys, gen_lookup, gen_numsum, gen_oneleaf, gen_partition, gen_placeholder, gen_preagg, gen_setkeys, gen_widew, render_lookup, render_oneleaf, render_partition, render_placeholder, render_preagg, render_setkeys
-from .fam_shapes import gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_toplook, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_toplook, render_topn, render_union
+from .fam_shapes import gen_corrsub, render_corrsub, gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_toplook, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_toplook, render_topn, render_union
 from .fam_lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point, gen_pointagg, gen_same, gen_trail, gen_twolevel, gen_txnmix, render_distinctrows, render_listpage, render_oneentity, render_point, render_pointagg, render_same, render_trail, render_twolevel, render_txnmix
 from .fam_units import gen_arrlen, gen_dead, gen_floor, gen_keycut, gen_nullzone, gen_window, render_keycut, render_window
 from .fam_groups import gen_groupsplit, render_groupsplit
@@ -30,7 +30,7 @@ FAMILIES = {
     'having': (gen_having, render_having, 0),   # opt-in: --families having, --having-weight
     'listpage': (gen_listpage, render_listpage, 3), 'groupsplit': (gen_groupsplit, render_groupsplit, 4),
     'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'ctecopies': (gen_ctecopies, render_ctecopies, 4), 'keylist': (gen_keylist, render_keylist, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
-    'scope': (gen_scope, render_scope, 4),
+    'scope': (gen_scope, render_scope, 4), 'corrsub': (gen_corrsub, render_corrsub, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']

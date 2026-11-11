@@ -845,6 +845,8 @@ ancestor_param_walker(Node *n, PlannerInfo *root)
 {
 	if (n == NULL)
 		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, ancestor_param_walker, root, 0);
 	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
 		for (PlannerInfo *up = root->parent_root; up != NULL; up = up->parent_root)
 			foreach_node(PlannerParamItem, item, up->plan_params)
