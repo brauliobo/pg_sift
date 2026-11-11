@@ -75,7 +75,18 @@ Four indexes on the same table (the three above and D, `url, uid, tenant` with `
 
 D keeps its own strings under the rule, and its CREATE INDEX says how much it stores again and what the order of the index that holds the column would spare it (at 2,000,000 rows D's strings are 72.5 MB of the 295.3 MB). Sharing across orders is not done: the codes of an index that meets the rows in another order do not climb in the store, and its strings are read block by block in the order of the store.
 
-Reads, 2,000,000 rows (millions of instructions, own -> shared, cold / warm): equality on the URL 4.8 -> 4.9 / 1.2 -> 1.2; IN of 100 URLs 125 -> 127 / 114 -> 116; range on the URL 2,698 -> 2,788 / 2,245 -> 2,273; group by the URL 951 -> 1,044 / 439 -> 466 (one index), 1,076 / 484 with three indexes, whose parallel builds cut the segments differently and the codes climb in pieces; distinct 2,331 -> 2,332 / 1,814 -> 1,811. At 100,000 and 500,000 rows the same shapes are equal or cheaper (equality 70 -> 3.7 cold at 500,000: the segment's dictionary is not read for a code lookup). Blocks touched fall for group, distinct and range (15,216 -> 4,700 + 269 at 2M for the range), the store's own blocks are read only for the strings that are output.
+Reads, 2,000,000 rows, the three indexes of the lab above with the automatic choices of the build (instructions of the backend in millions, own -> shared, cold / warm; `perf stat`, the pushdown plan forced):
+
+| shape | cold | warm |
+| --- | ---: | ---: |
+| equality on the URL | 7.8 -> 7.6 | 1.0 -> 1.0 |
+| equality on the uid | 7.5 -> 7.2 | 1.1 -> 1.0 |
+| IN of 100 URLs | 72.2 -> 83.3 (+11) | 52.1 -> 60.8 (+8.7) |
+| range on the URL | 3,457 -> 3,593 (+3.9%) | 2,174 -> 2,245 (+3.3%) |
+| group by the URL (2,000,000 groups) | 9,019 -> 8,993 | 7,574 -> 7,628 (+0.7%) |
+| count(DISTINCT url) | 3,169 -> 3,144 | 1,732 -> 1,780 (+2.8%) |
+
+Buffers touched are equal (range 17,421 -> 17,802 cold). Where the rest goes, from the profile of the cold range (the worst shape): the strings of a segment are rebuilt from the store's runs by code (+67 M: the codes sorted back into runs, the blocks copied, minus the parse of an own dictionary), and the predicate meets the strings in that layout (+45 M); a lookup by value is searched in each of the store's 15 runs (the IN: 100 values, +8.7 M). The block offsets of a run are read one window at a time, as the blocks are: before that, a full read of the strings left the page of the blocks for the page of their offsets and back (62,000 more buffer accesses at 2,000,000 rows, 66 M instructions). The strings of a shared column are fetched through the codes, which an own dictionary does not need, so the worst shape stays about 4% above the own index at this size; against it the lab table keeps 23% less of the indexes (244.4 -> 186.9 MB with the order array of the URL off, 416.8 -> 372.8 MB with it on: the order array is not shared) and the sharing spares 29 bytes a row (57.5 MB of 2,000,000 rows), six times the 5 bytes a row the rule asks.
 
 Builds, 2,000,000 rows: an index that adopts a store builds in 1.0 to 1.45 times the time of one with its strings (B 3.7-5.0 s -> 4.3-7.1 s, C 2.0-2.1 s -> 2.0-2.9 s on a loaded host); the index that creates the stores pays for them once (5.4-7.0 s -> 11.5-13.4 s for two stores of two million strings). WAL of a build is the same.
 

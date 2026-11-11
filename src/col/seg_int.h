@@ -337,6 +337,10 @@ typedef struct DictLook
 	bool		bc_tried;
 	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
 	uint32		kept_next;
+	uint32	   *boffw;			/* the block offsets around the last block read, boffw_n of them from block boffw_b0: blocks read in turn take them from one read (NULL: none yet) */
+	uint32		boffw_b0;
+	uint32		boffw_n;
+	uint32		boffw_last1;	/* the last block read, plus 1 */
 	/* written before they are read, so not cleared with the rest (look_alloc) */
 	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
 	uint8		blkraw[DICT_BLOCK_RAW_MAX];
