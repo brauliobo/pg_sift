@@ -95,7 +95,7 @@ maint_vacuum_truncates(Relation index)
 
 /*
  * The rolling rewrite of a key-cut index (roll.c) ends with the blocks of its last step free (the partition it took and the overlay rows that waited for it), and the
- * promotions and the first step of the next pass write into them. The VACUUM leaves as many free blocks inside the file as the largest segment holds (and cuts the free tail):
+ * promotions and the first step of the next pass write into them. The VACUUM leaves as many free blocks inside the file as a partition holds, or the largest segment when it is smaller (and cuts the free tail):
  * it moves down only the blocks above the end that holds no more (the online shrink, bm25/space.c), where a copy of the segments that end the file down into the holes
  * wrote whole segments to cut a part of one, as the segments of the steps lie in each other's extents.
  */
@@ -114,7 +114,7 @@ maint_rolling_keep(Relation index)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			largest = Max(largest, snap->segs[i].bytes);
 	pfree(snap);
-	return largest / BLCKSZ;
+	return Min(largest, (uint64) maint_part_kb * 1024) / BLCKSZ;
 }
 
 /*
