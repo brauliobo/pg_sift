@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a correlated sub-select over a join with a derived table that PostgreSQL does not pull up (`GROUP BY`, `DISTINCT`, `UNION`, `HAVING`), filtered by a column of the outer row on a column of the derived table, could return the count (or sum) of an earlier outer row for the later ones when the aggregate scan ran it: the scan read the derived table once and replayed it for every outer row. The scan now leaves such a sub-select to PostgreSQL's plan, which asks the derived table once for each outer row (seen from 4.0.5 to 4.3.1).
+
 
 ## 4.3.1 - 2026-11-11
 

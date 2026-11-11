@@ -353,7 +353,7 @@ extern Node *placeholder_expr(AggCtx *c, PlaceHolderVar *ph);
 extern Node *strict_placeholders(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
-extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);
+extern bool reads_outer(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, int skip);
 extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool walk_memo_get(const void *a, const void *b, int skip, double *r);
 extern void walk_memo_put(const void *a, const void *b, int skip, double r);

@@ -466,7 +466,7 @@ two_spine(TwoLevel *t)
 		case RTE_VALUES:
 		case RTE_FUNCTION:
 		case RTE_SUBQUERY:
-			if (reads_outer(&outer, e, 1) || contain_volatile_functions(e->rtekind == RTE_VALUES ? (Node *) e->values_lists :
+			if (reads_outer(&outer, e, rel, 1) || contain_volatile_functions(e->rtekind == RTE_VALUES ? (Node *) e->values_lists :
 																		 e->rtekind == RTE_FUNCTION ? (Node *) e->functions : (Node *) e->subquery))
 				return agg_refuse_on(SPINE_SHAPE, "the spine reads the query's other tables or calls a volatile function");
 			break;

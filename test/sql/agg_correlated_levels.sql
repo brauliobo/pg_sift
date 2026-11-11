@@ -49,6 +49,55 @@ SELECT * FROM check_query($q$
    FROM facts f LEFT JOIN (SELECT kind, label FROM lookup_values m WHERE m.region = r.region) l ON l.kind = f.kind)
  FROM regions r
 $q$);
+-- A condition on the columns of a derived table that PostgreSQL does not pull up (GROUP BY, DISTINCT, a set operation, HAVING) is pushed into the plan of
+-- the derived table as a parameter of the outer row: the sub-select does not hold it, but the scan would read the derived table once for all the outer rows.
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f JOIN (SELECT kind, region FROM lookup_values GROUP BY 1, 2) d ON d.kind = f.kind WHERE d.region = r.region)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f JOIN (SELECT DISTINCT kind, region FROM lookup_values) d ON d.kind = f.kind WHERE d.region = r.region)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f
+   JOIN (SELECT kind, region FROM lookup_values UNION SELECT kind, region FROM lookup_values) d ON d.kind = f.kind WHERE d.region = r.region)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f JOIN (SELECT kind, count(*) c FROM lookup_values GROUP BY 1) d ON d.kind = f.kind WHERE d.c = r.id)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f
+   JOIN (SELECT kind FROM lookup_values GROUP BY kind HAVING count(*) > r.id) d ON d.kind = f.kind)
+ FROM regions r
+$q$);
+-- The same through a lateral sub-select, a materialized or inlined CTE and a VALUES list.
+SELECT * FROM check_query($q$
+ SELECT r.id, x.c FROM regions r LEFT JOIN LATERAL
+  (SELECT count(*) c FROM facts f JOIN (SELECT kind, region FROM lookup_values GROUP BY 1, 2) d ON d.kind = f.kind WHERE d.region = r.region) x ON true
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f
+   JOIN (WITH c AS MATERIALIZED (SELECT kind, region FROM lookup_values GROUP BY 1, 2) SELECT kind, region FROM c) d ON d.kind = f.kind WHERE d.region = r.region)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f
+   JOIN (VALUES ('a', 'east'), ('b', 'west'), ('b', 'east')) d(kind, region) ON d.kind = f.kind WHERE d.region = r.region)
+ FROM regions r
+$q$);
+-- Control: the condition inside the derived table, and a constant one: the first is read per outer row, the second once.
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f
+   JOIN (SELECT kind FROM lookup_values WHERE region = r.region GROUP BY kind) d ON d.kind = f.kind)
+ FROM regions r
+$q$);
+SELECT * FROM check_query($q$
+ SELECT r.id, (SELECT count(*) FROM facts f JOIN (SELECT kind, region FROM lookup_values GROUP BY 1, 2) d ON d.kind = f.kind WHERE d.region = 'west')
+ FROM regions r
+$q$);
 -- A function that reads the grandparent's column.
 SELECT * FROM check_query($q$
  SELECT r.id, (SELECT count(*) FROM facts f CROSS JOIN LATERAL generate_series(1, r.id) g(i) WHERE g.i = 1 + f.id % 4)

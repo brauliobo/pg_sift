@@ -29,9 +29,12 @@ unsupported_clause(AggCtx *c, Node *n)
 	return n != NULL && (contain_volatile_functions(n) || has_exec_param_walker(n, c));
 }
 
-/* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
+/*
+ * does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? PostgreSQL pushes a condition on the columns of
+ * a sub-select into the copy of it that it plans (rel->subroot), as a parameter of the query above: the sub-select of the RTE does not hold it.
+ */
 bool
-reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
+reads_outer(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, int skip)
 {
 	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
 	OuterRef	oref = {c->root, e->rtekind == RTE_SUBQUERY ? 0 : -1, skip};
@@ -49,7 +52,8 @@ reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
 	sift_agg_outer_walks++;
 #endif
 	if (e->rtekind == RTE_SUBQUERY)
-		r = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
+		r = query_tree_walker(e->subquery, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE) ||
+			(skip && rel->subroot != NULL && ancestor_param_walker((Node *) rel->subroot->parse, c->root));
 	else
 		r = outer_ref_walker(expr, &oref) || (skip && ancestor_param_walker(expr, c->root));
 	walk_memo_put(e, c->root, skip, r);
@@ -103,9 +107,9 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	 * A column of a query above the aggregate's own reaches the child as a parameter of that query's plan, which changes per row of it; the
 	 * scan replays its groups when rescanned (agg_rescan) and never sees it. Only the query's own tables are an input of the child.
 	 */
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, rel, 1))
 		return agg_refuse_on(JOIN_CHILD, "the child is not a base relation of this query level, or reads the queries around it");
-	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
+	if (reads_outer(c, e, rel, 0) || !bms_is_empty(rel->lateral_relids))
 		return e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION ? planned_correlated_child(c, e, rel, jc) :
 			agg_refuse_f(JOIN_CHILD, "%s (%s) reads the query's other tables, which only a sub-select or a function can do as a child", e->eref->aliasname, *what);
 	if ((jc->cpath = child_path(rel, false)) == NULL)
