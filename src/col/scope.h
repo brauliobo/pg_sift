@@ -23,7 +23,7 @@ typedef struct SiftScopeRel
 	char	   *name;
 	char	   *a;
 	char	   *b;
-	char	   *index_name;			/* using name: the unique btree of the relation that defines its rows, NULL: chosen by the rule (sift_scope_resolve) */
+	char	   *index_name;			/* using name: the btree of the relation that defines its rows, NULL: chosen by the rule (sift_scope_resolve) */
 } SiftScopeRel;
 
 typedef struct SiftScopeSpec
@@ -55,19 +55,19 @@ extern int	sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf,
 extern int	sift_scope_time_leaf(const SiftColDef *defs, int n);
 /* The checks of a declared scope's relation (ERROR with a hint when it does not qualify); left open in *rel, AccessShare */
 extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
-/* ... and the unique btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
+/* ... and the btree on (member, scope_key) that defines its pairs: the one the index records (a dependency written by CREATE INDEX and REINDEX), never chosen again by a read */
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
-/* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded unique btrees */
+/* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded btrees */
 extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
-/* CREATE INDEX, REINDEX (sticky false: chooses the unique btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
+/* CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
-/* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the unique btree; -1 when the index declares no such scope */
+/* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
 /*
- * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the unique btree
+ * What the planner needs to prove that a query asks for the pairs of a scope (docs/COL-SCOPE.md): the paths that give pairs. A leg is the rows of rel that satisfy pred, the btree
  * that defines them (recorded when the scope segments were written); pred is the predicate of that btree as an implicit-AND list over Vars of varno 1 (NIL: every row).
  * The pairs of a scope are the distinct (member, key) of its legs.
  */
@@ -85,6 +85,8 @@ typedef struct SiftScopeLeg
 	Oid			via_btree;
 	List	   *via_pred;
 } SiftScopeLeg;
+/* Are the pairs of the scope (of one path) a multiset: its recorded btree is not unique (or none is recorded), so a join counts a fact once for each row of a pair */
+extern bool sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s);
 /* The legs of scope ordinal scope of the index: 1 (the pairs relation) or 2 (the pairs relation and the joined path); returns their number */
 extern int	sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2]);
 
@@ -179,6 +181,8 @@ typedef struct SiftScopePair
 	int64		member;
 	int64		key;
 } SiftScopePair;
+/* Sorts the pairs by (member, key) and keeps each once: the one place that turns the rows of a scope relation, which may hold a pair in several rows, into pairs; returns how many there are */
+extern uint64 sift_scope_pairs_distinct(SiftScopePair *p, uint64 n);
 
 /* The write buffers of an index: the batches of the live rows of each, as the backend keeps them (a scan reads them the same way), and what the scan stamps their rows with (col/scan/scope_delta.c) */
 struct SiftColBatch;
@@ -330,7 +334,7 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 extern Oid	sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey);
 
 #ifdef SIFT_TESTING
-/* A fill of one scope read from a relation and its unique btree on (member, key), without a declaration (sift._test_scope_expand) */
+/* A fill of one scope read from a relation and its btree on (member, key), without a declaration (sift._test_scope_expand) */
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;

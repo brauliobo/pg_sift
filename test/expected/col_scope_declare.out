@@ -64,8 +64,8 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('member not an integer', 'tenant_id: dim_a_id -> pairs_text(m, s)'),
 	('scope key not an integer', 'tenant_id: dim_a_id -> pairs_text(s, m)'),
 	('nullable columns', 'tenant_id: dim_a_id -> pairs_nullable(m, s)'),
-	('no unique btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
-	('unique on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
+	('no btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
+	('btree on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
 	('partial unique, no journal index', 'tenant_id: dim_a_id -> pairs_partial(m, s)'),
 	('deferrable unique', 'tenant_id: dim_a_id -> pairs_deferrable(m, s)'),
 	('unique with an included column', 'tenant_id: dim_a_id -> pairs_include(m, s)');
@@ -99,11 +99,11 @@ NOTICE:  scope "tenant_id": the pairs of "pairs_partial" are the rows of its uni
  23 | member not an integer            | scope "tenant_id": column "m" of "pairs_text" is not an integer [The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.]
  24 | scope key not an integer         | scope "tenant_id": column "m" of "pairs_text" is not an integer [The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.]
  25 | nullable columns                 | scope "tenant_id": column "m" of "pairs_nullable" is nullable [Declare the member and scope key columns NOT NULL: a pair has both keys.]
- 26 | no unique btree                  | scope "tenant_id": "pairs_plain" has no unique btree index on (m, s) [CREATE UNIQUE INDEX on pairs_plain (m, s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
- 27 | unique on three columns          | scope "tenant_id": "pairs_three" has no unique btree index on (m, s) [CREATE UNIQUE INDEX on pairs_three (m, s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
+ 26 | no btree                         | scope "tenant_id": "pairs_plain" has no btree index on (m, s) [CREATE UNIQUE INDEX on pairs_plain (m, s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
+ 27 | btree on three columns           | scope "tenant_id": "pairs_three" has no btree index on (m, s) [CREATE UNIQUE INDEX on pairs_three (m, s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
  28 | partial unique, no journal index | scope "tenant_id": "pairs_partial" has no sift_col index that journals its changes [CREATE INDEX ON pairs_partial USING sift_col (m, s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
- 29 | deferrable unique                | scope "tenant_id": "pairs_deferrable" has no unique btree index on (m, s) [CREATE UNIQUE INDEX on pairs_deferrable (m, s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
- 30 | unique with an included column   | scope "tenant_id": "pairs_include" has no unique btree index on (m, s) [CREATE UNIQUE INDEX on pairs_include (m, s), or make them its primary key: a plain, immediate, unique btree on exactly those two columns.]
+ 29 | deferrable unique                | scope "tenant_id": "pairs_deferrable" has no btree index on (m, s) [CREATE UNIQUE INDEX on pairs_deferrable (m, s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
+ 30 | unique with an included column   | scope "tenant_id": "pairs_include" has no btree index on (m, s) [CREATE UNIQUE INDEX on pairs_include (m, s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
 (30 rows)
 
 SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';

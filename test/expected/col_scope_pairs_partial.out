@@ -254,9 +254,9 @@ SELECT btree FROM sift._test_scope_legs('facts_col', 0);
 
 -- two partial unique btrees: the pairs are a guess, REINDEX says so; USING names the one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
-                                                                                                    two_partial                                                                                                    
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "group_id": "memberships" has two partial unique btrees on (dim_a_id, group_id) [The predicate of the unique btree says which rows are pairs: name the one that does with USING <index> after the columns.]
+                                                                                                two_partial                                                                                                 
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "group_id": "memberships" has two partial unique btrees on (dim_a_id, group_id) [The predicate of the btree says which rows are pairs: name the one that does with USING <index> after the columns.]
 (1 row)
 
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS using_active;
@@ -288,15 +288,15 @@ SELECT * FROM compare();
 (1 row)
 
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_missing'')') AS using_unknown;
-                                                     using_unknown                                                      
-------------------------------------------------------------------------------------------------------------------------
- scope "group_id": "memberships" has no index "memberships_missing" [USING names a unique btree of the scope relation.]
+                                                  using_unknown                                                  
+-----------------------------------------------------------------------------------------------------------------
+ scope "group_id": "memberships" has no index "memberships_missing" [USING names a btree of the scope relation.]
 (1 row)
 
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using facts_pkey'')') AS using_not_a_pair_btree;
-                                            using_not_a_pair_btree                                             
----------------------------------------------------------------------------------------------------------------
- scope "group_id": "memberships" has no index "facts_pkey" [USING names a unique btree of the scope relation.]
+                                         using_not_a_pair_btree                                         
+--------------------------------------------------------------------------------------------------------
+ scope "group_id": "memberships" has no index "facts_pkey" [USING names a btree of the scope relation.]
 (1 row)
 
 ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
@@ -306,17 +306,17 @@ CREATE INDEX memberships_journal_b ON memberships USING sift_col (dim_a_id, grou
 DROP INDEX facts_col;
 DROP INDEX memberships_journal;
 SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS journal_other_predicate;
-                                                                                                                                                     journal_other_predicate                                                                                                                                                      
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "group_id": the journal index of "memberships" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
+                                                                                                                                                  journal_other_predicate                                                                                                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "group_id": the journal index of "memberships" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the btree of the pairs implies it: CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
 (1 row)
 
 DROP INDEX memberships_journal_b;
 CREATE INDEX memberships_journal_c ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL AND group_id > 0;
 SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS journal_weaker_predicate;
-                                                                                                                                                     journal_weaker_predicate                                                                                                                                                     
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "group_id": the journal index of "memberships" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
+                                                                                                                                                 journal_weaker_predicate                                                                                                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "group_id": the journal index of "memberships" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the btree of the pairs implies it: CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
 (1 row)
 
 DROP INDEX memberships_journal_c;

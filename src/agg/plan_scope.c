@@ -12,10 +12,11 @@
  * The proof that the scope read gives the rows of the join, all of it at plan time:
  *  (a) the relation and its columns are the index's declared scope, and the join is the equality of its member column and the declared column of the scanned table;
  *  (b) the scope key is bound by one equality or IN list of constants or of parameters (a $n, an InitPlan's output, a stable expression: the scan evaluates them when it starts), the
- *      scope relation has no other table joined to it and no condition but the predicate of the unique btree that defines its pairs, which the statement must state (agg/scope_legs.c);
- *  (c) the statement reads no column of the scope relation but its key as a group key (`GROUP BY s.key`, "every tenant"): the declaration needs a unique btree on (member, key), so a row
- *      of the scanned table has at most one pair with a key and the join, the semi join and the scope read count it the same; the group key is read as the derived leaf of the scope, which holds the
- *      key of each pair the scan reads (an aggregate argument, a select list expression, a HAVING that reads the key keeps the join);
+ *      scope relation has no other table joined to it and no condition but the predicate of the btree that defines its pairs, which the statement must state (agg/scope_legs.c);
+ *  (c) the statement reads no column of the scope relation but its key as a group key (`GROUP BY s.key`, "every tenant"), and a join is taken only where the recorded btree on (member, key) is
+ *      unique: a row of the scanned table has at most one row with a key then, and the join, the semi join and the scope read count it the same; the group key is read as the derived leaf of the
+ *      scope, which holds the key of each pair the scan reads (an aggregate argument, a select list expression, a HAVING that reads the key keeps the join). With a non-unique btree (a pair may be
+ *      several rows: a multiset) the scope read counts a pair once, the semi joins (IN, EXISTS) too, and a join counts it once for each row: only the semi joins are taken;
  *  (d) a semi join (IN, EXISTS) counts a row once whichever keys it has, which the reader does (Scope Semantics: once); a join counts it once for each pair, which the reader reads
  *      per pair for one key, for several and for every key (no condition on the key, SiftAggScope.all). Where the units cannot answer (the reader's refusals, its changed pairs) or cost more, the
  *      node runs the join as written (agg/cost/scope.c: the plan holds it), so a read of several or of every key, and a read that groups by the key, is planned only where the first pass
@@ -52,6 +53,24 @@
 #include "core/cmp.h"
 
 #define NOT_SCOPE	((const char *) 1)	/* take_item: the item is not the scope relation of the index */
+
+/* why a join, or a read for each pair, is no scope read of a relation whose btree is not unique: the scope read counts a pair once */
+#define SCOPE_MULTISET	"pairs are a multiset (non-unique btree): a join counts a fact once for each row"
+
+/* is the scope key_name of the index, which it declares, one whose pairs may be several rows */
+static bool
+scope_multiset(Oid indexoid, const char *key_name)
+{
+	Relation	index = index_open(indexoid, AccessShareLock);
+	SiftScopeSpecs *sp = sift_scope_specs(index);
+	bool		multiset = false;
+
+	for (int i = 0; i < sp->n; i++)
+		if (strcmp(sp->s[i]->key_name, key_name) == 0)
+			multiset = sift_scope_pairs_multiset(index, sp->s[i]);
+	index_close(index, NoLock);
+	return multiset;
+}
 
 static void
 scope_miss(const char *why)
@@ -164,6 +183,8 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 	proto.key_name = TextDatumGetCString(name->constvalue);
 	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
 	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
+	if (!proto.once && scope_multiset(c->indexoid, proto.key_name))
+		return no_scope(why, SCOPE_MULTISET);
 	return scope_make(c, &proto, leaf);
 }
 
@@ -483,6 +504,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			lj = o;
 	if (lj != NULL && lj->kind != SJ_SEMI)
 		return "the scope relation is not joined by an inner or semi join (IN, EXISTS)";
+	if (lj == NULL && scope_multiset(c->indexoid, sp->key_name))
+		return SCOPE_MULTISET;
 	pool = list_concat_copy(list_concat_copy(fs->quals, fs->scan_quals), lj ? list_concat_copy(lj->quals, lj->inner) : NIL);
 	if (lj != NULL && lj->tree != NULL && !scan_tree(lj->rarg, &tables, &pool))
 		return "the sub-select of the semi join has a join other than a semi join";

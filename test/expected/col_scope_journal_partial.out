@@ -30,9 +30,9 @@ INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * 
 -- a partial journal index is the only candidate: refused with a hint
 CREATE INDEX pairs_partial ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE group_id < 10;
 SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS only_partial;
-                                                                                                                                                     only_partial                                                                                                                                                     
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "group_id": the journal index of "pairs" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the unique btree of the pairs implies it: CREATE INDEX ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
+                                                                                                                                                 only_partial                                                                                                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "group_id": the journal index of "pairs" is a partial index [A partial index never hears of a pair inserted outside its predicate, unless the predicate of the btree of the pairs implies it: CREATE INDEX ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') without a WHERE.]
 (1 row)
 
 -- a plain one beside it: the scope index depends on the plain one only
