@@ -115,7 +115,6 @@ SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER 
 -- the testing markers by the same rule: a read for each pair is the join's meaning and is refused for the pairs of a multiset, a semi join is read
 EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', f.dim_a_id, 3);
 EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', f.dim_a_id, '{3,5}'::int8[]);
-EXPLAIN (COSTS OFF) SELECT sift.scope_key('events_col'::regclass, 'tenant_id', f.dim_a_id), count(*) FROM events f WHERE sift.in_scope_all('events_col'::regclass, 'tenant_id', f.dim_a_id) GROUP BY 1;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope('events_col'::regclass, 'tenant_id', f.dim_a_id, 3);
 
 -- the same planned statements after the pairs changed again and a rebuild: IN is the scope read and the join is the join

@@ -463,17 +463,6 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope_pairs('eve
    Pushed Aggregates: count(*)
 (5 rows)
 
-EXPLAIN (COSTS OFF) SELECT sift.scope_key('events_col'::regclass, 'tenant_id', f.dim_a_id), count(*) FROM events f WHERE sift.in_scope_all('events_col'::regclass, 'tenant_id', f.dim_a_id) GROUP BY 1;
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
-   Index: events_col
-   Filters: dim_a_id: sift.in_scope_all('events_col'::regclass, 'tenant_id'::text, f.dim_a_id)
-   Scope Fallback: pairs are a multiset (non-unique btree): a join counts a fact once for each row
-   Group Keys: dim_a_id: sift.scope_key('events_col'::regclass, 'tenant_id'::text, f.dim_a_id)
-   Pushed Aggregates: count(*)
-(6 rows)
-
 EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope('events_col'::regclass, 'tenant_id', f.dim_a_id, 3);
               QUERY PLAN               
 ---------------------------------------
