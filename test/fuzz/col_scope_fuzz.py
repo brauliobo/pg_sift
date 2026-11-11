@@ -635,7 +635,9 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
             rd.run('COMMIT;')
         a.run('VACUUM events;')
         check(a, s, 'final', False, stats)
-        a.run('REINDEX INDEX events_col;')
+        out = a.run('SET sift.scope_max_multiplicity = 64; REINDEX INDEX events_col; SET sift.scope_max_multiplicity = 8;')   # churn raises the entries of a row above the limit of the build
+        if ERR.search(out):
+            raise Fail(f'final rebuild: {out.strip()[:500]}')
         check(a, s, 'final rebuild', True, stats)
         if s.cols is None and 'entries|t' not in a.run("SELECT 'entries', sf_entries_are_the_join();"):
             raise Fail('final rebuild: the scope entries are not the join of the facts and the pairs')
