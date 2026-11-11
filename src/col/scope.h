@@ -263,8 +263,9 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_PRICING_INSTR	1000000
 /* the changed members one read lists, at most (8 MB of keys) */
 #define SIFT_SCOPE_CHANGED_MAX		(1 << 20)
-/* a scope entry tested against the drop lists of a read of several keys counted once (the figure of the planner lane: about 7 tests a row and key; not measured with the figures above) */
-#define SIFT_SCOPE_DEDUPE_INSTR		7
+/* a scope entry tested against the drop list of each key of a read of several keys counted once that has one (the members it leaves to a lesser key): 217 instructions an entry for 10 keys, 364 for 20, 512 for 30,
+ * 808 for 50 over the 67 of an entry of one key (300,000 events, 5,000 members in several keys, 50 keys, the largest keys first; warm, instructions of the backend): about 15 for each key with a list */
+#define SIFT_SCOPE_DEDUPE_INSTR		15
 
 /*
  * The counts the price of a read of a scope key takes. The executor (scope_open) has them from the read it made: the entries and rows from the zones and set summaries of the units as the scan
@@ -278,6 +279,7 @@ typedef struct SiftScopeCounts
 {
 	uint32		nkeys;
 	bool		once;			/* a row counts once though its member has pairs with several keys */
+	uint32		drops;			/* with once: the keys that have a drop list (SiftScopeRead.ndrop), 0 where the read has not been made: the least the units cost */
 	uint64		entries;		/* the rows of the scope units of the keys */
 	uint64		patch_units;	/* the units of the entity segments the rows of the changed members that have a pair now are read from */
 	uint64		patch_scan_rows;	/* the entity rows looked at to find them (no point directory of the member leaf tells where they are) */
@@ -297,7 +299,7 @@ sift_scope_patch_price(const SiftScopeCounts *c)
 static inline double
 sift_scope_units_price(const SiftScopeCounts *c)
 {
-	double		entry = SIFT_SCOPE_ENTRY_INSTR + (c->once && c->nkeys > 1 ? SIFT_SCOPE_DEDUPE_INSTR : 0);
+	double		entry = SIFT_SCOPE_ENTRY_INSTR + (c->once ? SIFT_SCOPE_DEDUPE_INSTR * (double) c->drops : 0);
 
 	return SIFT_SCOPE_SETUP_INSTR + entry * c->entries + sift_scope_patch_price(c);
 }
