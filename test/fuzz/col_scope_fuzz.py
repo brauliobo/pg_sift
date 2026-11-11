@@ -564,7 +564,7 @@ def check_delta(a, s, label, first_id):
         return
     k = s.rng.choice(keys)
     q = f"SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, {k})"
-    out = a.run(f"SELECT 'rows', count(*) FROM events e WHERE e.id >= {first_id} AND EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = {k}{s.act});\n"
+    out = a.run(f"SELECT 'rows', count(*) FROM events e WHERE e.id >= {first_id} AND EXISTS (SELECT 1 FROM {s.pairs} s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = {k}{s.act});\n"
                 "SELECT 'buffer', coalesce(sum(rows), 0) FROM sift.col_segments('events_col') WHERE kind = 'buffer';\n"
                 "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) " + q + ";")
     rows, buf = (int(re.search(rf'^{w}\|(\d+)$', out, re.M).group(1)) for w in ('rows', 'buffer'))

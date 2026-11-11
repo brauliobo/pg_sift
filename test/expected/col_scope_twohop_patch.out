@@ -378,9 +378,9 @@ SELECT 'after the rollback' AS state, c.*, v.* FROM changed() c, verdict() v;
 INSERT INTO facts SELECT i, 1 + (i * 7) % 60, timestamptz '2026-03-01' + i * interval '9 minutes', i % 10 FROM generate_series(3001, 3400) i;
 UPDATE memberships SET group_id = 4 WHERE group_id = 5 AND dim_a_id = 41;
 SELECT 'facts in a write buffer' AS state, c.*, v.* FROM changed() c, verdict() v;
-          state          | why | dim_b | reads | differ | units | patched | refused | unaccounted |                    reasons                    
--------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+-----------------------------------------------
- facts in a write buffer | ok  |       |    40 |      0 |    31 |      31 |       1 |           0 | per pair, changed pairs, top-n, changed pairs
+          state          | why | dim_b | reads | differ | units | patched | refused | unaccounted |       reasons        
+-------------------------+-----+-------+-------+--------+-------+---------+---------+-------------+----------------------
+ facts in a write buffer | ok  |       |    40 |      0 |    32 |       0 |       0 |           0 | top-n, changed pairs
 (1 row)
 
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;
