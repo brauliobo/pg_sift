@@ -18,6 +18,7 @@ of it, or `DROP TABLE` of the relation, needs `CASCADE`, which drops the index. 
 choose it (the lowest oid of those that qualify) and say which in a NOTICE, every read uses that one, and a btree made or rebuilt (`REINDEX .. CONCURRENTLY`) afterwards changes nothing until the next
 `REINDEX` of the scope index chooses again; `ALTER INDEX` keeps it. `ALTER INDEX .. SET (scope = 'off')` or `RESET (scope)` removes the declaration; `REINDEX` drops the scope segments.
 The time cut of the scope units is the first `date`, `timestamp` or `timestamptz` column of the index, else none.
+A scope may also be the union of this relation and a relation joined through a second one ([two paths](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)).
 
 **The journal index.** The relation of pairs must have a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
 outside its predicate, so it does not qualify). Without one `CREATE INDEX` is refused with a hint. The first scope index declared on a relation starts its journal at the end of its build, so its segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the
@@ -51,6 +52,88 @@ nothing to the journal. The scope entries are the active pairs only (soft delete
 - **What the predicate can be.** What PostgreSQL accepts in an index predicate: immutable, over the columns of the row (`IS NULL`, comparisons with constants, boolean columns). `now()` is refused by PostgreSQL
   (`functions in index predicate must be marked IMMUTABLE`), so a pair that ends by the clock needs a column the application or a scheduled `UPDATE` sets (`UPDATE grants SET expired = true WHERE expired_at <= now() AND NOT expired`,
   a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the copy path ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
+
+## Pairs reached by two paths: a direct grant and a group grant
+
+A tenant sees an entity when it has a grant on the entity or on a group the entity belongs to (a subscription). The pairs are not the rows of one relation but the union of two paths, and a
+member can be reached by both. The declaration names the three relations and no table holds the union:
+
+    facts(id, dim_a_id, ..)
+    grants(id, tenant_id, dim_a_id, group_id, deleted_at, ..)     -- a grant names a member or a group; both columns may be NULL
+    memberships(id, group_id, dim_a_id, deleted_at, ..)
+    CREATE UNIQUE INDEX grants_direct  ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX grants_group   ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+    CREATE INDEX grants_by_member         ON grants      USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+    CREATE INDEX grants_by_group          ON grants      USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+    CREATE INDEX memberships_by_member    ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+    CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, value_num)
+      WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+
+**The grammar.** One alternative after the `->`: `key: fk -> rel(member, key) [using ix] | rel2(via, key) [using ix2] via vrel(via, member) [using ix3] [cols(a, b)]`. The first relation is
+the direct path (the rows of `rel` are pairs), `rel2` the joined path (a row of `rel2` gives its key to every member of its `via` value), and `vrel` lists the members of a `via` value. A text
+that names a second path without `via` and its relation, or a relation with one column, is refused with what is missing. The three sets of columns must differ (`grants(dim_a_id, tenant_id)` twice,
+or reversed, is refused), the columns of one role are of one integer type (`via` in `rel2` and `vrel`, `member` in `rel` and `vrel`, `key` in `rel` and `rel2`), and a relation is a heap table that
+is not the indexed table. The columns of a scope of two paths may be nullable (a grant on a group has no member, a grant on a member no group): a row with a NULL in a column of its path is not a
+pair of that path, as a join drops it; the columns of a scope of one path are still NOT NULL.
+
+**The three unique btrees.** Each relation has its own recorded unique btree on exactly its two columns, with the rule of the pairs of one relation (above): `CREATE INDEX` and `REINDEX` choose it (the
+only partial one, else the lowest oid of the plain ones; two partial ones are an error that asks for `using`) and say which, one `NOTICE` for each path (`the direct pairs of "grants" (dim_a_id,
+tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)`, then `the joined pairs` and `the via members`); `ALTER INDEX` is sticky (another `using` than the
+recorded one is refused); `DROP INDEX` of a recorded btree is refused without `CASCADE`, and `REINDEX .. CONCURRENTLY` of it keeps the dependency. The dependencies are told apart by the relation
+and its two columns, so one scope index depends on up to three btrees of the same relation or of several, and an index may hold a scope of two paths beside scopes of one. A scope of one path declared as before is unchanged.
+
+**The pair set.** The pairs of the scope are the DISTINCT `(member, key)` of the direct rows D and of the joined ones J, `J = { (m.member, g.key) : g in rel2, m in vrel, m.via = g.via }`, the rows of each
+that satisfy the predicate of its btree. The SQL that says it:
+
+    SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+    UNION
+    SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
+     WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+
+The tests compare every read with a join on this statement after every edit of the three tables.
+
+**Once and per pair.** A member reached directly and through one or several groups is ONE pair: the scope segments store the distinct pairs and no fact row is stored twice for a key. A read with the
+meaning of `IN` or `EXISTS` counts a fact once; a join or `GROUP BY` the key over the `UNION` counts it once for each pair, which is once for a key a member has by any number of paths
+(`Scope Semantics: once`, `per pair`, as for one path). The dedupe across keys, the `work_mem` bound and the per-pair read of several keys that has a changed member are those of the section below.
+`sift.scope_max_multiplicity` applies to the derived set: a member reached by two paths adds no entry, so the figure is the distinct entries for the rows of the table, as the `NOTICE` says it.
+
+**The three journals.** The pairs of a member depend on (1) the rows of `rel` with that member, (2) its rows of `vrel`, and (3) the rows of `rel2` of every group it is in. Each relation needs a
+journal index, a `sift_col` index with `track_changes = 'ctid'` whose first column is the journaled key and that holds the other column, plain or partial with a predicate that the predicate of the
+recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths does
+not require them: a scope with any of the three missing, or one a pair can be inserted outside of (a partial journal), vouches for nothing, the plan says `Scope Fallback: no journal`, and the read is the
+entity rows of the members the three relations list for the keys. The scope index finds the journals when it is created or rebuilt and depends on them: a journal made later is found by the next
+`REINDEX` of the scope index, which starts it (the reads say `unfilled` until the `REINDEX` after that stamps the segments). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
+`other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
+
+**The members that changed.** A segment of a scope of two paths holds a stamp for each of the three journals. The members whose pairs changed since the stamps are the union of the members of J1, the members of J3
+(the ones that left a group are there), and the members of every group in J2 as the recorded btree of `vrel` lists them for the reader's snapshot (the active rows, the predicate applied). The result is exact: the pairs of
+a member depend on no other row (the three lists above), a row of one of them that changed names the member, or the group whose members are looked up now, in a journal; a member that left a group is in
+J3. The read is the one of one path: the units of the keys less the changed members, plus the entity rows of those that have a pair with a key now (the patch), and the write buffer's
+members the same way. `sift.scope_patch_keys` bounds the changed members (a group with more members than it is `too many changed keys`: the entity rows are read), and the refresh of the maintenance
+counts them against `sift.col_connect_refresh_pct` as it counts those of one path, the members of a changed group included.
+
+**Cost.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs; a read of one key (the account), instructions:u of the backend, cold and warm, in millions:
+
+| | nothing changed | 1 group changed (10 members) | 100 groups changed (1,090 members, 135 patched) | the plain join |
+|---|---|---|---|---|
+| cold | 6.02 | 12.5 | 26.5 | 68.9 |
+| warm | 1.34 | 7.8 | 21.8 | 63.6 |
+
+The changes cost 6.5 M instructions for one group and 20.5 M for 100 groups over the first column, cold and warm alike; the join reads 63.6 M even warm.
+
+**Column format minor 49.** A segment of an index that declares a scope of two paths holds three stamps and is written as column format minor 49 (docs/FORMATS.md); an index whose scopes all have one path
+keeps writing minor 45 with one stamp for each scope. A library before 5.0, and a 5.0 build before minor 49, refuse the index (`Use a newer pg_sift`, `REINDEX`): `CREATE INDEX` says so in a `NOTICE`. A scope
+declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale connection`)
+until `REINDEX`.
+
+**`sift.in_scope` and the planner.** The scan takes the conjunct only from the marker `sift.in_scope(index, key_name, fk, key or keys)` (`sift.in_scope_pairs` for the join meaning), as for one path. The planner's recognition of the forms of the `UNION` (`fk IN (SELECT member FROM <the union> WHERE key = k)`, `EXISTS`, the join) is the work of the
+planner, which reads the paths from `sift_scope_legs(index, scope, legs[2])`: it returns 2 legs for this declaration, the second one joined (`via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`, the
+`via` column of `rel2` in `member`). Until it lands a release build has no statement that reads these units except the markers.
+
+**What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a unique btree); a condition on a third table (a group's own soft delete: the memberships of a deleted group
+stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
+into a column, see above); a partitioned table among the three; text or uuid keys; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
 
 ## What a read does
 
@@ -278,7 +361,7 @@ copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.
 
 ## Limits
 
-EXPERIMENTAL; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
+EXPERIMENTAL; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs (the relations of a scope of two paths included); at most one joined path, no third hop; text keys through a dictionary table; a top-N over changed members reads the entity
 rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds, and so does every key by the key when a changed member has a pair now; a join to a table of keys and the planner's recognition of a `GROUP BY` the key are not in this release; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
 by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

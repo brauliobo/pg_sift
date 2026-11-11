@@ -356,7 +356,7 @@ SELECT * FROM sift.scope_verify('facts_by_group');   -- no rows
 
 The indexes the refresh reads are `memberships (dim_a_id) WHERE deleted_at IS NULL`, `grants (account_id)`, `grants (group_id) WHERE group_id IS NOT NULL`, `grants (dim_a_id) WHERE dim_a_id IS NOT NULL` and,
 for the sweep, `grants (expired_at) WHERE expired_at IS NOT NULL`, and a btree on `facts (dim_a_id)`. Run `sift.scope_expire_pairs('account_pairs')` from a scheduler. The group alone needs no
-table when the scope index is enough ([COL-SCOPE](COL-SCOPE.md#pairs-that-are-soft-deleted-a-partial-unique-btree): the partial unique btree of the memberships is the pairs). The costs measured on
+table when the scope index is enough ([COL-SCOPE](COL-SCOPE.md#pairs-that-are-soft-deleted-a-partial-unique-btree): the partial unique btree of the memberships is the pairs; the account, the union of its direct grants and of the grants of its groups, is [a scope of two paths](#grants-to-a-member-or-to-a-group-a-scope-index-of-two-paths)). The costs measured on
 1,000,000 facts, 20,000 ids, 500 groups and 50 accounts (22,000 active memberships, 20% of the table soft deleted): a read of one account from the copy takes 0.46 to 0.55 M instructions where the join through the
 view takes 18 to 26 M; soft deleting a membership takes 16.7 M instructions, a direct grant 10.3 M and a grant of a group 636 M (the whole key of the account is recomputed from the view).
 
@@ -447,6 +447,66 @@ The same fixture. Each row is one statement in a transaction that is rolled back
 | ... and restored | 0.3, 1.6, 0.01 MB | 52.8, 18.6, 0.74 MB | 6,016, 2,704, 72.3 MB |
 
 The refresh of the pair table costs a plan of its statement (about 4 M instructions and 4 ms for one id; the statement is planned on each call) and a read of the ids' or keys' pairs and of the view for them, so it follows the size of the edit and, for a key, the size of the key: 1,000 ids cost 80 to 125 M instructions and 0.2 to 0.7 MB of WAL. The copy is what the edit costs once the facts of the ids are rewritten: about 60,000 instructions and 240 B of WAL records for each copy row inserted (900 B with the full-page images of the first change of each page), 12,600 instructions and 50 B of records for each row deleted by the id that leaves and 62,000 instructions for each row deleted by the key that leaves (a pair that goes is found by the `sift_col` index of the copy; the full-page images of a checkpoint's first touch are 5 to 28 MB of the WAL columns of the rolled-back runs). An edit that changes the ids of a tenant in bulk is the one to batch in one statement; a copy on the pairs is worth it where the reads it serves (above) outnumber such edits.
+
+## Grants to a member or to a group: a scope index of two paths
+
+The shape of [the soft deleted memberships and grants](#soft-deleted-memberships-and-grants), read through the scope index and without a pair table: an account sees an entity when it has a grant on the
+entity or on a group the entity belongs to. The three tables are the application's, with the soft delete it already has, and the scope index declares the union of the two paths
+([COL-SCOPE](COL-SCOPE.md#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant) has the grammar and the rules):
+
+```sql
+CREATE TABLE grants (id bigint PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz);   -- one of dim_a_id and group_id is set
+CREATE TABLE memberships (id bigint PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz);
+-- the three btrees that define the rows of each path: unique over the active rows
+CREATE UNIQUE INDEX grants_direct      ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group       ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+-- the three journals, each keyed by what its path depends on: the member, the group, the member again
+CREATE INDEX grants_by_member      ON grants      USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group       ON grants      USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id)  WITH (track_changes = 'ctid');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, value_num)
+  WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+```
+
+`CREATE INDEX` says which btree of each path it recorded (one `NOTICE` each) and how many entries the scope holds for the rows. A member that an account reaches directly and through its
+groups is one pair, so a fact is in the units of the account once; the entries are the distinct pairs, within `sift.scope_max_multiplicity`.
+
+**Verify.**
+
+```sql
+-- the distinct pairs the scope stands for, as the join says them (a member reached twice is one pair)
+SELECT count(*) FROM (
+  SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+  UNION
+  SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
+   WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL) p;
+SELECT sift.col_verify('facts_col', true);                                 -- empty
+SELECT format, count(*) FROM sift.col_segments('facts_col') WHERE kind = 'immutable' GROUP BY format;   -- 49
+```
+
+and `EXPLAIN` of a read of the scope has `Scope Units` and no `Scope Fallback` once the journals vouch. A scope whose reads say `Scope Fallback: no journal` is missing one of the three journal indexes
+(or has one that a row can be inserted outside of: a partial journal); `unfilled` is the `REINDEX` of the scope index after the journal that was made later (the first one finds it, the second stamps the
+segments); `other lineage` is a journal that was rebuilt (`REINDEX` of the scope index).
+
+**Monitor.** `sift.col_maintenance_due('facts_col', false)` says `stale connection` when so many members of the pairs or of the groups changed that a rewrite is cheaper than the patches
+(`sift.col_connect_refresh_pct`, the groups counted by their members); `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that
+fell to the entity rows (`sift.scope_patch_keys`). The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
+index holds (a HOT update) writes none. A time dependent grant (`expires_at`) is a column the application or a scheduled `UPDATE` sets into the predicate (`WHERE deleted_at IS NULL AND NOT expired`): `now()` is refused in an index predicate.
+
+**What it measures.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs, a read of one account (instructions:u of the backend, millions): 6.02 cold and 1.34 warm with nothing changed since the
+build, 12.5 and 7.8 with one group (10 members) changed, 26.5 and 21.8 with 100 groups (1,090 members, 135 patched), where the join on the `UNION` takes 68.9 and 63.6.
+
+**Dump and restore.** The text of the scope is the record: `pg_dump` writes the declaration and the restore chooses the three btrees again by the rule (the only partial unique btree on the two
+columns, else the lowest oid of the plain ones). A rule that is settled by the oids of the btrees (two partial ones on a relation, or a partial and a plain one) can choose another one after a restore than
+before it: name the btree with `using` where the choice must not depend on them (`grants(group_id, tenant_id) using grants_group`).
+
+**Two paths or a copy.** The pair table and the scope copy of the sections above are the right choice for arbitrary pair queries (a table anyone can join or filter), a condition on a third table (a group
+that is soft deleted itself, a tenant that is suspended: the view says it, the scope index cannot), a pair that is a view, a time dependent pair swept by `sift.scope_expire_pairs`, or a planner that must
+read the pairs today. The two paths are the right choice for the grants and memberships shape: the incremental maintenance is exact for every edit of the three tables (a grant, a membership, a
+member moved, a group emptied), there is no pair table or copy to size, to vacuum and to keep by triggers, and an edit of one group costs the members of that group at the next read (6.5 M
+instructions for 10 members, above) and not a recompute of the account's pairs (164 M for a tenant of 11,884 pairs by key, a different fixture, in [the edit table](#what-an-assignment-edit-costs-by-pair-and-by-key)). The planner's recognition of the join forms is
+not in this release, for the scope index of one path or of two.
 
 ## Totals per key and month: a cube table
 
