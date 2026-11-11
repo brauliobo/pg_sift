@@ -224,6 +224,8 @@ extern void sift_conn_fill_end(struct SiftColFill *fill);
 /* What a fill prices its two ways to know the keys of a table with: its estimated rows, and whether asking its btree for `rows` keys is cheaper than reading it (the connection fill and the scope fill) */
 extern double sift_conn_rows_of(Relation rel);
 extern bool sift_conn_probe_cheaper(uint64 rows, double parent_rows);
+/* ... and the same for asking a sift_col index of the parent (its journal index) for `rows` keys in one search */
+extern bool sift_conn_journal_cheaper(uint64 rows, double parent_rows);
 
 /* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
 typedef struct SiftConnKeySet SiftConnKeySet;
@@ -233,6 +235,15 @@ extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
 extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
 extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
+/* The predicate of a partial btree (InvalidOid, or a plain one: none), tested on the rows of its table: a row that fails it is no row of the btree */
+typedef struct SiftConnPred
+{
+	struct EState *estate;
+	struct ExprState *qual;
+} SiftConnPred;
+extern void sift_conn_pred_begin(SiftConnPred *pr, Oid btree);
+extern bool sift_conn_pred_test(const SiftConnPred *pr, TupleTableSlot *slot);
+extern void sift_conn_pred_end(SiftConnPred *pr);
 
 /* The btree probe of the keys of a batch (col/conn_probe.c): the other way to know whether the parent has one visible row for a key */
 typedef struct SiftConnProbe SiftConnProbe;
@@ -253,6 +264,8 @@ typedef bool (*SiftConnProbeFn) (void *arg, TupleTableSlot *slot);
 extern SiftConnProbe *sift_conn_probe_begin_on(MemoryContext cx, Relation parent, Oid btree, AttrNumber key, Snapshot snap);
 extern void sift_conn_probe_open(SiftConnProbe *p, SiftConnProbeScan *s);
 extern void sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnProbeFn each, void *arg);
+/* ... all the n keys in one search of the index (an array key: a sift_col index reads its segments once for them, a btree is asked for each) */
+extern void sift_conn_probe_keys(SiftConnProbe *p, SiftConnProbeScan *s, const int64 *keys, uint32 n, SiftConnProbeFn each, void *arg);
 extern void sift_conn_probe_close(SiftConnProbeScan *s);
 
 /*

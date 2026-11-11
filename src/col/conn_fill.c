@@ -23,6 +23,9 @@
  */
 #define FILL_SCAN_NS_PER_PARENT_ROW	130
 #define FILL_PROBE_NS_PER_KEY		3500
+/* a sift_col journal index asked for a run of keys in one search: its segments are opened once, then each key is a point lookup and the heap row it names */
+#define FILL_JOURNAL_NS				60000
+#define FILL_JOURNAL_NS_PER_KEY		2000
 
 
 #ifdef SIFT_TESTING
@@ -75,6 +78,16 @@ sift_conn_probe_cheaper(uint64 rows, double parent_rows)
 		return sift_test_conn_fill == 2;
 #endif
 	return (double) rows * FILL_PROBE_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
+}
+
+bool
+sift_conn_journal_cheaper(uint64 rows, double parent_rows)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_conn_fill != 0)
+		return sift_test_conn_fill == 2;
+#endif
+	return FILL_JOURNAL_NS + (double) rows * FILL_JOURNAL_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
 }
 
 SiftColFill *

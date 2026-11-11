@@ -203,7 +203,8 @@ typedef struct PairScan
 	const int64 *keys;			/* the scope keys asked for, sorted and distinct; NULL: every key */
 	uint32		nkeys;
 	ScopePairs	out;
-	int64		cur;			/* the key or the member a probe asks for */
+	int64		cur;			/* the key a probe asks for */
+	SiftConnPred pred;			/* a probe of the journal index: the predicate of the btree, which the rows of the journal index need not satisfy */
 } PairScan;
 
 static bool
@@ -246,10 +247,11 @@ static bool
 probe_of_member(void *arg, TupleTableSlot *slot)
 {
 	PairScan   *ps = arg;
-	int64		k;
+	int64		m,
+				k;
 
-	if (sift_conn_slot_key(slot, ps->skey, &k) && wanted(ps, k))
-		pairs_add(&ps->out, ps->cur, k);
+	if (sift_conn_pred_test(&ps->pred, slot) && sift_conn_slot_key(slot, ps->member, &m) && sift_conn_slot_key(slot, ps->skey, &k) && wanted(ps, k))
+		pairs_add(&ps->out, m, k);
 	return true;
 }
 
@@ -301,18 +303,48 @@ pairs_of_keys(PairScan *ps)
 	pairs_distinct(&ps->out);
 }
 
-/* The pairs of the members with one of the keys: the btree asked for each member when it leads with the member and that is cheaper than reading the pairs of the keys (the fill's price rule), else the pairs of the keys filtered */
+/* The members asked of the relation's journal index in one search: its rows (a journal index is led by the member and holds every row of a pair, soft deleted ones too) are tested against the predicate of the btree */
+static void
+probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
+{
+	SiftConnProbe *p = sift_conn_probe_begin_on(CurrentMemoryContext, ps->rel, journal, ps->member, ps->snap);
+	SiftConnProbeScan s;
+
+	sift_conn_pred_begin(&ps->pred, ps->btree);
+	sift_conn_probe_open(p, &s);
+	sift_conn_probe_keys(p, &s, members, n, probe_of_member, ps);
+	sift_conn_probe_close(&s);
+	sift_conn_pred_end(&ps->pred);
+}
+
+/*
+ * The pairs of the members, by asking an index for them: the btree for each member when it leads with the member and that is cheaper than reading the relation (the fill's price rule), else the
+ * journal index of the relation in one search (it is led by the member whichever way the btree is) when that is cheaper. False: neither is
+ */
+static bool
+probe_members(PairScan *ps, const int64 *members, uint32 n)
+{
+	double		rows = sift_conn_rows_of(ps->rel);
+	Oid			journal;
+
+	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper(n, rows))
+		probe_all(ps, ps->member, members, n, probe_of_member);
+	else if (OidIsValid(journal = sift_scope_journal_index(ps->rel, ps->member, ps->skey, ps->btree)) && sift_conn_journal_cheaper(n, rows))
+		probe_journal(ps, journal, members, n);
+	else
+		return false;
+	pairs_distinct(&ps->out);
+	return true;
+}
+
+/* The pairs of the members with one of the keys: probed (probe_members), else the pairs of the keys filtered */
 static void
 pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
 {
 	uint32		k = 0;
 
-	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper(n, sift_conn_rows_of(ps->rel)))
-	{
-		probe_all(ps, ps->member, members, n, probe_of_member);
-		pairs_distinct(&ps->out);
+	if (probe_members(ps, members, n))
 		return;
-	}
 	pairs_of_keys(ps);
 	for (uint32 i = 0; i < ps->out.n; i++)
 		if (has_i64(members, n, ps->out.p[i].member))

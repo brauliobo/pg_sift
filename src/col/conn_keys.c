@@ -69,41 +69,64 @@ sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
  * defines the rows (a scope relation's pairs): a row that fails it is not one (InvalidOid: every row)
  */
 void
+sift_conn_pred_begin(SiftConnPred *pr, Oid btree)
+{
+	Relation	idx;
+	IndexInfo  *ii;
+
+	*pr = (SiftConnPred) {0};
+	if (!OidIsValid(btree))
+		return;
+	idx = index_open(btree, AccessShareLock);
+	ii = BuildIndexInfo(idx);
+	if (ii->ii_Predicate != NIL)
+	{
+		pr->estate = CreateExecutorState();
+		pr->qual = ExecPrepareQual(ii->ii_Predicate, pr->estate);
+	}
+	index_close(idx, NoLock);
+}
+
+bool
+sift_conn_pred_test(const SiftConnPred *pr, TupleTableSlot *slot)
+{
+	ExprContext *econtext;
+
+	if (pr->qual == NULL)
+		return true;
+	econtext = GetPerTupleExprContext(pr->estate);
+	econtext->ecxt_scantuple = slot;
+	return ExecQual(pr->qual, econtext);
+}
+
+void
+sift_conn_pred_end(SiftConnPred *pr)
+{
+	if (pr->estate != NULL)
+		FreeExecutorState(pr->estate);
+	*pr = (SiftConnPred) {0};
+}
+
+void
 sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
 	TableScanDesc scan = sift_table_beginscan(rel, snap, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(rel, NULL);
-	EState	   *estate = NULL;
-	ExprState  *pred = NULL;
-	ExprContext *econtext = NULL;
+	SiftConnPred pred;
 
-	if (OidIsValid(pred_index))
-	{
-		Relation	idx = index_open(pred_index, AccessShareLock);
-		IndexInfo  *ii = BuildIndexInfo(idx);
-
-		if (ii->ii_Predicate != NIL)
-		{
-			estate = CreateExecutorState();
-			econtext = GetPerTupleExprContext(estate);
-			econtext->ecxt_scantuple = slot;
-			pred = ExecPrepareQual(ii->ii_Predicate, estate);
-		}
-		index_close(idx, NoLock);
-	}
+	sift_conn_pred_begin(&pred, pred_index);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		int64		k,
 					k2 = 0;
 
-		if (pred != NULL && !ExecQual(pred, econtext))
+		if (!sift_conn_pred_test(&pred, slot))
 			continue;
 		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_key(slot, key2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
-	if (estate != NULL)
-		FreeExecutorState(estate);
+	sift_conn_pred_end(&pred);
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
 }
