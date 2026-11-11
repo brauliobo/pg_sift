@@ -35,6 +35,47 @@ overlay_in_window(const RewriteView *v, int i, const SiftColWindow *w)
 	return (!w->has_lo || v->khi[i] >= w->lo) && (!w->has_hi || v->klo[i] < w->hi);
 }
 
+/*
+ * The partitions of the index, in the order of their keys (order), and the overlays (over): the segments of a partition's size that have a key and meet no narrower one of them
+ * in a key are partitions, as a rewrite cuts them (the windows of the key tile), and the others are overlays, as large as a partition or not: an overlay merge that grew to a
+ * partition's size holds rows of the whole key range, and the pieces of a step lie between partitions or in a key. The segments meet at a boundary key and no more.
+ */
+static int
+pick_partitions(const RewriteView *v, bool *over, int *order)
+{
+	int			cand[SIFT_MAX_SEGMENTS];
+	int			nc = 0,
+				np = 0;
+
+	for (int i = 0; i < v->n; i++)
+	{
+		int			k;
+
+		over[i] = true;
+		if (!maint_is_partition(&v->imm[i]) || v->klo[i] > v->khi[i] || v->khi[i] == PG_INT64_MAX)
+			continue;
+		for (k = nc++; k > 0 && v->khi[cand[k - 1]] - v->klo[cand[k - 1]] > v->khi[i] - v->klo[i]; k--)
+			cand[k] = cand[k - 1];
+		cand[k] = i;
+	}
+	for (int c = 0; c < nc; c++)
+	{
+		int			i = cand[c],
+					k;
+
+		for (k = 0; k < np; k++)
+			if (v->klo[i] < v->khi[order[k]] && v->klo[order[k]] < v->khi[i])
+				break;
+		if (k < np)
+			continue;
+		over[i] = false;
+		for (k = np++; k > 0 && v->klo[order[k - 1]] > v->klo[i]; k--)
+			order[k] = order[k - 1];
+		order[k] = i;
+	}
+	return np;
+}
+
 /* Whether the pass in hand began for an overlay that holds a dead row or has a stale connection: every partition is a step of it (the overlay is taken by the windows it has rows of, and is gone when the last has) */
 static bool pass_all = false;
 
@@ -51,25 +92,7 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 
 	for (int i = 0; i < v->n; i++)
 		pass = maint_pass_gen == 0 ? Max(pass, v->imm[i].gen) : pass;
-	for (int i = 0; i < v->n; i++)
-	{
-		int			k;
-
-		/* a segment under half a partition is an overlay, whether its keys meet another segment's or not (a piece of a step lies between partitions, or in a key), and one of a partition's size is not, whatever the density of the superblocks it shares says (the cut of the rows makes it dense); what the pass wrote over the key range of another is what its steps left of the overlays (as large as a partition, and not denser than the one it meets) */
-		rs->over[i] = !maint_is_partition(&v->imm[i]) || (maint_pass_gen != 0 && v->imm[i].gen > maint_pass_gen && maint_key_meets(v, i));
-		if (rs->over[i])
-			continue;
-		/* a partition without a key, or whose window would pass the largest key, is no one to cut a window by */
-		if (v->klo[i] > v->khi[i] || v->khi[i] == PG_INT64_MAX)
-			return ROLL_NO;
-		for (k = np++; k > 0 && v->klo[order[k - 1]] > v->klo[i]; k--)
-			order[k] = order[k - 1];
-		order[k] = i;
-	}
-	/* the partitions meet at most at a boundary key (the overlays are over every one of them, and so are no partition of the key) */
-	for (int k = 1; k < np; k++)
-		if (v->klo[order[k]] < v->khi[order[k - 1]])
-			return ROLL_NO;
+	np = pick_partitions(v, rs->over, order);
 	if (np < 2)
 		return ROLL_NO;
 	/* a partition much larger than the size of one is what the rewrite of the index cuts, not a step */
