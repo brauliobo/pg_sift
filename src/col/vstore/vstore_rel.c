@@ -12,6 +12,7 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/skey.h"
 #include "access/table.h"
 #include "access/tableam.h"
@@ -376,7 +377,7 @@ sift_vstore_ensure(Relation heap, Relation index, AttrNumber attno)
 	return store;
 }
 
-static void sift_vstore_dropping(Oid index, Oid heap, bool released);
+static void sift_vstore_dropping(Oid index, Oid heap, bool released, bool swapped_out);
 
 void
 sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
@@ -387,7 +388,7 @@ sift_vstore_release(Relation heap, Relation index, AttrNumber attno)
 		return;
 	deleteDependencyRecordsForSpecific(RelationRelationId, RelationGetRelid(index), DEPENDENCY_NORMAL, RelationRelationId, store);
 	CommandCounterIncrement();
-	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap), true);
+	sift_vstore_dropping(RelationGetRelid(index), RelationGetRelid(heap), true, false);
 }
 
 /* The indexes that depend on the store (the members that hold references to it) */
@@ -536,6 +537,7 @@ typedef struct Gone
 	Oid			index;
 	Oid			heap;
 	bool		released;		/* the index stays, it stopped using a store (a rebuild or the rewrite of the one left alone) */
+	bool		swapped_out;	/* it is not valid: the old index of a REINDEX CONCURRENTLY (or one dropped concurrently) */
 } Gone;
 
 static Gone *gone;
@@ -543,14 +545,14 @@ static int	ngone,
 			gone_cap;
 
 static void
-sift_vstore_dropping(Oid index, Oid heap, bool released)
+sift_vstore_dropping(Oid index, Oid heap, bool released, bool swapped_out)
 {
 	if (ngone == gone_cap)
 	{
 		gone_cap = gone_cap ? gone_cap * 2 : 16;
 		gone = gone ? repalloc(gone, gone_cap * sizeof(Gone)) : MemoryContextAlloc(TopMemoryContext, gone_cap * sizeof(Gone));
 	}
-	gone[ngone++] = (Gone) {index, heap, released};
+	gone[ngone++] = (Gone) {index, heap, released, swapped_out};
 }
 
 /* An index of ours is being dropped: its table is looked at for stores that no index uses before the transaction commits */
@@ -569,7 +571,7 @@ sift_vstore_note_drop(Oid relid)
 	tp = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(relid));
 	if (HeapTupleIsValid(tp))
 	{
-		sift_vstore_dropping(relid, ((Form_pg_index) GETSTRUCT(tp))->indrelid, false);
+		sift_vstore_dropping(relid, ((Form_pg_index) GETSTRUCT(tp))->indrelid, false, !((Form_pg_index) GETSTRUCT(tp))->indisvalid);
 		ReleaseSysCache(tp);
 	}
 }
@@ -600,11 +602,36 @@ left_visit(Oid store, void *arg)
 	return false;
 }
 
+/*
+ * REINDEX CONCURRENTLY swaps every dependency of the index it built with those of the index it replaces. A new index that shares a column the old one held in
+ * its own segments (it was built before the store) refers to the store through a dependency that went to the old index, which is dropped: the index whose
+ * segments name a store of the table and that does not depend on it depends on it again
+ */
+static bool
+adopt_visit(Oid store, void *arg)
+{
+	Relation	heap = arg;
+	AttrNumber	attno = get_attnum(RelationGetRelid(heap), get_attname(store, 1, false));
+
+	foreach_oid(oid, RelationGetIndexList(heap))
+	{
+		Relation	index = try_relation_open(oid, AccessShareLock);
+
+		if (index == NULL)
+			continue;
+		if (index->rd_rel->relam == sift_col_am_oid() && index->rd_index->indisvalid && !index_depends_on(oid, store) && sift_vstore_index_names(index, store))
+			(void) sift_vstore_ensure(heap, index, attno);
+		relation_close(index, AccessShareLock);
+	}
+	return false;
+}
+
 static void
 gone_xact(XactEvent event, void *arg)
 {
 	int			kept = 0;
-	List	   *heaps = NIL;
+	List	   *heaps = NIL,
+			   *swapped = NIL;
 
 	if (event == XACT_EVENT_ABORT)
 		ngone = 0;
@@ -615,7 +642,11 @@ gone_xact(XactEvent event, void *arg)
 		if (!gone[i].released && SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].index)))
 			gone[kept++] = gone[i];
 		else if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].heap)))
+		{
 			heaps = list_append_unique_oid(heaps, gone[i].heap);
+			if (gone[i].swapped_out)
+				swapped = list_append_unique_oid(swapped, gone[i].heap);
+		}
 	ngone = kept;
 	PushActiveSnapshot(GetTransactionSnapshot());	/* the commit of a VACUUM has none, and the catalog deletes want one */
 	foreach_oid(heapoid, heaps)
@@ -624,6 +655,8 @@ gone_xact(XactEvent event, void *arg)
 
 		if (heap == NULL)
 			continue;
+		if (list_member_oid(swapped, heapoid))
+			each_store(heapoid, adopt_visit, heap);
 		sift_vstore_drop_unused(heap);
 		each_store(heapoid, left_visit, heap);
 		table_close(heap, NoLock);

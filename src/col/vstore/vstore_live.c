@@ -76,59 +76,98 @@ use_count(const uint8 *bits, uint64 nbits)
 	return c;
 }
 
+/* The leaves of the immutable segments of the index that refer to a store, with the codes they name: calls fn(arg, store, epoch, codes, n) for each, stops when it returns true */
+typedef bool (*RefVisit) (void *arg, uint32 store, uint32 epoch, const uint32 *codes, uint32 n);
+
+static bool
+index_refs(Relation index, RefVisit fn, void *arg)
+{
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift value store usage", ALLOCSET_DEFAULT_SIZES);
+	bool		stop = false;
+
+	sift_dir_read(index, snap);
+	for (int i = 0; !stop && i < snap->nsegs; i++)
+	{
+		MemoryContext old;
+		SiftColSegment *seg;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		CHECK_FOR_INTERRUPTS();
+		old = MemoryContextSwitchTo(cx);
+		seg = sift_cseg_open(index, &snap->segs[i], cx);
+		for (int c = 0; !stop && c < seg->schema->ncols; c++)
+		{
+			uint32		st,
+						epoch,
+						n;
+			uint32	   *codes = sift_cseg_ref_codes(seg, c, &st, &epoch, &n);
+
+			if (codes != NULL)
+			{
+				MemoryContextSwitchTo(old);
+				stop = fn(arg, st, epoch, codes, n);
+				MemoryContextSwitchTo(cx);
+			}
+		}
+		sift_cseg_close(seg);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(cx);
+	}
+	MemoryContextDelete(cx);
+	return stop;
+}
+
+typedef struct UseArg
+{
+	List	  **uses;
+	Oid			index;
+	Oid			store;
+} UseArg;
+
+static bool
+use_visit(void *arg, uint32 st, uint32 epoch, const uint32 *codes, uint32 n)
+{
+	UseArg	   *a = arg;
+
+	if (st == a->store)
+	{
+		Use		   *u = use_for(a->uses, a->index, epoch);
+
+		u->segments++;
+		use_set(u, codes, n);
+	}
+	return false;
+}
+
+static bool
+names_visit(void *arg, uint32 st, uint32 epoch, const uint32 *codes, uint32 n)
+{
+	return st == *(Oid *) arg;
+}
+
+bool
+sift_vstore_index_names(Relation index, Oid store)
+{
+	return index_refs(index, names_visit, &store);
+}
+
 /* The members' segments of the store: what each of them refers to, by epoch */
 static List *
 store_uses(Oid store)
 {
 	List	   *uses = NIL;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift value store usage", ALLOCSET_DEFAULT_SIZES);
 
 	foreach_oid(index_oid, sift_vstore_members(store))
 	{
 		Relation	index = index_open(index_oid, AccessShareLock);
-		SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+		UseArg		a = {&uses, index_oid, store};
 
-		if (index->rd_rel->relam != sift_col_am_oid())
-		{
-			index_close(index, AccessShareLock);
-			continue;
-		}
-		sift_dir_read(index, snap);
-		for (int i = 0; i < snap->nsegs; i++)
-		{
-			MemoryContext old;
-			SiftColSegment *seg;
-
-			if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
-				continue;
-			CHECK_FOR_INTERRUPTS();
-			old = MemoryContextSwitchTo(cx);
-			seg = sift_cseg_open(index, &snap->segs[i], cx);
-			for (int c = 0; c < seg->schema->ncols; c++)
-			{
-				uint32		st,
-							epoch,
-							n;
-				uint32	   *codes = sift_cseg_ref_codes(seg, c, &st, &epoch, &n);
-
-				if (codes != NULL && st == store)
-				{
-					Use		   *u;
-
-					MemoryContextSwitchTo(old);
-					u = use_for(&uses, index_oid, epoch);
-					u->segments++;
-					use_set(u, codes, n);
-					MemoryContextSwitchTo(cx);
-				}
-			}
-			sift_cseg_close(seg);
-			MemoryContextSwitchTo(old);
-			MemoryContextReset(cx);
-		}
+		if (index->rd_rel->relam == sift_col_am_oid())
+			index_refs(index, use_visit, &a);
 		index_close(index, AccessShareLock);
 	}
-	MemoryContextDelete(cx);
 	return uses;
 }
 

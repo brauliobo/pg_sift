@@ -62,6 +62,8 @@ extern void sift_vstore_auto(Relation heap, Relation index);
 /* Whether a relation is a value store */
 extern bool sift_vstore_is_store(Oid relid);
 extern List *sift_vstore_members(Oid store);
+/* Whether a segment of the index refers to the store, whatever the dependencies say */
+extern bool sift_vstore_index_names(Relation index, Oid store);
 extern Oid	sift_vstore_table(Oid store);
 /* Drops the stores of the table that no index depends on any more (VACUUM of the table) */
 extern void sift_vstore_drop_unused(Relation heap);
