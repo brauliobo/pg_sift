@@ -109,8 +109,8 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
-		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-(txn(-shapes)?|scope(-[12])?)$'
+		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl|-vstore)?(-[12])?$'
+		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-(txn(-shapes|-vstore)?|scope(-[12])?)$'
 		elif [[ $f == test/fuzz/scope_fuzz* ]]; then FAST+='|^difftest-scope(-[12])?$'
 		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi

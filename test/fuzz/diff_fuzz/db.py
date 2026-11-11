@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(os.path.dirname(HERE))
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
-           PGOPTIONS='-c client_min_messages=warning')
+           PGOPTIONS=f"-c client_min_messages=warning {os.environ.get('PGOPTIONS', '')}")
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
 REF = 'sift.enable_agg=off;max_parallel_workers_per_gather=0'

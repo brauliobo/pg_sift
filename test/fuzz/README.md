@@ -80,3 +80,14 @@ Makefile accepts `SANITIZE=1` (or always sanitizes), add a function named after
 the module to `scripts/fuzz.sh`, and add a row here. libFuzzer entry points
 (`LLVMFuzzerTestOneInput`) need clang. gcc is the only compiler on this host, so
 the harnesses of tools/ drive their own generators; the targets of test/fuzz use libFuzzer where clang has it and their own driver else.
+
+## Differential fuzz with the shared value store forced
+
+`test/fuzz/diff_fuzz.py` and `test/fuzz/txn_fuzz.py` pass the `PGOPTIONS` of the caller to their sessions, so the test setting that puts every string column of every index in a shared value store (docs/COL-VSTORE.md) runs them against the store. A standing gate until the 5.0 release; the quick tier runs it as `difftest-fuzz-vstore` and `difftest-txn-vstore` (about 90 s together):
+
+    SIFT_ALLOW_LOCAL_CI=1 SIFT_CI_JOBS='^difftest-(fuzz|txn)-vstore$' scripts/ci.sh quick
+
+or, on a `scripts/pgtest.sh` cluster, a longer search:
+
+    PGOPTIONS='-c sift.test_vstore_columns=*' test/fuzz/diff_fuzz.py --seeds 1-24 --queries 40 --rows 3000
+    PGOPTIONS='-c sift.test_vstore_columns=*' test/fuzz/txn_fuzz.py --seeds 1-24

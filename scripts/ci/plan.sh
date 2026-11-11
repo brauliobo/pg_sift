@@ -176,8 +176,11 @@ else
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-3 --queries 40 --rows 3000 --leader-on
+	# the same with every string column in a shared value store (docs/COL-VSTORE.md): a standing gate until the 5.0 release; the setting reaches the sessions through PGOPTIONS
+	once_on_18 && job difftest-fuzz-vstore difftest-fuzz 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 40 --rows 3000 --leader-on
 	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
 	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
+	once_on_18 && job difftest-txn-vstore difftest-txn 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --stop-after 2
 	job difftest-scope difftest-scope 1 python3 "$REPO/test/fuzz/scope_fuzz.py" --seeds 1-4,9 --steps 30 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
 	tap_shell leakcheck_gate

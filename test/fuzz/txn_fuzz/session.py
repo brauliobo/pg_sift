@@ -8,7 +8,7 @@ import time
 
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
-           PGOPTIONS='-c client_min_messages=warning -c lc_messages=C')
+           PGOPTIONS=f"-c client_min_messages=warning -c lc_messages=C {os.environ.get('PGOPTIONS', '')}")
 READ_TIMEOUT = 90.0
 
 
