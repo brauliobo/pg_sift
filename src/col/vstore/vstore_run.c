@@ -105,7 +105,7 @@ view_get(Oid store)
 		v->slots = NULL;
 		v->nslots = 0;
 		v->indexed = 0;
-		v->loaded = false;
+			v->loaded = false;
 		v->piece = NULL;
 		v->npiece = v->cap = 0;
 		v->total = 0;
@@ -228,6 +228,8 @@ load_run(SiftVStore *vs, const SiftSegEntry *e)
 	pfree(ext);
 }
 
+#define VSTORE_PREFETCH	32	/* hashes computed, and their slots prefetched, before they are probed */
+
 static const char *
 view_string(const VStoreView *v, uint64 code, uint32 *len)
 {
@@ -263,7 +265,7 @@ view_index(SiftVStore *vs)
 {
 	VStoreView *v = vs->view;
 
-	if (v->nslots < v->total * 2)
+	if (v->slots == NULL || v->nslots < v->total * 2)
 	{
 		uint32		nslots = pg_nextpower2_32(Max(1024, v->total * 2));
 		uint64	   *slots = MemoryContextAllocZero(v->cx, (Size) nslots * sizeof(uint64));
@@ -276,22 +278,29 @@ view_index(SiftVStore *vs)
 		v->slots = slots;
 		v->nslots = nslots;
 	}
-	for (uint64 c = v->indexed; c < v->total; c++)
+	for (uint64 c = v->indexed; c < v->total; c += VSTORE_PREFETCH)
 	{
-		uint32		len;
-		const char *s = view_string(v, c, &len);
+		uint32		n = Min(VSTORE_PREFETCH, v->total - c);
+		uint64		slot[VSTORE_PREFETCH];
 
-		slot_put(v->slots, v->nslots, (uint64) sift_cdict_mem_hash(s, len) << 32 | (c + 1));
+		for (uint32 j = 0; j < n; j++)
+		{
+			uint32		len;
+			const char *s = view_string(v, c + j, &len);
+
+			slot[j] = (uint64) sift_cdict_mem_hash(s, len) << 32 | (c + j + 1);
+			__builtin_prefetch(&v->slots[(uint32) (slot[j] >> 32) & (v->nslots - 1)], 1);
+		}
+		for (uint32 j = 0; j < n; j++)
+			slot_put(v->slots, v->nslots, slot[j]);
 	}
 	v->indexed = v->total;
 }
 
 /* The code of a string among those indexed, or -1 */
 static int64
-view_find(const VStoreView *v, const char *s, uint32 len)
+view_find(const VStoreView *v, const char *s, uint32 len, uint32 hash)
 {
-	uint32		hash = sift_cdict_mem_hash(s, len);
-
 	for (uint32 i = hash & (v->nslots - 1);; i = (i + 1) & (v->nslots - 1))
 	{
 		uint64		u = v->slots[i];
@@ -501,46 +510,37 @@ merge_runs(SiftVStore *vs, const SiftCcPolicy *pol, const SiftDirSnapshot *snap)
 	pfree(runs);
 }
 
-/*
- * map[i] = the code of the value i of the batch, for the values among the codes from the given one on (the others are left as they are). A batch that is
- * small beside the store finds its values in the table of the view (made once by a backend and extended by the runs that come after); a batch of the size
- * of the store walks the store's strings and finds each in the table the batch already has, which makes no table of the store at all
- */
+/* map[i] = the code of the value i of the batch for the values the table of the view has (the others are left as they are) */
 static void
-map_codes(SiftVStore *vs, SiftCDict *batch, uint64 from, uint32 *map)
+map_codes(SiftVStore *vs, SiftCDict *batch, uint32 *map)
 {
 	VStoreView *v = vs->view;
+	uint32		hash[VSTORE_PREFETCH];
 
-	if (v->indexed > 0 || (uint64) batch->n * 2 < v->total)
+	view_index(vs);
+	for (uint32 i = 0; i < batch->n; i += VSTORE_PREFETCH)
 	{
-		view_index(vs);
-		for (uint32 i = 0; i < batch->n; i++)
+		uint32		n = Min(VSTORE_PREFETCH, batch->n - i);
+
+		for (uint32 j = 0; j < n; j++)
+		{
+			uint32		len;
+			const char *s = sift_cdict_str(batch, i + j, &len);
+
+			hash[j] = sift_cdict_mem_hash(s, len);
+			__builtin_prefetch(&v->slots[hash[j] & (v->nslots - 1)]);
+		}
+		for (uint32 j = 0; j < n; j++)
 		{
 			uint32		len;
 			const char *s;
 			int64		code;
 
-			if (map[i] != PG_UINT32_MAX)
+			if (map[i + j] != PG_UINT32_MAX)
 				continue;
-			s = sift_cdict_str(batch, i, &len);
-			code = view_find(v, s, len);
-			map[i] = code < 0 ? PG_UINT32_MAX : (uint32) code;
-		}
-		return;
-	}
-	for (int p = 0; p < v->npiece; p++)
-	{
-		ViewPiece  *pc = &v->piece[p];
-		uint64		end = p + 1 < v->npiece ? v->piece[p + 1].lo : v->total;
-
-		for (uint64 c = Max(pc->lo, from); c < end; c++)
-		{
-			uint32		len;
-			const char *s = sift_cdict_str(pc->d, (uint32) (c - pc->dbase), &len);
-			int64		i = sift_cdict_find(batch, s, len);
-
-			if (i >= 0)
-				map[i] = (uint32) c;
+			s = sift_cdict_str(batch, i + j, &len);
+			code = view_find(v, s, len, hash[j]);
+			map[i + j] = code < 0 ? PG_UINT32_MAX : (uint32) code;
 		}
 	}
 }
@@ -552,20 +552,18 @@ sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch_in, const SiftCcPolicy
 	SiftCDict  *batch = (SiftCDict *) batch_in;
 	uint32		missing = 0,
 				appended = 0;
-	uint64		seen;
 	SiftDirSnapshot *snap;
 
 	memset(map, 0xff, batch->n * sizeof(uint32));
 	pfree(view_refresh(vs));
-	map_codes(vs, batch, 0, map);
+	map_codes(vs, batch, map);
 	for (uint32 i = 0; i < batch->n; i++)
 		missing += map[i] == PG_UINT32_MAX;
 	if (missing == 0)
 		return 0;
 	LockRelationForExtension(vs->rel, ExclusiveLock);
-	seen = vs->view->total;
 	snap = view_refresh(vs);
-	map_codes(vs, batch, seen, map);
+	map_codes(vs, batch, map);
 	{
 		SiftCDict  *fresh = sift_cdict_create(vs->view->cx);
 		uint32		lo = vs->view->total;
