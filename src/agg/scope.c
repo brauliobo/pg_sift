@@ -21,9 +21,8 @@
 #include "agg/agg_int.h"
 #include "agg/lookcol_int.h"
 
-/* the leaf of the scope key: the one whose path is "<key_name>#scope" (agg/col.c); -1 when the source has none */
-static int
-scope_leaf(const SiftSrcLayout *lay, const char *key_name)
+int
+sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 {
 	const char *path = psprintf("%s#scope", key_name);
 
@@ -104,7 +103,7 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 	c = (SiftScopeCounts) {
 		.nkeys      = sc->nkeys,
 		.once       = sc->once,
-		.entries    = unit_rows(units, scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys),
+		.entries    = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->keys, sc->nkeys),
 		.patch_rows = unit_rows(entity, sc->fk, rd->patch, rd->npatch),
 		.delta_rows = rd->delta_rows,
 		.pairs      = pairs,
@@ -136,8 +135,8 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
-	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->keys, sc->nkeys, sc->once, ex->spec->topn != NULL,
-										ex->spec->leaves, ex->spec->nleaves);
+	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
+										ex->spec->topn != NULL, ex->spec->leaves, ex->spec->nleaves);
 	if (rd->why == NULL && (rd->npatch > 0 || SIFT_SCOPE_DELTA_INSTR * (double) rd->delta_rows > SIFT_SCOPE_DELTA_PRICED) && (sc->once || sc->nkeys == 1) &&
 		!sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
@@ -172,23 +171,30 @@ conjunction(AggExec *ex, int *total, List *preds, SiftAggPredKind kind, const ch
 	return p;
 }
 
-/* the conjuncts of the units of keys: their key, and the members left out (the changed and write buffer members, and those of the drop) */
+/* the members the units leave out (the changed ones, and those of the drop): the conjunct that keeps the others; NULL: none */
+static SiftAggPred *
+left_out(AggExec *ex, int *total, int fk, const SiftScopeRead *rd, const SiftScopeDrop *drop)
+{
+	uint32		nleft = rd->nexcept + (drop ? drop->n : 0);
+	int64	   *left;
+
+	if (nleft == 0)
+		return NULL;
+	left = palloc(nleft * sizeof(int64));
+	memcpy(left, rd->except, rd->nexcept * sizeof(int64));
+	if (drop)
+		memcpy(left + rd->nexcept, drop->members, drop->n * sizeof(int64));
+	return pred_in(ex, total, fk, true, left, nleft, psprintf("member not changed since the scope stamp (%s)", keys_text(left, nleft)));
+}
+
+/* the conjuncts of the units of keys: their key, and the members left out */
 static List *
 arm_of(AggExec *ex, int *total, int sleaf, int fk, const int64 *keys, uint32 nkeys, const SiftScopeRead *rd, const SiftScopeDrop *drop)
 {
 	List	   *arm = list_make1(pred_in(ex, total, sleaf, false, keys, nkeys, psprintf("%s IN (%s)", ex->lay->leaf[sleaf].name, keys_text(keys, nkeys))));
-	uint32		nleft = rd->nexcept + (drop ? drop->n : 0);
+	SiftAggPred *left = left_out(ex, total, fk, rd, drop);
 
-	if (nleft > 0)
-	{
-		int64	   *left = palloc(nleft * sizeof(int64));
-
-		memcpy(left, rd->except, rd->nexcept * sizeof(int64));
-		if (drop)
-			memcpy(left + rd->nexcept, drop->members, drop->n * sizeof(int64));
-		arm = lappend(arm, pred_in(ex, total, fk, true, left, nleft, psprintf("member not changed since the scope stamp (%s)", keys_text(left, nleft))));
-	}
-	return arm;
+	return left ? lappend(arm, left) : arm;
 }
 
 /* the distinct keys that have no drop list */
@@ -221,9 +227,20 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 	const SiftAggScope *sc = ex->spec->scope;
 	const SiftScopeRead *rd = ex->scope_rd;
 	int64	   *plain = palloc(Max(sc->nkeys, 1) * sizeof(int64));
-	uint32		nplain = plain_keys(sc, rd, plain);
+	uint32		nplain;
 	List	   *arms = NIL;
 
+	/* every key: the units are all read, each row has its key (no member to patch: the reader refuses it); only the changed members leave */
+	if (sc->all)
+	{
+		SiftAggPred *left = left_out(ex, total, sc->fk, rd, NULL);
+
+		if (left)
+			*add = lappend(*add, left);
+		ex->scope_preds = left != NULL;
+		return;
+	}
+	nplain = plain_keys(sc, rd, plain);
 	if (nplain > 0 || rd->ndrop == 0)
 		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, rd, NULL));
 	for (int d = 0; d < rd->ndrop; d++)
@@ -288,7 +305,7 @@ List *
 scope_prune(AggExec *ex, List *tests)
 {
 	const SiftAggScope *sc = ex->spec->scope;
-	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? scope_leaf(ex->lay, sc->key_name) : -1;
+	int			sleaf = ex->scope_rd && ex->scope_why == NULL ? sift_agg_scope_leaf(ex->lay, sc->key_name) : -1;
 
 	if (sleaf < 0 || ex->scope_rd->npatch == 0)
 		return tests;
@@ -303,7 +320,7 @@ scope_filter(AggExec *ex, int *total, List **add)
 	const SiftAggScope *sc = ex->spec->scope;
 	int64	   *members;
 	uint32		n;
-	int			leaf = ex->scope_why == NULL ? scope_leaf(ex->lay, sc->key_name) : sc->fk;
+	int			leaf = ex->scope_why == NULL ? sift_agg_scope_leaf(ex->lay, sc->key_name) : sc->fk;
 
 	SIFT_INVARIANT(leaf >= 0, "sift: the scope segments of index \"%s\" have no leaf for scope \"%s\"", get_rel_name(ex->spec->indexoid), sc->key_name);
 	ex->scope_preds = 0;
@@ -312,8 +329,8 @@ scope_filter(AggExec *ex, int *total, List **add)
 		stored_filter(ex, total, add, leaf);
 		return;
 	}
-	/* one row for each pair of a member in several keys is what only the join of the scope relation gives: the planner keeps it as the fallback of such a scope */
-	if (!sc->once && sc->nkeys > 1)
+	/* one row for each pair of a member in several keys, and the key of each, is what only the join of the scope relation gives: the planner keeps it as the fallback of such a scope */
+	if (!sc->once && (sc->all || sc->nkeys > 1))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
 						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));
 	members = ex->scope_rd->members;

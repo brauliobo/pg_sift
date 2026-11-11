@@ -60,5 +60,4 @@ plan_prednorm.c: widening # a test of whether a comparison widens the type of it
 spec.c: sift_aggspec_gstream sift_aggspec_ord_range # tests of whether a spilled scan can give its groups in the order of the ORDER BY: a no spills the groups and sorts them, no arm is refused
 plan_contains.c: path_declared # a lookup of the leaf at a path of a jsonb column: the caller says the path is undeclared and runs the containment on the leaves, no arm is refused
 plan_type.c: haskey_reads # a walk of the query for the reads of the document and of the key leaf besides the test doc ? 'k': compile_haskey says no, and the conjunct stays the normal plan's
-plan_scope.c: is_marker # the shape of the test form of a scope read: a qual that is not the marker stays where it was, and the scan refuses it by its own reason
 plan_scope.c: sift_agg_scope_take sift_agg_scope_extract sift_agg_scope_wanted member_equality key_source # predicates of the shape and the second pass over a scope index, a try: its miss is the arm `scope` of its own (agg_report, slug scope), the arms of the first pass keep the reasons of the statement

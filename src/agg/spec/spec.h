@@ -34,7 +34,11 @@ typedef struct SiftAggScope
 	Node	   *param;			/* the keys are the value of this expression of the statement's parameters when the scan starts (scope_keys_init); NULL: they are constants */
 	const char *param_desc;		/* EXPLAIN: the expression, as text */
 	bool		once;			/* a row counts once whichever of the keys it has (IN, EXISTS); false: once for each pair of its member, as a join and GROUP BY the key count it */
+	bool		all;			/* every key (keys NULL, nkeys 0, not once): a row for each pair of its member, which the spec may group by the derived leaf (sift_agg_scope_leaf) */
 } SiftAggScope;
+
+/* The leaf of the derived key "<key_name>#scope" in the layout of a scope index; -1 when it has none */
+extern int	sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name);
 
 /* The keys of a value of an integer type or of an array of one (int2, int4, int8), sorted and each once */
 extern int64 *sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n);

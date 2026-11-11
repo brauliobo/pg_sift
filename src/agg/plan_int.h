@@ -176,6 +176,7 @@ typedef struct AggCtx
 	int			npred;			/* ids handed out to predicate nodes */
 	List	   *joins;			/* JoinCtx */
 	struct ScopeTake *scope_take;	/* the join to the scope relation the second pass took out of the FROM list (plan_scope.c); NULL: none */
+	const char *scope_all;		/* the scope (key_name) whose every key the scan reads (SiftAggScope.all): its derived leaf is a leaf the spec may read; NULL: none */
 	Bitmapset  *nulling;		/* the outer joins whose nullable side is the scanned table: its Vars carry them in varnullingrels */
 	List	   *combos;			/* ComboCtx */
 	int			nvleaf;			/* SiftAggSpec.vleaf: leaves c->lay has after the source's */
@@ -587,6 +588,8 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
 extern bool sift_agg_scope_wanted(AggCtx *c);
+/* the derived leaf of the scope the scan reads every key of, when e is the expression that stands for it (match_leaf); -1 when it is not */
+extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern bool spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys);

@@ -111,16 +111,18 @@ fk_leaf(AggCtx *c, Node *fk, const char *key_name, const char **why)
 
 /* ---- the testing marker ---- */
 
+/* sift.<name>(index, key_name, fk [, keys]) of the testing extension */
+static bool
+is_func(Node *q, const char *name, int nargs)
+{
+	return IsA(q, FuncExpr) && list_length(((FuncExpr *) q)->args) == nargs && get_func_namespace(((FuncExpr *) q)->funcid) == get_namespace_oid("sift", true) &&
+		strcmp(get_func_name(((FuncExpr *) q)->funcid), name) == 0;
+}
+
 static bool
 is_marker(Node *q)
 {
-	FuncExpr   *f;
-
-	if (!IsA(q, FuncExpr))
-		return false;
-	f = (FuncExpr *) q;
-	return list_length(f->args) == 4 && get_func_namespace(f->funcid) == get_namespace_oid("sift", true) &&
-		(strcmp(get_func_name(f->funcid), "in_scope") == 0 || strcmp(get_func_name(f->funcid), "in_scope_pairs") == 0);
+	return is_func(q, "in_scope", 4) || is_func(q, "in_scope_pairs", 4) || is_func(q, "in_scope_all", 3);
 }
 
 static bool
@@ -141,26 +143,52 @@ static SiftAggScope *
 marker_scope(AggCtx *c, Node *q, const char **why)
 {
 	FuncExpr   *f = (FuncExpr *) q;
+	bool		all = list_length(f->args) == 3;
 	Const	   *idx = arg_const(f, 0, REGCLASSOID),
 			   *name = arg_const(f, 1, TEXTOID),
-			   *key = arg_const(f, 3, INT8OID);
+			   *key = all ? NULL : arg_const(f, 3, INT8OID);
 	int			leaf;
 	SiftAggScope proto = {0};
 
-	if (key == NULL)
+	if (key == NULL && !all)
 		key = arg_const(f, 3, INT8ARRAYOID);
-	if (idx == NULL || name == NULL || key == NULL)
+	if (idx == NULL || name == NULL || (key == NULL && !all))
 		return no_scope(why, "scope index, name or keys are not constants");
 	if (DatumGetObjectId(idx->constvalue) != c->indexoid)
 		return no_scope(why, "scope index is not the scanned index");
 	if ((leaf = fk_leaf(c, list_nth(f->args, 2), TextDatumGetCString(name->constvalue), why)) < 0)
 		return NULL;
-	if (key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
+	if (!all && key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
 		return no_scope(why, "a scope key is NULL");
 	proto.key_name = TextDatumGetCString(name->constvalue);
-	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
+	proto.all = all;
+	if (!all)
+		proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
 	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
 	return scope_make(c, &proto, leaf);
+}
+
+/*
+ * The expression that stands for the derived key of a scope the scan reads every key of: the testing marker sift.scope_key(index, key_name, fk), in a group key or an aggregate. Its leaf is the one
+ * of the derived key "<key_name>#scope", whose value is the key of each row the scan reads (the reader gives only rows that have one).
+ * RELEASE-TODO: the recognition of the join replaces it: the key column of the scope relation in a GROUP BY of the join, read as this leaf, of the type of that column.
+ */
+int
+sift_agg_scope_key_leaf(AggCtx *c, Node *e)
+{
+	FuncExpr   *f = (FuncExpr *) e;
+	Const	   *idx,
+			   *name;
+	const char *why;
+
+	if (c->scope_all == NULL || !is_func(e, "scope_key", 3))
+		return -1;
+	idx = arg_const(f, 0, REGCLASSOID);
+	name = arg_const(f, 1, TEXTOID);
+	if (idx == NULL || name == NULL || DatumGetObjectId(idx->constvalue) != c->indexoid || strcmp(TextDatumGetCString(name->constvalue), c->scope_all) != 0 ||
+		fk_leaf(c, list_nth(f->args, 2), c->scope_all, &why) < 0)
+		return -1;
+	return sift_agg_scope_leaf(c->lay, c->scope_all);
 }
 
 /* ---- the join to the scope relation ---- */
@@ -567,9 +595,11 @@ sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	const char *why = scan_why(c);
 	int			leaf;
 
+	c->scope_all = NULL;
 	if (t == NULL)
 	{
 		scope_scan(c, s, fs, why);
+		c->scope_all = s->scope != NULL && s->scope->all ? s->scope->key_name : NULL;
 		return true;
 	}
 	if (why == NULL && (leaf = fk_leaf(c, (Node *) t->fk, t->sc.key_name, &why)) >= 0)
@@ -585,5 +615,6 @@ sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 void
 sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why)
 {
+	c->scope_all = NULL;
 	scope_scan(c, s, fs, why);
 }

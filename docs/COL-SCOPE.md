@@ -59,7 +59,7 @@ stamp of the units (the journal says which), plus the entity rows of those of th
 keeps those whose member did not change, and copies each once for each pair of its member with a key under the statement's snapshot (the pairs come from the pair btree, the leaves of the journal index of the pairs or a scan of the
 relation, whichever is cheapest), as the promotion would write them; the scan reads the copies as one more unit of each key, so the visibility check and the tombstones are those of the
 write buffer's rows. A buffered row of a member whose pairs changed is read with the rest of that member's rows by the patch. A statement
-that the scope cannot answer reads the entity rows of the members the relation lists for the keys; the answer is the join's in every case (the tests compare md5 against the plain join after every
+that the scope cannot answer reads the entity rows of the members the relation lists for the keys (a read of every key by the key has no such fallback: below); the answer is the join's in every case (the tests compare md5 against the plain join after every
 state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). The scan takes the scope conjunct from the join the way an application writes it
 (the recognition below), or from the marker `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join).
 
@@ -77,7 +77,7 @@ rows are those of the join in every case; whether the index may be read at execu
 | `f.fk IN (SELECT member FROM scope_rel WHERE scope_key = k or IN (list))`, `EXISTS`, a CTE of the members, a set-returning SQL function of them | once | yes, any number of constant keys |
 | the same through a view, a security barrier view that projects the two columns, an inlined `STABLE` SQL function | as written | yes |
 | `JOIN` with several keys | once for each pair | no: a member whose pairs changed needs the join, which counts them |
-| `GROUP BY` the scope key or any other column of the relation read | | no: the units give the rows, not the pair |
+| `GROUP BY` the scope key ("every tenant"), or any other column of the relation read | once for each pair | not by the planner yet: the reader gives it (below; the testing markers reach it) |
 | the scope key bound by a parameter: `= $1`, `= ANY ($1)`, `IN ($1, $2)`, a stable expression (`current_setting(..)::int`), the output of an InitPlan (`= (SELECT ..)`, `= ANY (ARRAY(SELECT ..))`) | as written | yes: the keys are those of the execution (below); a join (a row for each pair) only for a scalar, an array may hold several keys |
 | a table of keys joined to the scope relation (`JOIN keys k ON k.key = s.key`, `s.key IN (SELECT key FROM keys ..)`) | | no: the keys of the table are not known when the plan is made (`= ANY (ARRAY(SELECT key FROM keys ..))` is) |
 | another condition on the relation, a view with a condition, `DISTINCT` or a join inside the sub-select, `NOT EXISTS`, an outer join, row-level security on the relation | | no |
@@ -95,8 +95,8 @@ A statement that is nearly one keeps the join and says why in `sift.explain_why`
 **Many to many.** A member may be in several keys: a fact has one entry for each. A read of one key counts each fact of a member that has the pair once. A read of several keys with the meaning of
 `IN` or `EXISTS` counts a fact once whichever of the keys its member has (`Scope Semantics: once`): the units of all but the least key of a member leave the member's facts out, from lists the read
 builds from the pairs, bounded by `work_mem` and by 64 keys that have a list (`dedupe over work_mem`, `dedupe keys`: the entity rows are read then). A join and `GROUP BY` the key count a fact once for each pair
-(`Scope Semantics: per pair`). A read per pair of several keys that has changed members cannot be patched from the entity rows (one row each); it is not a fallback to the entity rows, it needs
-the join, which the planner keeps (only the testing marker `sift.in_scope_pairs` reaches it, and raises an error that says so).
+(`Scope Semantics: per pair`). A read per pair of several keys that has changed members cannot be patched from the entity rows (one row each), and neither can a read of every key (the row has no key): it is not a fallback to the entity rows, it needs
+the join, which the planner keeps (only the testing markers `sift.in_scope_pairs` and `sift.in_scope_all` reach it, and raise an error that says so).
 
 **The patch is priced.** A member that has a pair now (a restore, a new pair) has its facts read through the entity rows, and an index whose units are cut by time holds some of them in every unit: the
 patch then reads most of the table beside the scope units. On 1,000,000 events, 20,000 members and 500 keys (a key of 995 members; instructions of the backend) one restored member reads 53,752 entity
@@ -120,9 +120,19 @@ besides the units, 32.5 million with 2,000 buffered rows and 93.7 with 20,000 wh
 members with a buffer of tens of thousands of rows can still cost more than the join: the copies are encoded for each read. 20 changed pairs still cost 5.3 million (the entity rows of the changed members, against
 the join's 3.7): the rows of a changed member are read through the entity path.
 
+**Every key, grouped by the key.** A read of every key (`Scope Keys: all`, no key list, `Scope Semantics: per pair`) reads all the scope units, a fact once for each pair of its member, and its group key is the derived leaf
+`<key_name>#scope`: every entry has its key (`Scope Group Key: <key_name>`), so the scan groups by it as the engine groups by any leaf. The units of a key hold that one key (the units of small keys share a unit, a run of keys), so a
+unit with no member to leave out answers from its pre-aggregates, histograms and sums of its entries, with no hash and no row read (`Units From Pre-aggregates`); the gate that kept a read of several keys from them was written for the dedupe of `IN` and `EXISTS`, which a read per pair does not
+have. The rest is as for one key: the stored entries of the members that changed leave (`fk NOT IN`), and the rows of the write buffers are the delta, a copy for each pair of their member. What this read cannot do is the patch:
+the entity rows of a changed member that has a pair now carry no key, and the group key is never NULL, so the reader refuses (`per pair, changed pairs`, and the other reasons of the verdict) and the statement needs the join, which is the statement as written; the planner chooses between the two
+at the start of the scan from the price of one function (`sift_scope_entity_cheaper`, with the keys the relation lists). Until the planner recognises the join, the testing markers `sift.in_scope_all(index, key_name, fk)` in the `WHERE` clause and
+`sift.scope_key(index, key_name, fk)` as a group key or an aggregate stand for it, and a refused read raises the error the planner will replace by the join (test `col_scope_groupkey`). Measured on 300,000 events, 5,000 members and 50 tenants
+(instructions of the backend, warm, median of 5; `sum(amount), count(*)` for every tenant): the read costs 1.94 million instructions (86 units from pre-aggregates, 408 blocks hit, 213 read cold; the join 52.9 million, 206 hit, 176 read), with 2,000 buffered rows 12.6 million (2,190 copies, about 4,800 instructions
+each, of which sorting the pairs and the copies is 40%; the join 53.7), and with 20 changed pairs the reader says why after 0.94 million instructions, which the join then adds to its 56.7.
+
 ## EXPLAIN
 
-`Scope Index`, `Scope Keys`, `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
+`Scope Index`, `Scope Keys` (`all` for every key), `Scope Group Key` (a group key of the scan is the derived key), `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
 Keys`, `Scope Patched Rows`, `Scope Delta Rows` (the copies of write buffer rows the scan reads, not counted in the patched rows), `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
 `no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer` (the pairs of the buffered rows are more than work_mem holds), `top-n, changed pairs` (a top-N cannot take the patch or the delta of a changed pair),
 `dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
@@ -269,6 +279,6 @@ copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.
 ## Limits
 
 EXPERIMENTAL; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds; a join to a table of keys and a `GROUP BY` the key are not recognised; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds, and so does every key by the key when a changed member has a pair now; a join to a table of keys and the planner's recognition of a `GROUP BY` the key are not in this release; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
 by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
 rows still answer.

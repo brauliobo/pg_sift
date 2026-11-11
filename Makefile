@@ -258,6 +258,7 @@ TESTING_REGRESS += col_scope_declare
 TESTING_REGRESS += col_scope_dedupe
 TESTING_REGRESS += col_scope_delta
 TESTING_REGRESS += col_scope_fill
+TESTING_REGRESS += col_scope_groupkey
 TESTING_REGRESS += col_scope_journal
 TESTING_REGRESS += col_scope_journal_partial
 TESTING_REGRESS += col_scope_maint

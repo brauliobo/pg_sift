@@ -7,7 +7,7 @@ A seed builds events (facts with an entity key, a time, a kind and a value), a t
 and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between dim_b), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
 tenant of pairs, a reload of the pairs, rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
 After every step (a 'buffer' step leaves its rows in the write buffer, and the read of a key whose dim_b have some must take them as its delta) a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
-(a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason
+(a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason (a read of every key grouped by its key, 'group key', raises it as the error that makes the join run)
 (scope_reason_ok in test/scope_helpers.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
 entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size, track_changes, key_cut by the member column and order arrays named for the columns
@@ -41,7 +41,11 @@ BEGIN
 	FOR d IN SELECT * FROM sf_q ORDER BY qid LOOP
 		det := NULL; r := NULL; ok := true;
 		BEGIN
-			SELECT * INTO r FROM scope_run(d.q, d.plain);
+			IF d.class = 'group key' THEN
+				SELECT * INTO r FROM scope_group_run(d.q, d.plain);
+			ELSE
+				SELECT * INTO r FROM scope_run(d.q, d.plain);
+			END IF;
 			IF NOT r.same THEN ok := false; det := 'rows differ';
 			ELSIF NOT d.sql_form AND NOT r.path_ok THEN ok := false; det := 'the scope path is neither read nor accounted for';
 			ELSIF d.sql_form AND planner AND d.engage_wanted AND NOT r.engaged THEN ok := false; det := 'the planner did not recognise the form';
@@ -64,7 +68,12 @@ BEGIN
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE 'SELECT coalesce(md5(json_agg(t)::text), '''') FROM (' || d.plain || ') t' INTO h;
 		SET LOCAL sift.enable_agg = on;
-		EXECUTE 'SELECT coalesce(md5(json_agg(t)::text), '''') FROM (' || d.q || ') t' INTO r;
+		BEGIN
+			EXECUTE 'SELECT coalesce(md5(json_agg(t)::text), '''') FROM (' || d.q || ') t' INTO r;
+		EXCEPTION WHEN feature_not_supported THEN   -- the reader refused a read of every key: the join runs (the planner's choice), which the plain form is
+			IF d.class <> 'group key' THEN RAISE; END IF;
+			r := h;
+		END;
 		INSERT INTO sf_snap0 VALUES (d.qid, h) ON CONFLICT DO NOTHING;
 		SELECT s.h INTO h0 FROM sf_snap0 s WHERE s.qid = d.qid;
 		IF r <> h OR h <> h0 THEN bad := bad || format('q%s scope=%s plain=%s first=%s; ', d.qid, r, h, h0); END IF;
@@ -137,6 +146,7 @@ class Seed:
         self.cut = r.choice([None, None, 'dim_a_id'])
         self.gord = r.random() < 0.5
         self.next_id = self.n + 1
+        self.grng = random.Random(f'{seed}group')   # its own stream: the draws of the other classes stay
         sr = random.Random(seed * 7919 + 13)   # its own stream: the seeds that are not soft draw what they drew before
         self.soft = seed % 3 == 2   # a third of the seeds, and seed 2 of the quick tier
         self.pk2 = sr.choice(['dim_a_id, tenant_id', 'tenant_id, dim_a_id'])
@@ -292,6 +302,16 @@ VACUUM (ANALYZE) tenant_scope;"""
         qs.append(('per pair',
                    pair % (("sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, k)",) * 2 + (lst(ks),)),
                    pair % (("EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = k%s)" % self.act,) * 2 + (lst(ks),)), False, False, False, None))
+        gk, ga = "sift.scope_key('events_col'::regclass, 'tenant_id', e.dim_a_id)", "sift.in_scope_all('events_col'::regclass, 'tenant_id', e.dim_a_id)"
+        for cols, aggs, filt in self.grng.sample([({'v'}, "count(*), sum(v)", ''), ({'id', 'v'}, "min(id), max(id), min(v)", ''), (set(), "count(DISTINCT e.dim_a_id), count(*)", ''),
+                                          ({'v'}, "count(*), sum(v)", ' AND v > 4'), ({'id', 'created_at'}, "min(id), max(id)", f" AND created_at >= DATE '2026-0{m1}-01'")], 3):
+            subset = self.kept is None or cols <= self.kept   # every key by its key: stored right after a build, else the join
+            qs.append(('group key', f"SELECT {gk} AS k, {aggs} FROM events e WHERE {ga}{filt} GROUP BY 1 ORDER BY 1",
+                       f"SELECT s.tenant_id AS k, {aggs} FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id{self.act} WHERE true{filt} GROUP BY 1 ORDER BY 1", False, subset, False,
+                       None if subset else '^column .* not in the scope units$'))
+        qs.append(('group key', f"SELECT count(*), sum(v), min(id) FROM events e WHERE {ga}",   # a row for each pair, no group
+                   f"SELECT count(*), sum(v), min(id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id{self.act}", False, self.kept is None or {'v', 'id'} <= self.kept, False,
+                   None if self.kept is None or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % self.act, False),
                           ("SELECT count(*), sum(v) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (lst([pick() for _ in range(3)]), self.act), False),
                           ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope s WHERE tenant_id = %d%s)" % (pick(), self.act), True),
@@ -366,7 +386,7 @@ def run_seed(seed, rows, steps, out_dir):
     stats = collections.Counter()
     try:
         helpers = open(HELPERS).read().replace('\\set ECHO none', '').replace('\\set ECHO all', '')
-        a.run("DROP FUNCTION IF EXISTS scope_reason_ok(text), scope_run(text, text) CASCADE;\n" + helpers)
+        a.run("DROP FUNCTION IF EXISTS scope_reason_ok(text), scope_run(text, text), scope_group_run(text, text) CASCADE;\n" + helpers)
         caps = probe(a)
         s = Seed(seed, rows, caps)
         log.write(f'-- seed {seed} planner={"planner" in caps} {vars(s)}\n')

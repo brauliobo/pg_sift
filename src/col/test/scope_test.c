@@ -209,6 +209,8 @@ sift_test_col_scope_flag(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_in_scope);
 PG_FUNCTION_INFO_V1(sift_test_in_scope_set);
+PG_FUNCTION_INFO_V1(sift_test_in_scope_all);
+PG_FUNCTION_INFO_V1(sift_test_scope_key);
 
 /* the members of the keys under one snapshot, kept by the call site of the statement that asked */
 typedef struct InScope
@@ -232,7 +234,7 @@ cmp_i64(const void *a, const void *b)
 static bool
 same_ask(const InScope *st, Oid indexoid, const int64 *keys, int nkeys, Snapshot snap)
 {
-	return st != NULL && st->index == indexoid && st->nkeys == nkeys && memcmp(st->keys, keys, nkeys * sizeof(int64)) == 0 &&
+	return st != NULL && st->index == indexoid && st->nkeys == nkeys && (keys == NULL || memcmp(st->keys, keys, nkeys * sizeof(int64)) == 0) &&
 		st->xmin == snap->xmin && st->xmax == snap->xmax && st->curcid == snap->curcid;
 }
 
@@ -273,7 +275,8 @@ in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 		}
 		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), snap, keys, nkeys, &st->n);
 		st->keys = palloc(Max(nkeys, 1) * sizeof(int64));
-		memcpy(st->keys, keys, nkeys * sizeof(int64));
+		if (keys != NULL)
+			memcpy(st->keys, keys, nkeys * sizeof(int64));
 		st->nkeys = nkeys;
 		st->index = indexoid;
 		st->xmin = snap->xmin;
@@ -321,6 +324,23 @@ sift_test_in_scope_set(PG_FUNCTION_ARGS)
 		keys[i] = DatumGetInt64(elems[i]);
 	}
 	return in_scope(fcinfo, keys, n);
+}
+
+/* sift.in_scope_all(index regclass, key_name text, fk anyelement): whether the scope relation has a pair of fk with any key; a scan reads it as the join counts it, a row for each pair, every key */
+Datum
+sift_test_in_scope_all(PG_FUNCTION_ARGS)
+{
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+	return in_scope(fcinfo, NULL, 0);
+}
+
+/* sift.scope_key(index regclass, key_name text, fk anyelement): the key of each pair of a scan of every key of the scope; it has no value for a statement the scan does not read, which a row has many of */
+Datum
+sift_test_scope_key(PG_FUNCTION_ARGS)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.scope_key is read by a scan of the scope units of every key, with sift.in_scope_all")));
+	PG_RETURN_NULL();
 }
 
 PG_FUNCTION_INFO_V1(sift_test_scope_legs);

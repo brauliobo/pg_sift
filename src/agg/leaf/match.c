@@ -26,6 +26,8 @@ match_leaf_node(AggCtx *c, Node *e)
 	c->txt_pending = 0;
 	c->io_pending = 0;
 	e = strip_relabel(e);
+	if ((att = sift_agg_scope_key_leaf(c, e)) >= 0)
+		return att;
 	if (IsA(e, Var) && ((Var *) e)->varno == c->func_rti && c->func_rti != 0)
 		return func_var_leaf(c, (Var *) e);
 	if ((att = attr_of_expr(c, e)) > 0)

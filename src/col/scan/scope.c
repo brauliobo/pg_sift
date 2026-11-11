@@ -121,6 +121,20 @@ sort_unique(int64 *a, uint32 n)
 	return k;
 }
 
+/* the distinct keys ascending, a copy; NULL for every key (keys NULL) */
+static int64 *
+sorted_keys(const int64 *keys, int nkeys, uint32 *n)
+{
+	int64	   *sorted;
+
+	*n = 0;
+	if (keys == NULL)
+		return NULL;
+	sorted = memcpy(palloc(Max(nkeys, 1) * sizeof(int64)), keys, nkeys * sizeof(int64));
+	*n = sort_unique(sorted, nkeys);
+	return sorted;
+}
+
 static bool
 has_i64(const int64 *a, uint32 n, int64 v)
 {
@@ -165,11 +179,17 @@ typedef struct PairScan
 	AttrNumber	member;
 	AttrNumber	skey;
 	Snapshot	snap;
-	const int64 *keys;			/* the scope keys asked for, sorted and distinct */
+	const int64 *keys;			/* the scope keys asked for, sorted and distinct; NULL: every key */
 	uint32		nkeys;
 	ScopePairs	out;
 	int64		cur;			/* the key or the member a probe asks for */
 } PairScan;
+
+static bool
+wanted(const PairScan *ps, int64 key)
+{
+	return ps->keys == NULL || has_i64(ps->keys, ps->nkeys, key);
+}
 
 static bool
 btree_leads_with(Oid btree, AttrNumber att)
@@ -186,7 +206,7 @@ scan_pair(void *arg, int64 member, int64 key)
 {
 	PairScan   *ps = arg;
 
-	if (has_i64(ps->keys, ps->nkeys, key))
+	if (wanted(ps, key))
 		pairs_add(&ps->out, member, key);
 }
 
@@ -207,7 +227,7 @@ probe_of_member(void *arg, TupleTableSlot *slot)
 	PairScan   *ps = arg;
 	int64		k;
 
-	if (sift_conn_slot_key(slot, ps->skey, &k) && has_i64(ps->keys, ps->nkeys, k))
+	if (sift_conn_slot_key(slot, ps->skey, &k) && wanted(ps, k))
 		pairs_add(&ps->out, ps->cur, k);
 	return true;
 }
@@ -253,7 +273,7 @@ leaf_pairs(PairScan *ps)
 static void
 pairs_of_keys(PairScan *ps)
 {
-	if (btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
+	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
 	else if (!leaf_pairs(ps))
 		sift_conn_scan_keys(ps->rel, ps->btree, ps->member, ps->skey, ps->snap, scan_pair, ps);
@@ -298,13 +318,11 @@ scope_relation(Relation heap, Relation index, int ord, PairScan *ps, const int64
 int64 *
 sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
 {
-	int64	   *sorted = palloc(Max(nkeys, 1) * sizeof(int64)),
-			   *out;
+	int64	   *out;
 	PairScan	ps = {0};
 	uint32		nk;
+	int64	   *sorted = sorted_keys(keys, nkeys, &nk);
 
-	memcpy(sorted, keys, nkeys * sizeof(int64));
-	nk = sort_unique(sorted, nkeys);
 	scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), &ps, sorted, nk, snap);
 	pairs_of_keys(&ps);
 	table_close(ps.rel, NoLock);
@@ -548,8 +566,8 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 	for (uint32 i = 0; i < patch.n; i++)
 		rd->patch[i] = patch.p[i].member;
 	rd->npatch = sort_unique(rd->patch, patch.n);
-	/* the entity rows of a member are one fact each: a row that counts once for each of the member's pairs with the keys can only come from the units */
-	if (rd->npatch > 0 && !once && any_member_twice(&patch))
+	/* the entity rows of a member are one fact each, with no scope key: a row that counts once for each of the member's pairs with the keys, or that gives its key, can only come from the units */
+	if (rd->npatch > 0 && !once && (keys == NULL || any_member_twice(&patch)))
 		rd->why = "per pair, changed pairs";
 	else if ((rd->npatch > 0 || rd->delta_rows > 0) && topn)
 		rd->why = "top-n, changed pairs";
@@ -560,8 +578,8 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
-	int64	   *sorted;
 	uint32		nk;
+	int64	   *sorted;
 	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
 	const char *missing;
 
@@ -574,9 +592,8 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	if (rd->why != NULL)
 		return rd;
 	rd->scope = ord;
-	sorted = palloc(Max(nkeys, 1) * sizeof(int64));
-	memcpy(sorted, keys, nkeys * sizeof(int64));
-	nk = sort_unique(sorted, nkeys);
+	SIFT_INVARIANT(keys != NULL || !once, "sift: a scope read of every key counts a row for each pair");
+	sorted = sorted_keys(keys, nkeys, &nk);
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);

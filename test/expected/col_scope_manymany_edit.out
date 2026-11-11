@@ -251,6 +251,6 @@ SELECT b.same AS same_after_rebuild, b.stored_one_key AS stored_after_rebuild FR
 
 DROP TABLE battery_q, shapes, preds, edits, edit_results, events, tenant_scope;
 DROP FUNCTION battery(), edit(int), run_edit(int), dead_entries();
-DROP FUNCTION scope_run(text, text), scope_reason_ok(text);
+DROP FUNCTION scope_run(text, text), scope_group_run(text, text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

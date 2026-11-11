@@ -776,7 +776,7 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 
 typedef struct KeyPairs
 {
-	const int64 *keys;			/* ascending */
+	const int64 *keys;			/* ascending; NULL: every key */
 	int			nkeys;
 	SiftScopePair *pair;
 	uint32		n;
@@ -794,7 +794,7 @@ key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uin
 			int64		i = (int64) w * 64 + __builtin_ctzll(bits),
 						key = lookcol_scalar_value(&need[1], i);
 
-			if (key < kp->keys[0] || key > kp->keys[kp->nkeys - 1] || !bsearch(&key, kp->keys, kp->nkeys, sizeof(int64), sift_cmp_i64))
+			if (kp->keys != NULL && (key < kp->keys[0] || key > kp->keys[kp->nkeys - 1] || !bsearch(&key, kp->keys, kp->nkeys, sizeof(int64), sift_cmp_i64)))
 				continue;
 			if (kp->n == kp->cap)
 				kp->pair = kp->pair ? repalloc(kp->pair, (kp->cap *= 2) * sizeof(SiftScopePair)) : palloc((kp->cap = 1024) * sizeof(SiftScopePair));
@@ -803,7 +803,7 @@ key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uin
 }
 
 /*
- * The (member, key) pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending), in the order of the leaves, from the leaves of its sift_col index ix: the
+ * The (member, key) pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), in the order of the leaves, from the leaves of its sift_col index ix: the
  * pairs a scope relation lists for the keys, read as the leaves of the index hold them. False (nothing read) when the index is not one of the whole table or holds a value a leaf
  * cannot store.
  */
@@ -813,7 +813,7 @@ lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const in
 	Relation	index = index_open(ix, AccessShareLock);
 	ColNeed		need[2] = {0};
 	KeyPairs	kp = {.keys = keys,.nkeys = nkeys};
-	bool		ok = nkeys > 0 && usable_index(index);
+	bool		ok = (keys == NULL || nkeys > 0) && usable_index(index);
 
 	if (ok)
 	{

@@ -122,6 +122,7 @@ codec_scope(Codec *c, SiftAggScope **sc)
 	for (int i = 0; (*sc)->param == NULL && i < (*sc)->nkeys; i++)
 		pk_i64(c, &(*sc)->keys[i]);
 	PK(c, (*sc)->once);
+	PK(c, (*sc)->all);
 }
 
 static void

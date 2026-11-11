@@ -376,6 +376,20 @@ explain_topn(AggExec *ex, ExplainState *es)
 	sift_explain_end(&ln);
 }
 
+/* does a group key of the spec read the leaf: the key itself, as a number or as the value of the leaf */
+static bool
+group_reads(const SiftAggSpec *s, int leaf)
+{
+	sift_i128	mul,
+				add;
+
+	for (int j = 0; j < s->nkeys; j++)
+		if ((s->key[j].kind == SAK_LEAF && s->key[j].leaf == leaf) ||
+			(s->key[j].kind == SAK_NUM && sift_aggnum_linear(&s->key[j].num, &mul, &add) == leaf))
+			return true;
+	return false;
+}
+
 /* The scope conjunct (agg/scope.c): the scope it reads, and in a run the units it read of the scope segments or why it read the entity rows */
 static void
 explain_scope(AggExec *ex, ExplainState *es)
@@ -396,7 +410,9 @@ explain_scope(AggExec *ex, ExplainState *es)
 	if (ex->spec->scope_why != NULL)
 		ExplainPropertyText("Scope Filter Left", ex->spec->scope_why, es);
 	ExplainPropertyText("Scope Index", psprintf("%s (%s)", get_rel_name(ex->spec->indexoid), sc->key_name), es);
-	if (sc->param == NULL)
+	if (sc->all)
+		ExplainPropertyText("Scope Keys", "all", es);
+	else if (sc->param == NULL)
 		ExplainPropertyInteger("Scope Keys", NULL, sc->nkeys, es);
 	else if (es->analyze && ex->started)
 		ExplainPropertyText("Scope Keys", psprintf("%s (%d keys)", sc->param_desc, sc->nkeys), es);
@@ -405,6 +421,8 @@ explain_scope(AggExec *ex, ExplainState *es)
 	/* a plain EXPLAIN has not opened the index */
 	index = ex->index ? ex->index : index_open(ex->spec->indexoid, AccessShareLock);
 	sift_scope_columns(index, sc->key_name, &kept, &all);
+	if (sc->all && group_reads(ex->spec, sift_agg_scope_leaf(sift_colsrc_layout(index), sc->key_name)))
+		ExplainPropertyText("Scope Group Key", sc->key_name, es);
 	if (index != ex->index)
 		index_close(index, NoLock);
 	ExplainPropertyText("Scope Columns", psprintf("%d of %d", kept, all), es);
