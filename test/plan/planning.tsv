@@ -49,7 +49,7 @@ jsonpath_element	1840
 lag_of_months	710	1.5
 lateral_dim_limit_one	987
 lateral_first_fact_per_parent	1213	1.55
-lateral_latest_fact	1344	1.5
+lateral_latest_fact	1429	1.6
 lateral_recordset	1343
 lateral_series	875
 left_join_active	923
