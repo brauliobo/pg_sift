@@ -92,7 +92,7 @@ leak_scan() {
 	local files found
 	mapfile -t files < <(leak_logs "$@")
 	(( ${#files[@]} )) || return 0
-	found=$(grep -aHnE -e "$(leak_regex)" "${files[@]}" 2>/dev/null | leak_unexpected "$@")
+	found=$({ grep -aHnE -e "$(leak_regex)" "${files[@]}" 2>/dev/null || [[ $? -eq 1 ]]; } | leak_unexpected "$@")
 	[[ -z $found ]] && return 0
 	echo "leakcheck: $(wc -l <<<"$found") finding(s):" >&2
 	head -30 <<<"$found" | cut -c1-300 >&2
@@ -213,13 +213,21 @@ leak_growth() {
 
 # ---------- gate self test ----------
 
+# leak_scan in a shell of its own with set -e: the one that a `||` of the caller would switch off
+leak_scan_strict() { bash -c 'set -euo pipefail; source "$1"; leak_scan "$2"' _ "${BASH_SOURCE[0]}" "$1" 2>/dev/null; }
+
 leak_selftest() {
-	local d rc=0 rule re sample
+	local d dirty rc=0 rule re sample
 	d=$(mktemp -d); trap "rm -rf '$d'; trap - RETURN" RETURN
 	printf '%s\n' '2026-10-16 12:00:00.000 UTC [1] LOG:  database system is ready to accept connections' \
 		'2026-10-16 12:00:01.000 UTC [1] LOG:  background worker "logical replication launcher" (PID 7) exited with exit code 1' \
 		'2026-10-16 12:00:02.000 UTC [9] ERROR:  duplicate key value violates unique constraint "t_pkey"' >"$d/postgres.log"
 	leak_scan "$d" 2>/dev/null || { echo "not ok: clean log rejected"; rc=1; }
+	# under set -e, as scripts/pgtest.sh sanitizer-report runs it: no finding is exit 0, a finding is exit 1
+	leak_scan_strict "$d" || { echo "not ok: clean log fails under set -e"; rc=1; }
+	dirty=$(mktemp -d) && printf '%s\n' 'LOG:  server process (PID 42) was terminated by signal 6: Aborted' >"$dirty/postgres.log"
+	leak_scan_strict "$dirty" && { echo "not ok: dirty log accepted under set -e"; rc=1; }
+	rm -rf "$dirty"
 	for rule in "${LEAK_RULES[@]}"; do
 		re=${rule%%$'\t'*} sample=${rule#*$'\t'}
 		printf '%s\n' "$sample" >"$d/postgres.log"
