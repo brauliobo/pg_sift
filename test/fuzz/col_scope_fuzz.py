@@ -342,6 +342,7 @@ VACUUM (ANALYZE) {self.tables};"""
         joined = f"JOIN {self.pairs} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = k{self.act}"   # the pairs are distinct: a row once for each
         qs.append(('per pair', pair % ((scoped,) * 2 + (lst(ks),)), pair % ((joined,) * 2 + (lst(ks),)), False, False, False, None))
         P = self.pairs
+        gk, ga = "sift.scope_key('events_col'::regclass, 'tenant_id', e.dim_a_id)", "sift.in_scope_all('events_col'::regclass, 'tenant_id', e.dim_a_id)"
         for cols, aggs, filt in self.grng.sample([({'v'}, "count(*), sum(v)", ''), ({'id', 'v'}, "min(id), max(id), min(v)", ''), (set(), "count(DISTINCT e.dim_a_id), count(*)", ''),
                                           ({'v'}, "count(*), sum(v)", ' AND v > 4'), ({'id', 'created_at'}, "min(id), max(id)", f" AND created_at >= DATE '2026-0{m1}-01'")], 3):
             subset = self.kept is None or cols <= self.kept   # every key by its key: stored right after a build, else the join

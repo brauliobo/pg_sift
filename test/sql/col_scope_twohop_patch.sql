@@ -199,6 +199,6 @@ RESET min_parallel_table_scan_size;
 SELECT sift.col_verify('facts_col', true);
 
 DROP TABLE facts, grants, memberships, shapes, key_sets, reads, states, parallel_states CASCADE;
-DROP FUNCTION verdict(), changed(), read_run(text, text), scope_run(text, text), scope_reason_ok(text);
+DROP FUNCTION verdict(), changed(), read_run(text, text), scope_run(text, text), scope_group_run(text, text), scope_reason_ok(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
