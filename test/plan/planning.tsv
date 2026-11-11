@@ -85,7 +85,7 @@ point_days_ten	744
 point_days_three	466
 range_only_by_month	679
 rank_within_month	847
-running_total	666
+running_total	763	1.45
 scope_expression_filter	1002
 scope_path_filter_in	1046
 scope_path_filter_join	1055
@@ -125,4 +125,4 @@ two_distincts	480
 two_keys_month	783
 two_keys_parent_kind	725
 two_level_join_outer	705
-skew_join_rows_read	1734	1.5
+skew_join_rows_read	2048	1.6
