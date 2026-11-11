@@ -657,8 +657,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
 	/* several keys or every key counted for each pair, or a group key: where the units cannot (the reader refuses them, or the join costs less) the node runs the join the first pass priced, so it needs one */
 	if ((sc.all || sc.nkeys > 1 || key_read) && !once && t->alts == NIL)
-		return it.is_union ? "several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place" :
-			"several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
+		return "several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
 	if (it.is_union && rest != NIL)
 		return psprintf("the union of the two paths of the scope has another condition: %s", expr_text(c, linitial(rest)));
 	if (!it.is_union && (why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
@@ -695,6 +694,18 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 			*rti = jc->rti;
 			*key = get_attnum(rte->relid, sp->rel.b);
 			return true;
+		}
+		if (rte->rtekind == RTE_SUBQUERY && rte->subquery->setOperations != NULL)
+		{
+			ScopeItem	it = scope_union_item(c, specs, rte->subquery);
+
+			for (int i = 1; it.is_union && !it.all && i < it.nmap; i++)
+				if (it.map[i] == get_attnum(it.relid, it.sp->rel.b))
+				{
+					*rti = jc->rti;
+					*key = i;
+					return true;
+				}
 		}
 	}
 	return false;

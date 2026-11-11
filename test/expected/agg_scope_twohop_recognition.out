@@ -193,67 +193,67 @@ BEGIN
 	RETURN a = b AND b = c;
 END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
-                      name                       |                                                                                                                            plan                                                                                                                            | same_rows 
--------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------
- = ANY (ARRAY(SELECT ..)), view of the two paths | join, ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan: write it as IN (SELECT ..) or EXISTS                                                                                                                       | t
- EXISTS                                          | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN                                              | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, DISTINCT in an arm                          | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                                                                          | t
- IN, EXCEPT                                      | join, the sub-select is not a union of two selects                                                                                                                                                                                                         | t
- IN, INTERSECT                                   | join, the sub-select is not a union of two selects                                                                                                                                                                                                         | t
- IN, LIMIT in an arm                             | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                                                                          | t
- IN, UNION ALL                                   | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, a column that is not the member             | join, the union projects other columns than the member and the key of the pairs                                                                                                                                                                            | t
- IN, a condition on the direct path              | join, an arm of the union on grants: the scope relation has another condition: (status = 'live'::text)                                                                                                                                                     | t
- IN, a condition on the groups                   | join, an arm of the union on grants: the scope relation has another condition: (status = 'live'::text)                                                                                                                                                     | t
- IN, a condition on the memberships              | join, an arm of the union on memberships: the scope relation has another condition: (status = 'live'::text)                                                                                                                                                | t
- IN, a condition that is no binding of the key   | join, an arm of the union on grants: the scope relation has another condition: (tenant_id < 2)                                                                                                                                                             | t
- IN, a key in one arm only                       | join, an arm of the union does not bind the scope key                                                                                                                                                                                                      | t
- IN, a path and a sub-select of keys             | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                                                                          | t
- IN, a path and a table that is none             | join, the union is not the two paths of a scope: one select reads only the pairs relation, the other its joined relation and the relation that lists the member of each group                                                                              | t
- IN, a tenant with no pair                       | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, a third table in the joined path            | join, the union is not the two paths of a scope: one select reads only the pairs relation, the other its joined relation and the relation that lists the member of each group                                                                              | t
- IN, a union that reads no scope                 | join                                                                                                                                                                                                                                                       | t
- IN, an arm that aggregates                      | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                                                                          | t
- IN, arms in the other order                     | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, barrier view                                | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, columns that are not NULL                   | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, no join of the groups to the memberships    | join, the select of the joined path does not join its groups to the relation of their member by the group column                                                                                                                                           | t
- IN, no key                                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                                                                                                                                                   | t
- IN, one path                                    | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set                                                                                                                                                | t
- IN, one path, the joined one                    | join, a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units                                               | t
- IN, other keys in the arms                      | join, the arms of the union bind different keys                                                                                                                                                                                                            | t
- IN, table of keys                               | scope read, ARRAY(SELECT my_tenants.tenant_id FROM my_tenants) keys, once                                                                                                                                                                                  | t
- IN, the direct path without its predicate       | join, an arm of the union on grants: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                                                                            | t
- IN, the groups joined by another column         | join, the select of the joined path does not join its groups to the relation of their member by the group column                                                                                                                                           | t
- IN, the groups without their predicate          | join, an arm of the union on grants: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                                                                            | t
- IN, the member or the group of a grant          | join, a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units                                               | t
- IN, the memberships without their predicate     | join, an arm of the union on memberships: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                                                                       | t
- IN, the rows that are not pairs                 | join, an arm of the union on grants: the scope relation has another condition: (deleted_at IS NOT NULL)                                                                                                                                                    | t
- IN, three selects                               | join, the sub-select is not a union of two selects                                                                                                                                                                                                         | t
- IN, two keys                                    | scope read, 2 keys, once                                                                                                                                                                                                                                   | t
- IN, view                                        | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, view with the key first                     | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, view, UNION ALL                             | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- IN, view, two keys                              | scope read, 2 keys, once                                                                                                                                                                                                                                   | t
- function                                        | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
- join, UNION ALL                                 | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION                                                                                                          | t
- join, UNION ALL, member alone                   | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION                                                                                                          | t
- join, a condition on the pairs                  | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                                                                                                                                       | t
- join, a left join                               | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                                                                                                                               | t
- join, a tenant with no pair                     | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, barrier view                              | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, every key                                 | join, several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place | t
- join, group by the key                          | join, several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place | t
- join, key in an arm and above                   | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, key in the arms                           | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, member alone, two keys                    | scope read, 2 keys, once                                                                                                                                                                                                                                   | t
- join, other columns projected                   | join, the union projects other columns than the member and the key of the pairs                                                                                                                                                                            | t
- join, two keys                                  | join, several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place | t
- join, union                                     | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, view                                      | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- join, view with the key first                   | scope read, 1 keys, per pair                                                                                                                                                                                                                               | t
- top 5, view                                     | scope read, 1 keys, once                                                                                                                                                                                                                                   | t
+                      name                       |                                                                                                     plan                                                                                                     | same_rows 
+-------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ = ANY (ARRAY(SELECT ..)), view of the two paths | join, ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan: write it as IN (SELECT ..) or EXISTS                                                                         | t
+ EXISTS                                          | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN                                              | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, DISTINCT in an arm                          | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                            | t
+ IN, EXCEPT                                      | join, the sub-select is not a union of two selects                                                                                                                                                           | t
+ IN, INTERSECT                                   | join, the sub-select is not a union of two selects                                                                                                                                                           | t
+ IN, LIMIT in an arm                             | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                            | t
+ IN, UNION ALL                                   | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, a column that is not the member             | join, the union projects other columns than the member and the key of the pairs                                                                                                                              | t
+ IN, a condition on the direct path              | join, an arm of the union on grants: the scope relation has another condition: (status = 'live'::text)                                                                                                       | t
+ IN, a condition on the groups                   | join, an arm of the union on grants: the scope relation has another condition: (status = 'live'::text)                                                                                                       | t
+ IN, a condition on the memberships              | join, an arm of the union on memberships: the scope relation has another condition: (status = 'live'::text)                                                                                                  | t
+ IN, a condition that is no binding of the key   | join, an arm of the union on grants: the scope relation has another condition: (tenant_id < 2)                                                                                                               | t
+ IN, a key in one arm only                       | join, an arm of the union does not bind the scope key                                                                                                                                                        | t
+ IN, a path and a sub-select of keys             | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                            | t
+ IN, a path and a table that is none             | join, the union is not the two paths of a scope: one select reads only the pairs relation, the other its joined relation and the relation that lists the member of each group                                | t
+ IN, a tenant with no pair                       | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, a third table in the joined path            | join, the union is not the two paths of a scope: one select reads only the pairs relation, the other its joined relation and the relation that lists the member of each group                                | t
+ IN, a union that reads no scope                 | join                                                                                                                                                                                                         | t
+ IN, an arm that aggregates                      | join, an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join                                                            | t
+ IN, arms in the other order                     | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, barrier view                                | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, columns that are not NULL                   | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, no join of the groups to the memberships    | join, the select of the joined path does not join its groups to the relation of their member by the group column                                                                                             | t
+ IN, no key                                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                                                                                                     | t
+ IN, one path                                    | join, the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set                                                                                                  | t
+ IN, one path, the joined one                    | join, a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units | t
+ IN, other keys in the arms                      | join, the arms of the union bind different keys                                                                                                                                                              | t
+ IN, table of keys                               | scope read, ARRAY(SELECT my_tenants.tenant_id FROM my_tenants) keys, once                                                                                                                                    | t
+ IN, the direct path without its predicate       | join, an arm of the union on grants: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                              | t
+ IN, the groups joined by another column         | join, the select of the joined path does not join its groups to the relation of their member by the group column                                                                                             | t
+ IN, the groups without their predicate          | join, an arm of the union on grants: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                              | t
+ IN, the member or the group of a grant          | join, a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units | t
+ IN, the memberships without their predicate     | join, an arm of the union on memberships: the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                                         | t
+ IN, the rows that are not pairs                 | join, an arm of the union on grants: the scope relation has another condition: (deleted_at IS NOT NULL)                                                                                                      | t
+ IN, three selects                               | join, the sub-select is not a union of two selects                                                                                                                                                           | t
+ IN, two keys                                    | scope read, 2 keys, once                                                                                                                                                                                     | t
+ IN, view                                        | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, view with the key first                     | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, view, UNION ALL                             | scope read, 1 keys, once                                                                                                                                                                                     | t
+ IN, view, two keys                              | scope read, 2 keys, once                                                                                                                                                                                     | t
+ function                                        | scope read, 1 keys, once                                                                                                                                                                                     | t
+ join, UNION ALL                                 | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION                                                            | t
+ join, UNION ALL, member alone                   | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION                                                            | t
+ join, a condition on the pairs                  | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                                                                                         | t
+ join, a left join                               | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                                                                                 | t
+ join, a tenant with no pair                     | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, barrier view                              | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, every key                                 | scope read, all keys, per pair                                                                                                                                                                               | t
+ join, group by the key                          | scope read, all keys, per pair                                                                                                                                                                               | t
+ join, key in an arm and above                   | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, key in the arms                           | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, member alone, two keys                    | scope read, 2 keys, once                                                                                                                                                                                     | t
+ join, other columns projected                   | join, the union projects other columns than the member and the key of the pairs                                                                                                                              | t
+ join, two keys                                  | scope read, 2 keys, per pair                                                                                                                                                                                 | t
+ join, union                                     | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, view                                      | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ join, view with the key first                   | scope read, 1 keys, per pair                                                                                                                                                                                 | t
+ top 5, view                                     | scope read, 1 keys, once                                                                                                                                                                                     | t
 (59 rows)
 
 -- the key by a parameter: a generic plan reads it when the scan starts; a condition that reads a parameter is no proof that an arm takes the rows of its btree
@@ -300,201 +300,276 @@ RESET plan_cache_mode;
 -- the pairs change after the build: the reader patches the member ids whose pairs changed (each of the three journals says which) and the rows are the join's in every state
 CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool) LANGUAGE sql AS $$
 	SELECT note, f.name, label(f.q), same(f.q) FROM forms f
-	WHERE f.name IN ('IN', 'IN, two keys', 'IN, view', 'IN, a tenant with no pair', 'function', 'top 5, view', 'join, view', 'join, key in the arms', 'join, member alone, two keys') ORDER BY f.name
+	WHERE f.name IN ('IN', 'IN, two keys', 'IN, view', 'IN, a tenant with no pair', 'function', 'top 5, view', 'join, view', 'join, key in the arms', 'join, member alone, two keys',
+		'join, two keys', 'join, every key', 'join, group by the key') ORDER BY f.name
 $$;
+-- the node runs the join it holds when the units cannot answer or cost more: its plan holds the union as a child, which must give the rows of the join (sift.test_scope_join forces the run)
+CREATE FUNCTION held(note text) RETURNS TABLE (state text, name text, fallback text, same_rows bool) LANGUAGE plpgsql AS $$
+DECLARE l text; r text; f record;
+BEGIN
+	PERFORM set_config('sift.test_scope_join', 'on', false);
+	FOR f IN SELECT * FROM forms ff WHERE ff.name IN ('join, view', 'join, key in the arms', 'join, two keys', 'join, every key', 'join, group by the key') ORDER BY ff.name LOOP
+		r := 'not run';
+		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || f.q LOOP
+			IF l ~ 'Scope Fallback' THEN r := regexp_replace(l, '^ *Scope Fallback: ', ''); END IF;
+		END LOOP;
+		state := note; name := f.name; fallback := r; same_rows := same(f.q);
+		RETURN NEXT;
+	END LOOP;
+	PERFORM set_config('sift.test_scope_join', 'off', false);
+END $$;
 SELECT * FROM states('built');
- state |             name             |             plan             | same_rows 
--------+------------------------------+------------------------------+-----------
- built | IN                           | scope read, 1 keys, once     | t
- built | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- built | IN, two keys                 | scope read, 2 keys, once     | t
- built | IN, view                     | scope read, 1 keys, once     | t
- built | function                     | scope read, 1 keys, once     | t
- built | join, key in the arms        | scope read, 1 keys, per pair | t
- built | join, member alone, two keys | scope read, 2 keys, once     | t
- built | join, view                   | scope read, 1 keys, per pair | t
- built | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+ state |             name             |              plan              | same_rows 
+-------+------------------------------+--------------------------------+-----------
+ built | IN                           | scope read, 1 keys, once       | t
+ built | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ built | IN, two keys                 | scope read, 2 keys, once       | t
+ built | IN, view                     | scope read, 1 keys, once       | t
+ built | function                     | scope read, 1 keys, once       | t
+ built | join, every key              | scope read, all keys, per pair | t
+ built | join, group by the key       | scope read, all keys, per pair | t
+ built | join, key in the arms        | scope read, 1 keys, per pair   | t
+ built | join, member alone, two keys | scope read, 2 keys, once       | t
+ built | join, two keys               | scope read, 2 keys, per pair   | t
+ built | join, view                   | scope read, 1 keys, per pair   | t
+ built | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
+
+SELECT * FROM held('built');
+ state |          name          |       fallback       | same_rows 
+-------+------------------------+----------------------+-----------
+ built | join, every key        | sift.test_scope_join | t
+ built | join, group by the key | sift.test_scope_join | t
+ built | join, key in the arms  | sift.test_scope_join | t
+ built | join, two keys         | sift.test_scope_join | t
+ built | join, view             | sift.test_scope_join | t
+(5 rows)
 
 INSERT INTO grants (id, tenant_id, dim_a_id) VALUES (20, 1, 30), (21, 9, 31), (22, 9, 32);
 SELECT * FROM states('direct grants inserted');
-         state          |             name             |             plan             | same_rows 
-------------------------+------------------------------+------------------------------+-----------
- direct grants inserted | IN                           | scope read, 1 keys, once     | t
- direct grants inserted | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- direct grants inserted | IN, two keys                 | scope read, 2 keys, once     | t
- direct grants inserted | IN, view                     | scope read, 1 keys, once     | t
- direct grants inserted | function                     | scope read, 1 keys, once     | t
- direct grants inserted | join, key in the arms        | scope read, 1 keys, per pair | t
- direct grants inserted | join, member alone, two keys | scope read, 2 keys, once     | t
- direct grants inserted | join, view                   | scope read, 1 keys, per pair | t
- direct grants inserted | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+         state          |             name             |              plan              | same_rows 
+------------------------+------------------------------+--------------------------------+-----------
+ direct grants inserted | IN                           | scope read, 1 keys, once       | t
+ direct grants inserted | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ direct grants inserted | IN, two keys                 | scope read, 2 keys, once       | t
+ direct grants inserted | IN, view                     | scope read, 1 keys, once       | t
+ direct grants inserted | function                     | scope read, 1 keys, once       | t
+ direct grants inserted | join, every key              | scope read, all keys, per pair | t
+ direct grants inserted | join, group by the key       | scope read, all keys, per pair | t
+ direct grants inserted | join, key in the arms        | scope read, 1 keys, per pair   | t
+ direct grants inserted | join, member alone, two keys | scope read, 2 keys, once       | t
+ direct grants inserted | join, two keys               | scope read, 2 keys, per pair   | t
+ direct grants inserted | join, view                   | scope read, 1 keys, per pair   | t
+ direct grants inserted | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE grants SET deleted_at = now() WHERE id = 2;
 SELECT * FROM states('a direct grant soft deleted');
-            state            |             name             |             plan             | same_rows 
------------------------------+------------------------------+------------------------------+-----------
- a direct grant soft deleted | IN                           | scope read, 1 keys, once     | t
- a direct grant soft deleted | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a direct grant soft deleted | IN, two keys                 | scope read, 2 keys, once     | t
- a direct grant soft deleted | IN, view                     | scope read, 1 keys, once     | t
- a direct grant soft deleted | function                     | scope read, 1 keys, once     | t
- a direct grant soft deleted | join, key in the arms        | scope read, 1 keys, per pair | t
- a direct grant soft deleted | join, member alone, two keys | scope read, 2 keys, once     | t
- a direct grant soft deleted | join, view                   | scope read, 1 keys, per pair | t
- a direct grant soft deleted | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+            state            |             name             |              plan              | same_rows 
+-----------------------------+------------------------------+--------------------------------+-----------
+ a direct grant soft deleted | IN                           | scope read, 1 keys, once       | t
+ a direct grant soft deleted | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a direct grant soft deleted | IN, two keys                 | scope read, 2 keys, once       | t
+ a direct grant soft deleted | IN, view                     | scope read, 1 keys, once       | t
+ a direct grant soft deleted | function                     | scope read, 1 keys, once       | t
+ a direct grant soft deleted | join, every key              | scope read, all keys, per pair | t
+ a direct grant soft deleted | join, group by the key       | scope read, all keys, per pair | t
+ a direct grant soft deleted | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a direct grant soft deleted | join, member alone, two keys | scope read, 2 keys, once       | t
+ a direct grant soft deleted | join, two keys               | scope read, 2 keys, per pair   | t
+ a direct grant soft deleted | join, view                   | scope read, 1 keys, per pair   | t
+ a direct grant soft deleted | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 2;
 SELECT * FROM states('a direct grant restored');
-          state          |             name             |             plan             | same_rows 
--------------------------+------------------------------+------------------------------+-----------
- a direct grant restored | IN                           | scope read, 1 keys, once     | t
- a direct grant restored | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a direct grant restored | IN, two keys                 | scope read, 2 keys, once     | t
- a direct grant restored | IN, view                     | scope read, 1 keys, once     | t
- a direct grant restored | function                     | scope read, 1 keys, once     | t
- a direct grant restored | join, key in the arms        | scope read, 1 keys, per pair | t
- a direct grant restored | join, member alone, two keys | scope read, 2 keys, once     | t
- a direct grant restored | join, view                   | scope read, 1 keys, per pair | t
- a direct grant restored | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+          state          |             name             |              plan              | same_rows 
+-------------------------+------------------------------+--------------------------------+-----------
+ a direct grant restored | IN                           | scope read, 1 keys, once       | t
+ a direct grant restored | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a direct grant restored | IN, two keys                 | scope read, 2 keys, once       | t
+ a direct grant restored | IN, view                     | scope read, 1 keys, once       | t
+ a direct grant restored | function                     | scope read, 1 keys, once       | t
+ a direct grant restored | join, every key              | scope read, all keys, per pair | t
+ a direct grant restored | join, group by the key       | scope read, all keys, per pair | t
+ a direct grant restored | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a direct grant restored | join, member alone, two keys | scope read, 2 keys, once       | t
+ a direct grant restored | join, two keys               | scope read, 2 keys, per pair   | t
+ a direct grant restored | join, view                   | scope read, 1 keys, per pair   | t
+ a direct grant restored | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE grants SET group_id = 1 WHERE id = 3;
 SELECT * FROM states('a group grant moved to another group');
-                state                 |             name             |             plan             | same_rows 
---------------------------------------+------------------------------+------------------------------+-----------
- a group grant moved to another group | IN                           | scope read, 1 keys, once     | t
- a group grant moved to another group | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a group grant moved to another group | IN, two keys                 | scope read, 2 keys, once     | t
- a group grant moved to another group | IN, view                     | scope read, 1 keys, once     | t
- a group grant moved to another group | function                     | scope read, 1 keys, once     | t
- a group grant moved to another group | join, key in the arms        | scope read, 1 keys, per pair | t
- a group grant moved to another group | join, member alone, two keys | scope read, 2 keys, once     | t
- a group grant moved to another group | join, view                   | scope read, 1 keys, per pair | t
- a group grant moved to another group | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+                state                 |             name             |              plan              | same_rows 
+--------------------------------------+------------------------------+--------------------------------+-----------
+ a group grant moved to another group | IN                           | scope read, 1 keys, once       | t
+ a group grant moved to another group | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a group grant moved to another group | IN, two keys                 | scope read, 2 keys, once       | t
+ a group grant moved to another group | IN, view                     | scope read, 1 keys, once       | t
+ a group grant moved to another group | function                     | scope read, 1 keys, once       | t
+ a group grant moved to another group | join, every key              | scope read, all keys, per pair | t
+ a group grant moved to another group | join, group by the key       | scope read, all keys, per pair | t
+ a group grant moved to another group | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a group grant moved to another group | join, member alone, two keys | scope read, 2 keys, once       | t
+ a group grant moved to another group | join, two keys               | scope read, 2 keys, per pair   | t
+ a group grant moved to another group | join, view                   | scope read, 1 keys, per pair   | t
+ a group grant moved to another group | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 INSERT INTO grants (id, tenant_id, group_id) VALUES (23, 9, 3);
 SELECT * FROM states('a group granted');
-      state      |             name             |             plan             | same_rows 
------------------+------------------------------+------------------------------+-----------
- a group granted | IN                           | scope read, 1 keys, once     | t
- a group granted | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a group granted | IN, two keys                 | scope read, 2 keys, once     | t
- a group granted | IN, view                     | scope read, 1 keys, once     | t
- a group granted | function                     | scope read, 1 keys, once     | t
- a group granted | join, key in the arms        | scope read, 1 keys, per pair | t
- a group granted | join, member alone, two keys | scope read, 2 keys, once     | t
- a group granted | join, view                   | scope read, 1 keys, per pair | t
- a group granted | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+      state      |             name             |              plan              | same_rows 
+-----------------+------------------------------+--------------------------------+-----------
+ a group granted | IN                           | scope read, 1 keys, once       | t
+ a group granted | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a group granted | IN, two keys                 | scope read, 2 keys, once       | t
+ a group granted | IN, view                     | scope read, 1 keys, once       | t
+ a group granted | function                     | scope read, 1 keys, once       | t
+ a group granted | join, every key              | scope read, all keys, per pair | t
+ a group granted | join, group by the key       | scope read, all keys, per pair | t
+ a group granted | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a group granted | join, member alone, two keys | scope read, 2 keys, once       | t
+ a group granted | join, two keys               | scope read, 2 keys, per pair   | t
+ a group granted | join, view                   | scope read, 1 keys, per pair   | t
+ a group granted | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE grants SET deleted_at = now() WHERE id = 23;
 SELECT * FROM states('a group grant soft deleted');
-           state            |             name             |             plan             | same_rows 
-----------------------------+------------------------------+------------------------------+-----------
- a group grant soft deleted | IN                           | scope read, 1 keys, once     | t
- a group grant soft deleted | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a group grant soft deleted | IN, two keys                 | scope read, 2 keys, once     | t
- a group grant soft deleted | IN, view                     | scope read, 1 keys, once     | t
- a group grant soft deleted | function                     | scope read, 1 keys, once     | t
- a group grant soft deleted | join, key in the arms        | scope read, 1 keys, per pair | t
- a group grant soft deleted | join, member alone, two keys | scope read, 2 keys, once     | t
- a group grant soft deleted | join, view                   | scope read, 1 keys, per pair | t
- a group grant soft deleted | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+           state            |             name             |              plan              | same_rows 
+----------------------------+------------------------------+--------------------------------+-----------
+ a group grant soft deleted | IN                           | scope read, 1 keys, once       | t
+ a group grant soft deleted | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a group grant soft deleted | IN, two keys                 | scope read, 2 keys, once       | t
+ a group grant soft deleted | IN, view                     | scope read, 1 keys, once       | t
+ a group grant soft deleted | function                     | scope read, 1 keys, once       | t
+ a group grant soft deleted | join, every key              | scope read, all keys, per pair | t
+ a group grant soft deleted | join, group by the key       | scope read, all keys, per pair | t
+ a group grant soft deleted | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a group grant soft deleted | join, member alone, two keys | scope read, 2 keys, once       | t
+ a group grant soft deleted | join, two keys               | scope read, 2 keys, per pair   | t
+ a group grant soft deleted | join, view                   | scope read, 1 keys, per pair   | t
+ a group grant soft deleted | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 INSERT INTO memberships (group_id, dim_a_id) VALUES (1, 59), (2, 60);
 SELECT * FROM states('memberships added to groups');
-            state            |             name             |             plan             | same_rows 
------------------------------+------------------------------+------------------------------+-----------
- memberships added to groups | IN                           | scope read, 1 keys, once     | t
- memberships added to groups | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- memberships added to groups | IN, two keys                 | scope read, 2 keys, once     | t
- memberships added to groups | IN, view                     | scope read, 1 keys, once     | t
- memberships added to groups | function                     | scope read, 1 keys, once     | t
- memberships added to groups | join, key in the arms        | scope read, 1 keys, per pair | t
- memberships added to groups | join, member alone, two keys | scope read, 2 keys, once     | t
- memberships added to groups | join, view                   | scope read, 1 keys, per pair | t
- memberships added to groups | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+            state            |             name             |              plan              | same_rows 
+-----------------------------+------------------------------+--------------------------------+-----------
+ memberships added to groups | IN                           | scope read, 1 keys, once       | t
+ memberships added to groups | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ memberships added to groups | IN, two keys                 | scope read, 2 keys, once       | t
+ memberships added to groups | IN, view                     | scope read, 1 keys, once       | t
+ memberships added to groups | function                     | scope read, 1 keys, once       | t
+ memberships added to groups | join, every key              | scope read, all keys, per pair | t
+ memberships added to groups | join, group by the key       | scope read, all keys, per pair | t
+ memberships added to groups | join, key in the arms        | scope read, 1 keys, per pair   | t
+ memberships added to groups | join, member alone, two keys | scope read, 2 keys, once       | t
+ memberships added to groups | join, two keys               | scope read, 2 keys, per pair   | t
+ memberships added to groups | join, view                   | scope read, 1 keys, per pair   | t
+ memberships added to groups | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id = 7;
 SELECT * FROM states('a member soft deleted from a group');
-               state                |             name             |             plan             | same_rows 
-------------------------------------+------------------------------+------------------------------+-----------
- a member soft deleted from a group | IN                           | scope read, 1 keys, once     | t
- a member soft deleted from a group | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a member soft deleted from a group | IN, two keys                 | scope read, 2 keys, once     | t
- a member soft deleted from a group | IN, view                     | scope read, 1 keys, once     | t
- a member soft deleted from a group | function                     | scope read, 1 keys, once     | t
- a member soft deleted from a group | join, key in the arms        | scope read, 1 keys, per pair | t
- a member soft deleted from a group | join, member alone, two keys | scope read, 2 keys, once     | t
- a member soft deleted from a group | join, view                   | scope read, 1 keys, per pair | t
- a member soft deleted from a group | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+               state                |             name             |              plan              | same_rows 
+------------------------------------+------------------------------+--------------------------------+-----------
+ a member soft deleted from a group | IN                           | scope read, 1 keys, once       | t
+ a member soft deleted from a group | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a member soft deleted from a group | IN, two keys                 | scope read, 2 keys, once       | t
+ a member soft deleted from a group | IN, view                     | scope read, 1 keys, once       | t
+ a member soft deleted from a group | function                     | scope read, 1 keys, once       | t
+ a member soft deleted from a group | join, every key              | scope read, all keys, per pair | t
+ a member soft deleted from a group | join, group by the key       | scope read, all keys, per pair | t
+ a member soft deleted from a group | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a member soft deleted from a group | join, member alone, two keys | scope read, 2 keys, once       | t
+ a member soft deleted from a group | join, two keys               | scope read, 2 keys, per pair   | t
+ a member soft deleted from a group | join, view                   | scope read, 1 keys, per pair   | t
+ a member soft deleted from a group | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id = 7;
 SELECT * FROM states('a member restored to a group');
-            state             |             name             |             plan             | same_rows 
-------------------------------+------------------------------+------------------------------+-----------
- a member restored to a group | IN                           | scope read, 1 keys, once     | t
- a member restored to a group | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a member restored to a group | IN, two keys                 | scope read, 2 keys, once     | t
- a member restored to a group | IN, view                     | scope read, 1 keys, once     | t
- a member restored to a group | function                     | scope read, 1 keys, once     | t
- a member restored to a group | join, key in the arms        | scope read, 1 keys, per pair | t
- a member restored to a group | join, member alone, two keys | scope read, 2 keys, once     | t
- a member restored to a group | join, view                   | scope read, 1 keys, per pair | t
- a member restored to a group | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+            state             |             name             |              plan              | same_rows 
+------------------------------+------------------------------+--------------------------------+-----------
+ a member restored to a group | IN                           | scope read, 1 keys, once       | t
+ a member restored to a group | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a member restored to a group | IN, two keys                 | scope read, 2 keys, once       | t
+ a member restored to a group | IN, view                     | scope read, 1 keys, once       | t
+ a member restored to a group | function                     | scope read, 1 keys, once       | t
+ a member restored to a group | join, every key              | scope read, all keys, per pair | t
+ a member restored to a group | join, group by the key       | scope read, all keys, per pair | t
+ a member restored to a group | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a member restored to a group | join, member alone, two keys | scope read, 2 keys, once       | t
+ a member restored to a group | join, two keys               | scope read, 2 keys, per pair   | t
+ a member restored to a group | join, view                   | scope read, 1 keys, per pair   | t
+ a member restored to a group | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 DELETE FROM memberships WHERE group_id = 1 AND dim_a_id = 59;
 SELECT * FROM states('a membership deleted');
-        state         |             name             |             plan             | same_rows 
-----------------------+------------------------------+------------------------------+-----------
- a membership deleted | IN                           | scope read, 1 keys, once     | t
- a membership deleted | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- a membership deleted | IN, two keys                 | scope read, 2 keys, once     | t
- a membership deleted | IN, view                     | scope read, 1 keys, once     | t
- a membership deleted | function                     | scope read, 1 keys, once     | t
- a membership deleted | join, key in the arms        | scope read, 1 keys, per pair | t
- a membership deleted | join, member alone, two keys | scope read, 2 keys, once     | t
- a membership deleted | join, view                   | scope read, 1 keys, per pair | t
- a membership deleted | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+        state         |             name             |              plan              | same_rows 
+----------------------+------------------------------+--------------------------------+-----------
+ a membership deleted | IN                           | scope read, 1 keys, once       | t
+ a membership deleted | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ a membership deleted | IN, two keys                 | scope read, 2 keys, once       | t
+ a membership deleted | IN, view                     | scope read, 1 keys, once       | t
+ a membership deleted | function                     | scope read, 1 keys, once       | t
+ a membership deleted | join, every key              | scope read, all keys, per pair | t
+ a membership deleted | join, group by the key       | scope read, all keys, per pair | t
+ a membership deleted | join, key in the arms        | scope read, 1 keys, per pair   | t
+ a membership deleted | join, member alone, two keys | scope read, 2 keys, once       | t
+ a membership deleted | join, two keys               | scope read, 2 keys, per pair   | t
+ a membership deleted | join, view                   | scope read, 1 keys, per pair   | t
+ a membership deleted | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 UPDATE facts SET dim_a_id = 59 WHERE id <= 40;
 SELECT * FROM states('facts moved to an added member, write buffer');
-                    state                     |             name             |             plan             | same_rows 
-----------------------------------------------+------------------------------+------------------------------+-----------
- facts moved to an added member, write buffer | IN                           | scope read, 1 keys, once     | t
- facts moved to an added member, write buffer | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- facts moved to an added member, write buffer | IN, two keys                 | scope read, 2 keys, once     | t
- facts moved to an added member, write buffer | IN, view                     | scope read, 1 keys, once     | t
- facts moved to an added member, write buffer | function                     | scope read, 1 keys, once     | t
- facts moved to an added member, write buffer | join, key in the arms        | scope read, 1 keys, per pair | t
- facts moved to an added member, write buffer | join, member alone, two keys | scope read, 2 keys, once     | t
- facts moved to an added member, write buffer | join, view                   | scope read, 1 keys, per pair | t
- facts moved to an added member, write buffer | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+                    state                     |             name             |              plan              | same_rows 
+----------------------------------------------+------------------------------+--------------------------------+-----------
+ facts moved to an added member, write buffer | IN                           | scope read, 1 keys, once       | t
+ facts moved to an added member, write buffer | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ facts moved to an added member, write buffer | IN, two keys                 | scope read, 2 keys, once       | t
+ facts moved to an added member, write buffer | IN, view                     | scope read, 1 keys, once       | t
+ facts moved to an added member, write buffer | function                     | scope read, 1 keys, once       | t
+ facts moved to an added member, write buffer | join, every key              | scope read, all keys, per pair | t
+ facts moved to an added member, write buffer | join, group by the key       | scope read, all keys, per pair | t
+ facts moved to an added member, write buffer | join, key in the arms        | scope read, 1 keys, per pair   | t
+ facts moved to an added member, write buffer | join, member alone, two keys | scope read, 2 keys, once       | t
+ facts moved to an added member, write buffer | join, two keys               | scope read, 2 keys, per pair   | t
+ facts moved to an added member, write buffer | join, view                   | scope read, 1 keys, per pair   | t
+ facts moved to an added member, write buffer | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
+
+SELECT * FROM held('facts moved to an added member, write buffer');
+                    state                     |          name          |       fallback       | same_rows 
+----------------------------------------------+------------------------+----------------------+-----------
+ facts moved to an added member, write buffer | join, every key        | sift.test_scope_join | t
+ facts moved to an added member, write buffer | join, group by the key | sift.test_scope_join | t
+ facts moved to an added member, write buffer | join, key in the arms  | sift.test_scope_join | t
+ facts moved to an added member, write buffer | join, two keys         | sift.test_scope_join | t
+ facts moved to an added member, write buffer | join, view             | sift.test_scope_join | t
+(5 rows)
 
 REINDEX INDEX facts_col;
 SELECT * FROM states('rebuilt');
-  state  |             name             |             plan             | same_rows 
----------+------------------------------+------------------------------+-----------
- rebuilt | IN                           | scope read, 1 keys, once     | t
- rebuilt | IN, a tenant with no pair    | scope read, 1 keys, once     | t
- rebuilt | IN, two keys                 | scope read, 2 keys, once     | t
- rebuilt | IN, view                     | scope read, 1 keys, once     | t
- rebuilt | function                     | scope read, 1 keys, once     | t
- rebuilt | join, key in the arms        | scope read, 1 keys, per pair | t
- rebuilt | join, member alone, two keys | scope read, 2 keys, once     | t
- rebuilt | join, view                   | scope read, 1 keys, per pair | t
- rebuilt | top 5, view                  | scope read, 1 keys, once     | t
-(9 rows)
+  state  |             name             |              plan              | same_rows 
+---------+------------------------------+--------------------------------+-----------
+ rebuilt | IN                           | scope read, 1 keys, once       | t
+ rebuilt | IN, a tenant with no pair    | scope read, 1 keys, once       | t
+ rebuilt | IN, two keys                 | scope read, 2 keys, once       | t
+ rebuilt | IN, view                     | scope read, 1 keys, once       | t
+ rebuilt | function                     | scope read, 1 keys, once       | t
+ rebuilt | join, every key              | scope read, all keys, per pair | t
+ rebuilt | join, group by the key       | scope read, all keys, per pair | t
+ rebuilt | join, key in the arms        | scope read, 1 keys, per pair   | t
+ rebuilt | join, member alone, two keys | scope read, 2 keys, once       | t
+ rebuilt | join, two keys               | scope read, 2 keys, per pair   | t
+ rebuilt | join, view                   | scope read, 1 keys, per pair   | t
+ rebuilt | top 5, view                  | scope read, 1 keys, once       | t
+(12 rows)
 
 -- the privileges of the statement: the plan of the scope read has no scan of the tables of the arms, and the role still needs what the join needs, as the owner of a view it reads through
 CREATE ROLE twohop_reader NOLOGIN;
@@ -653,7 +728,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
 DROP VIEW tenant_pairs_m, tenant_pairs_m_all;
 DROP TABLE facts_m, grants_m, memberships_m;
 DEALLOCATE ALL;
-DROP FUNCTION label(text), rows_md5(text), same(text), states(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text), join_stmt(text, text);
+DROP FUNCTION label(text), rows_md5(text), same(text), states(text), held(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text), join_stmt(text, text);
 DROP TABLE forms;
 DROP VIEW tenant_pairs, tenant_pairs_all, tenant_pairs_barrier, tenant_pairs_keyfirst;
 DROP TABLE facts, grants, memberships, my_tenants;

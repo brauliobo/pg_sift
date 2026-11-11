@@ -941,6 +941,12 @@ select status, count(*), sum(amount) from scope_events where dim_a_id in (select
 select date_trunc('month', d), count(distinct dim_a_id) from scope_events where dim_a_id in (select member from scope_pairs_union where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50, 7)) group by 1;
 -- @case scope_union_join_view | scope | a join to the view of the union counts a member once for each pair of one tenant
 select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id where v.tenant_id = 1 + @K@ % 50 group by 1;
+-- @case scope_union_join_keys | scope | a join to the view of the union counts a member once for each pair of two tenants
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id where v.tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50) group by 1;
+-- @case scope_union_join_every_key | scope | a join to the view of the union with no key counts a member once for each of its pairs
+select e.status, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id group by 1;
+-- @case scope_union_group_key | scope | a join to the view of the union grouped by the key: the totals of every tenant
+select v.tenant_id, count(*), sum(e.amount) from scope_events e join scope_pairs_union v on v.member = e.dim_a_id group by 1;
 -- @case scope_union_join_all | join | a join to a UNION ALL of the two paths counts a member of both twice: the join as written
 select e.status, count(*), sum(e.amount) from scope_events e join (select l.dim_a_id as member, l.tenant_id from scope_links l where l.deleted_at is null union all select m.dim_a_id, l.tenant_id from scope_links l join scope_members m on m.group_id = l.group_id where l.deleted_at is null and m.deleted_at is null) v on v.member = e.dim_a_id where v.tenant_id = 1 + @K@ % 50 group by 1;
 -- @case scope_union_missing | join | the direct path without the predicate of its btree counts the soft deleted grants: the join as written

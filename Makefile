@@ -94,6 +94,7 @@ TESTING_REGRESS += agg_scope_group_key
 TESTING_REGRESS += agg_scope_param_keys
 TESTING_REGRESS += agg_scope_preserved
 TESTING_REGRESS += agg_scope_recognition
+TESTING_REGRESS += agg_scope_twohop_recognition
 TESTING_REGRESS += agg_scope_virtual_leaf
 TESTING_REGRESS += agg_topn_key_only
 TESTING_REGRESS += agg_topn_offset_bulk

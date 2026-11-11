@@ -111,44 +111,44 @@ SELECT name, label(f) AS plan FROM cforms f ORDER BY name COLLATE "C";
 SELECT f.name, k.n AS keys, m.mode, o.chosen, o.why, o.same_rows
 FROM cforms f, (VALUES (1), (10), (30)) k(n), (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode), LATERAL outcome(f, m.mode, karg(f, k.n)) o
 ORDER BY f.name COLLATE "C", k.n, m.mode;
-                   name                   | keys |        mode        |    chosen     |             why             | same_rows 
-------------------------------------------+------+--------------------+---------------+-----------------------------+-----------
- IN, ANY ($1)                             |    1 | force_custom_plan  | scope read    |                             | t
- IN, ANY ($1)                             |    1 | force_generic_plan | scope read    |                             | t
- IN, ANY ($1)                             |   10 | force_custom_plan  | scope read    |                             | t
- IN, ANY ($1)                             |   10 | force_generic_plan | scope read    |                             | t
- IN, ANY ($1)                             |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
- IN, ANY ($1)                             |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
- IN, table of keys, a plan of its own     |    1 | force_custom_plan  | scope read    |                             | t
- IN, table of keys, a plan of its own     |    1 | force_generic_plan | scope read    |                             | t
- IN, table of keys, a plan of its own     |   10 | force_custom_plan  | scope read    |                             | t
- IN, table of keys, a plan of its own     |   10 | force_generic_plan | scope read    |                             | t
- IN, table of keys, a plan of its own     |   30 | force_custom_plan  | no scope read |                             | t
- IN, table of keys, a plan of its own     |   30 | force_generic_plan | scope read    |                             | t
- join, ANY ($1), a row for each pair      |    1 | force_custom_plan  | scope read    |                             | t
- join, ANY ($1), a row for each pair      |    1 | force_generic_plan | scope read    |                             | t
- join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | scope read    |                             | t
- join, ANY ($1), a row for each pair      |   10 | force_generic_plan | scope read    |                             | t
- join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | scope read    |                             | t
- join, ANY ($1), a row for each pair      |   30 | force_generic_plan | scope read    |                             | t
- join, table of keys, a row for each pair |    1 | force_custom_plan  | scope read    |                             | t
- join, table of keys, a row for each pair |    1 | force_generic_plan | scope read    |                             | t
- join, table of keys, a row for each pair |   10 | force_custom_plan  | scope read    |                             | t
- join, table of keys, a row for each pair |   10 | force_generic_plan | scope read    |                             | t
- join, table of keys, a row for each pair |   30 | force_custom_plan  | scope read    |                             | t
- join, table of keys, a row for each pair |   30 | force_generic_plan | scope read    |                             | t
- latest 5, ANY ($1)                       |    1 | force_custom_plan  | scope read    |                             | t
- latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read    |                             | t
- latest 5, ANY ($1)                       |   10 | force_custom_plan  | scope read    |                             | t
- latest 5, ANY ($1)                       |   10 | force_generic_plan | scope read    |                             | t
- latest 5, ANY ($1)                       |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
- latest 5, ANY ($1)                       |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
- top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | scope read    |                             | t
- top 5 ids, ANY ($1)                      |    1 | force_generic_plan | scope read    |                             | t
- top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | scope read    |                             | t
- top 5 ids, ANY ($1)                      |   10 | force_generic_plan | scope read    |                             | t
- top 5 ids, ANY ($1)                      |   30 | force_custom_plan  | join          | join is cheaper for 30 keys | t
- top 5 ids, ANY ($1)                      |   30 | force_generic_plan | join          | join is cheaper for 30 keys | t
+                   name                   | keys |        mode        |   chosen   |             why             | same_rows 
+------------------------------------------+------+--------------------+------------+-----------------------------+-----------
+ IN, ANY ($1)                             |    1 | force_custom_plan  | scope read |                             | t
+ IN, ANY ($1)                             |    1 | force_generic_plan | scope read |                             | t
+ IN, ANY ($1)                             |   10 | force_custom_plan  | scope read |                             | t
+ IN, ANY ($1)                             |   10 | force_generic_plan | scope read |                             | t
+ IN, ANY ($1)                             |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
+ IN, ANY ($1)                             |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
+ IN, table of keys, a plan of its own     |    1 | force_custom_plan  | scope read |                             | t
+ IN, table of keys, a plan of its own     |    1 | force_generic_plan | scope read |                             | t
+ IN, table of keys, a plan of its own     |   10 | force_custom_plan  | scope read |                             | t
+ IN, table of keys, a plan of its own     |   10 | force_generic_plan | scope read |                             | t
+ IN, table of keys, a plan of its own     |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
+ IN, table of keys, a plan of its own     |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
+ join, ANY ($1), a row for each pair      |    1 | force_custom_plan  | scope read |                             | t
+ join, ANY ($1), a row for each pair      |    1 | force_generic_plan | scope read |                             | t
+ join, ANY ($1), a row for each pair      |   10 | force_custom_plan  | scope read |                             | t
+ join, ANY ($1), a row for each pair      |   10 | force_generic_plan | scope read |                             | t
+ join, ANY ($1), a row for each pair      |   30 | force_custom_plan  | scope read |                             | t
+ join, ANY ($1), a row for each pair      |   30 | force_generic_plan | scope read |                             | t
+ join, table of keys, a row for each pair |    1 | force_custom_plan  | scope read |                             | t
+ join, table of keys, a row for each pair |    1 | force_generic_plan | scope read |                             | t
+ join, table of keys, a row for each pair |   10 | force_custom_plan  | scope read |                             | t
+ join, table of keys, a row for each pair |   10 | force_generic_plan | scope read |                             | t
+ join, table of keys, a row for each pair |   30 | force_custom_plan  | scope read |                             | t
+ join, table of keys, a row for each pair |   30 | force_generic_plan | scope read |                             | t
+ latest 5, ANY ($1)                       |    1 | force_custom_plan  | scope read |                             | t
+ latest 5, ANY ($1)                       |    1 | force_generic_plan | scope read |                             | t
+ latest 5, ANY ($1)                       |   10 | force_custom_plan  | scope read |                             | t
+ latest 5, ANY ($1)                       |   10 | force_generic_plan | scope read |                             | t
+ latest 5, ANY ($1)                       |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
+ latest 5, ANY ($1)                       |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
+ top 5 ids, ANY ($1)                      |    1 | force_custom_plan  | scope read |                             | t
+ top 5 ids, ANY ($1)                      |    1 | force_generic_plan | scope read |                             | t
+ top 5 ids, ANY ($1)                      |   10 | force_custom_plan  | scope read |                             | t
+ top 5 ids, ANY ($1)                      |   10 | force_generic_plan | scope read |                             | t
+ top 5 ids, ANY ($1)                      |   30 | force_custom_plan  | join       | join is cheaper for 30 keys | t
+ top 5 ids, ANY ($1)                      |   30 | force_generic_plan | join       | join is cheaper for 30 keys | t
 (36 rows)
 
 RESET plan_cache_mode;
