@@ -85,8 +85,7 @@ SELECT * FROM phase();
 DELETE FROM dim_a WHERE id = 999;
 INSERT INTO dim_a VALUES (8, 'back', 1);
 SELECT * FROM phase();
--- changed keys at the share of the setting (a parent row inserted for a segment with orphans is no key the share counts)
-UPDATE dim_a SET label = 'again' WHERE id IN (20, 21);
+-- the parent rows inserted since the stamp, for a segment with orphans, reach the share of the setting
 SET sift.col_connect_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
 -- the refresh is done once: a rewrite restamps what was stale, and the end state holds again

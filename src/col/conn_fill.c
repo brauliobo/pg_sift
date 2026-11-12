@@ -285,6 +285,8 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 		SiftConnStamp st = i < seg->nconn ? seg->conn[i] : (SiftConnStamp) {0};
 		double		limit = s->c[i].rows * sift_col_connect_refresh_pct / 100;
 		SiftConnKeys keys;
+		uint64		inserted,
+					changed;
 
 		if (!s->c[i].vouches)
 			continue;
@@ -292,12 +294,12 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 			return true;
 		if (sift_conn_changed(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
-		if (keys.n >= limit)
-		{
-			sift_conn_keys_free(&keys);
-			return true;
-		}
+		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts the rows inserted since with the keys changed */
+		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_rows(s->c[i].heap, s->c[i].index, &st);
+		changed = keys.n + inserted;
 		sift_conn_keys_free(&keys);
+		if (changed >= limit)
+			return true;
 	}
 	return false;
 }

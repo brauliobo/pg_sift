@@ -115,11 +115,11 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * set. Every verdict other than OK means "read the join path for these rows".
  */
 /*
- * Could a row have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
- * count)? Conservative: false only when every segment says its inserters finished before the horizon (SIFT_SEG_XSTAMP) and no live record of the write buffer is from
- * the horizon on. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
+ * How many rows could have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
+ * count)? Conservative: the rows of each segment that does not say its inserters finished before the horizon (SIFT_SEG_XSTAMP) and the live records of the write buffer from
+ * the horizon on; 0 only when there is none. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
  */
-extern bool sift_conn_inserted_since(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
+extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 /* The same, with the keys of the inserted entries (adds) of a scope relation's journal as well (col/scope.h) */
 extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out);

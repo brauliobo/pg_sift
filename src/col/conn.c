@@ -367,17 +367,17 @@ key_slot(KeyRec *tab, uint32 mask, int64 key)
 	return &tab[h];
 }
 
-bool
-sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *stamp)
+uint64
+sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stamp)
 {
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	const SiftColSchema *schema;
-	bool		since = false;
+	uint64		since = 0;
 
 	sift_col_flush_held();
 	schema = sift_col_rel(index)->schema;
 	sift_dir_read(index, dir);
-	for (int i = 0; !since && i < dir->nsegs; i++)
+	for (int i = 0; i < dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &dir->segs[i];
 		TransactionId xs;
@@ -385,9 +385,9 @@ sift_conn_inserted_since(Relation heap, Relation index, const SiftConnStamp *sta
 		if (sift_tomb_is_seg(e))
 			continue;
 		if (e->kind == SIFT_SEG_IMMUTABLE)
-			since = !sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin);
+			since += !sift_seg_xstamp(e, &xs) || TransactionIdFollows(xs, stamp->xmin) ? e->ndocs : 0;
 		else if (sift_seg_is_wbuf(e))
-			since = sift_cwbuf_inserted_since(index, e, schema, stamp->xmin);
+			since += sift_cwbuf_inserted_since(index, e, schema, stamp->xmin);
 	}
 	pfree(dir);
 	return since;
