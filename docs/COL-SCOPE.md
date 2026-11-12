@@ -425,13 +425,22 @@ is read. What else a statement says keeps the join as written, and `sift.explain
 
 **What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a btree on their two columns, unique or not); a condition on a third table (a group's own soft delete: the memberships of a deleted group
 stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
-into a column, see above); a partitioned table among the three; text or uuid keys; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
+into a column, see above); a partitioned table among the three; text or uuid members, and text or uuid keys in a scope of two paths; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
+
+### Key types
+
+The scope key may be a `text`, `varchar` or `uuid` column of the pairs relation (a deterministic collation: equal values have equal bytes; `char(n)`, `citext` and nondeterministic collations are refused with their reason). The scope still cuts its
+units by an int8: the code of the key in the shared value store of the key column ([COL-VSTORE](COL-VSTORE.md)), a store that is pinned for the scope, so that a code never moves. The index depends on the store (column format minor 50, which
+older libraries refuse). A build or a rewrite of scope segments interns the keys it meets; a read only looks them up, so a standby can read. A key the store has not seen has no stored unit: the read gives it a code of its own for the length
+of the statement, and its pairs come from the delta like those of any key. The planner takes the same forms as for an integer key (`=`, `IN`, `ANY`, a parameter, a table of keys); an equality under a nondeterministic collation, or a group by
+a coded key, keeps the join as written.
 
 ### Limits
 
 EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do in 5.0:
 
-- **Declaration.** The member key, the scope key and the columns of the relations are `int2`, `int4` or `int8`: text and uuid keys are refused (`is not an integer`). A relation is a heap table that is not partitioned, not a view and not the indexed
+- **Declaration.** The member key and the columns of the relations are `int2`, `int4` or `int8` (`is not an integer`); the scope key may also be `text`, `varchar` or `uuid` of a deterministic collation, in a scope of one path
+  (a coded key: see [Key types](#key-types)). A relation is a heap table that is not partitioned, not a view and not the indexed
   table; a scope of one path has both columns NOT NULL. At most 4 scopes and 8 connections on an index, and a scan reads one scope. At most one joined path and no third hop; no deny rows; no condition on a third table and no predicate that depends on time.
 - **Forms.** A statement that is not in the table of recognised forms keeps the join (`sift.explain_why`, arm `scope`): among them a join or a read for each pair over the pairs of a non-unique btree, a join to a table of keys that may hold a key twice,
   a key in an expression, a range of keys, `ROLLUP` / `CUBE` / grouping sets over the key. A top-N cannot take the patch or the delta of a changed pair (`top-n, changed pairs`): the join answers.
