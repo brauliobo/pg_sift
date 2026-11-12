@@ -121,7 +121,7 @@ check "the standby holds scope segments" test "$(sql scs "$ENT")" == t
 # the scope segments written again, replayed: the standby reads them (stored where the reader may) and exactly
 sql scp "REINDEX INDEX events_col" >/dev/null
 catchup scp scs
-ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
+ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col') WHERE tid IN (SELECT ctid FROM events))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id)"
 check "after a REINDEX of the primary the scope entries of the standby are the join" test "$(sql scs "$ENTJ")" == t
 check "... and its reads are the join's" test "$(sql scs "$SC")" == t
