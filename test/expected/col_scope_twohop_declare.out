@@ -1,6 +1,6 @@
 -- A scope of two paths: 'key: fk -> rel(member, key) | rel2(via, key) via vrel(via, member)'. Its pairs are the distinct union of the rows of the first relation and of the joined ones (a member of
 -- a via value, with each key of that value). The declaration records the unique btree of each of the three relations (the edges are told apart by their columns), says which in a NOTICE, and
--- needs no journal index yet. What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
+-- needs the journal indexes of its three relations (without them it is refused, as a scope of one path is). What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -96,7 +96,7 @@ SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_i
   4 | joined relation is a view                    | scope "tenant_id": "grants_view" is not a plain heap table [The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.]
   5 | joined column missing                        | scope "tenant_id": relation "grants" has no column "nothing" []
   6 | via column missing                           | scope "tenant_id": relation "memberships" has no column "nothing" []
-  7 | joined column not an integer                 | scope "tenant_id": column "group_id" of "grants_text" is not an integer [The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.]
+  7 | joined column not an integer                 | scope "tenant_id": column "group_id" of "grants_text" is not an integer [The member column is int2, int4 or int8.]
   8 | joined path has no btree                     | scope "tenant_id": "grants_plain" has no btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
   9 | via relation has no btree                    | scope "tenant_id": "grants_plain" has no btree index on (group_id, tenant_id) [CREATE UNIQUE INDEX on grants_plain (group_id, tenant_id), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]
  10 | same column twice in the joined path         | scope "tenant_id": the member and scope key columns are the same column [A scope relation has two columns: the member key and the scope key.]
@@ -119,22 +119,32 @@ SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
                 0
 (1 row)
 
--- the declaration: three edges, one NOTICE per path, no journal index, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
+-- no journal index: refused, with the CREATE INDEX of each of the three
+SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS no_journals;
+                                                                                                                                                                                                                                                                  no_journals                                                                                                                                                                                                                                                                   
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+(1 row)
+
+-- one of them that is not a journal says what it lacks
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group_partial ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid') WHERE id > 0;
+SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS journals_missing_and_partial;
+                                                                                                                                                                                                            journals_missing_and_partial                                                                                                                                                                                                             
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+(1 row)
+
+DROP INDEX grants_by_group_partial;
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+-- the declaration: three edges, one NOTICE per path, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
 SET client_min_messages = notice;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
-NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')
-NOTICE:  scope "tenant_id": "memberships" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
 NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
 NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
@@ -143,9 +153,9 @@ NOTICE:  sift_col index "facts_col" has a scope: column format minor 49, which a
 HINT:  The scope option needs this format: build the index without it for the older library.
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS edges;
-                     edges                     
------------------------------------------------
- grants_direct grants_group memberships_active
+                                                edges                                                 
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 SELECT o AS option FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'facts_col' AND o LIKE 'scope=%';
@@ -183,17 +193,17 @@ REINDEX INDEX CONCURRENTLY grants_direct;
 REINDEX INDEX CONCURRENTLY grants_group;
 REINDEX INDEX CONCURRENTLY memberships_active;
 SELECT edges('facts_col') AS after_reindex_concurrently;
-          after_reindex_concurrently           
------------------------------------------------
- grants_direct grants_group memberships_active
+                                      after_reindex_concurrently                                      
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 CREATE UNIQUE INDEX grants_other ON grants (tenant_id, group_id) WHERE id > 0;
 ALTER INDEX facts_col SET (superunit = 8);
 SELECT edges('facts_col') AS after_other_option;
-              after_other_option               
------------------------------------------------
- grants_direct grants_group memberships_active
+                                          after_other_option                                          
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 -- two partial unique btrees on the columns of the joined path: REINDEX says so, naming the index in USING settles it, ALTER keeps the recorded one
@@ -211,9 +221,9 @@ SELECT try('ALTER INDEX facts_col SET (scope = ''tenant_id: dim_a_id -> grants(d
 
 ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using grants_group via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS after_using_recorded;
-             after_using_recorded              
------------------------------------------------
- grants_direct grants_group memberships_active
+                                         after_using_recorded                                         
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 ALTER INDEX facts_col RESET (scope);
@@ -230,9 +240,9 @@ NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) a
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS after_using_other;
-               after_using_other               
------------------------------------------------
- grants_direct grants_other memberships_active
+                                          after_using_other                                           
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_other memberships_active memberships_by_member
 (1 row)
 
 ALTER INDEX facts_col SET (scope = 'off');
@@ -245,9 +255,9 @@ SELECT edges('facts_col') AS after_off;
 DROP INDEX grants_other;
 ALTER INDEX facts_col SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS after_set;
-                   after_set                   
------------------------------------------------
- grants_direct grants_group memberships_active
+                                              after_set                                               
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 -- the text is the record: pg_dump writes it and a restore makes the same index
@@ -262,16 +272,16 @@ SELECT count(*) AS edges_after_drop FROM pg_depend WHERE classid = 'pg_class'::r
 SELECT :'ddl' AS restore \gexec
 CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (track_changes=id, point_tid_columns='auto: id', key_columns=auto, superunit='8', scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
 SELECT edges('facts_col') AS after_restore;
-                 after_restore                 
------------------------------------------------
- grants_direct grants_group memberships_active
+                                            after_restore                                             
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 REINDEX INDEX facts_col;
 SELECT edges('facts_col') AS after_reindex;
-                 after_reindex                 
------------------------------------------------
- grants_direct grants_group memberships_active
+                                            after_reindex                                             
+------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member
 (1 row)
 
 -- a scope of one path is as it was: the btree and its journal index, and a scope of two paths beside it in the same index
@@ -292,9 +302,9 @@ SELECT leg, rel, member, key, btree, via_rel FROM sift._test_scope_legs('facts_o
 CREATE INDEX facts_both ON facts USING sift_col (id, dim_a_id, created_at, amount, pad)
 	WITH (scope = 'by_grant: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id); by_pair: dim_a_id -> pairs_one(dim_a_id, tenant_id)');
 SELECT edges('facts_both') AS both_edges;
-                                   both_edges                                   
---------------------------------------------------------------------------------
- grants_direct grants_group memberships_active pairs_one_journal pairs_one_pkey
+                                                              both_edges                                                               
+---------------------------------------------------------------------------------------------------------------------------------------
+ grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member pairs_one_journal pairs_one_pkey
 (1 row)
 
 SELECT scope, leg, rel, member, key, btree, via_rel FROM generate_series(0, 1) scope, LATERAL sift._test_scope_legs('facts_both', scope) ORDER BY scope, leg;

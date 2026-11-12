@@ -1,5 +1,5 @@
 -- What a scope declaration needs of its relations and its journals is said when the index is made or altered, not when it is first read: a temporary table of pairs, a relation with
--- row-level security, a scope of two paths without its journals, a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
+-- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
 -- one, and an ALTER INDEX that would take the journal away. The index that ALTER INDEX leaves unwritten is not scanned (a plan that cost it read the segments with the leaf list of
 -- the options and failed with a corrupted segment): every statement over its table runs, and sift.explain_why says what to do.
 CREATE EXTENSION pg_sift;
@@ -67,31 +67,20 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 DROP INDEX rls_col;
--- a scope of two paths without the journals of its relations: reads run as written until they exist and a REINDEX writes the segments under them
+-- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: refused, with the CREATE INDEX of each
 CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
 CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
-CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT try('CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_paths_no_journals;
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct"
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group"
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_pkey"
-NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
-NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')
-NOTICE:  scope "tenant_id": "memberships" has no sift_col index that journals its changes
-DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
-HINT:  CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
-NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
-NOTICE:  sift_col index "two_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('two_col');
-NOTICE:  sift_col index "two_col" has a scope: column format minor 49, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
-DROP INDEX two_col;
+                                                                                                                                                                                                                                                             two_paths_no_journals                                                                                                                                                                                                                                                              
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+(1 row)
+
 -- a partition declares its own scope: a statement over the partitioned table reads none
 CREATE TABLE part_events (id int, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE part_events_1 PARTITION OF part_events FOR VALUES FROM (0) TO (100000);

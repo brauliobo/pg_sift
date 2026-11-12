@@ -1,6 +1,6 @@
 -- A scope of two paths: 'key: fk -> rel(member, key) | rel2(via, key) via vrel(via, member)'. Its pairs are the distinct union of the rows of the first relation and of the joined ones (a member of
 -- a via value, with each key of that value). The declaration records the unique btree of each of the three relations (the edges are told apart by their columns), says which in a NOTICE, and
--- needs no journal index yet. What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
+-- needs the journal indexes of its three relations (without them it is refused, as a scope of one path is). What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -80,7 +80,17 @@ INSERT INTO bad_decls SELECT row_number() OVER (), why, opt FROM (VALUES
 SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = %L)', opt)) AS result FROM bad_decls ORDER BY n;
 SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
 
--- the declaration: three edges, one NOTICE per path, no journal index, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
+-- no journal index: refused, with the CREATE INDEX of each of the three
+SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS no_journals;
+-- one of them that is not a journal says what it lacks
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group_partial ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid') WHERE id > 0;
+SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS journals_missing_and_partial;
+DROP INDEX grants_by_group_partial;
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+
+-- the declaration: three edges, one NOTICE per path, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
 SET client_min_messages = notice;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');

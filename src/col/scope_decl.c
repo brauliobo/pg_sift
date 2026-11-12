@@ -167,67 +167,6 @@ pair_index(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumb
 	return InvalidOid;
 }
 
-/* The predicate of an index as an implicit-AND list over Vars of varno 1 (a copy), NIL for a plain one */
-static List *
-index_predicate(Oid indexoid)
-{
-	Relation	idx = index_open(indexoid, AccessShareLock);
-	List	   *pred = list_copy(RelationGetIndexPredicate(idx));
-
-	index_close(idx, AccessShareLock);
-	return pred;
-}
-
-/*
- * The journal indexes of the scope relation: ready sift_col indexes with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid of those that hear of
- * every pair. A journal records the pairs a statement ends and inserts, so a partial one qualifies only when the predicate of the btree that defines the pairs implies its predicate (every pair
- * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged. unfit: the first one that is not so (for the hint), not a candidate.
- */
-static Oid
-journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree, bool unfit)
-{
-	List	   *pair_pred = index_predicate(pair_btree);
-
-	foreach_oid(ioid, RelationGetIndexList(rel))
-	{
-		Relation	idx = index_open(ioid, AccessShareLock);
-		bool		ok = sift_col_is_index(idx) && sift_index_ready(idx) && idx->rd_index->indisvalid && sift_col_track_ctid(idx) &&
-			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber;
-
-		if (ok)
-		{
-			List	   *jpred = RelationGetIndexPredicate(idx);
-
-			ok = (jpred == NIL || predicate_implied_by(jpred, pair_pred, false)) != unfit;
-		}
-		index_close(idx, AccessShareLock);
-		if (ok)
-			return ioid;
-	}
-	return InvalidOid;
-}
-
-Oid
-sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
-{
-	return journal_scan(rel, member, scope_key, pair_btree, false);
-}
-
-/* The journal index whose leaves list exactly the pairs (its predicate and the one of the btree imply each other): a plain journal of a partial btree holds the soft deleted rows too */
-Oid
-sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
-{
-	Oid			journal = sift_scope_journal_index(rel, member, scope_key, pair_btree);
-
-	return OidIsValid(journal) && predicate_implied_by(index_predicate(pair_btree), index_predicate(journal), false) ? journal : InvalidOid;
-}
-
-Oid
-sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumber b, Oid btree)
-{
-	return hop == 2 ? journal_scan(rel, b, a, btree, false) : journal_scan(rel, a, b, btree, false);
-}
-
 /* Relation i of the declaration: 0 the pairs (member, scope key), 1 the joined path (via, scope key), 2 the members of the via column (via, member) */
 static const SiftScopeRel *
 decl_rel(const SiftScopeSpec *s, int i)
@@ -484,7 +423,7 @@ notice_btree(const SiftScopeSpec *s, int i, Relation rel, Oid btree)
 {
 	static const char *const what[] = {"direct pairs", "joined pairs", "via relation"};
 	const SiftScopeRel *r = decl_rel(s, i);
-	List	   *pred = index_predicate(btree);
+	List	   *pred = sift_scope_index_predicate(btree);
 	const char *text = pred == NIL ? NULL : deparse_expression((Node *) make_ands_explicit(pred), deparse_context_for(RelationGetRelationName(rel), RelationGetRelid(rel)), false, false);
 
 	if (!btree_unique(btree))
@@ -566,9 +505,9 @@ static Oid
 require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree)
 {
 	Oid			journal = sift_scope_journal_index(rel, member, key, btree);
-	char	   *unfit = OidIsValid(journal) ? NULL : sift_scope_journal_unfit(rel, member, key);
+	char	   *unfit = OidIsValid(journal) ? NULL : sift_scope_journal_unfit(rel, member, key, NIL);
 
-	if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, btree, true)))
+	if (!OidIsValid(journal) && OidIsValid(sift_scope_journal_scan(rel, member, key, btree, true)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", s->key_name, s->rel.name),
 						errhint("A partial index never hears of a pair inserted outside its predicate, unless the predicate of the btree of the pairs implies it: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
 								s->rel.name, s->rel.a, s->rel.b)));
@@ -578,6 +517,43 @@ require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNum
 						errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
 								s->rel.name, s->rel.a, s->rel.b)));
 	return journal;
+}
+
+/* The journal indexes of the three relations of a scope of two paths (added to keep), which must hear of every pair: ERROR naming each relation that has none */
+static void
+require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2], const Oid *btree, List **keep)
+{
+	StringInfoData fix;
+	Oid			journal[3];
+	const char *first = NULL;
+	char	   *detail = NULL;
+
+	for (int h = 0; h < 3; h++)
+	{
+		journal[h] = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
+		if (OidIsValid(journal[h]))
+			*keep = list_append_unique_oid(*keep, journal[h]);
+	}
+	initStringInfo(&fix);
+	for (int h = 0; h < 3; h++)
+	{
+		AttrNumber	member = att[h][h == 2 ? 1 : 0],
+					key = att[h][h == 2 ? 0 : 1];
+
+		if (OidIsValid(journal[h]))
+			continue;
+		if (first == NULL)
+		{
+			first = decl_rel(s, h)->name;
+			detail = sift_scope_journal_unfit(rel[h], member, key, *keep);
+		}
+		appendStringInfo(&fix, "%sCREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid')", fix.len > 0 ? "; " : "", RelationGetRelationName(rel[h]),
+						 get_attname(RelationGetRelid(rel[h]), member, false), get_attname(RelationGetRelid(rel[h]), key, false));
+	}
+	if (first != NULL)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", s->key_name, first),
+						detail ? errdetail("%s", detail) : 0,
+						errhint("A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: %s.", fix.data)));
 }
 
 /*
@@ -621,18 +597,11 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 		/* the codes of a text or uuid scope key are those of the value store of its column: the index depends on it */
 		if (sift_keymap_type(get_atttype(RelationGetRelid(rel[0]), att[0][1])))
 			(void) sift_vstore_ensure(rel[0], index, att[0][1]);
-		/* a scope of one path needs its journal; one of two paths vouches for nothing without the three it finds, which a later REINDEX of this index finds as well */
+		/* a scope needs its journal, a scope of two paths the three of its relations */
 		if (npath == 1)
 			keep = list_append_unique_oid(keep, require_journal(s, rel[0], att[0][0], att[0][1], btree[0]));
-		for (int h = 0; npath == 3 && h < npath; h++)
-		{
-			Oid			journal = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
-
-			if (OidIsValid(journal))
-				keep = list_append_unique_oid(keep, journal);
-			else if (!sticky)
-				sift_scope_notice_no_journal(s->key_name, decl_rel(s, h)->name, rel[h], att[h][h == 2 ? 1 : 0], att[h][h == 2 ? 0 : 1]);
-		}
+		if (npath == 3)
+			require_journals(s, rel, att, btree, &keep);
 		for (int h = 0; h < npath; h++)
 			table_close(rel[h], NoLock);
 	}
@@ -789,7 +758,7 @@ sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 	s = specs->s[scope];
 	l->btree = sift_scope_relation_index(heap, index, s, &rel, &l->member, &l->key);
 	l->rel = RelationGetRelid(rel);
-	l->pred = index_predicate(l->btree);
+	l->pred = sift_scope_index_predicate(l->btree);
 	l->via_rel = InvalidOid;
 	table_close(rel, NoLock);
 	if (s->joined != NULL)
@@ -797,10 +766,10 @@ sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 		l = &legs[1];
 		l->btree = sift_scope_hop_index(heap, index, s, 1, &rel, &l->member, &l->key);
 		l->rel = RelationGetRelid(rel);
-		l->pred = index_predicate(l->btree);
+		l->pred = sift_scope_index_predicate(l->btree);
 		l->via_btree = sift_scope_hop_index(heap, index, s, 2, &via, &l->via_join, &l->via_member);
 		l->via_rel = RelationGetRelid(via);
-		l->via_pred = index_predicate(l->via_btree);
+		l->via_pred = sift_scope_index_predicate(l->via_btree);
 		table_close(rel, NoLock);
 		table_close(via, NoLock);
 	}

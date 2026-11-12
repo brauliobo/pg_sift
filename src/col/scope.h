@@ -68,9 +68,8 @@ extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* col/scope_guard.c: what the declaration needs of its relations and journals, said when the index is made or altered */
-extern char *sift_scope_journal_unfit(Relation rel, AttrNumber member, AttrNumber key);
+extern char *sift_scope_journal_unfit(Relation rel, AttrNumber member, AttrNumber key, List *serving);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
-extern void sift_scope_notice_no_journal(const char *key_name, const char *name, Relation rel, AttrNumber first, AttrNumber second);
 extern void sift_scope_journal_alter(Relation index);
 extern void sift_scope_notice_stale(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
@@ -118,6 +117,8 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
  */
 #define sift_scope_njournals(s) ((s)->joined != NULL ? SIFT_SCOPE_JOURNALS : 1)
 /* The journal index of the relation for the pairs defined by pair_btree: a plain index, or one whose predicate the predicate of pair_btree implies (every pair is in it); InvalidOid when it has none */
+extern List *sift_scope_index_predicate(Oid indexoid);
+extern Oid	sift_scope_journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree, bool unfit);
 extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
 /* ... and the one whose leaves list exactly the pairs, InvalidOid when there is none */
 extern Oid	sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);

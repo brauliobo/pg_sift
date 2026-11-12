@@ -1,7 +1,7 @@
 -- The scope segments of a scope of two paths hold the DISTINCT union of the direct pairs (grants on a member) and the joined ones (grants on a group, with the members of the group): a member
 -- reached directly and through several groups is one pair, so a fact row is in the units of a key once. Every way to know the pairs (relations read once, btrees probed) writes the entries
--- of the SQL UNION; so do promotion and merge. The relations of this test have no journal indexes, so a read takes the entity rows of the members the three relations list for the keys: the
--- answers are those of the join, IN and EXISTS in every state of the relations, and the plan says why it did not read the units (col_scope_twohop_patch reads them).
+-- of the SQL UNION; so do promotion and merge. The answers are those of the join, IN and EXISTS in every state of the relations, read from the units or as written
+-- (col_scope_twohop_patch reads the units of the changed members).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -115,6 +115,9 @@ BEGIN
 	RETURN jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 -- the build, every way to know the pairs: the three relations read once, their btrees probed, chosen by the price
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT 'default' AS pairs_known, * FROM entries_vs_oracle();
@@ -168,24 +171,24 @@ SELECT count(*) AS facts_of_member_5, (SELECT count(*) FROM sift._test_col_scope
                 44 |                  44
 (1 row)
 
--- the reads: the answers are the join's, IN and EXISTS; the scope units are not read (no journal) and the plan says so
+-- the reads: the answers are the join's, IN and EXISTS; the plan says whether the units were read
 SELECT * FROM reads();
  differ_in | differ_exists | differ_pairs | fell_back 
 -----------+---------------+--------------+-----------
-         0 |             0 |            0 |         7
+         0 |             0 |            0 |         0
 (1 row)
 
 SELECT why() AS scope_fallback;
  scope_fallback 
 ----------------
- no journal
+ 
 (1 row)
 
 -- a read of several keys that counts a row for each pair needs the units: it is refused with the reason, as for any scope read that cannot use them
 SELECT try('SELECT count(*) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])') AS per_pair_several_keys;
-                                                                                per_pair_several_keys                                                                                 
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- a scope read of several keys that counts a row for each pair needs the join: "no journal" [Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.]
+ per_pair_several_keys 
+-----------------------
+ ok
 (1 row)
 
 -- every state of the relations, one after the other and committed: the answers stay the join's
@@ -209,84 +212,84 @@ UPDATE grants SET deleted_at = now() WHERE id = 1
 SELECT 1 AS n, 'soft delete a direct grant' AS state, r.* FROM reads() r
  n |           state            | differ_in | differ_exists | differ_pairs | fell_back 
 ---+----------------------------+-----------+---------------+--------------+-----------
- 1 | soft delete a direct grant |         0 |             0 |            0 |         7
+ 1 | soft delete a direct grant |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 1
 SELECT 2 AS n, 'restore it' AS state, r.* FROM reads() r
  n |   state    | differ_in | differ_exists | differ_pairs | fell_back 
 ---+------------+-----------+---------------+--------------+-----------
- 2 | restore it |         0 |             0 |            0 |         7
+ 2 | restore it |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE grants SET deleted_at = now() WHERE id = 3
 SELECT 3 AS n, 'soft delete a group grant' AS state, r.* FROM reads() r
  n |           state           | differ_in | differ_exists | differ_pairs | fell_back 
 ---+---------------------------+-----------+---------------+--------------+-----------
- 3 | soft delete a group grant |         0 |             0 |            0 |         7
+ 3 | soft delete a group grant |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 3; INSERT INTO grants VALUES (16, 1, NULL, 1, NULL)
 SELECT 4 AS n, 'a grant on a group of a member that has one directly' AS state, r.* FROM reads() r
  n |                        state                         | differ_in | differ_exists | differ_pairs | fell_back 
 ---+------------------------------------------------------+-----------+---------------+--------------+-----------
- 4 | a grant on a group of a member that has one directly |         0 |             0 |            0 |         7
+ 4 | a grant on a group of a member that has one directly |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE memberships SET deleted_at = now() WHERE group_id = 6 AND dim_a_id = 5
 SELECT 5 AS n, 'soft delete a membership' AS state, r.* FROM reads() r
  n |          state           | differ_in | differ_exists | differ_pairs | fell_back 
 ---+--------------------------+-----------+---------------+--------------+-----------
- 5 | soft delete a membership |         0 |             0 |            0 |         7
+ 5 | soft delete a membership |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE memberships SET deleted_at = NULL WHERE group_id = 6 AND dim_a_id = 5
 SELECT 6 AS n, 'restore it' AS state, r.* FROM reads() r
  n |   state    | differ_in | differ_exists | differ_pairs | fell_back 
 ---+------------+-----------+---------------+--------------+-----------
- 6 | restore it |         0 |             0 |            0 |         7
+ 6 | restore it |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE memberships SET group_id = 4 WHERE group_id = 3 AND dim_a_id = 2
 SELECT 7 AS n, 'move a member to another group' AS state, r.* FROM reads() r
  n |             state              | differ_in | differ_exists | differ_pairs | fell_back 
 ---+--------------------------------+-----------+---------------+--------------+-----------
- 7 | move a member to another group |         0 |             0 |            0 |         7
+ 7 | move a member to another group |         0 |             0 |            0 |         0
 (1 row)
 
 INSERT INTO memberships (group_id, dim_a_id) VALUES (9, 5)
 SELECT 8 AS n, 'a membership of a group nobody has a grant on' AS state, r.* FROM reads() r
  n |                     state                     | differ_in | differ_exists | differ_pairs | fell_back 
 ---+-----------------------------------------------+-----------+---------------+--------------+-----------
- 8 | a membership of a group nobody has a grant on |         0 |             0 |            0 |         7
+ 8 | a membership of a group nobody has a grant on |         0 |             0 |            0 |         0
 (1 row)
 
 DELETE FROM grants WHERE id = 14
 SELECT 9 AS n, 'delete a grant' AS state, r.* FROM reads() r
  n |     state      | differ_in | differ_exists | differ_pairs | fell_back 
 ---+----------------+-----------+---------------+--------------+-----------
- 9 | delete a grant |         0 |             0 |            0 |         7
+ 9 | delete a grant |         0 |             0 |            0 |         0
 (1 row)
 
 DELETE FROM memberships WHERE group_id = 2
 SELECT 10 AS n, 'delete memberships' AS state, r.* FROM reads() r
  n  |       state        | differ_in | differ_exists | differ_pairs | fell_back 
 ----+--------------------+-----------+---------------+--------------+-----------
- 10 | delete memberships |         0 |             0 |            0 |         7
+ 10 | delete memberships |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE grants SET tenant_id = 2 WHERE id = 7
 SELECT 11 AS n, 'a grant to a member by an update of its key' AS state, r.* FROM reads() r
  n  |                    state                    | differ_in | differ_exists | differ_pairs | fell_back 
 ----+---------------------------------------------+-----------+---------------+--------------+-----------
- 11 | a grant to a member by an update of its key |         0 |             0 |            0 |         7
+ 11 | a grant to a member by an update of its key |         0 |             0 |            0 |         0
 (1 row)
 
 UPDATE grants SET group_id = 1 WHERE id = 11
 SELECT 12 AS n, 'a group grant moved to another group' AS state, r.* FROM reads() r
  n  |                state                 | differ_in | differ_exists | differ_pairs | fell_back 
 ----+--------------------------------------+-----------+---------------+--------------+-----------
- 12 | a group grant moved to another group |         0 |             0 |            0 |         7
+ 12 | a group grant moved to another group |         0 |             0 |            0 |         0
 (1 row)
 
 -- a rebuild writes the entries of the relations as they are now
@@ -300,7 +303,7 @@ SELECT * FROM entries_vs_oracle();
 SELECT * FROM reads();
  differ_in | differ_exists | differ_pairs | fell_back 
 -----------+---------------+--------------+-----------
-         0 |             0 |            0 |         7
+         0 |             0 |            0 |         0
 (1 row)
 
 -- rows written after the build are in the write buffer, then in scope segments of a promotion, which expands them by the same union; a merge keeps the entries
@@ -320,7 +323,7 @@ SELECT * FROM entries_vs_oracle();
 SELECT * FROM reads();
  differ_in | differ_exists | differ_pairs | fell_back 
 -----------+---------------+--------------+-----------
-         0 |             0 |            0 |         7
+         0 |             0 |            0 |         0
 (1 row)
 
 INSERT INTO facts SELECT i, 1 + (i * 7) % 60, timestamptz '2026-04-01' + i * interval '9 minutes', i % 10 FROM generate_series(3401, 3500) i;
@@ -345,7 +348,7 @@ SELECT * FROM entries_vs_oracle();
 SELECT * FROM reads();
  differ_in | differ_exists | differ_pairs | fell_back 
 -----------+---------------+--------------+-----------
-         0 |             0 |            0 |         7
+         0 |             0 |            0 |         0
 (1 row)
 
 SELECT sift.col_verify('facts_col', true);
@@ -387,7 +390,7 @@ SET sift.test_conn_fill = 0;
 SELECT * FROM reads();
  differ_in | differ_exists | differ_pairs | fell_back 
 -----------+---------------+--------------+-----------
-         0 |             0 |            0 |         7
+         0 |             0 |            0 |         0
 (1 row)
 
 DROP INDEX facts_col;

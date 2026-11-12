@@ -1,5 +1,5 @@
 -- What a scope declaration needs of its relations and its journals is said when the index is made or altered, not when it is first read: a temporary table of pairs, a relation with
--- row-level security, a scope of two paths without its journals, a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
+-- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
 -- one, and an ALTER INDEX that would take the journal away. The index that ALTER INDEX leaves unwritten is not scanned (a plan that cost it read the segments with the leaf list of
 -- the options and failed with a corrupted segment): every statement over its table runs, and sift.explain_why says what to do.
 CREATE EXTENSION pg_sift;
@@ -36,13 +36,12 @@ CREATE INDEX pairs_rls_journal ON pairs_rls USING sift_col (m, s) WITH (track_ch
 CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_rls(m, s)');
 DROP INDEX rls_col;
 
--- a scope of two paths without the journals of its relations: reads run as written until they exist and a REINDEX writes the segments under them
+-- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: refused, with the CREATE INDEX of each
 CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
 CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
-CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
-DROP INDEX two_col;
+SELECT try('CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_paths_no_journals;
 
 -- a partition declares its own scope: a statement over the partitioned table reads none
 CREATE TABLE part_events (id int, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) PARTITION BY RANGE (id);

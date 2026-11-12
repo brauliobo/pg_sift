@@ -1,7 +1,7 @@
 -- The scope segments of a scope of two paths hold the DISTINCT union of the direct pairs (grants on a member) and the joined ones (grants on a group, with the members of the group): a member
 -- reached directly and through several groups is one pair, so a fact row is in the units of a key once. Every way to know the pairs (relations read once, btrees probed) writes the entries
--- of the SQL UNION; so do promotion and merge. The relations of this test have no journal indexes, so a read takes the entity rows of the members the three relations list for the keys: the
--- answers are those of the join, IN and EXISTS in every state of the relations, and the plan says why it did not read the units (col_scope_twohop_patch reads them).
+-- of the SQL UNION; so do promotion and merge. The answers are those of the join, IN and EXISTS in every state of the relations, read from the units or as written
+-- (col_scope_twohop_patch reads the units of the changed members).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -108,6 +108,9 @@ BEGIN
 END $$;
 
 -- the build, every way to know the pairs: the three relations read once, their btrees probed, chosen by the price
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT 'default' AS pairs_known, * FROM entries_vs_oracle();
@@ -128,7 +131,7 @@ SELECT key AS tenant_id, count(*) AS entries, count(DISTINCT tid) AS fact_rows F
 SELECT count(*) AS facts_of_member_5, (SELECT count(*) FROM sift._test_col_scope_entries('facts_col') e JOIN facts f ON f.ctid = e.tid WHERE e.key = 1 AND f.dim_a_id = 5) AS entries_of_tenant_1
 	FROM facts WHERE dim_a_id = 5;
 
--- the reads: the answers are the join's, IN and EXISTS; the scope units are not read (no journal) and the plan says so
+-- the reads: the answers are the join's, IN and EXISTS; the plan says whether the units were read
 SELECT * FROM reads();
 SELECT why() AS scope_fallback;
 -- a read of several keys that counts a row for each pair needs the units: it is refused with the reason, as for any scope read that cannot use them

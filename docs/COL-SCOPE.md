@@ -431,10 +431,10 @@ meaning of `IN` or `EXISTS` counts a fact once; a join or `GROUP BY` the key ove
 
 **The three journals.** The pairs of a member depend on (1) the rows of `rel` with that member, (2) its rows of `vrel`, and (3) the rows of `rel2` of every group it is in. Each relation needs a
 journal index, a `sift_col` index with `track_changes = 'ctid'` whose first column is the journaled key and that holds the other column, plain or partial with a predicate that the predicate of the
-recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths does
-not require them: a scope with any of the three missing, or one a pair can be inserted outside of (a partial journal), vouches for nothing, the plan says `Scope Fallback: no journal`, and the read is the
-entity rows of the members the three relations list for the keys. The scope index finds the journals when it is created or rebuilt and depends on them: a journal made later is found by the next
-`REINDEX` of the scope index, which starts it before it reads and stamps the segments with it (the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
+recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths, as of one path,
+is refused when any of the three is missing, or is a partial journal that a pair can be inserted outside of: the error names the first relation without one and the sift_col index it has that is not
+a journal, and the hint has the `CREATE INDEX` of each missing journal. The scope index finds the journals when it is created or rebuilt and depends on them (a journal made later is found by
+the next `REINDEX` of the scope index, which starts it before it reads and stamps the segments with it: the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
 `other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
 
 **The members that changed.** A segment of a scope of two paths holds a stamp for each of the three journals. The members whose pairs changed since the stamps are the union of the members of J1, the members of J3
@@ -618,7 +618,7 @@ Each line is checked when the index is made (`CREATE INDEX`, `REINDEX`) or alter
 | Its member and scope key columns are integers of one type on every path, `NOT NULL` on a scope of one path | `ERROR`: not an integer, nullable, the same column, types that differ | `ALTER TABLE .. SET NOT NULL`; change a column or the declaration |
 | An immediate btree on exactly `(member, scope_key)`, in either order | `ERROR`: no btree, or only a deferrable or `INCLUDE` one; two partial ones of one kind (name the one that defines the pairs with `using`) | `CREATE UNIQUE INDEX ON pairs (member, scope_key)`; `using <index>` |
 | The journal index: a `sift_col` index of the relation with `track_changes = 'ctid'`, the member first, holding the scope key, valid, without a `WHERE` (unless the btree of the pairs implies it) | `ERROR`: none, or the first `sift_col` index of the relation names what it lacks (no `track_changes = 'ctid'`, the member not first, no scope key, not valid, partial) | `CREATE INDEX ON pairs USING sift_col (member, scope_key) WITH (track_changes = 'ctid')` |
-| A scope of two paths has the journals of its three relations | `NOTICE` for each missing one: reads run as written until the journal exists and `REINDEX INDEX` writes the scope segments under it | create the journals, then `REINDEX INDEX` |
+| A scope of two paths has the journals of its three relations (as a scope of one path has its journal) | `ERROR` naming the first relation without one and what its sift_col index lacks, the hint has the statement that makes each missing journal | the `CREATE INDEX` of the hint, for each |
 | The journal stays a journal | `ALTER INDEX journal SET (track_changes = ..)` to another value, or `RESET`, is refused while a scope index depends on it | `ALTER INDEX scope_index RESET (scope)` first |
 | At most `sift.scope_max_multiplicity` entries for each row | `ERROR` with the size and the growth, after the build | raise the setting, or leave the table without the scope |
 | `ALTER INDEX .. SET (scope = ..)` or `RESET (scope)` on an index that has segments | `NOTICE`: the segments were written without the declaration, and the index is not scanned (every statement over the table runs on its other plans) until a `REINDEX` writes them | `REINDEX INDEX` |
