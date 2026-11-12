@@ -79,10 +79,10 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
 	SiftCPaggSpec rewrite = r->pagg;
-	TransactionId xstamp = InvalidTransactionId;
+	SiftXWait	xwait = {InvalidTransactionId};
 
 	sift_cwbuf_flag_sealed(index, sealed);
-	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xstamp);
+	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xwait);
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
@@ -135,8 +135,6 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu[0]);
 		neu[0].flags |= sealed->flags & SIFT_SEG_ROOTS;
-		if (r->track)
-			sift_seg_set_xstamp(&neu[0], xstamp);
 		/* the rows go to the scope segments in the same switch of the directory as their entity segment */
 		if (sf != NULL)
 		{
@@ -146,6 +144,9 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;
 		}
 		sift_conn_fill_end(fill);
+		/* as late as the rows are written: the transactions that finished while they were leave no bit in the stamp */
+		if (r->track)
+			sift_seg_set_xstamp(&neu[0], sift_xstamp_make(&xwait));
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
@@ -153,6 +154,40 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
+}
+
+typedef struct StampChange
+{
+	uint64		gen;
+	SiftXStamp	stamp;
+} StampChange;
+
+static void
+stamp_settled(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	const StampChange *c = arg;
+
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].gen == c->gen && (dir->segs[i].flags & SIFT_SEG_XPENDING))
+			sift_seg_set_xstamp(&dir->segs[i], c->stamp);
+}
+
+/*
+ * The segments written while a transaction that inserted some of their rows had not finished (SIFT_SEG_XPENDING): once those have, the stamp is a plain one if they all committed, and none
+ * if one did not (its rows stay checked in the heap, as the rows of a segment that never had a stamp). The commit log says which, so no row is read; a merge of such segments settles them as well.
+ */
+static void
+settle_stamps(Relation index, const SiftDirSnapshot *snap)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_XPENDING))
+		{
+			StampChange c = {snap->segs[i].gen, sift_seg_xstamp_of(&snap->segs[i])};
+
+			if (sift_xstamp_settle(&c.stamp) && c.stamp.open != 0)
+				continue;
+			sift_dir_update(index, &(SiftDirChange) {.fn = stamp_settled,.arg = &c,.extra = InvalidBuffer});
+		}
 }
 
 static const SiftSegEntry *
@@ -171,6 +206,7 @@ maint_promote_next(Relation index, bool propagate, uint64 *busy)
 	const SiftSegEntry *s;
 
 	sift_col_dir_read(index, snap, false);
+	settle_stamps(index, snap);
 	if ((s = first_sealed(snap)) != NULL)
 	{
 		int			nin;

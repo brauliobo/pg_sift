@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_mem_encodes);
+PG_FUNCTION_INFO_V1(sift_test_col_set_stats);
 extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/seg_int.h, which cannot be included next to maint_int.h */
 uint64		sift_cseg_dict_blocks;
 
@@ -776,4 +777,26 @@ sift_test_wbuf_format(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(format);
 }
 
+/* (): rows, allocated bytes, bytes in use, bytes of records and whether it is kept, of the set the last shared read of this backend used */
+Datum
+sift_test_col_set_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	SiftWbufSetStats st;
+	Datum		v[6];
+	bool		nul[6] = {0};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_cwbuf_last_set(&st);
+	v[0] = Int64GetDatum(st.rows);
+	v[1] = Int64GetDatum(st.allocated);
+	v[2] = Int64GetDatum(st.consumed);
+	v[3] = Int64GetDatum(st.recbytes);
+	v[4] = BoolGetDatum(st.kept);
+	v[5] = Int64GetDatum(st.batches);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, v, nul)));
+}
+
 #endif							/* SIFT_TESTING */
+

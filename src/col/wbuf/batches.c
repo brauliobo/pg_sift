@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
+#include "core/limits.h"
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 
@@ -126,17 +127,41 @@ typedef struct BatchSet
 
 #define BATCH_SETS			4
 
-/* A set bigger than this is built for its scan and not kept, unless it is within BATCH_AMPLIFY times the records it was made from: a buffer of the size the index allows (write_buffer_limit) is kept whole, whatever its limit */
+/*
+ * A set whose bytes in use (the chunks it frees to grow its arrays are not counted: the memory of a set grows by doubling and a buffer scattered over hundreds of
+ * superblocks leaves 40% of what it holds in free chunks) are over BATCH_SET_BYTES is built for its scan and not kept, unless it is within BATCH_AMPLIFY times the
+ * records it was made from: a buffer of the size the index allows (write_buffer_limit) is kept whole, whatever its layout. Not kept, a read decodes it again (11 K instructions a row).
+ */
 #define BATCH_SET_BYTES		((Size) 16 << 20)
-#define BATCH_AMPLIFY		6
+#define BATCH_AMPLIFY		8
 
 static MemoryContext sets_cxt;
+
+static Size
+set_bytes(const BatchSet *s)
+{
+	MemoryContextCounters c = {0};
+
+	MemoryContextMemConsumed(s->cx, &c);
+	return c.totalspace - c.freespace;
+}
 
 static BatchSet *sets[BATCH_SETS];
 
 static uint64 sets_clock;
 
 static uint64 sets_serial;
+
+#ifdef SIFT_TESTING
+/* the set the last shared read used, for the tests that price the memory of a kept set */
+static SiftWbufSetStats last_set;
+
+void
+sift_cwbuf_last_set(SiftWbufSetStats *out)
+{
+	*out = last_set;
+}
+#endif
 
 
 static int
@@ -401,25 +426,26 @@ lanes_unread(WbufLane *lane)
 }
 
 /*
- * The xid before which the transactions that inserted the records of f all committed: one past the largest xmin; InvalidTransactionId when a record has no xmin
- * (the row of a speculative insertion, of an index without track_changes, of a buffer written before the xmin was kept) or its transaction had not finished (it may still
- * commit). A segment made of these rows says so with SIFT_SEG_XSTAMP.
+ * Who inserted the records of f (col/xstamp.h): the transactions that committed did so before the xid one past the largest xmin of all of them, and those that had not finished
+ * when the records were read are the ones the stamp waits for. No stamp (top invalid) when a record has no xmin (the row of a speculative insertion, of an index without track_changes, of a buffer written before
+ * the xmin was kept), or there are more of them than a stamp holds. A segment made of these rows says so with SIFT_SEG_XSTAMP, or SIFT_SEG_XPENDING while some have not finished.
  */
-static TransactionId
-fresh_stamp(const Fresh *f)
+static void
+fresh_stamp(const Fresh *f, SiftXWait *w)
 {
-	TransactionId top = InvalidTransactionId;
-
+	*w = (SiftXWait) {InvalidTransactionId};
 	for (int i = 0; i < f->nheld; i++)
 	{
-		if (f->held[i].xst != XST_COMMITTED)
-			return InvalidTransactionId;
-		if (!TransactionIdIsValid(top) || TransactionIdFollows(f->held[i].xmin, top))
-			top = f->held[i].xmin;
+		const Held *h = &f->held[i];
+
+		if ((h->xst != XST_COMMITTED && h->xst != XST_OPEN) || (h->xst == XST_OPEN && !sift_xwait_note(w, h->xmin)))
+		{
+			w->top = InvalidTransactionId;
+			return;
+		}
+		if (!TransactionIdIsValid(w->top) || TransactionIdFollows(h->xmin, w->top))
+			w->top = h->xmin;
 	}
-	if (TransactionIdIsValid(top))
-		TransactionIdAdvance(top);
-	return top;
 }
 
 uint64
@@ -442,7 +468,7 @@ sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftC
 }
 
 SiftColBatch **
-sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp)
+sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -456,7 +482,7 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 	if (!set_fill(&s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
 	if (stamp)
-		*stamp = fresh_stamp(&f);
+		fresh_stamp(&f, stamp);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*n = s.n;
@@ -643,6 +669,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 	SiftCWbufReader *r = wbuf_open_lazy(index, entry, schema, tmp);
 	BatchSet   *s = NULL;
 	WbufLane	lane[SIFT_LANES];
+
 	Fresh		f;
 
 	for (int i = 0; i < BATCH_SETS; i++)
@@ -712,7 +739,7 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	if (!s->kept && s->n > 0 && MemoryContextMemAllocated(s->cx, true) <= Max(BATCH_SET_BYTES, BATCH_AMPLIFY * s->recbytes))
+	if (!s->kept && s->n > 0 && set_bytes(s) <= Max((Size) sift_limit(wbuf_set_bytes, BATCH_SET_BYTES), (Size) sift_limit(wbuf_set_amplify, BATCH_AMPLIFY) * s->recbytes))
 	{
 		int			slot = 0;
 
@@ -729,6 +756,15 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 		sets[slot] = s;
 		s->kept = true;
 	}
+#ifdef SIFT_TESTING
+	{
+		int64		rows = 0;
+
+		for (int i = 0; i < s->n; i++)
+			rows += s->b[i]->nrows;
+		last_set = (SiftWbufSetStats) {rows, (int64) MemoryContextMemAllocated(s->cx, true), (int64) set_bytes(s), (int64) s->recbytes, s->kept, s->n};
+	}
+#endif
 	s->used = ++sets_clock;
 	if (stamp)
 		*stamp = set_stamp(s);

@@ -100,6 +100,8 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `shred_text` | one text value of a jsonb leaf | 1,048,576 (1 MiB) | bytes | the value is OVERFLOW (read from the heap) |  | `col/shred.h` `SIFT_SHRED_MAX_TEXT` |  |
 | `shred_key_bytes` | a key of a jsonb wildcard object | 255 | bytes | the value is OVERFLOW (read from the heap) |  | `col/shred.h` `SIFT_SHRED_MAX_KEY_BYTES` |  |
 | `shred_keys` | distinct keys of a jsonb wildcard object per segment | 65,536 | keys | the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE) |  | `col/shred.h` `SIFT_SHRED_DEFAULT_KEYS` | yes |
+| `wbuf_set_bytes` | bytes in use of the batches a backend keeps of one write buffer for its next scan | 16,777,216 (16 MiB) | bytes | a set over it and over wbuf_set_amplify times its records is built for its scan and not kept: a read decodes the buffer again |  | `col/wbuf/batches.c` `BATCH_SET_BYTES` | yes |
+| `wbuf_set_amplify` | bytes of a kept set of a write buffer as a multiple of the record bytes it was made from, when it is over wbuf_set_bytes | 8 | times | the set is built for its scan and not kept: a read decodes the buffer again |  | `col/wbuf/batches.c` `BATCH_AMPLIFY` | yes |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 

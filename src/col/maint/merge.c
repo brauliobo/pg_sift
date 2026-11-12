@@ -455,7 +455,7 @@ typedef struct MergeOut
 	MemoryContext pcx;
 	SiftSegEntry neu[MAX_PARTS];
 	int			nneu;
-	TransactionId xstamp;		/* of the segments merged: all of them said so, else InvalidTransactionId */
+	SiftXStamp	xstamp;			/* who inserted the rows of the segments merged, each settled: none when one does not say */
 	bool		roots;			/* every segment merged has SIFT_SEG_ROOTS */
 	int			scope;			/* the scope the segments merged hold the entries of (their cut is its key's), -1 for the entities of the index */
 	bool		scoped;			/* entities: every segment merged has SIFT_SEG_SCOPED, so the one written has */
@@ -463,24 +463,6 @@ typedef struct MergeOut
 	int			nconn;
 	SiftConnStamp carry[SIFT_SCOPE_MAX][SIFT_SCOPE_JOURNALS];	/* the stamps of the scopes of the output, one for each journal: the oldest of the segments merged, whose entries it holds */
 } MergeOut;
-
-/* The latest of the stamps of the segments, none when one has no stamp: a row of it may have an inserter that did not commit */
-static TransactionId
-merge_stamp(const SiftSegEntry *in, int n)
-{
-	TransactionId top = InvalidTransactionId;
-
-	for (int i = 0; i < n; i++)
-	{
-		TransactionId x;
-
-		if (!sift_seg_xstamp(&in[i], &x))
-			return InvalidTransactionId;
-		if (!TransactionIdIsValid(top) || TransactionIdFollows(x, top))
-			top = x;
-	}
-	return top;
-}
 
 /* Do all the segments say their string roots are flagged: a merge copies the values as they were stored, so one that does not say it cannot be made to */
 static bool
@@ -586,7 +568,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
 	int			nscope = sift_cschema_nscope(schema);
 	bool		scope = n > 0 && (in[0].flags & SIFT_SEG_SCOPE) != 0;	/* the segments are those of one scope: the rows of the entities are not merged with them */
-	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? merge_stamp(in, n) : InvalidTransactionId, .roots = sift_col_is_index(index) && merge_roots(in, n),
+	MergeOut	o = {.index = index, .schema = schema, .policy = policy, .cx = cx, .parts = 1, .xstamp = sift_col_is_index(index) ? sift_xstamp_inputs(in, n) : (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0}, .roots = sift_col_is_index(index) && merge_roots(in, n),
 		.scope = scope ? (int) in[0].pad : -1, .scoped = schema->scoped && !scope, .nconn = sift_cschema_nconn(schema), .cut0 = -1};
 	uint64		live_bytes = 0,
 				live_units = 0;

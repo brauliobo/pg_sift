@@ -9,6 +9,7 @@
 #include "core/host.h"
 
 #include "col/enc.h"
+#include "col/xstamp.h"
 #include "core/store.h"
 
 /* Per-relation state the caller keeps (the relcache entry's rd_amcache holds it for the AM): the active segment and lane tails last seen */
@@ -91,11 +92,11 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
 
 /*
  * All live rows of the segment, sorted by key (a repeated TID keeps its first record), as batches, one per superblock, ascending, in
- * mcxt. *n = the number of batches (0 for none).
+ * mcxt. *n = the number of batches (0 for none). stamp (may be NULL): who inserted them (col/xstamp.h: sift_xstamp_make says what a segment made of them is stamped with).
  */
 /* How many live records of the write buffer entry come from a transaction at or after x that did not abort (or from one that says nothing of itself)? Reads the headers of the records */
 extern uint64 sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, TransactionId x);
-extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp);
+extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp);
 
 /*
  * What a scan was given of a kept set: the set (a serial, never reused) and the rows added to it in place since it was made. A cache of the scan that
@@ -126,6 +127,18 @@ extern int64 sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, co
 
 /* The rows the backends of the server decoded from the buffer of generation gen to read it, since it was opened (col/wbuf/reads.c): what its promotion is weighed against (maint_wbuf_read_due) */
 extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
+#ifdef SIFT_TESTING
+typedef struct SiftWbufSetStats
+{
+	int64		rows,
+				allocated,
+				consumed,
+				recbytes,
+				kept,
+				batches;
+} SiftWbufSetStats;
+extern void sift_cwbuf_last_set(SiftWbufSetStats *out);
+#endif
 extern uint64 sift_cwbuf_decoded(Relation index, uint64 gen);
 /* whether this backend decoded rows since the last call (the scan that did looks for the promotion, sift_col_vacuum_tick) */
 extern bool sift_cwbuf_decoded_take(void);

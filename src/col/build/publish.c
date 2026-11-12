@@ -55,7 +55,7 @@ sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs, bool stamped)
 		TransactionId next = ReadNextTransactionId();
 
 		for (int i = 0; i < nsegs; i++)
-			sift_seg_set_xstamp(&segs[i], next);
+			sift_seg_set_xstamp(&segs[i], (SiftXStamp) {next, InvalidTransactionId, 0});
 	}
 	qsort(segs, nsegs, sizeof(SiftSegEntry), seg_cmp);
 	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.extra = InvalidBuffer});

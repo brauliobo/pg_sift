@@ -56,6 +56,11 @@ def rotate(sql, delta):
     return sql
 
 
+def seed_of(b, k):
+    """the setseed argument of the part k of batch b: within -1..1 for every batch (b * 4 + k reaches 1001 at batch 250)"""
+    return (b * 4 + k) % 1000 / 1000
+
+
 def delta(b):
     return b * 53 % 400
 
@@ -282,9 +287,9 @@ class Lab:
 
     def batch(s, w, rd, b, ops):
         """one batch through the writer session w and the reader session rd; ops(kind, fn) runs each part (and waits) so that a bench can measure around it"""
-        ops("insert", lambda: w.ask(insert_sql(s.case, N, (b * 4) / 1000)))
-        ops("update", lambda: w.ask(update_sql(N, (b * 4 + 1) / 1000)))
-        ops("delete", lambda: w.ask(delete_sql(N, (b * 4 + 2) / 1000)))
+        ops("insert", lambda: w.ask(insert_sql(s.case, N, seed_of(b, 0))))
+        ops("update", lambda: w.ask(update_sql(N, seed_of(b, 1))))
+        ops("delete", lambda: w.ask(delete_sql(N, seed_of(b, 2))))
 
         def readloop():   # the scans that the read-priced maintenance rules see
             for q in [CLASSES[(READS * (b - 1) + i) % len(CLASSES)] for i in range(READS)]:

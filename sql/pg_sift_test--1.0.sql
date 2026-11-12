@@ -593,6 +593,12 @@ CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETUR
 CREATE FUNCTION sift._test_col_log_hidden(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_hidden' LANGUAGE C STRICT;
 
+-- the xid stamp of a segment (col/xstamp.c): the stamp of rows whose latest inserter is top, of which those in open had not finished, and the union of two stamps; next:base:open (hex)
+CREATE FUNCTION sift._test_xstamp_pack(top int8, open int8[]) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_xstamp_pack' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_xstamp_union(a text, b text) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_xstamp_union' LANGUAGE C STRICT;
+
 CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dsm_deferred(OUT name text, OUT asks int8) RETURNS SETOF record
@@ -669,3 +675,5 @@ CREATE FUNCTION sift._test_vstore_forget() RETURNS void
 -- the answers the memos of the catalog state (the triggers of a journal, the relations of a scope, its legs, the rows of its relations, the units of a read) gave without asking the catalogs, in this backend
 CREATE FUNCTION sift._test_catalog_memos() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_catalog_memos' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_set_stats(OUT rows int8, OUT allocated int8, OUT consumed int8, OUT recbytes int8, OUT kept bool, OUT batches int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_set_stats' LANGUAGE C STRICT;

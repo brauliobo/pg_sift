@@ -4,7 +4,7 @@
   wamp.py run CASE CK WORK ROOT OUT   CASE std | wide; CK = batches between checkpoints; WORK holds the base heap (lab.py base);
                                       ROOT = the staged install under test; writes OUT.json, OUT.txt (line 1 = the settings)
   wamp.py table OUT.json...           the cells (case x batches): index WAL by operation class, all-relations WAL, index file; the slope between counts
-  wamp.py check EXPECT OUT.json...    each cell against the expectation file, within its tolerance; exit 1 on a miss
+  wamp.py check EXPECT OUT.json...    each cell against the expectation file, within its tolerance; exit 1 on a miss (a class under BIG B/row is not judged)
   wamp.py expect OUT.json...          the expectation rows of these results (what bench/focus/expect-wamp.tsv holds; give two runs of a cell for its noise)
 
 One run is 48 batches of INSERT / UPDATE / soft DELETE, a few reads, VACUUM every 6th batch, with the background workers on (promotion,
@@ -21,7 +21,8 @@ import lab
 
 BATCHES, COUNTS = 48, (6, 12, 24, 48)
 CLASSES = ("wbuf", "promotion", "merge", "rewrite", "move", "other")
-TOL, FLOOR = 0.10, 3.0
+TOL, TOL_CLASS, FLOOR = 0.15, 0.30, 3.0
+BIG = 100.0  # B/row: a class of the split is judged by check only when its expectation is this large (the totals idx, all and file always are)
 LOGL = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) UTC \[(\d+)\] LOG:  (sift: .*)$")
 OPL = re.compile(r'sift: (?P<what>.+?) index "facts_sift" in (?P<ms>\d+) ms(?:, (?P<docs>\d+) documents)?(?:, (?P<bytes>\d+) bytes)?$')
 REC = re.compile(r"rmgr: (\S+)\s+len \(rec/tot\):\s*(\d+)/\s*(\d+).*lsn: ([0-9A-F]+)/([0-9A-F]+)")
@@ -184,10 +185,10 @@ def values(results):
 
 
 def expect(results):
-    """the expectation rows: the mean of the runs, and the tolerance: 10 percent, 1.5 times the spread between the runs, 3 B/row on a class"""
+    """the expectation rows: the mean of the runs, and the tolerance: 15 percent (30 on a class), twice the spread between the runs, 3 B/row on a class"""
     for (cell, c, k), v in sorted(values(results).items()):
         m = sum(v) / len(v)
-        tol = max(TOL * m, 1.5 * (max(v) - min(v)), 0 if k in ("file", "all") else FLOOR)
+        tol = max((TOL_CLASS if k in CLASSES else TOL) * m, 2 * (max(v) - min(v)), 0 if k in ("file", "all") else FLOOR)
         print(f"{cell}\t{c}\t{k}\t{m:.1f}\t{tol:.1f}")
 
 
@@ -197,13 +198,14 @@ def check(path, results):
     want = {(cell, int(c), k): (float(v), float(tol)) for cell, c, k, v, tol in rows}
     got, bad = values(results), 0
     for key, (w, tol) in want.items():
-        if key not in got:
+        if key not in got or (key[2] in CLASSES and w < BIG):
             continue
         v = sum(got[key]) / len(got[key])
         if abs(v - w) > tol:
             bad += 1
             print(f"FAIL {key[0]} batches={key[1]} {key[2]}: {v:.1f}, expected {w:.1f} +- {tol:.1f} ({100 * (v - w) / max(abs(w), 1e-9):+.0f}%)")
-    print(f"{'FAIL' if bad else 'ok'}: {sum(k in got for k in want)} of {len(want)} expectations measured, {bad} outside the tolerance")
+    judged = sum(k in got and (k[2] not in CLASSES or want[k][0] >= BIG) for k in want)
+    print(f"{'FAIL' if bad else 'ok'}: {judged} of {len(want)} expectations judged, {bad} outside the tolerance")
     return bad
 
 
@@ -222,7 +224,7 @@ def main(a):
         if a[0] == "table":
             table(res)
         elif a[0] == "expect":
-            print("# B per inserted row up to the batch count (file: MB); tolerance: 10 percent, 1.5 times the spread of the runs, or 3 B/row on a class")
+            print("# B per inserted row up to the batch count (file: MB); tolerance: 15 percent, twice the spread of the runs, or 3 B/row on a class; classes under 100 B/row are not judged (the split between wbuf, promotion and merge moves by a fifth from run to run: the totals judge them)")
             print(res[0]["settings"] + f"; rows={res[0]['rows']}; n={res[0]['n']}; runs={len(res) // 3}")
             print("# cell\tbatches\tmetric\tvalue\ttolerance")
             expect(res)

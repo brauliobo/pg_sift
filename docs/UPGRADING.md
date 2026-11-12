@@ -469,6 +469,14 @@ SELECT c.oid::regclass AS index FROM pg_class c JOIN pg_am a ON a.oid = c.relam,
 
 From 4.2 on the maintenance worker, `VACUUM` or a read that has to check the heap repairs it by itself (see the pg_upgrade section above): nothing to run.
 
+## Known issue of 4.0.0 to 4.3.2: a concurrent writer at a promotion left reads on the heap
+
+Fixed in 5.0; no patch release is planned. In 4.0.0 to 4.3.2 a `sift_col` index with `track_changes` that promoted its write buffer while a transaction that had inserted some of the rows was still open wrote the segment without its stamp, and a merge that took such a segment in wrote its output without one too. A read of an unstamped segment decides its rows from the heap, not from the tombstone log, so the reads of an index under concurrent writers cost more (the heap pages of its rows) until a rewrite of the index (`REINDEX`, or a rewrite of those segments). **Answers were never wrong**: an unstamped segment is the safe side, and the three reads (heap-free, heap-checked, no sift plan) agree in every state of an inserter (open, committed, rolled back, subtransactions, prepared).
+
+5.0 keeps the wait in the directory entry of the segment (no new format minor; an older library reads it as an unstamped segment) and turns it into the stamp at the next maintenance step or merge once the transactions it waited for have committed, so install the files and restart; nothing to update in the database. A segment promoted by an older release stays unstamped until its next rewrite (`REINDEX`).
+
+A limit that stays: a transaction that **rolled back** after the promotion that waited for it leaves its segment unstamped until a rewrite of the segment, and so do transactions in doubt more than 63 transaction ids apart or more than 64 distinct ones. The rows a read returns are the heap's in every case.
+
 ## What is tested
 
 | What | Test |

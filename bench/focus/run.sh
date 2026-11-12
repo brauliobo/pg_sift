@@ -3,6 +3,8 @@
 #
 #   bench/focus/run.sh wamp  ROOT LABEL    write amplification, cases std-ck24 std-ck1 wide-ck24, 48 batches each (about 1.5 minutes a case): table, then the check against expect-wamp.tsv
 #   bench/focus/run.sh reads ROOT LABEL    read cost per class, cases std and wide, 54 batches each (about 2.5 minutes a case): table
+#   bench/focus/run.sh held  ROOT LABEL    the reads of a build when an inserter is in flight at a promotion (FOCUS_HOLD, default batch 14): read cost and the share of entries without a stamp, cases std and wide
+#   bench/focus/run.sh gap   ROOT LABEL    the churned index against a fresh build of the same table on the cold batches (FOCUS_FRESH): per class, absolute instructions and blocks, and the state; cases std and wide
 #   bench/focus/run.sh both  ROOT LABEL
 #   bench/focus/run.sh expect LABEL...     the expectation rows of the wamp results of these labels (two runs of one build give the tolerance)
 #
@@ -36,7 +38,7 @@ run_reads() {
 	$PY "$HERE/reads.py" run "${1%%:*}" "$WORK" "$ROOT" "$OUT/reads-${1%%:*}-$LABEL" > /dev/null
 }
 
-mode=${1:?usage: run.sh wamp|reads|both ROOT LABEL | expect LABEL...}
+mode=${1:?usage: run.sh wamp|reads|held|gap|both ROOT LABEL | expect LABEL...}
 if [[ $mode == expect ]]; then
 	shift
 	files=()
@@ -50,6 +52,24 @@ if [[ $mode == wamp || $mode == both ]]; then
 	files=("$OUT"/wamp-*-"$LABEL".json)
 	$PY "$HERE/wamp.py" table "${files[@]}"
 	$PY "$HERE/wamp.py" check "$HERE/expect-wamp.tsv" "${files[@]}" || [[ -n ${FOCUS_NO_CHECK:-} ]]
+fi
+if [[ $mode == held ]]; then
+	CASES=(std wide)
+	FOCUS_HOLD=${FOCUS_HOLD:-14}
+	export FOCUS_HOLD
+	LABEL=$LABEL-held
+	cases run_reads
+	$PY "$HERE/reads.py" table "$OUT"/reads-std-"$LABEL".json
+	$PY "$HERE/reads.py" table "$OUT"/reads-wide-"$LABEL".json
+fi
+if [[ $mode == gap ]]; then
+	CASES=(std wide)
+	FOCUS_FRESH=1
+	export FOCUS_FRESH
+	LABEL=$LABEL-fresh
+	cases run_reads
+	$PY "$HERE/reads.py" gap "$OUT"/reads-std-"$LABEL".json
+	$PY "$HERE/reads.py" gap "$OUT"/reads-wide-"$LABEL".json
 fi
 if [[ $mode == reads || $mode == both ]]; then
 	CASES=(std wide)

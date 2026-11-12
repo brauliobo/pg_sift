@@ -5,7 +5,11 @@
 
 A seed fills a table with keys of a chosen shape (many equal keys, a NULL region, scattered or arriving in order), builds two sift_col indexes (order arrays on four columns, and
 grouped by an entity) and b-tree twins, and draws steps: batches of INSERTs, DELETEs and UPDATEs of a random, newest or oldest window, upserts, updates that change a key and
-updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs, merge, REINDEX and ANALYZE. After every step a sample of the queries (top-N both ways, OFFSET small and deep,
+updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs, merge, REINDEX and ANALYZE.
+Two more sessions hold inserters open across those steps (their own stream of random choices, so the steps of a seed are the same with or without them): a transaction that inserts rows
+(some under a savepoint that is rolled back or released) and stays open for some steps, then commits or rolls back, so that a promotion, a merge, a VACUUM and the reads of the checks
+see rows of transactions in progress, and stamps that wait for them; SIFT_FUZZ_HOLD=0 leaves them out. SIFT_FUZZ_SET is SQL every session runs first
+(`SET sift.test_hf_ignore_stamp = on;` takes every segment for stamped: a mutant the holders of a seed must catch). After every step a sample of the queries (top-N both ways, OFFSET small and deep,
 ranges with LIMIT, IN lists, group top-N, NULL regions, text keys) must give the same ordered rows through the forced sift plan, the planned one, a forced b-tree plan and a
 forced heap plan, and col_verify must pass. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The
 seed also draws track_changes on or off, sift.col_wbuf_ref, key_cut, the segment size and, in a testing build, sift.test_col_gorder_seek (every chunk seekable).
@@ -191,12 +195,51 @@ class Fail(Exception):
 
 
 SETUP = ("SET client_min_messages = warning; SET synchronous_commit = on; SET sift.async_maintenance = off; SET max_parallel_maintenance_workers = 0; "
-         "SET max_parallel_workers_per_gather = 0; SET lock_timeout = '30s';")
+         "SET max_parallel_workers_per_gather = 0; SET lock_timeout = '30s';" + os.environ.get('SIFT_FUZZ_SET', ''))
+
+
+HOLD_BASE = 10000000   # the ids of the held inserts: above every id the steps draw, so that no upsert waits for a transaction that the harness holds
+
+
+class Holder:
+    """A session whose transaction inserts rows and stays open for some steps (its own random stream)."""
+
+    def __init__(self, sess, rng, slot):
+        self.sess, self.rng, self.next, self.is_open = sess, rng, HOLD_BASE + slot * 1000000, False
+
+    def begin(self):
+        r = self.rng
+        a, m = self.next, r.choice([20, 200, 2000])
+        self.next += m
+        ins = (f"INSERT INTO ct SELECT i, ((i::bigint * 7919) % 300)::int, (i * 104729::bigint) % 1000003, TIMESTAMP '2026-01-01' + (i % 5000) * interval '1 minute', "
+               f"lpad(to_hex((i * 40503::bigint) % 4096), 3, '0'), i % 50, repeat('x', 60) FROM generate_series({{a}}, {{b}}) i;")
+        sql = 'BEGIN; ' + ins.format(a=a, b=a + m - 1)
+        v = r.random()
+        if v < 0.25:    # a subtransaction that is rolled back, one that is released
+            sql += f" SAVEPOINT s; {ins.format(a=a + m, b=a + m + 49)} ROLLBACK TO s; SAVEPOINT t; {ins.format(a=a + m + 50, b=a + m + 99)} RELEASE t;"
+            self.next += 100
+        elif v < 0.4:
+            sql += f" UPDATE ct SET pad = 'h' WHERE id BETWEEN {a} AND {a + min(m, 20) - 1};"
+        self.is_open = True
+        return self.sess.run(sql)
+
+    def end(self):
+        self.is_open = False
+        return self.sess.run(self.rng.choice(['COMMIT;', 'COMMIT;', 'ROLLBACK;']))
+
+    def tick(self):
+        """Before a step: begin one that is not open, or end one that is."""
+        r = self.rng.random()
+        if not self.is_open and r < 0.35:
+            return self.begin()
+        if self.is_open and r < 0.4:
+            return self.end()
+        return ''
 
 
 class Churn:
     def __init__(self, rng, n):
-        self.rng, self.n, self.next = rng, n, n + 1
+        self.rng, self.n, self.next, self.held = rng, n, n + 1, False
 
     def window(self, pct):
         r = self.rng
@@ -212,7 +255,7 @@ class Churn:
         kind = r.choices(['ins', 'del', 'upd_key', 'upd_pad', 'upsert', 'aborted', 'chain', 'promote', 'vacuum', 'merge', 'reindex', 'analyze', 'fold'],
                          [14, 14, 14, 8, 8, 6, 6, 8, 10, 8, 2, 2, 10])[0]
         pct = r.choice([1, 3, 10, 30, 60])
-        if kind == 'reindex' and reader:   # its lock waits for the reader's transaction
+        if kind == 'reindex' and (reader or self.held):   # its lock waits for the reader's and the holders' transactions
             kind = 'analyze'
         if kind == 'ins':
             a, m = self.next, r.choice([50, 500, 3000])
@@ -276,6 +319,9 @@ def run_seed(seed, n, steps):
     ts = rng.choice(["TIMESTAMP '2026-01-01' + i * interval '1 minute'", f"TIMESTAMP '2026-01-01' + ((i * 7919) % {n}) * interval '1 minute'"])
     flags = f"SET sift.test_col_segment_kb = {cfg['seg_kb']}; SET sift.col_wbuf_ref = {cfg['wbuf']};" + (' SET sift.test_col_gorder_seek = on;' if cfg['seek'] else '')
     a, rd = Sess('writer', log, SETUP), Sess('reader', log, SETUP)
+    hold = os.environ.get('SIFT_FUZZ_HOLD', '1') != '0'
+    hs = [Sess(f'holder{k}', log, SETUP) for k in range(2 if hold else 0)]
+    holders = [Holder(h, random.Random(seed * 7919 + k), k) for k, h in enumerate(hs)]
     try:
         a.run(f"{flags}\nDROP TABLE IF EXISTS ct, ct_q, ct_res CASCADE;\n" + LIB.replace('CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION'))
         ins = ',\n'.join(f'({i}, {sqlstr(c)}, {sqlstr(q)})' for i, (c, q) in enumerate(queries(n), 1))
@@ -297,6 +343,11 @@ VACUUM (ANALYZE) ct;""")
             if not re.search(r'^snap\|$', out, re.M):
                 raise Fail(f'reader first read: {out.strip()[:500]}')
         for i in range(steps):
+            for h in holders:
+                out = h.tick()
+                if ERR.search(out):
+                    raise Fail(f'step {i} holder: {out.strip()[:800]}')
+            c.held = any(h.is_open for h in holders)
             kind, sql = c.step(reader)
             out = a.run(sql + ';')
             if ERR.search(out):
@@ -308,6 +359,10 @@ VACUUM (ANALYZE) ct;""")
                     raise Fail(f'step {i} {kind}: reader snapshot changed: {out.strip()[:800]}')
         if reader:
             rd.run('COMMIT;')
+        for h in holders:
+            if h.is_open:
+                h.end()
+        a.run(f"SELECT sift.col_promote('ct_i'), sift.col_promote('ct_g');")
         a.run('VACUUM ct;')
         check(a, 'final', 2, 0)
         a.run('DROP TABLE ct, ct_q, ct_res CASCADE;')
@@ -319,6 +374,8 @@ VACUUM (ANALYZE) ct;""")
         return 1, path
     finally:
         a.close(); rd.close(); log.close()
+        for h in hs:
+            h.close()
 
 
 def main():

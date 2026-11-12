@@ -105,6 +105,8 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_TBL_SEG_WBUF` | 0x0100 | `sift_table` write buffer |
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
 | `SIFT_SEG_ROOTS` | 0x0004 | column segment whose documents were shredded with a string root stored as the overflow of every column below it (below) |
+| `SIFT_SEG_XSTAMP` | 0x4000 | column segment of a heap index with `track_changes` whose inserters all committed before the xid in `reserved` ([COL-HEAPFREE.md](COL-HEAPFREE.md)) |
+| `SIFT_SEG_XPENDING` | 0x0040 | the same while some inserters had not finished: `reserved` is the xid, `pad` the latest of those that had not, `sum_dl` a bit for each; reads take it for a segment without a stamp, maintenance settles it |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
 | `SIFT_SEG_NET` | 0x2000 | column segment with the pre-aggregates of its dirty units net of their dead rows, in whole pages at the end of the stream (below) |
 

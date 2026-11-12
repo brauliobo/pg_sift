@@ -109,6 +109,7 @@ extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/seg/net.c); no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_XSTAMP	0x4000	/* a segment of a heap sift_col index with track_changes whose entries were all inserted by transactions that committed before the xid in reserved (sift_seg_xstamp): a snapshot whose xmin is not below it sees every inserter as committed and finished; not with SIFT_SEG_VERS */
+#define SIFT_SEG_XPENDING	0x0040	/* like SIFT_SEG_XSTAMP, but some of the transactions that inserted an entry had not finished when the segment was written: reserved = the xid before which all the others committed, pad = the latest of those that had not, sum_dl = a bit for each of them (col/xstamp.h). Reads treat the segment as unstamped; maintenance turns it into a SIFT_SEG_XSTAMP segment once they have all committed. Never with SIFT_SEG_SCOPE (pad is its ordinal) */
 #define SIFT_SEG_UNIT	0x8000	/* a one-unit generation written by the unit_rewrite method of 4.1 and earlier, which is gone: merge, rewrite and the overlay still keep its allocation boundary */
 #define SIFT_SEG_VERS	0x0400	/* a column segment with unfrozen rows: reserved = the smallest xid (docs/COL-TAM.md section 7); cleared when the rows are frozen */
 
@@ -122,7 +123,7 @@ typedef struct SiftSegEntry
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
 	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
-	uint32		pad;			/* 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page; a scope segment (SIFT_SEG_SCOPE) holds the ordinal of its scope */
+	uint32		pad;			/* 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page; a scope segment (SIFT_SEG_SCOPE) holds the ordinal of its scope, one with SIFT_SEG_XPENDING its latest unfinished inserter */
 	uint64		ndocs;
 	uint64		sum_dl;
 	uint64		bytes;
