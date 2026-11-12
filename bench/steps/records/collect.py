@@ -196,11 +196,12 @@ def pg_bytes_mb(text):
 
 # --- the server
 
-def all_rows(s, sql):
+def all_rows(s, sql, columns=0):
+    """the rows of sql, split at `|`; COLUMNS says how many the query has when its last one may hold a `|` (the reloptions of a scope index do)"""
     _, rows, err, *_ = s.run(sql)
     if err:
         raise RuntimeError('%s: %s' % (sql[:80], err))
-    return [r.split('|') for r in rows]
+    return [r.split('|', columns - 1) if columns else r.split('|') for r in rows]
 
 
 def one(s, sql):
@@ -399,7 +400,7 @@ def index_facts(s, table):
     are the rows of sift.col_segments (sift_col) and sift.segments (sift); a write buffer is a `buffer`, `sealed buffer`, `active` or `sealed` one. index_options are the reloptions of the
     indexes, sorted, those of different indexes told apart by ` | ` (`default` when none has any). Empty when there is no sift index: the heap, b-tree and GIN arms have no segments"""
     indexes = all_rows(s, "SELECT am.amname, i.indexrelid, coalesce((SELECT string_agg(o, ';' ORDER BY o) FROM unnest(ic.reloptions) o), '') FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid "
-                          "JOIN pg_am am ON am.oid = ic.relam WHERE am.amname IN ('sift', 'sift_col') AND i.indrelid IN (SELECT oid FROM (%s) t) ORDER BY 2" % subject_oids(table))
+                          "JOIN pg_am am ON am.oid = ic.relam WHERE am.amname IN ('sift', 'sift_col') AND i.indrelid IN (SELECT oid FROM (%s) t) ORDER BY 2" % subject_oids(table), columns=3)
     if not indexes:
         return {}
     counts = [0, 0, 0]
