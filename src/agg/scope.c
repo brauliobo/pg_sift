@@ -161,9 +161,9 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
+	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)
 	{
-		pair_counts(ex, &c);
 		c.key_pairs = (c.pairs + c.scan_pairs) * c.entries / Max(scope_entries(ex), 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
 	}
 	return c;
@@ -191,33 +191,52 @@ patch_price(const SiftScopeRead *rd)
 	return sift_scope_patch_price(&c);
 }
 
+/* ... and with the changed members, at the least a member costs (the pairs of the relations are not known yet) */
+static double
+patch_extra(const SiftScopeRead *rd)
+{
+	return patch_price(rd) + SIFT_SCOPE_MEMBER_INSTR * (double) rd->nexcept;
+}
+
 /*
- * Is the entity path cheaper than the units with the patch and the delta? The units read the scope entries of the keys, the patch reads the rows of the members that changed by member key and the
- * delta copies them (and the rows of the write buffers) for each pair. The entity path lists the members of the keys from the relations of the scope and reads the units of the entity rows, as
- * many as the layout leaves it: both are priced by sift_scope_entity_cheaper (col/scope.h), which the planner calls with its estimates. The members are not listed to price it (the listing is
- * the dearest part of the entity path, and the units read are then those of the zones of the member leaf, which prune a layout that clusters it only): all the units and rows count.
+ * Is the entity path cheaper than the units with the changed members, the patch and the delta? The units read the scope entries of the keys, the changed members are listed and the patch reads the rows of the
+ * members that changed by member key, which the delta copies (with the rows of the write buffers) for each pair; changed and rd: the members the journal lists, and what the read planned of the patch (NULL
+ * before it is planned). The entity path lists the members of the keys from the relations of the scope and reads the units of the entity rows, as many as the layout leaves it: both are priced by
+ * sift_scope_entity_cheaper (col/scope.h), which the planner calls with its estimates. The members are not listed to price it (the listing is the dearest part of the entity path, and the units read are then
+ * those of the zones of the member leaf, which prune a layout that clusters it only): all the units and rows count.
  */
+static bool
+entity_cheaper(AggExec *ex, Snapshot snapshot, uint64 changed, const SiftScopeRead *rd)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	SiftScopeCounts c = unit_counts(ex, snapshot);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
+	bool		cheaper;
+
+	if (rd != NULL)
+		read_counts(sc, &c, rd);
+	c.changed = changed;
+	c.path_rows = unit_rows(entity, NULL, &c.path_units);
+	cheaper = sift_scope_entity_cheaper(&c);
+	sift_colsrc_close(entity);
+	MemoryContextDelete(cx);
+	return cheaper;
+}
+
+/* the extra the changed members, the patch and the delta cost on top of the clean read of the units */
 static bool
 patch_dearer(AggExec *ex, Snapshot snapshot)
 {
-	const SiftAggScope *sc = ex->spec->scope;
+	const SiftScopeRead *rd = ex->scope_rd;
 	SiftScopeCounts c = {0};
-	MemoryContext cx;
-	SiftSrcSource *entity;
 
-	/* the entity path costs at least what listing the pairs does; a patch under half of it leaves the units, which the entries of the keys bound, below the rest in every measured read, and the units are not counted */
+	/* the entity path costs at least what listing the pairs does; changed members and a patch under half of it leave the units, which the entries of the keys bound, below the rest in every measured read, and the units are not counted */
 	pair_counts(ex, &c);
-	if (patch_price(ex->scope_rd) <= sift_scope_entity_price(&c) / 2)
+	c.changed = rd->nexcept;
+	if (sift_scope_members_price(&c) + patch_price(rd) <= sift_scope_entity_price(&c) / 2)
 		return false;
-	cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
-	c = unit_counts(ex, snapshot);
-	read_counts(sc, &c, ex->scope_rd);
-	pair_counts(ex, &c);
-	c.path_rows = unit_rows(entity, NULL, &c.path_units);
-	sift_colsrc_close(entity);
-	MemoryContextDelete(cx);
-	return sift_scope_entity_cheaper(&c);
+	return entity_cheaper(ex, snapshot, rd->nexcept, rd);
 }
 
 /*
@@ -275,13 +294,19 @@ join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c)
 	return sift_scope_units_price(c) > alt_price(sc, alt_keys(sc, c->entries));
 }
 
-/* the changed members past which the join costs less: each costs SIFT_SCOPE_MEMBER_INSTR beyond the price of the clean read (whose counts are c), which the reader need not list */
+/*
+ * the changed members past which the join costs less: the room the clean read leaves under the join, less the journal, over what asking for a member costs; none when the pairs of the relations read whole
+ * (which the read takes for the changed members once they cost more) cost less than the room: the count is then no reason to refuse
+ */
 static uint32
 changed_limit(const SiftAggScope *sc, const SiftScopeCounts *c)
 {
-	double		room = alt_price(sc, alt_keys(sc, c->entries)) - sift_scope_units_price(c);
+	double		room = alt_price(sc, alt_keys(sc, c->entries)) - sift_scope_units_price(c) - SIFT_SCOPE_CHANGED_INSTR,
+				leaf = sift_scope_members_leaf(c);
 
-	return (uint32) Min(Max(room, 0.0) / SIFT_SCOPE_MEMBER_INSTR, (double) PG_UINT32_MAX);
+	if (leaf > 0 && leaf <= room)
+		return PG_UINT32_MAX;
+	return (uint32) Min(Max(room, 0.0) / sift_scope_member_instr(c), (double) PG_UINT32_MAX);
 }
 
 /* the reason EXPLAIN gives for the join the node runs */
@@ -358,7 +383,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return false;
 	}
 	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
-	if (rd->why == NULL && sc->alt == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
 	if (rd->why == NULL)
 		sift_scope_read_rows(rd);

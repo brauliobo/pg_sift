@@ -27,7 +27,7 @@ SELECT t.* FROM base, LATERAL (VALUES
 	('the same pairs for one key: not listed', price(1, true, pairs => 1000, key_pairs => 1000) - setup, 1000),
 	('a changed pair', price(2, true, changed => 1000) - setup, 1000),
 	('an entry left out of the units of a changed read', price(2, true, entries => 1000, changed => 1) - price(2, true, entries => 1000) - price(2, true, changed => 1) + setup, 1000),
-	('a unit of the changed pairs rows', price(1, false, patch_units => 10) - setup, 10),
+	('a unit the changed pairs rows fall in', price(1, false, patch_units => 10, delta_rows => 100000) - price(1, false, delta_rows => 100000), 10),
 	('a fact row looked at to find them', price(1, false, patch_scan_rows => 1000) - setup, 1000),
 	('a copy of the delta', price(1, false, delta_rows => 1000) - setup, 1000)
 ) AS v(label, got, n), LATERAL term(v.label, v.got, 0, v.n::float8) t;
@@ -118,7 +118,7 @@ CREATE FUNCTION churn(n int) RETURNS void LANGUAGE sql AS $$
 	INSERT INTO tenant_scope SELECT * FROM d $$;
 SELECT churn(5);
 SELECT '5 pairs changed' AS state, * FROM outcome('{1,2,3}');
--- 700 are more than the join leaves the read of 3 keys and fewer than the cap of the rows of the table (763): the join answers, and the reason is the count
+-- 700 are more than the join leaves the read of 3 keys and fewer than the cap of the rows of the table (763): the pairs of the relation are read whole for them (cheaper than asking for each), and the join answers on the price
 SELECT churn(700);
 SELECT '700 pairs changed' AS state, * FROM outcome('{1,2,3}');
 -- the cap counts the distinct dim_a_ids, not the records of the journal: 700 changed by 1,410 records are 700

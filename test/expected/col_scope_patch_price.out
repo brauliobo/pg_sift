@@ -78,15 +78,15 @@ INSERT INTO membership SELECT dim_a_id, 1 FROM fresh WHERE n BETWEEN 11 AND 100;
 SELECT '100 dim_b' AS state, * FROM probe(1);
    state   |    idx    | verdict |               route               | patched_keys | patched_percent_of_table 
 -----------+-----------+---------+-----------------------------------+--------------+--------------------------
- 100 dim_b | by_member | same    | patch dearer than the entity path |            0 |                        0
+ 100 dim_b | by_member | same    | units                             |          100 |                        3
  100 dim_b | by_time   | same    | patch dearer than the entity path |            0 |                        0
 (2 rows)
 
 SELECT '100 dim_b, other group' AS state, * FROM probe(2);
-         state          |    idx    | verdict |               route               | patched_keys | patched_percent_of_table 
-------------------------+-----------+---------+-----------------------------------+--------------+--------------------------
- 100 dim_b, other group | by_member | same    | units                             |            4 |                        0
- 100 dim_b, other group | by_time   | same    | patch dearer than the entity path |            0 |                        0
+         state          |    idx    | verdict | route | patched_keys | patched_percent_of_table 
+------------------------+-----------+---------+-------+--------------+--------------------------
+ 100 dim_b, other group | by_member | same    | units |            4 |                        0
+ 100 dim_b, other group | by_time   | same    | units |            4 |                        0
 (2 rows)
 
 -- the patch is only taken when it is cheaper: the testing setting takes it whatever it costs, and the answer is the same

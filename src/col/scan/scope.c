@@ -271,8 +271,8 @@ probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnPr
 	sift_conn_probe_close(&s);
 }
 
-/* A pair read from the leaves of the journal index of the relation costs about this (the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is 13 times that), a probe of the btree about 3,500 */
-#define LEAF_PAIR_NS	10
+/* A pair read from the leaves of the journal index of the relation costs about this (138 instructions: 16 million for 116,000 pairs; the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is three times that), a probe of the btree about 3,500 */
+#define LEAF_PAIR_NS	45
 #define SCAN_NS		130
 #define PROBE_NS		3500
 
