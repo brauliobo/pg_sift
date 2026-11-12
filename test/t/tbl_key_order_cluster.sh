@@ -106,7 +106,7 @@ BIN=$(pg_config --bindir)
 	-U postgres -p "$(port a)" -P "$(port up)" -s "$(dir up)/sock" >"$(dir up)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade of the database with a key_order succeeds" test $upgraded -eq 0
-[[ $upgraded -eq 0 ]] || diag "$(tail -n 15 "$(dir up)/pg_upgrade.log")"
+[[ $upgraded -eq 0 ]] || upgrade_failed up
 node_start up || bail "upgraded cluster did not start"
 check "the rows and the option are those of the source after pg_upgrade" test "$(rows up)|$(sql up "SELECT sift.table_get_option('t', 'key_order')" | tail -n 1)" == "$before|k"
 check "the upgraded table rewrites sorted" test "$(sql up "INSERT INTO t SELECT 4000000 + i, i % 500, now(), 'u' FROM generate_series(1, 5000) i" "VACUUM FULL t" >/dev/null 2>&1; sorted up)" == t

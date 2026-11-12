@@ -111,7 +111,7 @@ BIN=$(pg_config --bindir)
 	-U postgres -p "$(port a)" -P "$(port up)" -s "$(dir up)/sock" >"$(dir up)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade of the databases with options succeeds" test $upgraded -eq 0
-[[ $upgraded -eq 0 ]] || diag "$(tail -n 15 "$(dir up)/pg_upgrade.log")"
+[[ $upgraded -eq 0 ]] || upgrade_failed up
 node_start up || bail "upgraded cluster did not start"
 check "the options of every database are the same after pg_upgrade" test "$(for db in postgres r1 r3; do sqld up $db "$QO"; done)" == "$before"
 check "the sift_tables have the OIDs they had" test "$(sqld up postgres "$OIDS")" == "$oids_before"

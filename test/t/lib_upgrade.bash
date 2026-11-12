@@ -6,15 +6,6 @@ qs() { PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STO
 quiet() { "$@" >/dev/null; }
 PG_BINS="postgres initdb pg_ctl pg_upgrade vacuumdb pg_resetwal pg_controldata pg_dump pg_dumpall pg_restore pg_checksums pg_config psql"
 
-# upgrade_failed NODE: after a failed pg_upgrade into NODE, the tail of its log and the error lines of the logs under pg_upgrade_output.d (a restore command is
-# echoed whole after its error, so the tail of a dump log is the end of the statement, not the error); the logs are copied next to pg_upgrade.log, which outlives the data directory
-upgrade_failed() {
-	local d logs
-	d=$(dir "$1"); logs=$(ls -d "$d"/data/pg_upgrade_output.d/*/log 2>/dev/null | tail -n 1)
-	[[ -z $logs ]] || cp -r "$logs" "$d/upgrade-logs"
-	diag "$(tail -n 20 "$d/pg_upgrade.log"; grep -hE -A2 'ERROR|error:|TRAP|FATAL|PANIC' "$d"/upgrade-logs/*.log 2>/dev/null | head -n 40)"
-}
-
 # overlay PG_CONFIG DEST ROOT: the server of PG_CONFIG at its absolute paths under DEST, pg_sift of the install ROOT in it
 overlay() {
 	local bin lib share f

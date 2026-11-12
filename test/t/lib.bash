@@ -302,6 +302,15 @@ node_leakcheck() {
 	return $rc
 }
 
+# upgrade_failed NODE: after a failed pg_upgrade into NODE, the tail of its log and the error lines of the logs under pg_upgrade_output.d (a restore command is
+# echoed whole after its error, so the tail of a dump log is the end of the statement, not the error; loadable_libraries.txt when the library check failed); the logs are copied next to pg_upgrade.log, which outlives the data directory
+upgrade_failed() {
+	local d logs
+	d=$(dir "$1"); logs=$(ls -d "$d"/data/pg_upgrade_output.d/*/log 2>/dev/null | tail -n 1)
+	[[ -z $logs ]] || cp -r "$logs" "$d/upgrade-logs"
+	diag "$(tail -n 20 "$d/pg_upgrade.log"; cat "$d"/data/pg_upgrade_output.d/*/loadable_libraries.txt 2>/dev/null; grep -hE -A2 'ERROR|error:|TRAP|FATAL|PANIC' "$d"/upgrade-logs/*.log 2>/dev/null | head -n 40)"
+}
+
 finish() {
 	local name out
 	for name in "${NODES[@]}"; do

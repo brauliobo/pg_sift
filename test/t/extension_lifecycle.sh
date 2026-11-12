@@ -465,7 +465,7 @@ BIN=$(pg_config --bindir)
 	-U postgres -p "$(port life)" -P "$(port up)" -s "$(dir up)/sock" >"$(dir up)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade of the databases with sift indexes succeeds" test $upgraded -eq 0
-[[ $upgraded -eq 0 ]] || diag "$(cat "$(dir up)"/data/pg_upgrade_output.d/*/loadable_libraries.txt; tail -n 5 "$(dir up)"/data/pg_upgrade_output.d/*/log/pg_upgrade_server.log)"
+[[ $upgraded -eq 0 ]] || upgrade_failed up
 node_start up || bail "upgraded cluster did not start"
 for db in $DBS; do
 	check "upgraded $db verifies and keeps its results" test "$(vq up $db "SELECT fp() = seq()")" == t
