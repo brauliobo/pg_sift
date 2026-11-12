@@ -110,6 +110,10 @@ CREATE FUNCTION sift._test_aggkern_level() RETURNS text
 CREATE FUNCTION sift._test_intids(seed int8, cases int4, OUT bad int8, OUT paged int8, OUT hashed int8, OUT up int8, OUT down int8)
 	AS 'MODULE_PATHNAME', 'sift_test_intids' LANGUAGE C STRICT;
 
+-- The plan spec of a parallel worker (src/agg/spec_pack_test.c): a double through pack, text and unpack, as its bits.
+CREATE FUNCTION sift._test_spec_pack_bits(bits int8) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_spec_pack_bits' LANGUAGE C STRICT;
+
 -- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
