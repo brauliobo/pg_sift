@@ -22,6 +22,7 @@
 #include "storage/lmgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
@@ -61,20 +62,33 @@ int64		sift_maint_wait_max_us = 0;
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
 StaticAssertDecl(2 * SIFT_MERGE_MAX_FANIN <= SIFT_MAX_SEGMENTS, "a merge of the largest merge_fanin overflows a directory");
 
+static Oid	options_index = InvalidOid;
+static TransactionId options_xid = InvalidTransactionId;
+
+void
+sift_maint_options_written(Relation index)
+{
+	options_index = RelationGetRelid(index);
+	options_xid = GetTopTransactionId();
+}
+
+/* The lock a maintainer took after the commit of an option change reads the options of the commit, not those the cached state of its backend held while it waited */
 static bool
 maint_lock_mode(Relation index, bool wait, LOCKMODE mode)
 {
 	if (wait)
-	{
 		LockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
-		return true;
-	}
-	return ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
+	else if (!ConditionalLockPage(index, SIFT_MAINT_LOCK_BLKNO, mode))
+		return false;
+	AcceptInvalidationMessages();
+	return true;
 }
 
 static void
 maint_unlock_mode(Relation index, LOCKMODE mode)
 {
+	if (options_index == RelationGetRelid(index) && TransactionIdEquals(options_xid, GetTopTransactionIdIfAny()))
+		return;
 	UnlockPage(index, SIFT_MAINT_LOCK_BLKNO, mode);
 }
 

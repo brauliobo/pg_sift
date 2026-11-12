@@ -21,6 +21,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+#include "bm25/maint.h"
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/keycols/keycols_int.h"
@@ -149,6 +150,7 @@ sift_col_set_option(Relation index, const char *name, const char *value)
 	ReleaseSysCache(tuple);
 	table_close(pgclass, RowExclusiveLock);
 	CommandCounterIncrement();
+	sift_maint_options_written(index);
 }
 
 void
