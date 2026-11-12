@@ -229,7 +229,45 @@ fact once for each of its keys, and the reads of a key go by unit), which the re
 
 These rows are of the lab of the reuse measurements below. The growth in percent follows the size of the entity index, which follows the data: a build on the fixture of "What it costs" scaled to 500,000 events (25,000 members, 200 tenants, 2.70 entries a row, one 5-column index, serial build) went from 6,938,624 to 20,152,320 bytes (+190%; 9.8 bytes an entry where the row above has 23), 1.2 s to 3.6 s and 6.9 to 20.2 MB of WAL. The +254% and +255% of the table below are of the lab of the by-address study, whose entity index at 500,000 events is 12.4 MB.
 
-**Writes.** The statements that write the facts cost the same with and without the scope (10,000 inserted, updated or deleted facts, 500,000 events, 2.7 entries a row: 537, 1,021 and 493 M instructions either way); the work is deferred to the promotion that applies the journal, which costs 470 M instructions and 1.1 MB of WAL against 74 M and 0.3 MB (+396 M, +0.8 MB for each 10,000 facts); 100 pairs added to a key cost 0.5 M more. The promotion was measured at 2.7 entries a row only.
+**Writes.** The statement that writes the facts costs the same with and without the scope: the rows wait in the write buffer of the index, and the scope entries are written when the buffer is promoted, in the same switch of the directory. Ten thousand inserted facts (a 2,400,000-row table, 1.05 entries a row; the instructions of the backend; the WAL of the statement, about 4 MB for the heap and its two b-trees, varies by 0.3 MB from run to run, so it is not a difference):
+
+| 10,000 facts | no `sift_col` index | entity index | with the scope |
+|---|---:|---:|---:|
+| INSERT statement | 224 M instr | 380 M | 360 M |
+| promotion of the buffer | | 224 M, 0.24 MB WAL | 404 M, 0.39 MB WAL (+180 M, +0.15 MB) |
+| promotion at 9,600,000 rows | | 217 M, 0.26 MB | 463 M, 0.48 MB (+246 M, +0.22 MB) |
+| promotion at 500,000 rows, 2.7 entries a row | | 74 M, 0.3 MB | 470 M, 1.1 MB (+396 M, +0.8 MB) |
+
+So the promotion is where the scope is paid: +180 to +246 M instructions and +0.15 to +0.22 MB of WAL for each 10,000 facts at 1.05 entries a row, +396 M and +0.8 MB at 2.7, and it grows with the entries a row and little with the size of the table (+180 M at 2,400,000 rows, +246 M at 9,600,000). UPDATE and DELETE of the facts were measured at 2.7 entries a row only (1,021 and 493 M instructions for 10,000, the same with and without the scope).
+A pair edit costs its journal record: 100 pairs ended by one UPDATE took 18 to 21 M instructions and 40 to 46 KB of WAL with the journal index, 13 M and 16 KB without it; 100 pairs inserted 6 to 7 M and 35 KB, against 7 M and 14 KB (9,600,000 rows). That is about 220 bytes of WAL for each pair edit over the 32-byte record, which includes the pages of the journal. Reuse costs nothing to write.
+
+**An access model of nine tenants.** A table of facts (a 13-column index, one scope of two hops: grants to a member directly and to a group of members, 1,674 members, 1.05 entries a row) of nine tenants of 2.2% to 36% of the facts, the nine requests of a dashboard (sum and count by kind and by month, count by kind, latest 20, top 20 members, distinct members by month, by member, a filter on two columns, a date range, a count over a nested array); the statement is written with the view of the pairs and is the same in the three columns. Geometric mean over the nine requests, instructions of the backend (warm), shared buffers hit (warm) and blocks read with the shared buffers evicted (cold); every cell returned the same rows in the three arms. The larger tables are disjoint copies of the 2,400,000-row table (the shares of the tenants are the same), not other data:
+
+| facts | tenant | join (member keys) | scope index | stock PostgreSQL (`sift.enable_agg = off`) | index: entity / with the scope, build, WAL |
+|---:|---:|---|---|---|---|
+| 100,000 | 36% | 12.8 M instr, 123 hit, 85 cold | 4.7 M, 60, 32 | 139 M | 3.2 / 5.5 MB (+75%), 0.6 / 0.9 s, 3.1 / 5.4 MB |
+| 100,000 | 2.2% | 12.9 M, 128, 92 | 2.7 M, 29, 12 | 85 M | |
+| 500,000 | 36% | 36.1 M, 429, 312 | 10.9 M, 191, 123 | 705 M | 14.6 / 26.4 MB (+81%), 2.7 / 7.6 s, 14.6 / 26.5 MB |
+| 500,000 | 2.2% | 30.3 M, 394, 302 | 3.4 M, 46, 29 | 417 M | |
+| 2,400,000 | 36% | 94.9 M, 1,127, 863 | 34.4 M, 747, 510 | 3,463 M | 60.9 / 110.9 MB (+82%), 13.8 / 17.7 s, 61 / 111 MB |
+| 2,400,000 | 12% | 84.9 M, 1,159, 943 | 14.4 M, 324, 243 | | |
+| 2,400,000 | 2.2% | 47.1 M, 673, 548 | 5.8 M, 130, 98 | 2,085 M | |
+| 4,800,000 | 36% | 254 M, 3,222, 2,259 | 62.1 M, 1,305, 874 | 6,844 M | 110.8 / 208.8 MB (+88%), 20.2 / 41.9 s, 111 / 210 MB |
+| 4,800,000 | 2.2% | 98.9 M, 1,295, 852 | 8.4 M, 148, 109 | 4,167 M | |
+| 9,600,000 | 36% | 477 M, 6,194, 1,639 | 117 M, 2,535, 1,775 | 9,471 M | 223.1 / 418.3 MB (+88%), 32.7 / 60.7 s, 224 / 422 MB |
+| 9,600,000 | 2.2% | 184 M, 2,456, 1,653 | 13.9 M, 286, 227 | 499 M (an index plan) | |
+
+The scope index read fewer instructions than the join in all 243 cells of 100,000, 500,000 and 2,400,000 facts (9 tenants, 9 requests each), from 0.66 (the 36% tenant, count by kind) to 0.05 of the join, and the cold blocks of the two tenants shown fell by 1.7 to 10 times; the saving grows with the table (the 2.2% tenant: 10 M instructions at 100,000 facts, 170 M at 9,600,000), and no tenant share measured, up to 36%, turned it into a loss when the pairs were unchanged. A tenant of 36% saves 3 to 4 times the instructions and reads about as many cold blocks at 9,600,000 facts (1,775 against 1,639: the join reads the entity units that hold the member keys, the scope the units of the key). The requests that gain least are the count by kind, by member and the top 20 members (0.57 to 0.66 of the join at the 36% tenant); the date range and the latest 20 gain most (geometric means 0.09 and 0.13 at 2,400,000 facts). The statements of the 4,800,000 and 9,600,000 rows were read for four tenants; the latest 20 of those two sizes was measured with the scope read first in the session, because a scope read of it that follows the join read of the same statement in one session returned other rows there (a known defect, under investigation); every other cell is equal in any order.
+
+**After writes, the same table (2,400,000 facts).** 600 facts in the write buffer and 20 pair edits (10 of the 36% tenant's direct pairs ended, 10 of its members granted to the 2.2% tenant, 5 members of a group of the 27% tenant left it and 5 joined it); the maintenance had not rewritten the segments (`sift.col_auto_merge = off` in this lab), the rows are the same in all cells. Instructions of the backend, scope against join:
+
+| tenant | what changed | scope | join | the scope read |
+|---|---|---:|---:|---|
+| 36% | 10 of its pairs ended | 13 to 224 M | 13 to 223 M | the join, `join is cheaper for 1 key` (ratio 1.00 to 1.04) |
+| 27% | 5 members of a group left, 5 joined | 51 to 166 M | 51 to 239 M | patch and delta: 0.43 to 0.73 for sums, distinct, nested array; 1.08 to 1.15 for latest 20 (`top-n, changed pairs`) and top 20 members |
+| 2.2% | received 10 members of the 36% tenant | 32 to 150 M | 25 to 107 M | **the scope patch, dearer than the join**: 1.3 to 4.0 times, 97.5 against 27.9 M for the top 20 members, 105.0 against 26.4 M for the filter (the patch reads the 22,262 rows of the 10 members, 3,300 hits against 500) |
+
+A tenant that received members is the case where the planner chose the scope read and the join was the cheaper one: the price of the patch is below its measured cost when the changed members hold a large part of the facts of the tenant (a reproduction is kept with the notes of the item). Until a rewrite (`REINDEX`, or the maintenance when the share of changed members or the cost of the reads calls for it) a tenant with changed pairs reads as the join at best and as 1.3 to 4 times it at worst, and a table where members of large tenants move often gets less of the saving.
 
 **Building at the same time.** The build of a `sift_col` index that tracks changes installs the two triggers of its log on the table when it has read it, which takes `ShareRowExclusiveLock`
 while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
@@ -280,8 +318,9 @@ The expected case needs nothing of what follows. The edges, each with what happe
 Tenant size is not a limit: in the table of [the expected case](#the-expected-case) and of [the member keys](#without-a-scope-index-replicate-or-reuse) the scope index read fewer instructions at every tenant share measured, 0.1% to 33% of the events. What differs is the request. At 2,000,000 events and the 33% tenant the member keys cost 13.3 times the instructions of the scope index for sums by kind, 10.2 for the same in one month, 6.9 for the latest 20 and 2.5 for a filter on the value; the gain is smallest for the top 20 members (1.0, a tie) and for distinct members by month (1.4), the requests that read rows of the largest keys. At 0.1% the same two gain 6.6 and 4.6 times.
 
 - **Latest-N and top-N and changed pairs.** A top-N of the scan (`ORDER BY .. LIMIT n`, which is what a latest-N read is) cannot take the patch or the delta of a changed pair: while pairs of the keys changed since the segments were written, or rows of their members wait in the write buffer, it reads the entity rows and says `Scope Fallback: top-n, changed pairs` (test `agg_scope_param_keys`).
-- **Small tables.** At 100,000 events the member keys cost 2.32 to 5.09 M instructions and the scope index 0.90 to 1.93 M (a saving of 1.4 to 3.2 M); [the break-even](#break-even-the-multiplicity-limit) at that size is 2.0 entries a row.
+- **Small tables.** At 100,000 events the member keys cost 2.32 to 5.09 M instructions and the scope index 0.90 to 1.93 M (a saving of 1.4 to 3.2 M) on the six requests of the first table; on the nine requests of [the access model](#what-it-costs) at 100,000 facts the join costs 12.8 to 16 M (2 to 5 ms) and the scope index 2.7 to 4.7 M (0.4 to 1.9 ms); [the break-even](#break-even-the-multiplicity-limit) at that size is 2.0 entries a row.
 - **Members in many keys.** Above 3 entries a row `CREATE INDEX` refuses the scope and says the size it would have had; the join answers, at the cost of [the member keys](#without-a-scope-index-replicate-or-reuse) and nothing more. Leave a scope undeclared too when the extra size, build and the 0.8 MB of WAL for each 10,000 facts of promotion are not worth the saving.
+- **Changed pairs of a tenant that received members.** Until the segments are rewritten the read of a changed key patches the members that changed; when those hold much of the tenant's facts the patch costs 1.3 to 4 times the join and the planner still chooses it ([measured](#what-it-costs)).
 - **The two plans.** With both a scope index and an entity index on a table, the planner chose the scope read in all 48 cells measured (2,000,000 events at 2.7 entries a row and 500,000 at 5.4, four tenants, six requests), and it was never more than 1% dearer than the join read measured on its own (the closest cells: top 20 of the 33% key, 82.8 against 85.3 M instructions at 2,000,000 events, and 22.3 against 22.1 M at 500,000 events and 5.4 entries a row).
 
 ### Pairs that are soft deleted: a partial unique btree
@@ -498,7 +537,7 @@ make; they differ in what they keep.
 | what is stored | the rows replicated by scope key inside the segments of the index of the table | a second table of the facts, once for each scope key of the member, with a `sift_col` index keyed by the scope key |
 | size (100,000 events, 5,000 entities, tenants and groups: all tables and indexes of the fixture, 13.7 MB with the plain index) | 17.9 MB with one index of two scopes (+4.2 MB) | 35.0 MB with the two copies (+21.3 MB) |
 | WAL of the builds (same fixture; 2.6 MB for the plain index) | 6.7 MB | 24.6 MB |
-| writes to the facts | the statements cost what the index costs (the write buffer of the index; the pairs are read through their journal); the scope work is deferred to the promotion ([What it costs](#what-it-costs)) | a statement trigger applies the change to the copy in the statement |
+| writes to the facts | the statements cost what the index costs (the write buffer of the index; the pairs are read through their journal); the scope work is deferred to the promotion (+180 to +246 M instructions and +0.15 to +0.22 MB of WAL for each 10,000 facts at 1.05 entries a row, +396 M and +0.8 MB at 2.7: [What it costs](#what-it-costs)) | a statement trigger applies the change to the copy in the statement |
 | writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
 | a pair table that is a view | no: the pairs are a heap table with a btree on its two columns, unique or not | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
 | the planner uses it | the join forms of the statement, as the application writes them (the recognition above) | the copy is a table: `WHERE tenant_id = k` on it |
