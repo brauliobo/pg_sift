@@ -57,6 +57,7 @@ BEGIN
 	ELSIF current_setting('plangate.lane', true) LIKE '%@%' THEN
 		anyband := true; plan := 'either';	-- a size with no bands recorded (plangate.sh --rows): the results and the loses are checked
 	END IF;
+	IF band[1] = 'any' THEN anyband := true; band := ARRAY['-', NULL]; END IF;	-- the tag `normal any`: a scan path that exists on some minors of the server only
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
 	err := coldiff.materialize(q, 'pg_native');
