@@ -99,11 +99,16 @@ DEALLOCATE ALL;
 SELECT format(c.q, 'copy_parts', '$1') || ' ORDER BY 1' AS q FROM classes c WHERE c.n = 1 \gset
 EXPLAIN (COSTS OFF) :q \bind 1 \g
 :q \bind 3 \g
-EXPLAIN (COSTS OFF) :q \bind 99 \g
+-- the plan for the value, as a driver's Bind makes it, without the `Replaces:` line PostgreSQL 19 prints for a scan a Result stands in for
+CREATE FUNCTION bound_plan(q text, k int) RETURNS TABLE ("QUERY PLAN" text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY EXECUTE 'EXPLAIN (COSTS OFF) ' || q USING k;
+END $$;
+SELECT * FROM bound_plan(:'q', 99) p WHERE "QUERY PLAN" !~ 'Replaces:';
 
 SELECT sift.scope_drop('copy_single');
 SELECT sift.scope_drop('copy_parts');
-DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text);
+DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text), bound_plan(text, int);
 DROP TABLE classes, facts, pairs;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

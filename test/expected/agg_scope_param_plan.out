@@ -176,7 +176,12 @@ EXPLAIN (COSTS OFF) :q \bind 1 \g
     6 |    58 | 2911.90
 (7 rows)
 
-EXPLAIN (COSTS OFF) :q \bind 99 \g
+-- the plan for the value, as a driver's Bind makes it, without the `Replaces:` line PostgreSQL 19 prints for a scan a Result stands in for
+CREATE FUNCTION bound_plan(q text, k int) RETURNS TABLE ("QUERY PLAN" text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY EXECUTE 'EXPLAIN (COSTS OFF) ' || q USING k;
+END $$;
+SELECT * FROM bound_plan(:'q', 99) p WHERE "QUERY PLAN" !~ 'Replaces:';
               QUERY PLAN              
 --------------------------------------
  GroupAggregate
@@ -199,7 +204,7 @@ SELECT sift.scope_drop('copy_parts');
  
 (1 row)
 
-DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text);
+DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text), bound_plan(text, int);
 DROP TABLE classes, facts, pairs;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
