@@ -602,7 +602,7 @@ engine_open_rest(AggExec *ex)
 static SiftSrcSource *
 scope_source(AggExec *ex, Snapshot snapshot)
 {
-	SiftSrcSource *src = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->view);
+	SiftSrcSource *src = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->scope_rd->view);
 
 	sift_colsrc_scope_delta(src, ex->scope_rd);
 	return src;

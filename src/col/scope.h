@@ -203,6 +203,7 @@ typedef struct SiftScopeBuffer
 
 struct SiftDirSnapshot;
 struct SiftScopeDelta;
+extern void *sift_col_scope_view(Relation heap, const struct SiftDirSnapshot *dir);
 extern SiftScopeBuffer *sift_scope_buffers(Relation index, const struct SiftDirSnapshot *dir, int *n);
 extern uint64 sift_scope_buffers_rows(const SiftScopeBuffer *bufs, int nbufs);
 /* The member keys of the rows of the buffers (not distinct, not sorted); *n of them */
@@ -246,6 +247,7 @@ typedef struct SiftScopeRead
 	uint64		buffer_rows;	/* the live rows of the write buffers */
 	struct SiftScopeDelta *delta;	/* the rows of the buffers and the segment rows of the patched members, copied for each of the pairs their member has with the keys: what the source reads of them */
 	uint64		delta_rows;		/* ... and how many copies they are */
+	void	   *view;			/* the directory the read took, as the view the source of the scope segments opens on (sift_col_scope_view): the delta and the units are of one directory */
 } SiftScopeRead;
 
 /*

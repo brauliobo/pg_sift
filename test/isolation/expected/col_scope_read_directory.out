@@ -1,0 +1,35 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2l s1q s3p s2u s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sd;
+count
+-----
+ 6300
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7003);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, stored FROM iso_sd_q(7003); <waiting ...>
+step s3p: SELECT sift.col_promote('iso_sd_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2u: SELECT pg_advisory_unlock(7003);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1q: <... completed>
+agree|stored
+-----+------
+t    |t     
+(1 row)
+
+step s1c: COMMIT;

@@ -169,6 +169,8 @@ sift_seg_is_scoped(const SiftSegEntry *e)
 
 /* sift_dir_read for one family of readers: the entity family (everything but the scope segments: the readers of the rows of the index), or the scope segments alone (no write buffer, no log) */
 extern void sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope);
+/* ... of a directory read already: keeps the segments of that family */
+extern void sift_col_dir_family(SiftDirSnapshot *snap, bool scope);
 
 /* Index of the first unit whose id >= id, nsb if none (the id of a unit is a superblock of a segment cut by superblock and a sequence number of one cut by key) */
 extern uint32 sift_cseg_unit_lower_bound(const SiftColSegment *seg, uint32 id);

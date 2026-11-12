@@ -884,6 +884,8 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
+	rd->view = sift_col_scope_view(heap, dir);
+	SIFT_COL_OPEN_GATE();
 	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
 	return rd;
 }
