@@ -31,6 +31,8 @@ extern PGDLLIMPORT int64 sift_maint_wait_max_us;
 /* The maintenance lock (LockPage on SIFT_MAINT_LOCK_BLKNO), shared by the BM25 and the column maintenance: wait = false returns false when busy */
 extern bool sift_maint_lock(Relation index, bool wait);
 extern void sift_maint_unlock(Relation index);
+/* The transaction wrote an option of index (a catalog update that others see at its commit): it keeps the maintenance lock to its end, and whoever takes the lock next reads the options again */
+extern void sift_maint_options_written(Relation index);
 
 /*
  * SiftDirMutator that replaces segments in the directory: the generations old[0..nold) are dropped (their totals leave the metapage) and neu, if any,
