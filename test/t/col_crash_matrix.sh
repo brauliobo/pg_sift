@@ -7,11 +7,11 @@
 # run). After the restart (wal_consistency_checking = generic: crash recovery compares every page it rebuilds with the page the primary wrote) the
 # indexes verify (heapallindexed), the store checks pass, the answers through the indexes equal the plain plan and what the table held before, and
 # the operation, run again, completes and leaves it the same. An index with a scope (the scope_* scenarios) also has the scope entries of every row of its entity segments after the restart: the
-# promotion, the merge and the refill of its scope segments are each one switch of the directory. SIFT_CRASHMX_ITERS caps the number of crashes (default 60, 20 quick: the first and the last update of every operation).
+# promotion, the merge and the refill of its scope segments are each one switch of the directory. SIFT_CRASHMX_ITERS caps the number of crashes (default 70, 20 quick: the first and the last update of every operation).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 
-ITERS=$(knob SIFT_CRASHMX_ITERS 60 20)
+ITERS=$(knob SIFT_CRASHMX_ITERS 70 20)
 FULL=$(knob SIFT_CRASHMX_FULL 1 "")
 node_init cm 1 "wal_consistency_checking = 'generic'
 autovacuum = off
@@ -42,6 +42,10 @@ SCOPE="$GP; $SCOPEIX"
 scope_check() { # the highest id of a row that is in an entity segment
 	echo "CREATE OR REPLACE FUNCTION scope_missing() RETURNS bigint LANGUAGE plpgsql AS \$f\$ BEGIN RETURN (SELECT count(*) FROM (SELECT d.ctid, p.t FROM docs d JOIN gp p USING (g) WHERE d.id <= $1 EXCEPT SELECT tid, key::int FROM sift._test_col_scope_entries('docs_sc')) m); END \$f\$"
 }
+# a key_cut index in partitions of 512 kB whose rolling rewrite then runs at 64 kB: each partition is a step that writes its window as several pieces in one switch of the directory (statements of a setup split at @@: a VACUUM
+# cannot be in a transaction)
+ROLL="INSERT INTO docs SELECT i, i % 9, i % 100, md5(i::text) FROM generate_series(6001, 100000) i@@CREATE INDEX docs_ck ON docs USING sift_col (id, g, n, body) WITH (key_cut = 'n', dead_rewrite_pct = 100)"
+ROLL+="@@SET sift.test_col_net = off@@SET sift.col_auto_merge = on@@SET sift.col_auto_merge_partition_kb = 512@@UPDATE docs SET g = g + 1 WHERE id % 7 = 0@@VACUUM docs@@SELECT sift.col_maintain('docs_ck')@@UPDATE docs SET g = g + 1 WHERE id % 5 = 0@@VACUUM docs"
 TBL="CREATE TABLE tbl (id int, g int, n int) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE tbl_h (id int, g int, n int)"
 
 # scenario ~ setup (after the base table and its rows) ~ the operation
@@ -58,6 +62,7 @@ SCENARIOS=(
 	"scope_refill~$SCOPE; $(scope_check 8000); $(more 6001 8000); SELECT sift.col_promote('docs_sc')~UPDATE gp SET t = t; SELECT sift.col_maintain('docs_sc')"
 	"vacuum~$BM25; $COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"col_net~$COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
+	"col_roll~$ROLL~SET sift.test_col_net = off; SET sift.col_auto_merge = on; SET sift.col_auto_merge_partition_kb = 64; SELECT sift.col_maintain('docs_ck')"
 	"tbl_seal~$TBL; INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; DELETE FROM tbl WHERE id % 5 = 0; DELETE FROM tbl_h WHERE id % 5 = 0~VACUUM tbl"
 )
 
@@ -91,7 +96,7 @@ healthy() { # the indexes verify and the answers through them are the plain plan
 }
 fresh() { # SETUP
 	sql cm "DROP TABLE IF EXISTS docs, tbl, tbl_h, gp CASCADE" "$BASE" >/dev/null || return 1
-	[[ -z $1 ]] || sql cm "$1" >/dev/null || return 1
+	[[ -z $1 ]] || { IFS=$'\x1f' read -ra stmts <<<"${1//@@/$'\x1f'}"; sql cm "${stmts[@]}" >/dev/null; } || return 1
 	REF=$(answers PLAIN)
 }
 await_exit() { # PID
