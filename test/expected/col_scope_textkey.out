@@ -264,3 +264,6 @@ SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', tr
             |            | 
 (1 row)
 
+DROP FUNCTION states(), same(text), rows_md5(text), run_of(text), label(text);
+DROP TABLE forms, events, tenant_scope, var_events, var_scope, uuid_events, uuid_scope, my_tenants CASCADE;
+DROP EXTENSION pg_sift;

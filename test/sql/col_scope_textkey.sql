@@ -167,3 +167,7 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'IN, nested IN') ORDER BY name COLLATE "C";
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true);
+
+DROP FUNCTION states(), same(text), rows_md5(text), run_of(text), label(text);
+DROP TABLE forms, events, tenant_scope, var_events, var_scope, uuid_events, uuid_scope, my_tenants CASCADE;
+DROP EXTENSION pg_sift;
