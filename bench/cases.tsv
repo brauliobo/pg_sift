@@ -471,3 +471,6 @@ group_split_lateral	the groups of a row's entity as a lateral sub-select over a 
 group_split_entities	the request over a set of keys with their groups in a CTE	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
 lookup_probe_partial	a join to a table whose only btree on the join column is partial (live links) is a probe of it for each key the scan meets	events	-	Lookup Joins: sift_probe	native	whole:sift.agg_probe_rewrite = off	ms	faster33	no	-
 group_split_unique	the groups of a row's entity over a link table that holds each (group, entity) pair once are joined once	events	-	Custom Scan \(SiftAgg\)	native	-	ms,minstr	faster33	no	-
+scope_union_group_key	for several keys, for every key and with the key as a group key	events	-	Scope Group Key	native	join:sift.agg_scope = off	ms	faster33	no	-
+scope_union_join_keys	for several keys, for every key and with the key as a group key	events	-	Scope Keys: 10	native	join:sift.agg_scope = off	ms	faster33	no	-
+scope_array_members	are read from the scope units: the planner hook also plans the statement	events	-	Scope Keys: 1	native	join:sift.agg_scope = off	ms	faster33	no	-
