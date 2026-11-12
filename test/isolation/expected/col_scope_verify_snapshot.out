@@ -1,0 +1,35 @@
+Parsed test spec with 2 sessions
+
+starting permutation: rverify
+step rverify: SELECT scope_key, problem, detail FROM sift.col_scope_verify('iso_facts_col', 50) ORDER BY scope_key;
+scope_key|problem|detail
+---------+-------+------
+(0 rows)
+
+
+starting permutation: rbegin wedit rverify rend rverify rsetting
+step rbegin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS snapshot_taken FROM iso_facts WHERE id = 1;
+snapshot_taken
+--------------
+             1
+(1 row)
+
+step wedit: BEGIN; DELETE FROM iso_pairs WHERE tenant_id = 2; INSERT INTO iso_pairs SELECT m, 2 FROM generate_series(1, 40) m ON CONFLICT DO NOTHING;
+		  UPDATE iso_facts SET dim_a_id = 1 + dim_a_id % 120 WHERE id % 7 = 0; DELETE FROM iso_facts WHERE id % 11 = 0; COMMIT;
+step rverify: SELECT scope_key, problem, detail FROM sift.col_scope_verify('iso_facts_col', 50) ORDER BY scope_key;
+scope_key|problem|detail
+---------+-------+------
+(0 rows)
+
+step rend: COMMIT;
+step rverify: SELECT scope_key, problem, detail FROM sift.col_scope_verify('iso_facts_col', 50) ORDER BY scope_key;
+scope_key|problem|detail
+---------+-------+------
+(0 rows)
+
+step rsetting: SHOW sift.enable_agg;
+sift.enable_agg
+---------------
+on             
+(1 row)
+

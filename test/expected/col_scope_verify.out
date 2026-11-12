@@ -1,0 +1,175 @@
+-- sift.col_scope_verify: the scope index against the plain join for a sample of scope keys. A clean index gives no row; state the journal did not hear of (the testing mutant
+-- sift.test_no_track: the statement triggers of the pairs' journal write no record, as a bug of the tracking would) gives 'differs' for the keys whose answer changed and for those only;
+-- a rebuild repairs it; a key not read from the stored units (a CREATE INDEX CONCURRENTLY makes unstamped segments) is 'unverified' with the reason, not clean.
+-- One path (plain and soft deleted pairs) and two paths are verified; the keys are drawn from the pairs or named.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.scope_max_multiplicity = 8;
+-- one path, unique pairs, 12 tenants of 50 members; member m is in (m % 4) of them
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 3) % 12 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int NOT NULL, value_num int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 200, timestamptz '2026-01-01' + i * interval '7 minutes', i % 7, i % 1000 FROM generate_series(1, 4000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+SELECT 'clean, every key' AS state, scope, scope_key, problem, detail FROM sift.col_scope_verify('events_col', 100) ORDER BY scope_key;
+ state | scope | scope_key | problem | detail 
+-------+-------+-----------+---------+--------
+(0 rows)
+
+SELECT 'clean, default sample' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col');
+         state         | rows 
+-----------------------+------
+ clean, default sample |    0
+(1 row)
+
+-- a pair deleted and a pair moved while the journal writes nothing: the stored entries still hold the old keys
+SET sift.test_no_track = on;
+DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id = (SELECT min(dim_a_id) FROM tenant_scope WHERE tenant_id = 3);
+UPDATE tenant_scope SET tenant_id = 12 WHERE tenant_id = 5 AND dim_a_id = (SELECT min(dim_a_id) FROM tenant_scope WHERE tenant_id = 5);
+RESET sift.test_no_track;
+SELECT 'mutant, every key' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('events_col', 100) ORDER BY scope_key;
+       state       | scope_key | problem | scope_rows | join_rows |        detail         
+-------------------+-----------+---------+------------+-----------+-----------------------
+ mutant, every key |         3 | differs |        660 |       640 | differing: 1, first 7
+(1 row)
+
+SELECT 'mutant, other keys' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', keys => ARRAY[1, 2, 4, 6, 7, 99]);
+       state        | rows 
+--------------------+------
+ mutant, other keys |    0
+(1 row)
+
+SELECT 'mutant, named key' AS state, scope_key, problem FROM sift.col_scope_verify('events_col', keys => ARRAY[3]);
+       state       | scope_key | problem 
+-------------------+-----------+---------
+ mutant, named key |         3 | differs
+(1 row)
+
+REINDEX INDEX events_col;
+SELECT 'after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', 100);
+     state     | rows 
+---------------+------
+ after REINDEX |    0
+(1 row)
+
+-- the pairs soft deleted: the pairs are the rows of a partial unique btree
+CREATE TABLE memberships (dim_a_id int NOT NULL, group_id int NOT NULL, deleted_at timestamptz, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
+INSERT INTO memberships SELECT m, 1 + (m * 5 + j * 3) % 12, CASE WHEN j = 2 THEN now() END FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
+CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
+CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_soft ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+SELECT 'soft, clean' AS state, count(*) AS rows FROM sift.col_scope_verify('events_soft', 100);
+    state    | rows 
+-------------+------
+ soft, clean |    0
+(1 row)
+
+SET sift.test_no_track = on;
+DELETE FROM memberships WHERE group_id = 4 AND deleted_at IS NULL AND dim_a_id = (SELECT min(dim_a_id) FROM memberships WHERE group_id = 4 AND deleted_at IS NULL);
+RESET sift.test_no_track;
+SELECT 'soft, mutant' AS state, scope_key, problem, detail FROM sift.col_scope_verify('events_soft', 100) ORDER BY scope_key;
+    state     | scope_key | problem |        detail         
+--------------+-----------+---------+-----------------------
+ soft, mutant |         4 | differs | differing: 1, first 3
+(1 row)
+
+REINDEX INDEX events_soft;
+SELECT 'soft, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_soft', 100);
+        state        | rows 
+---------------------+------
+ soft, after REINDEX |    0
+(1 row)
+
+-- two paths: the grants of a member, the grants of a group and the memberships of the groups
+CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE group_members (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX group_members_active ON group_members (group_id, dim_a_id) WHERE deleted_at IS NULL;
+INSERT INTO group_members (group_id, dim_a_id) SELECT 1 + (m - 1) / 10, m FROM generate_series(1, 60) m;
+INSERT INTO grants VALUES (1, 1, NULL, 1, NULL), (2, 1, 25, NULL, NULL), (3, 2, NULL, 2, NULL), (4, 2, NULL, 3, NULL), (5, 3, 41, NULL, NULL), (6, 3, NULL, 6, now());
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX group_members_by_member ON group_members USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + (i * 7) % 60, timestamptz '2026-01-01' + i * interval '9 minutes', i % 10 FROM generate_series(1, 3000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via group_members(group_id, dim_a_id)');
+VACUUM (FREEZE, ANALYZE) facts, grants, group_members;
+SELECT 'two paths, clean' AS state, scope, scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]) ORDER BY scope_key;
+ state | scope | scope_key | problem | detail 
+-------+-------+-----------+---------+--------
+(0 rows)
+
+SET sift.test_no_track = on;
+DELETE FROM group_members WHERE group_id = 2 AND dim_a_id = 12;
+DELETE FROM grants WHERE id = 5;
+RESET sift.test_no_track;
+SELECT 'two paths, mutant' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]) ORDER BY scope_key;
+       state       | scope_key | problem | scope_rows | join_rows |         detail         
+-------------------+-----------+---------+------------+-----------+------------------------
+ two paths, mutant |         2 | differs |       1000 |       950 | differing: 1, first 12
+ two paths, mutant |         3 | differs |         50 |         0 | differing: 1, first 41
+(2 rows)
+
+REINDEX INDEX facts_col;
+SELECT 'two paths, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]);
+          state           | rows 
+--------------------------+------
+ two paths, after REINDEX |    0
+(1 row)
+
+-- the first scope index of a relation of pairs made concurrently has segments with no stamp: its reads are the entity rows, which the verifier says instead of calling it clean
+CREATE TABLE tenant_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_pairs SELECT m, 1 + (m * 5 + j * 3) % 12 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
+CREATE INDEX tenant_pairs_journal ON tenant_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX CONCURRENTLY events_concurrent ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_pairs(dim_a_id, tenant_id)');
+SELECT 'concurrent' AS state, problem, detail, count(*) AS keys FROM sift.col_scope_verify('events_concurrent', 4) GROUP BY problem, detail;
+   state    |  problem   |  detail  | keys 
+------------+------------+----------+------
+ concurrent | unverified | unfilled |    4
+(1 row)
+
+REINDEX INDEX events_concurrent;
+SELECT 'concurrent, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_concurrent', 4);
+           state           | rows 
+---------------------------+------
+ concurrent, after REINDEX |    0
+(1 row)
+
+-- the caller's settings stay as they were
+SET sift.enable_agg = off;
+SELECT count(*) AS rows FROM sift.col_scope_verify('events_col', 2);
+ rows 
+------
+    0
+(1 row)
+
+SHOW sift.enable_agg;
+ sift.enable_agg 
+-----------------
+ off
+(1 row)
+
+SHOW sift.agg_force;
+ sift.agg_force 
+----------------
+ off
+(1 row)
+
+-- what it refuses
+CREATE INDEX events_plain ON events USING sift_col (id, kind);
+SELECT * FROM sift.col_scope_verify('events_plain');
+ERROR:  col_scope_verify: events_plain has no scope
+CONTEXT:  PL/pgSQL function sift.col_scope_verify(regclass,integer,bigint[]) line 44 at RAISE
+SELECT * FROM sift.col_scope_verify('events_pkey');
+ERROR:  col_scope_verify: events_pkey is not a sift_col index
+CONTEXT:  PL/pgSQL function sift.col_scope_verify(regclass,integer,bigint[]) line 41 at RAISE
+DROP TABLE facts, grants, group_members, events, memberships, tenant_pairs, tenant_scope;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
