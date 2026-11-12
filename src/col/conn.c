@@ -182,7 +182,17 @@ journal_make(Relation heap, Relation index, TransactionId trim, AttrNumber tag_a
 		log = sift_col_log(index);
 	}
 	if (log->keys_cover && log->keys.lineage != 0)
+	{
+		/* a journal made before its records were tagged holds records of no tag (of every key); the ones it gets from here carry one */
+		if (tag_att != InvalidAttrNumber && SIFT_TOMB_KEYS_TAGATT(log->keys.flags) == InvalidAttrNumber)
+		{
+			k = log->keys;
+			k.flags |= (uint32) tag_att << SIFT_TOMB_KEYS_TAGATT_SHIFT;
+			sift_tomb_set_keys(index, log, &k);
+			CacheInvalidateRelcache(index);
+		}
 		return log->keys.lineage;
+	}
 	if (!log->keys_cover)
 	{
 		(void) sift_tomb_rewrite(index, log, keep_all, NULL);
@@ -228,7 +238,7 @@ sift_conn_enable(Relation heap, Relation index, bool read_after, AttrNumber tag_
 
 	check_key(heap, index);
 	/* a child that was connected before (its dependency is committed) made the journal under the lock, and every writer records since: nothing to hold out */
-	if (sift_conn_children(RelationGetRelid(index)) != NIL && sift_conn_gen(index, &gen))
+	if (sift_conn_children(RelationGetRelid(index)) != NIL && sift_conn_gen(index, &gen) && (tag_att == InvalidAttrNumber || sift_conn_journal_tagatt(index) != InvalidAttrNumber))
 		return gen.lineage;
 	/*
 	 * Writers of the table are held out until the transaction ends: every transaction that wrote it before is finished, so the journal is complete from here. The log need not be
@@ -450,6 +460,26 @@ sift_conn_key_tag(int64 key)
 /* more keys than this tag a good part of the tags there are */
 #define CONN_TAGS_MAX_KEYS	2048
 
+void
+sift_conn_tags_add(SiftConnTags *t, const int64 *keys, uint32 nkeys)
+{
+	t->all |= t->n + nkeys > CONN_TAGS_MAX_KEYS;
+	t->n += nkeys;
+	for (uint32 i = 0; i < nkeys && !t->all; i++)
+		t->map[sift_conn_key_tag(keys[i]) / 8] |= 1 << (sift_conn_key_tag(keys[i]) % 8);
+}
+
+SiftConnTags *
+sift_conn_tags_lazy(AttrNumber att, void (*fill) (SiftConnTags *tags, void *arg), void *arg)
+{
+	SiftConnTags *t = palloc0(sizeof(SiftConnTags));
+
+	t->att = att;
+	t->fill = fill;
+	t->arg = arg;
+	return t;
+}
+
 SiftConnTags *
 sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys)
 {
@@ -457,25 +487,39 @@ sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys)
 
 	if (nkeys > CONN_TAGS_MAX_KEYS)
 		return NULL;
-	t = palloc0(sizeof(SiftConnTags));
-	t->att = att;
-	for (uint32 i = 0; i < nkeys; i++)
-		t->map[sift_conn_key_tag(keys[i]) / 8] |= 1 << (sift_conn_key_tag(keys[i]) % 8);
+	t = sift_conn_tags_lazy(att, NULL, NULL);
+	sift_conn_tags_add(t, keys, nkeys);
 	return t;
+}
+
+AttrNumber
+sift_conn_journal_tagatt(Relation index)
+{
+	journal_lineage(index);
+	return sift_col_rel(index)->journal_tagatt;
 }
 
 /* Is the record one of the keys of tags: it has none of its own, or the journal is tagged by another column than the tags are of, or its tag is one of the keys' */
 static bool
-tag_wanted(const SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
+tag_wanted(SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
 {
 	uint16		tag = SIFT_TOMB_TAG(flags);
 
-	return tags == NULL || tag == 0 || tags->att != SIFT_TOMB_KEYS_TAGATT(log->keys.flags) || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
+	if (tags == NULL || tag == 0 || tags->att != SIFT_TOMB_KEYS_TAGATT(log->keys.flags))
+		return true;
+	if (tags->fill != NULL)
+	{
+		void		(*fill) (SiftConnTags *, void *) = tags->fill;
+
+		tags->fill = NULL;
+		fill(tags, tags->arg);
+	}
+	return tags->all || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
 }
 
 /* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names */
 SiftConnWhy
-sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, const SiftConnTags *tags, SiftConnKeys *out)
+sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
 	SiftConnWhy why = vouch(heap, index, stamp, snap, &log);

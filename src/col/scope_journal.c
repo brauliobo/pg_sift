@@ -25,13 +25,15 @@
 /* The relations of the journals of a scope, and the btree of the via relation that lists the members of a group, open and locked */
 typedef struct ScopeJournals
 {
+	Relation	index;			/* the index of the scope and its ordinal: what finds the groups of its keys */
+	int			scope;
 	int			n;
 	Relation	rel[SIFT_SCOPE_JOURNALS];
 	Relation	jidx[SIFT_SCOPE_JOURNALS];
 	Oid			via_btree;		/* two paths: the unique btree of the via relation, probed by its via column for the members of a group */
 	AttrNumber	via;
 	AttrNumber	member;
-	AttrNumber	skey[SIFT_SCOPE_JOURNALS];	/* the scope key column of each relation that has one (the tag of its journal's records): none for the via relation */
+	AttrNumber	skey[SIFT_SCOPE_JOURNALS];	/* the column that tags the records of each journal: the scope key of the pairs relations, the via column (the group) of the via relation */
 } ScopeJournals;
 
 /*
@@ -95,7 +97,7 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 	bool		ok = true;
 	uint64		gen = SharedInvalidMessageCounter;
 
-	*J = (ScopeJournals) {0};
+	*J = (ScopeJournals) {.index = index,.scope = scope};
 	if (specs == NULL || scope < 0 || scope >= specs->n)
 		return false;
 	if (journals_open_memo(index, scope, lock, J))
@@ -110,7 +112,7 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 		Oid			btree = j == 0 ? sift_scope_relation_index(heap, index, s, &J->rel[j], &a, &b) : sift_scope_hop_index(heap, index, s, j, &J->rel[j], &a, &b);
 		Oid			joid = sift_scope_hop_journal(J->rel[j], j, a, b, btree);
 
-		J->skey[j] = j == 2 ? InvalidAttrNumber : b;
+		J->skey[j] = j == 2 ? a : b;
 		if (j == 2)
 		{
 			J->via_btree = btree;
@@ -264,16 +266,137 @@ group_members(const ScopeJournals *J, const SiftConnKeys *groups, Snapshot snap,
 	sift_conn_probe_close(&s);
 }
 
-/* The union of the changed keys of the journals in k[0..n) and the members of the groups of k[1]; of the pairs of the scope keys only (NULL: of every key) */
+/*
+ * What tags the records of the via relation's journal need of the read: the groups of the scope keys, those the joined relation lists now and those its journal says changed. The groups of keys
+ * at a stamp of the joined relation's journal are a list that only its records (of the keys: tagged by them) change, so the groups a backend listed (and the changed ones then) are kept for the stamp:
+ * every group the keys had since is those and the ones the journal says changed since. A transaction with an xid does not keep them (its own changes are of the transaction).
+ */
+typedef struct GroupTags
+{
+	const ScopeJournals *J;
+	Snapshot	snap;
+	const int64 *keys;
+	uint32		nkeys;
+	const SiftConnStamp *stamp;	/* of the joined relation's journal */
+	const SiftConnKeys *changed;	/* its changed groups of the keys */
+} GroupTags;
+
+#define GROUPS_MEMO_N 4
+#define GROUPS_MEMO_KEYS 64
+#define GROUPS_MEMO_GROUPS 4096
+static struct GroupsMemo
+{
+	Oid			index;
+	int			scope;
+	uint64		gen;
+	uint64		lineage;
+	uint32		xmin;
+	uint32		nkeys;
+	int64		keys[GROUPS_MEMO_KEYS];
+	uint32		n;
+	int64	   *groups;
+	MemoryContext cx;
+} groups_memo[GROUPS_MEMO_N];
+static int	groups_memo_next;
+
+static const struct GroupsMemo *
+groups_memo_find(const GroupTags *g)
+{
+	if (TransactionIdIsValid(GetTopTransactionIdIfAny()) || g->nkeys > GROUPS_MEMO_KEYS)
+		return NULL;
+	for (int i = 0; i < GROUPS_MEMO_N; i++)
+	{
+		const struct GroupsMemo *m = &groups_memo[i];
+
+		if (m->groups != NULL && m->index == RelationGetRelid(g->J->index) && m->scope == g->J->scope && m->gen == SharedInvalidMessageCounter && m->lineage == g->stamp->lineage &&
+			m->xmin == g->stamp->xmin && m->nkeys == g->nkeys && memcmp(m->keys, g->keys, g->nkeys * sizeof(int64)) == 0)
+			return m;
+	}
+	return NULL;
+}
+
+/* keeps the groups of the keys: now and changed (the groups of the keys at the stamp and since) */
+static void
+groups_memo_keep(const GroupTags *g, const int64 *now, uint32 n)
+{
+	struct GroupsMemo *m;
+	MemoryContext old;
+	int64	   *all;
+	uint32		na;
+
+	if (TransactionIdIsValid(GetTopTransactionIdIfAny()) || g->nkeys > GROUPS_MEMO_KEYS || n + g->changed->n > GROUPS_MEMO_GROUPS)
+		return;
+	m = &groups_memo[groups_memo_next++ % GROUPS_MEMO_N];
+	if (m->cx == NULL)
+		m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope groups", ALLOCSET_SMALL_SIZES);
+	MemoryContextReset(m->cx);
+	m->groups = NULL;
+	old = MemoryContextSwitchTo(m->cx);
+	all = palloc(Max(n + g->changed->n, 1) * sizeof(int64));
+	MemoryContextSwitchTo(old);
+	memcpy(all, now, n * sizeof(int64));
+	if (g->changed->n > 0)
+		memcpy(all + n, g->changed->keys, g->changed->n * sizeof(int64));
+	na = sift_conn_keys_sort_unique(all, n + g->changed->n);
+	*m = (struct GroupsMemo) {RelationGetRelid(g->J->index), g->J->scope, SharedInvalidMessageCounter, g->stamp->lineage, g->stamp->xmin, g->nkeys, {0}, na, all, m->cx};
+	memcpy(m->keys, g->keys, g->nkeys * sizeof(int64));
+}
+
+static void
+groups_fill(SiftConnTags *t, void *arg)
+{
+	const GroupTags *g = arg;
+	const struct GroupsMemo *m = groups_memo_find(g);
+
+	if (m != NULL)
+	{
+		sift_catalog_memo_hits++;
+		sift_conn_tags_add(t, m->groups, m->n);
+	}
+	else
+	{
+		Relation	heap = table_open(g->J->index->rd_index->indrelid, AccessShareLock);
+		uint32		n;
+		int64	   *now = sift_scope_groups(heap, g->J->index, g->J->scope, g->snap, g->keys, g->nkeys, &n);
+
+		table_close(heap, NoLock);
+		sift_conn_tags_add(t, now, n);
+		groups_memo_keep(g, now, n);
+		pfree(now);
+	}
+	sift_conn_tags_add(t, g->changed->keys, g->changed->n);
+}
+
+/* The tags of the records of journal j that belong to the scope keys: of their pairs for the pairs relations, of their groups for the via relation (a member of a group the keys have); NULL: every record */
+static SiftConnTags *
+journal_tags(const ScopeJournals *J, int j, const GroupTags *g)
+{
+	if (g->keys == NULL || J->skey[j] == InvalidAttrNumber)
+		return NULL;
+	return j == 2 ? sift_conn_tags_lazy(J->skey[j], groups_fill, (void *) g) : sift_conn_tags(J->skey[j], g->keys, g->nkeys);
+}
+
+/*
+ * The union of the changed keys of the journals in k[0..n) and the members of the groups of k[1]; of the pairs of the scope keys only (NULL: of every key). The pairs inserted for the keys read are
+ * known from the journals of the pairs relations and, when the via relation's records are tagged by group, from those of it: a member added to a group of the keys is expected to have a pair (the
+ * members of a changed group are not told apart before their pairs are read, none is expected to have one: a lower bound of the patch).
+ */
 static SiftConnWhy
 journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out)
 {
 	SiftConnKeys k[SIFT_SCOPE_JOURNALS] = {{0}};
 	SiftConnWhy why = SIFT_CONN_OK;
 	MemberSet	ms = {.cap = cap};
+	GroupTags	g = {J, snap, keys, nkeys, &stamp[1], &k[1]};
+	SiftConnTags *via_tags = NULL;
 
 	for (int j = 0; j < J->n && why == SIFT_CONN_OK; j++)
-		why = sift_conn_changed_by(J->rel[j], J->jidx[j], &stamp[j], snap, cap, true, keys != NULL && J->skey[j] != InvalidAttrNumber ? sift_conn_tags(J->skey[j], keys, nkeys) : NULL, &k[j]);
+	{
+		SiftConnTags *tags = journal_tags(J, j, &g);
+
+		why = sift_conn_changed_by(J->rel[j], J->jidx[j], &stamp[j], snap, cap, true, tags, &k[j]);
+		via_tags = j == 2 ? tags : via_tags;
+	}
 	if (why == SIFT_CONN_OK && J->n == 1)
 	{
 		*out = k[0];
@@ -281,6 +404,8 @@ journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot sn
 	}
 	if (why == SIFT_CONN_OK)
 	{
+		bool		via_added = via_tags != NULL && via_tags->fill == NULL && !via_tags->all;
+
 		ms.m = palloc(64 * sizeof(int64));
 		ms.space = 64;
 		for (int j = 0; j < J->n; j += 2)
@@ -293,12 +418,13 @@ journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot sn
 		else
 		{
 			*out = (SiftConnKeys) {.keys = ms.m,.kept = palloc0(Max(ms.n, 1) * sizeof(bool)),.added = palloc0(Max(ms.n, 1) * sizeof(bool)),.n = ms.n,.cap = ms.n};
-			/* the pairs inserted for the keys read are known; the members of a changed group are not told apart before their pairs are read, none is expected to have one (a lower bound of the patch) */
-			for (uint32 i = 0, a = 0; i < ms.n; i++)
+			for (uint32 i = 0, a = 0, b = 0; i < ms.n; i++)
 			{
 				for (; a < k[0].n && k[0].keys[a] < ms.m[i]; a++)
 					;
-				out->added[i] = a < k[0].n && k[0].keys[a] == ms.m[i] && k[0].added[a];
+				for (; b < k[2].n && k[2].keys[b] < ms.m[i]; b++)
+					;
+				out->added[i] = (a < k[0].n && k[0].keys[a] == ms.m[i] && k[0].added[a]) || (via_added && b < k[2].n && k[2].keys[b] == ms.m[i] && k[2].added[b]);
 			}
 		}
 	}

@@ -298,6 +298,7 @@ TESTING_REGRESS += col_scope_twohop_choice
 TESTING_REGRESS += col_scope_twohop_declare
 TESTING_REGRESS += col_scope_twohop_journal
 TESTING_REGRESS += col_scope_twohop_patch
+TESTING_REGRESS += col_scope_twohop_tags
 TESTING_REGRESS += col_scope_verify_order
 TESTING_REGRESS += col_seg_head
 TESTING_REGRESS += col_seg_mirror
