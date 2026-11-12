@@ -9,7 +9,7 @@ read of 1 and of 10 tenants, three arms are measured; --paths two builds the sco
 no read asks for (other), of the big one and of the tiny one, directly granted (direct) or through a group that holds them (member), for 1 tenant reads: the scope units (`scope`, forced), the join as written (`join`, sift.agg_scope off) and the planner's choice (`chosen`). Each cell reports the
 absolute instructions of the backend (perf stat, median of 3), the shared blocks hit / read of a cold run (shared buffers emptied) and of a warm one, and whether the rows are md5-equal to the plain
 statement (sift.enable_agg off). The planner's pick is checked: `chosen` must be within TOL (3%) of the cheaper arm (60,000 instructions of a 2 million one); the exit code is 1 on a
-differing md5 and 2 on a cell over the tolerance (reported, the run goes on).
+differing md5 and 2 on a cell over the tolerance (reported, the run goes on). A change to the pairs of other keys than the read's (`other`, or the other tenant) costs the read nothing: `chosen` must be within TOL of the same cell of the first state, which has no change, and RECORD_INSTR instructions for each changed pair (its journal records are read and sorted).
 """
 import argparse
 import os
@@ -21,6 +21,8 @@ import sys
 import time
 
 TOL = 0.03
+# the journal records of a changed pair of other keys (two: the row ended and the row inserted) are read and sorted by the statement that reads the key: about 120 instructions each, 150 for a pair that was changed
+RECORD_INSTR = 150
 FLOOR = 0
 ARMS = (('join', 'SET sift.enable_agg = on; SET sift.agg_scope = off; SET sift.test_scope_patch = off'),
         ('scope', 'SET sift.enable_agg = on; SET sift.agg_scope = on; SET sift.test_scope_patch = on'),
@@ -176,6 +178,7 @@ def main():
     a = ap.parse_args()
     subprocess.run(['psql', '-X', '-q', '-U', 'postgres', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {a.db}', '-c', f'CREATE DATABASE {a.db}'], check=True, env=ENV)
     bad = over = 0
+    clean = {}
     print('| state | tenant | read | arm | M instr | cold hit/read | warm hit/read | picked |\n|---|---|---|---|---|---|---|---|')
     for label, fixture, shapes, tenants, edit in states(a.paths, [int(x) for x in a.changed.split(',')]):
         s = Sess(a.db)
@@ -197,6 +200,12 @@ def main():
                 pick = 'scope' if 'Scope Units' in res['chosen'][3] else 'join'
                 if res['chosen'][0] > best * (1 + TOL) + FLOOR:
                     over += 1
+                # a change to the pairs of other keys costs the read of this key nothing: the cell of the first state, which has no change, is its cost
+                edited = None if not edit else 'big' if a.paths == 'one' else label.split()[1]
+                clean.setdefault((tn, shape), res['chosen'][0])
+                if edited not in (None, tn) and res['chosen'][0] > clean[(tn, shape)] * (1 + TOL) + RECORD_INSTR * int(label.split()[-1]):
+                    over += 1
+                    print(f'OTHER KEYS COST {label} {tn} {shape}: {res["chosen"][0] / 1e6:.2f} M, {clean[(tn, shape)] / 1e6:.2f} M clean', file=sys.stderr)
                 for arm in ('join', 'scope', 'chosen'):
                     ins, cold, warm, _ = res[arm]
                     print(f"| {label} | {tn} | {shape} | {arm} | {ins / 1e6:.2f} | {cold[0]}/{cold[1]} | {warm[0]}/{warm[1]} | {pick if arm == 'chosen' else ''} |", flush=True)
