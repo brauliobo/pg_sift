@@ -405,7 +405,6 @@ extern PGDLLEXPORT void sift_col_read_rewrite_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_read_promote_worker_main(Datum main_arg);
 /* sift.col_auto_merge* (col/am/am.c): the rewrite VACUUM asks the worker for when the churn has scattered the index (col/maint/maint.c) */
 extern PGDLLIMPORT bool sift_col_auto_merge;
-extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
 extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;

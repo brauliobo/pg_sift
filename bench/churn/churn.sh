@@ -10,7 +10,7 @@
 # Settings (environment): N rows (50000), CYCLES (6), RATE percent of the live rows touched per cycle (2), MIX upd:del:ins (40:30:30), HOT touch share:newest
 # percent of the ids, e.g. 90:10 (0 = uniform), PAD md5 repeats of the payload (12: a 400-byte pad; 0: a light row), BATCH rows per transaction (200), ARMS (none worker force reindex), SCN name of the scenario (s1), QUERIES every
 # cycle (1) or only the first and last (0). An arm may have index options (ARM_OPTS_<arm>, e.g. "merge_fanin = 4") and session settings for its
-# VACUUM and maintenance steps (ARM_GUC_<arm>, e.g. "sift.col_auto_merge_dirty_pct=10 sift.maintenance_cost_delay=2").
+# VACUUM and maintenance steps (ARM_GUC_<arm>, e.g. "sift.col_auto_merge_fragmentation=1.5 sift.maintenance_cost_delay=2").
 #
 # CHECKPOINT_EACH=1 checkpoints before the DML of every cycle (every cycle then pays the full-page images of the pages it touches, as a server whose checkpoint interval is a cycle).
 #

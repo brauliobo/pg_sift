@@ -42,11 +42,10 @@ CREATE FUNCTION fa_index(idx regclass) RETURNS TABLE (segments int, buffer_rows 
 	SELECT (SELECT count(*)::int FROM sift.col_segments(idx) WHERE kind = 'immutable'), (SELECT coalesce(sum(rows), 0)::int FROM sift.col_segments(idx) WHERE kind <> 'immutable'),
 	       (SELECT coalesce(sum(units), 0)::int FROM sift.col_segments(idx)), (SELECT units::int FROM sift.col_index_info(idx)) $$;
 
--- the reason for the rewrite under the three thresholds (percent of units with a dead row, units per superblock, percent of rows in the buffer)
-CREATE FUNCTION fa_due(idx regclass, dirty int, frag numeric, buf numeric) RETURNS text LANGUAGE plpgsql AS $$
+-- the reason for the rewrite under the two thresholds (units per superblock, percent of rows in the buffer)
+CREATE FUNCTION fa_due(idx regclass, frag numeric, buf numeric) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.col_auto_merge_dirty_pct', dirty::text, true), set_config('sift.col_auto_merge_fragmentation', frag::text, true),
-	        set_config('sift.col_auto_merge_buffer_pct', buf::text, true);
+	PERFORM set_config('sift.col_auto_merge_fragmentation', frag::text, true), set_config('sift.col_auto_merge_buffer_pct', buf::text, true);
 	RETURN coalesce(sift.col_maintenance_due(idx, false), 'not due');
 END $$;
 
@@ -62,6 +61,7 @@ BEGIN
 END $$;
 
 SELECT 'built' AS step, * FROM fa_state('facts_a');
+SELECT 'clean index' AS rule, fa_due('facts_a_col', 1000, 100) AS thresholds_off, fa_due('facts_a_col', 2, 1) AS defaults;
 
 -- cycle 1: the policy of VACUUM leaves every unit with a dead row, none answers from the pre-aggregates, and 1% of dead rows is far from dead_rewrite_pct
 CALL fa_churn(1);
@@ -69,11 +69,8 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 SELECT 'cycle 1' AS step, * FROM fa_state('facts_a');
 SELECT sum(dead_rows) * 100 / sum(rows) < 10 AS under_dead_rewrite_pct, bool_and(dirty) AS all_dirty FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable';
 
--- the rule: each threshold alone, at the value of the index (due) and just above it (not due)
-SELECT 'dirty units' AS rule, fa_due('facts_a_col', 99, 1000, 100) AS at_99, fa_due('facts_a_col', 100, 1000, 100) AS at_100;
-WITH b AS (SELECT buffer_rows * 100.0 / (buffer_rows + (SELECT sum(rows) FROM sift.col_segments('facts_a_col') WHERE kind = 'immutable')) AS pct FROM fa_index('facts_a_col'))
-SELECT 'write buffer rows' AS rule, fa_due('facts_a_col', 100, 1000, greatest(floor(pct * 100) / 100 - 0.01, 0.01)) AS below, fa_due('facts_a_col', 100, 1000, ceil(pct * 100) / 100) AS at_pct FROM b;
-SELECT 'nothing due' AS rule, fa_due('facts_a_col', 100, 1000, 100) AS thresholds_off, fa_due('facts_a_col', 30, 2, 1) AS defaults;
+-- a unit with a dead row is a reason on its own, whatever the share of the units: there is no threshold to set
+SELECT 'dirty units' AS rule, fa_due('facts_a_col', 1000, 100) AS thresholds_off;
 -- an index over sift.vacuum_rewrite_limit is due like any other (its rewrite goes by partitions of that size), for the server's own rule and the explicit one
 SET sift.vacuum_rewrite_limit = 1;
 SELECT sift.col_maintenance_due('facts_a_col') AS automatic, sift.col_maintenance_due('facts_a_col', false) AS explicit;
@@ -81,9 +78,22 @@ RESET sift.vacuum_rewrite_limit;
 
 -- units listed per superblock covered: the promotion of the buffer adds a segment over the superblocks the churn touched
 SELECT sift.col_promote('facts_a_col') > 0 AS promoted;
-SELECT segments, buffer_rows, listed > covered AS fragmented FROM fa_index('facts_a_col');
-WITH r AS (SELECT listed::numeric / covered AS ratio FROM fa_index('facts_a_col'))
-SELECT 'fragmented units' AS rule, fa_due('facts_a_col', 100, floor(ratio * 100) / 100, 100) AS at_ratio, fa_due('facts_a_col', 100, floor(ratio * 100) / 100 + 0.01, 100) AS above FROM r;
+
+-- the other two thresholds alone, each at the value of the index (due) and just above it (not due), on an index with no dead row known (no VACUUM after the churn):
+-- the rows written and the units listed twice by the promotion are all there is
+CREATE TABLE facts_g (LIKE facts_a) WITH (autovacuum_enabled = false);
+INSERT INTO facts_g SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 40000) g;
+CREATE INDEX facts_g_col ON facts_g USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_g;
+UPDATE facts_g SET amount = amount + 1 WHERE id % 100 = 1;
+INSERT INTO facts_g SELECT 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 400) g;
+WITH b AS (SELECT buffer_rows * 100.0 / (buffer_rows + (SELECT sum(rows) FROM sift.col_segments('facts_g_col') WHERE kind = 'immutable')) AS pct FROM fa_index('facts_g_col'))
+SELECT 'write buffer rows' AS rule, fa_due('facts_g_col', 1000, greatest(floor(pct * 100) / 100 - 0.01, 0.01)) AS below, fa_due('facts_g_col', 1000, ceil(pct * 100) / 100) AS at_pct FROM b;
+SELECT sift.col_promote('facts_g_col') > 0 AS promoted;
+SELECT segments, buffer_rows, listed > covered AS fragmented FROM fa_index('facts_g_col');
+WITH r AS (SELECT listed::numeric / covered AS ratio FROM fa_index('facts_g_col'))
+SELECT 'fragmented units' AS rule, fa_due('facts_g_col', floor(ratio * 100) / 100, 100) AS at_ratio, fa_due('facts_g_col', floor(ratio * 100) / 100 + 0.01, 100) AS above FROM r;
+SELECT 'nothing due' AS rule, fa_due('facts_g_col', 1000, 100) AS thresholds_off, fa_due('facts_g_col', 2, 1) AS defaults;
 
 -- cycle 2, then the rewrite in this session: the index is the one a REINDEX of the same table gives
 CALL fa_churn(2);
@@ -156,9 +166,9 @@ CREATE TABLE facts_f (LIKE facts_a);
 CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
 RESET sift.col_auto_merge;
 
-DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f;
+DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f, facts_g;
 DROP FUNCTION fa_state(text);
 DROP FUNCTION fa_index(regclass);
-DROP FUNCTION fa_due(regclass, int, numeric, numeric);
+DROP FUNCTION fa_due(regclass, numeric, numeric);
 DROP PROCEDURE fa_churn(int);
 DROP EXTENSION pg_sift;

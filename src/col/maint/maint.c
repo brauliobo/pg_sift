@@ -17,8 +17,6 @@
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am/am.c) */
 bool		sift_col_auto_merge = true;
 
-int			sift_col_auto_merge_dirty_pct = 30;
-
 double		sift_col_auto_merge_fragmentation = 2.0;
 
 int			sift_col_auto_merge_max_active = 0;

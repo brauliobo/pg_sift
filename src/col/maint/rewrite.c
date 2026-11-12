@@ -218,10 +218,11 @@ rewrite_held(Relation index, uint64 bytes)
  * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
- * the directory and the liveness (no heap page is read): more than sift.col_auto_merge_dirty_pct percent of the units hold a dead row, or the
+ * the directory and the liveness (no heap page is read): a unit holds a dead row (under churn every unit does, so no share of them tells a rewrite that is
+ * worth it from one that is not: the WAL budget and the price of the reads do), or the
  * units listed are sift.col_auto_merge_fragmentation times the superblocks they cover, or the write buffer holds more than
  * sift.col_auto_merge_buffer_pct percent of the rows. Why, or NULL. The automatic rewrite also stays within sift.col_auto_merge_wal_pct of the WAL the server writes (wal_budget_spent), which defers the rewrite of the segments and not the promotion of the write buffer. It waits too while the blocks the last rewrite freed are held back by a snapshot.
- * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with dirty_pct of its units dirty is due, whatever the
+ * With sift.col_auto_merge_partition_kb the rewrite is of one partition at a time: a partition with a dirty unit is due, whatever the
  * share of the whole index, units listed twice are those of the overlays over the partitions, the size of the index does not matter and the segments
  * a rewrite leaves are the partitions.
  */
@@ -235,7 +236,6 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	bool		partitioned,
 				overlay_due,
 				take[SIFT_MAX_SEGMENTS] = {false},
-				part_dirty = false,
 				buffer_due,
 				build_peers;
 	uint64		listed = 0,
@@ -244,7 +244,6 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				bytes = 0,
 				buffered = 0,
 				over_listed = 0,
-				over_dirty = 0,
 				covered,
 				shared,
 				shared_listed;
@@ -271,7 +270,6 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	{
 		const SiftSegEntry *e = &v->imm[i];
 		SiftColSegment *seg = v->seg[i];
-		uint32		d = 0;
 
 		rows += e->ndocs;
 		if (e->flags & SIFT_SEG_UNIT)
@@ -288,18 +286,10 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		stale |= v->stale[i];
 		old_epoch |= v->old_epoch[i];
 		if (e->flags & SIFT_SEG_DIRTY)
-		{
-			d = maint_dirty_units(seg);
-			dirty += d;
-		}
+			dirty += maint_dirty_units(seg);
 		/* the partitions of a key-cut index are told by size: what a rolling pass writes has superblocks in common with its neighbours, and the density does not say it is no partition */
-		if (partitioned && sift_col_key_cut(sift_col_rel(index)) ? maint_is_partition(e) : !v->over[i] && !v->kover[i])
-			part_dirty |= (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * seg->nsb;
-		else
-		{
+		if (!(partitioned && sift_col_key_cut(sift_col_rel(index)) ? maint_is_partition(e) : !v->over[i] && !v->kover[i]))
 			over_listed += seg->nsb;
-			over_dirty += d;
-		}
 		sift_cseg_close(seg);
 	}
 	for (int i = 0; i < snap->nsegs; i++)
@@ -315,8 +305,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	shared = sift_cseg_dir_shared(snap, &shared_listed);
 	MemoryContextDelete(cx);
 	pfree(snap);
-	if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
-		listed > 0 && dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * listed)
+	if (dirty > 0)
 		why = "dirty units";
 	/*
 	 * Runs of a build that are as large as partitions but each hold rows of every key (a lookup of one key reads a unit in each of them) are neither overlays nor dirty,
@@ -334,8 +323,6 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 		why = "overlay units";
 		maint_overlay_asked = true;
 	}
-	else if (maint_read_asked && dirty > 0)
-		why = "dirty units";
 	else if (old_epoch)
 		why = "value store epoch";
 	else if (stale || maint_scope_refill_due(index))

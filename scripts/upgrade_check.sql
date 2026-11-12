@@ -21,10 +21,11 @@ DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
 	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6", "32": "3.6", "33": "3.7", "34": "3.7", "35": "3.7", "36": "3.7", "37": "3.7", "38": "3.7", "39": "3.7", "40": "4.0", "41": "4.0", "42": "4.0", "43": "4.0", "44": "4.3", "45": "5.0", "46": "5.0", "47": "5.0", "48": "5.0", "49": "5.0"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
-	-- the settings the 4.2 library removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
+	-- the settings the 4.2 and 5.0 libraries removed, each with the value that is refused (a regular expression; null: any value) and what to say. sift.eval_methods lost only some of its methods
 	removed CONSTANT jsonb := '{"sift.eval_methods": ["(^|[^a-z_])(latest_hint|snapshot_masks|unit_rewrite|skip_trigger_lookup)([^a-z_]|$)", "the 4.2 library has removed that method (skip_trigger_lookup is always on) and refuses it in a SET"],
 		"sift.enable_col": [null, "the 4.2 library has removed this setting (it never changed a plan; sift.enable_col_scan and sift.enable_agg are the switches) and refuses it in a SET"],
-		"sift.table_auto_defrag_dead_pct": [null, "the 4.2 library has removed this setting (it has had no effect since 4.0; the background pass of a sift_table is asked for by the reads of the table) and refuses it in a SET"]}';
+		"sift.table_auto_defrag_dead_pct": [null, "the 4.2 library has removed this setting (it has had no effect since 4.0; the background pass of a sift_table is asked for by the reads of the table) and refuses it in a SET"],
+		"sift.col_auto_merge_dirty_pct": [null, "the 5.0 library has removed this setting (a unit holding a dead row asks for the rewrite, whatever the share of the units; sift.col_auto_merge_wal_pct and the price of the reads pace it) and refuses it in a SET"]}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
 	lib text;
@@ -223,8 +224,8 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 
-	-- 4.2 removed the settings of `removed` (and latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup, also with a leading -, from sift.eval_methods): a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that
-	-- names one fails once the 4.2 library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
+	-- 4.2 and 5.0 removed the settings of `removed` (and latest_hint, snapshot_masks, unit_rewrite and skip_trigger_lookup, also with a leading -, from sift.eval_methods): a SET, ALTER ROLE, ALTER DATABASE and ALTER SYSTEM that
+	-- names one fails once that library is loaded, and where the server reads one (postgresql.conf, postgresql.auto.conf, a role or database setting) it is ignored with a warning in every session
 	FOR r IN SELECT x.name, x.scope, x.value, x.cmd, k.spec->>1 AS note FROM (
 				SELECT s.name, 'server (' || s.source || ')' AS scope, s.setting AS value,
 					   'remove it from postgresql.conf, or ALTER SYSTEM RESET ' || s.name || ' when it is in postgresql.auto.conf, then SELECT pg_reload_conf()' AS cmd

@@ -12,7 +12,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 118
+plan 119
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -287,15 +287,16 @@ q postgres "ALTER SYSTEM RESET sift.eval_methods" "ALTER ROLE ev_role RESET sift
 check "after the commands nothing is left" test "$(uc v42 | grep -c 'sift\.eval_methods')" == 0
 # 4.2 removed sift.enable_col whole: the same list serves it, whatever the value, and the generic check of unknown settings does not repeat it as a warning
 q postgres "ALTER ROLE ev_role SET sift.enable_col = off" "ALTER DATABASE ev_db SET sift.enable_col = off" "ALTER SYSTEM SET sift.enable_col = off" >/dev/null
-q postgres "ALTER ROLE ev_role IN DATABASE ev_db SET sift.table_auto_defrag_dead_pct = 5" >/dev/null
+q postgres "ALTER ROLE ev_role IN DATABASE ev_db SET sift.table_auto_defrag_dead_pct = 5" "ALTER DATABASE ev_db SET sift.col_auto_merge_dirty_pct = 10" >/dev/null
 out=$(uc v42)
 check "a removed setting of a role is a blocker with the ALTER ROLE .. RESET that removes it" grep -q -E '^blocker +sift\.enable_col .*set by ALTER ROLE ev_role .*ALTER ROLE ev_role RESET sift\.enable_col' <<<"$out"
 check "a removed setting of a database is a blocker with the ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.enable_col .*set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.enable_col' <<<"$out"
 check "a removed setting in postgresql.auto.conf is a blocker that says to ALTER SYSTEM RESET" grep -q -E '^blocker +sift\.enable_col .*postgresql\.auto\.conf.*ALTER SYSTEM RESET sift\.enable_col' <<<"$out"
 check "the other removed setting is a blocker too, with its ALTER ROLE .. IN DATABASE .. RESET" grep -q -E '^blocker +sift\.table_auto_defrag_dead_pct .*ALTER ROLE ev_role IN DATABASE ev_db RESET sift\.table_auto_defrag_dead_pct' <<<"$out"
+check "the rewrite rule setting 5.0 removed is a blocker too, with its ALTER DATABASE .. RESET" grep -q -E '^blocker +sift\.col_auto_merge_dirty_pct .*set by IN DATABASE ev_db .*ALTER DATABASE ev_db RESET sift\.col_auto_merge_dirty_pct' <<<"$out"
 check "the removed setting is no warning of the generic check" test "$(grep -c -E '^warn +sift\.enable_col' <<<"$out")" == 0
-q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.table_auto_defrag_dead_pct" >/dev/null
-check "after the commands nothing of it is left" test "$(uc v42 | grep -c 'sift\.enable_col')" == 0
+q postgres "ALTER SYSTEM RESET sift.enable_col" "ALTER ROLE ev_role RESET sift.enable_col" "ALTER DATABASE ev_db RESET sift.enable_col" "ALTER ROLE ev_role IN DATABASE ev_db RESET sift.table_auto_defrag_dead_pct" "ALTER DATABASE ev_db RESET sift.col_auto_merge_dirty_pct" >/dev/null
+check "after the commands nothing of it is left" test "$(uc v42 | grep -cE 'sift\.(enable_col|col_auto_merge_dirty_pct)')" == 0
 # a scope is column format 45 and a scope of two paths (the grants of a member and of a group, and the memberships: three stamps in a segment) column format 49: 4.3 reads neither, 5.0 both
 q postgres "CREATE DATABASE hop" "ALTER DATABASE hop SET sift.scope_max_multiplicity = 8" >/dev/null
 printf '%s;\n' "CREATE EXTENSION pg_sift" "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]}" "CREATE TABLE one_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" "INSERT INTO one_pairs SELECT m, 1 + m % 12 FROM generate_series(1, 200) m" \

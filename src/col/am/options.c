@@ -301,15 +301,11 @@ sift_col_init(void)
 							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
 							 "when the rows changed since the last VACUUM are a thousandth of the table (50 rows at least, 100,000 at most). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
 							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
-							 "The merge rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct, and it stays within sift.col_auto_merge_wal_pct of the WAL the server writes; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
+							 "The merge rule is a unit holding a dead row, sift.col_auto_merge_fragmentation and _buffer_pct, and it stays within sift.col_auto_merge_wal_pct of the WAL the server writes; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
 							 "when the maintenance lock is held. An index over sift.vacuum_rewrite_limit is rewritten by partitions of that size (sift.col_auto_merge_partition_kb sets another), one step each, so that the lock is let go between them. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. "
 							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
 							 "Set it for the server or the database: the worker reads no session setting.",
 							 &sift_col_auto_merge, true, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
-							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
-							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
-							&sift_col_auto_merge_dirty_pct, 30, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.col_auto_merge_fragmentation",
 							 "Units listed per superblock they cover from which the automatic rewrite of a sift_col index runs.",
 							 "Each promotion of the write buffer adds a segment over the superblocks the churn touched.",
@@ -342,7 +338,7 @@ sift_col_init(void)
 							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
 							"Size of the segments the automatic rewrite of a sift_col index writes, which then rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
-							"A step rewrites the partition with most dirty units (over sift.col_auto_merge_dirty_pct of its own), or the overlays the promotions left over the partitions, "
+							"A step rewrites the partition with most dirty units, or the overlays the promotions left over the partitions, "
 							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
 							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole. 0: partitions of sift.vacuum_rewrite_limit for an index over it, or of a third of maintenance_work_mem where that is less, which is what the writer of a segment holds in memory.",
 							&sift_col_auto_merge_partition_kb, 0, 0, MAX_KILOBYTES, PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);

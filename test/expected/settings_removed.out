@@ -1,5 +1,6 @@
 -- A setting that a release removed is refused with the library loaded, in a SET, ALTER ROLE and ALTER DATABASE alike, and is not there to SHOW
--- (sift.enable_col, declared in 3.0 and never read; sift.table_auto_defrag_dead_pct, without effect since 4.0). The text is the server's, for a reserved prefix.
+-- (sift.enable_col, declared in 3.0 and never read; sift.table_auto_defrag_dead_pct, without effect since 4.0; sift.col_auto_merge_dirty_pct, the share of dirty units of a rewrite
+-- rule that every churned index met: a unit with a dead row is what asks for the rewrite). The text is the server's, for a reserved prefix.
 CREATE EXTENSION pg_sift;
 \set VERBOSITY default
 SET sift.enable_col = off;
@@ -8,10 +9,15 @@ DETAIL:  "sift" is a reserved prefix.
 SET sift.table_auto_defrag_dead_pct = 1;
 ERROR:  invalid configuration parameter name "sift.table_auto_defrag_dead_pct"
 DETAIL:  "sift" is a reserved prefix.
+SET sift.col_auto_merge_dirty_pct = 30;
+ERROR:  invalid configuration parameter name "sift.col_auto_merge_dirty_pct"
+DETAIL:  "sift" is a reserved prefix.
 SHOW sift.enable_col;
 ERROR:  unrecognized configuration parameter "sift.enable_col"
 SHOW sift.table_auto_defrag_dead_pct;
 ERROR:  unrecognized configuration parameter "sift.table_auto_defrag_dead_pct"
+SHOW sift.col_auto_merge_dirty_pct;
+ERROR:  unrecognized configuration parameter "sift.col_auto_merge_dirty_pct"
 RESET sift.enable_col;
 ERROR:  invalid configuration parameter name "sift.enable_col"
 DETAIL:  "sift" is a reserved prefix.

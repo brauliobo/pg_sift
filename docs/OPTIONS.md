@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 100 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -626,22 +626,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** on — On since 3.3 (3.2: off): units answered from pre-aggregates 32% to 51% (wide rows) and 33% to 83% (mixed), a grouped sum 10.8 to 0.24 ms, for +0.9% to +1.9% total WAL, within the budget of col_auto_merge_wal_pct.
 - **Turn off:** Server or database only, the worker reads no session value: ALTER SYSTEM SET sift.col_auto_merge = off and reload, or ALTER DATABASE .. SET. sift.col_maintain(index) still applies the rule from a job.
 - **Upgrade from 4.3:** unchanged
-- **Advice:** Leave on (set for the server or database). Off stops the background vacuums and rewrites. Tuning: _dirty_pct, _fragmentation, _buffer_pct, _wal_pct, _max_active, _partition_kb, _max_workers.
+- **Advice:** Leave on (set for the server or database). Off stops the background vacuums and rewrites. Tuning: _fragmentation, _buffer_pct, _wal_pct, _max_active, _partition_kb, _max_workers.
 - **Sources:** benchmark `test:col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
-
-#### sift.col_auto_merge_dirty_pct
-
-`sift_col` · default · since 3.2 · default 30
-
-- **What it does:** after churn a worker vacuums the table and merges the segments into one, so that scans stop checking rows in the heap and units answer from pre-aggregates again: 5% of 200k rows updated, a grouped sum 10.8 ms becomes 0.24 ms (2.6 ms after the VACUUM alone); 3% churn per round on 1M rows, the units answerable from the pre-aggregates 32% to 51% (wide rows) and 33% to 83% (a mix of hot and cold churn), 100% right after a rewrite
-- **Gain:** as `sift.col_auto_merge`
-- **Impact:** index size: as `sift.col_auto_merge`; build, merge and writes: as `sift.col_auto_merge`; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
-- **When:** One reason of the rewrite rule: units of a sift_col index holding a dead row; such a unit answers from rows, not pre-aggregates, however few rows are dead. sift.col_maintain(index) uses it too. 1 to 100.
-- **Default:** 30 — 30, with the fragmentation and buffer reasons: a 1% churn spread over the table left 0 of 50 units answering from pre-aggregates, the rewrite 25 of 25 (200,000 rows).
-- **Turn off:** n/a: a threshold. 100 never fires this reason (it is 'above'); the other reasons stay, and sift.col_auto_merge = off stops the worker. Server or database level.
-- **Upgrade from 4.3:** unchanged
-- **Advice:** Leave at 30: the rewrite runs when more than this percent of the units hold a dead row (such a unit answers from rows, not pre-aggregates). Lower it to rewrite sooner, at more WAL. Under it, the reads of a backend that find dead rows in units ask for the rewrite when they have cost half of it.
-- **Sources:** benchmark as `sift.col_auto_merge`; [USAGE](USAGE.md#maintenance-and-operations)
 
 #### sift.col_auto_merge_fragmentation
 
