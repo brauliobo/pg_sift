@@ -183,6 +183,8 @@ BEGIN
 END $f$;
 SET sift.test_col_unit_rows = 3000;
 CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id');
+-- the parallel build already merged its own peers: one segment, so a manual merge has nothing to do; after the DML below it has
+SELECT segments, units FROM sift.col_index_info('pa_cut');
 SELECT sift.col_merge('pa_cut', true);
 SELECT 'built' AS step, leaf, (r).exact_units > 0 AS exact, (r).bad
 FROM (VALUES ('i2', 'int2', true), ('i4', 'int4', true), ('n', 'numeric', true), ('d', 'date', false)) v(leaf, typ, withsum),
