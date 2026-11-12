@@ -417,10 +417,18 @@ into a column, see above); a partitioned table among the three; text or uuid key
 
 ### Limits
 
-EXPERIMENTAL; the pairs of a scope of one path may be several rows (a non-unique btree) but the scope read, a semi join, counts a pair once: a join or a read for each pair of them keeps the join; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs (the relations of a scope of two paths included); at most one joined path, no third hop; keys are `int2`, `int4` or `int8` (text and uuid keys are not supported); a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) run the join as written where the units cannot answer or cost more, and an array parameter that holds several keys is the same; a join to a table of keys that may hold a key twice keeps the join; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
-by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
-rows still answer.
+EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do in 5.0:
+
+- **Declaration.** The member key, the scope key and the columns of the relations are `int2`, `int4` or `int8`: text and uuid keys are refused (`is not an integer`). A relation is a heap table that is not partitioned, not a view and not the indexed
+  table; a scope of one path has both columns NOT NULL. At most 4 scopes and 8 connections on an index, and a scan reads one scope. At most one joined path and no third hop; no deny rows; no condition on a third table and no predicate that depends on time.
+- **Forms.** A statement that is not in the table of recognised forms keeps the join (`sift.explain_why`, arm `scope`): among them a join or a read for each pair over the pairs of a non-unique btree, a join to a table of keys that may hold a key twice,
+  a key in an expression, a range of keys, `ROLLUP` / `CUBE` / grouping sets over the key. A top-N cannot take the patch or the delta of a changed pair (`top-n, changed pairs`): the join answers.
+- **No parallel workers.** A scope read is decided once, by the leader (test `col_scope_read` launches none); the join the node falls back to runs serial in the leader. The builds do run in parallel.
+- **`CREATE INDEX CONCURRENTLY`** starts the journal at the end of its build, so the scope segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the scope index or the rewrite the maintenance makes.
+- **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).
+- **Generic plans.** A condition on the relation that reads a parameter is proved only by a custom plan: a generic plan keeps the join for a relation with a partial btree.
+- **Two builds at once.** `REINDEX` of two indexes of one table at the same time is not covered by the build-lock event trigger.
+- **Format.** The reserved by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity rows still answer.
 
 ## Without a scope index: replicate or reuse
 
@@ -471,7 +479,7 @@ make; they differ in what they keep.
 | WAL of the builds (same fixture; 2.6 MB for the plain index) | 6.7 MB | 24.6 MB |
 | writes to the facts | the statements cost what the index costs (the write buffer of the index; the pairs are read through their journal); the scope work is deferred to the promotion ([What it costs](#what-it-costs)) | a statement trigger applies the change to the copy in the statement |
 | writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
-| a pair table that is a view | no: the pairs are a table with a unique btree | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
+| a pair table that is a view | no: the pairs are a heap table with a btree on its two columns, unique or not | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
 | the planner uses it | the join forms of the statement, as the application writes them (the recognition above) | the copy is a table: `WHERE tenant_id = k` on it |
 | state | EXPERIMENTAL | new in 5.0, EXPERIMENTAL too (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
 
