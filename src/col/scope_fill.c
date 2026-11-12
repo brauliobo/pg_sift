@@ -273,7 +273,7 @@ fill_new(MemoryContext mcxt, int n)
 static void
 fill_snapshot(SiftScopeFill *f)
 {
-	f->snap = IsInParallelMode() ? GetActiveSnapshot() : RegisterSnapshot(GetTransactionSnapshot());
+	f->snap = IsInParallelMode() ? GetActiveSnapshot() : RegisterSnapshot(GetLatestSnapshot());
 }
 
 /* The maps are made: a fill whose maps all hold their pairs gives the snapshot back, one that probes keeps it until the end call */

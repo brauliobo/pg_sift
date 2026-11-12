@@ -35,6 +35,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "access/stratnum.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
@@ -267,6 +268,34 @@ item_strays(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 	return bms_is_empty(c->root->simple_rel_array[rti]->lateral_relids) ?
 		"a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units" :
 		"a lateral (correlated) sub-select reads the scope relation";
+}
+
+bool
+sift_agg_reads_scope(Query *level, Node *tree)
+{
+	foreach_node(RangeTblEntry, rte, level->rtable)
+	{
+		Relation	heap;
+
+		if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || !has_column_source(rte->relid))
+			continue;
+		heap = relation_open(rte->relid, AccessShareLock);
+		foreach_oid(ixoid, RelationGetIndexList(heap))
+		{
+			Relation	index = index_open(ixoid, AccessShareLock);
+			ScopeSeen	seen = {rte->relid, sift_col_is_index(index) ? sift_scope_specs(index) : NULL};
+			bool		hit = seen.specs != NULL && scope_seen_walker(tree, &seen);
+
+			index_close(index, NoLock);
+			if (hit)
+			{
+				relation_close(heap, AccessShareLock);
+				return true;
+			}
+		}
+		relation_close(heap, AccessShareLock);
+	}
+	return false;
 }
 
 /*
@@ -657,8 +686,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return "the scope key is not bound by an equality or an IN list of constants or parameters";
 	/* several keys or every key counted for each pair, or a group key: where the units cannot (the reader refuses them, or the join costs less) the node runs the join the first pass priced, so it needs one */
 	if ((sc.all || sc.nkeys > 1 || key_read) && !once && t->alts == NIL)
-		return it.is_union ? "several keys or every key, or the key as a group key, of a union of the two paths, and a row counts once for each pair: where the units cannot answer the node runs the join, whose plan holds the union as a child the node cannot run in its place" :
-			"several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
+		return "several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have";
 	if (it.is_union && rest != NIL)
 		return psprintf("the union of the two paths of the scope has another condition: %s", expr_text(c, linitial(rest)));
 	if (!it.is_union && (why = scope_pairs_proof(c, specs, sp, rti, map, nmap, rest)) != NULL)
@@ -696,6 +724,18 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 			*key = get_attnum(rte->relid, sp->rel.b);
 			return true;
 		}
+		if (rte->rtekind == RTE_SUBQUERY && rte->subquery->setOperations != NULL)
+		{
+			ScopeItem	it = scope_union_item(c, specs, rte->subquery);
+
+			for (int i = 1; it.is_union && !it.all && i < it.nmap; i++)
+				if (it.map[i] == get_attnum(it.relid, it.sp->rel.b))
+				{
+					*rti = jc->rti;
+					*key = i;
+					return true;
+				}
+		}
 	}
 	return false;
 }
@@ -720,7 +760,7 @@ scope_strays(AggCtx *c, const FromScan *fs, const SiftScopeSpecs *specs)
 			continue;
 		foreach_ptr(SubPlan, sp, c->root->init_plans)
 			if (sp->plan_id == plan && sp->subLinkType == ARRAY_SUBLINK)
-				return "ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan: write it as IN (SELECT ..) or EXISTS";
+				return "ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan, so this plan joins as written; the statement is also planned with IN (SELECT ..) in its place where the sub-select has no ORDER BY, LIMIT, DISTINCT or aggregate, and the cheaper plan runs (sift.explain_why of the IN form says why it is not read from the units)";
 		return "a sub-select over the scope relation is a plan of its own (NOT IN, OR, a scalar sub-select, a MATERIALIZED CTE, the select list): only a join, IN or EXISTS that PostgreSQL pulls up into the join is read from the units";
 	}
 	return NULL;

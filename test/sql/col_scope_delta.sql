@@ -115,10 +115,10 @@ SELECT * FROM probe();
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('facts_col', true);
 
--- soft deleted pairs, read at the price (sift.test_scope_patch off: the read takes the cheaper of the units and the entity rows): the pairs are the rows of a partial unique btree, the journal index is
--- plain and lists the soft deleted rows too, so the pairs of a buffered row's member are those of the btree. A buffered row of a member with only soft deleted pairs reads nothing, one of a member
--- with some active pairs reads a copy for each of them; every key's answer is the join's on the active pairs, from the units (route units) through each state of the pairs and the buffers
-SET sift.test_scope_patch = off;
+-- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too, so the pairs of a buffered row's member are those of the btree.
+-- A buffered row of a member with only soft deleted pairs reads nothing, one of a member with some active pairs reads a copy for each of them; every key's answer is the join's on the active pairs,
+-- from the units through each state of the pairs and the buffers. The reads take the units whatever they cost (sift.test_scope_patch of the cluster): the price of the patch against the join sits
+-- within a factor of two of the size of these tables, on both sides, and it follows the planner's estimates, which a PostgreSQL version may move across it (the tests of the price are col_scope_patch_price and col_scope_price_terms)
 CREATE TABLE sd_pairs (dim_a_id int, group_id int, deleted_at timestamptz, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
 INSERT INTO sd_pairs SELECT m, 1 + (m * 5 + j * 7) % 12, CASE WHEN (m + j) % 5 = 0 THEN now() END FROM generate_series(1, 200) m, generate_series(0, m % 3) j ON CONFLICT DO NOTHING;
 CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, group_id) WHERE deleted_at IS NULL;
@@ -145,7 +145,6 @@ INSERT INTO sd_states VALUES
 	(4, 'restore some', 'UPDATE sd_pairs SET deleted_at = NULL WHERE dim_a_id % 12 = 1'),
 	(5, 'promoted', 'SELECT sift.col_promote(''sd_facts_col'')');
 SELECT c FROM sd_states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM sd_probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
-RESET sift.test_scope_patch;
 DROP TABLE sd_states, sd_facts, sd_pairs;
 DROP FUNCTION sd_probe();
 

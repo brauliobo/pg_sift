@@ -23,6 +23,15 @@
 #include "agg/agg_int.h"
 #include "agg/lookcol_int.h"
 
+static bool test_scope_join;
+
+void
+sift_agg_scope_init(void)
+{
+	DefineCustomBoolVariable("sift.test_scope_join", "Testing: a scope read runs the join the node holds, whatever the units cost.", NULL, &test_scope_join, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+}
+
 int
 sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 {
@@ -40,15 +49,26 @@ sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
 
 static SiftSrcPrune *values_prune(int leaf, const int64 *vals, uint32 n);
 
-/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); vals NULL: of every unit */
+/* The units that have a value in the leaf: those of the scope the leaf is the derived key of (another scope's units and the entity units hold NULL there) */
+static SiftSrcPrune *
+not_null_prune(int leaf)
+{
+	SiftSrcPrune *z = palloc0(sizeof(SiftSrcPrune));
+
+	z->leaf = leaf;
+	z->nulltest = SSN_NOTNULL;
+	return z;
+}
+
+/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); NULL: of every unit */
 static uint64
-unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n, uint64 *units)
+unit_rows(SiftSrcSource *src, SiftSrcPrune *prune, uint64 *units)
 {
 	SiftSrcUnit u;
 	uint64		rows = 0;
 
 	*units = 0;
-	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), vals ? values_prune(leaf, vals, n) : NULL, vals ? 1 : 0);
+	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), prune, prune ? 1 : 0);
 	while (sift_colsrc_next(src, &u))
 	{
 		rows += u.nrow;
@@ -62,7 +82,7 @@ unit_rows(SiftSrcSource *src, int leaf, const int64 *vals, uint32 n, uint64 *uni
  * which are all a listing reads, and the join of the planner reads them there), else from the relation.
  */
 static int64 *
-listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
+listed_members(AggExec *ex, Snapshot snapshot, uint32 *n)
 {
 	const SiftAggScope *sc = ex->spec->scope;
 	int64	   *sorted = palloc(Max(sc->nkeys, 1) * sizeof(int64)),
@@ -79,28 +99,21 @@ listed_members(AggExec *ex, Snapshot snapshot, uint32 *n, double *pairs)
 	for (int i = 0; i < sc->nkeys; i++)
 		if (nk == 0 || sorted[nk - 1] != sorted[i])
 			sorted[nk++] = sorted[i];
-	if (pairs)
-		*pairs = Max(rel->rd_rel->reltuples, 0);
 	if (!OidIsValid(journal) || !lookcol_members(rel, journal, snapshot, member, skey, sorted, nk, &members, n))
 		members = sift_scope_members(ex->heap, ex->index, sc->key_name, snapshot, sc->keys, sc->nkeys, n);
 	table_close(rel, NoLock);
 	return members;
 }
 
-/* the pairs of the relation of the scope */
-static double
-pairs_rows(AggExec *ex)
+/* the rows of the relations the pairs of the scope are listed from, by the way they are listed */
+static void
+pair_counts(AggExec *ex, SiftScopeCounts *c)
 {
-	const SiftAggScope *sc = ex->spec->scope;
-	Relation	rel;
-	AttrNumber	member,
-				skey;
-	double		rows;
+	double		scanned;
+	double		rows = sift_scope_relations_rows(ex->heap, ex->index, ex->spec->scope->key_name, &scanned);
 
-	(void) sift_scope_pairs_index(ex->heap, ex->index, sc->key_name, &rel, &member, &skey);
-	rows = Max(rel->rd_rel->reltuples, 0);
-	table_close(rel, NoLock);
-	return rows;
+	c->pairs = rows - scanned;
+	c->scan_pairs = scanned;
 }
 
 /* the entries of the scope segments, the rows a scan of every key reads */
@@ -142,15 +155,16 @@ unit_counts(AggExec *ex, Snapshot snapshot)
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
 	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
+	int			leaf = sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name);
 
-	c.entries = unit_rows(units, sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name), sc->all ? NULL : sc->keys, sc->nkeys, &c.units);
+	c.entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c.units);
 	sift_colsrc_close(units);
 	MemoryContextDelete(cx);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
+	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)
 	{
-		c.pairs = pairs_rows(ex);
-		c.key_pairs = c.pairs * c.entries / Max(scope_entries(ex), 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
+		c.key_pairs = (c.pairs + c.scan_pairs) * c.entries / Max(scope_entries(ex), 1);	/* the pairs of the keys, as many of the relation's as the keys have of the entries: the reader counts them */
 	}
 	return c;
 }
@@ -168,39 +182,6 @@ read_counts(const SiftAggScope *sc, SiftScopeCounts *c, const SiftScopeRead *rd)
 	c->preagg *= exp(-SCOPE_CHANGED_SPREAD * rd->nexcept / Max(alt_keys(sc, c->entries), 1.0));
 }
 
-/*
- * Is the entity path cheaper than the units with the patch and the delta? The units read the scope entries of the keys, the patch reads the rows of the members that changed by member key and the
- * delta copies them (and the rows of the write buffers) for each pair. The entity path lists the members of the keys, and reads the units of the entity rows that may hold one of them,
- * which the planner's semi join does the same way: both are counted from the zones and set summaries of the units, as the scan prunes them, and priced by sift_scope_entity_cheaper
- * (col/scope.h), which the planner calls with its estimates. The list the entity path takes is kept.
- */
-static bool
-patch_dearer(AggExec *ex, Snapshot snapshot)
-{
-	const SiftAggScope *sc = ex->spec->scope;
-	SiftScopeRead *rd = ex->scope_rd;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
-	double		pairs;
-	SiftScopeCounts c;
-	bool		dearer;
-
-	rd->members = listed_members(ex, snapshot, &rd->nmembers, &pairs);
-	c = unit_counts(ex, snapshot);
-	read_counts(sc, &c, rd);
-	c.pairs = pairs;
-	c.path_rows = unit_rows(entity, sc->fk, rd->members, rd->nmembers, &c.path_units);
-	sift_colsrc_close(entity);
-	MemoryContextDelete(cx);
-	dearer = sift_scope_entity_cheaper(&c);
-	if (!dearer)
-	{
-		pfree(rd->members);
-		rd->members = NULL;
-	}
-	return dearer;
-}
-
 /* what the read's patch and delta cost, from the counts it planned */
 static double
 patch_price(const SiftScopeRead *rd)
@@ -208,6 +189,54 @@ patch_price(const SiftScopeRead *rd)
 	SiftScopeCounts c = {.patch_units = rd->patch_units, .patch_scan_rows = rd->patch_scan, .delta_rows = rd->delta_rows + rd->patch_rows};
 
 	return sift_scope_patch_price(&c);
+}
+
+/* ... and with the changed members, at the least a member costs (the pairs of the relations are not known yet) */
+static double
+patch_extra(const SiftScopeRead *rd)
+{
+	return patch_price(rd) + SIFT_SCOPE_MEMBER_INSTR * (double) rd->nexcept;
+}
+
+/*
+ * Is the entity path cheaper than the units with the changed members, the patch and the delta? The units read the scope entries of the keys, the changed members are listed and the patch reads the rows of the
+ * members that changed by member key, which the delta copies (with the rows of the write buffers) for each pair; changed and rd: the members the journal lists, and what the read planned of the patch (NULL
+ * before it is planned). The entity path lists the members of the keys from the relations of the scope and reads the units of the entity rows, as many as the layout leaves it: both are priced by
+ * sift_scope_entity_cheaper (col/scope.h), which the planner calls with its estimates. The members are not listed to price it (the listing is the dearest part of the entity path, and the units read are then
+ * those of the zones of the member leaf, which prune a layout that clusters it only): all the units and rows count.
+ */
+static bool
+entity_cheaper(AggExec *ex, Snapshot snapshot, uint64 changed, const SiftScopeRead *rd)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	SiftScopeCounts c = unit_counts(ex, snapshot);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view);
+	bool		cheaper;
+
+	if (rd != NULL)
+		read_counts(sc, &c, rd);
+	c.changed = changed;
+	c.path_rows = unit_rows(entity, NULL, &c.path_units);
+	cheaper = sift_scope_entity_cheaper(&c);
+	sift_colsrc_close(entity);
+	MemoryContextDelete(cx);
+	return cheaper;
+}
+
+/* the extra the changed members, the patch and the delta cost on top of the clean read of the units */
+static bool
+patch_dearer(AggExec *ex, Snapshot snapshot)
+{
+	const SiftScopeRead *rd = ex->scope_rd;
+	SiftScopeCounts c = {0};
+
+	/* the entity path costs at least what listing the pairs does; changed members and a patch under half of it leave the units, which the entries of the keys bound, below the rest in every measured read, and the units are not counted */
+	pair_counts(ex, &c);
+	c.changed = rd->nexcept;
+	if (sift_scope_members_price(&c) + patch_price(rd) <= sift_scope_entity_price(&c) / 2)
+		return false;
+	return entity_cheaper(ex, snapshot, rd->nexcept, rd);
 }
 
 /*
@@ -265,13 +294,19 @@ join_cheaper(const SiftAggScope *sc, const SiftScopeCounts *c)
 	return sift_scope_units_price(c) > alt_price(sc, alt_keys(sc, c->entries));
 }
 
-/* the changed members past which the join costs less: each costs SIFT_SCOPE_MEMBER_INSTR beyond the price of the clean read (whose counts are c), which the reader need not list */
+/*
+ * the changed members past which the join costs less: the room the clean read leaves under the join, less the journal, over what asking for a member costs; none when the pairs of the relations read whole
+ * (which the read takes for the changed members once they cost more) cost less than the room: the count is then no reason to refuse
+ */
 static uint32
 changed_limit(const SiftAggScope *sc, const SiftScopeCounts *c)
 {
-	double		room = alt_price(sc, alt_keys(sc, c->entries)) - sift_scope_units_price(c);
+	double		room = alt_price(sc, alt_keys(sc, c->entries)) - sift_scope_units_price(c) - SIFT_SCOPE_CHANGED_INSTR,
+				leaf = sift_scope_members_leaf(c);
 
-	return (uint32) Min(Max(room, 0.0) / SIFT_SCOPE_MEMBER_INSTR, (double) PG_UINT32_MAX);
+	if (leaf > 0 && leaf <= room)
+		return PG_UINT32_MAX;
+	return (uint32) Min(Max(room, 0.0) / sift_scope_member_instr(c), (double) PG_UINT32_MAX);
 }
 
 /* the reason EXPLAIN gives for the join the node runs */
@@ -317,6 +352,11 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	ex->scope_why = NULL;
 	if (sc == NULL)
 		return false;
+	if (sc->alt != NULL && test_scope_join)
+	{
+		run_join(ex, "sift.test_scope_join");
+		return false;
+	}
 	leaves = read_leaves(ex->spec, sift_colsrc_layout(ex->index), &nleaves);
 	if (priced)
 	{
@@ -343,7 +383,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return false;
 	}
 	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
-	if (rd->why == NULL && sc->alt == NULL && patch_price(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
 	if (rd->why == NULL)
 		sift_scope_read_rows(rd);
@@ -506,10 +546,7 @@ scope_filter(AggExec *ex, int *total, List **add)
 	if (!sc->once && (sc->all || sc->nkeys > 1))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
 						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));
-	members = ex->scope_rd->members;
-	n = ex->scope_rd->nmembers;
-	if (members == NULL)
-		members = listed_members(ex, ex->snap, &n, NULL);
+	members = listed_members(ex, ex->snap, &n);
 	ex->scope_members = n;
 	ex->scope_preds = 1;
 	if (n == 0)

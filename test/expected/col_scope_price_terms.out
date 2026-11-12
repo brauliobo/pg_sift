@@ -26,7 +26,7 @@ SELECT t.* FROM base, LATERAL (VALUES
 	('the same pairs for one key: not listed', price(1, true, pairs => 1000, key_pairs => 1000) - setup, 1000),
 	('a changed pair', price(2, true, changed => 1000) - setup, 1000),
 	('an entry left out of the units of a changed read', price(2, true, entries => 1000, changed => 1) - price(2, true, entries => 1000) - price(2, true, changed => 1) + setup, 1000),
-	('a unit of the changed pairs rows', price(1, false, patch_units => 10) - setup, 10),
+	('a unit the changed pairs rows fall in', price(1, false, patch_units => 10, delta_rows => 100000) - price(1, false, delta_rows => 100000), 10),
 	('a fact row looked at to find them', price(1, false, patch_scan_rows => 1000) - setup, 1000),
 	('a copy of the delta', price(1, false, delta_rows => 1000) - setup, 1000)
 ) AS v(label, got, n), LATERAL term(v.label, v.got, 0, v.n::float8) t;
@@ -40,11 +40,11 @@ SELECT t.* FROM base, LATERAL (VALUES
  a pair of the relation listed for several keys   |        39000 |        39
  a pair of the keys listed and deduped            |       286000 |       286
  the same pairs for one key: not listed           |            0 |         0
- a changed pair                                   |      3300000 |      3300
+ a changed pair                                   |      3450000 |      3450
  an entry left out of the units of a changed read |        20000 |        20
- a unit of the changed pairs rows                 |      2660000 |    266000
- a fact row looked at to find them                |        15000 |        15
- a copy of the delta                              |      1385000 |      1385
+ a unit the changed pairs rows fall in            |       430000 |     43000
+ a fact row looked at to find them                |        13000 |        13
+ a copy of the delta                              |      1600000 |      1600
 (13 rows)
 
 -- the entity path: the pairs it reads, the units and the rows of the fact segments that may hold a dim_a_id of the keys, the entries it keeps
@@ -97,12 +97,12 @@ ORDER BY n;
  55 rows, two keys          |   10 |      6.5 |       6.47 |             0 | t
  55 rows, two keys          |   30 |     21.1 |       20.5 |             3 | t
  55 rows, two keys          |   50 |     49.5 |      48.35 |             2 | t
- 20 of 110 pairs changed    |    1 |     12.1 |      12.21 |            -1 | t
- 20 of 110 pairs changed    |   30 |     35.6 |      35.77 |            -1 | t
- 20 pairs of every tenant   |    1 |     16.8 |      15.46 |             9 | t
- 20 pairs of every tenant   |   30 |    133.4 |      140.6 |            -5 | t
- every pair of every tenant |    1 |     50.2 |      43.87 |            14 | t
- every pair of every tenant |   30 |    534.7 |     494.16 |             8 | t
+ 20 of 110 pairs changed    |    1 |      9.9 |      12.21 |           -19 | t
+ 20 of 110 pairs changed    |   30 |     33.4 |      35.77 |            -7 | t
+ 20 pairs of every tenant   |    1 |     12.5 |      15.46 |           -19 | t
+ 20 pairs of every tenant   |   30 |    143.5 |      140.6 |             2 | t
+ every pair of every tenant |    1 |     36.5 |      43.87 |           -17 | t
+ every pair of every tenant |   30 |    593.5 |     494.16 |            20 | t
 (19 rows)
 
 -- a read of keys whose pairs changed past what the join leaves it is refused before it lists them: 1,200 dim_a_ids of 40 keys, 100 facts each
@@ -169,7 +169,7 @@ SELECT '5 pairs changed' AS state, * FROM outcome('{1,2,3}');
  5 pairs changed | scope read | t
 (1 row)
 
--- 700 are more than the join leaves the read of 3 keys and fewer than the cap of the rows of the table (763): the join answers, and the reason is the count
+-- 700 are more than the join leaves the read of 3 keys and fewer than the cap of the rows of the table (763): the pairs of the relation are read whole for them (cheaper than asking for each), and the join answers on the price
 SELECT churn(700);
  churn 
 -------
@@ -177,9 +177,9 @@ SELECT churn(700);
 (1 row)
 
 SELECT '700 pairs changed' AS state, * FROM outcome('{1,2,3}');
-       state       |        chosen         | same_rows 
--------------------+-----------------------+-----------
- 700 pairs changed | too many changed keys | t
+       state       |   chosen   | same_rows 
+-------------------+------------+-----------
+ 700 pairs changed | scope read | t
 (1 row)
 
 -- the cap counts the distinct dim_a_ids, not the records of the journal: 700 changed by 1,410 records are 700

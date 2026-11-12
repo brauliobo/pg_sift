@@ -74,7 +74,7 @@ SELECT sift.col_verify('events_col', true);
 SELECT g.gen IN (SELECT gen FROM sift._test_col_scope_entries('events_col')) AS scope_segment, bool_or(s.section = 'point_dir') AS has_point_directory
 	FROM (SELECT gen FROM sift.col_segments('events_col') WHERE kind = 'immutable') g, LATERAL sift._test_col_sections('events_col', g.gen) s GROUP BY 1 ORDER BY 1;
 
--- the scope stamps are written with every segment (a scope relation has no journal in this round: lineage 0, the horizon of the snapshot the pairs were read under)
+-- the scope stamps are written with every segment (the journal of the scope relation, and the horizon of the snapshot the pairs were read under)
 SELECT count(*) > 0 AS stamped, count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
 	FROM sift._test_col_conn_stamps('events_col');
 

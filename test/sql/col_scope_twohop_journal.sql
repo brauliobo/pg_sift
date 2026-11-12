@@ -125,7 +125,7 @@ RESET sift.test_scope_patch;
 SELECT * FROM probe();
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
 
--- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); a few are left to the reads
+-- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); the rewrite of a table this small costs less than a thousand reads that patch even one (col_scope_refresh_price: a larger one leaves it to the reads)
 VACUUM (ANALYZE) grants, memberships;
 REINDEX INDEX facts_col;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_filled;

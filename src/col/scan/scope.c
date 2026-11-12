@@ -203,7 +203,8 @@ typedef struct PairScan
 	const int64 *keys;			/* the scope keys asked for, sorted and distinct; NULL: every key */
 	uint32		nkeys;
 	ScopePairs	out;
-	int64		cur;			/* the key or the member a probe asks for */
+	int64		cur;			/* the key a probe asks for */
+	SiftConnPred pred;			/* a probe of the journal index: the predicate of the btree, which the rows of the journal index need not satisfy */
 } PairScan;
 
 static bool
@@ -246,10 +247,11 @@ static bool
 probe_of_member(void *arg, TupleTableSlot *slot)
 {
 	PairScan   *ps = arg;
-	int64		k;
+	int64		m,
+				k;
 
-	if (sift_conn_slot_key(slot, ps->skey, &k) && wanted(ps, k))
-		pairs_add(&ps->out, ps->cur, k);
+	if (sift_conn_pred_test(&ps->pred, slot) && sift_conn_slot_key(slot, ps->member, &m) && sift_conn_slot_key(slot, ps->skey, &k) && wanted(ps, k))
+		pairs_add(&ps->out, m, k);
 	return true;
 }
 
@@ -269,8 +271,9 @@ probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnPr
 	sift_conn_probe_close(&s);
 }
 
-/* A pair read from the leaves of the journal index of the relation costs about this (the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is 13 times that), a probe of the btree about 3,500 */
-#define LEAF_PAIR_NS	10
+/* A pair read from the leaves of the journal index of the relation costs about this (138 instructions: 16 million for 116,000 pairs; the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is three times that), a probe of the btree about 3,500 */
+#define LEAF_PAIR_NS	45
+#define SCAN_NS		130
 #define PROBE_NS		3500
 
 static bool
@@ -301,18 +304,57 @@ pairs_of_keys(PairScan *ps)
 	pairs_distinct(&ps->out);
 }
 
-/* The pairs of the members with one of the keys: the btree asked for each member when it leads with the member and that is cheaper than reading the pairs of the keys (the fill's price rule), else the pairs of the keys filtered */
+/* The members asked of the relation's journal index in one search: its rows (a journal index is led by the member and holds every row of a pair, soft deleted ones too) are tested against the predicate of the btree */
+static void
+probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
+{
+	SiftConnProbe *p = sift_conn_probe_begin_on(CurrentMemoryContext, ps->rel, journal, ps->member, ps->snap);
+	SiftConnProbeScan s;
+
+	sift_conn_pred_begin(&ps->pred, ps->btree);
+	sift_conn_probe_open(p, &s);
+	sift_conn_probe_keys(p, &s, members, n, probe_of_member, ps);
+	sift_conn_probe_close(&s);
+	sift_conn_pred_end(&ps->pred);
+}
+
+/* What the pairs of the keys cost to ask for, in ns: the btree for each key when it leads with the scope key, else the leaves of the relation's journal index, else the relation read (pairs_of_keys) */
+static double
+keys_ns(const PairScan *ps, double rows)
+{
+	double		read = rows * (OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
+
+	return ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) ? Min(read, (double) ps->nkeys * PROBE_NS) : read;
+}
+
+/*
+ * The pairs of the members, by asking an index for them: the btree for each member when it leads with the member, else the journal index of the relation in one search (it is led by the member
+ * whichever way the btree is), whichever is cheaper than the pairs of the keys (keys_ns): thousands of changed members cost more to ask for than the leaves of the keys' pairs to read. False: neither is
+ */
+static bool
+probe_members(PairScan *ps, const int64 *members, uint32 n)
+{
+	double		read = keys_ns(ps, sift_conn_rows_of(ps->rel));
+	Oid			journal;
+
+	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper_than(n, read))
+		probe_all(ps, ps->member, members, n, probe_of_member);
+	else if (OidIsValid(journal = sift_scope_journal_index(ps->rel, ps->member, ps->skey, ps->btree)) && sift_conn_journal_cheaper_than(n, read))
+		probe_journal(ps, journal, members, n);
+	else
+		return false;
+	pairs_distinct(&ps->out);
+	return true;
+}
+
+/* The pairs of the members with one of the keys: probed (probe_members), else the pairs of the keys filtered */
 static void
 pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
 {
 	uint32		k = 0;
 
-	if (btree_leads_with(ps->btree, ps->member) && sift_conn_probe_cheaper(n, sift_conn_rows_of(ps->rel)))
-	{
-		probe_all(ps, ps->member, members, n, probe_of_member);
-		pairs_distinct(&ps->out);
+	if (probe_members(ps, members, n))
 		return;
-	}
 	pairs_of_keys(ps);
 	for (uint32 i = 0; i < ps->out.n; i++)
 		if (has_i64(members, n, ps->out.p[i].member))
@@ -461,6 +503,31 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 	*skey = ps.skey;
 	/* the leaves of one journal list the pairs of one relation; the members of a scope of two paths are listed by sift_scope_members */
 	return sift_scope_specs(index)->s[ord]->joined != NULL ? InvalidOid : sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
+}
+
+double
+sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned)
+{
+	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
+	const SiftScopeSpec *s = sift_scope_specs(index)->s[ord];
+	double		rows = 0;
+	PairScan	ps = {0};
+
+	*scanned = 0;
+	for (int hop = 0; hop <= (s->joined != NULL ? 2 : 0); hop++)
+	{
+		double		n;
+
+		if (hop == 0)
+			scope_relation(heap, index, ord, &ps, NULL, 0, NULL);
+		else
+			hop_scan(heap, index, s, hop, &ps, NULL, NULL, 0);
+		n = sift_conn_rows_of(ps.rel);
+		rows += n;
+		*scanned += OidIsValid(sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree)) ? 0 : n;
+		table_close(ps.rel, NoLock);
+	}
+	return rows;
 }
 
 /* ---- what the segments of the index say ---- */
@@ -737,6 +804,61 @@ sift_scope_read_rows(SiftScopeRead *rd)
 	rd->delta_rows += copies;
 }
 
+/* the key most of the pairs of ps have (the least of them when several do) */
+static int64
+commonest_key(const ScopePairs *ps)
+{
+	int64	   *k = palloc(ps->n * sizeof(int64));
+	int64		key = 0;
+	uint32		best = 0,
+				run = 0;
+
+	for (uint32 i = 0; i < ps->n; i++)
+		k[i] = ps->p[i].key;
+	sift_sort_i64(k, ps->n);
+	for (uint32 i = 0; i < ps->n; i++)
+	{
+		run = i > 0 && k[i] == k[i - 1] ? run + 1 : 1;
+		if (run > best)
+		{
+			best = run;
+			key = k[i];
+		}
+	}
+	pfree(k);
+	return key;
+}
+
+bool
+sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope, SiftScopeCounts *c)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
+	SiftConnKeys changed = {0};
+	ScopePairs	pairs;
+	SiftScopeRead *rd;
+	int64		key;
+
+	*c = (SiftScopeCounts) {.nkeys = 1,.once = true};
+	sift_dir_read(index, dir);
+	if (segments_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
+		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, &changed) != SIFT_CONN_OK)
+		return false;
+	c->changed = changed.n;
+	pairs = scope_pairs(heap, index, scope, snap, NULL, 0, changed.keys, changed.n, 0);
+	sift_conn_keys_free(&changed);
+	if (pairs.n == 0)
+		return true;	/* no changed member has a pair now: nothing to patch */
+	key = commonest_key(&pairs);
+	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, &key, 1, true, false, NULL, 0, PG_UINT32_MAX);
+	if (rd->why != NULL)
+		return false;
+	c->patch_units = rd->patch_units;
+	c->patch_scan_rows = rd->patch_scan;
+	c->delta_rows = rd->patch_rows;
+	return true;
+}
+
 SiftScopeRead *
 sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves,
 				uint32 max_changed)
@@ -762,6 +884,8 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	(void) sift_cwbuf_flush(index);
 	dir = palloc(sizeof(SiftDirSnapshot));
 	sift_dir_read(index, dir);
+	rd->view = sift_col_scope_view(heap, dir);
+	SIFT_COL_OPEN_GATE();
 	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
 	return rd;
 }

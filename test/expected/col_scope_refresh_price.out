@@ -1,0 +1,102 @@
+-- The maintenance rewrites the scope segments of an index whose pairs changed since they were filled when the reads that pay for the changed members cost more than the rewrite (a read pays for
+-- them every time: the journal, their pairs, the patch of their rows and the delta). The prices are pure (instructions, from the counts of col/scope.h): the refresh of the segments grows with the
+-- entity rows and the entries it writes, a read with the changed members and the units they fall in. Then the decision on an index: a pair edit of one member leaves the segments as they are (md5 of
+-- the scope read equal to the plain join, the stamps unchanged), the edit of twenty more is refreshed by sift.col_maintain (new stamp, no member changed since, md5 equal). Counts and md5 only,
+-- no timings.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET sift.scope_max_multiplicity = 8;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.agg_force = on;
+-- the refresh and the read of the changed members, for the entity rows, the entries times the columns they keep and the counts a read has, and whether the refresh is due
+SELECT rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows,
+	   round(refresh_price / 1e6) AS refresh_m, round(read_price / 1e3) AS read_k, due
+FROM (VALUES (60000, 150000, 4, 0, 0, 0, 0),
+			 (60000, 150000, 4, 1, 1, 12000, 20),
+			 (60000, 150000, 4, 20, 5, 60000, 400),
+			 (60000, 150000, 4, 400, 5, 60000, 8000),
+			 (1000000, 1000000, 7, 20, 20, 100000, 13000),
+			 (1000000, 1000000, 7, 200, 200, 1000000, 130000),
+			 (1000000, 1000000, 7, 2000, 200, 1000000, 1300000)) AS t(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows),
+	 LATERAL sift._test_scope_refresh(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows)
+ORDER BY rows, changed;
+  rows   | entries | columns | changed | patch_units | patch_scan_rows | delta_rows | refresh_m | read_k  | due 
+---------+---------+---------+---------+-------------+-----------------+------------+-----------+---------+-----
+   60000 |  150000 |       4 |       0 |           0 |               0 |          0 |       498 |       0 | f
+   60000 |  150000 |       4 |       1 |           1 |           12000 |         20 |       498 |     384 | f
+   60000 |  150000 |       4 |      20 |           5 |           60000 |        400 |       498 |    1851 | t
+   60000 |  150000 |       4 |     400 |           5 |           60000 |       8000 |       498 |   15265 | t
+ 1000000 | 1000000 |       7 |      20 |          20 |          100000 |      13000 |      6260 |   23176 | t
+ 1000000 | 1000000 |       7 |     200 |         200 |         1000000 |     130000 |      6260 |  230410 | t
+ 1000000 | 1000000 |       7 |    2000 |         200 |         1000000 |    1300000 |      6260 | 2108350 | t
+(7 rows)
+
+CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
+INSERT INTO tenant_scope SELECT d, 1 + (d * 5 + j * 7) % 12 FROM generate_series(1, 3000) d, generate_series(0, d % 4) j ON CONFLICT DO NOTHING;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i * 7919) % 3000, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 60000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+VACUUM (FREEZE, ANALYZE) events;
+VACUUM (ANALYZE) tenant_scope;
+-- the members whose pairs changed since the stamp of the scope segments, and whether the scope read equals the plain join (every tenant)
+CREATE FUNCTION changed_members() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(c.key) FROM (SELECT s.lineage, s.horizon::text::xid AS horizon FROM sift._test_col_scope_stamps('events_col') s
+							   WHERE s.family = 'scope' AND s.scope = 0 ORDER BY s.horizon LIMIT 1) t,
+		 LATERAL sift._test_scope_journal_changes('events_col', 0, t.lineage, t.horizon) c
+$$;
+CREATE FUNCTION same_as_join() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SELECT md5(json_agg(t)::text) INTO a FROM (SELECT k, count(*), sum(amount) FROM generate_series(1, 12) k, LATERAL
+		(SELECT e.amount FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = k)) x GROUP BY k ORDER BY k) t;
+	SET LOCAL sift.enable_agg = off;
+	SELECT md5(json_agg(t)::text) INTO b FROM (SELECT k, count(*), sum(amount) FROM generate_series(1, 12) k, LATERAL
+		(SELECT e.amount FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = k)) x GROUP BY k ORDER BY k) t;
+	RETURN a = b;
+END $$;
+CREATE TEMP TABLE stamp_before AS SELECT horizon FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0;
+-- nothing changed: nothing to refresh
+SELECT changed_members() AS changed, sift.col_maintain('events_col') AS rewritten;
+ changed | rewritten 
+---------+-----------
+       0 | f
+(1 row)
+
+-- one member moves to another tenant: a read pays for it, but not as much as a rewrite of the segments of 60,000 rows
+UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id = 1 AND tenant_id = 1 + 5 % 12;
+SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after;
+ changed | same | rewritten | changed_after 
+---------+------+-----------+---------------
+       1 | t    | f         |             1
+(1 row)
+
+-- twenty more members: the reads cost more than the rewrite
+UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id BETWEEN 2 AND 21 AND tenant_id = 1 + (dim_a_id * 5) % 12;
+SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after, same_as_join() AS same_after;
+ changed | same | rewritten | changed_after | same_after 
+---------+------+-----------+---------------+------------
+      21 | t    | t         |             0 | t
+(1 row)
+
+SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) >
+	   (SELECT min(horizon) FROM stamp_before) AS stamp_is_new;
+ stamp_is_new 
+--------------
+ t
+(1 row)
+
+SELECT sift.col_verify('events_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE events, tenant_scope CASCADE;
+DROP FUNCTION changed_members(), same_as_join();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -198,7 +198,8 @@ fills the rows again under one new stamp. A connection whose journal does not vo
 The flags of a segment are as of its stamp, so they age with the parent. The rewrite of `sift.col_auto_merge` (the maintenance gate: the WAL budget, the held horizon, the maintenance lock,
 `sift.col_maintain`) takes a segment of a connected index when, for a connection whose journal vouches now, the segment was never filled (the first child of a parent, whose journal starts after its
 scan), its stamp is of another journal (the parent index was rebuilt), the journal cannot tell what changed since the stamp (trimmed, too many keys), or the keys changed since the stamp are
-`sift.col_connect_refresh_pct` percent (10) of the rows of the parent index: below that a read patches those keys from the join, which costs less than the rewrite. The reason is `stale connection` in
+`sift.col_connect_refresh_pct` percent (10) of the rows of the parent index (for a segment with a row whose parent is missing, the rows inserted into the parent since the stamp count too: no
+journal records them, and no flag is read once one is inserted): below that a read patches those keys from the join, which costs less than the rewrite. The reason is `stale connection` in
 `sift.col_maintenance_due`. The rewrite fills the segment again under a new stamp, so the rule ends.
 
 A snapshot older than the journal (a transaction that began before the first child was built and still runs) is never vouched: its reads use the join path for every row, the answer is the same. The

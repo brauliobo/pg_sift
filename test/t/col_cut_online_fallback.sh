@@ -4,6 +4,7 @@
 # free end under an ExclusiveLock (readers are never kept out; a writer waits for the cut of the free end only). The file is within 1.3 times the live bytes after a few
 # VACUUMs with the readers running, a writer stalls for milliseconds, a kill while the pages are copied or when the move is published leaves an index that agrees with its
 # table, and a standby that replays it verifies the index.
+# maintenance_work_mem holds the whole index in one partition: VACUUM leaves a partition of free blocks in a key_cut index in partitions for its rolling rewrite (col_rewrite_roll).
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_OF_ROWS 200000 100000)
@@ -12,7 +13,8 @@ node_init primary 8 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 512MB
 autovacuum = off
-max_worker_processes = 16"
+max_worker_processes = 16
+maintenance_work_mem = 256MB"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \

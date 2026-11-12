@@ -68,7 +68,7 @@ lookvalid_readable(Relation rel, Relation index, Snapshot snap, const LookFinger
 	SiftConnStamp cs = {.lineage = stored->lsn[0],.xmin = (TransactionId) stored->lsn[1]};
 	SiftConnKeys keys = {0};
 
-	return stored->stamp && sift_conn_vouches(rel, index, &cs, snap) == SIFT_CONN_OK && !sift_conn_inserted_since(rel, index, &cs) &&
+	return stored->stamp && sift_conn_vouches(rel, index, &cs, snap) == SIFT_CONN_OK && sift_conn_inserted_rows(rel, index, &cs) == 0 &&
 		sift_conn_changed(rel, index, &cs, snap, 0, &keys) == SIFT_CONN_OK;
 }
 

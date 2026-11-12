@@ -81,9 +81,9 @@ CREATE FUNCTION verdict() RETURNS TABLE (all_same boolean, stored int, reasons t
 	SELECT bool_and(same), count(*) FILTER (WHERE stored)::int, coalesce(string_agg(DISTINCT why, ', '), '-') FROM phase()
 $$;
 
--- built under a journal that did not exist when the table was read: the segments carry no stamp (the next rewrite fills them), and the read says so
+-- the build makes the journal that did not exist before it reads the table: the segments carry its stamp and the reads are the units
 SELECT * FROM verdict();
-SELECT bool_and(lineage = 0) AS unstamped FROM sift._test_col_conn_stamps('events_col');
+SELECT bool_and(lineage = (SELECT lineage FROM sift._test_conn_gen('tenant_scope_journal'))) AS stamped FROM sift._test_col_conn_stamps('events_col');
 -- a rebuild under the journal stamps them
 REINDEX INDEX events_col;
 SELECT bool_and(lineage = (SELECT lineage FROM sift._test_conn_gen('tenant_scope_journal'))) AS stamped_by_the_journal FROM sift._test_col_conn_stamps('events_col');
@@ -206,7 +206,8 @@ SELECT * FROM verdict();
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;
 
--- refresh: a few changed members are left to the reads, as many as sift.col_connect_refresh_pct percent of the pairs make the scope segments due for the rewrite ('stale connection')
+-- refresh: the rewrite of the 20,000 rows costs less than a thousand reads that patch even a few changed members, and so do as many as sift.col_connect_refresh_pct percent of the pairs ('stale connection');
+-- a table whose rewrite costs more leaves a few changed members to the reads (col_scope_refresh_price)
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
 DELETE FROM tenant_scope WHERE dim_a_id <= 5;

@@ -338,7 +338,7 @@ sift_test_conn_enable(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
 	Relation	heap = table_open(index->rd_index->indrelid, ShareLock);
-	uint64		lineage = sift_conn_enable(heap, index);
+	uint64		lineage = sift_conn_enable(heap, index, false);
 
 	table_close(heap, NoLock);
 	index_close(index, NoLock);
@@ -467,14 +467,14 @@ sift_test_conn_gen(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
-/* sift._test_conn_inserted_since(index, lineage, xmin): sift_conn_inserted_since for the stamp */
+/* sift._test_conn_inserted_since(index, lineage, xmin): sift_conn_inserted_rows > 0 for the stamp */
 Datum
 sift_test_conn_inserted_since(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftConnStamp st = {.lineage = (uint64) PG_GETARG_INT64(1),.xmin = PG_GETARG_TRANSACTIONID(2)};
-	bool		since = sift_conn_inserted_since(heap, index, &st);
+	bool		since = sift_conn_inserted_rows(heap, index, &st) > 0;
 
 	table_close(heap, NoLock);
 	index_close(index, NoLock);

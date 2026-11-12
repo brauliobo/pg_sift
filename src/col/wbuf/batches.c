@@ -395,7 +395,7 @@ fresh_stamp(const Fresh *f)
 	return top;
 }
 
-bool
+uint64
 sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, TransactionId x)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer inserters", ALLOCSET_DEFAULT_SIZES);
@@ -403,12 +403,12 @@ sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftC
 	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
 	WbufLane	lane[SIFT_LANES];
 	Fresh		f;
-	bool		since = false;
+	uint64		since = 0;
 
 	lanes_unread(lane);
 	fresh_read(r, lane, NULL, &f);
-	for (int i = 0; !since && i < f.nheld; i++)
-		since = f.held[i].xst == XST_NONE || !TransactionIdIsValid(f.held[i].xmin) || TransactionIdFollowsOrEquals(f.held[i].xmin, x);
+	for (int i = 0; i < f.nheld; i++)
+		since += f.held[i].xst == XST_NONE || !TransactionIdIsValid(f.held[i].xmin) || TransactionIdFollowsOrEquals(f.held[i].xmin, x);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	return since;

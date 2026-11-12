@@ -22,17 +22,19 @@ overlay() {
 }
 
 # build_old PG_CONFIG ROOT: pg_sift for another major, built in a copy of this tree (the tree under test keeps its objects); OLD_MAJOR names that major.
+# The copy of this tree is the testing library like the staged one (the SQL of the test sets sift.test_* settings on both sides); a release is the release library.
 # Returns 77 after the SKIP line when the compile of a tagged release (OLD_REF) fails: a release cannot follow a newer major; any other failure is 1
 build_old() {
-	local src=$TAPDIR/old-src
+	local src=$TAPDIR/old-src testing=1
+	[[ -z $OLD_REF ]] || testing=
 	mkdir -p "$src"
 	if [[ -n $OLD_REF ]]; then git -C "$REPO" archive "$OLD_REF" | tar -x -C "$src"
 	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.dylib' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
-	nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= >"$TAPDIR/old-build.log" 2>&1 || {
+	nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing >"$TAPDIR/old-build.log" 2>&1 || {
 		[[ -n $OLD_REF ]] || return 1
 		echo "1..0 # SKIP the release $OLD_REF cannot be built for PostgreSQL $OLD_MAJOR"; return 77
 	}
-	make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= DESTDIR="$2" install >>"$TAPDIR/old-build.log" 2>&1
+	make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing DESTDIR="$2" install >>"$TAPDIR/old-build.log" 2>&1
 }
 
 # initdb_node NAME OFFSET BINDIR: the cluster every test starts from, with data checksums on both sides

@@ -23,6 +23,9 @@
  */
 #define FILL_SCAN_NS_PER_PARENT_ROW	130
 #define FILL_PROBE_NS_PER_KEY		3500
+/* a sift_col journal index asked for a run of keys in one search: its segments are opened once, then each key is a point lookup and the heap row it names */
+#define FILL_JOURNAL_NS				60000
+#define FILL_JOURNAL_NS_PER_KEY		2000
 
 
 #ifdef SIFT_TESTING
@@ -66,15 +69,33 @@ sift_conn_rows_of(Relation rel)
 	return tuples;
 }
 
-/* Is asking the btree for `rows` keys cheaper than reading a parent of `parent_rows` rows? */
+/* Is asking the btree for `rows` keys cheaper than another way to the same keys that costs `read_ns`? */
 bool
-sift_conn_probe_cheaper(uint64 rows, double parent_rows)
+sift_conn_probe_cheaper_than(uint64 rows, double read_ns)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_conn_fill != 0)
 		return sift_test_conn_fill == 2;
 #endif
-	return (double) rows * FILL_PROBE_NS_PER_KEY < parent_rows * FILL_SCAN_NS_PER_PARENT_ROW;
+	return (double) rows * FILL_PROBE_NS_PER_KEY < read_ns;
+}
+
+/* ... and asking a journal index in one search for them */
+bool
+sift_conn_journal_cheaper_than(uint64 rows, double read_ns)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_conn_fill != 0)
+		return sift_test_conn_fill == 2;
+#endif
+	return FILL_JOURNAL_NS + (double) rows * FILL_JOURNAL_NS_PER_KEY < read_ns;
+}
+
+/* Is asking the btree for `rows` keys cheaper than reading a parent of `parent_rows` rows? */
+bool
+sift_conn_probe_cheaper(uint64 rows, double parent_rows)
+{
+	return sift_conn_probe_cheaper_than(rows, parent_rows * FILL_SCAN_NS_PER_PARENT_ROW);
 }
 
 SiftColFill *
@@ -264,6 +285,8 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 		SiftConnStamp st = i < seg->nconn ? seg->conn[i] : (SiftConnStamp) {0};
 		double		limit = s->c[i].rows * sift_col_connect_refresh_pct / 100;
 		SiftConnKeys keys;
+		uint64		inserted,
+					changed;
 
 		if (!s->c[i].vouches)
 			continue;
@@ -271,12 +294,12 @@ sift_conn_stale(SiftConnStale *s, const SiftColSegment *seg)
 			return true;
 		if (sift_conn_changed(s->c[i].heap, s->c[i].index, &st, s->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
 			return true;
-		if (keys.n >= limit)
-		{
-			sift_conn_keys_free(&keys);
-			return true;
-		}
+		/* no journal records the inserted rows: a segment with orphans (no flag is read once a parent row was inserted, found.c) counts the rows inserted since with the keys changed */
+		inserted = st.reserved & SIFT_CONN_STAMP_CLEAN ? 0 : sift_conn_inserted_rows(s->c[i].heap, s->c[i].index, &st);
+		changed = keys.n + inserted;
 		sift_conn_keys_free(&keys);
+		if (changed >= limit)
+			return true;
 	}
 	return false;
 }

@@ -81,7 +81,7 @@ extern void sift_conn_keys_free(SiftConnKeys *k);
  * on the table: CREATE INDEX and REINDEX of the child do). Idempotent; the parent index must track a key column (sift_col_row_key_on) and be complete. Returns the
  * lineage.
  */
-extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index);
+extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index, bool read_after);
 
 /*
  * A child index is connected to the parent index: the dependency of the child on the parent (so that the parent index and its table cannot be dropped under it without CASCADE,
@@ -115,11 +115,11 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  * set. Every verdict other than OK means "read the join path for these rows".
  */
 /*
- * Could a row have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
- * count)? Conservative: false only when every segment says its inserters finished before the horizon (SIFT_SEG_XSTAMP) and no live record of the write buffer is from
- * the horizon on. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
+ * How many rows could have been inserted into the parent index by a transaction at or after the stamp's horizon (committed, in progress, or the caller's own; an aborted one does not
+ * count)? Conservative: the rows of each segment that does not say its inserters finished before the horizon (SIFT_SEG_XSTAMP) and the live records of the write buffer from
+ * the horizon on; 0 only when there is none. An UPDATE writes the new version as a row too, so it answers true as well; the keys of an update are in changed(S, X). Only for a stamp the journal vouches for.
  */
-extern bool sift_conn_inserted_since(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
+extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
 /* The same, with the keys of the inserted entries (adds) of a scope relation's journal as well (col/scope.h) */
 extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out);
@@ -224,15 +224,27 @@ extern void sift_conn_fill_end(struct SiftColFill *fill);
 /* What a fill prices its two ways to know the keys of a table with: its estimated rows, and whether asking its btree for `rows` keys is cheaper than reading it (the connection fill and the scope fill) */
 extern double sift_conn_rows_of(Relation rel);
 extern bool sift_conn_probe_cheaper(uint64 rows, double parent_rows);
+/* ... against another way that costs read_ns (a read of the leaves of an index of the parent, say), and for asking a sift_col index of the parent (its journal index) for `rows` keys in one search */
+extern bool sift_conn_probe_cheaper_than(uint64 rows, double read_ns);
+extern bool sift_conn_journal_cheaper_than(uint64 rows, double read_ns);
 
 /* The keys of a parent table under a snapshot (col/conn_keys.c): the least memory exact membership takes (a bitmap of a dense range, else a sorted array) */
 typedef struct SiftConnKeySet SiftConnKeySet;
 extern SiftConnKeySet *sift_conn_keyset_load(MemoryContext cx, Relation parent, AttrNumber key, Snapshot snap, Size limit);
 extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
-/* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation */
+/* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation. pred_index: a btree of rel that holds both columns, whose entries are the rows (a partial one: those of its predicate), read as an index only scan; InvalidOid: every row, read from the heap */
 extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
 extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
+/* The predicate of a partial btree (InvalidOid, or a plain one: none), tested on the rows of its table: a row that fails it is no row of the btree */
+typedef struct SiftConnPred
+{
+	struct EState *estate;
+	struct ExprState *qual;
+} SiftConnPred;
+extern void sift_conn_pred_begin(SiftConnPred *pr, Oid btree);
+extern bool sift_conn_pred_test(const SiftConnPred *pr, TupleTableSlot *slot);
+extern void sift_conn_pred_end(SiftConnPred *pr);
 
 /* The btree probe of the keys of a batch (col/conn_probe.c): the other way to know whether the parent has one visible row for a key */
 typedef struct SiftConnProbe SiftConnProbe;
@@ -253,6 +265,8 @@ typedef bool (*SiftConnProbeFn) (void *arg, TupleTableSlot *slot);
 extern SiftConnProbe *sift_conn_probe_begin_on(MemoryContext cx, Relation parent, Oid btree, AttrNumber key, Snapshot snap);
 extern void sift_conn_probe_open(SiftConnProbe *p, SiftConnProbeScan *s);
 extern void sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnProbeFn each, void *arg);
+/* ... all the n keys in one search of the index (an array key: a sift_col index reads its segments once for them, a btree is asked for each) */
+extern void sift_conn_probe_keys(SiftConnProbe *p, SiftConnProbeScan *s, const int64 *keys, uint32 n, SiftConnProbeFn each, void *arg);
 extern void sift_conn_probe_close(SiftConnProbeScan *s);
 
 /*

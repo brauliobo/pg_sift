@@ -95,9 +95,9 @@ SELECT 'grants_by_member' AS missing, 'built' AS step, * FROM journals() j, prob
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'grants_by_member' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-     missing      |         step          | vouching | why | same | units |   why    
-------------------+-----------------------+----------+-----+------+-------+----------
- grants_by_member | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+     missing      |         step          | vouching | why | same | units | why 
+------------------+-----------------------+----------+-----+------+-------+-----
+ grants_by_member | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -122,9 +122,9 @@ SELECT 'grants_by_group' AS missing, 'built' AS step, * FROM journals() j, probe
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'grants_by_group' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-     missing     |         step          | vouching | why | same | units |   why    
------------------+-----------------------+----------+-----+------+-------+----------
- grants_by_group | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+     missing     |         step          | vouching | why | same | units | why 
+-----------------+-----------------------+----------+-----+------+-------+-----
+ grants_by_group | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -149,9 +149,9 @@ SELECT 'memberships_by_member' AS missing, 'built' AS step, * FROM journals() j,
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'memberships_by_member' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-        missing        |         step          | vouching | why | same | units |   why    
------------------------+-----------------------+----------+-----+------+-------+----------
- memberships_by_member | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+        missing        |         step          | vouching | why | same | units | why 
+-----------------------+-----------------------+----------+-----+------+-------+-----
+ memberships_by_member | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -299,7 +299,7 @@ SELECT * FROM probe();
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
--- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); a few are left to the reads
+-- refresh: the members of a changed group count as changed members (sift.col_connect_refresh_pct percent, 10, of the rows of the pairs relation and the via relation, 65 here: 6.5 members); the rewrite of a table this small costs less than a thousand reads that patch even one (col_scope_refresh_price: a larger one leaves it to the reads)
 VACUUM (ANALYZE) grants, memberships;
 REINDEX INDEX facts_col;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_filled;
@@ -310,9 +310,9 @@ SELECT sift.col_maintenance_due('facts_col', false) AS due_filled;
 
 UPDATE grants SET deleted_at = now() WHERE id = 5;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_a_member;
- due_a_member 
---------------
- 
+   due_a_member   
+------------------
+ stale connection
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 5;

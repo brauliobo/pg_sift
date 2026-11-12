@@ -171,6 +171,7 @@ extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_decor_rows_candidate(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_minmax_sublinks(Query *q, bool apply);
+extern Query *sift_agg_array_sublinks(Query *q);
 extern bool sift_agg_probe_joins(Query *q, bool apply);
 extern void sift_agg_probe_init(void);
 extern bool sift_agg_push_dim_keys(Query *q, bool apply);

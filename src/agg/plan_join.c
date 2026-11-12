@@ -861,10 +861,11 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 		return;
 	scope_alt_record(c, s, input_rel, &cp->path, pathkeys);
 	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
-	s->scope = scope0;
 	agg_path_children(c, ap);
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);
+	scope_alt_children(ap, s);
+	s->scope = scope0;
 	agg_arm_path(&cp->path);
 	agg_force_price(&cp->path);
 	add_path(output_rel, &cp->path);

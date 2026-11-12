@@ -71,8 +71,9 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		return;
 	scope_alt_record(c, s, input_rel, &cp->path, cp->path.pathkeys);
 	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
-	s->scope = scope0;
 	agg_path_children(c, ap);
+	scope_alt_children(ap, s);
+	s->scope = scope0;
 	agg_arm_path(&cp->path);
 	/* TOPN_TIES: the rows come in the order of the first keys only; the Sort puts the others in order, and the Limit above it takes the first */
 	if (nordered < list_length(root->sort_pathkeys))

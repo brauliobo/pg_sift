@@ -431,10 +431,13 @@ scope_pairs_predicate_in_missing	SiftAgg	distinct:f:distinct_set,scope:f:scope,s
 scope_union_in	SiftAgg	single:t
 scope_union_in_view	SiftAgg	distinct:f:distinct_set,distinct:f:distinct_set,single:t
 scope_union_join_view	SiftAgg	single:t
+scope_union_join_keys	SiftAgg	single:t
+scope_union_join_every_key	SiftAgg	single:t,two_level:f:two_arms
+scope_union_group_key	SiftAgg	single:t,two_level:f:two_arms
 scope_union_join_all	-	scope:f:scope,single:f:join_child
 scope_union_missing	SiftAgg	scope:f:scope,single:t
 scope_union_param	-	n/a(prepared)
 scope_refused_nested_in	SiftAgg	scope:f:scope,single:t
 scope_refused_not_in	SiftAgg	scope:f:scope,single:t
 scope_refused_two_in	SiftAgg	scope:f:scope,single:t
-scope_refused_array_any	SiftAgg	scope:f:scope,single:t
+scope_array_any	SiftAgg	scope:f:scope,single:t

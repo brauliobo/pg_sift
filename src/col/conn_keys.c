@@ -10,12 +10,14 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/visibilitymap.h"
 #include "catalog/pg_type_d.h"
 #include "access/genam.h"
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
+#include "storage/predicate.h"
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
@@ -69,41 +71,124 @@ sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
  * defines the rows (a scope relation's pairs): a row that fails it is not one (InvalidOid: every row)
  */
 void
+sift_conn_pred_begin(SiftConnPred *pr, Oid btree)
+{
+	Relation	idx;
+	IndexInfo  *ii;
+
+	*pr = (SiftConnPred) {0};
+	if (!OidIsValid(btree))
+		return;
+	idx = index_open(btree, AccessShareLock);
+	ii = BuildIndexInfo(idx);
+	if (ii->ii_Predicate != NIL)
+	{
+		pr->estate = CreateExecutorState();
+		pr->qual = ExecPrepareQual(ii->ii_Predicate, pr->estate);
+	}
+	index_close(idx, NoLock);
+}
+
+bool
+sift_conn_pred_test(const SiftConnPred *pr, TupleTableSlot *slot)
+{
+	ExprContext *econtext;
+
+	if (pr->qual == NULL)
+		return true;
+	econtext = GetPerTupleExprContext(pr->estate);
+	econtext->ecxt_scantuple = slot;
+	return ExecQual(pr->qual, econtext);
+}
+
+void
+sift_conn_pred_end(SiftConnPred *pr)
+{
+	if (pr->estate != NULL)
+		FreeExecutorState(pr->estate);
+	*pr = (SiftConnPred) {0};
+}
+
+/* The position of the table's column att in the btree */
+static int
+btree_pos(Relation idx, AttrNumber att)
+{
+	for (int j = 0; j < idx->rd_index->indnkeyatts; j++)
+		if (idx->rd_index->indkey.values[j] == att)
+			return j + 1;
+	Assert(false);
+	return 0;
+}
+
+/* The integer key of the column at position pos of the index tuple, false for a NULL */
+static bool
+itup_key(IndexScanDesc scan, int pos, int64 *k)
+{
+	bool		isnull;
+	Datum		d = index_getattr(scan->xs_itup, pos, scan->xs_itupdesc, &isnull);
+
+	return !isnull && key_of(TupleDescAttr(scan->xs_itupdesc, pos - 1)->atttypid, d, k);
+}
+
+/* The rows of the btree, which holds both columns, as an index only scan reads them: the entries of its partial predicate are its rows, and the heap is asked only for those on a page the map does not hold all-visible */
+static void
+scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
+{
+	Relation	idx = index_open(btree, AccessShareLock);
+	IndexScanDesc scan = sift_index_beginscan(rel, idx, snap, 0);
+	TupleTableSlot *slot = table_slot_create(rel, NULL);
+	Buffer		vmbuf = InvalidBuffer;
+	int			pos = btree_pos(idx, key),
+				pos2 = key2 == InvalidAttrNumber ? 0 : btree_pos(idx, key2);
+
+	scan->xs_want_itup = true;
+	index_rescan(scan, NULL, 0, NULL, 0);
+	for (ItemPointer tid; (tid = index_getnext_tid(scan, ForwardScanDirection)) != NULL;)
+	{
+		BlockNumber blk = ItemPointerGetBlockNumber(tid);
+		int64		k,
+					k2 = 0;
+
+		if (!VM_ALL_VISIBLE(rel, blk, &vmbuf))
+		{
+			if (!index_fetch_heap(scan, slot))
+				continue;
+		}
+		else
+			PredicateLockPage(rel, blk, snap);
+		if (itup_key(scan, pos, &k) && (pos2 == 0 || itup_key(scan, pos2, &k2)))
+			f(arg, k, k2);
+		CHECK_FOR_INTERRUPTS();
+	}
+	if (vmbuf != InvalidBuffer)
+		ReleaseBuffer(vmbuf);
+	ExecDropSingleTupleTableSlot(slot);
+	index_endscan(scan);
+	index_close(idx, NoLock);
+}
+
+void
 sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
-	TableScanDesc scan = sift_table_beginscan(rel, snap, 0, NULL);
-	TupleTableSlot *slot = table_slot_create(rel, NULL);
-	EState	   *estate = NULL;
-	ExprState  *pred = NULL;
-	ExprContext *econtext = NULL;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
 
 	if (OidIsValid(pred_index))
 	{
-		Relation	idx = index_open(pred_index, AccessShareLock);
-		IndexInfo  *ii = BuildIndexInfo(idx);
-
-		if (ii->ii_Predicate != NIL)
-		{
-			estate = CreateExecutorState();
-			econtext = GetPerTupleExprContext(estate);
-			econtext->ecxt_scantuple = slot;
-			pred = ExecPrepareQual(ii->ii_Predicate, estate);
-		}
-		index_close(idx, NoLock);
+		scan_btree_keys(rel, pred_index, key, key2, snap, f, arg);
+		return;
 	}
+	scan = sift_table_beginscan(rel, snap, 0, NULL);
+	slot = table_slot_create(rel, NULL);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		int64		k,
 					k2 = 0;
 
-		if (pred != NULL && !ExecQual(pred, econtext))
-			continue;
 		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_key(slot, key2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
-	if (estate != NULL)
-		FreeExecutorState(estate);
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
 }

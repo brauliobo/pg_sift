@@ -243,7 +243,7 @@ join_found(AggExec *ex, int ci, int *total, List **add)
 
 		if (verdict != SIFT_CONN_OK)
 			why = sift_conn_why_name(verdict);
-		else if (!clean && sift_conn_inserted_since(parent, pidx, &stamp))
+		else if (!clean && sift_conn_inserted_rows(parent, pidx, &stamp) > 0)
 			why = "parent rows inserted since the stamp";
 		else if ((verdict = sift_conn_changed(parent, pidx, &stamp, ex->snap, FOUND_MAX_KEYS, &changed)) != SIFT_CONN_OK)
 			why = sift_conn_why_name(verdict);

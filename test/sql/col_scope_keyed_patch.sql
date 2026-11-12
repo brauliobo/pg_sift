@@ -1,0 +1,187 @@
+-- The patch of a scope read is keyed: the pairs that changed since the stamps name dim_a_id values (the journals', not keys), the read leaves their stored entries out, asks the relations of the scope for the
+-- current pairs of those dim_a_id values only (their btree when it is led by the dim_a_id, else the journal index of the relation, which is, in one search) and keeps the ones that have a pair with a key it
+-- reads: a change of a pair of another key patches nothing. Each state below is built from fresh stamps, edited once, and read for each key one at a time: the rows are the join's, the changed dim_a_id values
+-- are those of the edit, and the patched ones those of the read key only. The whole run is made twice, with the relations read whole (sift.test_conn_fill = 1) and with the index probed (2): the two lists are equal.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.agg_force = on;
+\ir test/scope_helpers.sql
+
+-- two paths: a tenant is granted a dim_a_id, or a group; a dim_a_id is in groups
+CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE group_dims (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX group_dims_active ON group_dims (group_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants_by_dim_a ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX group_dims_by_dim_a ON group_dims USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
+-- dim_a_id 1..60: in the group 1 + dim_a_id % 6, every fifth of them in a second one; the tenants 1..6 are granted dim_a_id values and groups
+INSERT INTO group_dims (group_id, dim_a_id) SELECT 1 + m % 6, m FROM generate_series(1, 60) m;
+INSERT INTO group_dims (group_id, dim_a_id) SELECT 1 + (m + 2) % 6, m FROM generate_series(5, 60, 5) m;
+INSERT INTO grants VALUES
+	(1, 1, 5, NULL, NULL), (2, 1, 17, NULL, NULL), (3, 1, NULL, 6, NULL),
+	(4, 2, NULL, 3, NULL), (5, 2, 8, NULL, now()),
+	(6, 3, 1, NULL, NULL), (7, 3, 2, NULL, NULL), (8, 3, NULL, 4, now()),
+	(9, 4, NULL, 5, NULL), (10, 4, NULL, 7, NULL),
+	(11, 5, 40, NULL, NULL), (12, 5, NULL, 5, NULL),
+	(13, 6, 50, 3, NULL);
+INSERT INTO facts SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 1 + (i * 7) % 63 END, timestamptz '2026-01-01' + i * interval '9 minutes', i % 10 FROM generate_series(1, 1500) i;
+CREATE VIEW pair_oracle AS
+	SELECT dim_a_id AS dim_a, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+	UNION
+	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN group_dims m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via group_dims(group_id, dim_a_id)');
+REINDEX INDEX facts_col;
+VACUUM (FREEZE, ANALYZE) facts;
+VACUUM (ANALYZE) grants, group_dims;
+
+-- one key: the units less the changed dim_a_id values, plus the rows of those that have a pair with the key now; the plain statement is the join
+CREATE FUNCTION read_key(key int8, OUT same boolean, OUT stored boolean, OUT changed int, OUT patched int) LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', key) INTO p;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])) t', key) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a FROM pair_oracle WHERE tenant_id = %s)) t', key) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	changed := coalesce((jsonb_path_query_first(p, '$.**."Scope Changed Keys"') #>> '{}')::int, 0);
+	patched := coalesce((jsonb_path_query_first(p, '$.**."Scope Patched Keys"') #>> '{}')::int, 0);
+END $$;
+
+-- the line of a state: whether every key's rows are the join's, whether every key read the units, the changed dim_a_id values of the reads, and the patched ones of each key 1..6; route 1 reads the relations
+-- whole to list the pairs of the changed dim_a_id values, route 2 asks their index
+CREATE FUNCTION state_line(route int, OUT same boolean, OUT stored boolean, OUT changed int, OUT patched int[]) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_conn_fill', route::text, true);
+	SELECT bool_and(r.same), bool_and(r.stored), max(r.changed), array_agg(r.patched ORDER BY k.k) INTO same, stored, changed, patched
+	FROM generate_series(1, 6) k(k), LATERAL read_key(k.k) r;
+END $$;
+
+-- the states accumulate; each starts from fresh stamps
+CREATE TABLE states (n int, label text, edit text);
+INSERT INTO states VALUES
+	(1, 'a direct grant of tenant 3 to a new dim_a_id', 'INSERT INTO grants VALUES (101, 3, 30, NULL, NULL)'),
+	(2, 'a direct grant of tenant 3 soft deleted', 'UPDATE grants SET deleted_at = now() WHERE id = 7'),
+	(3, 'a direct grant of tenant 1 deleted', 'DELETE FROM grants WHERE id = 2'),
+	(4, 'a direct grant of tenant 6 moved to a group', 'UPDATE grants SET dim_a_id = NULL, group_id = 6 WHERE id = 13'),
+	(5, 'a grant of tenant 2 to a group soft deleted', 'UPDATE grants SET deleted_at = now() WHERE id = 4'),
+	(6, 'a grant of tenant 4 to a group added', 'INSERT INTO grants VALUES (102, 4, NULL, 1, NULL)'),
+	(7, 'a dim_a_id added to a group: it is granted to tenants 4 and 5', 'INSERT INTO group_dims (group_id, dim_a_id) VALUES (5, 59)'),
+	(8, 'a dim_a_id added to a group: it is granted to nobody', 'INSERT INTO group_dims (group_id, dim_a_id) VALUES (9, 59)'),
+	(9, 'a dim_a_id soft deleted from the group of tenant 4', 'UPDATE group_dims SET deleted_at = now() WHERE group_id = 5 AND dim_a_id = 10'),
+	(10, 'a dim_a_id moved to another group', 'UPDATE group_dims SET group_id = 4 WHERE group_id = 3 AND dim_a_id = 14'),
+	(11, 'an update that keeps every column', 'UPDATE grants SET group_id = group_id WHERE id IN (3, 4, 6)'),
+	(12, 'a dim_a_id reached by two paths loses one', 'UPDATE grants SET deleted_at = now() WHERE id = 1');
+CREATE TABLE lines (route int, n int, label text, same boolean, stored boolean, changed int, patched int[]);
+SELECT stmt FROM (SELECT n, 0 AS k, 'REINDEX INDEX facts_col' AS stmt FROM states
+	UNION ALL SELECT n, 1, edit FROM states
+	UNION ALL SELECT n, 2 + r, format('INSERT INTO lines SELECT %s, %s, %L, l.* FROM state_line(%s) l', r, n, label, r) FROM states, generate_series(1, 2) r) t ORDER BY n, k \gexec
+SELECT n, label, same, stored, changed, patched FROM lines WHERE route = 2 ORDER BY n;
+-- the relations read whole and the index probed give the same lists
+SELECT count(*) AS states, count(*) FILTER (WHERE a.same IS NOT DISTINCT FROM b.same AND a.stored IS NOT DISTINCT FROM b.stored AND a.changed IS NOT DISTINCT FROM b.changed AND a.patched IS NOT DISTINCT FROM b.patched) AS equal
+FROM lines a JOIN lines b ON a.n = b.n AND a.route = 1 AND b.route = 2;
+SELECT sift.col_verify('facts_col', true);
+
+-- one path: the pairs are the rows of a partial unique btree (a soft delete ends a pair) and the journal index is a plain one, so no journal index lists the pairs; the btree of the relation is led by
+-- the key, which the dim_a_id of a changed pair cannot ask: the index is asked (route 2), or the relation read through its btree (route 1)
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX tenant_scope_active ON tenant_scope (tenant_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+INSERT INTO tenant_scope SELECT m, 1 + m % 6 FROM generate_series(1, 60) m;
+INSERT INTO tenant_scope SELECT m, 1 + (m + 2) % 6 FROM generate_series(5, 60, 5) m;
+CREATE TABLE facts1 (id int PRIMARY KEY, dim_a_id int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts1 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 1 + (i * 7) % 63 END, i % 10 FROM generate_series(1, 1500) i;
+CREATE INDEX facts1_col ON facts1 USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX facts1_col;
+VACUUM (FREEZE, ANALYZE) facts1, tenant_scope;
+
+CREATE FUNCTION read_key1(key int8, OUT same boolean, OUT stored boolean, OUT changed int, OUT patched int) LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts1 f WHERE sift.in_scope(''facts1_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', key) INTO p;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts1 f WHERE sift.in_scope(''facts1_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])) t', key) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts1 f WHERE f.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s AND deleted_at IS NULL)) t', key) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	same := a = b;
+	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	changed := coalesce((jsonb_path_query_first(p, '$.**."Scope Changed Keys"') #>> '{}')::int, 0);
+	patched := coalesce((jsonb_path_query_first(p, '$.**."Scope Patched Keys"') #>> '{}')::int, 0);
+END $$;
+CREATE FUNCTION state_line1(route int, OUT same boolean, OUT stored boolean, OUT changed int, OUT patched int[]) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_conn_fill', route::text, true);
+	SELECT bool_and(r.same), bool_and(r.stored), max(r.changed), array_agg(r.patched ORDER BY k.k) INTO same, stored, changed, patched
+	FROM generate_series(1, 6) k(k), LATERAL read_key1(k.k) r;
+END $$;
+CREATE TABLE states1 (n int, label text, edit text);
+INSERT INTO states1 VALUES
+	(1, 'a pair added', 'INSERT INTO tenant_scope VALUES (30, 5, NULL)'),
+	(2, 'a pair soft deleted', 'UPDATE tenant_scope SET deleted_at = now() WHERE dim_a_id = 30 AND tenant_id = 5'),
+	(3, 'a pair deleted', 'DELETE FROM tenant_scope WHERE dim_a_id = 7'),
+	(4, 'a pair moved to another key', 'UPDATE tenant_scope SET tenant_id = 6 WHERE dim_a_id = 8'),
+	(5, 'a soft deleted pair restored', 'UPDATE tenant_scope SET deleted_at = NULL WHERE dim_a_id = 30 AND tenant_id = 5'),
+	(6, 'an update that keeps every column', 'UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id IN (1, 2, 3)'),
+	(7, 'twenty dim_a_id values of one key deleted', 'DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id < 40');
+CREATE TABLE lines1 (route int, n int, label text, same boolean, stored boolean, changed int, patched int[]);
+SELECT stmt FROM (SELECT n, 0 AS k, 'REINDEX INDEX facts1_col' AS stmt FROM states1
+	UNION ALL SELECT n, 1, edit FROM states1
+	UNION ALL SELECT n, 2 + r, format('INSERT INTO lines1 SELECT %s, %s, %L, l.* FROM state_line1(%s) l', r, n, label, r) FROM states1, generate_series(1, 2) r) t ORDER BY n, k \gexec
+SELECT n, label, same, stored, changed, patched FROM lines1 WHERE route = 2 ORDER BY n;
+SELECT count(*) AS states, count(*) FILTER (WHERE a.same IS NOT DISTINCT FROM b.same AND a.stored IS NOT DISTINCT FROM b.stored AND a.changed IS NOT DISTINCT FROM b.changed AND a.patched IS NOT DISTINCT FROM b.patched) AS equal
+FROM lines1 a JOIN lines1 b ON a.n = b.n AND a.route = 1 AND b.route = 2;
+SELECT sift.col_verify('facts1_col', true);
+
+-- an index of two scopes: a read of every key of one reads the units of that scope, the units of the other are skipped (their derived key is NULL), and its price counts those of its own
+CREATE TABLE pairs_a (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE pairs_b (dim_a_id int NOT NULL, region_id int NOT NULL, PRIMARY KEY (dim_a_id, region_id));
+INSERT INTO pairs_a SELECT m, 1 + m % 5 FROM generate_series(1, 300) m;
+INSERT INTO pairs_b SELECT m, 1 + (m + j) % 7 FROM generate_series(1, 300) m, generate_series(1, 3) j ON CONFLICT DO NOTHING;
+CREATE INDEX pairs_a_journal ON pairs_a USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_b_journal ON pairs_b USING sift_col (dim_a_id, region_id) WITH (track_changes = 'ctid');
+CREATE TABLE events2 (id int PRIMARY KEY, dim_a_id int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO events2 SELECT i, 1 + (i * 7919) % 300, i % 10 FROM generate_series(1, 20000) i;
+CREATE INDEX events2_col ON events2 USING sift_col (id, dim_a_id, v)
+	WITH (scope = 'tenant_id: dim_a_id -> pairs_a(dim_a_id, tenant_id); region_id: dim_a_id -> pairs_b(dim_a_id, region_id)');
+REINDEX INDEX events2_col;
+VACUUM (FREEZE, ANALYZE) events2, pairs_a, pairs_b;
+CREATE FUNCTION every_key_units(q text, OUT same boolean, OUT units_read int, OUT units_skipped int) LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || q || ') t' INTO b;
+	same := a = b;
+	units_read := (jsonb_path_query_first(p, '$.**."Scope Units Read"') #>> '{}')::int;
+	units_skipped := (jsonb_path_query_first(p, '$.**."Scope Units Skipped"') #>> '{}')::int;
+END $$;
+SELECT 'tenant_id' AS scope, r.* FROM every_key_units('SELECT a.tenant_id, count(*), sum(e.v) FROM events2 e JOIN pairs_a a ON a.dim_a_id = e.dim_a_id GROUP BY 1') r
+UNION ALL
+SELECT 'region_id', r.* FROM every_key_units('SELECT b.region_id, count(*), sum(e.v) FROM events2 e JOIN pairs_b b ON b.dim_a_id = e.dim_a_id GROUP BY 1') r;
+
+DROP TABLE facts, grants, group_dims, states, lines, facts1, tenant_scope, states1, lines1, events2, pairs_a, pairs_b CASCADE;
+DROP FUNCTION read_key(int8), state_line(int), read_key1(int8), state_line1(int), every_key_units(text), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

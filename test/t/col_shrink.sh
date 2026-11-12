@@ -3,6 +3,7 @@
 # (no exclusive lock; the runs left behind are held by the horizon like those of a rewrite) and the online cut takes the free end. A merge leaves the file twice the
 # live bytes with the last block live; the file is back near the live bytes in a few VACUUMs: with a standby query holding the table (the blocks it can read are not
 # reused, the file does not grow), with inserts, deletes, merges and scans running, and after a kill when the pages are copied and when the move is published.
+# maintenance_work_mem holds the whole index in one partition: VACUUM leaves a partition of free blocks in a key_cut index in partitions for its rolling rewrite (col_rewrite_roll).
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_SH_ROWS 200000 100000)
@@ -13,7 +14,8 @@ max_wal_senders = 4
 wal_keep_size = 512MB
 autovacuum = off
 max_worker_processes = 16
-max_parallel_workers = 8"
+max_parallel_workers = 8
+maintenance_work_mem = 256MB"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \

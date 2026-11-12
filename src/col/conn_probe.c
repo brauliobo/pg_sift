@@ -17,7 +17,9 @@
 #include "executor/tuptable.h"
 #include "storage/lmgr.h"
 #include "utils/fmgroids.h"
+#include "utils/array.h"
 #include "utils/hsearch.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 #include "col/am.h"
@@ -125,6 +127,31 @@ sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnP
 	while (index_getnext_slot(s->scan, ForwardScanDirection, s->slot) && each(arg, s->slot))
 		;
 	CHECK_FOR_INTERRUPTS();
+}
+
+void
+sift_conn_probe_keys(SiftConnProbe *p, SiftConnProbeScan *s, const int64 *keys, uint32 n, SiftConnProbeFn each, void *arg)
+{
+	Datum	   *vals = palloc(Max(n, 1) * sizeof(Datum));
+	RegProcedure eq = F_INT8EQ;
+	uint32		nv = 0;
+	int16		len;
+	bool		byval;
+	char		align;
+	ScanKeyData skey;
+
+	for (uint32 i = 0; i < n; i++)
+		nv += key_datum(p->keytype, keys[i], &vals[nv], &eq);
+	if (nv > 0)
+	{
+		get_typlenbyvalalign(p->keytype, &len, &byval, &align);
+		ScanKeyEntryInitialize(&skey, SK_SEARCHARRAY, p->pos, BTEqualStrategyNumber, p->keytype, InvalidOid, eq,
+							   PointerGetDatum(construct_array(vals, nv, p->keytype, len, byval, align)));
+		index_rescan(s->scan, &skey, 1, NULL, 0);
+		while (index_getnext_slot(s->scan, ForwardScanDirection, s->slot) && each(arg, s->slot))
+			CHECK_FOR_INTERRUPTS();
+	}
+	pfree(vals);
 }
 
 void
