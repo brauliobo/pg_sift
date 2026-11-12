@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The rewrite the reads of an index ask for (sift.col_auto_merge). Rows deleted from one segment leave its units dirty after the VACUUM, under the 30% of the units from which
-# the rule rewrites, and a dirty unit is not served from the point directory: every read of a key in it reads the unit (60 keys: 0.90 M instructions before the VACUUM,
-# 1.75 M after it). The rewrite costs 886 M instructions and 3 MB of WAL, so a backend that reads the dirty units asks for it only when what its reads owe comes to half of that.
+# The rewrite the reads of an index ask for (sift.col_auto_merge). Rows deleted from one segment leave its units dirty after the VACUUM, and a dirty unit is not served from the
+# point directory: every read of a key in it reads the unit (60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it). The rewrite costs 886 M instructions and 3 MB of WAL
+# and the budget of the WAL (here a thousandth of a percent, out of reach) holds it back, so a backend that reads the dirty units asks for it, past the budget, only when what its
+# reads owe comes to half of that.
 . "$(dirname "$0")/lib.bash"
 
 plan 6
@@ -11,7 +12,7 @@ node_start rd || bail "start failed"
 sql rd "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, k int, v int, pad text)" \
 	"INSERT INTO t SELECT g, g % 3000, g % 1000, md5(g::text) FROM generate_series(1, 300000) g" \
 	"CREATE INDEX t_c ON t USING sift_col (id, k, v)" "VACUUM (ANALYZE, FREEZE) t" >/dev/null || bail "setup failed"
-sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
+sql rd "ALTER DATABASE postgres SET sift.col_auto_merge = on" "ALTER DATABASE postgres SET sift.col_auto_merge_wal_pct = 0.001" >/dev/null
 
 dirty() { sql rd "SELECT coalesce(sum(units) FILTER (WHERE dirty), 0) FROM sift.col_segments('t_c')"; }
 # the rewrite is done (the cap is a hang guard)
@@ -23,7 +24,7 @@ reads() { sql rd "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SET s
 churn() { sql rd "DELETE FROM t WHERE id BETWEEN $1 AND $2 AND id % 5 = 0" "VACUUM t" >/dev/null; }
 
 churn 1 20000
-check "the VACUUM left units with dead rows and the rule does not rewrite them" test "$(dirty)" -gt 0 -a -z "$(sql rd "SELECT rewrite_due FROM sift.col_maintenance_status('t_c')")"
+check "the VACUUM left units with dead rows and the budget does not let the rewrite start" test "$(dirty)" -gt 0 -a -z "$(sql rd "SELECT rewrite_due FROM sift.col_maintenance_status('t_c')")"
 reads 5
 sleep 2
 check "a few reads do not ask for the rewrite" test "$(dirty)" -gt 0
