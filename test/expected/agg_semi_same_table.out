@@ -1,7 +1,8 @@
 -- Two EXISTS (or IN) over one table, on the same unique key and with different conditions. PostgreSQL 18 merges them into one scan of the table
 -- (self-join elimination) that has both conditions, and moves them off the FROM tree the scan reads, so the scan used to apply one of them
 -- (`kind = 'k1'` and `kind = 'k4'` on a table that holds one kind per id counted the rows of the first). Such a query keeps the normal plan on
--- PostgreSQL 18 (PostgreSQL 19 keeps the relation and the scan reads both conditions: the rows are the same, pushed or not); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
+-- PostgreSQL 18.0 to 18.6 (18.7 and PostgreSQL 19 keep the relation as an inner join and the scan reads both conditions: the rows are the same, pushed or not,
+-- and agg_semi_same_table_1.out is the output of 18.7); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
