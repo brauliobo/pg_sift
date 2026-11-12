@@ -2,11 +2,15 @@
  * agg/spec_pack.c - pack and unpack of the spec as a flat List
  *
  * One function per struct does both: the Codec either appends the fields it walks to the list (pack) or sets them from it (unpack), so a field that is added
- * here is written and read in the same place and in the same order. The packed list is only read by the same build (the workers' copy of the plan).
+ * here is written and read in the same place and in the same order. The packed list is only read by the same build (the workers' copy of the plan). The integers between two items that are
+ * not one (a string, a node) are one item, a bytea of their varints: a plan packs some five hundred of them, and an Integer node and a list cell for each took 34,000 instructions.
  */
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
+#include "lib/stringinfo.h"
+#include "nodes/makefuncs.h"
 #include "nodes/value.h"
 
 #include "agg/spec.h"
@@ -16,22 +20,68 @@ typedef struct Codec
 	List	   *items;			/* written (pack) or read (unpack) */
 	int			pos;
 	bool		rd;
+	StringInfoData wr;			/* pack: the integers since the last item that is not one */
+	const uint8 *rp;			/* unpack: the rest of the bytea of integers being read */
+	const uint8 *re;
 } Codec;
 
 static pg_attribute_always_inline Node *
 pk_item(Codec *c)
 {
-	SIFT_INVARIANT(c->pos < list_length(c->items), "sift: truncated aggregate plan");
+	SIFT_INVARIANT(c->pos < list_length(c->items) && c->rp == c->re, "sift: truncated aggregate plan");
 	return list_nth(c->items, c->pos++);
+}
+
+/* the integers written since the last item that is not one become one item */
+static void
+pk_flush(Codec *c)
+{
+	bytea	   *b;
+
+	if (c->wr.len == 0)
+		return;
+	b = palloc(VARHDRSZ + c->wr.len);
+	SET_VARSIZE(b, VARHDRSZ + c->wr.len);
+	memcpy(VARDATA(b), c->wr.data, c->wr.len);
+	c->items = lappend(c->items, makeConst(BYTEAOID, -1, InvalidOid, -1, PointerGetDatum(b), false, false));
+	resetStringInfo(&c->wr);
 }
 
 static pg_attribute_always_inline void
 pk_int(Codec *c, int *v)
 {
 	if (c->rd)
-		*v = intVal(pk_item(c));
+	{
+		uint32		u = 0;
+		int			shift = 0;
+		uint8		b;
+
+		if (c->rp == c->re)
+		{
+			bytea	   *k;
+
+			SIFT_INVARIANT(c->pos < list_length(c->items), "sift: truncated aggregate plan");
+			k = DatumGetByteaPP(((Const *) list_nth(c->items, c->pos++))->constvalue);
+
+			c->rp = (const uint8 *) VARDATA_ANY(k);
+			c->re = c->rp + VARSIZE_ANY_EXHDR(k);
+		}
+		do
+		{
+			b = *c->rp++;
+			u |= (uint32) (b & 0x7F) << shift;
+			shift += 7;
+		} while (b & 0x80);
+		*v = (int) (u >> 1) ^ -(int) (u & 1);
+	}
 	else
-		c->items = lappend(c->items, makeInteger(*v));
+	{
+		uint32		u = ((uint32) *v << 1) ^ (uint32) (*v >> 31);
+
+		for (; u >= 0x80; u >>= 7)
+			appendStringInfoChar(&c->wr, (char) (u | 0x80));
+		appendStringInfoChar(&c->wr, (char) u);
+	}
 }
 
 /* the field f of any integer, enum or Oid type, as an int */
@@ -49,7 +99,10 @@ pk_str(Codec *c, const char **s)
 	if (c->rd)
 		*s = pstrdup(strVal(pk_item(c)));
 	else
+	{
+		pk_flush(c);
 		c->items = lappend(c->items, makeString(pstrdup(*s ? *s : "")));
+	}
 }
 
 #define PKS(c, f) pk_str(c, (const char **) &(f))
@@ -68,7 +121,10 @@ pk_node(Codec *c, Node **n)
 	if (c->rd)
 		*n = has ? pk_item(c) : NULL;
 	else if (has)
+	{
+		pk_flush(c);
 		c->items = lappend(c->items, *n);
+	}
 }
 
 #define PKN(c, f) pk_node(c, (Node **) &(f))
@@ -635,8 +691,11 @@ sift_aggspec_pack(const SiftAggSpec *s)
 {
 	Codec		c = {NIL, 0, false};
 
+	initStringInfo(&c.wr);
 	/* a pack only reads the spec */
 	codec_spec(&c, (SiftAggSpec *) s);
+	pk_flush(&c);
+	pfree(c.wr.data);
 	return c.items;
 }
 
