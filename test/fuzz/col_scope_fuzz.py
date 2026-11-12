@@ -6,7 +6,7 @@
 
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
 and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the entity: a fact moves between dim_b), upserts, pair INSERTs, DELETEs, moves of an entity between tenants, UPDATEs of the
-tenant of pairs, a reload of the pairs, rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
+tenant of pairs, a reload of the pairs, HOT updates of a column no index holds (the entries of a row lead to the first version of its chain), rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
 After every step (a 'buffer' step leaves its rows in the write buffer, and the read of a key whose dim_b have some must take them as its delta) a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
 (a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason (a read of every key grouped by its key, 'group key', raises it as the error that makes the join run)
 (scope_reason_ok in test/scope_helpers.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
@@ -114,13 +114,15 @@ END $$;
 
 CREATE OR REPLACE FUNCTION sf_dead() RETURNS bigint LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN (SELECT count(*) FROM sift._test_col_scope_entries('events_col') x LEFT JOIN events e ON e.ctid = x.tid WHERE e.id IS NULL);
+	RETURN (SELECT count(*) FROM sift._test_col_scope_entries('events_col') x LEFT JOIN sift._test_col_tids('events_col') t ON t.tid = x.tid WHERE t.tid IS NULL);
 END $$;
 
+-- an index entry leads to the first version of a HOT chain (not the address a scan of the heap reports for the live version): the addresses are those of the entity segments, which col_verify holds to the heap
 CREATE OR REPLACE FUNCTION sf_entries_are_the_join() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
-		= (SELECT md5(string_agg(e.ctid::text || ':' || t.tenant_id, ',' ORDER BY e.ctid, t.tenant_id)) FROM events e JOIN @PAIRS@ t ON t.dim_a_id = e.dim_a_id @ACT_T@);
+		= (SELECT md5(string_agg(r.tid::text || ':' || t.tenant_id, ',' ORDER BY r.tid, t.tenant_id))
+		   FROM sift._test_col_read('events_col', 0) r JOIN events e ON e.id = r.val::int JOIN @PAIRS@ t ON t.dim_a_id = e.dim_a_id @ACT_T@);
 END $$;
 """
 
@@ -144,7 +146,7 @@ KEYS_PER = {
 }
 INDEX_COLS = ['id', 'dim_a_id', 'created_at', 'kind', 'v']
 STEPS = [('buffer', 9), ('ins', 12), ('del', 8), ('upd_val', 7), ('upd_member', 7), ('upsert', 4), ('pair_ins', 11), ('pair_del', 9), ('pair_move', 11), ('pair_upd', 6), ('aborted', 5),
-         ('savepoints', 5), ('in_txn', 5), ('promote', 7), ('merge', 5), ('vacuum', 6), ('vacuum_pairs', 3), ('reindex', 3), ('pair_reload', 2), ('analyze', 1)]
+         ('savepoints', 5), ('in_txn', 5), ('promote', 7), ('merge', 5), ('vacuum', 6), ('vacuum_pairs', 3), ('reindex', 3), ('pair_reload', 2), ('analyze', 1), ('hot', 4)]
 SOFT_STEPS = [('pair_soft', 9), ('pair_restore', 6), ('pair_ins_deleted', 3), ('pair_note', 3)]   # added to the steps of a seed whose pairs are soft deleted
 
 
@@ -219,8 +221,9 @@ INSERT INTO tenant_scope (dim_a_id, tenant_id, deleted_at) SELECT m, 1 + (m * 31
         trk += ", order_array_columns = 'id, created_at, kind, v'" if self.gord else ''
         return f"""{f"SET sift.test_col_segment_kb = {self.seg_kb};" if self.seg_kb else ""}
 DROP TABLE IF EXISTS events, tenant_scope, grants, memberships CASCADE;
-{self.pair_sql()}CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off);
+{self.pair_sql()}CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off, fillfactor = 80);
 INSERT INTO events SELECT {self.fact_rows(1, self.n)};
+UPDATE events SET pad = 'h' WHERE id % 10 = 0;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(self.scope_text())}{trk});
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
@@ -295,6 +298,8 @@ VACUUM (ANALYZE) {self.tables};"""
             return kind, f"DELETE FROM events WHERE {self.window(pct)}", 'facts'
         if kind == 'upd_val':
             return kind, f"UPDATE events SET v = (v + 3) % 10, created_at = created_at + interval '30 hours' WHERE {self.window(pct)}", 'facts'
+        if kind == 'hot':   # a column no index holds: a HOT update, the address of the row stays that of the first version of its chain
+            return kind, f"UPDATE events SET pad = 'h' WHERE {self.window(pct)}", 'facts'
         if kind == 'upd_member':
             return kind, f"UPDATE events SET dim_a_id = 1 + (dim_a_id * 7 + id) % {self.dim_b} WHERE dim_a_id IS NOT NULL AND {self.window(pct)}", 'facts'
         if kind == 'upsert':
