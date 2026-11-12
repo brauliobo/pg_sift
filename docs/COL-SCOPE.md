@@ -546,3 +546,63 @@ make; they differ in what they keep.
 The copy is for a request that names the key and wants the rows of the key by a plain query on a table. The index is for facts that must stay one table (no second copy to size, to vacuum and to
 keep by triggers on the write path). The copy stores a fact once for each key of its member, so it grows with that figure (refused above 1.8
 copies a fact by default, `max_copies` raises it); the index's growth is said by the `NOTICE` and bounded by `sift.scope_max_multiplicity`.
+
+## Against tuned stock PostgreSQL
+
+The comparisons above are against sift's own join. `bench/steps/scope_stock_arms.py` adds the arms a database administrator would build instead, on one generated fixture of a real shape: 2.4 million events of
+2,648 members (median 388 events, largest 20,538; stored in time order), 32 tenants that reach members directly or through groups (3,612 distinct pairs, 1.45 tenants a member, soft-deleted rows included),
+the eight measured tenants holding 49.5, 19.6, 17.4, 6.0, 6.3, 3.9, 1.1 and 0.1% of the events. Nine classes (sum by month, count by score, latest 20, top 20 members, distinct members by month, by member, a
+selective filter, a date range, count by kind), eight tenants, every cell warm and cold, every result md5-equal to the plain statement (560 of 560 cells, and 140 more after the writes). All on one
+PostgreSQL 18 server on tmpfs, one backend, `max_parallel_workers_per_gather = 0`; ms are the executor time of `EXPLAIN (ANALYZE, TIMING OFF)`. Arms:
+
+- `stock_default`: a b-tree on the member, the semi join as written.
+- `semijoin`: a covering `(member, time, id)` b-tree, a partial b-tree for the filter class, a per-member probe for latest 20. Nothing is maintained.
+- `denorm_flat`, `denorm_part`: a copy of every event for each tenant that reaches it, as one table with a `(tenant, time)` covering b-tree or as a list partition by tenant, kept by triggers on the events and on the pairs
+  (the pairs themselves come from a maintained pair table, since a pair edit must find the events to copy).
+- `rollup`: rollups by member (month, score, channel and region, kind) kept by a statement trigger; the classes read them through the semi join.
+- `ivm`: pg_ivm 1.17 incremental views of the join of events and the maintained pair table, one for each family of classes.
+- `sift_reuse` and `sift_scope`: the entity index alone, and with the scope of two paths.
+
+Rollups and incremental views answer only aggregates (latest 20 is not answerable by them). Warm milliseconds, geometric mean over the eight classes all arms answer (latest 20 left out):
+
+| tenant (share) | stock_default | semijoin | denorm_flat | denorm_part | rollup | ivm | sift_reuse | sift_scope |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 (49%) | 307 | 130 | 79 | 109 | 27.0 | 4.50 | 11.9 | 5.69 |
+| 2 (20%) | 220 | 54.8 | 30.1 | 60.3 | 14.3 | 2.96 | 10.0 | 2.54 |
+| 4 (6%) | 145 | 18.2 | 7.72 | 17.4 | 13.8 | 1.63 | 6.71 | 1.13 |
+| 5 (6%, 17 members) | 126 | 15.6 | 8.62 | 17.5 | 1.74 | 0.35 | 2.46 | 1.31 |
+| 7 (1%) | 121 | 5.17 | 1.82 | 2.52 | 5.06 | 0.62 | 6.22 | 0.60 |
+| 8 (0.1%) | 9.24 | 0.99 | 0.38 | 0.55 | 0.84 | 0.27 | 1.75 | 0.47 |
+
+Where tuned stock PostgreSQL matches or beats the scope index, in the cells of the table (72 of them; absolute figures are in the bench output):
+
+- **The tuned semi join is 16 to 23 times slower than the scope read (geometric mean) for tenants of 6% or more** (tenant 1: 291 ms against 3.2 for a sum by month), 8 to 12 times slower for the tenants of 1 to 6% with 17 to 44
+  members, and within 0.5 ms of it for the tenant of 0.1%. It beats the scope read in 9 of 72 cells: the selective filter class for every tenant (1.5 against 3.1 ms at tenant 2, 1.9 against 19.8 ms at tenant 3, 0.4 against
+  0.5 ms at tenant 8) and latest 20 of tenant 5 (0.67 against 0.79 ms).
+- **A denormalised copy wins latest 20 everywhere (0.04 to 0.06 ms against 0.3 to 2.2 ms) and the selective filter (0.6 ms against 7.6 ms at tenant 1)**, and is as fast or faster than the scope read for the small tenants
+  (20 of 72 cells). It is 14 times slower for aggregates of tenant 1 (78 ms against 5.7 geometric mean), since it still reads 1.2 million copied rows.
+- **pg_ivm beats the scope read in 33 of the 64 cells it answers**, every aggregate whose group fits a view (at tenant 1: count by score 0.05 ms against 3.5, the filter 0.06 ms against 7.6, count by kind 0.6 ms
+  against 1.3) and is about even for the rest (4.5 against 5.7 ms geometric mean at tenant 1). It answers no row retrieval. **Its writes pay for those reads:** 10,000 inserted events cost 11.8 billion instructions
+  and 1.65 s (the scope index 0.15 billion, 0.33 with its promotion), and every pair edit 0.5 to 1.3 billion instructions and 67 to 280 ms (the scope index 0.0002 billion, under 1 ms). Member rollups, which a pair edit does not touch, are 4 to 12 times slower than the scope read for the tenants of 6% or more and 1.3 to 8 times for the small ones.
+- **Tenant 1's top 20 members is read faster by the entity index alone (6.6 ms) than by the scope units (13.5 ms)**, and its filter and date-range classes were planned as the join (`join is cheaper for 1 key`): the
+  scope read has no advantage for them at 49% of the events, as the break-even above says.
+- Four parallel workers did not make the tuned semi join faster in this fixture (tenant 1: 100 ms serial, 116 ms with four).
+
+What each arm costs. Added bytes and the cost of 10,000 inserted events (one statement), of granting a member to a tenant and revoking it (mean of 10 members of about 400 events; the largest member, 20,538 events, in
+brackets):
+
+| arm | build s | added MB | WAL of 10,000 inserts | instr of 10,000 inserts (M) | WAL of a pair grant | instr of a pair grant (M) |
+|---|---:|---:|---:|---:|---:|---:|
+| stock_default | 1.4 | 17 | 2.2 MB | 186 | 323 B | 0.14 |
+| semijoin | 3.0 | 97 | 2.6 MB | 211 | 323 B | 0.13 |
+| denorm_flat | 17.3 | 454 | 6.3 MB | 573 | 105 kB (7.3 MB) | 11.8 (603) |
+| denorm_part | 11.1 | 425 | 6.0 MB | 510 | 101 kB (6.7 MB) | 9.7 (507) |
+| rollup | 14.4 | 128 | 7.7 MB | 1,046 | 323 B | 0.13 |
+| ivm | 13.5 | 55 | 3.9 MB | 11,765 | 77 kB (99 kB) | 510 (1,263) |
+| sift_reuse | 7.6 | 33 | 1.7 MB + 0.10 MB promotion | 146 + 75 | 333 B | 0.14 |
+| sift_scope | 19.4 | 65 | 1.7 MB + 0.32 MB promotion | 146 + 179 | 897 B (584 B) | 0.19 (0.15) |
+
+The scope index adds 65 MB (the entity index alone 33 MB) and its writes cost a promotion and a few hundred bytes of WAL for a pair edit; the copies add 425 to 454 MB and write 6 to 7 MB of WAL for a pair grant of
+the largest member, and the incremental views need 0.5 to 1.3 billion instructions for any pair edit and 11.8 billion for 10,000 inserts (pg_ivm 1.17 matches the changed groups of a view with a null-safe
+`OR` that the unique index of the view cannot use beyond its first column). Updates and deletes of events, concurrent writers and a pair edit of a tenant of a read in flight were not measured for the stock arms; the copies and the
+rollups need further triggers and indexes for them, so the figures above are the cheapest case for them.
