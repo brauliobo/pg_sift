@@ -13,6 +13,7 @@ It fails when
 - the **plan slug** is not the pinned one in `plans.tsv`: the Custom Scan (Sift...) nodes of `explain (costs off)` and the verdict of `sift.explain_why` per arm (`t` used, `f:SLUG` refused). A statement that stops engaging, starts engaging, or is refused for another reason is a failure. Changing the set is allowed with `scripts/corpus.sh --update` **in the same commit**: read the diff of `plans.tsv`, a statement that left the engaged set is a regression unless the change says so.
 
 A node `~` in `plans.tsv` leaves a statement whose engagement is a cost call that differs across majors unpinned (rows are still compared); `--update` keeps it.
+A row `slug@19` pins the plan of that statement on PostgreSQL 19 where the major's planner gives a label the others do not (the row without `@` is the pin of the other majors); `--update` keeps those rows as they are, and is run on PostgreSQL 18. The two rows there: PostgreSQL 19 turns the semi join of an `IN` over a UNION into an inner join, which the two level analysis then reads and refuses (`two_level:f:two_arms`), while the scope read of the statement is the same.
 
 ## Run
 
@@ -22,7 +23,7 @@ A node `~` in `plans.tsv` leaves a statement whose engagement is a cost call tha
     scripts/corpus.sh --update             # re-record plans.tsv
     CORPUS_ON_SET='set sift.agg_dense=off;' scripts/corpus.sh   # try a setting: what it does to rows and plans
 
-On an installed cluster it takes **about 2 s** (lab load 1 s, statements 1 s, PostgreSQL 18); `corpus-local.sh` adds the build and install (about 40 s the first time). The CI job is `corpus` (every major; the pinned plans are the same on 17, 18 and 19 apart from the `~` rows).
+On an installed cluster it takes **about 2 s** (lab load 1 s, statements 1 s, PostgreSQL 18); `corpus-local.sh` adds the build and install (about 40 s the first time). The CI job is `corpus` (every major; the pinned plans are the same on 17, 18 and 19 apart from the `~` rows and the `@19` rows).
 
 ## Add a statement
 

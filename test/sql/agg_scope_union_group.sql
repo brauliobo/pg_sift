@@ -17,7 +17,8 @@ CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
-CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int, kind text) WITH (autovacuum_enabled = false);
+-- amount and kind are NOT NULL: they sit at the positions of the columns deleted_at of memberships and grants, and a condition of an arm is read as a condition of the arm's own tables
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int NOT NULL, kind text NOT NULL) WITH (autovacuum_enabled = false);
 CREATE TABLE my_tenants (tenant_id int PRIMARY KEY);
 INSERT INTO my_tenants VALUES (2), (5);
 

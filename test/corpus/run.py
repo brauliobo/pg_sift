@@ -105,6 +105,7 @@ def main(a):
     [t.start() for t in th]
     [t.join() for t in th]
     pinned = {}
+    major = int(subprocess.run(["psql", "-X", "-At", "-c", "show server_version_num"], capture_output=True, text=True).stdout) // 10000
     pf = os.path.join(HERE, "plans.tsv")
     if os.path.exists(pf):
         for l in open(pf).read().splitlines():
@@ -121,11 +122,12 @@ def main(a):
         if ro != rn:
             bad.append("%s: ROWS differ (%d off, %d on): %s" % (s, len(ro), len(rn), " || ".join(x[:60] for x in [l for l in rn if l not in set(ro)][:2] + [l for l in ro if l not in set(rn)][:2])))
         plans[s] = plan_of(os.path.join(out, "plan.%d" % i))
-        if not noplans and not update and pinned.get(s, ("",))[0] == "~":
+        pin = pinned.get("%s@%d" % (s, major), pinned.get(s))
+        if not noplans and not update and pin is not None and pin[0] == "~":
             continue
-        if not noplans and not update and s in pinned and pinned[s] != plans[s]:
-            bad.append("%s: PLAN changed: pinned %s [%s], now %s [%s] (update test/corpus/plans.tsv in the same change if it is meant)" % (s, pinned[s][0], pinned[s][1], plans[s][0], plans[s][1]))
-        elif not noplans and not update and s not in pinned:
+        if not noplans and not update and pin is not None and pin != plans[s]:
+            bad.append("%s: PLAN changed: pinned %s [%s], now %s [%s] (update test/corpus/plans.tsv in the same change if it is meant)" % (s, pin[0], pin[1], plans[s][0], plans[s][1]))
+        elif not noplans and not update and pin is None:
             bad.append("%s: no pinned plan (scripts/corpus.sh --update records it)" % s)
     if update and only == "*":
         with open(pf, "w") as f:
@@ -133,6 +135,9 @@ def main(a):
             for c in parse(os.path.join(HERE, "cases.sql")):
                 if c["slug"] in plans:
                     f.write("%s\t%s\t%s\n" % (c["slug"], *(("~", "cost-borderline across majors") if pinned.get(c["slug"], ("",))[0] == "~" else plans[c["slug"]])))
+            for k, (n, w) in pinned.items():
+                if "@" in k:
+                    f.write("%s\t%s\t%s\n" % (k, n, w))
     elif update:
         print("corpus: --update with --only changes nothing (the whole corpus is recorded together)")
     engaged = sum(1 for n, w in plans.values() if n != "-")

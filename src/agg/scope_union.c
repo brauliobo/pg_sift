@@ -70,6 +70,18 @@ set_leaves(Query *q, Node *n, Leaves *lv)
 	}
 }
 
+/* the planner state the conditions of the select q are simplified under: its own range table (a Var of an arm is a column of the arm's tables, not of the statement's), the statement's parameters */
+static PlannerInfo *
+arm_root(PlannerInfo *root, Query *q)
+{
+	PlannerInfo *r = makeNode(PlannerInfo);
+
+	r->glob = root->glob;
+	r->parse = q;
+	r->query_level = root->query_level + 1;
+	return r;
+}
+
 /* the tables and the conditions of the jointree of a select as the rewriter left it: inner joins of tables only */
 static bool
 arm_tree(PlannerInfo *root, Node *n, Arm *a)
@@ -321,7 +333,7 @@ scope_union_item(AggCtx *c, const SiftScopeSpecs *specs, Query *q)
 	for (int i = 0; why == NULL && i < 2; i++)
 	{
 		arm[i].q = list_nth(lv.select, i);
-		if (!plain_select(arm[i].q) || !arm_tree(c->root, (Node *) arm[i].q->jointree, &arm[i]))
+		if (!plain_select(arm[i].q) || !arm_tree(arm_root(c->root, arm[i].q), (Node *) arm[i].q->jointree, &arm[i]))
 			why = "an arm of the union is not a plain select: it has DISTINCT, GROUP BY, LIMIT, an aggregate, a sub-select or a join that is not an inner join";
 		else
 			why = arm_tables_why(&arm[i]);
