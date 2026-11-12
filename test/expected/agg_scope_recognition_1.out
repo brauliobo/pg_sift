@@ -118,53 +118,53 @@ BEGIN
 	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
 END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
-                   name                   |                                                        plan                                                        | same_rows 
-------------------------------------------+--------------------------------------------------------------------------------------------------------------------+-----------
- CTE                                      | scope read, 1 keys                                                                                                 | t
- EXISTS                                   | scope read, 1 keys                                                                                                 | t
- EXISTS, two keys                         | scope read, 2 keys, once                                                                                           | t
- IN                                       | scope read, 1 keys                                                                                                 | t
- IN, ANY array                            | scope read, 3 keys, once                                                                                           | t
- IN, every key                            | scope read, 10 keys, once                                                                                          | t
- IN, three keys                           | scope read, 3 keys, once                                                                                           | t
- IN, two keys                             | scope read, 2 keys, once                                                                                           | t
- barrier view, IN                         | scope read, 1 keys                                                                                                 | t
- barrier view, join                       | scope read, 1 keys                                                                                                 | t
- function of ids                          | scope read, 1 keys                                                                                                 | t
- function, IN                             | scope read, 1 keys                                                                                                 | t
- function, join                           | scope read, 1 keys                                                                                                 | t
- join                                     | scope read, 1 keys                                                                                                 | t
- join, bigint key                         | scope read, 1 keys                                                                                                 | t
- join, distinct count                     | scope read, 1 keys                                                                                                 | t
- join, group by the key                   | scope read, 3 keys, per pair                                                                                       | t
- join, one key in a list                  | scope read, 1 keys                                                                                                 | t
- join, other conditions of the facts      | scope read, 1 keys                                                                                                 | t
- join, the key first                      | scope read, 1 keys                                                                                                 | t
- latest 5                                 | scope read, 1 keys                                                                                                 | t
- miss: NOT EXISTS                         | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                       | t
- miss: another column read                | join, the statement reads a column of the scope relation other than its key as a group key: s.valid_until          | t
- miss: condition on a pair column         | join, the scope relation has another condition: (tenant_scope.valid_until IS NULL)                                 | t
- miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                           | t
- miss: range on the key                   | join, the scope key is not bound by an equality or an IN list of constants or parameters                           | t
- miss: view with DISTINCT                 | join, the sub-select over the scope relation is not a plain projection of its columns                              | t
- miss: view with a condition              | join, the view over the scope relation has a condition of its own                                                  | t
- miss: wrong fact column                  | join, the join is not by the declared member column dim_a_id and the declared column dim_a_id of the scanned table | t
- not a scope: barrier view over the table | normal plan                                                                                                        | t
- not a scope: volatile function           | normal plan                                                                                                        | t
- plain view                               | scope read, 1 keys                                                                                                 | t
- through another join                     | scope read, 1 keys                                                                                                 | t
- top 5 ids                                | scope read, 1 keys                                                                                                 | t
- two keys, a row for each pair            | scope read, 3 keys, per pair                                                                                       | t
+                   name                   |                                                                            plan                                                                             | same_rows 
+------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ CTE                                      | scope read, 1 keys                                                                                                                                          | t
+ EXISTS                                   | scope read, 1 keys                                                                                                                                          | t
+ EXISTS, two keys                         | scope read, 2 keys, once                                                                                                                                    | t
+ IN                                       | scope read, 1 keys                                                                                                                                          | t
+ IN, ANY array                            | scope read, 3 keys, once                                                                                                                                    | t
+ IN, every key                            | scope read, 10 keys, once                                                                                                                                   | t
+ IN, three keys                           | scope read, 3 keys, once                                                                                                                                    | t
+ IN, two keys                             | scope read, 2 keys, once                                                                                                                                    | t
+ barrier view, IN                         | scope read, 1 keys                                                                                                                                          | t
+ barrier view, join                       | scope read, 1 keys                                                                                                                                          | t
+ function of ids                          | scope read, 1 keys                                                                                                                                          | t
+ function, IN                             | scope read, 1 keys                                                                                                                                          | t
+ function, join                           | scope read, 1 keys                                                                                                                                          | t
+ join                                     | scope read, 1 keys                                                                                                                                          | t
+ join, bigint key                         | scope read, 1 keys                                                                                                                                          | t
+ join, distinct count                     | scope read, 1 keys                                                                                                                                          | t
+ join, group by the key                   | scope read, 3 keys, per pair                                                                                                                                | t
+ join, one key in a list                  | scope read, 1 keys                                                                                                                                          | t
+ join, other conditions of the facts      | scope read, 1 keys                                                                                                                                          | t
+ join, the key first                      | scope read, 1 keys                                                                                                                                          | t
+ latest 5                                 | scope read, 1 keys                                                                                                                                          | t
+ miss: NOT EXISTS                         | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                                | t
+ miss: another column read                | join, the statement reads a column of the scope relation other than its key as a group key: s.valid_until                                                   | t
+ miss: condition on a pair column         | join, the scope relation has another condition: (tenant_scope.valid_until IS NULL)                                                                          | t
+ miss: key not bound                      | join, the scope key is not bound by an equality or an IN list of constants or parameters                                                                    | t
+ miss: range on the key                   | join, the scope key is not bound by an equality or an IN list of constants or parameters                                                                    | t
+ miss: view with DISTINCT                 | join, the sub-select over the scope relation is not a plain projection of its columns                                                                       | t
+ miss: view with a condition              | join, the view over the scope relation has a condition of its own                                                                                           | t
+ miss: wrong fact column                  | join, the join is not by the declared member column dim_a_id and the declared column dim_a_id of the scanned table                                          | t
+ not a scope: barrier view over the table | join, no SiftAgg scan of "events" is planned, so its join to the scope relation runs as written (the arms index and single say why the scan is not planned) | t
+ not a scope: volatile function           | normal plan                                                                                                                                                 | t
+ plain view                               | scope read, 1 keys                                                                                                                                          | t
+ through another join                     | scope read, 1 keys                                                                                                                                          | t
+ top 5 ids                                | scope read, 1 keys                                                                                                                                          | t
+ two keys, a row for each pair            | scope read, 3 keys, per pair                                                                                                                                | t
 (35 rows)
 
 -- the switch: with sift.agg_scope off nothing is taken out
 SET sift.agg_scope = off;
 SELECT name, label(q) FROM forms WHERE name IN ('join', 'IN', 'IN, three keys') ORDER BY name;
-      name      | label 
-----------------+-------
- IN             | join
- IN, three keys | join
- join           | join
+      name      |            label            
+----------------+-----------------------------
+ IN             | join, sift.agg_scope is off
+ IN, three keys | join, sift.agg_scope is off
+ join           | join, sift.agg_scope is off
 (3 rows)
 
 RESET sift.agg_scope;

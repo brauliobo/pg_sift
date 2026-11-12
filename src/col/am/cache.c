@@ -234,7 +234,7 @@ fold(Relation index, const SiftDirSnapshot *dir, const Fold *f, bool shared, int
 		else
 			fold_reset(f, ncols);
 	}
-	if (!whole)
+	if (!whole && !rel->stale)	/* segments of another leaf list have no leaf of the current one to count: the index is read after its REINDEX */
 	{
 		int			j = 0;
 

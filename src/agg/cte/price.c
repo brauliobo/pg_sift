@@ -121,6 +121,20 @@ any_sift_agg(List *plans)
 	return a.n > 0;
 }
 
+/* does a SiftAgg node of the plan, or of a plan below it, read the scope units of a scope index? */
+bool
+plan_reads_scope(Plan *plan)
+{
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+		return sift_aggspec_unpack(((CustomScan *) plan)->custom_private)->scope != NULL;
+	foreach_ptr(Plan, p, child_plans(plan))
+		if (plan_reads_scope(p))
+			return true;
+	return plan_reads_scope(plan->lefttree) || plan_reads_scope(plan->righttree);
+}
+
 /* the tables the scans of a plan read: the table of the index and those of the lookups its joins make */
 void
 arm_tables(Plan *plan, List **oids)

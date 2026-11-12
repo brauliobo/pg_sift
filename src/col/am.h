@@ -46,6 +46,7 @@ typedef struct SiftColRel
 	SiftCWbufHint hint;
 	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
 	int			ncut;
+	bool		stale;			/* the segments were written under another leaf list than the options give now (ALTER INDEX of a scope or connection): the planner leaves the index alone until REINDEX */
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;
@@ -271,6 +272,7 @@ extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 
 /* Key-cut units */
 extern bool sift_col_index_keyed(Oid indexoid);
+extern bool sift_col_index_stale(Oid indexoid);
 extern uint32 sift_colk_unit_rows(uint32 aim);
 extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
 /* the rows of a unit of a key that fills at least two such units and is sorted by a second leaf (below ~2,000 the per-unit bytes outgrow what a narrower zone saves) */

@@ -223,7 +223,7 @@ names_relation(Oid heapoid, const SiftScopeRel *r, Oid relid)
  * The declared scope of the index whose pairs relation is relid; else the scope of two paths that has it as a relation of a path (its first or its joined one), whose pairs are not the rows of
  * either; else NULL.
  */
-static const SiftScopeSpec *
+const SiftScopeSpec *
 declared_scope(Oid heapoid, const SiftScopeSpecs *specs, Oid relid)
 {
 	const SiftScopeSpec *two = NULL;

@@ -173,7 +173,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COL
  miss: table joined to a third table, join               | join, the table of keys is joined to another table                                                                                                                              | t
  miss: the key bound twice                               | join, the scope key is bound more than once                                                                                                                                     | t
  miss: view                                              | join, the table of keys is read through a view                                                                                                                                  | t
- miss: volatile condition                                | normal plan                                                                                                                                                                     | t
+ miss: volatile condition                                | join, no SiftAgg scan of "events" is planned, so its join to the scope relation runs as written (the arms index and single say why the scan is not planned)                     | t
  semi join of several keys, a row for each pair          | scope read, ARRAY(SELECT my_tenants.tenant_id FROM my_tenants WHERE (my_tenants.user_id = 1)), per pair                                                                         | t
  top 5 ids, nested IN                                    | scope read, ARRAY(SELECT my_tenants.tenant_id FROM my_tenants WHERE (my_tenants.user_id = 1)), once                                                                             | t
 (38 rows)
@@ -181,10 +181,10 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COL
 -- the switch: with sift.agg_scope off nothing is taken out
 SET sift.agg_scope = off;
 SELECT name, label(q) FROM forms WHERE name IN ('IN, nested IN', 'join, one key a user') ORDER BY name COLLATE "C";
-         name         | label 
-----------------------+-------
- IN, nested IN        | join
- join, one key a user | join
+         name         |            label            
+----------------------+-----------------------------
+ IN, nested IN        | join, sift.agg_scope is off
+ join, one key a user | join, sift.agg_scope is off
 (2 rows)
 
 RESET sift.agg_scope;
@@ -217,10 +217,10 @@ GRANT SELECT ON forms, events, tenant_scope, tenants_rls TO kt_user;
 CREATE POLICY own_tenants ON tenants_rls USING (user_id = 1);
 SET ROLE kt_user;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms WHERE name LIKE 'miss: row-level security%' ORDER BY name COLLATE "C";
-                name                 |                           plan                           | same_rows 
--------------------------------------+----------------------------------------------------------+-----------
- miss: row-level security, join      | normal plan                                              | t
- miss: row-level security, nested IN | join, row-level security is enabled on the table of keys | t
+                name                 |                                                                            plan                                                                             | same_rows 
+-------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ miss: row-level security, join      | join, no SiftAgg scan of "events" is planned, so its join to the scope relation runs as written (the arms index and single say why the scan is not planned) | t
+ miss: row-level security, nested IN | join, row-level security is enabled on the table of keys                                                                                                    | t
 (2 rows)
 
 RESET ROLE;

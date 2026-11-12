@@ -21,6 +21,9 @@
 #include "col/am.h"
 #include "col/amscan/amscan_int.h"
 
+/* the price of a scan of an index whose segments another leaf list wrote (col/am.h, stale): the path is never the cheapest, whatever the table */
+#define COL_SCAN_STALE	1.0e10
+
 /*
  * col/amscan/amscan.c - the bitmap scan of a sift_col index (docs/COL-SCAN.md): the keys of the operator classes sift.col_*_ops become
  * predicates of the column source, the TIDs of the rows that pass go to the TID bitmap, and the heap scan above applies MVCC.
@@ -199,6 +202,15 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 			   *narrowed = NULL;
 	double		redundant = redundant_scans(root, path, &narrowed);
 	int			nprobes;
+
+	if (sift_col_index_stale(index->indexoid))
+	{
+		*indexStartupCost = *indexTotalCost = COL_SCAN_STALE;
+		*indexSelectivity = 1.0;
+		*indexCorrelation = 0.0;
+		*indexPages = 1.0;
+		return;
+	}
 
 	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one; IS [NOT] NULL tests a bit, as a comparison does */
 	foreach_node(IndexClause, ic, path->indexclauses)

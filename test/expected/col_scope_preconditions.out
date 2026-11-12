@@ -1,0 +1,196 @@
+-- What a scope declaration needs of its relations and its journals is said when the index is made or altered, not when it is first read: a temporary table of pairs, a relation with
+-- row-level security, a scope of two paths without its journals, a partition, an ALTER INDEX that declares a scope the segments do not hold, a journal that is not
+-- one, and an ALTER INDEX that would take the journal away. The index that ALTER INDEX leaves unwritten is not scanned (a plan that cost it read the segments with the leaf list of
+-- the options and failed with a corrupted segment): every statement over its table runs, and sift.explain_why says what to do.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 50, i % 4, i % 10 FROM generate_series(1, 2000) i;
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 50) i;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "tenant_scope_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tenant_scope_journal');
+CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE hint text; detail text; BEGIN EXECUTE stmt; RETURN 'ok';
+   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT, detail = PG_EXCEPTION_DETAIL;
+   RETURN sqlerrm || coalesce(' {' || nullif(detail, '') || '}', '') || coalesce(' [' || hint || ']', ''); END $$;
+CREATE FUNCTION scope_reasons(q text) RETURNS SETOF text LANGUAGE sql AS
+$$ SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') FROM sift.explain_why(q) WHERE arm = 'scope' $$;
+-- a temporary table of pairs: the index would be dropped with it when the session ends
+CREATE TEMP TABLE pairs_temp (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
+SELECT try('CREATE INDEX temp_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pg_temp.pairs_temp(m, s)'')') AS temp_pairs;
+                                                                                                          temp_pairs                                                                                                          
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "pairs_temp" is a temporary table {The index depends on the btree and the journal of the scope relation, so it would be dropped with the table when the session ends.} [Name a permanent table of pairs.]
+(1 row)
+
+-- a sift_col index of the relation that is not its journal says what it lacks
+CREATE TABLE pairs_unjournaled (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
+CREATE INDEX pairs_unjournaled_auto ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'off');
+SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_off;
+NOTICE:  scope "tenant_id": the pairs of "pairs_unjournaled" are the rows of its unique btree "pairs_unjournaled_pkey"
+                                                                                                                                                                                           journal_off                                                                                                                                                                                           
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "pairs_unjournaled" has no sift_col index that journals its changes {The sift_col index "pairs_unjournaled_auto" of "pairs_unjournaled" has no track_changes = 'ctid'.} [CREATE INDEX ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
+(1 row)
+
+DROP INDEX pairs_unjournaled_auto;
+CREATE INDEX pairs_unjournaled_rev ON pairs_unjournaled USING sift_col (s, m) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "pairs_unjournaled_rev": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_rev');
+SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_member_second;
+NOTICE:  scope "tenant_id": the pairs of "pairs_unjournaled" are the rows of its unique btree "pairs_unjournaled_pkey"
+                                                                                                                                                                                         journal_member_second                                                                                                                                                                                          
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ scope "tenant_id": "pairs_unjournaled" has no sift_col index that journals its changes {The sift_col index "pairs_unjournaled_rev" of "pairs_unjournaled" does not have the member column first.} [CREATE INDEX ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
+(1 row)
+
+-- row-level security of the relation: the statements of a role the policies apply to read the join as written
+CREATE TABLE pairs_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
+ALTER TABLE pairs_rls ENABLE ROW LEVEL SECURITY;
+CREATE INDEX pairs_rls_journal ON pairs_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
+NOTICE:  sift_col index "pairs_rls_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_rls_journal');
+CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_rls(m, s)');
+NOTICE:  scope "tenant_id": "pairs_rls" has row-level security enabled
+DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
+NOTICE:  scope "tenant_id": the pairs of "pairs_rls" are the rows of its unique btree "pairs_rls_pkey"
+NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
+NOTICE:  sift_col index "rls_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rls_col');
+NOTICE:  sift_col index "rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+DROP INDEX rls_col;
+-- a scope of two paths without the journals of its relations: reads run as written until they exist and a REINDEX writes the segments under them
+CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
+CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
+CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct"
+NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group"
+NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_pkey"
+NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
+DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
+HINT:  CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
+NOTICE:  scope "tenant_id": "grants" has no sift_col index that journals its changes
+DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
+HINT:  CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')
+NOTICE:  scope "tenant_id": "memberships" has no sift_col index that journals its changes
+DETAIL:  Reads of the scope index run as written until the journal exists and REINDEX INDEX makes the scope segments under it.
+HINT:  CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
+NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
+NOTICE:  sift_col index "two_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('two_col');
+NOTICE:  sift_col index "two_col" has a scope: column format minor 49, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+DROP INDEX two_col;
+-- a partition declares its own scope: a statement over the partitioned table reads none
+CREATE TABLE part_events (id int, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) PARTITION BY RANGE (id);
+CREATE TABLE part_events_1 PARTITION OF part_events FOR VALUES FROM (0) TO (100000);
+CREATE INDEX part_col ON part_events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope: "part_events_1" is a partition: a statement over the partitioned table reads no scope
+DETAIL:  A statement on this partition reads the scope units of its index; the scope index of each partition is declared on that partition.
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "tenant_id": 0 entries for 0 rows (0.00 per row)
+NOTICE:  sift_col index "part_events_1_id_dim_a_id_amount_idx": 1 automatic choice, 1 advice
+DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('part_events_1_id_dim_a_id_amount_idx');
+NOTICE:  sift_col index "part_events_1_id_dim_a_id_amount_idx" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+DROP TABLE part_events;
+-- ALTER INDEX declares a scope the segments do not hold: the notice says REINDEX, and the statements over the table run (they did not: the plan read the segments)
+CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount);
+NOTICE:  sift_col index "altered_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = dim_a_id, amount; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
+ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
+SELECT count(*) AS by_key FROM events WHERE id = 5;
+ by_key 
+--------
+      1
+(1 row)
+
+SELECT sum(amount) AS total FROM events;
+ total 
+-------
+  9000
+(1 row)
+
+SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
+ tenant_total 
+--------------
+         1400
+(1 row)
+
+SELECT * FROM scope_reasons($q$SELECT sum(e.amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)$q$);
+                                                                                      scope_reasons                                                                                      
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ the scope of index altered_col was declared after its segments were written (ALTER INDEX): REINDEX INDEX altered_col writes the scope segments, and the index is not scanned until then
+(1 row)
+
+REINDEX INDEX altered_col;
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
+NOTICE:  sift_col index "altered_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = dim_a_id, amount; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
+NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
+ tenant_total 
+--------------
+         1400
+(1 row)
+
+-- giving the scope up leaves the same state
+ALTER INDEX altered_col RESET (scope);
+NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
+SELECT sum(amount) AS total FROM events;
+ total 
+-------
+  9000
+(1 row)
+
+-- the journal of a scope keeps its log; one nothing depends on may be switched off and on
+ALTER INDEX tenant_scope_journal SET (track_changes = 'off');
+ALTER INDEX tenant_scope_journal SET (track_changes = 'ctid');
+NOTICE:  sift_col index "tenant_scope_journal": track_changes = ctid queues about 42 bytes a changed row
+HINT:  Before a huge UPDATE or DELETE: ALTER INDEX tenant_scope_journal SET (track_changes = 'off'), then 'ctid' again.
+ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''off'')') AS journal_off_of_a_scope;
+                                                                                                                  journal_off_of_a_scope                                                                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ index "tenant_scope_journal" is the journal of a scope of index "altered_col" [The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. ALTER INDEX altered_col RESET (scope) first to give the scope up.]
+(1 row)
+
+SELECT try('ALTER INDEX tenant_scope_journal RESET (track_changes)') AS journal_reset_of_a_scope;
+                                                                                                                 journal_reset_of_a_scope                                                                                                                  
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ index "tenant_scope_journal" is the journal of a scope of index "altered_col" [The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. ALTER INDEX altered_col RESET (scope) first to give the scope up.]
+(1 row)
+
+SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''ctid'')') AS journal_kept;
+ journal_kept 
+--------------
+ ok
+(1 row)
+
+ALTER INDEX altered_col RESET (scope);
+NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
+DROP TABLE events, tenant_scope, pairs_unjournaled, pairs_rls, grants, memberships CASCADE;
+DROP FUNCTION try(text), scope_reasons(text);
+DROP EXTENSION pg_sift;

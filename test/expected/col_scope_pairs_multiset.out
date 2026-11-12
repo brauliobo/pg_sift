@@ -430,16 +430,16 @@ SELECT (SELECT count(*) FROM events e JOIN tenant_pairs s ON s.dim_a_id = e.dim_
 (1 row)
 
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
- n |                 label                 |                                         plan                                          | same_rows 
----+---------------------------------------+---------------------------------------------------------------------------------------+-----------
- 1 | IN                                    | scope read                                                                            | t
- 2 | EXISTS                                | scope read                                                                            | t
- 3 | IN, two keys                          | scope read                                                                            | t
- 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 5 | join, the key first                   | join                                                                                  | t
- 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
+ n |                 label                 |                                                        plan                                                         | same_rows 
+---+---------------------------------------+---------------------------------------------------------------------------------------------------------------------+-----------
+ 1 | IN                                    | scope read                                                                                                          | t
+ 2 | EXISTS                                | scope read                                                                                                          | t
+ 3 | IN, two keys                          | scope read                                                                                                          | t
+ 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 5 | join, the key first                   | join, the SiftAgg scan of "events" does not take its join to the scope relation of index events_col as a scope read | t
+ 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
 (8 rows)
 
 -- the testing markers by the same rule: a read for each pair is the join's meaning and is refused for the pairs of a multiset, a semi join is read
@@ -478,30 +478,30 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope('events_co
 -- the same planned statements after the pairs changed again and a rebuild: IN is the scope read and the join is the join
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 6, dim_a_id, tenant_id FROM tenant_pairs WHERE tenant_id = 3 AND row_src = 1;
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
- n |                 label                 |                                         plan                                          | same_rows 
----+---------------------------------------+---------------------------------------------------------------------------------------+-----------
- 1 | IN                                    | scope read                                                                            | t
- 2 | EXISTS                                | scope read                                                                            | t
- 3 | IN, two keys                          | scope read                                                                            | t
- 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 5 | join, the key first                   | join                                                                                  | t
- 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
+ n |                 label                 |                                                        plan                                                         | same_rows 
+---+---------------------------------------+---------------------------------------------------------------------------------------------------------------------+-----------
+ 1 | IN                                    | scope read                                                                                                          | t
+ 2 | EXISTS                                | scope read                                                                                                          | t
+ 3 | IN, two keys                          | scope read                                                                                                          | t
+ 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 5 | join, the key first                   | join, the SiftAgg scan of "events" does not take its join to the scope relation of index events_col as a scope read | t
+ 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
 (8 rows)
 
 REINDEX INDEX events_col;
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
- n |                 label                 |                                         plan                                          | same_rows 
----+---------------------------------------+---------------------------------------------------------------------------------------+-----------
- 1 | IN                                    | scope read                                                                            | t
- 2 | EXISTS                                | scope read                                                                            | t
- 3 | IN, two keys                          | scope read                                                                            | t
- 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 5 | join, the key first                   | join                                                                                  | t
- 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
- 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row | t
+ n |                 label                 |                                                        plan                                                         | same_rows 
+---+---------------------------------------+---------------------------------------------------------------------------------------------------------------------+-----------
+ 1 | IN                                    | scope read                                                                                                          | t
+ 2 | EXISTS                                | scope read                                                                                                          | t
+ 3 | IN, two keys                          | scope read                                                                                                          | t
+ 4 | join                                  | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 5 | join, the key first                   | join, the SiftAgg scan of "events" does not take its join to the scope relation of index events_col as a scope read | t
+ 6 | join, two keys                        | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 7 | join grouped by the key               | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
+ 8 | join grouped by a column of the facts | join, pairs are a multiset (non-unique btree): a join counts a fact once for each row                               | t
 (8 rows)
 
 SELECT sift.col_verify('events_col', true);

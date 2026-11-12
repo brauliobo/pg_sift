@@ -811,9 +811,11 @@ sift_col_alter_check(Relation index)
 		return;
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
+	sift_scope_journal_alter(index);
 	sift_col_track_reconcile(index);
 	sift_conn_alter(index);
 	sift_scope_alter(index);
+	sift_scope_notice_stale(index);
 }
 
 

@@ -10,6 +10,7 @@
 #include "agg/refuse.h"
 #include "agg/search.h"
 #include "agg/spec.h"
+#include "col/scope.h"
 
 typedef enum FuncKind
 {
@@ -614,6 +615,14 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
 extern bool sift_agg_scope_wanted(AggCtx *c, const FromScan *fs);
+/* plan_scope.c: the scope of the declarations of `specs` (the ones of an index of the table heapoid) that names the relation relid; NULL: none does */
+extern const SiftScopeSpec *declared_scope(Oid heapoid, const SiftScopeSpecs *specs, Oid relid);
+/* cte/price.c: does a SiftAgg node of the plan read the scope units of a scope index */
+extern bool plan_reads_scope(Plan *plan);
+extern bool uses_sift_agg(Plan *plan);
+extern bool any_sift_agg(List *plans);
+/* why a statement that holds a relation of a scope of an index of a table it scans reads no scope, for sift.explain_why; NULL: it reads one, or holds none */
+extern const char *sift_agg_scope_unread(const PlannedStmt *ps);
 /* does the tree read a relation of a scope of a column index of a table of the query level (the ARRAY(SELECT ..) rewrite of flat/array_in.c) */
 extern bool sift_agg_reads_scope(Query *level, Node *tree);
 /* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */

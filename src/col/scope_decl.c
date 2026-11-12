@@ -248,6 +248,10 @@ open_table(Relation heap, const SiftScopeSpec *s, const SiftScopeRel *r, Relatio
 	if ((*rel)->rd_rel->relkind != RELKIND_RELATION || (*rel)->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is not a plain heap table", s->key_name, r->name),
 						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
+	if ((*rel)->rd_rel->relpersistence == RELPERSISTENCE_TEMP && heap->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is a temporary table", s->key_name, r->name),
+						errdetail("The index depends on the btree and the journal of the scope relation, so it would be dropped with the table when the session ends."),
+						errhint("Name a permanent table of pairs.")));
 }
 
 /* The two columns of the relation of the declaration: integers, two columns; b is a scope key (the pairs, the joined path) or a member (the via relation) */
@@ -562,6 +566,7 @@ static Oid
 require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree)
 {
 	Oid			journal = sift_scope_journal_index(rel, member, key, btree);
+	char	   *unfit = OidIsValid(journal) ? NULL : sift_scope_journal_unfit(rel, member, key);
 
 	if (!OidIsValid(journal) && OidIsValid(journal_scan(rel, member, key, btree, true)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", s->key_name, s->rel.name),
@@ -569,6 +574,7 @@ require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNum
 								s->rel.name, s->rel.a, s->rel.b)));
 	if (!OidIsValid(journal))
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", s->key_name, s->rel.name),
+						unfit ? errdetail("%s", unfit) : 0,
 						errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
 								s->rel.name, s->rel.a, s->rel.b)));
 	return journal;
@@ -589,6 +595,9 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 	if (specs != NULL && (!sift_col_is_index(index) || heap->rd_rel->relam != HEAP_TABLE_AM_OID))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope: the index must be a sift_col index on a heap table"),
 						errhint("Declare a scope on a sift_col index of a heap table.")));
+	if (specs != NULL && !sticky && heap->rd_rel->relispartition)
+		ereport(NOTICE, (errmsg("scope: \"%s\" is a partition: a statement over the partitioned table reads no scope", RelationGetRelationName(heap)),
+						 errdetail("A statement on this partition reads the scope units of its index; the scope index of each partition is declared on that partition.")));
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
 		const SiftScopeSpec *s = specs->s[i];
@@ -602,6 +611,8 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 			open_hop(heap, s, h, &rel[h], &att[h][0], &att[h][1]);
 		if (npath == 3)
 			check_hops(s, rel, att);
+		for (int h = 0; !sticky && h < npath; h++)
+			sift_scope_notice_relation(s->key_name, decl_rel(s, h)->name, rel[h]);
 		for (int h = 0; h < npath; h++)
 		{
 			btree[h] = choose_btree(index, s, h, rel[h], att[h][0], att[h][1], sticky);
@@ -619,6 +630,8 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 
 			if (OidIsValid(journal))
 				keep = list_append_unique_oid(keep, journal);
+			else if (!sticky)
+				sift_scope_notice_no_journal(s->key_name, decl_rel(s, h)->name, rel[h], att[h][h == 2 ? 1 : 0], att[h][h == 2 ? 0 : 1]);
 		}
 		for (int h = 0; h < npath; h++)
 			table_close(rel[h], NoLock);

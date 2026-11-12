@@ -301,10 +301,9 @@ build_rel(Relation index, MemoryContext mcxt)
 	SiftColRel *r = build_rel_with(index, mcxt, layout[0]);
 	uint32		hash,
 				flags;
+	bool		stored = sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG);
 
-	if (layout[0] == layout[1] && layout[0] == layout[2])
-		return r;
-	if (sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG) && r->schema->hash != hash)
+	if (stored && r->schema->hash != hash && (layout[0] != layout[1] || layout[0] != layout[2]))
 		for (int i = 1; i < 3; i++)
 		{
 			SiftColRel *o;
@@ -313,8 +312,12 @@ build_rel(Relation index, MemoryContext mcxt)
 				continue;
 			o = build_rel_with(index, mcxt, layout[i]);
 			if (o->schema->hash == hash)
-				return o;
+			{
+				r = o;
+				break;
+			}
 		}
+	r->stale = stored && r->schema->hash != hash;
 	return r;
 }
 
@@ -327,6 +330,17 @@ sift_col_index_keyed(Oid indexoid)
 
 	index_close(index, NoLock);
 	return keyed;
+}
+
+/* Were the segments of the index written under another leaf list than its options give (ALTER INDEX of a scope or a connection): a scan refuses it until REINDEX */
+bool
+sift_col_index_stale(Oid indexoid)
+{
+	Relation	index = index_open(indexoid, NoLock);
+	bool		stale = sift_col_is_index(index) && sift_col_rel(index)->stale;
+
+	index_close(index, NoLock);
+	return stale;
 }
 
 SiftColRel *
