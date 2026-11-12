@@ -419,7 +419,8 @@ more than 1% dearer than the join read measured on its own (the closest cells: t
 
 `CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,248 entries for 100,000 rows (0.93 per row); the index grows from 2.4 MB to 4.4 MB (+81%)` (the growth is said
 from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
-them again when the journal says that many members changed (`sift.col_connect_refresh_pct`) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
+them again when the journal says that many members changed (`sift.col_connect_refresh_pct`), when the reads that pay for the changed members cost more than the rewrite (a thousand
+reads against the 1,500 instructions an entity row and 680 a column of an entry the rewrite takes: 20 members of a table of 60,000 rows are refreshed, 1 is not) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
 
 The test table of 100,000 events, 5,000 entities and 40 tenants (one scope, a 5-column index): the index is 2,523,136 bytes without the scope and 4,489,216 with it (4,358,144 with `cols(created_at, kind,
 value_num)`), the build takes 250 ms without and 406 ms with it, and writes 2.9 MB of WAL without and 5.2 MB with it. Keys of fewer than 2,048 entries share the units of the scope segments, and the

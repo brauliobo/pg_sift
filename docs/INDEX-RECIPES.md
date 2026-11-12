@@ -490,7 +490,7 @@ and `EXPLAIN` of a read of the scope has `Scope Units` and no `Scope Fallback` o
 segments); `other lineage` is a journal that was rebuilt (`REINDEX` of the scope index).
 
 **Monitor.** `sift.col_maintenance_due('facts_col', false)` says `stale connection` when so many members of the pairs or of the groups changed that a rewrite is cheaper than the patches
-(`sift.col_connect_refresh_pct`, the groups counted by their members); `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that
+(`sift.col_connect_refresh_pct`, the groups counted by their members) or when a thousand reads of the patches cost more than the rewrite; `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that
 fell to the entity rows (`sift.scope_patch_keys`). The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
 index holds (a HOT update) writes none. A time dependent grant (`expires_at`) is a column the application or a scheduled `UPDATE` sets into the predicate (`WHERE deleted_at IS NULL AND NOT expired`): `now()` is refused in an index predicate.
 

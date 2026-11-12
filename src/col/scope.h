@@ -353,6 +353,39 @@ sift_scope_members_price(const SiftScopeCounts *c)
 	return c->changed == 0 ? 0.0 : SIFT_SCOPE_CHANGED_INSTR + (leaf > 0 ? Min(each, leaf) : each);
 }
 
+/* What a read pays for the members that changed since the stamp, on top of the clean read: the journal's records, their pairs, the patch and the delta (pure) */
+static inline double
+sift_scope_changed_price(const SiftScopeCounts *c)
+{
+	return sift_scope_members_price(c) + sift_scope_patch_price(c);
+}
+
+/*
+ * What a refresh costs: the rewrite of the scope segments from the entity segments that a stale scope gets (maint_scope_refill and the merge of the runs it writes), and what it takes to be worth it.
+ * Instructions of the backend that ran sift.col_maintain on a settled index (entity and scope segments each one, every pair changed since the stamp), from 300,000 and 600,000 rows with 253,000 to 862,000
+ * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
+ * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read pays for the changed members the price above, every time: the refresh is due
+ * when SIFT_SCOPE_REFRESH_READS of them cost more than it does. The reads an index sees between two refreshes are not known to the maintenance, which sees no statement: a thousand is a dashboard that reads
+ * once a minute for an afternoon, and an index read less often than that is not worth the 2.5 seconds of a table of a million rows.
+ */
+#define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
+#define SIFT_SCOPE_REFRESH_ENTRY_INSTR	680
+#define SIFT_SCOPE_REFRESH_READS		1000
+
+/* What the refresh of the scope segments costs: the entity rows it decodes, and for each scope its entries times the columns they keep (pure) */
+static inline double
+sift_scope_refresh_price(uint64 rows, double entry_columns)
+{
+	return SIFT_SCOPE_REFRESH_ROW_INSTR * (double) rows + SIFT_SCOPE_REFRESH_ENTRY_INSTR * entry_columns;
+}
+
+/* Is the refresh cheaper than the reads it spares the patch of the changed members (pure) */
+static inline bool
+sift_scope_refresh_due(double read_price, double refresh_price)
+{
+	return read_price * SIFT_SCOPE_REFRESH_READS > refresh_price;
+}
+
 /* The pairs a read of several keys counted once lists before it reads a unit: the relation's, whole, and those of its keys (pure) */
 static inline double
 sift_scope_list_price(const SiftScopeCounts *c)
@@ -369,7 +402,7 @@ sift_scope_units_price(const SiftScopeCounts *c)
 				except = c->changed > 0 ? SIFT_SCOPE_EXCEPT_INSTR : 0;
 
 	return SIFT_SCOPE_SETUP_INSTR + (rows * SIFT_SCOPE_UNIT_INSTR + c->preagg * SIFT_SCOPE_PREAGG_UNIT_INSTR) * (double) c->units + rows * (entry + except) * (double) c->entries +
-		sift_scope_list_price(c) + sift_scope_members_price(c) + sift_scope_patch_price(c);
+		sift_scope_list_price(c) + sift_scope_changed_price(c);
 }
 
 /* What the entity path (the join as written) costs: the pairs read, the units of the entity rows that may hold a member of the keys, the rows the key filter tests and those it keeps (pure) */
@@ -392,6 +425,11 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 extern void sift_scope_read_rows(SiftScopeRead *rd);
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
 									   const int *leaves, int nleaves, uint32 max_changed);
+/*
+ * The counts of what a read of one key pays for the members that changed since the stamps (changed, patch_units, patch_scan_rows, delta_rows of SiftScopeCounts): the key is the one most of the changed
+ * members have a pair with now, which pays the most. False: the stored read is not exact (the verdict on the stamps, too many changed members, the patch is refused): another rule of the refresh says so.
+ */
+extern bool sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope, SiftScopeCounts *c);
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);

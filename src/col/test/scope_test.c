@@ -486,6 +486,24 @@ sift_test_scope_price(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
+PG_FUNCTION_INFO_V1(sift_test_scope_refresh);
+
+/* sift._test_scope_refresh(rows, entries, columns, changed, patch_units, patch_scan_rows, delta_rows): the price of the refresh of the scope segments, of a read for the changed members, and whether the refresh is due (pure) */
+Datum
+sift_test_scope_refresh(PG_FUNCTION_ARGS)
+{
+	SiftScopeCounts c = {.changed = PG_GETARG_INT64(3),.patch_units = PG_GETARG_INT64(4),.patch_scan_rows = PG_GETARG_INT64(5),.delta_rows = PG_GETARG_INT64(6)};
+	double		refresh = sift_scope_refresh_price(PG_GETARG_INT64(0), (double) PG_GETARG_INT64(1) * PG_GETARG_INT32(2)),
+				read = sift_scope_changed_price(&c);
+	Datum		v[3] = {Float8GetDatum(refresh), Float8GetDatum(read), BoolGetDatum(sift_scope_refresh_due(read, refresh))};
+	bool		nulls[3] = {false, false, false};
+	TupleDesc	desc;
+
+	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
+}
+
 static void
 mark_scope_ref(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {

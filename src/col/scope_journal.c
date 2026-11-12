@@ -279,6 +279,9 @@ struct SiftScopeStale
 {
 	int			n;
 	Snapshot	snap;
+	Relation	index;
+	Relation	heap;
+	int			priced;			/* the refresh is due by its price: 0 not asked yet, 1 due, -1 not */
 	struct
 	{
 		ScopeJournals J;
@@ -297,6 +300,8 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 		return NULL;
 	st = MemoryContextAllocZero(mcxt, sizeof(SiftScopeStale));
 	st->n = sift_col_rel(index)->nscope;
+	st->index = index;
+	st->heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	st->snap = RegisterSnapshot(IsInParallelMode() ? GetActiveSnapshot() : GetTransactionSnapshot());
 	for (int i = 0; i < st->n; i++)
 		if (journals_open(index, i, AccessShareLock, &st->s[i].J))
@@ -307,6 +312,39 @@ sift_scope_stale_begin(Relation index, MemoryContext mcxt)
 			st->s[i].members = Max(sift_conn_rows_of(J->rel[0]) + (J->n > 1 ? sift_conn_rows_of(J->rel[2]) : 0), 1);
 		}
 	return st;
+}
+
+/*
+ * Is the refresh cheaper than the reads of the index that pay for the members that changed since the stamps (sift_scope_refresh_due): what a read of the worst key of each scope pays, against
+ * the rewrite of the scope segments, which refreshes every scope at once.
+ */
+static bool
+refresh_priced(SiftScopeStale *st)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	double		read = 0,
+				entry_columns = 0;
+	uint64		rows = 0;
+
+	sift_dir_read(st->index, dir);
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
+			rows += dir->segs[i].ndocs;
+	for (int i = 0; i < st->n; i++)
+	{
+		SiftScopeCounts c;
+		int			kept,
+					all;
+
+		sift_scope_columns(st->index, sift_scope_specs(st->index)->s[i]->key_name, &kept, &all);
+		for (int j = 0; j < dir->nsegs; j++)
+			if (sift_seg_is_scope(&dir->segs[j]) && sift_seg_scope_ordinal(&dir->segs[j]) == i)
+				entry_columns += (double) dir->segs[j].ndocs * kept;
+		if (st->s[i].vouches && sift_scope_patch_counts(st->heap, st->index, st->snap, i, &c))
+			read += sift_scope_changed_price(&c);
+	}
+	pfree(dir);
+	return sift_scope_refresh_due(read, sift_scope_refresh_price(rows, entry_columns));
 }
 
 bool
@@ -336,12 +374,15 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 		if (many)
 			return true;
 	}
-	return false;
+	if (st->priced == 0)
+		st->priced = refresh_priced(st) ? 1 : -1;
+	return st->priced > 0;
 }
 
 void
 sift_scope_stale_end(SiftScopeStale *st)
 {
+	table_close(st->heap, NoLock);
 	UnregisterSnapshot(st->snap);
 	for (int i = 0; i < st->n; i++)
 		journals_close(&st->s[i].J);
