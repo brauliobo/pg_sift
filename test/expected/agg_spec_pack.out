@@ -1,0 +1,49 @@
+-- The plan spec travels to the parallel workers as a packed list (agg/spec_pack.c), a double as the integers of its bits. Every bit pattern must come
+-- back as it went, among them the ones the text of a list of integer nodes did not carry (the lowest int, the low half of an odd whole number of 2^21 to
+-- 2^22: a row estimate of 2.6 million rows killed a worker on an assertion build).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT bits, sift._test_spec_pack_bits(bits) = bits AS same
+FROM (VALUES (0::int8),
+	(-9223372036854775808),            -- -0.0: the high half is the lowest int
+	(2147483648),                      -- the low half is the lowest int
+	(4702855218352619520),             -- 2608079.0, an estimate of rows
+	(4703306456206671872),             -- 2818203.0
+	(-9223372036854775808 + 2147483648),
+	(-1), (1), (2147483647), (4294967295), (4294967296), (9223372036854775807),
+	(4611686018427387904),             -- 2.0
+	(9218868437227405312),             -- +Infinity
+	(9221120237041090560),             -- NaN
+	(-2251799813685248),               -- -NaN
+	(-4503599627370496)) v(bits);
+         bits         | same 
+----------------------+------
+                    0 | t
+ -9223372036854775808 | t
+           2147483648 | t
+  4702855218352619520 | t
+  4703306456206671872 | t
+ -9223372034707292160 | t
+                   -1 | t
+                    1 | t
+           2147483647 | t
+           4294967295 | t
+           4294967296 | t
+  9223372036854775807 | t
+  4611686018427387904 | t
+  9218868437227405312 | t
+  9221120237041090560 | t
+    -2251799813685248 | t
+    -4503599627370496 | t
+(17 rows)
+
+SELECT count(*) AS different
+FROM (SELECT (-9223372036854775807 + g * 4294967297 * 1000003)::int8 AS bits FROM generate_series(1, 2000) g) v
+WHERE sift._test_spec_pack_bits(bits) <> bits;
+ different 
+-----------
+         0
+(1 row)
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -128,14 +128,23 @@ extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index
  */
 typedef struct SiftConnTags
 {
-	AttrNumber	att;			/* the column of the scope key */
+	AttrNumber	att;			/* the column the tags are of */
+	bool		all;			/* too many keys: every record is wanted */
+	uint32		n;				/* the keys in the map */
+	void		(*fill) (struct SiftConnTags *tags, void *arg);	/* sets the keys at the first record that has a tag, for a read that has none to look at (NULL: the map is whole) */
+	void	   *arg;
 	uint8		map[(SIFT_TOMB_TAG_MAX + 8) / 8];	/* the tags of the keys: bit tag */
 } SiftConnTags;
 /* The tag of a scope key (1..SIFT_TOMB_TAG_MAX) */
 extern uint16 sift_conn_key_tag(int64 key);
 /* The tags of the keys of the column att; NULL for too many keys (they would tag most records: the read takes them all) */
 extern SiftConnTags *sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys);
-extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, const SiftConnTags *tags, SiftConnKeys *out);
+/* Tags of no key yet: fill(tags, arg) adds them (sift_conn_tags_add) when a record of a tag is first looked at */
+extern SiftConnTags *sift_conn_tags_lazy(AttrNumber att, void (*fill) (SiftConnTags *tags, void *arg), void *arg);
+extern void sift_conn_tags_add(SiftConnTags *tags, const int64 *keys, uint32 nkeys);
+/* The column the records of the journal of the index are tagged by (0: none) */
+extern AttrNumber sift_conn_journal_tagatt(Relation index);
+extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnTags *tags, SiftConnKeys *out);
 
 /*
  * The journal of a scope relation: a sift_col index with track_changes = 'ctid' whose first column is the member key. The row trigger of the index writes a KEYCHG record for the old

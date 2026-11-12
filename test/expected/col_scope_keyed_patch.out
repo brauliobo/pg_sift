@@ -142,10 +142,10 @@ SELECT n, label, same, stored, changed, patched FROM lines WHERE route = 2 ORDER
   4 | a direct grant of tenant 6 moved to a group                   | t    | t      |      24 | {0,0,0,0,0,12}
   5 | a grant of tenant 2 to a group soft deleted                   | t    | t      |      12 | {0,0,0,0,0,0}
   6 | a grant of tenant 4 to a group added                          | t    | t      |      12 | {0,0,0,12,0,0}
-  7 | a dim_a_id added to a group: it is granted to tenants 4 and 5 | t    | t      |       1 | {1,0,0,1,1,1}
-  8 | a dim_a_id added to a group: it is granted to nobody          | t    | t      |       1 | {1,0,0,1,1,1}
+  7 | a dim_a_id added to a group: it is granted to tenants 4 and 5 | t    | t      |       1 | {0,0,0,1,1,0}
+  8 | a dim_a_id added to a group: it is granted to nobody          | t    | t      |       0 | {0,0,0,0,0,0}
   9 | a dim_a_id soft deleted from the group of tenant 4            | t    | t      |       1 | {0,0,0,1,0,0}
- 10 | a dim_a_id moved to another group                             | t    | t      |       1 | {0,0,0,0,0,0}
+ 10 | a dim_a_id moved to another group                             | t    | t      |       0 | {0,0,0,0,0,0}
  11 | an update that keeps every column                             | t    | t      |       0 | {0,0,0,0,0,0}
  12 | a dim_a_id reached by two paths loses one                     | t    | t      |       1 | {1,0,0,0,0,0}
 (12 rows)

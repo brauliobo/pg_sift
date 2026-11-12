@@ -448,6 +448,8 @@ extern bool sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap
 /* The member keys that have a pair with one of the keys under the snapshot (keys NULL: with any), ascending, each once */
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
+/* The groups (via values) the joined relation lists under snap for the keys (sorted, distinct), of a scope of two paths */
+extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 /* The rows of the relations a read lists the pairs of the scope from (the estimate of each): the pairs relation, and for two paths the joined and the via relations; *scanned of them those whose pairs the leaves of no journal index list */
 extern double sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned);
