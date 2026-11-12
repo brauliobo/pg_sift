@@ -113,7 +113,7 @@ UPG=("$NEWB/pg_upgrade" -b "$OLDB" -B "$NEWB" -d "$(dir old)/data" -D "$(dir new
 (cd "$(dir new)" && LD_PRELOAD=${SIFT_PRELOAD:-} "${UPG[@]}" >"$(dir new)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade of the cluster succeeds" test $upgraded -eq 0
-if [[ $upgraded -ne 0 ]]; then diag "$(tail -n 30 "$(dir new)/pg_upgrade.log")"; bail "pg_upgrade failed"; fi
+if [[ $upgraded -ne 0 ]]; then upgrade_failed new; bail "pg_upgrade failed"; fi
 node_start new || bail "the upgraded cluster does not start"
 q new postgres "ALTER EXTENSION pg_sift UPDATE" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "the extension update failed"
 unrepaired=0
