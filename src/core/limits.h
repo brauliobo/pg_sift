@@ -236,6 +236,10 @@
 	  "prefix_index option", "option rejected at CREATE INDEX", "prefix_index option", 0) \
 	X(write_buffer_kb, "SIFT_DEFAULT_WRITE_BUFFER_LIMIT", "core/sift.h", SIFT_DEFAULT_WRITE_BUFFER_LIMIT, "kB", \
 	  "default write buffer; a sift_table row that does not fit it is accepted with sift.table_wide_rows (on)", "ERROR 54000 for a larger sift_table row only when sift.table_wide_rows is off (on, the default: up to 1 GB)", "sift.table_wide_rows", 0) \
+	X(wbuf_set_bytes, "BATCH_SET_BYTES", "col/wbuf/batches.c", 16777216, "bytes", \
+	  "bytes in use of the batches a backend keeps of one write buffer for its next scan", "a set over it and over wbuf_set_amplify times its records is built for its scan and not kept: a read decodes the buffer again", "-", 1) \
+	X(wbuf_set_amplify, "BATCH_AMPLIFY", "col/wbuf/batches.c", 8, "times", \
+	  "bytes of a kept set of a write buffer as a multiple of the record bytes it was made from, when it is over wbuf_set_bytes", "the set is built for its scan and not kept: a read decodes the buffer again", "-", 1) \
 	X(table_vblocks, "-", "table/wbuf.c", 4294967294, "blocks", \
 	  "virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left)", "ERROR 54000, VACUUM FULL renumbers them", "-", 0) \
 	X(query_bytes, "SIFT_QUERY_MAX_BYTES", "bm25/query.h", SIFT_QUERY_MAX_BYTES, "bytes", \

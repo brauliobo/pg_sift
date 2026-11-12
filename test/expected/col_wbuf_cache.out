@@ -533,6 +533,86 @@ END $$;
 DROP TABLE wp, wd_state, wd_seen;
 DROP FUNCTION wp_fill(int, int), wp_agg(bool), wp_rows(bool), wp_top(bool), wp_same(), wd_snap(text), wd_fold(text), wd_check(text);
 DROP EXTENSION pg_sift_test;
+-- the memory a kept set may take is the bytes in use, not the chunks it freed to grow its arrays: a buffer scattered over many superblocks (the new versions of rows
+-- take the addresses VACUUM freed all over the table) holds a part of its memory in free chunks, and a set measured by what it holds was over the limit at 12,000 rows
+-- of a wide table, was not kept, and was decoded again by every read. The limit is set between the two for this set, in a new backend that builds it again.
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE wq (id int PRIMARY KEY, g int NOT NULL, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, s1 text, s2 text, pad text DEFAULT repeat('x', 100))
+	WITH (autovacuum_enabled = off, fillfactor = 20);
+INSERT INTO wq SELECT i, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, md5(i::text), 'c' || i % 200 FROM generate_series(1, 80000) i;
+CREATE INDEX wq_col ON wq USING sift_col (id, g, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, s1, s2);
+NOTICE:  sift_col index "wq_col": 2 automatic choices (rollup_columns, track_changes)
+DETAIL:  rollup_columns = g, a1; track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wq_col');
+VACUUM (FREEZE, ANALYZE) wq;
+UPDATE wq SET a1 = a1 + 1 WHERE id % 29 = 0;
+VACUUM wq;
+SELECT sift.col_promote('wq_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+UPDATE wq SET a1 = a1 + 1 WHERE (id + 3) % 29 = 0;
+CREATE FUNCTION wq_read() RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE r bigint;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('enable_seqscan', 'off', true);
+	SELECT count(*) INTO r FROM (SELECT g, count(*), sum(a1), min(s1) FROM wq GROUP BY g) x;
+	RETURN r;
+END $$;
+SELECT wq_read();
+ wq_read 
+---------
+       7
+(1 row)
+
+SELECT rows >= 2500 AS buffered, batches >= 8 AS scattered, allocated > consumed AS free_chunks, (allocated + consumed) / 2 AS lim FROM sift._test_col_set_stats() \gset
+SELECT :'buffered'::bool AS buffered, :'scattered'::bool AS scattered, :'free_chunks'::bool AS free_chunks;
+ buffered | scattered | free_chunks 
+----------+-----------+-------------
+ t        | t         | t
+(1 row)
+
+\c -
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SELECT set_config('sift.test_limits', 'wbuf_set_bytes=' || :lim || ',wbuf_set_amplify=1', false) IS NOT NULL AS limits_set;
+ limits_set 
+------------
+ t
+(1 row)
+
+SELECT wq_read();
+ wq_read 
+---------
+       7
+(1 row)
+
+SELECT kept AS kept_over_the_chunks_it_freed FROM sift._test_col_set_stats();
+ kept_over_the_chunks_it_freed 
+-------------------------------
+ t
+(1 row)
+
+SELECT decoded AS before FROM sift._test_col_wbuf_reads('wq_col') \gset
+SELECT wq_read();
+ wq_read 
+---------
+       7
+(1 row)
+
+SELECT decoded = :before AS none_decoded_again FROM sift._test_col_wbuf_reads('wq_col');
+ none_decoded_again 
+--------------------
+ t
+(1 row)
+
+RESET ALL;
+DROP TABLE wq;
+DROP FUNCTION wq_read();
+DROP EXTENSION pg_sift_test;
 DROP TABLE wc CASCADE;
 DROP FUNCTION wc_cursor(), wc_same(text), wc_rows(bool), wc_agg(bool);
 DROP EXTENSION pg_sift;

@@ -126,6 +126,18 @@ extern int64 sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, co
 
 /* The rows the backends of the server decoded from the buffer of generation gen to read it, since it was opened (col/wbuf/reads.c): what its promotion is weighed against (maint_wbuf_read_due) */
 extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
+#ifdef SIFT_TESTING
+typedef struct SiftWbufSetStats
+{
+	int64		rows,
+				allocated,
+				consumed,
+				recbytes,
+				kept,
+				batches;
+} SiftWbufSetStats;
+extern void sift_cwbuf_last_set(SiftWbufSetStats *out);
+#endif
 extern uint64 sift_cwbuf_decoded(Relation index, uint64 gen);
 /* whether this backend decoded rows since the last call (the scan that did looks for the promotion, sift_col_vacuum_tick) */
 extern bool sift_cwbuf_decoded_take(void);

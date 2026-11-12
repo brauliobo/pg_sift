@@ -669,3 +669,5 @@ CREATE FUNCTION sift._test_vstore_forget() RETURNS void
 -- the answers the memos of the catalog state (the triggers of a journal, the relations of a scope, its legs, the rows of its relations, the units of a read) gave without asking the catalogs, in this backend
 CREATE FUNCTION sift._test_catalog_memos() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_catalog_memos' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_set_stats(OUT rows int8, OUT allocated int8, OUT consumed int8, OUT recbytes int8, OUT kept bool, OUT batches int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_set_stats' LANGUAGE C STRICT;

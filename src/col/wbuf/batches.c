@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
+#include "core/limits.h"
 #include "core/tomb.h"
 #include "col/wbuf/wbuf_int.h"
 
@@ -126,17 +127,41 @@ typedef struct BatchSet
 
 #define BATCH_SETS			4
 
-/* A set bigger than this is built for its scan and not kept, unless it is within BATCH_AMPLIFY times the records it was made from: a buffer of the size the index allows (write_buffer_limit) is kept whole, whatever its limit */
+/*
+ * A set whose bytes in use (the chunks it frees to grow its arrays are not counted: the memory of a set grows by doubling and a buffer scattered over hundreds of
+ * superblocks leaves 40% of what it holds in free chunks) are over BATCH_SET_BYTES is built for its scan and not kept, unless it is within BATCH_AMPLIFY times the
+ * records it was made from: a buffer of the size the index allows (write_buffer_limit) is kept whole, whatever its layout. Not kept, a read decodes it again (11 K instructions a row).
+ */
 #define BATCH_SET_BYTES		((Size) 16 << 20)
-#define BATCH_AMPLIFY		6
+#define BATCH_AMPLIFY		8
 
 static MemoryContext sets_cxt;
+
+static Size
+set_bytes(const BatchSet *s)
+{
+	MemoryContextCounters c = {0};
+
+	MemoryContextMemConsumed(s->cx, &c);
+	return c.totalspace - c.freespace;
+}
 
 static BatchSet *sets[BATCH_SETS];
 
 static uint64 sets_clock;
 
 static uint64 sets_serial;
+
+#ifdef SIFT_TESTING
+/* the set the last shared read used, for the tests that price the memory of a kept set */
+static SiftWbufSetStats last_set;
+
+void
+sift_cwbuf_last_set(SiftWbufSetStats *out)
+{
+	*out = last_set;
+}
+#endif
 
 
 static int
@@ -643,6 +668,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 	SiftCWbufReader *r = wbuf_open_lazy(index, entry, schema, tmp);
 	BatchSet   *s = NULL;
 	WbufLane	lane[SIFT_LANES];
+
 	Fresh		f;
 
 	for (int i = 0; i < BATCH_SETS; i++)
@@ -712,7 +738,7 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	if (!s->kept && s->n > 0 && MemoryContextMemAllocated(s->cx, true) <= Max(BATCH_SET_BYTES, BATCH_AMPLIFY * s->recbytes))
+	if (!s->kept && s->n > 0 && set_bytes(s) <= Max((Size) sift_limit(wbuf_set_bytes, BATCH_SET_BYTES), (Size) sift_limit(wbuf_set_amplify, BATCH_AMPLIFY) * s->recbytes))
 	{
 		int			slot = 0;
 
@@ -729,6 +755,15 @@ sift_cwbuf_batches_shared(Relation index, const SiftSegEntry *entry, const SiftC
 		sets[slot] = s;
 		s->kept = true;
 	}
+#ifdef SIFT_TESTING
+	{
+		int64		rows = 0;
+
+		for (int i = 0; i < s->n; i++)
+			rows += s->b[i]->nrows;
+		last_set = (SiftWbufSetStats) {rows, (int64) MemoryContextMemAllocated(s->cx, true), (int64) set_bytes(s), (int64) s->recbytes, s->kept, s->n};
+	}
+#endif
 	s->used = ++sets_clock;
 	if (stamp)
 		*stamp = set_stamp(s);
