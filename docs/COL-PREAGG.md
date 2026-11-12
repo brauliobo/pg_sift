@@ -252,7 +252,7 @@ The segment is not rewritten for that any more: the VACUUM that cleared the bits
 - **What writes it.** VACUUM, before the merges it decides (`vacuum_net`): a segment with a unit whose dead rows the sidecar does not know gets a new one, one pass over the leaves of its dirty units, the cost of a
   verification of them; the segment keeps its generation, a new header page lists the extents of the stream and of the new sidecar, and the old header and sidecar pages are released with the directory switch (the
   relocation of a segment does the same). A crash after the pages and before the switch leaves unreferenced pages, which the orphan sweep returns.
-- **What it changes for the rewrite.** The units a sidecar answers for count as clean in the rule of the automatic rewrite (`sift.col_auto_merge_dirty_pct`) and in the cost of `dead_rewrite_pct = 0`; a segment still is rewritten when half of it is dead, when its
+- **What it changes for the rewrite.** The units a sidecar answers for count as clean in the rule of the automatic rewrite (a unit with a dead row asks for it) and in the cost of `dead_rewrite_pct = 0`; a segment still is rewritten when half of it is dead, when its
   units are fragmented, when the write buffer is large, and by the merge tiers. A rewrite or a merge writes no sidecar (its output has no dead rows) and drops the one of its inputs with their pages.
 - **Cost.** One sidecar is about the cube and rollups of the dirty units (a share of the segment's pre-aggregates section) and the sums of each leaf per unit (80 bytes); `sift.col_sections` shows it as `net`. It is written again whole
   by every VACUUM that clears more bits. `sift.col_verify` rebuilds each unit's blobs from its live rows and compares the bytes.
