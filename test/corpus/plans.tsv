@@ -441,3 +441,7 @@ scope_refused_nested_in	SiftAgg	scope:f:scope,single:t
 scope_refused_not_in	SiftAgg	scope:f:scope,single:t
 scope_refused_two_in	SiftAgg	scope:f:scope,single:t
 scope_array_any	SiftAgg	scope:f:scope,single:t
+scope_array_any_keys	SiftAgg	scope:f:scope,single:t
+scope_array_any_union	SiftAgg	scope:f:scope,single:t
+scope_array_limit	SiftAgg	scope:f:scope,single:t
+scope_array_or	SiftAgg	scope:f:scope,single:t

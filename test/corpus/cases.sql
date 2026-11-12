@@ -964,3 +964,12 @@ select status, count(*), sum(amount) from scope_events where dim_a_id not in (se
 select status, count(*), sum(amount) from scope_events where dim_a_id in (select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50) and dim_a_id in (select dim_a_id from scope_pairs where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50)) group by 1;
 -- @case scope_array_any | scope | the members as = ANY (ARRAY(SELECT ..)) are planned also as IN (SELECT ..), which the scope read takes
 select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) group by 1;
+-- @case scope_array_any_keys | scope | the members of two tenants as = ANY (ARRAY(SELECT ..)) are planned also as IN
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id in (1 + @K@ % 50, 1 + @K2@ % 50))) group by 1;
+-- @case scope_array_any_union | scope | the members of the union of the two paths as = ANY (ARRAY(SELECT ..))
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select member from scope_pairs_union where tenant_id = 1 + @K@ % 50)) group by 1;
+-- @case scope_array_limit | join | the members as = ANY (ARRAY(SELECT .. LIMIT n)) are an InitPlan the IN form does not read: the join as written, with its reason
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50 limit 100)) group by 1;
+-- @case scope_array_or | join | the members as = ANY (ARRAY(SELECT ..)) under OR are no semi join: the join as written, with its reason
+select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) or amount = 7 group by 1;
+
