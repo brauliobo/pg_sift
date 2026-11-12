@@ -42,7 +42,7 @@ typedef struct SiftAggScope
 	bool		once;			/* a row counts once whichever of the keys it has (IN, EXISTS); false: once for each pair of its member, as a join and GROUP BY the key count it */
 	bool		all;			/* every key (keys NULL, nkeys 0, not once): a row for each pair of its member, which the spec may group by the derived leaf (sift_agg_scope_leaf) */
 	struct SiftAggSpec *alt;	/* the join as written: the scan of this spec without the conjunct, which the node runs instead when it costs less for the keys it has (agg/scope.c scope_open); NULL: there is none */
-	int			nknot;			/* what the alternative costs, in instructions, for knot_k[i] keys of the average size (the planner's own price, agg/cost/scope.c): linear between the knots, flat past the last */
+	int			nknot;			/* what the alternative costs, in instructions, for knot_k[i] keys of the average size (the planner's own price, agg/cost/scope.c): linear between the knots, flat past the last and below the first */
 	double		knot_k[SIFT_AGG_SCOPE_KNOTS];
 	double		knot_instr[SIFT_AGG_SCOPE_KNOTS];
 	double		entry_instr;	/* the instructions the aggregation of a row of the keys costs, on top of the entry the units read (SIFT_SCOPE_ENTRY_INSTR): the operators of the model a row has, which both ways pay */

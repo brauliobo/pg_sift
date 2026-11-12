@@ -1,0 +1,48 @@
+-- A scope read and the join as written (the first pass of the planner) are priced for the keys the node really has: the entries of the read, over the rows of a key of the average size, are the
+-- keys the join is priced for (a price at its knots, linear between them and flat past the last). A key smaller than the average one is a fraction of a key, and the join scans the table whatever
+-- the keys, so it costs what it does for one key: the line through the first two knots, taken on below the first, went to 0 where the average key held most of the table and the join took a tenant
+-- of three ids of a hundred and twenty for free (it read 60,000 rows where the units read 1,500). The units are read for the small keys, the join for the keys that hold the table, and the rows are the join's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET default_statistics_target = 1000;
+SET sift.test_scope_patch = off;
+
+-- 120 ids of 500 events each; the key 23 holds 80 of them, the keys 21 and 22 thirty each, the keys 1 to 20 three each
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 120, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 60000) i;
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT 1 + (t * 7 + k * 5) % 120, t FROM generate_series(1, 20) t, generate_series(1, 3) k ON CONFLICT DO NOTHING;
+INSERT INTO tenant_scope SELECT 1 + (t * 11 + k * 3) % 120, t FROM generate_series(21, 22) t, generate_series(1, 30) k ON CONFLICT DO NOTHING;
+INSERT INTO tenant_scope SELECT k, 23 FROM generate_series(1, 80) k;
+CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+
+CREATE FUNCTION small_key_sql(keys text) RETURNS text LANGUAGE sql AS
+$$ SELECT 'SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (' || keys || ')) GROUP BY kind' $$;
+
+-- the arm the node runs: the scope units, or the join with its reason
+CREATE FUNCTION small_key_arm(keys text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'scope units';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || small_key_sql(keys) LOOP
+		IF l ~ 'Scope Fallback' THEN r := trim(regexp_replace(l, 'Scope Fallback: ', 'join, ')); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION small_key_rows(keys text, enable_agg text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', enable_agg, false);
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || small_key_sql(keys) || ') t' INTO r;
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	RETURN r;
+END $$;
+
+SELECT label, keys, small_key_arm(keys) AS arm, small_key_rows(keys, 'on') = small_key_rows(keys, 'off') AS same_rows
+FROM (VALUES ('a key of 3 ids', '1'), ('three keys of 3 ids', '1, 2, 3'), ('a key of 30 ids', '21'),
+             ('the key of 80 ids', '23'), ('every key', '1, 5, 10, 15, 20, 21, 22, 23')) AS v(label, keys)
+ORDER BY keys;

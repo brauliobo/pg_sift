@@ -335,20 +335,21 @@ read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
 }
 
 /*
- * What the join as written costs for `keys` keys of the average size, in instructions: the planner's price at its knots (SiftAggScope), linear between them and flat past the last, which is
- * every key. A first segment goes on below its first knot (a key count the entries of a read give may be a fraction of one).
+ * What the join as written costs for `keys` keys of the average size, in instructions: the planner's price at its knots (SiftAggScope), linear between them, flat past the last, which is
+ * every key, and flat below the first: the entries of a read stand for a fraction of a key where its keys are smaller than the average one, and the join scans the table whatever the keys,
+ * so the price of the first knot, which holds that scan, is what it costs (the line through the first two knots went on below the first and reached 0 for a tenant of 3 members in 200).
  */
 static double
 alt_price(const SiftAggScope *sc, double keys)
 {
 	int			i = 0;
-	double		k = Min(keys, sc->knot_k[sc->nknot - 1]);
+	double		k = Max(Min(keys, sc->knot_k[sc->nknot - 1]), sc->knot_k[0]);
 
 	if (sc->nknot == 1)
 		return sc->knot_instr[0];
 	while (i + 2 < sc->nknot && k > sc->knot_k[i + 1])
 		i++;
-	return Max(sc->knot_instr[i] + (sc->knot_instr[i + 1] - sc->knot_instr[i]) * (k - sc->knot_k[i]) / (sc->knot_k[i + 1] - sc->knot_k[i]), 0.0);
+	return sc->knot_instr[i] + (sc->knot_instr[i + 1] - sc->knot_instr[i]) * (k - sc->knot_k[i]) / (sc->knot_k[i + 1] - sc->knot_k[i]);
 }
 
 /*

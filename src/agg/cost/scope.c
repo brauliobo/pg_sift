@@ -54,7 +54,7 @@ scope_tests(const SiftAggSpec *s)
  * follow them. The price is the scan of the table's rows (AGG_ALT_ROW), the pairs the lookup table loads (AGG_ALT_PAIR) and the operators the model counts for the keys' rows beyond those of the first
  * key (AGG_ALT_OP, from agg_ops: the operators as the executor spends them, not the cost units, which carry the share against the native plan and a scale that differs with the plan it is compared with:
  * a cost unit took 2.5 times the instructions it was fitted at on a table a third the size). The executor does the arithmetic with the keys it really has: linear between the knots, flat past the last, which
- * is every key. entry_instr is the same operators for each entry of the scope units, which they aggregate as the join does.
+ * is every key, and below the first knot. entry_instr is the same operators for each entry of the scope units, which they aggregate as the join does.
  */
 
 /* the operators of the first pass's scan, as the executor spends them, for `pairs` rows of the scope relation (srel) and the join rows in proportion */
