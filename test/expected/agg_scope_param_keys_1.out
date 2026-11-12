@@ -362,19 +362,19 @@ DELETE FROM tenant_scope WHERE dim_a_id = 10 AND tenant_id = 1;
 SELECT * FROM states('an ended pair');
      state     |     form     |                                 run                                 | same_rows 
 ---------------+--------------+---------------------------------------------------------------------+-----------
- an ended pair | IN, $1       | Keys: $1 (1 keys); Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | join, $1     | Keys: $1 (1 keys); Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 1; Patched Keys: 0                 | t
+ an ended pair | IN, $1       | Keys: $1 (1 keys)                                                   | t
+ an ended pair | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
+ an ended pair | join, $1     | Keys: $1 (1 keys)                                                   | t
+ an ended pair | latest 5, $1 | Keys: $1 (1 keys)                                                   | t
 (4 rows)
 
 INSERT INTO tenant_scope VALUES (370, 3), (371, 2), (371, 5), (371, 3);
 SELECT * FROM states('inserted pairs');
      state      |     form     |                                 run                                 | same_rows 
 ----------------+--------------+---------------------------------------------------------------------+-----------
- inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
- inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+ inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 
@@ -382,9 +382,9 @@ UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of three keys moved, write buffer');
                         state                        |     form     |                                 run                                 | same_rows 
 -----------------------------------------------------+--------------+---------------------------------------------------------------------+-----------
- facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
- facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 3; Patched Keys: 2                 | t
+ facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+ facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 
@@ -392,9 +392,9 @@ DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
             state             |     form     |                                 run                                 | same_rows 
 ------------------------------+--------------+---------------------------------------------------------------------+-----------
- every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                 | t
- every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 4; Patched Keys: 2                 | t
+ every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
+ every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
 (4 rows)
 

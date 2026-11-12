@@ -1,0 +1,31 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_rewrite b_insert b_merge a_commit b_option b_verify
+step a_begin: BEGIN;
+step a_rewrite: SELECT sift.col_merge('iso_kc_idx', true) > 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step b_insert: INSERT INTO iso_kc SELECT i, i % 800, 1 + i % 12, i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 second', 'y' FROM generate_series(300001, 300500) i;
+step b_merge: SELECT sift.col_merge('iso_kc_idx', true) > 0 AS merged; <waiting ...>
+step a_commit: COMMIT;
+step b_merge: <... completed>
+merged
+------
+t     
+(1 row)
+
+step b_option: SELECT reloptions::text ~ 'key_cut=auto' AS cut_chosen FROM pg_class WHERE relname = 'iso_kc_idx';
+cut_chosen
+----------
+t         
+(1 row)
+
+step b_verify: SELECT 1 AS verified FROM (SELECT sift.col_verify('iso_kc_idx', true)) v;
+verified
+--------
+       1
+(1 row)
+

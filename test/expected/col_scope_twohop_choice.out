@@ -1,0 +1,131 @@
+-- The read of a scope of two paths (the pairs of a member in a table of grants, and those of its groups through a table of memberships) runs the units or the join as written, whichever costs less
+-- for the pairs that changed since the units were filled: the price of the join counts the plan that makes the pairs (a view that unions the grants of a member with the join of the grants of a
+-- group to its members), and the rows a changed member has come from the statistics of its column. Table-driven: each state of the pairs (they accumulate) read for a key with many members and for
+-- one with few; the arm each read runs and whether its rows are the join's. Counts only, no timings (200,000 facts).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+SET sift.scope_max_multiplicity = 8;
+SET sift.test_scope_patch = off;
+CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int) WITH (autovacuum_enabled = false);
+CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = false);
+-- key 1 has every 10th of 20,000 members and 50 groups of 40, key 2 five members and a group of 20, keys 3..60 thirty members and two groups of five
+INSERT INTO grants (tenant_id, dim_a_id) SELECT 1, i FROM generate_series(10, 20000, 10) i;
+INSERT INTO grants (tenant_id, group_id) SELECT 1, g FROM generate_series(1, 50) g;
+INSERT INTO memberships (group_id, dim_a_id) SELECT g, (g - 1) * 40 + k FROM generate_series(1, 50) g, generate_series(1, 40) k;
+INSERT INTO grants (tenant_id, dim_a_id) SELECT 2, i FROM generate_series(15001, 15005) i;
+INSERT INTO grants (tenant_id, group_id) VALUES (2, 51);
+INSERT INTO memberships (group_id, dim_a_id) SELECT 51, 16000 + k FROM generate_series(1, 20) k;
+INSERT INTO grants (tenant_id, dim_a_id) SELECT t, 1 + (t * 7919 + k * 613) % 20000 FROM generate_series(3, 60) t, generate_series(1, 30) k ON CONFLICT DO NOTHING;
+INSERT INTO grants (tenant_id, group_id) SELECT t, 100 + t * 2 + j FROM generate_series(3, 60) t, generate_series(0, 1) j;
+INSERT INTO memberships (group_id, dim_a_id) SELECT 100 + t * 2 + j, 1 + (t * 104729 + j * 7001 + k * 389) % 20000 FROM generate_series(3, 60) t, generate_series(0, 1) j, generate_series(1, 5) k ON CONFLICT DO NOTHING;
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
+CREATE UNIQUE INDEX memberships_by_group ON memberships (group_id, dim_a_id);
+CREATE INDEX grants_by_dim_a ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_dim_a ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO facts SELECT i, 1 + (i::bigint * 7919) % 20000, date '2025-01-01' + i % 365, 'k' || i % 7, i % 100 FROM generate_series(1, 200000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+CREATE VIEW tenant_pairs AS
+	SELECT g.dim_a_id AS member, g.tenant_id FROM grants g WHERE g.dim_a_id IS NOT NULL
+	UNION
+	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id;
+VACUUM (FREEZE, ANALYZE) facts, grants, memberships;
+-- the arm the read of a key runs (scope or join) and whether its rows are those of the join as written
+CREATE FUNCTION read_key(k int, OUT arm text, OUT same boolean) LANGUAGE plpgsql AS $$
+DECLARE
+	q text := format('SELECT e.kind, sum(e.amount), count(*) FROM facts e WHERE e.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = %s) GROUP BY 1', k);
+	p jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (%s) t', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (%s) t', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	arm := CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'scope' ELSE 'join' END;
+	same := a = b;
+END $$;
+CREATE TABLE states (n int, label text, edit text);
+INSERT INTO states VALUES
+	(1, 'clean', 'SELECT 1'),
+	(2, '200 direct grants of key 1 deleted and inserted again',
+		'WITH d AS (DELETE FROM grants WHERE id IN (SELECT id FROM grants WHERE tenant_id = 1 AND dim_a_id IS NOT NULL ORDER BY id LIMIT 200) RETURNING *) INSERT INTO grants SELECT * FROM d'),
+	(3, '5 direct grants of key 2 deleted and inserted again',
+		'WITH d AS (DELETE FROM grants WHERE id IN (SELECT id FROM grants WHERE tenant_id = 2 AND dim_a_id IS NOT NULL ORDER BY id LIMIT 5) RETURNING *) INSERT INTO grants SELECT * FROM d'),
+	(4, '20 memberships of the groups of key 2 deleted and inserted again',
+		'WITH d AS (DELETE FROM memberships WHERE id IN (SELECT m.id FROM memberships m JOIN grants g ON g.group_id = m.group_id WHERE g.tenant_id = 2 ORDER BY m.id LIMIT 20) RETURNING *) INSERT INTO memberships SELECT * FROM d');
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), edit,
+	'SELECT k, r.arm, r.same FROM generate_series(1, 2) k, LATERAL read_key(k) r ORDER BY k']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT 1 AS n, 'clean' AS state
+ n | state 
+---+-------
+ 1 | clean
+(1 row)
+
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT k, r.arm, r.same FROM generate_series(1, 2) k, LATERAL read_key(k) r ORDER BY k
+ k |  arm  | same 
+---+-------+------
+ 1 | scope | t
+ 2 | scope | t
+(2 rows)
+
+SELECT 2 AS n, '200 direct grants of key 1 deleted and inserted again' AS state
+ n |                         state                         
+---+-------------------------------------------------------
+ 2 | 200 direct grants of key 1 deleted and inserted again
+(1 row)
+
+WITH d AS (DELETE FROM grants WHERE id IN (SELECT id FROM grants WHERE tenant_id = 1 AND dim_a_id IS NOT NULL ORDER BY id LIMIT 200) RETURNING *) INSERT INTO grants SELECT * FROM d
+SELECT k, r.arm, r.same FROM generate_series(1, 2) k, LATERAL read_key(k) r ORDER BY k
+ k |  arm  | same 
+---+-------+------
+ 1 | scope | t
+ 2 | scope | t
+(2 rows)
+
+SELECT 3 AS n, '5 direct grants of key 2 deleted and inserted again' AS state
+ n |                        state                        
+---+-----------------------------------------------------
+ 3 | 5 direct grants of key 2 deleted and inserted again
+(1 row)
+
+WITH d AS (DELETE FROM grants WHERE id IN (SELECT id FROM grants WHERE tenant_id = 2 AND dim_a_id IS NOT NULL ORDER BY id LIMIT 5) RETURNING *) INSERT INTO grants SELECT * FROM d
+SELECT k, r.arm, r.same FROM generate_series(1, 2) k, LATERAL read_key(k) r ORDER BY k
+ k |  arm  | same 
+---+-------+------
+ 1 | scope | t
+ 2 | join  | t
+(2 rows)
+
+SELECT 4 AS n, '20 memberships of the groups of key 2 deleted and inserted again' AS state
+ n |                              state                               
+---+------------------------------------------------------------------
+ 4 | 20 memberships of the groups of key 2 deleted and inserted again
+(1 row)
+
+WITH d AS (DELETE FROM memberships WHERE id IN (SELECT m.id FROM memberships m JOIN grants g ON g.group_id = m.group_id WHERE g.tenant_id = 2 ORDER BY m.id LIMIT 20) RETURNING *) INSERT INTO memberships SELECT * FROM d
+SELECT k, r.arm, r.same FROM generate_series(1, 2) k, LATERAL read_key(k) r ORDER BY k
+ k |  arm  | same 
+---+-------+------
+ 1 | scope | t
+ 2 | join  | t
+(2 rows)
+
+DROP TABLE states;
+DROP FUNCTION read_key(int);
+DROP VIEW tenant_pairs;
+DROP TABLE facts, grants, memberships;
+DROP EXTENSION pg_sift;

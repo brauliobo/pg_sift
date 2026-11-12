@@ -70,7 +70,8 @@ TWOHOP_P_TOP="SELECT id FROM hop_events e WHERE e.dim_a_id IN (SELECT dim_a_id F
 TWOHOP_Q_PAIR="SELECT k, (SELECT count(*) FROM hop_events e WHERE sift.in_scope('hop_col'::regclass, 'tenant_id', e.dim_a_id, k)) FROM generate_series(1, 17) k ORDER BY k"
 # a join that is not a correlated sub-select: the SiftAgg plan of a sub-select over a view with a UNION that reads the parameter of its outer level (SELECT k, (SELECT count(*) FROM .. JOIN hop_pairs s .. WHERE s.tenant_id = k)) reads the child once and answers every k with the first one, with or without a scope index
 TWOHOP_P_PAIR="SELECT k, count(e.id) FROM generate_series(1, 17) k LEFT JOIN hop_pairs s ON s.tenant_id = k LEFT JOIN hop_events e ON e.dim_a_id = s.dim_a_id GROUP BY k ORDER BY k"
-TWOHOP_ENTRIES="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('hop_col'))
+# the entries of the rows of the table: a REINDEX also indexes the rows a standby's snapshot (hot_standby_feedback, reported once a second) still holds back, which are no row of the join
+TWOHOP_ENTRIES="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('hop_col') WHERE tid IN (SELECT ctid FROM hop_events))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id)"
 
 # the functions below send their statements through ${TWOHOP_SQL:-sql} (a node name, or a database name for a test that restores into databases) and read the index ${TWOHOP_IX:-hop_col}

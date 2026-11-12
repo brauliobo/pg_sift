@@ -287,8 +287,8 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 }
 
 /* the rows a value of the heap column of a leaf has, from the statistics of the column (ANALYZE): 0 when they say nothing */
-static double
-leaf_rows_per_value(Relation index, const SiftColDef *def, double rows)
+double
+sift_col_leaf_rows_per_value(Relation index, const SiftColDef *def, double rows)
 {
 	AttrNumber	att = index->rd_index->indkey.values[def->attno - 1];
 	HeapTuple	tp;
@@ -352,7 +352,7 @@ sift_col_key_cut_note(Relation index)
 			continue;
 		leaf_clustering(seg, nseg, c, units, 0.01, &lc);
 		if (lc.has_range && strcmp(lc.verdict, "scattered") == 0 && lc.point > kc.point &&
-			(leaf_rows_per_value(index, def, rows) == 0 || leaf_rows_per_value(index, def, rows) >= 2))
+			(sift_col_leaf_rows_per_value(index, def, rows) == 0 || sift_col_leaf_rows_per_value(index, def, rows) >= 2))
 		{
 			key = c;
 			kc = lc;

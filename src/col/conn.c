@@ -59,6 +59,7 @@ journal_lineage(Relation index)
 	pfree(dir);
 	sift_col_rel(index)->journal_known = true;
 	sift_col_rel(index)->journal_lineage = k.lineage;
+	sift_col_rel(index)->journal_tagatt = SIFT_TOMB_KEYS_TAGATT(k.flags);
 	return k.lineage;
 }
 
@@ -105,28 +106,52 @@ sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *re
  * with the tombstones of the transaction. An index that keeps no journal ignores them.
  */
 static void
-journal_row(Relation index, Relation heap, SiftTombKind kind, Datum key, bool isnull)
+journal_row(Relation index, Relation heap, SiftTombKind kind, Datum key, bool isnull, Datum tagkey, bool tagnull)
 {
 	SiftTomb	rec;
-	AttrNumber	att = index->rd_index->indkey.values[0];
+	AttrNumber	att = index->rd_index->indkey.values[0],
+				tagatt = sift_col_rel(index)->journal_tagatt;
+	int64		tagval;
+	uint16		flags = 0;
 
-	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, kind, 0, &rec))
+	if (tagatt != InvalidAttrNumber && !tagnull && key64(TupleDescAttr(RelationGetDescr(heap), tagatt - 1)->atttypid, tagkey, &tagval))
+		flags = sift_conn_key_tag(tagval) << SIFT_TOMB_TAG_SHIFT;
+	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, kind, flags, &rec))
 		sift_col_tomb_hold_rec(index, &rec);
 }
 
+/* The column of the journal's tags (read from the log's header before): its value in the old version of a row */
 void
 sift_conn_ended_row(Relation index, Relation heap, HeapTuple old)
 {
-	bool		isnull;
-	Datum		key = heap_getattr(old, index->rd_index->indkey.values[0], RelationGetDescr(heap), &isnull);
+	bool		isnull,
+				tagnull = true;
+	Datum		key = heap_getattr(old, index->rd_index->indkey.values[0], RelationGetDescr(heap), &isnull),
+				tag = 0;
 
-	journal_row(index, heap, SIFT_TOMB_KEYCHG, key, isnull);
+	journal_lineage(index);
+	if (sift_col_rel(index)->journal_tagatt != InvalidAttrNumber)
+		tag = heap_getattr(old, sift_col_rel(index)->journal_tagatt, RelationGetDescr(heap), &tagnull);
+	journal_row(index, heap, SIFT_TOMB_KEYCHG, key, isnull, tag, tagnull);
 }
 
+/* ... and in the values the index gets for a new version, which are those of its own columns */
 void
 sift_conn_added_row(Relation index, Relation heap, const Datum *values, const bool *isnull)
 {
-	journal_row(index, heap, SIFT_TOMB_KEYADD, values[0], isnull[0]);
+	AttrNumber	tagatt;
+	Datum		tag = 0;
+	bool		tagnull = true;
+
+	journal_lineage(index);
+	tagatt = sift_col_rel(index)->journal_tagatt;
+	for (int i = 0; tagatt != InvalidAttrNumber && i < index->rd_index->indnatts; i++)
+		if (index->rd_index->indkey.values[i] == tagatt)
+		{
+			tag = values[i];
+			tagnull = isnull[i];
+		}
+	journal_row(index, heap, SIFT_TOMB_KEYADD, values[0], isnull[0], tag, tagnull);
 }
 
 bool
@@ -146,7 +171,7 @@ keep_all(SiftTomb *e, void *arg)
  * (invalid: the next one).
  */
 static uint64
-journal_make(Relation heap, Relation index, TransactionId trim)
+journal_make(Relation heap, Relation index, TransactionId trim, AttrNumber tag_att)
 {
 	SiftTombLog *log = sift_col_log(index);
 	SiftTombKeys k = {0};
@@ -171,6 +196,7 @@ journal_make(Relation heap, Relation index, TransactionId trim)
 	} while (k.lineage == 0);
 	/* the records start here: a stamp of a snapshot older than the journal cannot be vouched (a change between the snapshot and now is in no record); the writers are out, so no transaction below the next id writes the table */
 	k.trim = TransactionIdIsValid(trim) ? trim : ReadNextTransactionId();
+	k.flags = (uint32) tag_att << SIFT_TOMB_KEYS_TAGATT_SHIFT;
 	sift_tomb_set_keys(index, log, &k);
 	/* a scope relation's journal holds KEYADD records: an older library refuses it */
 	sift_tomb_set_format(index, sift_col_track_ctid(index) ? SIFT_COL_FORMAT_SCOPE : SIFT_COL_FORMAT_KEYJOURNAL);
@@ -196,7 +222,7 @@ check_key(Relation heap, Relation index)
 
 /* read_after: the caller reads the table under snapshots it takes after this call (a build that stamps what it reads: the first stamp is of the journal it makes) */
 uint64
-sift_conn_enable(Relation heap, Relation index, bool read_after)
+sift_conn_enable(Relation heap, Relation index, bool read_after, AttrNumber tag_att)
 {
 	SiftConnGen gen;
 
@@ -213,7 +239,7 @@ sift_conn_enable(Relation heap, Relation index, bool read_after)
 	 * A snapshot taken now sees every write before the lock, and the transactions that write after it have ids from its xmin on (the older ones are over): the journal is complete from that id for
 	 * the stamp of a read under such a snapshot, which the first id after the lock (its own transaction's is below) would refuse.
 	 */
-	return journal_make(heap, index, read_after ? GetLatestSnapshot()->xmin : InvalidTransactionId);
+	return journal_make(heap, index, read_after ? GetLatestSnapshot()->xmin : InvalidTransactionId, tag_att);
 }
 
 List *
@@ -256,7 +282,7 @@ sift_conn_depend(Relation child_index, Relation parent_index)
 void
 sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index)
 {
-	(void) sift_conn_enable(parent_heap, parent_index, false);
+	(void) sift_conn_enable(parent_heap, parent_index, false, InvalidAttrNumber);
 	sift_conn_depend(child_index, parent_index);
 }
 
@@ -271,7 +297,7 @@ sift_conn_build(Relation heap, Relation index)
 	if (wanted && sift_col_track_on(index))
 	{
 		check_key(heap, index);
-		(void) journal_make(heap, index, InvalidTransactionId);
+		(void) journal_make(heap, index, InvalidTransactionId, InvalidAttrNumber);
 	}
 }
 
@@ -362,6 +388,7 @@ typedef struct KeyRec
 	int64		key;
 	bool		kept;
 	bool		used;
+	bool		add;			/* a record of the key is of an entry inserted */
 } KeyRec;
 
 /* The slot of the key in an open-addressing table of KeyRec (at most half full) */
@@ -404,12 +431,44 @@ sift_conn_inserted_rows(Relation heap, Relation index, const SiftConnStamp *stam
 SiftConnWhy
 sift_conn_changed(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
 {
-	return sift_conn_changed_by(heap, index, stamp, snap, cap, false, out);
+	return sift_conn_changed_by(heap, index, stamp, snap, cap, false, NULL, out);
 }
 
-/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones */
+uint16
+sift_conn_key_tag(int64 key)
+{
+	return 1 + (((uint64) key * UINT64CONST(0x9E3779B97F4A7C15)) >> 50) % SIFT_TOMB_TAG_MAX;
+}
+
+/* more keys than this tag a good part of the tags there are */
+#define CONN_TAGS_MAX_KEYS	2048
+
+SiftConnTags *
+sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys)
+{
+	SiftConnTags *t;
+
+	if (nkeys > CONN_TAGS_MAX_KEYS)
+		return NULL;
+	t = palloc0(sizeof(SiftConnTags));
+	t->att = att;
+	for (uint32 i = 0; i < nkeys; i++)
+		t->map[sift_conn_key_tag(keys[i]) / 8] |= 1 << (sift_conn_key_tag(keys[i]) % 8);
+	return t;
+}
+
+/* Is the record one of the keys of tags: it has none of its own, or the journal is tagged by another column than the tags are of, or its tag is one of the keys' */
+static bool
+tag_wanted(const SiftConnTags *tags, const SiftTombLog *log, uint16 flags)
+{
+	uint16		tag = SIFT_TOMB_TAG(flags);
+
+	return tags == NULL || tag == 0 || tags->att != SIFT_TOMB_KEYS_TAGATT(log->keys.flags) || (tags->map[tag / 8] & (1 << (tag % 8))) != 0;
+}
+
+/* adds: the keys of the records of inserted entries (KEYADD, a scope relation's journal) are in the set as well as those of ended ones; tags: only those of the pairs of the keys it names */
 SiftConnWhy
-sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out)
+sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, const SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
 	SiftConnWhy why = sift_conn_vouches(heap, index, stamp, snap);
@@ -418,7 +477,8 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 	KeyRec	   *tab;
 	uint32		mask;
 	int64	   *keys;
-	bool	   *kept;
+	bool	   *kept,
+			   *added;
 	uint32		nk = 0;
 	TransactionId last = InvalidTransactionId;
 	bool		last_void = false;
@@ -437,7 +497,7 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 		KeyRec	   *slot;
 		bool		keeps = (rec[i].flags & SIFT_TOMB_KEPT) != 0;
 
-		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin))
+		if ((rec[i].kind != SIFT_TOMB_KEYCHG && !(adds && rec[i].kind == SIFT_TOMB_KEYADD)) || TransactionIdPrecedes(rec[i].xid, stamp->xmin) || !tag_wanted(tags, log, rec[i].flags))
 			continue;
 		if (rec[i].xid != last)
 		{
@@ -448,10 +508,13 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 			continue;
 		slot = key_slot(tab, mask, (int64) rec[i].succ);
 		if (slot->used)
+		{
 			slot->kept &= keeps;
+			slot->add |= rec[i].kind == SIFT_TOMB_KEYADD;
+		}
 		else
 		{
-			*slot = (KeyRec) {(int64) rec[i].succ, keeps, true};
+			*slot = (KeyRec) {(int64) rec[i].succ, keeps, true, rec[i].kind == SIFT_TOMB_KEYADD};
 			if (++nk > cap)
 			{
 				pfree(tab);
@@ -461,15 +524,19 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 	}
 	keys = nk > 0 ? palloc(nk * sizeof(int64)) : NULL;
 	kept = nk > 0 ? palloc(nk * sizeof(bool)) : NULL;
+	added = nk > 0 ? palloc(nk * sizeof(bool)) : NULL;
 	for (uint32 i = 0, w = 0; w < nk; i++)
 		if (tab[i].used)
 			keys[w++] = tab[i].key;
 	if (nk > 1)
 		sift_sort_i64(keys, nk);
 	for (uint32 i = 0; i < nk; i++)
+	{
 		kept[i] = key_slot(tab, mask, keys[i])->kept;
+		added[i] = key_slot(tab, mask, keys[i])->add;
+	}
 	pfree(tab);
-	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.n = nk,.cap = nk};
+	*out = (SiftConnKeys) {.keys = keys,.kept = kept,.added = added,.n = nk,.cap = nk};
 	return SIFT_CONN_OK;
 }
 
@@ -498,6 +565,8 @@ sift_conn_keys_free(SiftConnKeys *k)
 		pfree(k->keys);
 	if (k->kept)
 		pfree(k->kept);
+	if (k->added)
+		pfree(k->added);
 	*k = (SiftConnKeys) {0};
 }
 

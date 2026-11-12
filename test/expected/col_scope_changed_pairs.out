@@ -74,8 +74,8 @@ INSERT INTO shapes VALUES
 	(3, 'every key, min and max', 'SELECT m.tenant_id AS k, min(id), max(id), min(amount) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE %3$s GROUP BY 1'),
 	(4, 'one key, count and sum', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 3 AND %3$s)'),
 	(5, 'one key, min and max', 'SELECT min(id), max(id) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 4 AND %3$s)'),
-	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7) AND %3$s)'),
-	(7, 'three keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7) AND %3$s');
+	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s)'),
+	(7, 'four keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s');
 -- tbl: the events, idx: their scope index, pairs: the relation of the pairs, active: the condition of its active pairs
 CREATE FUNCTION probe(tbl text, idx text, pairs text, active text DEFAULT 'true') RETURNS TABLE (n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$
 	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route, r.delta, r.bounded
@@ -120,7 +120,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | none  | t
  5 | one key, min and max                | same    | units | none  | t
  6 | a list of keys, a row once          | same    | units | none  | t
- 7 | three keys, a row for each pair     | same    | units | none  | t
+ 7 | four keys, a row for each pair      | same    | units | none  | t
 (7 rows)
 
 SELECT 2 AS n, 'pairs added (dim_a_id with events, none yet in the key, and with no pair at all)' AS state
@@ -139,7 +139,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | none  | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 3 AS n, 'pairs removed' AS state
@@ -158,7 +158,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | none  | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 4 AS n, 'pairs moved (a dim_a_id changes tenant)' AS state
@@ -177,7 +177,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | patch | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 5 AS n, 'dim_a_id that lose every pair' AS state
@@ -196,7 +196,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | patch | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 6 AS n, 'buffered events of dim_a_id that lost every pair, of changed ones and of ones that did not change' AS state
@@ -215,7 +215,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | patch | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 7 AS n, 'promoted (the buffers are in the segments; the changed pairs still leave their dim_a_id out of the units)' AS state
@@ -239,7 +239,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | patch | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 8 AS n, 'merged' AS state
@@ -263,7 +263,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | patch | t
  5 | one key, min and max                | same    | units | patch | t
  6 | a list of keys, a row once          | same    | units | patch | t
- 7 | three keys, a row for each pair     | same    | units | patch | t
+ 7 | four keys, a row for each pair      | same    | units | patch | t
 (7 rows)
 
 SELECT 9 AS n, 'rebuilt (nothing changed since the stamp)' AS state
@@ -282,7 +282,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | none  | t
  5 | one key, min and max                | same    | units | none  | t
  6 | a list of keys, a row once          | same    | units | none  | t
- 7 | three keys, a row for each pair     | same    | units | none  | t
+ 7 | four keys, a row for each pair      | same    | units | none  | t
 (7 rows)
 
 SELECT 10 AS n, 'a pair added after the rebuild, and a buffered event of it' AS state
@@ -301,7 +301,7 @@ SELECT * FROM probe('events', 'events_col', 'tenant_scope')
  4 | one key, count and sum              | same    | units | none    | t
  5 | one key, min and max                | same    | units | buffers | t
  6 | a list of keys, a row once          | same    | units | patch   | t
- 7 | three keys, a row for each pair     | same    | units | patch   | t
+ 7 | four keys, a row for each pair      | same    | units | patch   | t
 (7 rows)
 
 SELECT sift.col_verify('events_col', true);

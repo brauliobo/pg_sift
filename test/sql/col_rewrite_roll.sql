@@ -38,6 +38,8 @@ CREATE FUNCTION rr_file_ok(pct int, k int) RETURNS bool LANGUAGE sql AS $$
 CREATE FUNCTION rr_moved(before text) RETURNS bool LANGUAGE sql AS $$
 	SELECT coalesce(sum(bytes) FILTER (WHERE NOT gen = ANY (string_to_array(before, ',')::bigint[])), 0) <= max(bytes) FROM sift.col_segments('rr_idx')
 	WHERE kind = 'immutable' $$;
+-- the free blocks inside the file: the VACUUM leaves one partition of them (128 blocks of 8 kB, the 1,024 kB the rewrite takes a step) for the next rewrite and the promotions, and moves down what is above
+CREATE FUNCTION rr_free() RETURNS bigint LANGUAGE sql AS $$ SELECT free_blocks FROM sift.col_index_info('rr_idx') $$;
 CREATE FUNCTION rr_gens() RETURNS text LANGUAGE sql AS $$
 	SELECT string_agg(gen::text, ',' ORDER BY gen) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable' $$;
 CREATE FUNCTION rr_same() RETURNS bool LANGUAGE plpgsql AS $$
@@ -49,6 +51,11 @@ BEGIN
 	SELECT x::text INTO b FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rr WHERE cust BETWEEN 10 AND 400) x;
 	RETURN a = b;
 END $$;
+-- the segments the rewrite leaves cover the keys disjointly: no key is in two of them (two may meet at the one key that ends one and starts the next); the overlays it took in did not
+CREATE FUNCTION rr_disjoint() RETURNS bool LANGUAGE sql AS $$
+	WITH r AS (SELECT a.segment, min(a.min::int) lo, max(a.max::int) hi FROM sift.col_unit_agg('rr_idx', 'cust') a
+			   JOIN sift.col_segments('rr_idx') s ON s.gen = a.segment WHERE s.kind = 'immutable' GROUP BY a.segment)
+	SELECT count(*) >= 5 AND NOT EXISTS (SELECT 1 FROM r x JOIN r y ON x.segment < y.segment AND x.lo < y.hi AND y.lo < x.hi) FROM r $$;
 -- the worker is done: no segment is dirty and no maintenance worker is at work in the database
 CREATE PROCEDURE rr_wait() LANGUAGE plpgsql AS $$
 DECLARE idle int = 0;
@@ -76,14 +83,16 @@ SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
 -- a round, the rewrite by the worker, and the VACUUM after it
 CALL rr_round(1);
+SELECT NOT rr_disjoint() AS overlays_meet_the_partitions;
 SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty, count(*) FILTER (WHERE bytes * 2 >= 1024 * 1024) >= 5 AS partitions FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok(20, 2) AS file_within_bound;
-SELECT rr_gens() AS gens \gset before_
+SELECT rr_file_ok(20, 2) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
+SELECT rr_gens() AS gens, rr_free() AS free \gset before_
 VACUUM rr;
-SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition;
+SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition,
+	rr_free() BETWEEN 96 AND 144 AS leaves_a_partition_free, rr_free() < :before_free AS moved_the_blocks_above_down;
 SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
 
@@ -94,10 +103,11 @@ SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok(20, 2) AS file_within_bound;
-SELECT rr_gens() AS gens \gset before_
+SELECT rr_file_ok(20, 2) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
+SELECT rr_gens() AS gens, rr_free() AS free \gset before_
 VACUUM rr;
-SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition;
+SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition,
+	rr_free() BETWEEN 96 AND 144 AS leaves_a_partition_free, rr_free() < :before_free AS moved_the_blocks_above_down;
 SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
 
@@ -107,7 +117,9 @@ DROP TABLE rr;
 DROP PROCEDURE rr_round(int);
 DROP PROCEDURE rr_wait();
 DROP FUNCTION rr_same();
+DROP FUNCTION rr_disjoint();
 DROP FUNCTION rr_gens();
+DROP FUNCTION rr_free();
 DROP FUNCTION rr_file_ok(int, int);
 DROP FUNCTION rr_moved(text);
 DROP EXTENSION pg_sift;

@@ -8,12 +8,14 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
+#include "core/compat.h"
 #include "col/pg.h"
 #include "agg/agg.h"
 #include "agg/cost/int.h"
@@ -81,6 +83,62 @@ alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel
 	return agg_ops;
 }
 
+/* the rows the nodes of a plan hand up: the scans of its relations (leaves) and every other node (joins, appends, aggregates, subquery scans) */
+static void
+plan_node_rows(Path *p, double *scans, double *others)
+{
+	List	   *kids = NIL;
+
+	check_stack_depth();
+	switch (nodeTag(p))
+	{
+		case T_NestPath:
+		case T_MergePath:
+		case T_HashPath:
+			kids = list_make2(((JoinPath *) p)->outerjoinpath, ((JoinPath *) p)->innerjoinpath);
+			break;
+		case T_AppendPath:
+			kids = ((AppendPath *) p)->subpaths;
+			break;
+		case T_MergeAppendPath:
+			kids = ((MergeAppendPath *) p)->subpaths;
+			break;
+		case T_SubqueryScanPath:
+			kids = list_make1(((SubqueryScanPath *) p)->subpath);
+			break;
+		case T_AggPath:
+			kids = list_make1(((AggPath *) p)->subpath);
+			break;
+		case T_SortPath:
+			kids = list_make1(((SortPath *) p)->subpath);
+			break;
+		default:
+			if (!sift_is_sorted_unique_path(p))
+			{
+				*scans += p->rows;
+				return;
+			}
+			kids = list_make1(((SiftSortedUniquePath *) p)->subpath);
+			break;
+	}
+	*others += p->rows;
+	foreach_ptr(Path, k, kids)
+		plan_node_rows(k, scans, others);
+}
+
+/* what a pair of the scope relation costs the join as written: AGG_ALT_PAIR for a scan of the relation, and for the rows the nodes of the plan that makes the relation (a view of a union and a join) hand up, AGG_ALT_NODE each */
+static double
+alt_pair_instr(AggCtx *c, double pairs)
+{
+	double		scans = 0,
+				others = 0;
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->cpath != NULL)
+			plan_node_rows(jc->cpath, &scans, &others);
+	return Max(AGG_ALT_PAIR, (AGG_ALT_PAIR * scans + AGG_ALT_NODE * others) / Max(pairs, 1.0));
+}
+
 /* does the node of the second pass run this spec in the place of its own: the plans its joins read are children it can hold (no parameter of an enclosing level, none of a query level of its own), and it has no spine */
 static bool
 alt_runs(AggCtx *c, const SiftAggSpec *s)
@@ -109,6 +167,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	double		kall,
 				per,
 				pairs,
+				pair_instr,
 				ops,
 				ops0 = 0;
 
@@ -138,6 +197,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 		if (jc->cpath != NULL)
 			a->children = lappend(a->children, jc->cpath);
 	a->entry_instr = 0;
+	pair_instr = alt_pair_instr(c, srel->rows);
 	for (int i = 0; i <= lengthof(counts); i++)
 	{
 		double		k = i < lengthof(counts) ? counts[i] : kall;
@@ -148,7 +208,7 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 		ops = alt_ops(c, s, input_rel, srel, pairs, s->est_groups);
 		ops0 = a->nknot == 0 ? ops : ops0;
 		a->knot_k[a->nknot] = k;
-		a->knot_instr[a->nknot++] = AGG_ALT_ROW * Max(c->rel->tuples, 1.0) + AGG_ALT_PAIR * pairs + AGG_ALT_OP * Max(ops - ops0, 0.0);
+		a->knot_instr[a->nknot++] = AGG_ALT_ROW * Max(c->rel->tuples, 1.0) + pair_instr * pairs + AGG_ALT_OP * Max(ops - ops0, 0.0);
 		a->entry_instr = a->nknot > 1 ? AGG_ALT_OP * (ops - ops0) / ((k - a->knot_k[0]) * a->knot_rows) : 0.0;
 	}
 	t->alts = lappend(t->alts, a);

@@ -159,7 +159,7 @@ SELECT * FROM probe()
  n |               label               | verdict |        route         |        delta         | patched 
 ---+-----------------------------------+---------+----------------------+----------------------+---------
  1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
+ 2 | IN list of keys                   | same    | units                | within the rows read | f
  3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
  4 | a row for each pair of three keys | same    | units                | within the rows read | t
  5 | listing of one key                | same    | top-n, changed pairs | none                 | f
@@ -175,7 +175,7 @@ SELECT * FROM probe()
  n |               label               | verdict |        route         |        delta         | patched 
 ---+-----------------------------------+---------+----------------------+----------------------+---------
  1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
+ 2 | IN list of keys                   | same    | units                | within the rows read | f
  3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
  4 | a row for each pair of three keys | same    | units                | within the rows read | t
  5 | listing of one key                | same    | top-n, changed pairs | none                 | f

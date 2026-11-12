@@ -46,7 +46,8 @@ typedef struct SiftScopeDelta
 static int
 fk_leaf(Relation index, int scope)
 {
-	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	/* check-memory: allow nothing reads the catalog between the fetch and the return */
+	const SiftColRel *r = sift_col_rel(index);
 
 	return r->first[r->schema->cols[r->scope_leaf[scope]].attno];
 }
@@ -164,7 +165,8 @@ members_has(const Members *m, int64 member)
 static void
 delta_kept(Relation index, int scope, int fk, const int *leaves, int nleaves, bool *kept)
 {
-	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	/* check-memory: allow the loops below read memory only */
+	const SiftColRel *r = sift_col_rel(index);
 
 	memset(kept, 0, SIFT_COL_MAX_COLS * sizeof(bool));
 	for (int i = 0; i < nleaves; i++)

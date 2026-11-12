@@ -691,14 +691,37 @@ typedef struct ScopeFill
 	int			nleaves;
 } ScopeFill;
 
+/* What the second half of the stored read (stored_pairs) needs of the first */
+typedef struct ScopeStage
+{
+	Relation	heap;
+	Relation	index;
+	Snapshot	snap;
+	int			ord;
+	const SiftDirSnapshot *dir;
+	const int64 *keys;
+	uint32		nkeys;
+	bool		once;
+	bool		topn;
+	bool		several;
+	const int  *leaves;
+	int			nleaves;
+	SiftScopeBuffer *bufs;
+	int			nbufs;
+	uint64		nbuf;
+	uint64		nrows;			/* the rows of the relation of pairs */
+	double		rows_per_member;
+} ScopeStage;
+
 /*
- * What the stored read of the scope needs besides the units of the keys, as the journal vouches (the rule above): the members to leave out (changed since the stamp), those of them
- * with a pair now (the patch), the drops of the facts in several keys, and the delta: the rows of the write buffers and the segment rows of the patched members, which no stored entry
- * of a valid pair describes, expanded by the pairs of their member. Sets rd->why when the stored read is not exact.
+ * What the stored read of the scope needs besides the units of the keys, as the journal vouches (the rule above), first half: the members to leave out (changed since the stamp, of the pairs of the
+ * keys read: the journal tags its records by the scope key), the write buffers, and what they are expected to cost, from the journal alone: the members whose last record inserted a pair are expected to
+ * be patched, and their rows are counted from the point directories of the entity segments (the second half lists the pairs). A read that is not to go on (the join costs less) is decided here, before the
+ * pairs of the members are asked of the relation, which is most of what the changed members cost. Sets rd->why when the stored read is not exact; rd->stage when the second half is to be done.
  */
 static void
-stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves, uint32 max_changed,
-			SiftScopeRead *rd)
+stored_changed(Relation heap, Relation index, Snapshot snap, int ord, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves,
+			   uint32 max_changed, SiftScopeRead *rd)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 	SiftConnKeys changed = {0};
@@ -709,12 +732,7 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 	int			nbufs;
 	uint64		nbuf;
 	PairScan	ps = {0};
-	uint64		nrows;
-	uint32		max = 0;
-	double		entity_rows = 0;
-	ScopePairs	all,
-				patch,
-				delta;
+	ScopeStage *st;
 
 	if ((rd->why = segments_stamp(index, dir, ord, stamp)) != NULL)
 	{
@@ -727,41 +745,71 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 		rd->why = "scope segments do not cover the rows";
 		return;
 	}
-	if ((verdict = sift_scope_vouch(index, ord, stamp, snap)) != SIFT_CONN_OK ||
-		(verdict = sift_scope_changed(index, ord, stamp, snap, cap, &changed)) != SIFT_CONN_OK)
+	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
 		return;
 	}
 	rd->nchanged = rd->nexcept = changed.n;
 	rd->except = palloc(Max(changed.n, 1) * sizeof(int64));
-	if (changed.n > 0)
-		memcpy(rd->except, changed.keys, changed.n * sizeof(int64));
+	rd->added = palloc(Max(changed.n, 1) * sizeof(int64));
+	for (uint32 i = 0; i < changed.n; i++)
+	{
+		rd->except[i] = changed.keys[i];
+		if (changed.added[i])
+			rd->added[rd->nadded++] = changed.keys[i];
+	}
 	sift_conn_keys_free(&changed);
 	bufs = sift_scope_buffers(index, dir, &nbufs);
 	rd->buffer_rows = nbuf = sift_scope_buffers_rows(bufs, nbufs);
 	if (rd->nexcept == 0 && nbuf == 0 && !several)
 		return;
 	scope_relation(heap, index, ord, &ps, keys, nkeys, snap);
-	nrows = sift_conn_rows_of(ps.rel);
+	st = rd->stage = palloc(sizeof(ScopeStage));
+	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, topn, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel)};
 	table_close(ps.rel, NoLock);
-	if (several || nbuf > 0)
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
+			rd->entity_rows += dir->segs[i].ndocs;
+	/* the rows a member has in the entity segments, from the statistics of its column; the rows each pair of the relation stands for when ANALYZE has none */
+	st->rows_per_member = sift_col_leaf_rows_per_value(index, &sift_col_rel(index)->schema->cols[sift_col_rel(index)->scope_leaf[ord]], rd->entity_rows);
+	if (st->rows_per_member == 0)
+		st->rows_per_member = rd->entity_rows / Max((double) st->nrows, 1.0);
+	if (rd->nadded > 0)
+	{
+		rd->est_plan = sift_scope_segment_plan(index, ord, dir, rd->added, rd->nadded, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+		rd->delta_rows = nbuf;
+	}
+}
+
+/* the second half: the pairs of the members, the patch, the drops, the delta */
+static void
+stored_pairs(SiftScopeRead *rd)
+{
+	ScopeStage *st = rd->stage;
+	uint32		max = 0;
+	ScopePairs	all,
+				patch,
+				delta;
+
+	rd->stage = NULL;
+	if (st->several || st->nbuf > 0)
 		max = (work_mem * 1024L) / sizeof(SiftScopePair);
-	if (several || (nbuf > 0 && !sift_conn_probe_cheaper(nbuf, nrows)))
-		all = scope_pairs(heap, index, ord, snap, keys, nkeys, NULL, 0, max);	/* the buffers hold more rows than the pairs of the keys are worth listing members for */
+	if (st->several || (st->nbuf > 0 && !sift_conn_probe_cheaper(st->nbuf, st->nrows)))
+		all = scope_pairs(st->heap, st->index, st->ord, st->snap, st->keys, st->nkeys, NULL, 0, max);	/* the buffers hold more rows than the pairs of the keys are worth listing members for */
 	else
 	{
 		uint32		nmem = 0,
 					nboth;
-		int64	   *members = nbuf > 0 ? sift_scope_buffers_members(index, ord, bufs, nbufs, &nmem) : NULL;
+		int64	   *members = st->nbuf > 0 ? sift_scope_buffers_members(st->index, st->ord, st->bufs, st->nbufs, &nmem) : NULL;
 		int64	   *both = union_i64(rd->except, rd->nexcept, members, nmem, &nboth);
 
-		all = scope_pairs(heap, index, ord, snap, keys, nkeys, both, nboth, max);
+		all = scope_pairs(st->heap, st->index, st->ord, st->snap, st->keys, st->nkeys, both, nboth, max);
 	}
 	rd->pairs = all.n;
 	if (all.over)
-		rd->why = several ? "dedupe over work_mem" : "write buffer";
-	else if (several && !dedupe_drops(&all, rd->except, rd->nexcept, rd))
+		rd->why = st->several ? "dedupe over work_mem" : "write buffer";
+	else if (st->several && !dedupe_drops(&all, rd->except, rd->nexcept, rd))
 		rd->why = "dedupe over work_mem";
 	if (rd->why != NULL)
 		return;
@@ -771,19 +819,31 @@ stored_read(Relation heap, Relation index, Snapshot snap, int ord, const SiftDir
 		rd->patch[i] = patch.p[i].member;
 	rd->npatch = sort_unique(rd->patch, patch.n);
 	/* a member of several keys counts once, in its least key, for the rows that have no entry yet as for those that have */
-	delta = several ? pairs_first(&all) : all;
-	rd->delta = sift_scope_delta_select(index, ord, bufs, nbufs, delta.p, delta.n, leaves, nleaves, &rd->delta_rows);
-	if ((rd->npatch > 0 || rd->delta_rows > 0) && topn)
+	delta = st->several ? pairs_first(&all) : all;
+	rd->delta = sift_scope_delta_select(st->index, st->ord, st->bufs, st->nbufs, delta.p, delta.n, st->leaves, st->nleaves, &rd->delta_rows);
+	if ((rd->npatch > 0 || rd->delta_rows > 0) && st->topn)
 		rd->why = "top-n, changed pairs";
 	if (rd->why != NULL)
 		return;
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
-			entity_rows += dir->segs[i].ndocs;
 	rd->fill = palloc(sizeof(ScopeFill));
-	*rd->fill = (ScopeFill) {heap, index, snap, ord, dir, bufs, nbufs, delta, NULL, leaves, nleaves};
+	*rd->fill = (ScopeFill) {st->heap, st->index, st->snap, st->ord, st->dir, st->bufs, st->nbufs, delta, NULL, st->leaves, st->nleaves};
 	if (rd->npatch > 0)
-		rd->fill->plan = sift_scope_segment_plan(index, ord, dir, rd->patch, rd->npatch, entity_rows / Max((double) nrows, 1.0), &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+	{
+		/* the members expected from the journal are those the pairs give: the plan made for them is the one */
+		if (rd->est_plan != NULL && rd->npatch == rd->nadded && memcmp(rd->patch, rd->added, rd->npatch * sizeof(int64)) == 0)
+			rd->fill->plan = rd->est_plan;
+		else
+			rd->fill->plan = sift_scope_segment_plan(st->index, st->ord, st->dir, rd->patch, rd->npatch, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+	}
+	else
+		rd->patch_rows = rd->patch_scan = rd->patch_units = 0;
+}
+
+void
+sift_scope_read_pairs(SiftScopeRead *rd)
+{
+	if (rd->stage != NULL)
+		stored_pairs(rd);
 }
 
 void
@@ -842,7 +902,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 	*c = (SiftScopeCounts) {.nkeys = 1,.once = true};
 	sift_dir_read(index, dir);
 	if (segments_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, &changed) != SIFT_CONN_OK)
+		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, &changed) != SIFT_CONN_OK)
 		return false;
 	c->changed = changed.n;
 	pairs = scope_pairs(heap, index, scope, snap, NULL, 0, changed.keys, changed.n, 0);
@@ -850,7 +910,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 	if (pairs.n == 0)
 		return true;	/* no changed member has a pair now: nothing to patch */
 	key = commonest_key(&pairs);
-	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, &key, 1, true, false, NULL, 0, PG_UINT32_MAX);
+	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, &key, 1, true, false, NULL, 0, PG_UINT32_MAX, false);
 	if (rd->why != NULL)
 		return false;
 	c->patch_units = rd->patch_units;
@@ -861,7 +921,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 
 SiftScopeRead *
 sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves,
-				uint32 max_changed)
+				uint32 max_changed, bool lazy)
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
 	SiftDirSnapshot *dir;
@@ -886,6 +946,8 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	sift_dir_read(index, dir);
 	rd->view = sift_col_scope_view(heap, dir);
 	SIFT_COL_OPEN_GATE();
-	stored_read(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
+	stored_changed(heap, index, snap, ord, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
+	if (!lazy)
+		sift_scope_read_pairs(rd);
 	return rd;
 }

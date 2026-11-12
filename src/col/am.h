@@ -71,6 +71,7 @@ typedef struct SiftColRel
 	int			rowkey_attno;
 	bool		journal_known;	/* journal_lineage (col/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
 	uint64		journal_lineage;
+	uint16		journal_tagatt;	/* the column the records of the journal are tagged by (SIFT_TOMB_KEYS_TAGATT): 0 for none */
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
 
@@ -175,6 +176,7 @@ extern void sift_col_choices_say(Relation heap, Relation index, int kinds, bool 
 extern const char *sift_col_final_name(Relation index);
 extern void sift_col_caps(Relation index, SiftChoiceFn add, void *ctx);
 extern char *sift_col_key_cut_note(Relation index);
+extern double sift_col_leaf_rows_per_value(Relation index, const SiftColDef *def, double rows);
 extern const char *sift_col_key_cut_advised(Relation index);
 extern char *sift_col_key_cut_advised_now(Relation heap, Relation index);
 extern const char *sift_col_key_cut_hot(Relation heap, Relation index, bool build);

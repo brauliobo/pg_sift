@@ -203,52 +203,52 @@ DELETE FROM tenant_scope WHERE dim_a_id = 10 AND tenant_id = 1;
 SELECT * FROM states('an ended pair');
      state     |       name       |                       run                        | same_rows 
 ---------------+------------------+--------------------------------------------------+-----------
- an ended pair | EXISTS, two keys | Changed Keys: 1; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | IN               | Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | IN, three keys   | Changed Keys: 1; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | barrier view, IN | Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | join             | Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | latest 5         | Changed Keys: 1; Patched Keys: 0                 | t
- an ended pair | top 5 ids        | Changed Keys: 1; Patched Keys: 0                 | t
+ an ended pair | EXISTS, two keys | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
+ an ended pair | IN               | units                                            | t
+ an ended pair | IN, three keys   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
+ an ended pair | barrier view, IN | units                                            | t
+ an ended pair | join             | units                                            | t
+ an ended pair | latest 5         | units                                            | t
+ an ended pair | top 5 ids        | units                                            | t
 (7 rows)
 
 INSERT INTO tenant_scope VALUES (370, 3, NULL), (371, 2, NULL), (371, 5, NULL);
 SELECT * FROM states('inserted pairs');
      state      |       name       |                       run                        | same_rows 
 ----------------+------------------+--------------------------------------------------+-----------
- inserted pairs | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | IN               | Changed Keys: 3; Patched Keys: 1                 | t
- inserted pairs | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | barrier view, IN | Changed Keys: 3; Patched Keys: 1                 | t
- inserted pairs | join             | Changed Keys: 3; Patched Keys: 1                 | t
+ inserted pairs | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | IN               | Changed Keys: 1; Patched Keys: 1                 | t
+ inserted pairs | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ inserted pairs | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
+ inserted pairs | join             | Changed Keys: 1; Patched Keys: 1                 | t
  inserted pairs | latest 5         | Fallback: top-n, changed pairs                   | t
- inserted pairs | top 5 ids        | Changed Keys: 3; Patched Keys: 1                 | t
+ inserted pairs | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of two keys moved, write buffer');
                        state                       |       name       |                       run                        | same_rows 
 ---------------------------------------------------+------------------+--------------------------------------------------+-----------
- facts of a member of two keys moved, write buffer | EXISTS, two keys | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of two keys moved, write buffer | IN               | Changed Keys: 3; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 3; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 3; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | join             | Changed Keys: 3; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of two keys moved, write buffer | IN               | Changed Keys: 1; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | join             | Changed Keys: 1; Patched Keys: 1                 | t
  facts of a member of two keys moved, write buffer | latest 5         | Fallback: top-n, changed pairs                   | t
- facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 3; Patched Keys: 1                 | t
+ facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
             state             |       name       |                       run                        | same_rows 
 ------------------------------+------------------+--------------------------------------------------+-----------
- every pair of a member ended | EXISTS, two keys | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | IN               | Changed Keys: 4; Patched Keys: 1                 | t
- every pair of a member ended | IN, three keys   | Changed Keys: 4; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | barrier view, IN | Changed Keys: 4; Patched Keys: 1                 | t
- every pair of a member ended | join             | Changed Keys: 4; Patched Keys: 1                 | t
+ every pair of a member ended | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | IN               | Changed Keys: 1; Patched Keys: 1                 | t
+ every pair of a member ended | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
+ every pair of a member ended | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
+ every pair of a member ended | join             | Changed Keys: 1; Patched Keys: 1                 | t
  every pair of a member ended | latest 5         | Fallback: top-n, changed pairs                   | t
- every pair of a member ended | top 5 ids        | Changed Keys: 4; Patched Keys: 1                 | t
+ every pair of a member ended | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 
 -- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
@@ -259,7 +259,7 @@ SELECT * FROM states('more changed pairs than the bound');
  more changed pairs than the bound | EXISTS, two keys | Fallback: join is cheaper for 2 keys | t
  more changed pairs than the bound | IN               | Fallback: join is cheaper for 1 key  | t
  more changed pairs than the bound | IN, three keys   | Fallback: join is cheaper for 3 keys | t
- more changed pairs than the bound | barrier view, IN | Changed Keys: 4; Patched Keys: 1     | t
+ more changed pairs than the bound | barrier view, IN | Changed Keys: 1; Patched Keys: 1     | t
  more changed pairs than the bound | join             | Fallback: join is cheaper for 1 key  | t
  more changed pairs than the bound | latest 5         | Fallback: top-n, changed pairs       | t
  more changed pairs than the bound | top 5 ids        | Fallback: join is cheaper for 1 key  | t

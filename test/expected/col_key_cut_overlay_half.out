@@ -1,0 +1,147 @@
+-- The segments that promotions of new rows leave over the keys of a key_cut index in partitions overlap every partition, as the runs of a build do. They are the build's
+-- rewrite, due at once, only when taking them out would leave most of the index: the bytes whose removal leaves none overlapping are half of it or more (two runs are each
+-- half). Below that, their rewrite takes the bytes of all the partitions they meet for the rows they hold: it is churn and waits for the WAL budget, which an automatic
+-- check says by finding nothing due while the manual one (col_maintain) still sees the overlap. One overlay at a time, from none to more than half of the index.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET sift.vacuum_rewrite_limit = 1;
+SET sift.col_auto_merge_partition_kb = 512;
+SET sift.col_auto_merge_wal_pct = 5;
+SET sift.test_col_segment_kb = 1500;
+SET sift.col_build_key_ranges = off;
+CREATE TABLE oh (id int, tenant_id int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO oh SELECT i, (i * 7919) % 400, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 40000) i;
+VACUUM (FREEZE, ANALYZE) oh;
+CREATE INDEX oh_idx ON oh USING sift_col (id, tenant_id, d, amount, pad) WITH (key_cut = 'tenant_id', dict_lookup = off);
+SELECT sift.col_maintain('oh_idx') AS partitioned;
+ partitioned 
+-------------
+ t
+(1 row)
+
+-- an overlay of 12,000 rows over all the tenants, then the state: overlays alive, their share of the index bytes, the rewrite due by the automatic rule and by the manual one
+CREATE FUNCTION oh_promote() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	INSERT INTO oh SELECT 200000 + (SELECT count(*) FROM oh) + g, (g * 7919) % 400, date '2026-01-01' + (g * 31) % 300, g % 100, md5(g::text) || md5((g + 1)::text) || md5((g + 2)::text) FROM generate_series(1, 12000) g;
+	PERFORM sift.col_promote('oh_idx');
+END $$;
+CREATE FUNCTION oh_state() RETURNS TABLE (overlays bigint, share_pct numeric, due_automatic text, due_manual text) LANGUAGE sql AS $$
+	SELECT (SELECT count(*) FROM sift.col_segments('oh_idx') WHERE kind = 'immutable' AND rows = 12000),
+		   (SELECT round(100.0 * sum(bytes) FILTER (WHERE rows = 12000) / sum(bytes)) FROM sift.col_segments('oh_idx') WHERE kind = 'immutable'),
+		   coalesce(sift.col_maintenance_due('oh_idx', true), '-'), coalesce(sift.col_maintenance_due('oh_idx', false), '-') $$;
+SELECT stmt FROM generate_series(1, 7) i, LATERAL (VALUES (1, 'SELECT oh_promote()'), (2, 'SELECT * FROM oh_state()')) v(k, stmt) ORDER BY i, k \gexec
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct | due_automatic |     due_manual     
+----------+-----------+---------------+--------------------
+        1 |        15 | -             | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct | due_automatic |     due_manual     
+----------+-----------+---------------+--------------------
+        2 |        26 | -             | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct | due_automatic |     due_manual     
+----------+-----------+---------------+--------------------
+        3 |        35 | -             | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct | due_automatic |     due_manual     
+----------+-----------+---------------+--------------------
+        4 |        42 | -             | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct | due_automatic |     due_manual     
+----------+-----------+---------------+--------------------
+        5 |        47 | -             | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct |   due_automatic    |     due_manual     
+----------+-----------+--------------------+--------------------
+        6 |        52 | key ranges overlap | key ranges overlap
+(1 row)
+
+SELECT oh_promote()
+ oh_promote 
+------------
+ 
+(1 row)
+
+SELECT * FROM oh_state()
+ overlays | share_pct |   due_automatic    |     due_manual     
+----------+-----------+--------------------+--------------------
+        7 |        56 | key ranges overlap | key ranges overlap
+(1 row)
+
+-- the manual rule takes them all in, and nothing is due after it
+SELECT sift.col_maintain('oh_idx') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT sift.col_verify('oh_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT count(*) FILTER (WHERE rows = 12000) AS overlays, coalesce(sift.col_maintenance_due('oh_idx', true), '-') AS due_automatic FROM sift.col_segments('oh_idx') WHERE kind = 'immutable';
+ overlays | due_automatic 
+----------+---------------
+        0 | -
+(1 row)
+
+SELECT count(*) = 40000 + 7 * 12000 AS rows_kept FROM oh;
+ rows_kept 
+-----------
+ t
+(1 row)
+
+DROP FUNCTION oh_promote(), oh_state();
+DROP TABLE oh;
+DROP EXTENSION pg_sift;

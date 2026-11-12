@@ -89,12 +89,12 @@ SELECT * FROM probe();
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            2 | t
   2 | same    | t      |     |            3 | t
-  3 | same    | t      |     |            1 | t
-  4 | same    | t      |     |            4 | t
+  3 | same    | t      |     |            0 | f
+  4 | same    | t      |     |            2 | t
   5 | same    | t      |     |            0 | f
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |            2 | t
-  8 | same    | t      |     |            4 | t
+  8 | same    | t      |     |            2 | t
   9 | same    | t      |     |            1 | t
  10 | same    | t      |     |            3 | t
  11 | same    | t      |     |            0 | f
@@ -107,17 +107,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            2 | t
-  2 | same    | t      |     |           13 | t
-  3 | same    | t      |     |           11 | t
-  4 | same    | t      |     |           14 | t
+  2 | same    | t      |     |            3 | t
+  3 | same    | t      |     |            0 | f
+  4 | same    | t      |     |           12 | t
   5 | same    | t      |     |            0 | f
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           12 | t
-  8 | same    | t      |     |           14 | t
-  9 | same    | t      |     |           11 | t
- 10 | same    | t      |     |           13 | t
- 11 | same    | t      |     |           10 | t
- 12 | same    | t      |     |           10 | t
+  8 | same    | t      |     |           12 | t
+  9 | same    | t      |     |            1 | t
+ 10 | same    | t      |     |            3 | t
+ 11 | same    | t      |     |            0 | f
+ 12 | same    | t      |     |            0 | f
 (12 rows)
 
 -- members moved between keys (the pair of a key deleted, the pair of another inserted)
@@ -127,17 +127,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           50 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           48 | t
   5 | same    | t      |     |           24 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           50 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           28 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           48 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           20 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 -- facts inserted (write buffer rows have no scope entries), for members of any number of keys, of none, and of no member
@@ -146,17 +146,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           50 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           48 | t
   5 | same    | t      |     |           24 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           50 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           28 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           48 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           20 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 -- facts updated (a new version in the buffer, the old one dead in its unit) and deleted
@@ -166,17 +166,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           50 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           48 | t
   5 | same    | t      |     |           24 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           50 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           28 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           48 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           20 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 -- a writer that aborted: its pair edits and its facts are in no snapshot
@@ -189,17 +189,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           50 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           48 | t
   5 | same    | t      |     |           24 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           50 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           28 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           48 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           20 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 -- this transaction's own changes are seen by its own reads
@@ -211,17 +211,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           53 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           51 | t
   5 | same    | t      |     |           26 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           53 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           30 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           51 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           22 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 ROLLBACK;
@@ -229,17 +229,17 @@ SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
   1 | same    | t      |     |            5 | t
-  2 | same    | t      |     |           24 | t
-  3 | same    | t      |     |           36 | t
-  4 | same    | t      |     |           50 | t
+  2 | same    | t      |     |           16 | t
+  3 | same    | t      |     |           27 | t
+  4 | same    | t      |     |           48 | t
   5 | same    | t      |     |           24 | t
   6 | same    | t      |     |            0 | f
   7 | same    | t      |     |           20 | t
-  8 | same    | t      |     |           50 | t
-  9 | same    | t      |     |           19 | t
- 10 | same    | t      |     |           37 | t
- 11 | same    | t      |     |           28 | t
- 12 | same    | t      |     |           20 | t
+  8 | same    | t      |     |           48 | t
+  9 | same    | t      |     |           11 | t
+ 10 | same    | t      |     |           29 | t
+ 11 | same    | t      |     |           20 | t
+ 12 | same    | t      |     |           12 | t
 (12 rows)
 
 -- random rounds of pair edits (members in 0 to 6 keys) and fact writes, each committed, each followed by a read of random keys, once and per pair: every read is md5 equal to the join (or says why it is not read as stored)
@@ -303,20 +303,20 @@ SELECT sift.col_verify('facts_col', true);
 -- the patch priced against the entity path (the cluster of the tests patches whatever it costs): the same answers, from whichever route is cheaper
 SET sift.test_scope_patch = off;
 SELECT * FROM probe();
- n  | verdict | stored |          why          | patched_keys | patched_rows_read 
-----+---------+--------+-----------------------+--------------+-------------------
-  1 | same    | f      | too many changed keys |            0 | f
-  2 | same    | f      | too many changed keys |            0 | f
-  3 | same    | f      | too many changed keys |            0 | f
-  4 | same    | f      | too many changed keys |            0 | f
-  5 | same    | f      | too many changed keys |            0 | f
-  6 | same    | f      | too many changed keys |            0 | f
-  7 | same    | t      |                       |          111 | t
-  8 | same    | t      |                       |          216 | t
-  9 | same    | f      | too many changed keys |            0 | f
- 10 | same    | t      |                       |          127 | t
- 11 | same    | t      |                       |          101 | t
- 12 | same    | t      |                       |          108 | t
+ n  | verdict | stored |                why                | patched_keys | patched_rows_read 
+----+---------+--------+-----------------------------------+--------------+-------------------
+  1 | same    | f      | patch dearer than the entity path |            0 | f
+  2 | same    | f      | patch dearer than the entity path |            0 | f
+  3 | same    | f      | too many changed keys             |            0 | f
+  4 | same    | f      | too many changed keys             |            0 | f
+  5 | same    | f      | too many changed keys             |            0 | f
+  6 | same    | t      |                                   |            0 | f
+  7 | same    | t      |                                   |           97 | t
+  8 | same    | t      |                                   |          208 | t
+  9 | same    | f      | patch dearer than the entity path |            0 | f
+ 10 | same    | t      |                                   |           68 | t
+ 11 | same    | t      |                                   |           69 | t
+ 12 | same    | t      |                                   |           70 | t
 (12 rows)
 
 RESET sift.test_scope_patch;
@@ -330,18 +330,18 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 SELECT * FROM probe();
  n  | verdict | stored | why | patched_keys | patched_rows_read 
 ----+---------+--------+-----+--------------+-------------------
-  1 | same    | t      |     |           61 | t
-  2 | same    | t      |     |           71 | t
-  3 | same    | t      |     |          140 | t
-  4 | same    | t      |     |          216 | t
-  5 | same    | t      |     |           76 | t
+  1 | same    | t      |     |           52 | t
+  2 | same    | t      |     |           30 | t
+  3 | same    | t      |     |          105 | t
+  4 | same    | t      |     |          208 | t
+  5 | same    | t      |     |           70 | t
   6 | same    | t      |     |            0 | f
-  7 | same    | t      |     |          111 | t
-  8 | same    | t      |     |          216 | t
-  9 | same    | t      |     |           63 | t
- 10 | same    | t      |     |          127 | t
- 11 | same    | t      |     |          101 | t
- 12 | same    | t      |     |          108 | t
+  7 | same    | t      |     |           97 | t
+  8 | same    | t      |     |          208 | t
+  9 | same    | t      |     |           29 | t
+ 10 | same    | t      |     |           68 | t
+ 11 | same    | t      |     |           69 | t
+ 12 | same    | t      |     |           70 | t
 (12 rows)
 
 SELECT sift.col_verify('facts_col', true);

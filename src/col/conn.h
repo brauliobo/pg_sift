@@ -68,6 +68,7 @@ typedef struct SiftConnKeys
 {
 	int64	   *keys;
 	bool	   *kept;			/* [n] every record of the key is of an update that wrote a new version of the same key (no delete, no key change): a row holds the key for every snapshot */
+	bool	   *added;			/* [n] the last record of the key is of an entry inserted (changed_by with adds): the key probably has an entry now, which a read of a scope expects to patch */
 	uint32		n;
 	uint32		cap;
 } SiftConnKeys;
@@ -79,9 +80,9 @@ extern void sift_conn_keys_free(SiftConnKeys *k);
 /*
  * The parent index gets its journal (a connection is being made to it): created under the lock that holds writers of the parent table out (the caller holds ShareLock
  * on the table: CREATE INDEX and REINDEX of the child do). Idempotent; the parent index must track a key column (sift_col_row_key_on) and be complete. Returns the
- * lineage.
+ * lineage. tag_att: the column of the relation whose values tag the records of a scope relation's journal (0: none), recorded when the journal is made here.
  */
-extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index, bool read_after);
+extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index, bool read_after, AttrNumber tag_att);
 
 /*
  * A child index is connected to the parent index: the dependency of the child on the parent (so that the parent index and its table cannot be dropped under it without CASCADE,
@@ -121,8 +122,20 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  */
 extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
-/* The same, with the keys of the inserted entries (adds) of a scope relation's journal as well (col/scope.h) */
-extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, SiftConnKeys *out);
+/*
+ * The same, with the keys of the inserted entries (adds) of a scope relation's journal (col/scope.h) as well, and only of the records of the pairs of the scope keys in tags (NULL: of every key). A
+ * record carries the tag of the scope key of its pair when the journal was made for the column the tags are of; a record of no tag, and every record of a journal of another column, is of every key.
+ */
+typedef struct SiftConnTags
+{
+	AttrNumber	att;			/* the column of the scope key */
+	uint8		map[(SIFT_TOMB_TAG_MAX + 8) / 8];	/* the tags of the keys: bit tag */
+} SiftConnTags;
+/* The tag of a scope key (1..SIFT_TOMB_TAG_MAX) */
+extern uint16 sift_conn_key_tag(int64 key);
+/* The tags of the keys of the column att; NULL for too many keys (they would tag most records: the read takes them all) */
+extern SiftConnTags *sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys);
+extern SiftConnWhy sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, const SiftConnTags *tags, SiftConnKeys *out);
 
 /*
  * The journal of a scope relation: a sift_col index with track_changes = 'ctid' whose first column is the member key. The row trigger of the index writes a KEYCHG record for the old

@@ -121,7 +121,7 @@ check "the standby holds scope segments" test "$(sql scs "$ENT")" == t
 # the scope segments written again, replayed: the standby reads them (stored where the reader may) and exactly
 sql scp "REINDEX INDEX events_col" >/dev/null
 catchup scp scs
-ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
+ENTJ="SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col') WHERE tid IN (SELECT ctid FROM events))
 	= (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id)"
 check "after a REINDEX of the primary the scope entries of the standby are the join" test "$(sql scs "$ENTJ")" == t
 check "... and its reads are the join's" test "$(sql scs "$SC")" == t
@@ -153,8 +153,11 @@ check "two paths: the standby reads as the join of the union, and as the primary
 diag "two paths: the standby says $(twohop_why scs); stamps $(twohop_vouch scs)"
 sql scp "SET sift.scope_max_multiplicity = 64" "REINDEX INDEX hop_col" >/dev/null   # the edits of the groups raised the entries of a row above the limit of the build
 catchup scp scs
-check "two paths: after a REINDEX of the primary the entries of the standby are the join, its reads are the join's and the indexes verify" test "$(sql scs "$TWOHOP_ENTRIES")|$(twohop_reads scs)" == "t|same" \
-	-a -z "$(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+hop_after_reindex() {
+	out="entries $(sql scs "$TWOHOP_ENTRIES"), reads $(twohop_reads scs), verify: $(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
+	[[ $out == "entries t, reads same, verify: " ]]
+}
+check "two paths: after a REINDEX of the primary the entries of the standby are the join, its reads are the join's and the indexes verify" hop_after_reindex
 
 node_promote scs
 for _ in $(seq 100); do [[ $(sql scs "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done

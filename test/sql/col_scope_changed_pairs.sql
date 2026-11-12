@@ -78,8 +78,8 @@ INSERT INTO shapes VALUES
 	(3, 'every key, min and max', 'SELECT m.tenant_id AS k, min(id), max(id), min(amount) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE %3$s GROUP BY 1'),
 	(4, 'one key, count and sum', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 3 AND %3$s)'),
 	(5, 'one key, min and max', 'SELECT min(id), max(id) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id = 4 AND %3$s)'),
-	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7) AND %3$s)'),
-	(7, 'three keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7) AND %3$s');
+	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s)'),
+	(7, 'four keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s');
 
 -- tbl: the events, idx: their scope index, pairs: the relation of the pairs, active: the condition of its active pairs
 CREATE FUNCTION probe(tbl text, idx text, pairs text, active text DEFAULT 'true') RETURNS TABLE (n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$

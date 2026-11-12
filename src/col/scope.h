@@ -127,9 +127,10 @@ extern SiftConnWhy sift_scope_take(Relation index, int scope, Snapshot snap, Sif
 extern SiftConnWhy sift_scope_vouch(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap);
 /*
  * The members whose pairs changed in (X, S], ended or inserted: sorted, unique, at most cap (SIFT_CONN_OVERFLOW), the keys palloc'd in the current context (sift_conn_keys_free). Of two paths: those of
- * the journals of the pairs relation and of the via relation and the members of every group of the joined relation's journal that the via relation lists under snap.
+ * the journals of the pairs relation and of the via relation and the members of every group of the joined relation's journal that the via relation lists under snap. keys: only the changes of the
+ * pairs of those scope keys (ascending, distinct; NULL: any key): a journal made for the scope key column tags its records with the key of their pair, and the pairs of the other keys change no unit of these.
  */
-extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out);
 
 /*
  * Refresh: is a scope segment of the index worth a rewrite for what its stamps say (sift_conn_stale for the scopes)? NULL from begin: the index declares no scope. The reason in
@@ -248,6 +249,11 @@ typedef struct SiftScopeRead
 	struct SiftScopeDelta *delta;	/* the rows of the buffers and the segment rows of the patched members, copied for each of the pairs their member has with the keys: what the source reads of them */
 	uint64		delta_rows;		/* ... and how many copies they are */
 	void	   *view;			/* the directory the read took, as the view the source of the scope segments opens on (sift_col_scope_view): the delta and the units are of one directory */
+	int64	   *added;			/* the members of except whose journal records include an inserted pair: those the patch is expected to read (the pairs of the second half are the exact ones) */
+	uint32		nadded;
+	uint64		entity_rows;	/* the rows of the entity segments */
+	struct ScopeStage *stage;	/* the second half of the read is still to be made (sift_scope_read_pairs); until then patch_*, delta_rows are the journal's expectation */
+	struct SiftScopeSegPlan *est_plan;	/* the plan made for the members expected */
 } SiftScopeRead;
 
 /*
@@ -428,8 +434,10 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 /* max_changed: the most changed members the caller will have read (its join costs less past them: the read then says "too many changed keys" without listing them); UINT32_MAX for as many as the cap allows */
 /* The rows of the patch (sift_scope_segment_rows): the delta takes them after the price of the read was taken (patch_rows and patch_scan are only expected until then); a read that is not to be made frees what the plan holds */
 extern void sift_scope_read_rows(SiftScopeRead *rd);
+/* lazy: the read stops after the journal (the changed members, the write buffers and what the patch is expected to cost): the caller decides whether the pairs are worth asking for, and asks (sift_scope_read_pairs) */
 extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
-									   const int *leaves, int nleaves, uint32 max_changed);
+									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
+extern void sift_scope_read_pairs(SiftScopeRead *rd);
 /*
  * The counts of what a read of one key pays for the members that changed since the stamps (changed, patch_units, patch_scan_rows, delta_rows of SiftScopeCounts): the key is the one most of the changed
  * members have a pair with now, which pays the most. False: the stored read is not exact (the verdict on the stamps, too many changed members, the patch is refused): another rule of the refresh says so.

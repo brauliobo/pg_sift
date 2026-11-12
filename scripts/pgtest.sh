@@ -17,7 +17,7 @@
 #                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
 #   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
-#   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters
+#   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters (SIFT_TAP_KEEP=1 keeps the data directories of a failed test)
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
 #   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database), once it is ready
 #   scripts/pgtest.sh stop       stop the cluster
