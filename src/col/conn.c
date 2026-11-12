@@ -321,7 +321,7 @@ journal_for(Relation heap, Relation index, Snapshot snap, SiftTombLog **log)
 		return SIFT_CONN_SNAPSHOT;
 	if (!sift_col_track_on(index) || (*log = sift_col_log(index)) == NULL || !(*log)->keys_cover || (*log)->keys.lineage == 0)
 		return SIFT_CONN_NO_JOURNAL;
-	if (!sift_col_track_ok(index, heap, snap))
+	if (!sift_col_track_ok_log(index, heap, snap, *log))
 		return SIFT_CONN_NOT_COMPLETE;
 	return SIFT_CONN_OK;
 }
@@ -364,23 +364,30 @@ sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b)
 	return a->lineage == b->lineage && a->records == b->records && a->trim == b->trim && a->flags == b->flags;
 }
 
-SiftConnWhy
-sift_conn_vouches(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap)
+static SiftConnWhy
+vouch(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, SiftTombLog **log)
 {
-	SiftTombLog *log;
-	SiftConnWhy why = journal_for(heap, index, snap, &log);
+	SiftConnWhy why = journal_for(heap, index, snap, log);
 
 	if (why != SIFT_CONN_OK)
 		return why;
-	if (log->keys.lineage != stamp->lineage)
+	if ((*log)->keys.lineage != stamp->lineage)
 		return SIFT_CONN_LINEAGE;
 	if (aged(stamp->xmin))
 		return SIFT_CONN_AGED;
-	if (trimmed(&log->keys, stamp->xmin))
+	if (trimmed(&(*log)->keys, stamp->xmin))
 		return SIFT_CONN_TRIMMED;
 	if (TransactionIdPrecedes(snap->xmin, stamp->xmin))
 		return SIFT_CONN_OLDER;
 	return SIFT_CONN_OK;
+}
+
+SiftConnWhy
+sift_conn_vouches(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap)
+{
+	SiftTombLog *log;
+
+	return vouch(heap, index, stamp, snap, &log);
 }
 
 typedef struct KeyRec
@@ -471,7 +478,7 @@ SiftConnWhy
 sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, bool adds, const SiftConnTags *tags, SiftConnKeys *out)
 {
 	SiftTombLog *log;
-	SiftConnWhy why = sift_conn_vouches(heap, index, stamp, snap);
+	SiftConnWhy why = vouch(heap, index, stamp, snap, &log);
 	const SiftTomb *rec;
 	int			n;
 	KeyRec	   *tab;
@@ -486,7 +493,6 @@ sift_conn_changed_by(Relation heap, Relation index, const SiftConnStamp *stamp, 
 	*out = (SiftConnKeys) {0};
 	if (why != SIFT_CONN_OK)
 		return why;
-	log = sift_col_log(index);
 	rec = sift_tomb_find(log, SIFT_TOMB_KEYS_KEY, &n);
 	/* the distinct keys are at most cap + 1 before the read refuses: the table of a log that overflows is no larger, and the records past the one that overflows it are not looked at */
 	mask = pg_nextpower2_32(2 * Max(Min((uint64) n, (uint64) cap + 1), 1)) - 1;

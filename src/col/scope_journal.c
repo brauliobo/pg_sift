@@ -15,6 +15,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "executor/tuptable.h"
+#include "storage/sinval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -34,6 +35,54 @@ typedef struct ScopeJournals
 } ScopeJournals;
 
 /*
+ * What finding the journals of a scope asks the catalogs: the relations by their names, the btree and the journal index that cover each, the checks of the declaration (about 25,000 instructions
+ * a scope). It is the same until the catalogs change, which reaches a backend as a shared invalidation message (SharedInvalidMessageCounter, as col/track.c keeps the state of the triggers of a
+ * journal): the oids are kept for the counter they were found at, and not at all in a transaction with an xid, whose own DDL is not counted before it commits.
+ */
+#define JOURNAL_MEMO_N 4
+static struct JournalMemo
+{
+	Oid			index;
+	int			scope;
+	uint64		gen;
+	int			n;
+	Oid			rel[SIFT_SCOPE_JOURNALS];
+	Oid			jidx[SIFT_SCOPE_JOURNALS];
+	Oid			via_btree;
+	AttrNumber	via;
+	AttrNumber	member;
+	AttrNumber	skey[SIFT_SCOPE_JOURNALS];
+} journal_memo[JOURNAL_MEMO_N];
+static int	journal_memo_next;
+
+static bool
+journals_open_memo(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
+{
+	if (TransactionIdIsValid(GetTopTransactionIdIfAny()))
+		return false;
+	for (int i = 0; i < JOURNAL_MEMO_N; i++)
+	{
+		const struct JournalMemo *m = &journal_memo[i];
+
+		if (m->index != RelationGetRelid(index) || m->scope != scope || m->gen != SharedInvalidMessageCounter)
+			continue;
+		sift_catalog_memo_hits++;
+		J->n = m->n;
+		J->via_btree = m->via_btree;
+		J->via = m->via;
+		J->member = m->member;
+		for (int j = 0; j < m->n; j++)
+		{
+			J->rel[j] = table_open(m->rel[j], AccessShareLock);
+			J->jidx[j] = index_open(m->jidx[j], lock);
+			J->skey[j] = m->skey[j];
+		}
+		return true;
+	}
+	return false;
+}
+
+/*
  * The relations and journal indexes of the journals of the scope, locked AccessShare (lock on the index: lock); false: the scope is not declared now, or one of its relations has no
  * journal index. Journal j: 0 the pairs relation keyed by its member, 1 the joined relation keyed by its via column, 2 the via relation keyed by its member column.
  */
@@ -44,10 +93,13 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 	const SiftScopeSpec *s;
 	Relation	heap;
 	bool		ok = true;
+	uint64		gen = SharedInvalidMessageCounter;
 
 	*J = (ScopeJournals) {0};
 	if (specs == NULL || scope < 0 || scope >= specs->n)
 		return false;
+	if (journals_open_memo(index, scope, lock, J))
+		return true;
 	s = specs->s[scope];
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	J->n = sift_scope_njournals(s);
@@ -72,6 +124,21 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 			J->n = j + 1;
 	}
 	table_close(heap, NoLock);
+	if (ok && !TransactionIdIsValid(GetTopTransactionIdIfAny()))
+	{
+		struct JournalMemo *m = &journal_memo[journal_memo_next++ % JOURNAL_MEMO_N];
+
+		*m = (struct JournalMemo) {RelationGetRelid(index), scope, gen, J->n};
+		m->via_btree = J->via_btree;
+		m->via = J->via;
+		m->member = J->member;
+		for (int j = 0; j < J->n; j++)
+		{
+			m->rel[j] = RelationGetRelid(J->rel[j]);
+			m->jidx[j] = RelationGetRelid(J->jidx[j]);
+			m->skey[j] = J->skey[j];
+		}
+	}
 	return ok;
 }
 

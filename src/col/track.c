@@ -43,6 +43,7 @@
 
 #include "access/xlog.h"
 #include "storage/lmgr.h"
+#include "storage/sinval.h"
 #include "utils/timestamp.h"
 
 #include "agg/stats.h"
@@ -669,21 +670,73 @@ trackable(Relation heap, Relation index)
 }
 
 /*
+ * What the catalogs say of the channel of an index: the table can be tracked, and the triggers installed (their identities in witness). A read asks it for each journal it vouches for,
+ * 70,000 instructions of catalog scans (pg_depend, pg_trigger, pg_inherits, pg_subscription_rel), and the answer changes only with DDL: every catalog change, a trigger dropped, disabled,
+ * enabled again or recreated included (it invalidates the relcache entry of the table), reaches the other backends as a shared invalidation message, which counts in
+ * SharedInvalidMessageCounter when the backend accepts it (at the lock of a relation it opens, at the start of a statement or of a transaction), the messages of its own committed DDL
+ * among them. The answer is kept for the counter it was read at, and not at all in a transaction that has an xid: its own DDL is not counted before it commits. No callback of the
+ * relcache is taken (check-relcache-slots.sh): the counter is read, and a hit costs a handful of loads.
+ */
+/* the answers the memos of the catalog state gave without asking the catalogs (col/track.c, col/scope_journal.c, col/scope_decl.c, col/scan/scope.c, agg/scope.c): what sift._test_catalog_memos() reports */
+uint64		sift_catalog_memo_hits;
+
+#define TRACK_MEMO_N 8
+static struct TrackMemo
+{
+	Oid			heap;
+	Oid			index;
+	uint64		gen;
+	bool		trackable;
+	bool		ok[2];
+	uint32		witness[2];
+} track_memo[TRACK_MEMO_N];
+static int	track_memo_next;
+
+static bool
+track_state(Relation heap, Relation index, bool ok[2], uint32 witness[2])
+{
+	bool		keep = !TransactionIdIsValid(GetTopTransactionIdIfAny());
+	uint64		gen = SharedInvalidMessageCounter;
+	struct TrackMemo m = {RelationGetRelid(heap), RelationGetRelid(index), gen};
+	bool		present[2];
+
+	for (int i = 0; keep && i < TRACK_MEMO_N; i++)
+		if (track_memo[i].heap == m.heap && track_memo[i].index == m.index && track_memo[i].gen == gen)
+		{
+			memcpy(ok, track_memo[i].ok, sizeof(m.ok));
+			memcpy(witness, track_memo[i].witness, sizeof(m.witness));
+			sift_catalog_memo_hits++;
+			return track_memo[i].trackable;
+		}
+	if ((m.trackable = trackable(heap, index)))
+		channel_read(heap, index, present, m.ok, m.witness);
+	if (keep)
+		track_memo[track_memo_next++ % TRACK_MEMO_N] = m;
+	memcpy(ok, m.ok, sizeof(m.ok));
+	memcpy(witness, m.witness, sizeof(m.witness));
+	return m.trackable;
+}
+
+/*
  * May a read take the log for the whole truth about which entries are live: the log was made complete, the triggers are the ones that did it, and the table still has its unique index on the key. With a snapshot, also that it is an MVCC one that sees the transaction that made the log complete.
  */
 bool
 sift_col_track_ok(Relation index, Relation heap, Snapshot snap)
 {
-	bool		present[2],
-				ok[2];
-	uint32		witness[2];
-	SiftTombLog *log;
+	return sift_col_track_ok_log(index, heap, snap, sift_col_log(index));
+}
 
-	if (!trackable(heap, index))
+/* ... for the log of the index the caller has taken (sift_col_log) */
+bool
+sift_col_track_ok_log(Relation index, Relation heap, Snapshot snap, SiftTombLog *log)
+{
+	bool		ok[2];
+	uint32		witness[2];
+
+	if (!track_state(heap, index, ok, witness))
 		return false;
-	if ((log = sift_col_log(index)) == NULL || log->chan.flags != SIFT_TOMB_CURRENT)
+	if (log == NULL || log->chan.flags != SIFT_TOMB_CURRENT)
 		return false;
-	channel_read(heap, index, present, ok, witness);
 	if (!ok[0] || !ok[1] || witness[0] != log->chan.witness[0] || witness[1] != log->chan.witness[1])
 		return false;
 	if (snap == NULL)

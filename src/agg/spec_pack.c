@@ -73,21 +73,21 @@ pk_node(Codec *c, Node **n)
 
 #define PKN(c, f) pk_node(c, (Node **) &(f))
 
+/* a double as the two integers of its bits: exact, with no formatting ("%.17g" took 2,000 instructions each and a plan of a scope read packs about fifty) */
 static void
 pk_dbl(Codec *c, double *d)
 {
-	const char *s;
-	char		buf[64];
+	uint64		u;
+	int			hi,
+				lo;
 
-	if (c->rd)
-	{
-		s = strVal(pk_item(c));
-		*d = strtod(s, NULL);
-		return;
-	}
-	snprintf(buf, sizeof(buf), "%.17g", *d);
-	s = buf;
-	pk_str(c, &s);
+	memcpy(&u, d, sizeof(u));
+	hi = (int) (u >> 32);
+	lo = (int) (u & 0xFFFFFFFF);
+	pk_int(c, &hi);
+	pk_int(c, &lo);
+	u = (uint64) (uint32) hi << 32 | (uint32) lo;
+	memcpy(d, &u, sizeof(u));
 }
 
 static void

@@ -935,7 +935,7 @@ sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s)
 }
 
 int
-sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
+sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
