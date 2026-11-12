@@ -74,7 +74,7 @@ SELECT 'split' AS step, * FROM pt_state('items');
 SELECT sift.col_verify('items_col', true);
 SELECT bool_and(rows > 0) AS no_empty_partition, max(bytes) < 2 * min(bytes) AS even FROM sift.col_segments('items_col') WHERE kind = 'immutable' AND bytes > 100000;
 
--- 2. churn of the newest 5% of the ids: far from dirty_pct of the units of the index, but all of those of the last partition. The rule on the whole index is not met
+-- 2. churn of the newest 5% of the ids: a few of the units of the index, but all of those of the last partition. The rule of the whole index rewrites all of it, the rule by range one partition
 CREATE TEMP TABLE before AS SELECT gen FROM sift.col_segments('items_col') WHERE kind = 'immutable';
 CALL pt_churn(2, 38000, 4);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) items, items_plain;
@@ -125,7 +125,6 @@ SELECT sift.col_promote('items_col') > 0 AS promoted;
 CREATE TEMP TABLE before3 AS SELECT gen FROM sift.col_segments('items_col') WHERE kind = 'immutable';
 SELECT (SELECT sum(units) FROM sift.col_segments('items_col')) > (SELECT units FROM sift.col_index_info('items_col')) AS listed_twice;
 SET sift.col_auto_merge_buffer_pct = 100;
-SET sift.col_auto_merge_dirty_pct = 100;
 SELECT set_config('sift.col_auto_merge_fragmentation', (SELECT floor(100.0 * (SELECT sum(units) FROM sift.col_segments('items_col')) / (SELECT units FROM sift.col_index_info('items_col'))) / 100)::text, false) IS NOT NULL AS fragmentation_set;
 SELECT sift.col_maintenance_due('items_col', false) AS due;
 SELECT sift.col_maintain('items_col') AS rewritten;

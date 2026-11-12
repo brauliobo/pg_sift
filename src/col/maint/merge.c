@@ -264,7 +264,7 @@ pick_key_window(const RewriteView *v, bool *take)
  * this order: the overlays together into one segment, when there are several or one has a dead row (cheap, and cut into partitions they would be overlays
  * again); when the units listed per superblock covered ask for it and one overlay is left, that overlay, the segments that hold a unit of a superblock
  * it holds and the dirty partitions, cut into partitions (an overlay over every partition is the rewrite of the index, once); else the partition the most of
- * whose units hold a dead row (over sift.col_auto_merge_dirty_pct), alone, so that the step costs a partition and the space it needs is one. Each step
+ * with most units that hold a dead row, alone, so that the step costs a partition and the space it needs is one. Each step
  * leaves nothing of what it picked for the next one, so the steps end. cut: the output is cut into partitions.
  */
 static int
@@ -311,7 +311,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 			over = i;
 			dirty_over |= d > 0;
 		}
-		else if (maint_read_asked ? d > 0 : (uint64) d * 100 > (uint64) sift_col_auto_merge_dirty_pct * v->seg[i]->nsb)
+		else if (d > 0)
 		{
 			dirty_part[i] = true;
 			if ((uint64) d * 1000 / v->seg[i]->nsb > worst_share)

@@ -25,7 +25,7 @@ check "the merge leaves the file over 1.6 times the live bytes" test "$loose" -g
 
 # dead rows in many units (a VACUUM that does not cut marks them) make a rewrite due; its WAL budget, a hundred times the segments, is far off: the automatic one does not start
 sql defer "UPDATE t SET amount = amount + 1 WHERE id % 20 = 1" "ALTER INDEX t_idx SET (vacuum_truncate = false)" "VACUUM t" "ALTER INDEX t_idx RESET (vacuum_truncate)" "SELECT pg_current_xact_id()" >/dev/null
-SETS=("SET sift.col_auto_merge = on" "SET sift.col_auto_merge_dirty_pct = 1" "SET sift.col_auto_merge_wal_pct = 1")
+SETS=("SET sift.col_auto_merge = on" "SET sift.col_auto_merge_wal_pct = 1")
 # the write buffer of the quick tier (a quarter of a unit is not reached, so VACUUM leaves its rows) is due for its promotion whatever the budget says, and a promotion moves no segment
 check "a rewrite is due and the automatic one waits (at most for the promotion of the write buffer)" test "$(sql defer "${SETS[@]}" "SELECT sift.col_maintenance_due('t_idx', false) IS NOT NULL, \
 	coalesce(sift.col_maintenance_due('t_idx', true), 'write buffer rows') = 'write buffer rows'")" == "t|t"
