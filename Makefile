@@ -205,6 +205,7 @@ TESTING_REGRESS += col_key_cut_big_overlays
 TESTING_REGRESS += col_key_cut_grown_overlay
 TESTING_REGRESS += col_key_cut_hot_value
 TESTING_REGRESS += col_key_cut_overlap
+TESTING_REGRESS += col_key_cut_overlay_half
 TESTING_REGRESS += col_key_cut_overlay_mass
 TESTING_REGRESS += col_key_cut_paced
 TESTING_REGRESS += col_key_cut_partition
