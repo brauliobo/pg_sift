@@ -28,11 +28,12 @@ VACUUM rr;
 SELECT count(*) >= 5 AS partitions, max(bytes) < 1024 * 1024 * 3 / 2 AS within_a_partition FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
 ALTER TABLE rr RESET (autovacuum_enabled);
 
--- the file is within a fifth of the live bytes and two partitions of them when the rewrite is done (the blocks of its last step and the short runs of the ones before it), and within
+-- the file is within a fifth of the live bytes and three partitions of them when the rewrite is done (the blocks of its last step and the short runs of the ones before it: the pieces of the
+-- steps are not larger than a partition, the segments are at times a half of one), and within
 -- a tenth and one partition when the VACUUM after it is (it moves down the blocks above the end that leaves a partition free, which the next rewrite writes into)
 CREATE FUNCTION rr_file_ok(pct int, k int) RETURNS bool LANGUAGE sql AS $$
 	SELECT i.relation_blocks * 8192 <= (1 + pct / 100.0) * (SELECT sum(bytes) FROM sift.col_sections('rr_idx') WHERE section <> 'free')
-		+ k * (SELECT max(bytes) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable')
+		+ k * (SELECT greatest(max(bytes), 1024 * 1024) FROM sift.col_segments('rr_idx') WHERE kind = 'immutable')
 	FROM sift.col_index_info('rr_idx') i $$;
 -- the segments written since (a VACUUM that moved only the blocks above the end wrote at most a partition of them)
 CREATE FUNCTION rr_moved(before text) RETURNS bool LANGUAGE sql AS $$
@@ -88,7 +89,7 @@ SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty, count(*) FILTER (WHERE bytes * 2 >= 1024 * 1024) >= 5 AS partitions FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok(20, 2) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
+SELECT rr_file_ok(20, 3) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
 SELECT rr_gens() AS gens, rr_free() AS free \gset before_
 VACUUM rr;
 SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition,
@@ -103,13 +104,47 @@ SET sift.async_maintenance = on;
 VACUUM rr;
 CALL rr_wait();
 SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rr_idx') WHERE kind = 'immutable';
-SELECT rr_file_ok(20, 2) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
+SELECT rr_file_ok(20, 3) AS file_within_bound, rr_disjoint() AS partitions_disjoint;
 SELECT rr_gens() AS gens, rr_free() AS free \gset before_
 VACUUM rr;
 SELECT rr_moved(:'before_gens') AS vacuum_moved_a_partition_at_most, rr_file_ok(10, 1) AS file_within_a_partition,
 	rr_free() BETWEEN 96 AND 144 AS leaves_a_partition_free, rr_free() < :before_free AS moved_the_blocks_above_down;
 SELECT sift.col_verify('rr_idx', true);
 SELECT rr_same();
+
+-- partitions of several times the size a rewrite cuts at (the size was lowered since they were written) are rolled all the same: a step for each of them, as the pieces of the size
+-- now, and not the one switch of the rewrite of the whole index
+CREATE EXTENSION pg_sift_test CASCADE;
+CREATE FUNCTION rs_same() RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+	SELECT x::text INTO a FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rs WHERE cust BETWEEN 10 AND 400) x;
+	SET LOCAL enable_indexscan = off; SET LOCAL enable_seqscan = on;
+	SELECT x::text INTO b FROM (SELECT count(*), sum(amount), count(DISTINCT cust) FROM rs WHERE cust BETWEEN 10 AND 400) x;
+	RETURN a = b;
+END $$;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge_partition_kb = 1024;
+CREATE TABLE rs (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO rs SELECT i, (i::bigint * 7919) % 600, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) FROM generate_series(1, 200000) i;
+CREATE INDEX rs_idx ON rs USING sift_col (id, cust, d, amount, pad) WITH (key_cut = 'cust', dict_lookup = off, dead_rewrite_pct = 100);
+UPDATE rs SET amount = amount + 1 WHERE id % 5 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) rs;
+SELECT sift.col_maintain('rs_idx') AS partitioned;
+SELECT count(*) >= 5 AS partitions, min(bytes) > 128 * 1024 * 2 AS over_twice_the_size FROM sift.col_segments('rs_idx') WHERE kind = 'immutable' AND rows > 20000;
+SET sift.col_auto_merge_partition_kb = 128;
+UPDATE rs SET amount = amount + 1 WHERE id % 5 = 2;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) rs;
+SELECT sift._test_dir_updates() AS d0 \gset
+SELECT sift.col_maintain('rs_idx') AS rolled;
+SELECT sift._test_dir_updates() - :d0 >= 5 AS a_step_for_each_partition;
+SELECT bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('rs_idx') WHERE kind = 'immutable';
+SELECT sift.col_verify('rs_idx', true);
+SELECT rs_same();
+DROP TABLE rs;
+DROP FUNCTION rs_same();
+DROP EXTENSION pg_sift_test;
 
 ALTER DATABASE :"db" RESET sift.col_auto_merge;
 ALTER DATABASE :"db" RESET sift.col_auto_merge_partition_kb;

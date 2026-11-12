@@ -35,15 +35,34 @@ overlay_in_window(const RewriteView *v, int i, const SiftColWindow *w)
 	return (!w->has_lo || v->khi[i] >= w->lo) && (!w->has_hi || v->klo[i] < w->hi);
 }
 
+/* The live bytes the step takes of a segment into its window: all of a partition, of an overlay the share of its key range the window holds (its rows spread evenly over it) */
+static uint64
+window_bytes(const RewriteView *v, int i, const SiftColWindow *w, bool overlay)
+{
+	double		live = v->imm[i].ndocs > 0 ? (double) v->imm[i].bytes * sift_cseg_live_rows(v->seg[i]) / v->imm[i].ndocs : 0,
+				lo = (double) v->klo[i],
+				hi = (double) v->khi[i] + 1;
+
+	if (!overlay || lo >= hi)
+		return (uint64) live;
+	lo = w->has_lo ? Max(lo, (double) w->lo) : lo;
+	hi = w->has_hi ? Min(hi, (double) w->hi) : hi;
+	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));
+}
+
 /*
- * The partitions of the index, in the order of their keys (order), and the overlays (over): the segments of a partition's size that have a key and meet no narrower one of them
- * in a key are partitions, as a rewrite cuts them (the windows of the key tile), and the others are overlays, as large as a partition or not: an overlay merge that grew to a
- * partition's size holds rows of the whole key range, and the pieces of a step lie between partitions or in a key. The segments meet at a boundary key and no more.
+ * The partitions of the index, in the order of their keys (order), and the overlays (over): the segments of a partition's size that have a key, of the set that meets in no key
+ * and holds the most bytes, are partitions, as a rewrite cuts them (the windows of the key tile), and the others are overlays, as large as a partition or not: an overlay merge that
+ * grew to a partition's size holds rows of the whole key range and is lighter than the partitions it meets, and the pieces of the tier merges over one base partition are
+ * lighter than it, which they must not turn into an overlay. The segments meet at a boundary key and no more.
  */
 static int
 pick_partitions(const RewriteView *v, bool *over, int *order)
 {
-	int			cand[SIFT_MAX_SEGMENTS];
+	int			cand[SIFT_MAX_SEGMENTS],
+				before[SIFT_MAX_SEGMENTS];
+	uint64		best[SIFT_MAX_SEGMENTS + 1] = {0};
+	bool		used[SIFT_MAX_SEGMENTS];
 	int			nc = 0,
 				np = 0;
 
@@ -54,24 +73,38 @@ pick_partitions(const RewriteView *v, bool *over, int *order)
 		over[i] = true;
 		if (!maint_is_partition(&v->imm[i]) || v->klo[i] > v->khi[i] || v->khi[i] == PG_INT64_MAX)
 			continue;
-		for (k = nc++; k > 0 && v->khi[cand[k - 1]] - v->klo[cand[k - 1]] > v->khi[i] - v->klo[i]; k--)
+		for (k = nc++; k > 0 && v->khi[cand[k - 1]] > v->khi[i]; k--)
 			cand[k] = cand[k - 1];
 		cand[k] = i;
 	}
+	/* by the end of the key: the heaviest set of the first c candidates either leaves the c-th out, or takes it with the heaviest of the ones that end where it starts */
 	for (int c = 0; c < nc; c++)
 	{
-		int			i = cand[c],
-					k;
+		int			p = 0;
 
-		for (k = 0; k < np; k++)
-			if (v->klo[i] < v->khi[order[k]] && v->klo[order[k]] < v->khi[i])
-				break;
-		if (k < np)
-			continue;
-		over[i] = false;
-		for (k = np++; k > 0 && v->klo[order[k - 1]] > v->klo[i]; k--)
-			order[k] = order[k - 1];
-		order[k] = i;
+		while (p < c && v->khi[cand[p]] <= v->klo[cand[c]])
+			p++;
+		before[c] = p;
+		used[c] = best[p] + v->imm[cand[c]].bytes > best[c];
+		best[c + 1] = used[c] ? best[p] + v->imm[cand[c]].bytes : best[c];
+	}
+	for (int c = nc; c > 0;)
+	{
+		if (!used[c - 1])
+			c--;
+		else
+		{
+			over[cand[c - 1]] = false;
+			order[np++] = cand[c - 1];
+			c = before[c - 1];
+		}
+	}
+	for (int k = 0; k < np / 2; k++)
+	{
+		int			t = order[k];
+
+		order[k] = order[np - 1 - k];
+		order[np - 1 - k] = t;
 	}
 	return np;
 }
@@ -85,26 +118,14 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 	int			order[SIFT_MAX_SEGMENTS];
 	int			np = 0,
 				at = 0;
-	uint64		pass = maint_pass_gen,
-				live_bytes = 0,
-				parts;
+	uint64		pass = maint_pass_gen;
 	bool		all = maint_pass_gen != 0 && pass_all;
 
 	for (int i = 0; i < v->n; i++)
 		pass = maint_pass_gen == 0 ? Max(pass, v->imm[i].gen) : pass;
+	/* one partition is the whole index: the rewrite of every segment, by the workers */
 	np = pick_partitions(v, rs->over, order);
 	if (np < 2)
-		return ROLL_NO;
-	/* a partition much larger than the size of one is what the rewrite of the index cuts, not a step */
-	for (int i = 0; i < v->n; i++)
-	{
-		if (!rs->over[i] && v->imm[i].bytes > (uint64) maint_part_kb * 2048)
-			return ROLL_NO;
-		live_bytes += v->imm[i].ndocs > 0 ? (uint64) (v->imm[i].bytes * ((double) sift_cseg_live_rows(v->seg[i]) / v->imm[i].ndocs)) : 0;
-	}
-	/* a pass begins on the partitions the rewrite of the index would cut (no more of them, and not under half as many), else that rewrite is what cuts them again; the steps of it make the partitions it left under the size by the dead rows they drop */
-	parts = maint_part_count(live_bytes, (uint64) maint_part_kb * 1024, true);
-	if (maint_pass_gen == 0 && ((uint64) np > parts || (uint64) np * 2 < parts))
 		return ROLL_NO;
 	for (int i = 0; i < v->n && maint_pass_gen == 0; i++)
 		all |= rs->over[i] && ((v->imm[i].flags & SIFT_SEG_DIRTY) || v->stale[i]);
@@ -121,7 +142,12 @@ roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 	rs->win.bounded = rs->bounded;
 	rs->win.unit_base = v->imm[order[at]].sb_lo;
 	for (int i = 0; i < v->n; i++)
+	{
 		take[i] |= rs->over[i] && overlay_in_window(v, i, &rs->win);
+		rs->bytes += take[i] ? window_bytes(v, i, &rs->win, rs->over[i]) : 0;
+	}
+	/* a partition larger than the size of one (a build's, or the one the step before it left) is written as the pieces that size makes of what the window holds */
+	rs->parts = (rs->bytes + (uint64) maint_part_kb * 1024 - 1) / ((uint64) maint_part_kb * 1024);
 	/* what is above the window is cut at once into as many pieces as the partitions ahead make up to ROLL_PIECES, so that a later step takes the piece of its window and not all that is left */
 	if (rs->win.has_hi)
 	{
@@ -146,24 +172,27 @@ maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs)
 }
 
 
-/* The rows of a window of the key range of the inputs, written as one segment that is not put in the directory (out->ndocs 0: no row) */
-static bool
-roll_write(Relation index, const SiftSegEntry *in, int n, const SiftColWindow *win, SiftSegEntry *out)
+/* The rows of a window of the key range of the inputs, written as parts segments (bytes: what the window holds, 0 for one segment of whatever it holds) that are not put in the directory; their number */
+static int
+roll_write(Relation index, const SiftSegEntry *in, int n, const SiftColWindow *win, uint64 bytes, int parts, SiftSegEntry *out)
 {
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	int			nout = 0;
 
-	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, 1, &(MergeSlice) {.nslices = 1,.out = out,.win = win});
-	return out->ndocs > 0;
+	maint_merge_segments(index, r->schema, r->policy, &r->pagg, in, n, sift_col_format_minor, NULL, NULL, 0, parts,
+						 &(MergeSlice) {.nslices = 1,.out = out,.win = win,.bytes = bytes,.nout = &nout});
+	return nout;
 }
 
 /*
- * One step of the rolling rewrite: the partition and the overlays are merged into the partition's window of the key range, and what the overlays hold outside the window
- * is written as overlays again (below it, above it), all in one switch of the directory.
+ * One step of the rolling rewrite: the partition and the overlays are merged into the partition's window of the key range, as one segment or, when the window holds more than
+ * the size of one, as the segments that size makes of it (the pieces a build's partitions are cut into), and what the overlays hold outside the window is written as overlays
+ * again (below it, above it), all in one switch of the directory. room: the segments the directory has place for.
  */
 void
-maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs)
+maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room)
 {
-	SiftSegEntry out[ROLL_PIECES + 3],
+	SiftSegEntry out[MAX_PARTS + ROLL_PIECES + 2],
 				over[SIFT_MAX_SEGMENTS];
 	bool		every[SIFT_MAX_SEGMENTS];
 	TimestampTz start = GetCurrentTimestamp();
@@ -180,13 +209,13 @@ maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep 
 	{
 		rest.has_hi = true;
 		rest.hi = rs->win.lo;
-		nout += roll_write(index, over, nover, &rest, &out[nout]);
+		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
-	nout += roll_write(index, sel, n, &rs->win, &out[nout]);
+	nout += roll_write(index, sel, n, &rs->win, rs->bytes, Max(1, Min(Min(rs->parts, MAX_PARTS), room - ROLL_PIECES - 2)), &out[nout]);
 	for (int g = 0; rs->win.has_hi && nover > 0 && g <= rs->nhigh; g++)
 	{
 		rest = (SiftColWindow) {.has_lo = true,.lo = g == 0 ? rs->win.hi : rs->high[g - 1],.has_hi = g < rs->nhigh,.hi = g < rs->nhigh ? rs->high[g] : 0,.bounded = every};
-		nout += roll_write(index, over, nover, &rest, &out[nout]);
+		nout += roll_write(index, over, nover, &rest, 0, 1, &out[nout]);
 	}
 	sift_col_merge_switch(index, sel, n, out, nout, start);
 }

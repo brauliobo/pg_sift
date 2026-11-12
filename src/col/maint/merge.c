@@ -628,8 +628,19 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	 * Equal partitions (a short last one would be an overlay of every later rewrite): as many as the live bytes of the inputs make of part_bytes, cut by
 	 * the bytes of units written, which are the part of a segment that grows with its rows (the dictionaries and the like grow with them)
 	 */
+	if (slice && slice->win && slice->bytes > 0 && slice->bytes < live_bytes)
+	{
+		/* the inputs hold more than the window takes of them: the shares of the pieces are those of what it takes */
+		double		share = (double) slice->bytes / live_bytes;
+
+		live_units = (uint64) (live_units * share);
+		live_rows = Max((uint64) (live_rows * share), 1);
+		live_bytes = slice->bytes;
+	}
 	if (part_bytes > 0)
 		o.parts = Max(1, Min(Min(maint_part_count(live_bytes, part_bytes, key_cut), MAX_PARTS), max_parts));
+	else if (slice && slice->win)
+		o.parts = max_parts;
 	o.live_rows = live_rows;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
 	if (sift_col_is_index(index))
@@ -637,11 +648,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		rewrite.lean = maint_is_overlay(live_rows, largest);
 		maint_set_unordered(&rewrite, schema, live_rows + overlay_rows, o.index_rows);
 	}
-	o.maxout = slice ? 1 : Min(MAX_PARTS, Max(max_parts, n));
+	o.maxout = slice ? (slice->win ? max_parts : 1) : Min(MAX_PARTS, Max(max_parts, n));
 	o.parts = Max(o.parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) o.maxout));
 	/* the writer of a merge may reside in maintenance_work_mem (the partitions are sized to it: maint_part_kb_for), and in what the partitions the directory allows need besides */
 	o.budget = sift_colw_budget((Size) maintenance_work_mem * 1024, SIFT_COLW_MERGE_PCT, SIFT_COLW_MERGE_BASE);
-	if (part_bytes > 0)
+	if (part_bytes > 0 || o.parts > 1)
 		o.budget = Max(o.budget, (Size) ((double) live_rows / o.parts * sift_colw_row_memory(pagg, schema->ncols)));
 	o.units_left = live_units;
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
@@ -739,7 +750,11 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		out_finish(&o);
 	if (slice)
 	{
-		*slice->out = o.nneu > 0 ? o.neu[0] : (SiftSegEntry) {0};
+		memcpy(slice->out, o.neu, o.nneu * sizeof(SiftSegEntry));
+		if (o.nneu == 0)
+			*slice->out = (SiftSegEntry) {0};
+		if (slice->nout)
+			*slice->nout = o.nneu;
 #ifdef SIFT_TESTING
 		if (sift_test_col_merge_panic && slice->i == 0)
 			elog(PANIC, "sift test: a slice of the merge of a build stops before the segments replace the old ones");
@@ -948,7 +963,7 @@ maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate,
 		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
 		if (rs.on)
-			maint_roll_merge(index, sel, n, &rs);
+			maint_roll_merge(index, sel, n, &rs, Max(room, 1));
 		else if (!merge_by_workers(index, sel, n, cut, Max(room, 1)))
 			maint_merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 						   cut ? (uint64) maint_part_kb * 1024 : 0, Max(room, 1), NULL);
