@@ -18,10 +18,11 @@ CREATE INDEX facts_dim_a ON facts (dim_a_id);
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount);
 VACUUM (FREEZE, ANALYZE) facts, scope_pairs;
 
+-- the lookup join of a semi join over a unique key is an inner join from PostgreSQL 19: the label's (semi) is not part of what the line proves
 CREATE FUNCTION plan_joins(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'none'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		IF l ~ 'Lookup Joins:' THEN r := trim(l); END IF;
+		IF l ~ 'Lookup Joins:' THEN r := trim(replace(l, ' (semi)', '')); END IF;
 	END LOOP;
 	RETURN r;
 END $$;
