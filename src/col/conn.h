@@ -81,7 +81,7 @@ extern void sift_conn_keys_free(SiftConnKeys *k);
  * on the table: CREATE INDEX and REINDEX of the child do). Idempotent; the parent index must track a key column (sift_col_row_key_on) and be complete. Returns the
  * lineage.
  */
-extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index);
+extern uint64 sift_conn_enable(Relation parent_heap, Relation parent_index, bool read_after);
 
 /*
  * A child index is connected to the parent index: the dependency of the child on the parent (so that the parent index and its table cannot be dropped under it without CASCADE,

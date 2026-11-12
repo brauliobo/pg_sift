@@ -81,9 +81,9 @@ CREATE FUNCTION verdict() RETURNS TABLE (all_same boolean, stored int, reasons t
 	SELECT bool_and(same), count(*) FILTER (WHERE stored)::int, coalesce(string_agg(DISTINCT why, ', '), '-') FROM phase()
 $$;
 
--- built under a journal that did not exist when the table was read: the segments carry no stamp (the next rewrite fills them), and the read says so
+-- the build makes the journal that did not exist before it reads the table: the segments carry its stamp and the reads are the units
 SELECT * FROM verdict();
-SELECT bool_and(lineage = 0) AS unstamped FROM sift._test_col_conn_stamps('events_col');
+SELECT bool_and(lineage = (SELECT lineage FROM sift._test_conn_gen('tenant_scope_journal'))) AS stamped FROM sift._test_col_conn_stamps('events_col');
 -- a rebuild under the journal stamps them
 REINDEX INDEX events_col;
 SELECT bool_and(lineage = (SELECT lineage FROM sift._test_conn_gen('tenant_scope_journal'))) AS stamped_by_the_journal FROM sift._test_col_conn_stamps('events_col');

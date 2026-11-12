@@ -749,7 +749,7 @@ sift_scope_alter(Relation index)
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 	sift_scope_resolve(heap, index, true);
-	sift_scope_start(heap, index);
+	sift_scope_start(heap, index, false);
 	table_close(heap, NoLock);
 }
 

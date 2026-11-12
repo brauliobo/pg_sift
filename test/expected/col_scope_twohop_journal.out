@@ -95,9 +95,9 @@ SELECT 'grants_by_member' AS missing, 'built' AS step, * FROM journals() j, prob
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'grants_by_member' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-     missing      |         step          | vouching | why | same | units |   why    
-------------------+-----------------------+----------+-----+------+-------+----------
- grants_by_member | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+     missing      |         step          | vouching | why | same | units | why 
+------------------+-----------------------+----------+-----+------+-------+-----
+ grants_by_member | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -122,9 +122,9 @@ SELECT 'grants_by_group' AS missing, 'built' AS step, * FROM journals() j, probe
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'grants_by_group' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-     missing     |         step          | vouching | why | same | units |   why    
------------------+-----------------------+----------+-----+------+-------+----------
- grants_by_group | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+     missing     |         step          | vouching | why | same | units | why 
+-----------------+-----------------------+----------+-----+------+-------+-----
+ grants_by_group | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col
@@ -149,9 +149,9 @@ SELECT 'memberships_by_member' AS missing, 'built' AS step, * FROM journals() j,
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
 REINDEX INDEX facts_col
 SELECT 'memberships_by_member' AS missing, 'journal made, REINDEX' AS step, * FROM journals() j, probe() p
-        missing        |         step          | vouching | why | same | units |   why    
------------------------+-----------------------+----------+-----+------+-------+----------
- memberships_by_member | journal made, REINDEX |        3 | ok  | t    | f     | unfilled
+        missing        |         step          | vouching | why | same | units | why 
+-----------------------+-----------------------+----------+-----+------+-------+-----
+ memberships_by_member | journal made, REINDEX |        3 | ok  | t    | t     | 
 (1 row)
 
 REINDEX INDEX facts_col

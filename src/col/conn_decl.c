@@ -318,7 +318,7 @@ connect_each(Relation heap, Relation index, SiftConnSpecs *specs, bool start)
 			Relation	pindex = index_open(pidx, ShareUpdateExclusiveLock);
 
 			if (start)
-				(void) sift_conn_enable(parent, pindex);
+				(void) sift_conn_enable(parent, pindex, false);
 			else
 				sift_conn_depend(index, pindex);
 			index_close(pindex, NoLock);

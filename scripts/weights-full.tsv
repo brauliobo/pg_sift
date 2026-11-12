@@ -332,3 +332,4 @@ tap-shell-col_scope_fuzz	300	300
 tap-shell-col_scope_crash	60	60
 tap-shell-col_scope_replica	50	50
 tap-shell-col_scope_concurrent_build	30	30
+tap-shell-col_scope_first_stamp	30	30

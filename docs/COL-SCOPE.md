@@ -21,8 +21,9 @@ The time cut of the scope units is the first `date`, `timestamp` or `timestamptz
 A scope may also be the union of this relation and a relation joined through a second one ([two paths](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)).
 
 **The journal index.** The relation of pairs must have a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
-outside its predicate, so it does not qualify). Without one `CREATE INDEX` is refused with a hint. The first scope index declared on a relation starts its journal at the end of its build, so its segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the
-scope index (or the rewrite the maintenance makes) takes it; the indexes built after it are stamped by their build.
+outside its predicate, so it does not qualify). Without one `CREATE INDEX` is refused with a hint. The first scope index declared on a relation starts its journal before its build reads anything and stamps its segments with it: the writers of the relation of pairs wait
+for the statement, as those of the table do for a `CREATE INDEX`. A `CREATE INDEX CONCURRENTLY` starts it at the end of its build instead, so its segments carry no stamp and the reads say
+`unfilled` until a `REINDEX` of the scope index (or the rewrite the maintenance makes) takes it.
 
 **`cols(..)`.** `scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(created_at, kind, value_num)'`: the scope segments of that scope keep only the listed columns of the index,
 the member key, the column the units are cut by and the derived key; every other leaf has no chunk in them. A statement that reads a column outside the list reads the entity rows instead
@@ -141,7 +142,7 @@ journal index, a `sift_col` index with `track_changes = 'ctid'` whose first colu
 recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths does
 not require them: a scope with any of the three missing, or one a pair can be inserted outside of (a partial journal), vouches for nothing, the plan says `Scope Fallback: no journal`, and the read is the
 entity rows of the members the three relations list for the keys. The scope index finds the journals when it is created or rebuilt and depends on them: a journal made later is found by the next
-`REINDEX` of the scope index, which starts it (the reads say `unfilled` until the `REINDEX` after that stamps the segments). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
+`REINDEX` of the scope index, which starts it before it reads and stamps the segments with it (the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
 `other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
 
 **The members that changed.** A segment of a scope of two paths holds a stamp for each of the three journals. The members whose pairs changed since the stamps are the union of the members of J1, the members of J3

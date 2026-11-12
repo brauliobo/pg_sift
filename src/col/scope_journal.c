@@ -245,11 +245,11 @@ sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapsh
 }
 
 /*
- * The journals of the scopes of the index, made when the build has read the table, as those of the parents of a connected child are (sift_conn_start): the writers of the scope relations
- * are held out from here to the end of the statement, and an index that has one already is not locked at all.
+ * The journals of the scopes of the index, as those of the parents of a connected child are (sift_conn_start): the writers of the scope relations are held out from here to the end of the
+ * statement, and an index that has one already is not locked at all.
  */
 void
-sift_scope_start(Relation heap, Relation index)
+sift_scope_start(Relation heap, Relation index, bool read_after)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	List	   *seen = NIL;
@@ -262,7 +262,7 @@ sift_scope_start(Relation heap, Relation index)
 		for (int j = 0; ok && j < J.n; j++)
 		{
 			if (!list_member_oid(seen, RelationGetRelid(J.jidx[j])))
-				(void) sift_conn_enable(J.rel[j], J.jidx[j]);
+				(void) sift_conn_enable(J.rel[j], J.jidx[j], read_after);
 			seen = lappend_oid(seen, RelationGetRelid(J.jidx[j]));
 		}
 		journals_close(&J);

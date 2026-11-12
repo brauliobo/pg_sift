@@ -117,16 +117,16 @@ $$;
 CREATE FUNCTION verdict() RETURNS TABLE (all_same boolean, stored int, reasons text) LANGUAGE sql AS $$
 	SELECT bool_and(same), count(*) FILTER (WHERE stored)::int, coalesce(string_agg(DISTINCT why, ', '), '-') FROM phase()
 $$;
--- built under a journal that did not exist when the table was read: the segments carry no stamp (the next rewrite fills them), and the read says so
+-- the build makes the journal that did not exist before it reads the table: the segments carry its stamp and the reads are the units
 SELECT * FROM verdict();
- all_same | stored | reasons  
-----------+--------+----------
- t        |      0 | unfilled
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
-SELECT bool_and(lineage = 0) AS unstamped FROM sift._test_col_conn_stamps('events_col');
- unstamped 
------------
+SELECT bool_and(lineage = (SELECT lineage FROM sift._test_conn_gen('tenant_scope_journal'))) AS stamped FROM sift._test_col_conn_stamps('events_col');
+ stamped 
+---------
  t
 (1 row)
 

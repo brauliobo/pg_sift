@@ -486,8 +486,7 @@ SELECT format, count(*) FROM sift.col_segments('facts_col') WHERE kind = 'immuta
 ```
 
 and `EXPLAIN` of a read of the scope has `Scope Units` and no `Scope Fallback` once the journals vouch. A scope whose reads say `Scope Fallback: no journal` is missing one of the three journal indexes
-(or has one that a row can be inserted outside of: a partial journal); `unfilled` is the `REINDEX` of the scope index after the journal that was made later (the first one finds it, the second stamps the
-segments); `other lineage` is a journal that was rebuilt (`REINDEX` of the scope index).
+(or has one that a row can be inserted outside of: a partial journal); `unfilled` is the `REINDEX` of the scope index after the journal that was made later (or the rewrite the maintenance makes); `other lineage` is a journal that was rebuilt (`REINDEX` of the scope index).
 
 **Monitor.** `sift.col_maintenance_due('facts_col', false)` says `stale connection` when so many members of the pairs or of the groups changed that a rewrite is cheaper than the patches
 (`sift.col_connect_refresh_pct`, the groups counted by their members) or when a thousand reads of the patches cost more than the rewrite; `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that

@@ -141,9 +141,12 @@ keep_all(SiftTomb *e, void *arg)
 	return true;
 }
 
-/* The journal of the index, made if it has none; the caller has the writers out or the index hidden from them. Returns the lineage. */
+/*
+ * The journal of the index, made if it has none; the caller has the writers out or the index hidden from them. Returns the lineage. trim: the first transaction id the records are complete from
+ * (invalid: the next one).
+ */
 static uint64
-journal_make(Relation heap, Relation index)
+journal_make(Relation heap, Relation index, TransactionId trim)
 {
 	SiftTombLog *log = sift_col_log(index);
 	SiftTombKeys k = {0};
@@ -167,7 +170,7 @@ journal_make(Relation heap, Relation index)
 		SIFT_INVARIANT(ok, "sift: could not generate a journal id");
 	} while (k.lineage == 0);
 	/* the records start here: a stamp of a snapshot older than the journal cannot be vouched (a change between the snapshot and now is in no record); the writers are out, so no transaction below the next id writes the table */
-	k.trim = ReadNextTransactionId();
+	k.trim = TransactionIdIsValid(trim) ? trim : ReadNextTransactionId();
 	sift_tomb_set_keys(index, log, &k);
 	/* a scope relation's journal holds KEYADD records: an older library refuses it */
 	sift_tomb_set_format(index, sift_col_track_ctid(index) ? SIFT_COL_FORMAT_SCOPE : SIFT_COL_FORMAT_KEYJOURNAL);
@@ -191,8 +194,9 @@ check_key(Relation heap, Relation index)
 						errhint("The key of the parent index is an int2, int4 or int8 column.")));
 }
 
+/* read_after: the caller reads the table under snapshots it takes after this call (a build that stamps what it reads: the first stamp is of the journal it makes) */
 uint64
-sift_conn_enable(Relation heap, Relation index)
+sift_conn_enable(Relation heap, Relation index, bool read_after)
 {
 	SiftConnGen gen;
 
@@ -205,7 +209,11 @@ sift_conn_enable(Relation heap, Relation index)
 	 * complete yet (a parallel restore connects before the primary key of the table exists): nothing is vouched while it is not, and the trim of the journal moves when it becomes so.
 	 */
 	LockRelationOid(RelationGetRelid(heap), ShareLock);
-	return journal_make(heap, index);
+	/*
+	 * A snapshot taken now sees every write before the lock, and the transactions that write after it have ids from its xmin on (the older ones are over): the journal is complete from that id for
+	 * the stamp of a read under such a snapshot, which the first id after the lock (its own transaction's is below) would refuse.
+	 */
+	return journal_make(heap, index, read_after ? GetLatestSnapshot()->xmin : InvalidTransactionId);
 }
 
 List *
@@ -248,7 +256,7 @@ sift_conn_depend(Relation child_index, Relation parent_index)
 void
 sift_conn_connect(Relation child_index, Relation parent_heap, Relation parent_index)
 {
-	(void) sift_conn_enable(parent_heap, parent_index);
+	(void) sift_conn_enable(parent_heap, parent_index, false);
 	sift_conn_depend(child_index, parent_index);
 }
 
@@ -263,7 +271,7 @@ sift_conn_build(Relation heap, Relation index)
 	if (wanted && sift_col_track_on(index))
 	{
 		check_key(heap, index);
-		(void) journal_make(heap, index);
+		(void) journal_make(heap, index, InvalidTransactionId);
 	}
 }
 

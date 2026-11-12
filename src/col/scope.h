@@ -116,8 +116,11 @@ extern Oid	sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumbe
 extern bool sift_scope_has_journal(Relation index, int scope);
 /* Does the index declare a scope of two paths (column format minor 49) */
 extern bool sift_scope_two_paths(Relation index);
-/* The journals of the scopes of the index, made when its build has read the table (the writers of the scope relation are held out to the end of the statement) */
-extern void sift_scope_start(Relation heap, Relation index);
+/*
+ * The journals of the scopes of the index, made with the writers of the scope relations held out to the end of the statement. read_after: the build reads the relations under snapshots it takes
+ * after this call, so that it stamps the segments with the journal it makes here (else the first scope index of a relation says "unfilled" until a REINDEX)
+ */
+extern void sift_scope_start(Relation heap, Relation index, bool read_after);
 /* The stamps of the journals of the scope at snap (the journals of the scope, SIFT_SCOPE_JOURNALS at most): fill, promotion and merge take them before they read the relations (lineage 0 and the reason when a journal cannot vouch) */
 extern SiftConnWhy sift_scope_take(Relation index, int scope, Snapshot snap, SiftConnStamp *stamp);
 /* May a derivation stamped so be read by snap: every journal vouches for its stamp */

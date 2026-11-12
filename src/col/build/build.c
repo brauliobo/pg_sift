@@ -7,6 +7,7 @@
 #include "commands/progress.h"
 #include "pgstat.h"
 #include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
 #include "utils/varlena.h"
 #ifdef SIFT_TESTING
 #include "bm25/build.h"
@@ -97,7 +98,8 @@ IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
-	bool		chosen;
+	bool		chosen,
+				scoped;
 
 	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
 	sift_cwbuf_discard(RelationGetRelid(index));
@@ -141,10 +143,19 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_track_check(heap, index);
 	sift_col_auto_point(heap, index);
 	sift_vstore_auto(heap, index);
+	/* the first scope index of a relation makes its journal before it reads anything and stamps its segments with it; a concurrent build does not hold the writers out for its whole length */
+	scoped = !info->ii_Concurrent && sift_scope_specs(index) != NULL;
+	if (scoped)
+	{
+		sift_scope_start(heap, index, true);
+		PushActiveSnapshot(GetLatestSnapshot());
+	}
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
+	if (scoped)
+		PopActiveSnapshot();
 	if (sift_col_track_on(index))
 	{
 		sift_col_log_create(index);
@@ -154,7 +165,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	else
 		sift_col_track_reconcile(index);
 	sift_conn_start(heap, index);
-	sift_scope_start(heap, index);
+	sift_scope_start(heap, index, false);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

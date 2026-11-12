@@ -100,12 +100,12 @@ SELECT g.gen IN (SELECT gen FROM sift._test_col_scope_entries('events_col')) AS 
  t             | f
 (2 rows)
 
--- the scope stamps are written with every segment (a scope relation has no journal in this round: lineage 0, the horizon of the snapshot the pairs were read under)
+-- the scope stamps are written with every segment (the journal of the scope relation, and the horizon of the snapshot the pairs were read under)
 SELECT count(*) > 0 AS stamped, count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
 	FROM sift._test_col_conn_stamps('events_col');
  stamped | vouched | without_horizon 
 ---------+---------+-----------------
- t       |       0 |               0
+ t       |       2 |               0
 (1 row)
 
 -- a promotion writes the scope segments of its rows beside its entity segment, and the merge of everything joins them: the entries stay those of the join (col_scope_maint has the rest)
