@@ -197,6 +197,7 @@ TESTING_REGRESS += col_gorder_textperm
 TESTING_REGRESS += col_gorder_tiebreak
 TESTING_REGRESS += col_gorder_track_scatter
 TESTING_REGRESS += col_heapfree_pending
+TESTING_REGRESS += col_heapfree_stamp_words
 TESTING_REGRESS += col_heapfree_xmin
 TESTING_REGRESS += col_holes_fuzz
 TESTING_REGRESS += col_index_%

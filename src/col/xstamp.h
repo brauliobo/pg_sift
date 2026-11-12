@@ -77,6 +77,9 @@ typedef struct SiftXWait
 /* Notes a transaction that had not finished: false (and no stamp) when it is one too many */
 extern bool sift_xwait_note(SiftXWait *w, TransactionId x);
 
+/* The stamp of rows whose latest inserter is top and of which the transactions xid[n] had not finished (none when top is invalid, or they are more than SIFT_XSTAMP_OPEN_MAX xids apart); no commit log is asked */
+extern SiftXStamp sift_xstamp_pack(TransactionId top, const TransactionId *xid, int n);
+
 /* The stamp of the rows now: next one past top, the transactions of w that have finished dropped (all of them committed, or none), those that have not within SIFT_XSTAMP_OPEN_MAX xids of each other */
 extern SiftXStamp sift_xstamp_make(SiftXWait *w);
 

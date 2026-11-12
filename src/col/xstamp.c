@@ -32,15 +32,33 @@ sift_xwait_note(SiftXWait *w, TransactionId x)
 }
 
 SiftXStamp
-sift_xstamp_make(SiftXWait *w)
+sift_xstamp_pack(TransactionId top, const TransactionId *xid, int n)
 {
-	static const SiftXStamp none = {InvalidTransactionId, InvalidTransactionId, 0};
-	SiftXStamp	s = {.base = InvalidTransactionId};
-	TransactionId top = w->top;
-	int			kept = 0;
+	SiftXStamp	s = {InvalidTransactionId, InvalidTransactionId, 0};
 
 	if (!TransactionIdIsNormal(top))
-		return none;
+		return s;
+	for (int i = 0; i < n; i++)
+		if (!TransactionIdIsValid(s.base) || TransactionIdFollows(xid[i], s.base))
+			s.base = xid[i];
+	for (int i = 0; i < n; i++)
+	{
+		int			d = xid_gap(s.base, xid[i]);
+
+		if (d < 0)
+			return (SiftXStamp) {InvalidTransactionId, InvalidTransactionId, 0};
+		s.open |= UINT64CONST(1) << d;
+	}
+	TransactionIdAdvance(top);
+	s.next = top;
+	return s;
+}
+
+SiftXStamp
+sift_xstamp_make(SiftXWait *w)
+{
+	int			kept = 0;
+
 	/* the transactions that finished since their records were read leave no bit: a promotion takes long enough for most of them to */
 	for (int i = 0; i < w->n; i++)
 		switch (sift_xid_state(w->xid[i]))
@@ -51,23 +69,10 @@ sift_xstamp_make(SiftXWait *w)
 				w->xid[kept++] = w->xid[i];
 				break;
 			default:
-				return none;
+				return sift_xstamp_pack(InvalidTransactionId, NULL, 0);
 		}
 	w->n = kept;
-	for (int i = 0; i < kept; i++)
-		if (!TransactionIdIsValid(s.base) || TransactionIdFollows(w->xid[i], s.base))
-			s.base = w->xid[i];
-	for (int i = 0; i < kept; i++)
-	{
-		int			d = xid_gap(s.base, w->xid[i]);
-
-		if (d < 0)
-			return none;
-		s.open |= UINT64CONST(1) << d;
-	}
-	TransactionIdAdvance(top);
-	s.next = top;
-	return s;
+	return sift_xstamp_pack(w->top, w->xid, kept);
 }
 
 bool
