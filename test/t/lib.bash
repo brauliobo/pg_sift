@@ -36,7 +36,7 @@ cleanup() {
 	local name
 	for name in "${NODES[@]}"; do
 		pg_ctl -D "$(dir "$name")/data" -m immediate stop >/dev/null 2>&1
-		if [[ $NFAIL -eq 0 ]]; then rm -rf "$(dir "$name")"; else rm -rf "$(dir "$name")/data"; fi
+		if [[ $NFAIL -eq 0 ]]; then rm -rf "$(dir "$name")"; elif [[ -z ${SIFT_TAP_KEEP:-} ]]; then rm -rf "$(dir "$name")/data"; fi
 	done
 }
 
