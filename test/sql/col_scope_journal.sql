@@ -206,7 +206,8 @@ SELECT * FROM verdict();
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;
 
--- refresh: a few changed members are left to the reads, as many as sift.col_connect_refresh_pct percent of the pairs make the scope segments due for the rewrite ('stale connection')
+-- refresh: the rewrite of the 20,000 rows costs less than a thousand reads that patch even a few changed members, and so do as many as sift.col_connect_refresh_pct percent of the pairs ('stale connection');
+-- a table whose rewrite costs more leaves a few changed members to the reads (col_scope_refresh_price)
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
 DELETE FROM tenant_scope WHERE dim_a_id <= 5;
