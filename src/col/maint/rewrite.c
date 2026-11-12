@@ -245,7 +245,9 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				buffered = 0,
 				over_listed = 0,
 				over_dirty = 0,
-				covered;
+				covered,
+				shared,
+				shared_listed;
 	XLogRecPtr	lsn[SIFT_MAX_SEGMENTS];
 	uint64		sbytes[SIFT_MAX_SEGMENTS];
 	int			nseg,
@@ -310,6 +312,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 			buffered += nrows;
 		}
 	covered = sift_cseg_dir_units(snap);
+	shared = sift_cseg_dir_shared(snap, &shared_listed);
 	MemoryContextDelete(cx);
 	pfree(snap);
 	if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
@@ -322,6 +325,9 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	else if (key_overlap >= 2)
 		why = "key ranges overlap";
 	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
+		why = "fragmented units";
+	/* the peers of a key_cut build (each holds every key) have ranges of different lengths: they list the superblocks they share as many times as they overlap, not as often as the covered ones */
+	else if (maint_after_build && sift_col_key_cut(sift_col_rel(index)) && shared > 1 && (double) shared_listed >= sift_col_auto_merge_fragmentation * shared)
 		why = "fragmented units";
 	else if (overlay_due)
 	{
