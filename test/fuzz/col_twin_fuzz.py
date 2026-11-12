@@ -8,7 +8,7 @@ grouped by an entity) and b-tree twins, and draws steps: batches of INSERTs, DEL
 updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs, merge, REINDEX and ANALYZE.
 Two more sessions hold inserters open across those steps (their own stream of random choices, so the steps of a seed are the same with or without them): a transaction that inserts rows
 (some under a savepoint that is rolled back or released) and stays open for some steps, then commits or rolls back, so that a promotion, a merge, a VACUUM and the reads of the checks
-see rows of transactions in progress, and stamps that wait for them (docs/COL-HEAPFREE.md); SIFT_FUZZ_HOLD=0 leaves them out. SIFT_FUZZ_SET is SQL every session runs first
+see rows of transactions in progress, and stamps that wait for them; SIFT_FUZZ_HOLD=0 leaves them out. SIFT_FUZZ_SET is SQL every session runs first
 (`SET sift.test_hf_ignore_stamp = on;` takes every segment for stamped: a mutant the holders of a seed must catch). After every step a sample of the queries (top-N both ways, OFFSET small and deep,
 ranges with LIMIT, IN lists, group top-N, NULL regions, text keys) must give the same ordered rows through the forced sift plan, the planned one, a forced b-tree plan and a
 forced heap plan, and col_verify must pass. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The

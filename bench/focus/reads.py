@@ -7,7 +7,7 @@
   env: FOCUS_READ_BATCHES (54), FOCUS_READ_FROM (13: the first batch measured), FOCUS_COLD_EVERY (7), FOCUS_HOLD (0: none), FOCUS_FRESH (0: no fresh builds)
 
 FOCUS_HOLD=B is the concurrent-writer arm (run.sh held): at batch B a second session inserts a batch of rows and keeps its transaction open while the write buffer is promoted
-(an inserter in flight at the moment of a promotion, as concurrent writers always have), then commits. The promoted overlay waits for that transaction (docs/COL-HEAPFREE.md); a build that
+(an inserter in flight at the moment of a promotion, as concurrent writers always have), then commits. The promoted overlay waits for that transaction; a build that
 cannot settle it leaves every segment it is merged into without a stamp, and every read checks their rows in the heap. The state of each batch says the share of the index entries in segments
 without a stamp, and the table prints it next to the read cost.
 

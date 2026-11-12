@@ -1,5 +1,5 @@
 /*
- * col/xstamp.h - who inserted the entries of a segment: the xid stamp of a heap sift_col index with track_changes (docs/COL-HEAPFREE.md)
+ * col/xstamp.h - who inserted the entries of a segment: the xid stamp of a heap sift_col index with track_changes
  */
 #ifndef SIFT_COL_XSTAMP_H
 #define SIFT_COL_XSTAMP_H
