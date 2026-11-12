@@ -40,6 +40,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_wbuf_rows);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_batches);
 PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
+PG_FUNCTION_INFO_V1(sift_test_col_mem_encodes);
 extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/seg_int.h, which cannot be included next to maint_int.h */
 uint64		sift_cseg_dict_blocks;
 
@@ -528,6 +529,8 @@ sift_test_col_wbuf_batches(PG_FUNCTION_ARGS)
 					elog(ERROR, "keys of a batch of segment %llu do not ascend", ULL(snap->segs[i].gen));
 				if (sift_block_sb(sift_key_block(b->keys[x])) != b->sb)
 					elog(ERROR, "a key of superblock %u in a batch of superblock %u", sift_block_sb(sift_key_block(b->keys[x])), b->sb);
+				if (sift_cbatch_dead(b, x))
+					continue;
 				sift_cbatch_row(b, x, &row);
 				put3(rsinfo, Int64GetDatum(snap->segs[i].gen), Int64GetDatum(b->sb), Int64GetDatum(check_row(seed, &row, false)));
 			}
@@ -546,6 +549,13 @@ sift_test_col_dir_version(PG_FUNCTION_ARGS)
 
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT64(version);
+}
+
+/* (): the units a scan of this backend made of a batch of the write buffer (a kept batch keeps its unit until it changes) */
+Datum
+sift_test_col_mem_encodes(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64((int64) sift_col_mem_encodes);
 }
 
 /* (): the kept orders of the write buffers: reads that found the order as it was, extended it, made it, and orders dropped, in this backend */

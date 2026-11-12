@@ -18,7 +18,6 @@ PHYS="SELECT (SELECT md5(string_agg(k::text, ',' ORDER BY ctid)) FROM t) = (SELE
 UPK="SELECT round(units_per_key::numeric, 1) FROM sift.table_layouts('t')"
 rows() { sql "$1" "$ROWS" | tail -n 1; }
 sorted() { sql "$1" "$PHYS" | tail -n 1; }
-rewriting() { [[ $(sql a "SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM FULL t' AND state = 'active'" | tail -n 1) -gt 0 ]]; }
 upk() { sql "$1" "$UPK" | tail -n 1; }
 
 build_old "$ref"; oldroot=$OLDROOT
@@ -68,10 +67,11 @@ check "after kill -9 of a finished rewrite the table has its rows, and the one w
 check "... and the row written after it is there" test "$(sql a "SELECT count(*) FROM t WHERE id = -2" | tail -n 1)" == 1
 sql a "DELETE FROM t WHERE id = -2" "INSERT INTO t SELECT 2000000 + i, (hashint8(i * 13) & 2147483647) % 500, now(), 'z' FROM generate_series(1, $((N / 5))) i" "VACUUM t" >/dev/null 2>&1
 base=$(rows a)
-(sql a "VACUUM FULL t" >/dev/null 2>&1 &)
-wait_for rewriting 20 || bail "the rewrite did not start"
-sleep 0.3
-crash a
+# the rewrite is cut where it publishes its segments (the first publication of the statement): a rewrite of this size is over before a poll could find it
+pm=$(head -1 "$(dir a)/data/postmaster.pid")
+SIFT_TMP=$(dir a) leak_expect 1 'terminated by signal 9'
+sql a "SET sift.test_crash_dir = 1" "VACUUM FULL t" >/dev/null 2>&1
+wait_for "! kill -0 $pm 2>/dev/null" 20 || bail "the rewrite was not cut"
 node_start a || bail "node a did not restart after the cut rewrite"
 check "after kill -9 in the rewrite the table has its rows, none twice" test "$(rows a)" == "$base"
 check "... and it takes the rewrite again" test "$(sql a "VACUUM FULL t" >/dev/null 2>&1; sorted a)|$(rows a)" == "t|$base"

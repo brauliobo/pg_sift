@@ -244,6 +244,7 @@ extern void sift_store_extent_map(Relation index, SiftExtentVisit visit, void *a
 
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
+extern bool sift_wal_snapshot_conflict(Relation index, BlockNumber blk, FullTransactionId horizon);
 extern uint64 sift_store_held_blocks(Relation index);
 
 /*

@@ -95,6 +95,37 @@ wbuf_page_dead(Relation index, Page page, Size from, Size upto)
 	return n;
 }
 
+/*
+ * The records of a page that start in bytes from to upto and are flagged dead, as the position of each and its key (pos and key hold up to cap of them, the ones after are counted only):
+ * a set that kept the rows of the page tells the records flagged since by the positions it kept
+ */
+uint32
+wbuf_page_dead_list(Relation index, Page page, Size from, Size upto, uint32 *pos, uint64 *key, uint32 cap)
+{
+	PageCursor	c = {.index = index};
+	uint32		n = 0;
+
+	wbuf_cursor_set(&c, page);
+	c.pos = from;
+	while (c.pos < c.used && c.pos < upto)
+	{
+		Size		size;
+		const SiftColRecHead *h = wbuf_rec_at(&c, &size);
+
+		if ((h->flags & SIFT_COLR_DELETED) != 0)
+		{
+			if (n < cap)
+			{
+				pos[n] = (uint32) c.pos;
+				key[n] = sift_key_from_tid((ItemPointer) &h->tid);
+			}
+			n++;
+		}
+		c.pos += size;
+	}
+	return n;
+}
+
 static void
 join_append(SiftCWbufReader *r, const uint8 *payload, Size len)
 {

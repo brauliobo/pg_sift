@@ -14,11 +14,14 @@
 
 #include <math.h>
 
+#include "common/hashfn.h"
 #include "port/pg_bitutils.h"
 #include "access/table.h"
 #include "utils/lsyscache.h"
 
 #include "core/cmp.h"
+#include "core/store.h"
+#include "col/am.h"
 #include "col/scope.h"
 #include "col/seg.h"
 #include "agg/agg_int.h"
@@ -160,6 +163,61 @@ alt_keys(const SiftAggScope *sc, uint64 entries)
 }
 
 /*
+ * The units and entries a read of the keys has, which only the directory of the index changes (a promotion, a merge, a build: its version) and the keys it reads: a read of the same keys
+ * of the same directory asks the segments no more than once (a statement that runs again, the read of a prepared one, the reads of a workload of a few keys). A directory that is read again
+ * costs the version of a pinned page.
+ */
+#define UNIT_MEMO_N 8
+static struct
+{
+	Oid			index;
+	RelFileNumber file;
+	uint32		version;
+	uint32		keys;
+	uint64		units;
+	uint64		entries;
+} unit_memo[UNIT_MEMO_N];
+static int	unit_memo_next;
+
+static uint32
+unit_memo_keys(const SiftAggScope *sc)
+{
+	uint32		h = hash_bytes((const unsigned char *) sc->key_name, strlen(sc->key_name));
+
+	return sc->all ? ~h : h ^ hash_bytes((const unsigned char *) sc->keys, sc->nkeys * sizeof(int64));
+}
+
+/* the entries and units of the scope units of the keys, from the memo or the segments */
+static void
+unit_entries(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c)
+{
+	const SiftAggScope *sc = ex->spec->scope;
+	Buffer		dirbuf = sift_dir_pin(ex->index);
+	uint32		version = sift_dir_version_peek(dirbuf),
+				keys = unit_memo_keys(sc);
+	MemoryContext cx;
+	SiftSrcSource *units;
+	int			leaf;
+
+	ReleaseBuffer(dirbuf);
+	for (int i = 0; i < UNIT_MEMO_N; i++)
+		if (unit_memo[i].index == RelationGetRelid(ex->index) && unit_memo[i].file == ex->index->rd_locator.relNumber && unit_memo[i].version == version && unit_memo[i].keys == keys)
+		{
+			sift_catalog_memo_hits++;
+			c->units = unit_memo[i].units;
+			c->entries = unit_memo[i].entries;
+			return;
+		}
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
+	leaf = sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name);
+	c->entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c->units);
+	sift_colsrc_close(units);
+	MemoryContextDelete(cx);
+	unit_memo[unit_memo_next++ % UNIT_MEMO_N] = (typeof(unit_memo[0])) {RelationGetRelid(ex->index), ex->index->rd_locator.relNumber, version, keys, c->units, c->entries};
+}
+
+/*
  * The counts of the scope units of the keys (col/scope.h): the units and their entries as the scan prunes them, and the pairs of the relation a read of several keys counted once lists whole. With several keys
  * counted once none of the units is answered from their pre-aggregates.
  */
@@ -167,14 +225,9 @@ static SiftScopeCounts
 unit_counts(AggExec *ex, Snapshot snapshot)
 {
 	const SiftAggScope *sc = ex->spec->scope;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
-	SiftSrcSource *units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	SiftScopeCounts c = {.nkeys = sc->nkeys,.once = sc->once,.entry_instr = sc->entry_instr};
-	int			leaf = sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name);
 
-	c.entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c.units);
-	sift_colsrc_close(units);
-	MemoryContextDelete(cx);
+	unit_entries(ex, snapshot, &c);
 	c.preagg = sc->alt == NULL || (sc->once && sc->nkeys > 1) ? 0.0 : 1.0 - sc->rowwise;
 	pair_counts(ex, &c);
 	if (sc->once && sc->nkeys > 1)

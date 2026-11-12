@@ -180,7 +180,6 @@ heap_vacuumable(Relation heap)
 #define VAC_ROW			340
 #define VAC_PAGE		41000
 #define VAC_WAL_PAGE	6.3e6
-#define MAINT_HALF		0.5
 
 /* unclean: false when every page is all-visible: a VACUUM spares no read anything then (the rows of the write buffer are checked in the heap whatever the map says, the merge spares those) */
 static double
@@ -222,7 +221,8 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	TimestampTz now;
 	Relation	index;
 	bool		small,
-				decoded;
+				decoded,
+				marked;
 
 	/* counted whether or not maintenance may run: this is how a stopped maintenance shows */
 	sift_stat_add(SIFT_STAT_ROWS_DIRTY, dirty_rows);
@@ -238,6 +238,7 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 	owed_vacuum += (double) vetted * PEN_VET_ROW;
 	/* a scan that checked a few rows in the heap saved nothing worth a VACUUM, but if it decoded the write buffer the reads may have paid for its promotion */
 	decoded = sift_cwbuf_decoded_take();
+	marked = sift_col_marks_take();
 	small = !priced && vetted > 0 && vetted < MIN_VETTED;
 	if (small && !decoded)
 		return;
@@ -277,7 +278,7 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted, int64 dirty_rows)
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 		owed_vacuum = 0;
 	}
-	else if (sift_col_promote_tick(index))
+	else if (sift_col_promote_tick(index) || (marked && sift_col_fold_tick(index)))
 	{
 		sift_stat_add(SIFT_STAT_MAINT_ASKS, 1);
 	}

@@ -1,0 +1,314 @@
+-- The marks of the tombstone log (a delete or an update of a row version, by the transaction that did it) are folded into the liveness runs of the index when the reads
+-- have paid for it: the rows whose transaction every snapshot sees as committed are cleared and their tombstones dropped, which a VACUUM does for the rows the heap removed.
+-- A read then takes no page of a unit through the log. What the fold must not touch stays: a transaction in progress or aborted, the chain of a heap-only update, a row that
+-- took the address of a removed one.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
+INSERT INTO events SELECT i, i % 10, i, 'x', 'n' FROM generate_series(1, 20000) i;
+CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
+VACUUM (FREEZE) events;
+-- the answer of the index and of the heap for the rows and for each tenant: equal, and how many rows a read decided by the log
+CREATE FUNCTION chk(what text, q text DEFAULT 'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1', OUT test text, OUT same_as_heap bool, OUT decided_by_log int)
+LANGUAGE plpgsql AS $$
+DECLARE a text; o text; ex text; t text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO a;
+	decided_by_log := 0;
+	FOR ex IN EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF) ' || q LOOP
+		t := substring(ex FROM '\((\d+) of them decided by the tombstone log');
+		IF t IS NOT NULL THEN decided_by_log := decided_by_log + t::int; END IF;
+	END LOOP;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO o;
+	test := what;
+	same_as_heap := a = o;
+END $$;
+-- the log's entries: of an update that moved the row, and of a delete
+CREATE FUNCTION marks(OUT moved int, OUT deleted int) LANGUAGE sql AS
+	$$ SELECT (count(*) FILTER (WHERE kind = 2))::int, (count(*) FILTER (WHERE kind = 1))::int FROM sift._test_col_log_entries('events_c') $$;
+CREATE FUNCTION dead() RETURNS bigint LANGUAGE sql AS $$ SELECT dead_rows FROM sift.col_index_status WHERE index::text = 'events_c' $$;
+SELECT * FROM chk('fresh');
+ test  | same_as_heap | decided_by_log 
+-------+--------------+----------------
+ fresh | t            |              0
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') AS nothing_to_fold;
+ nothing_to_fold 
+-----------------
+               0
+(1 row)
+
+-- updates that move the row: the new versions are in the write buffer, the old ones are marks
+UPDATE events SET counter_a = counter_a + 5 WHERE id % 11 = 0;
+SELECT sift.col_promote('events_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT (marks()).moved AS moved_marks, dead() AS dead_before;
+ moved_marks | dead_before 
+-------------+-------------
+        1818 |           0
+(1 row)
+
+SELECT * FROM chk('moved, marks in the log');
+          test           | same_as_heap | decided_by_log 
+-------------------------+--------------+----------------
+ moved, marks in the log | t            |          21818
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') AS folded_moved, (marks()).moved AS moved_marks_after, dead() AS dead_after;
+ folded_moved | moved_marks_after | dead_after 
+--------------+-------------------+------------
+         1818 |                 0 |       1818
+(1 row)
+
+SELECT * FROM chk('moved, folded');
+     test      | same_as_heap | decided_by_log 
+---------------+--------------+----------------
+ moved, folded | t            |              0
+(1 row)
+
+-- deletes
+DELETE FROM events WHERE id % 13 = 0;
+SELECT (marks()).deleted AS delete_marks, dead() AS dead_before;
+ delete_marks | dead_before 
+--------------+-------------
+         1677 |        1818
+(1 row)
+
+SELECT * FROM chk('deleted, marks in the log');
+           test            | same_as_heap | decided_by_log 
+---------------------------+--------------+----------------
+ deleted, marks in the log | t            |          20000
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') AS folded_deleted, (marks()).deleted AS delete_marks_after, dead() AS dead_after;
+ folded_deleted | delete_marks_after | dead_after 
+----------------+--------------------+------------
+           1538 |                  0 |       3356
+(1 row)
+
+SELECT * FROM chk('deleted, folded');
+      test       | same_as_heap | decided_by_log 
+-----------------+--------------+----------------
+ deleted, folded | t            |              0
+(1 row)
+
+-- a heap-only update (a column the index does not hold, room on the page) writes no mark: the entry stays right
+UPDATE events SET note = 'm' WHERE id % 17 = 0 AND id % 11 <> 0 AND id % 13 <> 0;
+SELECT (marks()).moved + (marks()).deleted AS marks_after_heap_only;
+ marks_after_heap_only 
+-----------------------
+                     0
+(1 row)
+
+SELECT * FROM chk('heap-only updates');
+       test        | same_as_heap | decided_by_log 
+-------------------+--------------+----------------
+ heap-only updates | t            |              0
+(1 row)
+
+-- a transaction in progress, and one that rolled back, mark nothing for the fold; a savepoint rolled back neither
+BEGIN;
+DELETE FROM events WHERE id % 19 = 0 AND id % 11 <> 0 AND id % 13 <> 0;
+SAVEPOINT s;
+DELETE FROM events WHERE id % 23 = 0 AND id % 11 <> 0 AND id % 13 <> 0;
+ROLLBACK TO s;
+SELECT sift._test_col_fold_marks('events_c') AS folded_in_progress;
+ folded_in_progress 
+--------------------
+                  0
+(1 row)
+
+SELECT * FROM chk('own deletes in progress');
+          test           | same_as_heap | decided_by_log 
+-------------------------+--------------+----------------
+ own deletes in progress | t            |          18462
+(1 row)
+
+COMMIT;
+BEGIN;
+DELETE FROM events WHERE id % 29 = 0 AND id % 11 <> 0 AND id % 13 <> 0;
+ROLLBACK;
+SELECT sift._test_col_fold_marks('events_c') > 0 AS folded_after_commit;
+ folded_after_commit 
+---------------------
+ t
+(1 row)
+
+SELECT * FROM chk('committed, rolled back and savepoint deletes');
+                     test                     | same_as_heap | decided_by_log 
+----------------------------------------------+--------------+----------------
+ committed, rolled back and savepoint deletes | t            |              0
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') AS nothing_more;
+ nothing_more 
+--------------
+            0
+(1 row)
+
+-- VACUUM after the fold: the rows it finds dead are not the ones the fold cleared, the addresses it frees are taken by new rows, which the fold has no mark for
+VACUUM events;
+SELECT (marks()).moved + (marks()).deleted AS marks_after_vacuum;
+ marks_after_vacuum 
+--------------------
+                  0
+(1 row)
+
+INSERT INTO events SELECT 20000 + i, i % 10, i, 'y', 'n' FROM generate_series(1, 4000) i;
+SELECT sift.col_promote('events_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('addresses taken again');
+         test          | same_as_heap | decided_by_log 
+-----------------------+--------------+----------------
+ addresses taken again | t            |              0
+(1 row)
+
+UPDATE events SET counter_a = counter_a + 1 WHERE id > 20000 AND id % 7 = 0;
+SELECT sift.col_promote('events_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('new rows updated, marks in the log');
+                test                | same_as_heap | decided_by_log 
+------------------------------------+--------------+----------------
+ new rows updated, marks in the log | t            |          22149
+(1 row)
+
+SELECT sift._test_col_fold_marks('events_c') > 0 AS folded_new_rows;
+ folded_new_rows 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM chk('new rows updated and folded');
+            test             | same_as_heap | decided_by_log 
+-----------------------------+--------------+----------------
+ new rows updated and folded | t            |              0
+(1 row)
+
+SELECT sift.col_verify('events_c') IS NOT NULL AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+DROP TABLE events;
+-- an index whose entries are at the root of a heap-only chain (track_changes = 'ctid'): the mark of a version that ends the chain is at the root, and the entry of the root is the one cleared
+CREATE TABLE chains (id int NOT NULL, g int NOT NULL, w int NOT NULL, pad text NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 60);
+CREATE UNIQUE INDEX chains_id ON chains (id);
+INSERT INTO chains SELECT i, i % 10, i, 'x' FROM generate_series(1, 20000) i;
+CREATE INDEX chains_c ON chains USING sift_col (g, w) WITH (track_changes = 'ctid');
+VACUUM chains;
+\set Q '''SELECT g, count(*), sum(w) FROM chains GROUP BY 1 ORDER BY 1'''
+UPDATE chains SET pad = 'y' WHERE id % 4 = 0;
+UPDATE chains SET pad = 'z' WHERE id % 8 = 0;
+SELECT sift.col_promote('chains_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('heap-only chains', :Q);
+       test       | same_as_heap | decided_by_log 
+------------------+--------------+----------------
+ heap-only chains | t            |              0
+(1 row)
+
+DELETE FROM chains WHERE id % 8 = 0;
+UPDATE chains SET w = w + 1 WHERE id % 12 = 0 AND id % 8 <> 0;
+SELECT sift.col_promote('chains_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('chain ends: deleted and moved', :Q);
+             test              | same_as_heap | decided_by_log 
+-------------------------------+--------------+----------------
+ chain ends: deleted and moved | t            |          20833
+(1 row)
+
+SELECT sift._test_col_fold_marks('chains_c') > 0 AS folded_chains;
+ folded_chains 
+---------------
+ t
+(1 row)
+
+SELECT * FROM chk('chain ends folded', :Q);
+       test        | same_as_heap | decided_by_log 
+-------------------+--------------+----------------
+ chain ends folded | t            |              0
+(1 row)
+
+VACUUM chains;
+SELECT * FROM chk('chains after the vacuum', :Q);
+          test           | same_as_heap | decided_by_log 
+-------------------------+--------------+----------------
+ chains after the vacuum | t            |              0
+(1 row)
+
+-- a VACUUM that finds too few dead rows to vacuum the index freezes the marks and leaves them: the ones whose version the heap has taken are folded
+DELETE FROM chains WHERE id IN (1, 2, 3);
+VACUUM chains;
+SELECT (SELECT count(*) FROM sift._test_col_log_entries('chains_c') WHERE xid::text::bigint = 2) > 0 AS frozen_marks;
+ frozen_marks 
+--------------
+ t
+(1 row)
+
+SELECT sift.col_promote('chains_c') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM chk('frozen marks', :Q);
+     test     | same_as_heap | decided_by_log 
+--------------+--------------+----------------
+ frozen marks | t            |             98
+(1 row)
+
+SELECT sift._test_col_fold_marks('chains_c') AS folded_frozen;
+ folded_frozen 
+---------------
+             3
+(1 row)
+
+SELECT * FROM chk('frozen marks folded', :Q);
+        test         | same_as_heap | decided_by_log 
+---------------------+--------------+----------------
+ frozen marks folded | t            |              0
+(1 row)
+
+VACUUM chains;
+SELECT * FROM chk('after the final vacuum', :Q);
+          test          | same_as_heap | decided_by_log 
+------------------------+--------------+----------------
+ after the final vacuum | t            |              0
+(1 row)
+
+SELECT sift.col_verify('chains_c') IS NOT NULL AS verified;
+ verified 
+----------
+ t
+(1 row)
+
+DROP TABLE chains;
+DROP FUNCTION chk(text, text), marks(), dead();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

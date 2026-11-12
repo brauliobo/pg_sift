@@ -20,6 +20,7 @@
 #include "executor/tuptable.h"
 #include "optimizer/optimizer.h"
 #include "miscadmin.h"
+#include "storage/sinval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -505,15 +506,56 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 	return sift_scope_specs(index)->s[ord]->joined != NULL ? InvalidOid : sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
+/*
+ * The rows of the relations of a scope, and of those whose pairs only their btree lists, for the price of a read: the planner's statistics of each (its pages now, the density of its last
+ * ANALYZE). Kept for the catalog state (SharedInvalidMessageCounter) and the pages, not in a transaction with an xid (its own DDL is not counted before it commits): finding the relations by name costs more.
+ */
+#define ROWS_MEMO_N 8
+static struct RowsMemo
+{
+	Oid			index;
+	int			ord;
+	uint64		gen;
+	int			nrel;
+	Oid			rel[3];
+	BlockNumber pages[3];
+	double		rows,
+				scanned;
+} rows_memo[ROWS_MEMO_N];
+static int	rows_memo_next;
+
+static bool
+rows_memo_fresh(const struct RowsMemo *m)
+{
+	for (int i = 0; i < m->nrel; i++)
+	{
+		Relation	rel = RelationIdGetRelation(m->rel[i]);
+		bool		same = rel != NULL && RelationGetNumberOfBlocks(rel) == m->pages[i];
+
+		if (rel != NULL)
+			RelationClose(rel);
+		if (!same)
+			return false;
+	}
+	return true;
+}
+
 double
 sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned)
 {
 	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
 	const SiftScopeSpec *s = sift_scope_specs(index)->s[ord];
-	double		rows = 0;
+	bool		keep = !TransactionIdIsValid(GetTopTransactionIdIfAny());
+	struct RowsMemo m = {RelationGetRelid(index), ord, SharedInvalidMessageCounter};
 	PairScan	ps = {0};
 
-	*scanned = 0;
+	for (int i = 0; keep && i < ROWS_MEMO_N; i++)
+		if (rows_memo[i].index == m.index && rows_memo[i].ord == ord && rows_memo[i].gen == m.gen && rows_memo_fresh(&rows_memo[i]))
+		{
+			sift_catalog_memo_hits++;
+			*scanned = rows_memo[i].scanned;
+			return rows_memo[i].rows;
+		}
 	for (int hop = 0; hop <= (s->joined != NULL ? 2 : 0); hop++)
 	{
 		double		n;
@@ -523,11 +565,16 @@ sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, d
 		else
 			hop_scan(heap, index, s, hop, &ps, NULL, NULL, 0);
 		n = sift_conn_rows_of(ps.rel);
-		rows += n;
-		*scanned += OidIsValid(sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree)) ? 0 : n;
+		m.rows += n;
+		m.scanned += OidIsValid(sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree)) ? 0 : n;
+		m.rel[m.nrel] = RelationGetRelid(ps.rel);
+		m.pages[m.nrel++] = RelationGetNumberOfBlocks(ps.rel);
 		table_close(ps.rel, NoLock);
 	}
-	return rows;
+	if (keep)
+		rows_memo[rows_memo_next++ % ROWS_MEMO_N] = m;
+	*scanned = m.scanned;
+	return m.rows;
 }
 
 /* ---- what the segments of the index say ---- */

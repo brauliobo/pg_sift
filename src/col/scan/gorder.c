@@ -221,6 +221,8 @@ gord_mem_text(SiftColSource *src, int leaf, uint32 collid, int v, MemoryContext 
 
 		for (uint32 r = 0; r < b->nrows; r++)
 		{
+			if (sift_cbatch_dead(b, r))
+				continue;
 			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
 			if (sift_col_bit_test(v->nulls, r))

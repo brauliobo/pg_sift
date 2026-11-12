@@ -290,7 +290,16 @@ typedef struct SiftColBatch
 	SiftCVals  *col;			/* [ncols] */
 	SiftCDict **dict;			/* [ncols]: batch dictionary of each STR leaf, NULL for the others */
 	SiftColImage *image;		/* the batch of a write buffer kept by a backend: what a scan made of it, NULL until one does */
+	uint64	   *dead;			/* a kept batch of the write buffer: bit r set = the record of row r was flagged dead since the batch was made (the row is not read, sift_cbatch_dead) */
+	uint32		deadrows;		/* the rows dead covers, a multiple of 64; the rows after it are not dead */
+	uint32		ndead;
 } SiftColBatch;
+
+static inline bool
+sift_cbatch_dead(const SiftColBatch *b, uint32 r)
+{
+	return b->ndead > 0 && r < b->deadrows && ((b->dead[r >> 6] >> (r & 63)) & 1) != 0;
+}
 
 /* Legacy write-buffer values carry UNSURE in memory; a writer must not certify them as complete kinds. */
 extern bool sift_cbatch_kinds_exact(const SiftColBatch *b);
@@ -315,6 +324,8 @@ extern void sift_cbatch_add(SiftColBatch *b, const SiftColRow *row);
 extern void sift_cbatch_add_ver(SiftColBatch *b, const SiftColRow *row, uint32 xmin, uint32 cmin);
 /* Appends row r of src (same schema) re-interning its strings; same key rules */
 extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r);
+/* Marks the rows with these keys (ascending, n > 0) dead: their slots and the unit image stay, no reader takes them */
+extern void sift_cbatch_mark_dead(SiftColBatch *b, const SiftKey *keys, int n);
 /* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted; the leaves of kept (NULL: all) that are not set are NULL in the copy */
 extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */
@@ -638,6 +649,7 @@ extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
 extern void sift_cunit_page_offsets(const SiftCUnitView *v, uint32 p, uint16 *offs);
 extern void sift_cunit_page_offsets_all(const SiftCUnitView *v);
 extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
+extern uint32 sift_cunit_find_keys(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);

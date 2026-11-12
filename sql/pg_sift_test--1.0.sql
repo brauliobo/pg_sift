@@ -195,6 +195,9 @@ CREATE FUNCTION sift._test_col_wbuf_batches(index regclass, seed int8, shared bo
 -- the directory version a scan that opens now reads; dirver of _test_col_wbuf_batches reads as the scan that read it (-1: the current one)
 CREATE FUNCTION sift._test_col_dir_version(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_dir_version' LANGUAGE C STRICT;
+-- the units this backend's scans made of the batches of the write buffers; a kept batch keeps its unit until it changes
+CREATE FUNCTION sift._test_col_mem_encodes() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_mem_encodes' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_gkept_stats(OUT hits int8, OUT extends int8, OUT builds int8, OUT drops int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_gkept_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_gdead_stats(OUT hits int8, OUT builds int8, OUT cut int8, OUT blocks int8) RETURNS record
@@ -512,11 +515,15 @@ CREATE FUNCTION sift._test_syn_lexize(internal, internal, internal, internal) RE
 CREATE TEXT SEARCH TEMPLATE sift._test_syn (INIT = sift._test_syn_init, LEXIZE = sift._test_syn_lexize);
 
 -- the tombstone log of a heap column index (col/tomblog.c): add the segment, append an entry for a heap address by the current transaction, and list the entries in log order
+CREATE FUNCTION sift._test_col_fold_marks(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_fold_marks' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_marks_paid(index regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_col_marks_paid' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_create(index regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_create' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_log_append(index regclass, tid tid) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_append' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4) RETURNS SETOF record
+CREATE FUNCTION sift._test_col_log_entries(index regclass, OUT tid tid, OUT xid xid, OUT cid int4, OUT kind int4, OUT flags int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_entries' LANGUAGE C STRICT;
 
 -- the key journal of a connected parent index (col/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
@@ -654,3 +661,7 @@ CREATE FUNCTION sift._test_vstore_value(store regclass, code int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_value' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vstore_forget() RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_vstore_forget' LANGUAGE C STRICT;
+
+-- the answers the memos of the catalog state (the triggers of a journal, the relations of a scope, its legs, the rows of its relations, the units of a read) gave without asking the catalogs, in this backend
+CREATE FUNCTION sift._test_catalog_memos() RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_catalog_memos' LANGUAGE C STRICT;

@@ -17,6 +17,7 @@
 #include "core/tomb.h"
 #include "core/visibility.h"
 #include "col/scan_int.h"
+#include "col/wbuf.h"
 
 /* The chunk of leaf col of the unit as stored; false when the unit has none. A stored unit reads its bytes on first use. */
 bool
@@ -357,6 +358,7 @@ unit_allvisible_keyed(ColUnit *cu)
 			cu->av_ready = true;
 			return NULL;
 		}
+		cu->marked = !cu->lane && hf_seg(cu->src, cu->seg);
 		sift_cunit_keyed_load(&cu->v);
 		nw = (cu->v.npages + 63) / 64;
 		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
@@ -382,6 +384,8 @@ unit_allvisible(ColUnit *cu)
 		{
 			memcpy(cu->av, unit_allvisible_vm(cu), sizeof(cu->av));
 			sb_add_log(cu->src, cu->seg, cu->sb, cu->av);
+			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+				cu->marked |= (cu->v.pagemask[w] & ~cu->av[w]) != 0 && hf_seg(cu->src, cu->seg);
 		}
 		/* the directory is checked after the mask, as the liveness is */
 		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
@@ -723,23 +727,31 @@ bool
 units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
 {
 	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
+	bool		all = true;
 
 	sift_cseg_super_pagemask(seg, first / sift_cseg_super_fan(seg), n, pm);
-	for (uint32 i = 0; i < n; i++)
+	for (uint32 i = 0; i < n && all; i++)
 	{
 		if (sift_cseg_keyed(&seg->entry))
 		{
 			/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
 			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
 
-			if (!col_range_allvisible(src, seg, (uint32) r, (uint32) (r >> 32)))
-				return false;
-			continue;
+			all = col_range_allvisible(src, seg, (uint32) r, (uint32) (r >> 32));
 		}
-		if (!col_sb_covers(src, seg, sift_cseg_unit_sb(seg, first + i), NULL, pm + i * SIFT_PAGEMASK_WORDS))
-			return false;
+		else
+			all = col_sb_covers(src, seg, sift_cseg_unit_sb(seg, first + i), NULL, pm + i * SIFT_PAGEMASK_WORDS);
 	}
-	return true;
+	/* a stamped segment has its pages covered by the log but for the marks in them: the pre-aggregates of the units are lost to those */
+	if (!all && hf_seg(src, seg))
+	{
+		uint64		rows = 0;
+
+		for (uint32 i = 0; i < n; i++)
+			rows += seg->sbdir[first + i].nrows;
+		sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));
+	}
+	return all;
 }
 
 /* Every superblock of the segment is plain for the table (tbl_sb_mask: all pages or none): a table's segment has no summary of page masks to test */

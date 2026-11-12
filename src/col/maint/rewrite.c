@@ -23,7 +23,6 @@ bool		maint_read_asked = false;
  * (sift_col_vacuum_tick) reaches half of it.
  */
 #define ROW_PRICE	9000.0
-#define MAINT_HALF	0.5
 
 /*
  * What a unit costs a read that need not have read it: 26,000 instructions to open and decode (the per-unit figure of the scan) and the block it reads when its page is cold, in the

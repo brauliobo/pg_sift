@@ -6,6 +6,24 @@
 #include "core/rowmem.h"
 
 /*
+ * The recovery conflict with the snapshots of a standby that precede horizon, for a change they could not tell from the snapshots of the primary (blk: the block reused, if any).
+ * It touches no page. Not logged when no standby can exist.
+ */
+bool
+sift_wal_snapshot_conflict(Relation index, BlockNumber blk, FullTransactionId horizon)
+{
+	xl_btree_reuse_page xlrec;
+
+	if (!XLogStandbyInfoActive() || !RelationNeedsWAL(index))
+		return false;
+	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = horizon};
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
+	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
+	return true;
+}
+
+/*
  * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
  * hot_standby_feedback. With sift.standby_conflicts, before blocks released with safexid are
  * reused (or their record is cleared for reuse) this logs a btree page-reuse record for the index:
@@ -18,15 +36,10 @@ log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
 {
 	static RelFileNumber last_rel = InvalidRelFileNumber;
 	static FullTransactionId last = {0};
-	xl_btree_reuse_page xlrec;
 
-	if (!sift_standby_conflicts || !XLogStandbyInfoActive() || !RelationNeedsWAL(index) ||
-		(last_rel == index->rd_locator.relNumber && !FullTransactionIdPrecedes(last, safexid)))
+	if (!sift_standby_conflicts || (last_rel == index->rd_locator.relNumber && !FullTransactionIdPrecedes(last, safexid)) ||
+		!sift_wal_snapshot_conflict(index, blk, safexid))
 		return;
-	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = safexid};
-	XLogBeginInsert();
-	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
-	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
 	last_rel = index->rd_locator.relNumber;
 	last = safexid;
 }

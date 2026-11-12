@@ -10,6 +10,7 @@
 #include "core/popcount.h"
 #include "col/seg.h"
 #include "col/scan_int.h"
+#include "col/wbuf.h"
 #include "core/cmp.h"
 
 static bool
@@ -795,6 +796,8 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 		if (!sift_test_col_paranoid)
 #endif
 			return sift_col_sel_count(sel) > 0;
+	if (!few && cu->marked)
+		sift_col_marks_note(src->index, src->hflog->gen, (uint64) (sift_col_sel_count(sel) * COL_MARK_ROW_PRICE));
 	sift_cunit_keyed_load(&cu->v);
 	if (sift_col_sel_count(sel) >= cu->v.nrows / 16)
 		sift_cunit_page_offsets_all(&cu->v);

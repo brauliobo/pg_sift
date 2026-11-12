@@ -91,6 +91,8 @@ typedef struct SiftScopeLeg
 extern bool sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s);
 /* The legs of scope ordinal scope of the index: 1 (the pairs relation) or 2 (the pairs relation and the joined path); returns their number */
 extern int	sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2]);
+/* The same, found in the catalogs (not kept) */
+extern int	sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2]);
 
 /* The cut of the units of the segments of a scope: cut[] (SIFT_COL_CUT_MAX leaves) gets its derived key and the time column of the index if it has one; returns their number */
 struct SiftColRel;

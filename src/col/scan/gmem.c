@@ -24,6 +24,8 @@ gord_collect(SiftColSource *src, int leaf, int gleaf, int64 gval, const uint32 *
 
 		for (uint32 r = cov ? cov[i] : 0; r < b->nrows; r++)
 		{
+			if (sift_cbatch_dead(b, r))
+				continue;
 			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
 			if (gleaf >= 0)
@@ -554,6 +556,11 @@ gpart_build(SiftColSource *src, int leaf, int gleaf)
 		{
 			uint32		s;
 
+			if (sift_cbatch_dead(b, r))
+			{
+				row[at] = PG_UINT32_MAX;
+				continue;
+			}
 			if (sift_col_bit_test(v->ovf, r) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || sift_col_bit_test(gv->ovf, r))
 				goto refused;
 			if (gpart_isnull(gv, r))

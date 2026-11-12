@@ -117,6 +117,8 @@ extern void sift_col_track_remove(Relation heap, Relation index);
 extern void sift_col_track_deafened(Oid relid);
 extern void sift_col_track_reconcile(Relation index);
 extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
+extern uint64 sift_catalog_memo_hits;
+extern bool sift_col_track_ok_log(Relation index, Relation heap, Snapshot snap, SiftTombLog *log);
 extern bool sift_col_track_own(const struct SiftTombLog *log);
 extern bool sift_col_track_rebaseline(Relation index, Relation heap);
 extern void sift_col_track_ask(Relation index, Relation heap);
@@ -409,6 +411,13 @@ extern bool sift_col_mostly_dead(Relation rel, const SiftSegEntry *e);
 extern void sift_col_maint_after_seal(Relation index);
 extern bool sift_col_maint_make_room(Relation index);
 extern int	sift_col_maint_promote(Relation index, bool wait);
+/* A maintenance step counts at half the price of what the reads owe for it (the weighted formula): a step is asked for when the reads owe half of its cost */
+#define MAINT_HALF		0.5
+/* The rows whose delete or update every snapshot sees as committed are cleared in the segments and the write buffer and their tombstones dropped, without waiting for a VACUUM (maintenance lock free) */
+extern uint64 sift_col_fold_marks(Relation index);
+/* Have the reads of the server paid for the fold of the marks, and the worker asked for when they have */
+extern bool sift_col_fold_due(Relation index);
+extern bool sift_col_fold_tick(Relation index);
 extern bool sift_col_maint_merge_step(Relation index, bool wait);
 extern PGDLLEXPORT void sift_col_maint_worker_main(Datum main_arg);
 extern PGDLLEXPORT void sift_col_rewrite_worker_main(Datum main_arg);
@@ -478,6 +487,7 @@ extern void sift_col_jitter(void);
 extern PGDLLIMPORT int sift_test_col_open_gate;	/* sift.test_col_open_gate: a scan waits for the advisory lock of this number right after it read the directory */
 extern PGDLLIMPORT uint64 sift_col_gkept_stat[4];	/* the kept orders of the write buffers (col/scan/gorder.c): reads that found the order as it was, extended it, made it, dropped it */
 extern PGDLLIMPORT uint64 sift_col_gdead_stat[3];	/* the kept lists of dead rows (col/seg/dead.c): lists found as they were, lists made; the entries the cut of an OFFSET took off the sources (agg/gord.c) */
+extern PGDLLIMPORT uint64 sift_col_mem_encodes;	/* the units a scan made of a batch of the write buffer (col/scan/scan.c), in this backend */
 extern PGDLLIMPORT bool sift_test_col_gkept_fail;	/* sift.test_col_gkept_fail: extending a kept order fails after the new arrays are made, before the order takes them */
 /* Holds a scan, with the directory version it read, until the test releases the lock: what runs meanwhile (VACUUM, DML) is after the open for the scan */
 #define SIFT_COL_OPEN_GATE()	sift_test_hold(sift_test_col_open_gate)

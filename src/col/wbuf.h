@@ -129,6 +129,13 @@ extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
 extern uint64 sift_cwbuf_decoded(Relation index, uint64 gen);
 /* whether this backend decoded rows since the last call (the scan that did looks for the promotion, sift_col_vacuum_tick) */
 extern bool sift_cwbuf_decoded_take(void);
+/*
+ * The instructions the reads of the server paid for the marks of the tombstone log of generation loggen (a scan that read a unit page by page for a mark in its range of heap
+ * blocks, or did without its pre-aggregate: col/scan_unit.c), what the fold of the marks is weighed against (sift_col_fold_due); whether this backend paid some since the last call
+ */
+extern void sift_col_marks_note(Relation index, uint64 loggen, uint64 instr);
+extern uint64 sift_col_marks_paid(Relation index, uint64 loggen);
+extern bool sift_col_marks_take(void);
 
 /* Extents (header and data pages) for release after promotion; records, rows (deleted included) and pages */
 extern SiftExtent *sift_cwbuf_pages(Relation index, const SiftSegEntry *entry, int *n);

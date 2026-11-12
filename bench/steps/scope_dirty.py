@@ -54,7 +54,8 @@ class Sess:
         self.run(sql)
         runs = []
         while len(runs) < n:
-            perf = subprocess.Popen(['perf', 'stat', '-x,', '-e', 'instructions:u', '-p', str(self.pid)], stderr=subprocess.PIPE, text=True)
+            perf = subprocess.Popen(['perf', 'stat', '-x,', '-e', 'instructions:u', '-p', str(self.pid)], stderr=subprocess.PIPE, text=True,
+                                    preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
             time.sleep(0.3)
             self.run(sql)
             perf.send_signal(signal.SIGINT)

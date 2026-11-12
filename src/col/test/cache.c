@@ -27,6 +27,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_pinned);
 
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
+PG_FUNCTION_INFO_V1(sift_test_catalog_memos);
 
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
@@ -62,6 +63,12 @@ sift_test_col_dict_pinned(PG_FUNCTION_ARGS)
 }
 
 /* The counters of a scan that selects the rows of the query */
+Datum
+sift_test_catalog_memos(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64((int64) sift_catalog_memo_hits);
+}
+
 Datum
 sift_test_col_counters(PG_FUNCTION_ARGS)
 {

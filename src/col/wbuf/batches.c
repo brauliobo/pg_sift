@@ -75,6 +75,7 @@ typedef struct PageStamp
 	XLogRecPtr	lsn;
 	Size		used;			/* the bytes of records read */
 	uint32		dead;			/* the records flagged dead among them */
+	uint32	   *dpos;			/* where each of them starts, ascending: the records flagged since are the ones at other places */
 } PageStamp;
 
 typedef struct StampList
@@ -108,6 +109,7 @@ typedef struct BatchSet
 	SiftColBatch **b;			/* ascending superblock */
 	int			refs;			/* the scans that hold the batches: the memory context that was given for them is alive */
 	bool		kept;			/* in the cache of the backend */
+	bool		dups;			/* a record repeated the address of another: a row the set lacks may be the one of a record that is live (set_settle) */
 	uint64		used;
 	Size		recbytes;		/* the bytes of records the batches were made from */
 	/*
@@ -169,6 +171,22 @@ stamp_same(Relation index, Page page, const PageStamp *st)
 	return (PageGetLSN(page) == st->lsn && RelationNeedsWAL(index)) || wbuf_page_dead(index, page, 0, st->used) == st->dead;
 }
 
+/* The records of the page that start in bytes from to upto and are flagged dead, added to those of the stamp */
+static void
+stamp_dead(StampList *sl, PageStamp *st, Page page, Size from, Size upto)
+{
+	uint32		n = wbuf_page_dead_list(sl->index, page, from, upto, NULL, NULL, 0);
+	uint64	   *keys;
+
+	if (n == 0)
+		return;
+	SIFT_REGROW_IN(sl->cx, st->dpos, (st->dead + n) * sizeof(uint32));
+	keys = palloc(n * sizeof(uint64));
+	(void) wbuf_page_dead_list(sl->index, page, from, upto, st->dpos + st->dead, keys, n);
+	pfree(keys);
+	st->dead += n;
+}
+
 /* A page the reader is about to read: the dead records are counted before the records are read, so one that dies in between is found by the next check */
 static void
 stamp_page(void *arg, BlockNumber blk, Page page, Size used)
@@ -181,7 +199,7 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 		/* the page the last read ended in, with more records now. A read that skipped the check of the stamps (the version had not moved for its scan) has not looked at the ones before it */
 		if (!stamp_same(sl->index, page, last))
 			sl->stale = true;
-		last->dead += wbuf_page_dead(sl->index, page, last->used, used);
+		stamp_dead(sl, last, page, last->used, used);
 		last->lsn = PageGetLSN(page);
 		last->used = used;
 		return;
@@ -191,7 +209,8 @@ stamp_page(void *arg, BlockNumber blk, Page page, Size used)
 		sl->cap = sl->cap ? 2 * sl->cap : 16;
 		SIFT_REGROW_IN(sl->cx, sl->p, sl->cap * sizeof(PageStamp));
 	}
-	sl->p[sl->n++] = (PageStamp) {blk, PageGetLSN(page), used, wbuf_page_dead(sl->index, page, 0, used)};
+	sl->p[sl->n] = (PageStamp) {blk, PageGetLSN(page), used, 0, NULL};
+	stamp_dead(sl, &sl->p[sl->n++], page, 0, used);
 }
 
 /* The live records of the lanes after lane[], sorted by key; lane[] moves to where the reading ended, and the pages read are stamped in stamp[] (NULL: not) */
@@ -316,6 +335,17 @@ set_stamp(BatchSet *s)
 	return top;
 }
 
+static void
+batch_drop_image(SiftColBatch *b)
+{
+	if (b->image == NULL)
+		return;
+	pfree(b->image->buf);
+	pfree(b->image->zones);
+	pfree(b->image);
+	b->image = NULL;
+}
+
 static bool
 set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 {
@@ -332,7 +362,10 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 		RawRec		rec;
 
 		if (i > 0 && h->key == f->held[i - 1].key)
+		{
+			s->dups = true;
 			continue;
+		}
 		pos = set_find(s, sb, &found);
 		if (found)
 		{
@@ -351,13 +384,7 @@ set_fill(BatchSet *s, SiftCWbufReader *r, const Fresh *f)
 			s->b[pos] = b;
 			s->n++;
 		}
-		if (b->image)
-		{
-			pfree(b->image->buf);
-			pfree(b->image->zones);
-			pfree(b->image);
-			b->image = NULL;
-		}
+		batch_drop_image(b);
 		set_note(s, h);
 		rec = (RawRec) {.tid = h->tid,.xmin = h->xmin,.payload = (const uint8 *) f->arena.data + h->off,.len = h->len};
 		wbuf_decode_row(r, &rec, &row);
@@ -481,32 +508,131 @@ set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, 
 	return s;
 }
 
+typedef struct DeadKeys
+{
+	uint64	   *k;
+	int			n,
+				cap;
+} DeadKeys;
+
 /*
- * Whether no record the set holds was flagged dead since it read it. VACUUM flags them in place, and the heap tuple address may then be reused, so the
- * row of the set would answer for another tuple. Only a page whose LSN moved is counted again (the pages of an index that is not WAL-logged keep theirs).
+ * The keys of the records of the page flagged dead since the stamp, added to dk, and the stamp brought up to date. False when the page lost a flag it had: the stamp tells nothing then.
  */
 static bool
-set_unchanged(BatchSet *s, Relation index)
+stamp_new_dead(Relation index, Page page, PageStamp *st, StampList *sl, DeadKeys *dk)
 {
+	uint32		n = wbuf_page_dead_list(index, page, 0, st->used, NULL, NULL, 0);
+	uint32	   *pos;
+	uint64	   *key;
+	uint32		old = 0;
+
+	if (n < st->dead)
+		return false;
+	pos = palloc(Max(n, 1) * sizeof(uint32));
+	key = palloc(Max(n, 1) * sizeof(uint64));
+	(void) wbuf_page_dead_list(index, page, 0, st->used, pos, key, n);
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (old < st->dead && st->dpos[old] == pos[i])
+		{
+			old++;
+			continue;
+		}
+		if (dk->n == dk->cap)
+			SIFT_REGROW_IN(CurrentMemoryContext, dk->k, (dk->cap = dk->cap ? 2 * dk->cap : 64) * sizeof(uint64));
+		dk->k[dk->n++] = key[i];
+	}
+	pfree(key);
+	if (old != st->dead)
+	{
+		pfree(pos);
+		return false;
+	}
+	if (n > st->dead)
+	{
+		st->dpos = NULL;
+		SIFT_REGROW_IN(sl->cx, st->dpos, n * sizeof(uint32));
+		memcpy(st->dpos, pos, n * sizeof(uint32));
+		st->dead = n;
+	}
+	pfree(pos);
+	return true;
+}
+
+static int
+key_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u64(*(const uint64 *) a, *(const uint64 *) b);
+}
+
+/*
+ * The rows of the records flagged dead since the set read them, marked dead in their batches (no scan holds the set): the batches and their unit images stay as they are, and
+ * the readers skip the rows (sift_cbatch_dead). The set is another one to what is kept of it (orders made from its rows are made again).
+ */
+static void
+set_forget(BatchSet *s, const uint64 *keys, int n)
+{
+	for (int i = 0; i < n;)
+	{
+		uint32		sb = sift_block_sb(sift_key_block(keys[i]));
+		int			j = i;
+		bool		found;
+		int			pos;
+
+		while (j < n && sift_block_sb(sift_key_block(keys[j])) == sb)
+			j++;
+		pos = set_find(s, sb, &found);
+		if (found)
+			sift_cbatch_mark_dead(s->b[pos], keys + i, j - i);
+		i = j;
+	}
+	s->serial = ++sets_serial;
+}
+
+/*
+ * Whether the set still holds what the buffer does: a record it holds may have been flagged dead since it read it (VACUUM flags them in place, and the heap tuple address may then be
+ * reused, so the row of the set would answer for another tuple; the fold of the marks of the log flags those whose tuple every snapshot sees as dead). Only a page whose LSN moved is
+ * counted again (the pages of an index that is not WAL-logged keep theirs). The rows of the records flagged since are marked dead in the batches, unless the set cannot tell what a row
+ * stands for (a repeated address), is held by a scan or holds more of the dead than of the live: false then, and the caller reads the buffer again.
+ */
+static bool
+set_settle(BatchSet *s, Relation index)
+{
+	DeadKeys	dk = {0};
+	uint64		rows = 0,
+				dead = 0;
+
 	for (int l = 0; l < SIFT_LANES; l++)
 		for (int i = 0; i < s->stamp[l].n; i++)
 		{
 			PageStamp  *st = &s->stamp[l].p[i];
 			Buffer		buf = sift_lane_read_locked(index, st->blk, BUFFER_LOCK_SHARE);
 			Page		page;
-			XLogRecPtr	lsn;
-			bool		same;
+			bool		ok = true;
 
 			sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, s->gen);
 			page = BufferGetPage(buf);
-			same = stamp_same(index, page, st);
-			lsn = PageGetLSN(page);
-
+			if (!stamp_same(index, page, st))
+				ok = stamp_new_dead(index, page, st, &s->stamp[l], &dk);
+			st->lsn = PageGetLSN(page);
 			UnlockReleaseBuffer(buf);
-			if (!same)
+			if (!ok)
 				return false;
-			st->lsn = lsn;
 		}
+	if (dk.n == 0)
+		return true;
+	if (s->dups || s->refs > 0)
+		return false;
+	/* a set that holds more of the dead than of the live is read again: the rows are not kept for the next scan to skip */
+	for (int i = 0; i < s->n; i++)
+	{
+		rows += s->b[i]->nrows;
+		dead += s->b[i]->ndead;
+	}
+	if (dead + dk.n > rows / 2 + 1024)
+		return false;
+	qsort(dk.k, dk.n, sizeof(uint64), key_cmp);
+	set_forget(s, dk.k, dk.n);
 	return true;
 }
 
@@ -539,7 +665,7 @@ set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *sche
 		/* the version was read before any page of this read: a flag set after it moves the version, and one set before it is in the pages */
 		if (s->dirver != dirver)
 		{
-			if (!set_unchanged(s, index))
+			if (!set_settle(s, index))
 				goto rebuild;
 			s->dirver = Max(s->dirver, dirver);
 		}

@@ -96,7 +96,7 @@ sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *buf
 	for (int i = 0; i < nbufs; i++)
 		for (int j = 0; j < bufs[i].n; j++)
 			for (uint32 r = 0; r < bufs[i].b[j]->nrows; r++)
-				if (!sift_col_bit_test(bufs[i].b[j]->col[fk].nulls, r))
+				if (!sift_cbatch_dead(bufs[i].b[j], r) && !sift_col_bit_test(bufs[i].b[j]->col[fk].nulls, r))
 					m[(*n)++] = bufs[i].b[j]->col[fk].key[r];
 	return m;
 }
@@ -552,7 +552,7 @@ sift_scope_delta_select(Relation index, int scope, const SiftScopeBuffer *bufs, 
 
 			for (uint32 r = 0; r < b->nrows; r++)
 			{
-				if ((take != NULL && !sift_col_bit_test(take, r)) || !members_has(&mem, v->key[r]) || sift_col_bit_test(v->nulls, r))
+				if ((take != NULL && !sift_col_bit_test(take, r)) || sift_cbatch_dead(b, r) || !members_has(&mem, v->key[r]) || sift_col_bit_test(v->nulls, r))
 					continue;
 				for (uint32 j = first_pair(pairs, npairs, v->key[r]); j < npairs && pairs[j].member == v->key[r]; j++)
 				{

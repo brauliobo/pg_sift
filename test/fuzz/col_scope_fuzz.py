@@ -371,8 +371,8 @@ VACUUM (ANALYZE) {self.tables};"""
         gq = f"SELECT count(*), sum(v), min(id) FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id{self.act}"   # a row for each pair, every key, no group
         qs.append(('group key', gq, gq, False, (self.kept is None or {'v', 'id'} <= self.kept) and not self.union, False, None if self.kept is None or self.union or {'v', 'id'} <= self.kept else '^column .* not in the scope units$'))
         ks2 = sorted(set(ks))   # several keys counted for each pair, by the key too: the changed pairs of a dim_b are read once from the segments and expanded by its pairs
-        subset = self.kept is None or {'v', 'id'} <= self.kept
-        for aggs, by in (("count(*), sum(v), min(id)", ''), ("s.tenant_id AS k, count(*), sum(v)", ' GROUP BY 1 ORDER BY 1')):
+        for aggs, by, need in (("count(*), sum(v), min(id)", '', {'v', 'id'}), ("s.tenant_id AS k, count(*), sum(v)", ' GROUP BY 1 ORDER BY 1', {'v'})):
+            subset = self.kept is None or need <= self.kept   # the read needs the columns it aggregates, and no other: it is stored where the index keeps those
             gq = f"SELECT {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}{by}"
             qs.append(('group key', gq, gq, False, False, False, None if subset or self.union else '^column .* not in the scope units$'))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % (P, self.act), False),

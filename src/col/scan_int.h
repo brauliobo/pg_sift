@@ -139,6 +139,14 @@ typedef struct ColInline
 	uint64	   *have;			/* the positions that have a code, NULL: all of them */
 } ColInline;
 
+/*
+ * What a mark of the tombstone log costs the reads of a unit it lies in the heap blocks of, in instructions, for the fold of the marks to be weighed against (sift_col_fold_due; range
+ * scan of a key-cut index, 12,700 rows selected: 5.5 M instructions with the marks against 1.4 M after their fold, 320 a selected row; the group scan that lost the pre-aggregates of
+ * 28 units of 7,400 rows: 9.5 M, 100 a row of the units read in their place).
+ */
+#define COL_MARK_ROW_PRICE		320.0
+#define COL_MARK_PREAGG_PRICE	100.0
+
 typedef struct ColUnit
 {
 	SiftColSource *src;
@@ -180,6 +188,7 @@ typedef struct ColUnit
 	bool		avvm_ready;
 	uint64		avvm[SIFT_PAGEMASK_WORDS];	/* the pages the visibility map holds all-visible, no page the log added (unit_allvisible_vm) */
 	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
+	bool		marked;			/* a mark of the log lies in the heap blocks of the unit's pages, so the unit is read page by page (valid with av_ready) */
 	ColGroup   *grp;
 	ColSelCache selc;
 	struct
