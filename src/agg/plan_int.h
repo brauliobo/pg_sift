@@ -614,6 +614,8 @@ extern SiftAggSpec *agg_spec_new(AggCtx *c);
 extern bool sift_agg_scope_extract(AggCtx *c, SiftAggSpec *s, FromScan *fs);
 extern void sift_agg_scope_declined(AggCtx *c, SiftAggSpec *s, FromScan *fs, const char *why);
 extern bool sift_agg_scope_wanted(AggCtx *c, const FromScan *fs);
+/* does the tree read a relation of a scope of a column index of a table of the query level (the ARRAY(SELECT ..) rewrite of flat/array_in.c) */
+extern bool sift_agg_reads_scope(Query *level, Node *tree);
 /* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
