@@ -256,6 +256,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `engines/*.sh` | one adapter per engine (see below) |
 | `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries); `sql/store/`: the orders data generator, the layout of each system and the ten queries |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
+| `focus/` | the focused write-amplification and read benches of a churned `sift_col` index (minutes; see Focused write and read benches below) |
 
 | `steps/` | role |
 |---|---|
@@ -456,6 +457,29 @@ running (ClickHouse `system.merges` and unfinished mutations, Elasticsearch `_no
 with `scripts/quiet.sh` (pressure stall information below 10% for CPU and I/O). A batch that runs anyway is marked NOISY in the results. After the load the same wait
 runs, so the merges that follow the load (ClickHouse `OPTIMIZE`, Elasticsearch force-merge) are over before anything is timed. The ClickHouse container turns off the logs of
 its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) because an idle server writing them uses 3-7% of a CPU.
+
+## Focused write and read benches (`bench/focus`)
+
+Two checks that take minutes where the churn runs of a whole rewrite cycle take hours, for a pull request that touches maintenance (promotion, merge, rewrite, VACUUM) or what a read opens.
+Both churn a `sift_col` index of 200,000 rows with the background workers on (batches of 2,000 inserted rows, 200 updates and 66 soft deletes, VACUUM every sixth batch), on a scratch cluster on tmpfs of
+about 300 MB with 64 MB of buffers, waiting after every statement until no worker runs and the WAL stood still. The data of a batch is seeded by its number, so two builds see the same rows. The settings are on line 1 of every result.
+`maintenance_work_mem = 26MB` makes a partition of the rewrite 8 MB, so that merges, the rewrite in partitions and the shrink that follows it all happen inside 48 batches.
+
+```sh
+bench/focus/run.sh wamp  ROOT LABEL   # index WAL per inserted row at 6 / 12 / 24 / 48 batches, std (12 indexed columns) at a checkpoint every 24 and every batch, wide (28 columns); about 5 minutes
+bench/focus/run.sh reads ROOT LABEL   # the ten read classes after 13..60 batches, warm and cold, std and wide; about 4 minutes
+bench/focus/compare.py 'out/reads-std-A*.json' 'out/reads-std-B*.json'   # per class ratios of two builds; exit 1 when a class is flagged
+```
+
+`wamp.py` reads the WAL of every statement with `pg_waldump` and gives each record of the index to the operation that wrote it (worker log lines placed on the WAL by a 5 ms sample of the insert LSN): `wbuf` (the
+statements' own writes), `promotion`, `merge` (overlay merges), `rewrite` (partition rewrite), `move` (relocation, shift, shrink) and `other`. A cell is the cumulative WAL of the one run up to that batch per inserted row,
+the table adds the all-relations WAL, the index file and the slope between counts. `expect-wamp.tsv` holds the values of the current tip and a tolerance for each (10 percent, or 1.5 times the spread of two runs of one build,
+or 3 B/row on a class); `wamp.py check` fails a cell outside it. Regenerate it with `run.sh expect LABEL_A LABEL_B` after a change that moves the numbers on purpose.
+`reads.py` measures the instructions of the backend (`perf_event_open`, user space), shared blocks hit and read, and the plan, of `EXPLAIN (ANALYZE, BUFFERS)` of each class in a fresh backend. The key window of the measured batch moves
+by `b * 53 % 400`, the same for every build. Cold = after the relations were evicted, on every 7th batch (coprime with the 6 batches of the write-buffer cycle). `compare.py` pools the runs of each side. With one run a side it flags a class when the p90 is more than 25 percent above the base; with three runs or more a side, when the p90 is more than 10 percent above, the
+phase-balanced median (the median of the medians of the six phases of the write-buffer cycle) more than 15 percent, or the mean without spikes more than 5 percent. The raw mean and the spikes (one-shot samples above
+three times the median of the class, which come at the same rate on every build) are shown, never flagged. Two runs of one build are the noise those bars sit on (on 28 columns they differ by 14 percent in the mean): run
+each build twice and compare the two runs first, and gate on three runs a side. Linux only (`perf_event_open`, `pg_waldump`; a hosted runner may have neither), PostgreSQL 18. They are a local per-PR gate for changes to maintenance or reads, about 10 minutes for both on one build, and are not wired into the hosted workflows or the tiers of `scripts/ci.sh`.
 
 ## Cases: one per optimization (`bench/bench cases`)
 
