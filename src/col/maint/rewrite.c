@@ -157,7 +157,8 @@ peers_overlap(const RewriteView *v)
  * rewrite is the build's, not churn. A promotion or merge of new rows that grew to the size of a partition overlaps every partition as well, but taking it out
  * leaves none overlapping, and it is part of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
  * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows, nor each time the merges of the overlays leave another.
- * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it.
+ * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it. The segment taken out next is the one
+ * that meets the most others for its bytes: pieces over one base partition are the cover (a third of the index), not the base that meets them all (two thirds of it).
  */
 #define KEY_RUNS_SHARE	2
 
@@ -173,19 +174,21 @@ key_runs(const RewriteView *v)
 		all += v->imm[i].bytes;
 	for (;;)
 	{
-		int			worst = -1,
-					most = 0;
+		int			worst = -1;
+		double		most = 0;
 
 		for (int i = 0; i < v->n; i++)
 		{
 			int			meets = 0;
+			double		per_byte;
 
 			for (int j = 0; j < v->n && left[i]; j++)
 				meets += left[j] && j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
-			if (meets > most)
+			per_byte = (double) meets / v->imm[i].bytes;
+			if (per_byte > most)
 			{
 				worst = i;
-				most = meets;
+				most = per_byte;
 			}
 		}
 		if (worst < 0)
@@ -242,7 +245,9 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 				buffered = 0,
 				over_listed = 0,
 				over_dirty = 0,
-				covered;
+				covered,
+				shared,
+				shared_listed;
 	XLogRecPtr	lsn[SIFT_MAX_SEGMENTS];
 	uint64		sbytes[SIFT_MAX_SEGMENTS];
 	int			nseg,
@@ -307,6 +312,7 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 			buffered += nrows;
 		}
 	covered = sift_cseg_dir_units(snap);
+	shared = sift_cseg_dir_shared(snap, &shared_listed);
 	MemoryContextDelete(cx);
 	pfree(snap);
 	if (partitioned ? part_dirty || over_dirty * 100 > (uint64) sift_col_auto_merge_dirty_pct * over_listed :
@@ -319,6 +325,9 @@ maint_rewrite_check(Relation index, bool automatic, int *gates)
 	else if (key_overlap >= 2)
 		why = "key ranges overlap";
 	else if (covered > 0 && (!partitioned || over_listed > 0) && (double) listed >= sift_col_auto_merge_fragmentation * covered)
+		why = "fragmented units";
+	/* the peers of a key_cut build (each holds every key) have ranges of different lengths: they list the superblocks they share as many times as they overlap, not as often as the covered ones */
+	else if (maint_after_build && sift_col_key_cut(sift_col_rel(index)) && shared > 1 && (double) shared_listed >= sift_col_auto_merge_fragmentation * shared)
 		why = "fragmented units";
 	else if (overlay_due)
 	{

@@ -145,6 +145,7 @@ extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
 
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
 extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);
+extern uint64 sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed);
 
 /* A scope segment holds the fact rows replicated once per scope key (col/scope.h): the readers of the rows of the index never see it */
 static inline bool

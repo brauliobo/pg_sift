@@ -739,6 +739,54 @@ sift_cseg_dir_units(const SiftDirSnapshot *dir)
 	return units;
 }
 
+/* One end of the range of a segment: +1 where it starts, -1 after its last superblock */
+typedef struct RangeEnd
+{
+	uint64		at;
+	int			step;
+}			RangeEnd;
+
+static int
+range_end_cmp(const void *a, const void *b)
+{
+	const RangeEnd *x = a,
+			   *y = b;
+
+	return (x->at > y->at) - (x->at < y->at);
+}
+
+/*
+ * The superblocks that more than one immutable segment of dir lists, and the units listed on them. The ranges of the segments of a parallel build overlap
+ * whatever their lengths (the participants take superblocks as fast as they can), which the units listed over the superblocks covered do not say.
+ */
+uint64
+sift_cseg_dir_shared(const SiftDirSnapshot *dir, uint64 *listed)
+{
+	RangeEnd	ends[2 * SIFT_MAX_SEGMENTS];
+	int			n = 0,
+				depth = 0;
+	uint64		shared = 0;
+
+	*listed = 0;
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			ends[n++] = (RangeEnd) {dir->segs[i].sb_lo, 1};
+			ends[n++] = (RangeEnd) {(uint64) dir->segs[i].sb_hi + 1, -1};
+		}
+	qsort(ends, n, sizeof(RangeEnd), range_end_cmp);
+	for (int i = 0; i < n; i++)
+	{
+		depth += ends[i].step;
+		if (depth > 1 && i + 1 < n)
+		{
+			shared += ends[i + 1].at - ends[i].at;
+			*listed += (ends[i + 1].at - ends[i].at) * depth;
+		}
+	}
+	return shared;
+}
+
 void
 sift_col_dir_family(SiftDirSnapshot *snap, bool scope)
 {

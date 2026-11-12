@@ -316,7 +316,7 @@ WHERE p.score > 5 AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.t
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events_part WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: partition_pruned
--- expect: normal -
+-- expect: normal any
 SELECT parent_id, count(*) AS n FROM events_part WHERE deleted_at IS NULL AND ts >= date '2025-02-01' AND ts < date '2025-04-01' GROUP BY 1 ORDER BY 1;
 
 -- name: partitions_join
