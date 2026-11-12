@@ -8,8 +8,8 @@ pairs (the pairs of the first dim_a_id values of the big tenant are deleted and 
 read of 1 and of 10 tenants, three arms are measured; --paths two builds the scope of two paths (a tenant is granted dim_a_id values and groups, a group has dim_a_id values) and edits the pairs of a tenant
 no read asks for (other), of the big one and of the tiny one, directly granted (direct) or through a group that holds them (member), for 1 tenant reads: the scope units (`scope`, forced), the join as written (`join`, sift.agg_scope off) and the planner's choice (`chosen`). Each cell reports the
 absolute instructions of the backend (perf stat, median of 3), the shared blocks hit / read of a cold run (shared buffers emptied) and of a warm one, and whether the rows are md5-equal to the plain
-statement (sift.enable_agg off). The planner's pick is checked: `chosen` must be within TOL (3%) of the cheaper arm (60,000 instructions of a 2 million one); the exit code is 1 on a
-differing md5 and 2 on a cell over the tolerance (reported, the run goes on). A change to the pairs of other keys than the read's (`other`, or the other tenant) costs the read nothing: `chosen` must be within TOL of the same cell of the first state, which has no change, and RECORD_INSTR instructions for each changed pair (its journal records are read and sorted).
+statement (sift.enable_agg off). The planner's pick is checked against an absolute bar: `chosen` must cost at most BAR_INSTR instructions and BAR_BLOCKS cold blocks (hit + read) more than the cheaper arm; the exit code is 1 on a
+differing md5 and 2 on a cell over the bar (reported, the run goes on). A change to the pairs of other keys than the read's (`other`, or the other tenant) costs the read nothing: `chosen` must be within BAR_INSTR of the same cell of the first state, which has no change, and RECORD_INSTR instructions for each changed pair (its journal records are read and sorted).
 """
 import argparse
 import os
@@ -20,10 +20,14 @@ import subprocess
 import sys
 import time
 
-TOL = 0.03
+# The bar is absolute: a relative one fails the cheap statements (0.17 M instructions, 0.03 ms, are 4% of a 4 M one) and passes the dear ones (3% of 100 M is 3 M). What the node costs on its own
+# where it picks the cheaper arm: 0.09 M at most of the execution (the pricing of the read with its journal) and 0.31 M at most of the statement as sent (it plans the scope alternative too), 21 blocks
+# at most, in 111 correct picks of 5 shapes (3 to 1,500 members a tenant, 100,000 to 250,000 facts, one and two paths, clean and dirty) and in the 70 cells of this script. The same statement over
+# five identical builds varies by 0.04 M at most (the blocks not at all). The bar is that maximum and that spread, rounded up.
+BAR_INSTR = 350000
+BAR_BLOCKS = 25
 # the journal records of a changed pair of other keys (two: the row ended and the row inserted) are read and sorted by the statement that reads the key: about 120 instructions each, 150 for a pair that was changed
 RECORD_INSTR = 150
-FLOOR = 0
 ARMS = (('join', 'SET sift.enable_agg = on; SET sift.agg_scope = off; SET sift.test_scope_patch = off'),
         ('scope', 'SET sift.enable_agg = on; SET sift.agg_scope = on; SET sift.test_scope_patch = on'),
         ('chosen', 'SET sift.enable_agg = on; SET sift.agg_scope = on; SET sift.test_scope_patch = off'))
@@ -196,14 +200,16 @@ def main():
                 if len(set(md5.values())) != 1:
                     bad += 1
                     print(f'MD5 DIFFERS {label} {tn} {shape}: {md5}', file=sys.stderr)
-                best = min(res['join'][0], res['scope'][0])
+                best = min(('join', 'scope'), key=lambda arm: res[arm][0])
                 pick = 'scope' if 'Scope Units' in res['chosen'][3] else 'join'
-                if res['chosen'][0] > best * (1 + TOL) + FLOOR:
+                blocks = lambda arm: sum(res[arm][1])
+                if res['chosen'][0] > res[best][0] + BAR_INSTR or blocks('chosen') > blocks(best) + BAR_BLOCKS:
                     over += 1
+                    print(f'OVER THE BAR {label} {tn} {shape}: chosen {res["chosen"][0] / 1e6:.2f} M, {blocks("chosen")} blocks; {best} {res[best][0] / 1e6:.2f} M, {blocks(best)} blocks', file=sys.stderr)
                 # a change to the pairs of other keys costs the read of this key nothing: the cell of the first state, which has no change, is its cost
                 edited = None if not edit else 'big' if a.paths == 'one' else label.split()[1]
                 clean.setdefault((tn, shape), res['chosen'][0])
-                if edited not in (None, tn) and res['chosen'][0] > clean[(tn, shape)] * (1 + TOL) + RECORD_INSTR * int(label.split()[-1]):
+                if edited not in (None, tn) and res['chosen'][0] > clean[(tn, shape)] + BAR_INSTR + RECORD_INSTR * int(label.split()[-1]):
                     over += 1
                     print(f'OTHER KEYS COST {label} {tn} {shape}: {res["chosen"][0] / 1e6:.2f} M, {clean[(tn, shape)] / 1e6:.2f} M clean', file=sys.stderr)
                 for arm in ('join', 'scope', 'chosen'):
@@ -211,7 +217,7 @@ def main():
                     print(f"| {label} | {tn} | {shape} | {arm} | {ins / 1e6:.2f} | {cold[0]}/{cold[1]} | {warm[0]}/{warm[1]} | {pick if arm == 'chosen' else ''} |", flush=True)
         s.p.stdin.close()
         s.p.wait()
-    print(f'md5 differences: {bad}; cells over {TOL:.0%} of the cheaper arm + {FLOOR / 1e6} M: {over}')
+    print(f'md5 differences: {bad}; cells over the bar ({BAR_INSTR / 1e6} M instructions, {BAR_BLOCKS} blocks): {over}')
     sys.exit(1 if bad else 2 if over else 0)
 
 
