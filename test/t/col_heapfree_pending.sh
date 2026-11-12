@@ -2,14 +2,16 @@
 # A segment promoted while a transaction that inserted some of its rows had not finished waits for it (a pending stamp, SIFT_SEG_XPENDING) and says its inserters committed once they all
 # have. What the single-session test (col_heapfree_pending) cannot show: an inserter that dies with its backend (a power loss, kill -9: nothing says it rolled back, the recovery finds it
 # did not commit), the pending stamp that crash recovery and WAL replay give back as it was, and a hot standby whose snapshot is older than the commit that settled the stamp. Every
-# answer is compared with the same aggregate with the heap checking every page and with no sift plan at all.
+# answer is compared with the same aggregate with the heap checking every page and with no sift plan at all. The primary runs with wal_consistency_checking = 'generic': crash recovery and the
+# standby compare every page they rebuild (the directory with the pending stamp, and the one that settles it) with the page the primary wrote.
 . "$(dirname "$0")/lib.bash"
 
 plan 18
 ROWS=$(knob SIFT_HF_ROWS 20000 12000)
 CONF="max_prepared_transactions = 5
 autovacuum = off
-synchronous_commit = on"
+synchronous_commit = on
+wal_consistency_checking = 'generic'"
 node_init p 34 "$CONF"
 node_start p || bail "start failed"
 D=$(dir p)
