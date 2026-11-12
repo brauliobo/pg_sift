@@ -4,7 +4,7 @@
     PGHOST=.. PGPORT=.. python3 -I bench/steps/scope_dirty.py [--facts N] [--changed 1,20,200,2000] [--db NAME] [--keys 1,10]
 
 A table of N facts (200,000 by default, on a tmpfs cluster) with its member key, a pairs relation of (member, tenant) with its journal index, and one scope index. For each number of changed
-pairs (the pairs of the members of a big tenant are deleted and inserted again: a journaled edit that leaves the rows as they were) a fresh fixture is built, and for a tiny and a big tenant, and for a
+pairs (the pairs of the first dim_a_id values of the big tenant are deleted and inserted again: a journaled edit that leaves the rows as they were) a fresh fixture is built, and for a tiny and a big tenant, and for a
 read of 1 and of 10 tenants, three arms are measured: the scope units (`scope`, forced), the join as written (`join`, sift.agg_scope off) and the planner's choice (`chosen`). Each cell reports the
 absolute instructions of the backend (perf stat, median of 3), the shared blocks hit / read of a cold run (shared buffers emptied) and of a warm one, and whether the rows are md5-equal to the plain
 statement (sift.enable_agg off). The planner's pick is checked: `chosen` must be within TOL (3%) of the cheaper arm plus the planning floor FLOOR (0.3 M instructions); the exit code is 1 on a
@@ -74,7 +74,7 @@ SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift; CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP SCHEMA IF EXISTS sd CASCADE; CREATE SCHEMA sd; SET search_path = sd, public;
 SET sift.scope_max_multiplicity = 8;
--- 2,000 members; tenant 1 is big (every member), tenant 2 tiny (20 members), tenants 3..12 hold a tenth of the members each
+-- 2,000 dim_a_id values; tenant 1 is big (every one), tenant 2 tiny (20 of them), tenants 3..12 hold a tenth each
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT m, 1 FROM generate_series(1, 2000) m;
 INSERT INTO tenant_scope SELECT m, 2 FROM generate_series(1, 20) m;
