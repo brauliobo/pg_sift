@@ -350,10 +350,10 @@ RESET plan_cache_mode;
 -- the node's choice: with the price in charge the node runs the join where it costs less than the units for the keys it finds, and says so; the rows are the join's
 SET sift.test_scope_patch = off;
 SELECT f.n, r.planned, r.same FROM forms f, LATERAL gk(format(f.stmt, 'pairs4', '', '')) r WHERE f.n IN (1, 11) ORDER BY f.n;
- n  |                              planned                              | same 
-----+-------------------------------------------------------------------+------
-  1 | Keys: all; Group Key: k4; Fallback: join is cheaper for every key | t
- 11 | Keys: all; Fallback: join is cheaper for every key                | t
+ n  |                      planned                       | same 
+----+----------------------------------------------------+------
+  1 | Keys: all; Group Key: k4                           | t
+ 11 | Keys: all; Fallback: join is cheaper for every key | t
 (2 rows)
 
 -- a group by the key through the join of the units: the same statement with the choice off reads the units
