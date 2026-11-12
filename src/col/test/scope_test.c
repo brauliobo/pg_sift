@@ -306,7 +306,7 @@ in_scope(FunctionCallInfo fcinfo, const int64 *keys, int nkeys)
 			pfree(st->members);
 			pfree(st->keys);
 		}
-		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), snap, keys, nkeys, &st->n);
+		st->members = sift_scope_members(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)), NULL, snap, keys, nkeys, &st->n);
 		st->keys = memcpy(palloc(nkeys * sizeof(int64)), keys, nkeys * sizeof(int64));
 		st->nkeys = nkeys;
 		st->index = indexoid;

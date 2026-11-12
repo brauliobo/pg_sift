@@ -27,9 +27,12 @@ typedef struct SiftAggOrd
  * The scope conjunct of a scan (col/scope.h): the rows whose member key has a pair with one of the scope keys, which the scan reads from the scope segments of its
  * index, or, when it cannot (agg/scope.c says why), from the entity rows of the members the scope relation lists for the keys. No other conjunct of the spec is about it.
  */
+struct SiftKeyMap;
+
 typedef struct SiftAggScope
 {
 	const char *key_name;		/* the scope of the index: the leaf "<key_name>#scope" holds its key */
+	Oid			key_type;		/* text, varchar or uuid: the keys are codes of the key map of the statement (col/scope_keys.c, scope_keys_init); InvalidOid: the key is an integer */
 	int			fk;				/* the leaf of the member key (the entity rows of the fallback are read by it) */
 	int			nkeys;			/* with param: what the planner expects of it, until the scan starts */
 	int64	   *keys;			/* sorted, each once */
@@ -50,8 +53,8 @@ typedef struct SiftAggScope
 /* The leaf of the derived key "<key_name>#scope" in the layout of a scope index; -1 when it has none */
 extern int	sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name);
 
-/* The keys of a value of an integer type or of an array of one (int2, int4, int8), sorted and each once */
-extern int64 *sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n);
+/* The keys of a value of an integer type or of an array of one (int2, int4, int8), sorted and each once; with km (a text or uuid key), the codes of the values */
+extern int64 *sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n, struct SiftKeyMap *km);
 
 typedef struct SiftAggSpec
 {

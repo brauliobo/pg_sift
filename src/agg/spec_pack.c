@@ -173,6 +173,7 @@ codec_scope(Codec *c, SiftAggScope **sc)
 	if (c->rd)
 		*sc = palloc0(sizeof(SiftAggScope));
 	PKS((c), (*sc)->key_name);
+	PK(c, (*sc)->key_type);
 	PK(c, (*sc)->fk);
 	PKN(c, (*sc)->param);
 	PKS_OPT(c, (*sc)->param_desc);

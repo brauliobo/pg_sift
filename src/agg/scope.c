@@ -114,8 +114,8 @@ listed_members(AggExec *ex, Snapshot snapshot, uint32 *n)
 	for (int i = 0; i < sc->nkeys; i++)
 		if (nk == 0 || sorted[nk - 1] != sorted[i])
 			sorted[nk++] = sorted[i];
-	if (!OidIsValid(journal) || !lookcol_members(rel, journal, snapshot, member, skey, sorted, nk, &members, n))
-		members = sift_scope_members(ex->heap, ex->index, sc->key_name, snapshot, sc->keys, sc->nkeys, n);
+	if (!OidIsValid(journal) || ex->scope_km != NULL || !lookcol_members(rel, journal, snapshot, member, skey, sorted, nk, &members, n))
+		members = sift_scope_members(ex->heap, ex->index, sc->key_name, ex->scope_km, snapshot, sc->keys, sc->nkeys, n);
 	table_close(rel, NoLock);
 	return members;
 }
@@ -436,7 +436,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		}
 		max_changed = changed_limit(sc, &c);
 	}
-	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
+	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, ex->scope_km, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
 										ex->spec->topn != NULL, leaves, nleaves, max_changed, priced);
 	if (priced && rd->why == NULL && rd->stage != NULL)
 	{

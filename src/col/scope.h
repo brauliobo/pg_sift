@@ -63,6 +63,8 @@ extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftSc
 extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
 /* CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
+/* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
+extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
@@ -118,6 +120,8 @@ extern Oid	sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumbe
 extern bool sift_scope_has_journal(Relation index, int scope);
 /* Does the index declare a scope of two paths (column format minor 49) */
 extern bool sift_scope_two_paths(Relation index);
+/* Does the index declare a scope whose key is a text, varchar or uuid column (column format minor 50) */
+extern bool sift_scope_coded(Relation index);
 /*
  * The journals of the scopes of the index, made with the writers of the scope relations held out to the end of the statement. read_after: the build reads the relations under snapshots it takes
  * after this call, so that it stamps the segments with the journal it makes here (else the first scope index of a relation says "unfilled" until a REINDEX)
@@ -437,7 +441,7 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 /* The rows of the patch (sift_scope_segment_rows): the delta takes them after the price of the read was taken (patch_rows and patch_scan are only expected until then); a read that is not to be made frees what the plan holds */
 extern void sift_scope_read_rows(SiftScopeRead *rd);
 /* lazy: the read stops after the journal (the changed members, the write buffers and what the patch is expected to cost): the caller decides whether the pairs are worth asking for, and asks (sift_scope_read_pairs) */
-extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, const int64 *keys, int nkeys, bool once, bool topn,
+extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once, bool topn,
 									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
 extern void sift_scope_read_pairs(SiftScopeRead *rd);
 /*
@@ -450,7 +454,9 @@ extern bool sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
 /* The groups (via values) the joined relation lists under snap for the keys (sorted, distinct), of a scope of two paths */
 extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n);
-extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+/* The map of the codes of the scope key (NULL for an integer key): one for each statement that reads the scope, which every key, pair and group of the read goes through (col/scope_keys.c) */
+extern SiftKeyMap *sift_scope_keymap(Relation heap, Relation index, const char *key_name);
 /* The rows of the relations a read lists the pairs of the scope from (the estimate of each): the pairs relation, and for two paths the joined and the via relations; *scanned of them those whose pairs the leaves of no journal index list */
 extern double sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned);
 /* The relation of pairs of the scope (open, AccessShare) with its member and scope key columns, and the journal index of the relation: a sift_col index that holds both columns */

@@ -708,6 +708,19 @@ map_codes(SiftVStore *vs, SiftCDict *batch, uint32 *map)
 	}
 }
 
+void
+sift_vstore_refresh(SiftVStore *vs)
+{
+	pfree(view_refresh(vs));
+	view_index(vs);
+}
+
+int64
+sift_vstore_find_code(SiftVStore *vs, const char *s, uint32 len)
+{
+	return view_find(vs->view, s, len, sift_cdict_mem_hash(s, len));
+}
+
 /*
  * map[i]: the code of the value i of the batch (batch->n entries) in the current epoch of the store, which is returned in *epoch with the codes it holds in *ncodes;
  * the values the store has not got are appended as one run. Returns how many were. The caller holds the store in RowExclusiveLock to the end of its transaction,

@@ -39,6 +39,7 @@ typedef enum SiftColStore
 #define SIFT_COLD_NET		0x0010	/* with SIFT_COLD_SHAPE: the head of a network (inet, cidr): the node of its block and the host bits inside it, a range has the start and the end */
 #define SIFT_COLD_FOUND	0x0020	/* the flag of a connection (col/conn.h, leaf "<fk>#found"): the parent row of the key was found; not a column of the table, its attno is the attribute that holds the key */
 #define SIFT_COLD_SCOPE	0x0040	/* the derived key of a scope (col/scope.h, leaf "<key_name>#scope"): the scope key of the row through its scope relation, an int8; NULL in every row an entity segment or the write buffer holds, filled in the scope segments; not a column of the table, its attno is the attribute that holds the member key */
+#define SIFT_COLD_CODED	0x0080	/* with SIFT_COLD_SCOPE: the scope key is a text, varchar or uuid value and the leaf holds its code in the value store of the key column of the scope relation (col/scope_keys.c), not the key; column format minor 50 */
 #define SIFT_COLD_DERIVED	(SIFT_COLD_FOUND | SIFT_COLD_SCOPE)	/* a leaf no column of the table holds: the writer of a segment fills it from another table */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 

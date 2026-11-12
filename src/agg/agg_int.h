@@ -265,6 +265,7 @@ typedef struct AggExec
 	uint64		found_keys;		/* the keys the journal of the parent names for them: the rows of those are outside the proof of the flag */
 	const char *found_why;		/* why a join of a connected index was not (the first of them) */
 	struct SiftScopeRead *scope_rd;	/* what the scan reads for its scope conjunct (scope_open): the scope units less the members that changed, plus the entity rows of those of them that have a pair now */
+	struct SiftKeyMap *scope_km;	/* a text or uuid scope key: the codes of its values for this execution (scope_keys_init) */
 	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
 	uint64		scope_members;	/* ... and how many members it listed */
 	int			scope_preds;	/* the conjuncts scope_filter added to the spec */

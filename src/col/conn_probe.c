@@ -40,6 +40,7 @@ struct SiftConnProbe
 	Oid			parent;
 	Oid			index;
 	Oid			keytype;
+	SiftKeyMap *km;				/* the probed column is not an integer: a key is its code (sift_conn_probe_codec) */
 	AttrNumber	pos;			/* the probed column in the btree */
 	Snapshot	snap;
 	MemoryContext cx;
@@ -83,9 +84,24 @@ sift_conn_probe_begin_on(MemoryContext cx, Relation parent, Oid btree, AttrNumbe
 	return p;
 }
 
-static bool
-key_datum(Oid typid, int64 k, Datum *d, RegProcedure *eq)
+void
+sift_conn_probe_codec(SiftConnProbe *p, SiftKeyMap *km)
 {
+	p->km = km;
+	p->keytype = sift_keymap_typid(km) == UUIDOID ? UUIDOID : TEXTOID;
+}
+
+static bool
+key_datum(const SiftConnProbe *p, int64 k, Datum *d, RegProcedure *eq)
+{
+	Oid			typid = p->keytype;
+
+	if (p->km != NULL)
+	{
+		*d = sift_keymap_datum(p->km, k);
+		*eq = typid == UUIDOID ? F_UUID_EQ : F_TEXTEQ;
+		return true;
+	}
 	switch (typid)
 	{
 		case INT2OID:
@@ -120,9 +136,9 @@ sift_conn_probe_key(SiftConnProbe *p, SiftConnProbeScan *s, int64 key, SiftConnP
 	Datum		d;
 	RegProcedure eq;
 
-	if (!key_datum(p->keytype, key, &d, &eq))
+	if (!key_datum(p, key, &d, &eq))
 		return;
-	ScanKeyInit(&skey, p->pos, BTEqualStrategyNumber, eq, d);
+	ScanKeyEntryInitialize(&skey, 0, p->pos, BTEqualStrategyNumber, InvalidOid, p->km != NULL ? sift_keymap_collation(p->km) : InvalidOid, eq, d);
 	index_rescan(s->scan, &skey, 1, NULL, 0);
 	while (index_getnext_slot(s->scan, ForwardScanDirection, s->slot) && each(arg, s->slot))
 		;
@@ -141,11 +157,11 @@ sift_conn_probe_keys(SiftConnProbe *p, SiftConnProbeScan *s, const int64 *keys, 
 	ScanKeyData skey;
 
 	for (uint32 i = 0; i < n; i++)
-		nv += key_datum(p->keytype, keys[i], &vals[nv], &eq);
+		nv += key_datum(p, keys[i], &vals[nv], &eq);
 	if (nv > 0)
 	{
 		get_typlenbyvalalign(p->keytype, &len, &byval, &align);
-		ScanKeyEntryInitialize(&skey, SK_SEARCHARRAY, p->pos, BTEqualStrategyNumber, p->keytype, InvalidOid, eq,
+		ScanKeyEntryInitialize(&skey, SK_SEARCHARRAY, p->pos, BTEqualStrategyNumber, p->keytype, p->km != NULL ? sift_keymap_collation(p->km) : InvalidOid, eq,
 							   PointerGetDatum(construct_array(vals, nv, p->keytype, len, byval, align)));
 		index_rescan(s->scan, &skey, 1, NULL, 0);
 		while (index_getnext_slot(s->scan, ForwardScanDirection, s->slot) && each(arg, s->slot))

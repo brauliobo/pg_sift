@@ -56,14 +56,27 @@ key_of(Oid typid, Datum d, int64 *out)
 	}
 }
 
-/* The integer key of a column of the row, false for a NULL */
+/* The key of a value: its integer, or its code when the column has a map (false for a value without one) */
+static bool
+value_key(Oid typid, Datum d, SiftKeyMap *km, int64 *k)
+{
+	return km != NULL ? sift_keymap_code(km, d, k) : key_of(typid, d, k);
+}
+
+/* The integer key of a column of the row (its code when km maps the column), false for a NULL */
 bool
-sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
+sift_conn_slot_code(TupleTableSlot *slot, AttrNumber att, SiftKeyMap *km, int64 *k)
 {
 	bool		isnull;
 	Datum		d = slot_getattr(slot, att, &isnull);
 
-	return !isnull && key_of(TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid, d, k);
+	return !isnull && value_key(TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid, d, km, k);
+}
+
+bool
+sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
+{
+	return sift_conn_slot_code(slot, att, NULL, k);
 }
 
 /*
@@ -122,17 +135,17 @@ btree_pos(Relation idx, AttrNumber att)
 
 /* The integer key of the column at position pos of the index tuple, false for a NULL */
 static bool
-itup_key(IndexScanDesc scan, int pos, int64 *k)
+itup_key(IndexScanDesc scan, int pos, SiftKeyMap *km, int64 *k)
 {
 	bool		isnull;
 	Datum		d = index_getattr(scan->xs_itup, pos, scan->xs_itupdesc, &isnull);
 
-	return !isnull && key_of(TupleDescAttr(scan->xs_itupdesc, pos - 1)->atttypid, d, k);
+	return !isnull && value_key(TupleDescAttr(scan->xs_itupdesc, pos - 1)->atttypid, d, km, k);
 }
 
 /* The rows of the btree, which holds both columns, as an index only scan reads them: the entries of its partial predicate are its rows, and the heap is asked only for those on a page the map does not hold all-visible */
 static void
-scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
+scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
 	Relation	idx = index_open(btree, AccessShareLock);
 	IndexScanDesc scan = sift_index_beginscan(rel, idx, snap, 0);
@@ -156,7 +169,7 @@ scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, Snapsh
 		}
 		else
 			PredicateLockPage(rel, blk, snap);
-		if (itup_key(scan, pos, &k) && (pos2 == 0 || itup_key(scan, pos2, &k2)))
+		if (itup_key(scan, pos, NULL, &k) && (pos2 == 0 || itup_key(scan, pos2, km2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -170,12 +183,18 @@ scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, Snapsh
 void
 sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
+	sift_conn_scan_pairs(rel, pred_index, key, key2, NULL, snap, f, arg);
+}
+
+void
+sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
+{
 	TableScanDesc scan;
 	TupleTableSlot *slot;
 
 	if (OidIsValid(pred_index))
 	{
-		scan_btree_keys(rel, pred_index, key, key2, snap, f, arg);
+		scan_btree_keys(rel, pred_index, key, key2, km2, snap, f, arg);
 		return;
 	}
 	scan = sift_table_beginscan(rel, snap, 0, NULL);
@@ -185,7 +204,7 @@ sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key
 		int64		k,
 					k2 = 0;
 
-		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_key(slot, key2, &k2)))
+		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_code(slot, key2, km2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}

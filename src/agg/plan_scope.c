@@ -48,6 +48,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/typcache.h"
 
 #include "agg/plan_int.h"
 #include "col/am.h"
@@ -183,7 +184,7 @@ marker_scope(AggCtx *c, Node *q, const char **why)
 	if (key->consttype == INT8ARRAYOID && ARR_HASNULL(DatumGetArrayTypeP(key->constvalue)))
 		return no_scope(why, "a scope key is NULL");
 	proto.key_name = TextDatumGetCString(name->constvalue);
-	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys);
+	proto.keys = sift_agg_scope_keys(key->consttype, key->constvalue, false, &proto.nkeys, NULL);
 	proto.once = strcmp(get_func_name(f->funcid), "in_scope") == 0;
 	if (!proto.once && scope_multiset(c->indexoid, proto.key_name))
 		return no_scope(why, SCOPE_MULTISET);
@@ -197,6 +198,16 @@ bool
 integer_eq(Oid opno)
 {
 	return op_in_opfamily(opno, INTEGER_BTREE_FAM_OID) && get_op_opfamily_strategy(opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber;
+}
+
+/* the equality of a scope key: the integer one, or the `=` of text (also varchar) or uuid under a deterministic collation, where the bytes of the values decide it, as the codes of the key map do */
+static bool
+key_eq(Oid opno, Oid collation)
+{
+	if (integer_eq(opno))
+		return true;
+	return (opno == lookup_type_cache(TEXTOID, TYPECACHE_EQ_OPR)->eq_opr || opno == lookup_type_cache(UUIDOID, TYPECACHE_EQ_OPR)->eq_opr) &&
+		(!OidIsValid(collation) || get_collation_isdeterministic(collation));
 }
 
 /* the relation r of a declaration is the table relid */
@@ -404,12 +415,12 @@ key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
 	Node	   *col,
 			   *val;
 
-	if (IsA(q, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) q)->useOr && integer_eq(((ScalarArrayOpExpr *) q)->opno))
+	if (IsA(q, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) q)->useOr && key_eq(((ScalarArrayOpExpr *) q)->opno, ((ScalarArrayOpExpr *) q)->inputcollid))
 	{
 		col = linitial(((ScalarArrayOpExpr *) q)->args);
 		val = lsecond(((ScalarArrayOpExpr *) q)->args);
 	}
-	else if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2 && integer_eq(((OpExpr *) q)->opno))
+	else if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2 && key_eq(((OpExpr *) q)->opno, ((OpExpr *) q)->inputcollid))
 	{
 		col = linitial(((OpExpr *) q)->args);
 		val = lsecond(((OpExpr *) q)->args);
@@ -445,7 +456,7 @@ key_equality(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q
 	Var		   *mine,
 			   *theirs;
 
-	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !integer_eq(op->opno))
+	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !key_eq(op->opno, op->inputcollid))
 		return NULL;
 	mine = item_var(linitial(op->args), rti);
 	theirs = other_var(lsecond(op->args), rti);
@@ -480,19 +491,23 @@ key_source(AggCtx *c, Node *val, SiftAggScope *sc)
 {
 	Oid			type = exprType(val);
 	Oid			elem = type_is_array(type) ? get_element_type(type) : type;
+	bool		coded = OidIsValid(sc->key_type);
 
-	if (elem != INT2OID && elem != INT4OID && elem != INT8OID)
+	if (coded ? !(sc->key_type == UUIDOID ? elem == UUIDOID : elem == TEXTOID || elem == VARCHAROID) : elem != INT2OID && elem != INT4OID && elem != INT8OID)
 		return false;
-	if (IsA(val, Const))
+	if (coded && IsA(val, Const) && ((Const *) val)->constisnull)
+		return false;
+	if (IsA(val, Const) && !coded)
 	{
-		sc->keys = sift_agg_scope_keys(type, ((Const *) val)->constvalue, ((Const *) val)->constisnull, &sc->nkeys);
+		sc->keys = sift_agg_scope_keys(type, ((Const *) val)->constvalue, ((Const *) val)->constisnull, &sc->nkeys, NULL);
 		return !((Const *) val)->constisnull;
 	}
 	sc->param_desc = expr_text(c, val);
 	if (pseudo_const(val))
 	{
 		sc->param = val;
-		sc->nkeys = elem == type ? 1 : IsA(val, ArrayExpr) ? list_length(((ArrayExpr *) val)->elements) : SCOPE_PARAM_KEYS;
+		sc->nkeys = elem == type ? 1 : IsA(val, ArrayExpr) ? list_length(((ArrayExpr *) val)->elements) : IsA(val, Const) ? ArrayGetNItems(ARR_NDIM(DatumGetArrayTypeP(((Const *) val)->constvalue)),
+					ARR_DIMS(DatumGetArrayTypeP(((Const *) val)->constvalue))) : SCOPE_PARAM_KEYS;
 	}
 	else if (IsA(val, Param) && ((Param *) val)->paramkind == PARAM_EXEC && initplan_ok(c, (Param *) val))
 	{
@@ -560,6 +575,15 @@ arm_key(AggCtx *c, const ScopeItem *it, Node *keyq, Node *keyval, SiftAggScope *
 	return key_source(c, it->key, sc) ? NULL : "the arms of the union bind the scope key by other than constants or parameters";
 }
 
+/* the type of the key column of the scope when it is coded (text, varchar, uuid), else InvalidOid */
+static Oid
+coded_key_type(Oid relid, const SiftScopeSpec *sp)
+{
+	Oid			type = get_atttype(relid, get_attnum(relid, sp->rel.b));
+
+	return sift_keymap_type(type) ? type : InvalidOid;
+}
+
 /*
  * The item rti of the FROM list as the scope join of the index: what the pass takes out of it is in t. NULL: it is, and the pass has its conditions; NOT_SCOPE: it is not the scope relation
  * of the index; else why it is but not a join the scope read answers.
@@ -595,6 +619,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		return why;
 	if (sp->joined != NULL && !it.is_union)
 		return "the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set";
+	sc.key_type = coded_key_type(relid, sp);
 	foreach_ptr(LeftJoin, o, fs->lefts)
 		if (o->rti == rti)
 			lj = o;
@@ -623,6 +648,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			return "another item of the FROM list reads the scope relation";
 	if ((why = key_above(c, rti, map, nmap, get_attnum(relid, sp->rel.b), lj == NULL, &key_read)) != NULL)
 		return why;
+	if (key_read && OidIsValid(sc.key_type))
+		return "the statement groups by a text or uuid scope key: the groups of a coded key are not read from the units yet";
 	own = bms_add_member(bms_make_singleton(rti), c->relid);
 	foreach_ptr(Node, q, pool)
 	{

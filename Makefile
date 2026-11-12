@@ -298,6 +298,7 @@ TESTING_REGRESS += col_scope_precheck
 TESTING_REGRESS += col_scope_price_terms
 TESTING_REGRESS += col_scope_read
 TESTING_REGRESS += col_scope_refresh_price
+TESTING_REGRESS += col_scope_textkey
 TESTING_REGRESS += col_scope_twohop_build
 TESTING_REGRESS += col_scope_twohop_choice
 TESTING_REGRESS += col_scope_twohop_declare

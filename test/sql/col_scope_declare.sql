@@ -27,6 +27,7 @@ $$ DECLARE r text; BEGIN EXECUTE format('SELECT md5(string_agg(t::text, '','' OR
 -- the relations a scope can name, and what is wrong with the others
 CREATE TABLE pairs_nullable (m int, s int, UNIQUE (m, s));
 CREATE TABLE pairs_text (m text NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
+CREATE TABLE pairs_numeric (m int NOT NULL, s numeric NOT NULL, PRIMARY KEY (m, s));
 CREATE TABLE pairs_plain (m int NOT NULL, s int NOT NULL);
 CREATE TABLE pairs_three (m int NOT NULL, s int NOT NULL, x int NOT NULL, PRIMARY KEY (m, s, x));
 CREATE TABLE pairs_partial (m int NOT NULL, s int NOT NULL);
@@ -61,7 +62,8 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('scope key column missing', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, nothing)'),
 	('same column twice', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, dim_a_id)'),
 	('member not an integer', 'tenant_id: dim_a_id -> pairs_text(m, s)'),
-	('scope key not an integer', 'tenant_id: dim_a_id -> pairs_text(s, m)'),
+	('scope key not an integer, text or uuid', 'tenant_id: dim_a_id -> pairs_numeric(m, s)'),
+	('text scope key, no journal index', 'tenant_id: dim_a_id -> pairs_text(s, m)'),
 	('nullable columns', 'tenant_id: dim_a_id -> pairs_nullable(m, s)'),
 	('no btree', 'tenant_id: dim_a_id -> pairs_plain(m, s)'),
 	('btree on three columns', 'tenant_id: dim_a_id -> pairs_three(m, s)'),
@@ -174,7 +176,7 @@ ALTER INDEX events_two RESET (scope);
 SELECT edges('events_two') AS after_scope_reset;
 DROP INDEX events_two;
 DROP SCHEMA other CASCADE;
-DROP TABLE tenant_scope, dim_a, events, pairs_nullable, pairs_text, pairs_plain, pairs_three, pairs_partial, pairs_deferrable, pairs_include, pairs_part CASCADE;
+DROP TABLE tenant_scope, dim_a, events, pairs_nullable, pairs_text, pairs_numeric, pairs_plain, pairs_three, pairs_partial, pairs_deferrable, pairs_include, pairs_part CASCADE;
 DROP FUNCTION edges(regclass);
 DROP FUNCTION try(text);
 DROP FUNCTION answers(text);

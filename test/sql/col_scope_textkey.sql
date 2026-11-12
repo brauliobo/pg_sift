@@ -1,0 +1,169 @@
+-- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the value store of the key column of the pairs, and every read
+-- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
+-- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET default_statistics_target = 1000;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
+-- entities 1 to 360 are members of tenant 'tenant-' (1 + id % 10), one in seven of a second tenant; the others are in no tenant
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT i, 'tenant-' || (1 + i % 10) FROM generate_series(1, 360) i;
+INSERT INTO tenant_scope SELECT i, 'tenant-' || (1 + (i * 3 + 1) % 10) FROM generate_series(1, 360) i WHERE i % 7 = 0 ON CONFLICT DO NOTHING;
+-- keys that differ in the bytes: a case, an accent, an empty key, a long one, a key with a space
+INSERT INTO tenant_scope SELECT 100 + i, k FROM unnest(ARRAY['Tenant-4', 'tenant-4 ', 'ténant-4', '', repeat('long-', 400)]) WITH ORDINALITY t (k, i);
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+
+-- the same shape with a varchar key and with a uuid key
+CREATE TABLE var_scope (dim_a_id int NOT NULL, tenant_id varchar(20) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO var_scope SELECT dim_a_id, tenant_id FROM tenant_scope;
+CREATE INDEX var_scope_journal ON var_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE var_events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO var_events SELECT id, dim_a_id, kind, amount FROM events;
+CREATE INDEX var_events_col ON var_events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> var_scope(dim_a_id, tenant_id)');
+REINDEX INDEX var_events_col;
+CREATE TABLE uuid_scope (dim_a_id int NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO uuid_scope SELECT dim_a_id, md5(tenant_id)::uuid FROM tenant_scope;
+CREATE INDEX uuid_scope_journal ON uuid_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE uuid_events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO uuid_events SELECT id, dim_a_id, kind, amount FROM events;
+CREATE INDEX uuid_events_col ON uuid_events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> uuid_scope(dim_a_id, tenant_id)');
+REINDEX INDEX uuid_events_col;
+
+-- the tables of keys: the tenants of a user (user 1 has three, user 2 one, user 3 none)
+CREATE TABLE my_tenants (user_id int, tenant_id text, PRIMARY KEY (user_id, tenant_id));
+INSERT INTO my_tenants VALUES (1, 'tenant-2'), (1, 'tenant-5'), (1, 'tenant-9'), (2, 'tenant-3');
+VACUUM (FREEZE, ANALYZE) events, tenant_scope, var_events, var_scope, uuid_events, uuid_scope, my_tenants;
+
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+ ('IN, one key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 'tenant-4') GROUP BY kind$q$),
+ ('IN, a list', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('tenant-4', 'tenant-5', 'tenant-6')) GROUP BY kind$q$),
+ ('IN, ANY of an array', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY ('{tenant-4,tenant-7}'::text[])) GROUP BY kind$q$),
+ ('IN, a key the store has not', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('tenant-4', 'tenant-none')) GROUP BY kind$q$),
+ ('IN, no key the store has', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 'tenant-none') GROUP BY kind$q$),
+ ('IN, a case other than the stored', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('Tenant-4', 'TENANT-4')) GROUP BY kind$q$),
+ ('IN, a space and an accent', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('tenant-4 ', 'ténant-4')) GROUP BY kind$q$),
+ ('IN, the empty key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = '') GROUP BY kind$q$),
+ ('IN, a long key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = repeat('long-', 400)) GROUP BY kind$q$),
+ ('IN, a key only the pairs added later have', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 'tenant-new') GROUP BY kind$q$),
+ ('IN, nested IN', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id FROM my_tenants WHERE user_id = 1)) GROUP BY kind$q$),
+ ('IN, nested IN, no keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id FROM my_tenants WHERE user_id = 3)) GROUP BY kind$q$),
+ ('EXISTS', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = 'tenant-4') GROUP BY kind$q$),
+ ('join, one key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 'tenant-4' GROUP BY kind$q$),
+ ('join, a list, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ('tenant-4', 'tenant-5') GROUP BY kind$q$),
+ ('join, a table of keys, one key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = 2 GROUP BY kind$q$),
+ ('varchar key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
+ ('varchar key, a text parameter type', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id = 'tenant-4'::text) GROUP BY kind$q$),
+ ('uuid key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id IN (md5('tenant-4')::uuid, md5('tenant-5')::uuid)) GROUP BY kind$q$),
+ ('uuid key, a literal', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id = '00000000-0000-0000-0000-000000000001') GROUP BY kind$q$);
+
+-- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
+CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text; plan text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		plan := plan || l || E'\n';
+	END LOOP;
+	IF plan ~ 'Scope Index: ' THEN
+		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
+	END IF;
+	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
+	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+END $$;
+
+-- the rows of the statement as planned, with sift.agg_scope off and with sift.enable_agg off (the normal plan)
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS scope_rows;
+	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM scope_rows t;
+	DROP TABLE scope_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text;
+BEGIN
+	a := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'off', false);
+	b := rows_md5(q);
+	PERFORM set_config('sift.enable_agg', 'off', false);
+	c := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'on', false);
+	PERFORM set_config('sift.enable_agg', 'on', false);
+	RETURN a = b AND b = c;
+END $$;
+
+-- what the run did: the reader's refusal, the keys it patched, the members it listed, else the units
+CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
+		END IF;
+	END LOOP;
+	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+END $$;
+
+SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
+SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
+
+-- a prepared statement: the keys are the value of its parameters at each execution (a text, an array, a key the store has not)
+PREPARE one(text) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind;
+PREPARE many(text[]) AS SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY ($1)) GROUP BY kind;
+SET plan_cache_mode = force_generic_plan;
+SELECT same('EXECUTE one(''tenant-4'')') AS one_4, same('EXECUTE one(''tenant-none'')') AS one_none, same('EXECUTE many(''{tenant-4,tenant-8}'')') AS many, same('EXECUTE many(''{}'')') AS many_empty;
+SELECT run_of('EXECUTE one(''tenant-4'')') AS run_one, run_of('EXECUTE many(''{tenant-4,tenant-8}'')') AS run_many;
+RESET plan_cache_mode;
+
+-- the pairs change: a pair added (a known key, a key the store has not), removed, re-keyed, a key that leaves every pair, a member that leaves, and a member that arrives
+CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
+	SELECT f.name, same(f.q) FROM forms f ORDER BY f.name COLLATE "C"
+$$;
+INSERT INTO tenant_scope VALUES (2, 'tenant-4'), (9, 'tenant-new'), (401, 'tenant-4');
+INSERT INTO var_scope VALUES (2, 'tenant-4'), (9, 'tenant-new'), (401, 'tenant-4');
+INSERT INTO uuid_scope VALUES (2, md5('tenant-4')::uuid), (9, md5('tenant-new')::uuid), (401, md5('tenant-4')::uuid);
+SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'join, a list, a row for each pair') ORDER BY name COLLATE "C";
+
+DELETE FROM tenant_scope WHERE tenant_id = 'tenant-4' AND dim_a_id % 5 = 0;
+DELETE FROM var_scope WHERE tenant_id = 'tenant-4' AND dim_a_id % 5 = 0;
+DELETE FROM uuid_scope WHERE tenant_id = md5('tenant-4')::uuid AND dim_a_id % 5 = 0;
+SELECT 'removed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+
+UPDATE tenant_scope SET tenant_id = 'tenant-5' WHERE tenant_id = 'tenant-6' AND dim_a_id % 2 = 0;
+UPDATE var_scope SET tenant_id = 'tenant-5' WHERE tenant_id = 'tenant-6' AND dim_a_id % 2 = 0;
+UPDATE uuid_scope SET tenant_id = md5('tenant-5')::uuid WHERE tenant_id = md5('tenant-6')::uuid AND dim_a_id % 2 = 0;
+SELECT 're-keyed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+
+DELETE FROM tenant_scope WHERE tenant_id = 'tenant-4';
+DELETE FROM var_scope WHERE tenant_id = 'tenant-4';
+DELETE FROM uuid_scope WHERE tenant_id = md5('tenant-4')::uuid;
+SELECT 'key gone' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+
+UPDATE events SET dim_a_id = 7 WHERE id % 50 = 0;
+UPDATE var_events SET dim_a_id = 7 WHERE id % 50 = 0;
+UPDATE uuid_events SET dim_a_id = 7 WHERE id % 50 = 0;
+INSERT INTO events SELECT 6000 + i, 1 + i % 360, date '2025-06-01', 'k0', 5 FROM generate_series(1, 300) i;
+INSERT INTO var_events SELECT id, dim_a_id, kind, amount FROM events WHERE id > 6000;
+INSERT INTO uuid_events SELECT id, dim_a_id, kind, amount FROM events WHERE id > 6000;
+SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+
+-- the stored units and the delta agree after the pairs are merged into the index (REINDEX) and after a VACUUM
+VACUUM events, tenant_scope, var_events, var_scope, uuid_events, uuid_scope;
+SELECT 'vacuumed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+REINDEX INDEX events_col;
+REINDEX INDEX var_events_col;
+REINDEX INDEX uuid_events_col;
+SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
+SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'IN, nested IN') ORDER BY name COLLATE "C";
+
+SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true);

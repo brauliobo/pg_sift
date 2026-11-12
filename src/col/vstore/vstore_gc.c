@@ -23,6 +23,7 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "col/scope.h"
 #include "col/vstore/vstore.h"
 #include "utils/builtins.h"
 
@@ -68,7 +69,7 @@ sift_col_value_store_begin(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 	vs = open_locked(store);
 	sift_vstore_usage(store, &epoch, &total, &live, &epochs);
-	if (live < total)
+	if (live < total && !sift_scope_key_store_pinned(store))
 		sift_vstore_bump_epoch(vs);
 	sift_vstore_close(vs);
 	PG_RETURN_OID(store);
@@ -145,7 +146,7 @@ vacuum_store(Oid store)
 		sift_vstore_usage(store, &epoch, &total, &live, &epochs);
 		(void) sift_vstore_retire(vs, epochs);
 	}
-	else if (bytes >= (int64) sift_vstore_gc_kb * 1024)
+	else if (bytes >= (int64) sift_vstore_gc_kb * 1024 && !sift_scope_key_store_pinned(store))
 	{
 		sift_vstore_usage(store, &epoch, &total, &live, &epochs);
 		if (total > 0 && (total - live) * 100 >= total * VSTORE_GARBAGE_PCT)

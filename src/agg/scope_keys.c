@@ -12,11 +12,24 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg_int.h"
+#include "col/scope.h"
 #include "core/cmp.h"
+
+/* the key of a value: the integer, or its code in the map of a text or uuid key */
+static int64
+key_of(Oid elem, Datum v, SiftKeyMap *km)
+{
+	int64		code;
+
+	if (km == NULL)
+		return elem == INT2OID ? DatumGetInt16(v) : elem == INT4OID ? DatumGetInt32(v) : DatumGetInt64(v);
+	(void) sift_keymap_code(km, v, &code);
+	return code;
+}
 
 /* the keys of a value of an integer type or an array of one: sorted, each once (the NULLs of an array and a NULL value match nothing) */
 int64 *
-sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n)
+sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n, SiftKeyMap *km)
 {
 	Oid			elem = type_is_array(type) ? get_element_type(type) : type;
 	Datum	   *vals = &value;
@@ -39,7 +52,7 @@ sift_agg_scope_keys(Oid type, Datum value, bool isnull, int *n)
 	keys = palloc(Max(nvals, 1) * sizeof(int64));
 	for (int i = 0; i < nvals; i++)
 		if (!nulls[i])
-			keys[k++] = elem == INT2OID ? DatumGetInt16(vals[i]) : elem == INT4OID ? DatumGetInt32(vals[i]) : DatumGetInt64(vals[i]);
+			keys[k++] = key_of(elem, vals[i], km);
 	sift_sort_i64(keys, k);
 	*n = 0;
 	for (int i = 0; i < k; i++)
@@ -63,8 +76,10 @@ scope_keys_init(AggExec *ex)
 	if (sc == NULL || sc->param == NULL)
 		return;
 	value = ExecEvalExprSwitchContext(operand_state(ex, sc->param), ex->lutcx, &isnull);
+	if (OidIsValid(sc->key_type))
+		ex->scope_km = sift_scope_keymap(ex->heap, ex->index, sc->key_name);
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
-	keys = sift_agg_scope_keys(exprType(sc->param), value, isnull, &n);
+	keys = sift_agg_scope_keys(exprType(sc->param), value, isnull, &n, ex->scope_km);
 	MemoryContextSwitchTo(spec_cx);
 	if (sc->keys != NULL)
 		pfree(sc->keys);

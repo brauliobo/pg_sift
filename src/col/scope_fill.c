@@ -56,6 +56,7 @@ typedef struct ScopeSrc
 	Oid			btree;
 	AttrNumber	a;
 	AttrNumber	b;
+	SiftKeyMap *km;				/* column b is a text, varchar or uuid column: its values are handed on as the codes of this map, interned (a writer) */
 } ScopeSrc;
 
 typedef struct ScopeList
@@ -70,6 +71,7 @@ typedef struct ScopeProbe
 	MemoryContext cx;
 	SiftConnProbe *probe;
 	AttrNumber	out;			/* the column the probe reads of each row */
+	SiftKeyMap *km;				/* ... which is mapped to codes (NULL: an integer column) */
 	HTAB	   *seen;
 	SiftScopePair *pool;			/* (the probed value, one key of its rows) */
 	uint64		npool;
@@ -121,14 +123,19 @@ list_load(ScopeList *l, MemoryContext cx, const ScopeSrc *src, Snapshot snap, Si
 {
 	uint64		n = 0;
 
-	sift_conn_scan_keys(src->rel, src->btree, src->a, src->b, snap, count_pair, &n);
+	/* the counting scan meets every key of the relation: a map has them interned together, one run, before the scan that lists the pairs reads their codes */
+	if (src->km != NULL)
+		sift_keymap_collect(src->km, true);
+	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->b, src->km, snap, count_pair, &n);
+	if (src->km != NULL)
+		sift_keymap_collect(src->km, false);
 	if (n > *budget / sizeof(SiftScopePair))
 		return false;
 	*budget -= n * sizeof(SiftScopePair);
 	/* check-memory: allow the bytes were checked against the budget of the caller (maintenance_work_mem / 2) above */
 	l->p = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(SiftScopePair), MCXT_ALLOC_HUGE);
 	l->n = 0;
-	sift_conn_scan_keys(src->rel, src->btree, src->a, src->b, snap, add_pair, l);
+	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->b, src->km, snap, add_pair, l);
 	l->n = sift_scope_pairs_distinct(l->p, l->n);
 	return true;
 }
@@ -222,6 +229,9 @@ probe_begin(ScopeProbe *p, MemoryContext cx, const ScopeSrc *src, AttrNumber by,
 	p->cx = cx;
 	p->probe = sift_conn_probe_begin_on(cx, src->rel, src->btree, by, snap);
 	p->out = out;
+	p->km = out == src->b ? src->km : NULL;
+	if (by == src->b && src->km != NULL)
+		sift_conn_probe_codec(p->probe, src->km);
 	p->seen = seen_new(cx);
 }
 
@@ -313,8 +323,17 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 
 		src[0].btree = sift_scope_relation_index(heap, index, sp, &src[0].rel, &src[0].a, &src[0].b);
+		{
+			MemoryContext old = MemoryContextSwitchTo(mcxt);
+
+			src[0].km = sift_keymap_open(src[0].rel, src[0].b, true);
+			MemoryContextSwitchTo(old);
+		}
 		for (int h = 1; h < nsrc; h++)
+		{
 			src[h].btree = sift_scope_hop_index(heap, index, sp, h, &src[h].rel, &src[h].a, &src[h].b);
+			src[h].km = NULL;
+		}
 		/* the stamps come before the first read of the relations */
 		if (sift_scope_take(index, i, f->snap, stamp) != SIFT_CONN_OK)
 			for (int j = 0; j < nsrc; j++)
@@ -334,7 +353,7 @@ SiftScopeFill *
 sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows)
 {
 	SiftScopeFill *f = fill_new(mcxt, 1);
-	ScopeSrc	src = {rel, btree, member, key};
+	ScopeSrc	src = {rel, btree, member, key, NULL};
 
 	fill_snapshot(f);
 	map_begin(f, &f->m[0], &src, 1, f->snap, rows, &(SiftConnStamp) {.xmin = f->snap->xmin});
@@ -445,7 +464,7 @@ collect_key(void *arg, TupleTableSlot *slot)
 	ScopeProbe *p = pk->p;
 	int64		key;
 
-	if (!sift_conn_slot_key(slot, p->out, &key))
+	if (!sift_conn_slot_code(slot, p->out, p->km, &key))
 		return true;
 	if (p->npool == p->poolcap)
 	{

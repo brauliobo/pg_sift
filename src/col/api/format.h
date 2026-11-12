@@ -55,7 +55,8 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_SCOPE	45	/* 5.0: the leaf list of the index has the derived key of a scope (col/scope.h, SIFT_COLD_SCOPE, leaf "<key_name>#scope"), and the index may hold scope segments (directory flag SIFT_SEG_SCOPE); written only for an index with the reloption scope */
 #define SIFT_COL_FORMAT_VSTORE	46	/* 5.0: a leaf dictionary of a segment is a reference to the shared value store of its column (col/vstore/), and the directory of a value store holds runs (SIFT_SEG_VALRUN) */
 #define SIFT_COL_FORMAT_TWOHOP	49	/* 5.0: a segment of an index with a scope of two paths holds up to three stamps for the scope, one for each journal its pairs depend on (col/scope.h); written only for such an index */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_TWOHOP	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_SCOPEKEY	50	/* 5.0: the derived key of a scope holds the codes of the value store of its key column (SIFT_COLD_CODED): a text, varchar or uuid scope key; written only for such a scope */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_SCOPEKEY	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

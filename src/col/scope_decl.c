@@ -35,6 +35,7 @@
 
 #include "col/am.h"
 #include "col/scope.h"
+#include "col/vstore/vstore.h"
 
 bool		sift_agg_scope = true;
 double		sift_scope_max_multiplicity = 3.0;
@@ -247,21 +248,28 @@ sift_scope_specs(Relation index)
 }
 
 /*
- * The checks of one column of a relation of the scope: it exists and is an integer. A scope of one path needs it NOT NULL (a pair has both keys); on two paths a row with a NULL in a column of
- * its path is not a pair of that path, as a join drops it (a grant on a group has no member, a grant on a member no group).
+ * The checks of one column of a relation of the scope: it exists and is an integer, or, for a scope key, a text, varchar or uuid column of a deterministic collation (col/scope_keys.c). A scope of one path needs
+ * it NOT NULL (a pair has both keys); on two paths a row with a NULL in a column of its path is not a pair of that path, as a join drops it (a grant on a group has no member, a grant on a member no group).
  */
 static AttrNumber
-relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name)
+relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name, bool key)
 {
 	AttrNumber	att = get_attnum(RelationGetRelid(rel), name);
 	Form_pg_attribute a;
+	const char *why;
 
 	if (att == InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": relation \"%s\" has no column \"%s\"", s->key_name, r->name, name)));
 	a = TupleDescAttr(RelationGetDescr(rel), att - 1);
-	if (!sift_conn_integer_type(a->atttypid))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is not an integer", s->key_name, name, r->name),
-						errhint("The member and scope key columns are int2, int4 or int8; map a text key through a dictionary table.")));
+	why = key ? sift_keymap_column_refusal(a->atttypid, a->attcollation) : sift_conn_integer_type(a->atttypid) ? NULL : "is not an integer";
+	if (why != NULL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" %s", s->key_name, name, r->name, why),
+						errhint(key ? "The scope key column is an int2, int4, int8, text, varchar or uuid column; the member column is int2, int4 or int8." :
+								"The member column is int2, int4 or int8.")));
+	if (key && !sift_conn_integer_type(a->atttypid) && s->joined != NULL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is a %s, which a scope of two paths does not take yet", s->key_name, name, r->name,
+																	   format_type_be(a->atttypid)),
+						errhint("A text or uuid scope key is read through a scope of one path.")));
 	if (!a->attnotnull && s->joined == NULL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is nullable", s->key_name, name, r->name),
 						errhint("Declare the member and scope key columns NOT NULL: a pair has both keys.")));
@@ -445,12 +453,12 @@ open_table(Relation heap, const SiftScopeSpec *s, const SiftScopeRel *r, Relatio
 						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
 }
 
-/* The two columns of the relation of the declaration: integers, two columns */
+/* The two columns of the relation of the declaration: integers, two columns; b is a scope key (the pairs, the joined path) or a member (the via relation) */
 static void
-check_columns(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumber *a, AttrNumber *b)
+check_columns(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, bool b_is_key, AttrNumber *a, AttrNumber *b)
 {
-	*a = relation_column(rel, s, r, r->a);
-	*b = relation_column(rel, s, r, r->b);
+	*a = relation_column(rel, s, r, r->a, false);
+	*b = relation_column(rel, s, r, r->b, b_is_key);
 	if (*a == *b)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
 						errhint("A scope relation has two columns: the member key and the scope key.")));
@@ -475,7 +483,7 @@ sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relat
 						errhint("Give the derived key a name that no column of the index has: key_order names a column or a derived key.")));
 	open_table(heap, s, &s->rel, rel);
 	check_cols(index, s);
-	check_columns(*rel, s, &s->rel, member, scope_key);
+	check_columns(*rel, s, &s->rel, true, member, scope_key);
 }
 
 /* The joined path and the members of its via column (hop 1, 2) with their columns; the checks of sift_scope_relation passed for the pairs relation */
@@ -483,7 +491,7 @@ static void
 open_hop(Relation heap, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b)
 {
 	open_table(heap, s, decl_rel(s, hop), rel);
-	check_columns(*rel, s, decl_rel(s, hop), a, b);
+	check_columns(*rel, s, decl_rel(s, hop), hop == 1, a, b);
 }
 
 /* The indexes this index depends on (normal edges to an index): the btrees and journal indexes of its scopes and the parent indexes of its connections */
@@ -802,6 +810,9 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 			btree[h] = choose_btree(index, s, h, rel[h], att[h][0], att[h][1], sticky);
 			keep = list_append_unique_oid(keep, btree[h]);
 		}
+		/* the codes of a text or uuid scope key are those of the value store of its column: the index depends on it */
+		if (sift_keymap_type(get_atttype(RelationGetRelid(rel[0]), att[0][1])))
+			(void) sift_vstore_ensure(rel[0], index, att[0][1]);
 		/* a scope of one path needs its journal; one of two paths vouches for nothing without the three it finds, which a later REINDEX of this index finds as well */
 		if (npath == 1)
 			keep = list_append_unique_oid(keep, require_journal(s, rel[0], att[0][0], att[0][1], btree[0]));
@@ -860,6 +871,26 @@ scope_kept(Relation index, const SiftScopeSpec *s, int own, int time, const Sift
 		kept[id] = (defs[id].flags & SIFT_COLD_SCOPE) ? id == own : id == time || list_member_int(atts, defs[id].attno);
 }
 
+/* Is the scope key column of the scope text, varchar or uuid */
+static bool
+key_is_coded(Relation index, const SiftScopeSpec *s)
+{
+	Oid			rel = sift_conn_relation_oid(index->rd_index->indrelid, s->rel.schema, s->rel.name, NoLock, true);
+
+	return OidIsValid(rel) && sift_keymap_type(get_atttype(rel, get_attnum(rel, s->rel.b)));
+}
+
+bool
+sift_scope_coded(Relation index)
+{
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+
+	for (int c = 0; specs != NULL && c < specs->n; c++)
+		if (key_is_coded(index, specs->s[c]))
+			return true;
+	return false;
+}
+
 int
 sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscope, bool (*kept)[SIFT_COL_MAX_COLS])
 {
@@ -877,7 +908,7 @@ sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscop
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": \"%s\" is not a column of this index", s->key_name, s->fk),
 							errhint("Name the column of the index that holds the member key.")));
 		leaf[c] = n;
-		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_INT,.flags = SIFT_COLD_SCOPE,.attno = fk,
+		defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_INT,.flags = SIFT_COLD_SCOPE | (key_is_coded(index, s) ? SIFT_COLD_CODED : 0),.attno = fk,
 			.type = SIFT_COLT_INT8,.path = psprintf("%s#scope", s->key_name)};
 		n++;
 		(*nscope)++;
@@ -965,4 +996,34 @@ sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 	}
 	table_close(heap, NoLock);
 	return s->joined != NULL ? 2 : 1;
+}
+
+/* Is the store the value store of the key column of a scope of an index that depends on it: its codes are cut into scope segments, which no epoch may renumber (col/vstore/vstore_gc.c) */
+bool
+sift_scope_key_store_pinned(Oid store)
+{
+	Oid			heap = sift_vstore_table(store);
+
+	foreach_oid(ioid, sift_vstore_members(store))
+	{
+		Relation	idx = try_index_open(ioid, AccessShareLock);
+		SiftScopeSpecs *specs;
+
+		if (idx == NULL)
+			continue;
+		specs = sift_col_is_index(idx) ? sift_scope_specs(idx) : NULL;
+		for (int c = 0; specs != NULL && c < specs->n; c++)
+		{
+			const SiftScopeSpec *s = specs->s[c];
+			Oid			rel = sift_conn_relation_oid(idx->rd_index->indrelid, s->rel.schema, s->rel.name, NoLock, true);
+
+			if (rel == heap && sift_vstore_find_oid(heap, get_attnum(rel, s->rel.b)) == store)
+			{
+				index_close(idx, AccessShareLock);
+				return true;
+			}
+		}
+		index_close(idx, AccessShareLock);
+	}
+	return false;
 }

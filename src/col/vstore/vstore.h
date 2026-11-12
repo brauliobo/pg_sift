@@ -95,6 +95,10 @@ extern void sift_vstore_usage(Oid store, uint64 *epoch, uint64 *total, uint64 *l
 /* map[i] = the code in the store of the value i of the batch; the values it has not got are appended as one run; returns how many were */
 extern uint32 sift_vstore_intern(SiftVStore *vs, const SiftCDict *batch, const SiftCcPolicy *pol, uint32 *map, uint64 *epoch, uint64 *ncodes);
 
+/* The view up to the newest run (sift_vstore_find_code looks in the view as it was last refreshed: a reader refreshes once), and the code of a string in it, -1 when the store has none */
+extern void sift_vstore_refresh(SiftVStore *vs);
+extern int64 sift_vstore_find_code(SiftVStore *vs, const char *s, uint32 len);
+
 /* Whether the store has at least ncodes codes of the epoch (low 32 bits), after reading its runs again when the view has fewer or is of another; the string of a code of it, valid until the store is read again */
 extern const char *sift_vstore_string(SiftVStore *vs, uint32 code, uint32 *len);
 
