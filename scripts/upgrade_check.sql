@@ -167,14 +167,17 @@ BEGIN
 		END LOOP;
 	END LOOP;
 
-	-- the two event triggers of 3.3 call table_ddl_check, a function that only the 3.3 library has (sift_table_paths_drop is 3.2's): with an older library every ALTER TABLE
-	-- and CREATE TRIGGER of the database fails
-	IF tgt IS NOT NULL AND string_to_array(tgt, '.')::int[] < ARRAY[3, 3] THEN
-		FOR r IN SELECT e.evtname::text AS name FROM pg_event_trigger e JOIN pg_proc p ON p.oid = e.evtfoid
-				 WHERE e.evtenabled <> 'D' AND p.pronamespace = 'sift'::regnamespace AND p.proname = 'table_ddl_check' ORDER BY 1
+	-- an event trigger calls a function that only the library of the release that added it has (sift_table_paths_drop is 3.2's): with an older library the statement it
+	-- fires on fails in every session of the database. 3.3: ALTER TABLE and CREATE TRIGGER (table_ddl_check); 5.0: CREATE INDEX (col_build_lock) and every DROP of an index
+	-- (_col_value_store_sql_drop calls the 5.0 function that drops an unused value store)
+	IF tgt IS NOT NULL THEN
+		FOR r IN SELECT e.evtname::text AS name, v.since, v.fails FROM pg_event_trigger e JOIN pg_proc p ON p.oid = e.evtfoid
+				 JOIN (VALUES ('table_ddl_check', '3.3', 'ALTER TABLE and CREATE TRIGGER'), ('col_build_lock', '5.0', 'CREATE INDEX'),
+							  ('_col_value_store_sql_drop', '5.0', 'DROP INDEX')) v(fn, since, fails) ON v.fn = p.proname
+				 WHERE e.evtenabled <> 'D' AND p.pronamespace = 'sift'::regnamespace AND string_to_array(tgt, '.')::int[] < string_to_array(v.since, '.')::int[] ORDER BY 1
 		LOOP
-			object := r.name; kind := 'trigger'; detected := 'enabled, its function is in the 3.3 library only'; status := 'blocker';
-			advice := format('ALTER EVENT TRIGGER %s DISABLE before the %s library runs (it would fail every ALTER TABLE and CREATE TRIGGER), ENABLE it when 3.3 runs again', r.name, tgt);
+			object := r.name; kind := 'trigger'; detected := format('enabled, its function is in the %s library only', r.since); status := 'blocker';
+			advice := format('ALTER EVENT TRIGGER %s DISABLE before the %s library runs (it would fail every %s), ENABLE it when %s runs again', r.name, tgt, r.fails, r.since);
 			RETURN NEXT;
 		END LOOP;
 	END IF;

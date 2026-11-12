@@ -73,12 +73,16 @@ out=$(uc --to 3.2 clean)
 check "to 3.2: the wide leaf is ok and the cube option is a blocker with the setting 6" grep -q -E '^blocker +facts_cube .*sift\.col_format_minor = 6 and REINDEX INDEX facts_cube' <<<"$out" &&
 	test -z "$(row "$out" blocker facts_wide)"
 check "to 3.2: the calendar cells of a timestamp in a sift_table (format 8) is a blocker with the setting 6" grep -q -E '^blocker +months .*sift\.col_format_minor = 6, then VACUUM FULL months ' <<<"$out"
-check "to 3.2: the two event triggers of 3.3, and no other, are blockers that say to disable them" test "$(grep -cE '^blocker +sift_table_(ddl_check|repack_guard) +trigger .*ALTER EVENT TRIGGER sift_table_[a-z_]+ DISABLE' <<<"$out")/$(grep -c ' trigger ' <<<"$out")" == 2/2
-q clean "ALTER EVENT TRIGGER sift_table_ddl_check DISABLE" "ALTER EVENT TRIGGER sift_table_repack_guard DISABLE" >/dev/null
+check "to 3.2: the two event triggers of 3.3 are blockers that say to disable them" test "$(grep -cE '^blocker +sift_table_(ddl_check|repack_guard) +trigger .*ALTER EVENT TRIGGER sift_table_[a-z_]+ DISABLE' <<<"$out")" == 2
+check "to 3.2: the two event triggers of 5.0 are blockers too, and they are all that are listed" test "$(grep -cE '^blocker +sift_col_(build_lock|value_store_sql_drop) +trigger .*ALTER EVENT TRIGGER sift_col_[a-z_]+ DISABLE' <<<"$out")/$(grep -c ' trigger ' <<<"$out")" == 2/4
+out=$(uc --to 4.3 clean)
+check "to 4.3: the event triggers of 5.0 are the blockers (CREATE INDEX and DROP INDEX fail with the older library), and no other trigger is listed" test "$(grep -cE '^blocker +sift_col_build_lock +trigger .*every CREATE INDEX' <<<"$out")$(grep -cE '^blocker +sift_col_value_store_sql_drop +trigger .*every DROP INDEX' <<<"$out")/$(grep -c ' trigger ' <<<"$out")" == 11/2
+check "to 5.0: no event trigger is a blocker" test "$(uc --to 5.0 clean | grep -c ' trigger ')" == 0
+q clean "ALTER EVENT TRIGGER sift_table_ddl_check DISABLE" "ALTER EVENT TRIGGER sift_table_repack_guard DISABLE" "ALTER EVENT TRIGGER sift_col_build_lock DISABLE" "ALTER EVENT TRIGGER sift_col_value_store_sql_drop DISABLE" >/dev/null
 check "to 3.2: a disabled event trigger is not listed" test "$(uc --to 3.2 clean | grep -c ' trigger ')" == 0
-q clean "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" >/dev/null
-check "to 3.3: the BM25 index with position blocks is the one blocker" test "$(uc --to 3.3 clean | awk '$1 == "blocker" {print $2}')" == docs_idx
-check "to 3.7: nothing blocks" test "$(uc --to 3.7 clean | grep -c '^blocker')" == 0
+q clean "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER EVENT TRIGGER sift_col_build_lock ENABLE" "ALTER EVENT TRIGGER sift_col_value_store_sql_drop ENABLE" >/dev/null
+check "to 3.3: the BM25 index with position blocks is the one blocker but the event triggers of 5.0" test "$(uc --to 3.3 clean | awk '$1 == "blocker" && $3 != "trigger" {print $2}')" == docs_idx
+check "to 3.7: nothing blocks but the event triggers of 5.0" test "$(uc --to 3.7 clean | grep '^blocker' | grep -vc ' trigger ')" == 0
 check "a release that is not major.minor is refused" test "$(uc --to three clean 2>&1 | grep -c 'target must be a release')" == 1
 
 # options that only the units written afterwards follow
