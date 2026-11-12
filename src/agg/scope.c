@@ -14,6 +14,7 @@
 
 #include <math.h>
 
+#include "port/pg_bitutils.h"
 #include "access/table.h"
 #include "utils/lsyscache.h"
 
@@ -60,15 +61,26 @@ not_null_prune(int leaf)
 	return z;
 }
 
-/* The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); NULL: of every unit */
+/*
+ * The rows of the units of the source that the prune entry may keep (their zones and set summaries, as the scan prunes them); NULL: of every unit. The source says which units it keeps without
+ * loading them (sift_colsrc_kept); one that cannot is read unit by unit.
+ */
 static uint64
 unit_rows(SiftSrcSource *src, SiftSrcPrune *prune, uint64 *units)
 {
 	SiftSrcUnit u;
+	uint32		nsb = sift_colsrc_nsb(src);
+	uint64	   *kept = palloc0(Max((nsb + 63) / 64, 1) * sizeof(uint64));
 	uint64		rows = 0;
 
 	*units = 0;
-	sift_colsrc_begin(src, 0, sift_colsrc_nsb(src), prune, prune ? 1 : 0);
+	if (sift_colsrc_kept(src, prune, prune ? 1 : 0, nsb, kept, &rows, false))
+	{
+		for (uint32 w = 0; w < (nsb + 63) / 64; w++)
+			*units += pg_popcount64(kept[w]);
+		return rows;
+	}
+	sift_colsrc_begin(src, 0, nsb, prune, prune ? 1 : 0);
 	while (sift_colsrc_next(src, &u))
 	{
 		rows += u.nrow;
@@ -136,6 +148,9 @@ scope_entries(AggExec *ex)
  * of the units without one (the fit of the entries read, 12.8% of them with 4 changed keys, 44% with 18, 92% with 45; 300,000 events, 5,000 members, 50 keys).
  */
 #define SCOPE_CHANGED_SPREAD	1.8
+
+/* what the journal's expectation of the patch may err by: the join is run for it when the units cost more than this times its price */
+#define SCOPE_ESTIMATE_MARGIN	1.1
 
 /* The keys the entries of a read stand for, as the join as written counts them: the entries of one key of the average size, which the planner's knots give */
 static double
@@ -369,7 +384,20 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		max_changed = changed_limit(sc, &c);
 	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
-										ex->spec->topn != NULL, leaves, nleaves, max_changed);
+										ex->spec->topn != NULL, leaves, nleaves, max_changed, priced);
+	if (priced && rd->why == NULL && rd->stage != NULL)
+	{
+		/* the journal alone says what the changed members cost: a join that costs less by more than the error of that is run without asking for their pairs */
+		SiftScopeCounts e = c;
+
+		read_counts(sc, &e, rd);
+		if (sift_scope_units_price(&e) > alt_price(sc, alt_keys(sc, e.entries)) * SCOPE_ESTIMATE_MARGIN)
+		{
+			run_join(ex, join_cheaper_why(sc));
+			return false;
+		}
+	}
+	sift_scope_read_pairs(rd);
 	if (sc->alt != NULL && rd->why != NULL)
 	{
 		run_join(ex, rd->why);

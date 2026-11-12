@@ -60,3 +60,4 @@ JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the 
 SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound of the option text, rejected with an error
 FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same
 FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from the found flag probes in its btree (agg/found.c): past it the join loads the parent, the rows are the same
+CONN_TAGS_MAX_KEYS	the keys of a read past which its journal records are not filtered by their key tag (the tags of that many keys leave few records out): a cost bound, the rows are the same

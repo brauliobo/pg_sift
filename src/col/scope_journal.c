@@ -30,6 +30,7 @@ typedef struct ScopeJournals
 	Oid			via_btree;		/* two paths: the unique btree of the via relation, probed by its via column for the members of a group */
 	AttrNumber	via;
 	AttrNumber	member;
+	AttrNumber	skey[SIFT_SCOPE_JOURNALS];	/* the scope key column of each relation that has one (the tag of its journal's records): none for the via relation */
 } ScopeJournals;
 
 /*
@@ -57,6 +58,7 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 		Oid			btree = j == 0 ? sift_scope_relation_index(heap, index, s, &J->rel[j], &a, &b) : sift_scope_hop_index(heap, index, s, j, &J->rel[j], &a, &b);
 		Oid			joid = sift_scope_hop_journal(J->rel[j], j, a, b, btree);
 
+		J->skey[j] = j == 2 ? InvalidAttrNumber : b;
 		if (j == 2)
 		{
 			J->via_btree = btree;
@@ -195,16 +197,16 @@ group_members(const ScopeJournals *J, const SiftConnKeys *groups, Snapshot snap,
 	sift_conn_probe_close(&s);
 }
 
-/* The union of the changed keys of the journals in k[0..n) and the members of the groups of k[1] */
+/* The union of the changed keys of the journals in k[0..n) and the members of the groups of k[1]; of the pairs of the scope keys only (NULL: of every key) */
 static SiftConnWhy
-journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
+journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out)
 {
 	SiftConnKeys k[SIFT_SCOPE_JOURNALS] = {{0}};
 	SiftConnWhy why = SIFT_CONN_OK;
 	MemberSet	ms = {.cap = cap};
 
 	for (int j = 0; j < J->n && why == SIFT_CONN_OK; j++)
-		why = sift_conn_changed_by(J->rel[j], J->jidx[j], &stamp[j], snap, cap, true, &k[j]);
+		why = sift_conn_changed_by(J->rel[j], J->jidx[j], &stamp[j], snap, cap, true, keys != NULL && J->skey[j] != InvalidAttrNumber ? sift_conn_tags(J->skey[j], keys, nkeys) : NULL, &k[j]);
 	if (why == SIFT_CONN_OK && J->n == 1)
 	{
 		*out = k[0];
@@ -222,7 +224,16 @@ journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot sn
 		if (ms.over || ms.n > cap)
 			why = SIFT_CONN_OVERFLOW;
 		else
-			*out = (SiftConnKeys) {.keys = ms.m,.kept = palloc0(Max(ms.n, 1) * sizeof(bool)),.n = ms.n,.cap = ms.n};
+		{
+			*out = (SiftConnKeys) {.keys = ms.m,.kept = palloc0(Max(ms.n, 1) * sizeof(bool)),.added = palloc0(Max(ms.n, 1) * sizeof(bool)),.n = ms.n,.cap = ms.n};
+			/* the pairs inserted for the keys read are known; the members of a changed group are not told apart before their pairs are read, none is expected to have one (a lower bound of the patch) */
+			for (uint32 i = 0, a = 0; i < ms.n; i++)
+			{
+				for (; a < k[0].n && k[0].keys[a] < ms.m[i]; a++)
+					;
+				out->added[i] = a < k[0].n && k[0].keys[a] == ms.m[i] && k[0].added[a];
+			}
+		}
 	}
 	for (int j = 0; j < J->n; j++)
 		sift_conn_keys_free(&k[j]);
@@ -232,14 +243,14 @@ journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot sn
 }
 
 SiftConnWhy
-sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out)
+sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out)
 {
 	ScopeJournals J;
 	SiftConnWhy why = SIFT_CONN_NO_JOURNAL;
 
 	*out = (SiftConnKeys) {0};
 	if (journals_open(index, scope, AccessShareLock, &J))
-		why = journals_changed(&J, stamp, snap, cap, out);
+		why = journals_changed(&J, stamp, snap, cap, keys, nkeys, out);
 	journals_close(&J);
 	return why;
 }
@@ -262,7 +273,7 @@ sift_scope_start(Relation heap, Relation index, bool read_after)
 		for (int j = 0; ok && j < J.n; j++)
 		{
 			if (!list_member_oid(seen, RelationGetRelid(J.jidx[j])))
-				(void) sift_conn_enable(J.rel[j], J.jidx[j], read_after);
+				(void) sift_conn_enable(J.rel[j], J.jidx[j], read_after, J.skey[j]);
 			seen = lappend_oid(seen, RelationGetRelid(J.jidx[j]));
 		}
 		journals_close(&J);
@@ -367,7 +378,7 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 		for (int j = 0; j < J->n; j++)
 			if (stamp[j].lineage != st->s[i].now[j].lineage)
 				return true;
-		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), &keys) != SIFT_CONN_OK)
+		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), NULL, 0, &keys) != SIFT_CONN_OK)
 			return true;
 		many = keys.n >= limit;
 		sift_conn_keys_free(&keys);

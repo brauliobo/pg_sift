@@ -338,7 +338,7 @@ sift_test_conn_enable(PG_FUNCTION_ARGS)
 {
 	Relation	index = index_open(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
 	Relation	heap = table_open(index->rd_index->indrelid, ShareLock);
-	uint64		lineage = sift_conn_enable(heap, index, false);
+	uint64		lineage = sift_conn_enable(heap, index, false, InvalidAttrNumber);
 
 	table_close(heap, NoLock);
 	index_close(index, NoLock);

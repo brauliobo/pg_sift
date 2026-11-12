@@ -98,6 +98,16 @@ typedef enum SiftTombKind
 #define SIFT_TOMB_HOT		0x0001
 /* KEYCHG entries: the update that ended the entry wrote a new version with the same key, so the key is held by a row either way (col/conn.h) */
 #define SIFT_TOMB_KEPT		0x0002
+/*
+ * Journal records of a scope relation (col/scope.h) carry the tag of the scope key of their pair in the bits above KEPT (0: none, the record is of every key), so that a read of some keys leaves out the
+ * records of the pairs of the others: the column the tags are of is named by the header of the log (SIFT_TOMB_KEYS_TAGATT), and a reader of another column takes every record.
+ */
+#define SIFT_TOMB_TAG_SHIFT		2
+#define SIFT_TOMB_TAG_MAX		0x3FFF
+#define SIFT_TOMB_TAG(flags)	(((flags) >> SIFT_TOMB_TAG_SHIFT) & SIFT_TOMB_TAG_MAX)
+/* the attribute number of the column the tags of the journal are of, in the flags of its header (0: no tags) */
+#define SIFT_TOMB_KEYS_TAGATT_SHIFT	16
+#define SIFT_TOMB_KEYS_TAGATT(flags)	((flags) >> SIFT_TOMB_KEYS_TAGATT_SHIFT)
 
 typedef struct SiftTomb
 {

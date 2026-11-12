@@ -271,7 +271,7 @@ SELECT * FROM states('20 of 30 items of a tenant changed');
  20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join       | join is cheaper for 1 key   | t
  20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 4       | scope read |                             | t
  20 of 30 items of a tenant changed | join, ANY ($1), a row for each pair | 30      | join       | join is cheaper for 30 keys | t
- 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join       | top-n, changed pairs        | t
+ 20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join       | join is cheaper for 1 key   | t
  20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 4       | scope read |                             | t
  20 of 30 items of a tenant changed | latest 5, ANY ($1)                  | 30      | join       | join is cheaper for 30 keys | t
 (9 rows)
@@ -285,14 +285,14 @@ SELECT churn(30);
 SELECT * FROM states('every pair of every tenant changed');
                state                |                form                 | tenants | chosen |             why             | same_rows 
 ------------------------------------+-------------------------------------+---------+--------+-----------------------------+-----------
- every pair of every tenant changed | IN, ANY ($1)                        | 1 (22)  | join   | too many changed keys       | t
- every pair of every tenant changed | IN, ANY ($1)                        | 4       | join   | too many changed keys       | t
+ every pair of every tenant changed | IN, ANY ($1)                        | 1 (22)  | join   | join is cheaper for 1 key   | t
+ every pair of every tenant changed | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys  | t
  every pair of every tenant changed | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
- every pair of every tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | too many changed keys       | t
+ every pair of every tenant changed | join, ANY ($1), a row for each pair | 1 (22)  | join   | join is cheaper for 1 key   | t
  every pair of every tenant changed | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
  every pair of every tenant changed | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | too many changed keys       | t
- every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | too many changed keys       | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
+ every pair of every tenant changed | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
  every pair of every tenant changed | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys | t
 (9 rows)
 
@@ -300,14 +300,14 @@ INSERT INTO tenant_scope SELECT dim_a_id, 1 + tenant_id % 40 FROM tenant_scope W
 SELECT * FROM states('items of two tenants');
         state         |                form                 | tenants | chosen |             why             | same_rows 
 ----------------------+-------------------------------------+---------+--------+-----------------------------+-----------
- items of two tenants | IN, ANY ($1)                        | 1 (22)  | join   | too many changed keys       | t
- items of two tenants | IN, ANY ($1)                        | 4       | join   | too many changed keys       | t
+ items of two tenants | IN, ANY ($1)                        | 1 (22)  | join   | join is cheaper for 1 key   | t
+ items of two tenants | IN, ANY ($1)                        | 4       | join   | join is cheaper for 4 keys  | t
  items of two tenants | IN, ANY ($1)                        | 30      | join   | join is cheaper for 30 keys | t
- items of two tenants | join, ANY ($1), a row for each pair | 1 (22)  | join   | too many changed keys       | t
+ items of two tenants | join, ANY ($1), a row for each pair | 1 (22)  | join   | join is cheaper for 1 key   | t
  items of two tenants | join, ANY ($1), a row for each pair | 4       | join   | join is cheaper for 4 keys  | t
  items of two tenants | join, ANY ($1), a row for each pair | 30      | join   | join is cheaper for 30 keys | t
- items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | too many changed keys       | t
- items of two tenants | latest 5, ANY ($1)                  | 4       | join   | too many changed keys       | t
+ items of two tenants | latest 5, ANY ($1)                  | 1 (22)  | join   | join is cheaper for 1 key   | t
+ items of two tenants | latest 5, ANY ($1)                  | 4       | join   | join is cheaper for 4 keys  | t
  items of two tenants | latest 5, ANY ($1)                  | 30      | join   | join is cheaper for 30 keys | t
 (9 rows)
 

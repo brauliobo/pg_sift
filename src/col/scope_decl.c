@@ -28,8 +28,10 @@
 #include "utils/ruleutils.h"
 #include "utils/fmgroids.h"
 #include "utils/builtins.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "col/am.h"
 #include "col/scope.h"
@@ -200,19 +202,47 @@ sift_scope_parse(const char *text, const char **err)
 	}
 }
 
-/* The scopes of the index, or NULL: the option is not set, or 'off' */
+/*
+ * The scopes of the index, or NULL: the option is not set, or 'off'. The parse is remembered with the text it was made of (a statement asks for it a dozen times): the text is the whole of what it depends
+ * on, so a changed option parses again. The specs are read, never changed.
+ */
+#define SPECS_MEMO_N 8
+static struct
+{
+	Oid			index;
+	char	   *text;
+	SiftScopeSpecs *specs;
+	MemoryContext cx;
+} specs_memo[SPECS_MEMO_N];
+static int	specs_memo_next;
+
 SiftScopeSpecs *
 sift_scope_specs(Relation index)
 {
 	const char *text = sift_col_options_scope(index);
 	const char *err = NULL;
 	SiftScopeSpecs *s;
+	MemoryContext old;
+	int			slot;
 
 	if (text[0] == '\0' || strcmp(text, "off") == 0)
 		return NULL;
+	for (int i = 0; i < SPECS_MEMO_N; i++)
+		if (specs_memo[i].index == RelationGetRelid(index) && strcmp(specs_memo[i].text, text) == 0)
+			return specs_memo[i].specs;
+	slot = specs_memo_next++ % SPECS_MEMO_N;
+	if (specs_memo[slot].cx != NULL)
+		MemoryContextDelete(specs_memo[slot].cx);
+	specs_memo[slot] = (typeof(specs_memo[0])) {0};
+	specs_memo[slot].cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope specs", ALLOCSET_SMALL_SIZES);
+	old = MemoryContextSwitchTo(specs_memo[slot].cx);
 	s = sift_scope_parse(text, &err);
 	if (s == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid scope option \"%s\": %s", text, err)));
+	specs_memo[slot].text = pstrdup(text);
+	MemoryContextSwitchTo(old);
+	specs_memo[slot].index = RelationGetRelid(index);
+	specs_memo[slot].specs = s;
 	return s;
 }
 
@@ -481,9 +511,8 @@ dependent_indexes(Oid index)
 	return edges;
 }
 
-/* The btree of rel that the index depends on and that still qualifies: the one that defined the pairs when the scope segments were written; InvalidOid when none */
 static Oid
-recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
+find_recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
 {
 	foreach_oid(edge, dependent_indexes(index))
 	{
@@ -499,6 +528,54 @@ recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
 			return edge;
 	}
 	return InvalidOid;
+}
+
+/*
+ * The btree of rel that the index depends on and that still qualifies: the one that defined the pairs when the scope segments were written; InvalidOid when none. A read asks for it for each relation it opens
+ * and a statement several times, each a scan of pg_depend: the answer is remembered until the row in pg_class of the index or of the btree changes (REINDEX records the btree again and rewrites the row, ALTER INDEX too,
+ * and a btree that REINDEX CONCURRENTLY replaces is dropped).
+ */
+#define BTREE_MEMO_N 8
+static struct
+{
+	Oid			index;
+	uint32		index_hash;		/* of its pg_class row in the RELOID syscache, and of the btree's: REINDEX CONCURRENTLY of the btree replaces it under the index, which names the old one until it is dropped */
+	uint32		btree_hash;
+	Oid			rel;
+	AttrNumber	member;
+	AttrNumber	key;
+	Oid			btree;
+} btree_memo[BTREE_MEMO_N];
+static int	btree_memo_next;
+static bool btree_memo_hooked;
+
+static void
+btree_memo_inval(Datum arg, int cacheid, uint32 hashvalue)
+{
+	for (int i = 0; i < BTREE_MEMO_N; i++)
+		if (hashvalue == 0 || btree_memo[i].index_hash == hashvalue || btree_memo[i].btree_hash == hashvalue)
+			btree_memo[i].index = InvalidOid;
+}
+
+static Oid
+recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
+{
+	Oid			btree;
+
+	for (int i = 0; i < BTREE_MEMO_N; i++)
+		if (btree_memo[i].index == index && btree_memo[i].rel == RelationGetRelid(rel) && btree_memo[i].member == member && btree_memo[i].key == key)
+			return btree_memo[i].btree;
+	btree = find_recorded_btree(index, rel, member, key);
+	if (!OidIsValid(btree))
+		return btree;
+	if (!btree_memo_hooked)
+	{
+		CacheRegisterSyscacheCallback(RELOID, btree_memo_inval, (Datum) 0);
+		btree_memo_hooked = true;
+	}
+	btree_memo[btree_memo_next++ % BTREE_MEMO_N] = (typeof(btree_memo[0])) {index, GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(index)), GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(btree)),
+															   RelationGetRelid(rel), member, key, btree};
+	return btree;
 }
 
 /*

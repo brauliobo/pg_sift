@@ -134,20 +134,20 @@ UPDATE grants SET deleted_at = now() WHERE id = 1
 INSERT INTO lines SELECT 1, 12, 'a dim_a_id reached by two paths loses one', l.* FROM state_line(1) l
 INSERT INTO lines SELECT 2, 12, 'a dim_a_id reached by two paths loses one', l.* FROM state_line(2) l
 SELECT n, label, same, stored, changed, patched FROM lines WHERE route = 2 ORDER BY n;
- n  |                             label                             | same | stored | changed |     patched      
-----+---------------------------------------------------------------+------+--------+---------+------------------
-  1 | a direct grant of tenant 3 to a new dim_a_id                  | t    | t      |       1 | {0,1,1,0,0,1}
-  2 | a direct grant of tenant 3 soft deleted                       | t    | t      |       1 | {0,1,0,0,0,1}
+ n  |                             label                             | same | stored | changed |    patched     
+----+---------------------------------------------------------------+------+--------+---------+----------------
+  1 | a direct grant of tenant 3 to a new dim_a_id                  | t    | t      |       1 | {0,0,1,0,0,0}
+  2 | a direct grant of tenant 3 soft deleted                       | t    | t      |       1 | {0,0,0,0,0,0}
   3 | a direct grant of tenant 1 deleted                            | t    | t      |       1 | {1,0,0,0,0,0}
-  4 | a direct grant of tenant 6 moved to a group                   | t    | t      |      24 | {12,12,1,2,2,12}
-  5 | a grant of tenant 2 to a group soft deleted                   | t    | t      |      12 | {0,0,1,2,2,0}
-  6 | a grant of tenant 4 to a group added                          | t    | t      |      12 | {0,0,1,12,2,0}
+  4 | a direct grant of tenant 6 moved to a group                   | t    | t      |      24 | {0,0,0,0,0,12}
+  5 | a grant of tenant 2 to a group soft deleted                   | t    | t      |      12 | {0,0,0,0,0,0}
+  6 | a grant of tenant 4 to a group added                          | t    | t      |      12 | {0,0,0,12,0,0}
   7 | a dim_a_id added to a group: it is granted to tenants 4 and 5 | t    | t      |       1 | {1,0,0,1,1,1}
   8 | a dim_a_id added to a group: it is granted to nobody          | t    | t      |       1 | {1,0,0,1,1,1}
   9 | a dim_a_id soft deleted from the group of tenant 4            | t    | t      |       1 | {0,0,0,1,0,0}
  10 | a dim_a_id moved to another group                             | t    | t      |       1 | {0,0,0,0,0,0}
  11 | an update that keeps every column                             | t    | t      |       0 | {0,0,0,0,0,0}
- 12 | a dim_a_id reached by two paths loses one                     | t    | t      |       1 | {1,0,0,0,0,1}
+ 12 | a dim_a_id reached by two paths loses one                     | t    | t      |       1 | {1,0,0,0,0,0}
 (12 rows)
 
 -- the relations read whole and the index probed give the same lists
@@ -243,13 +243,13 @@ INSERT INTO lines1 SELECT 2, 7, 'twenty dim_a_id values of one key deleted', l.*
 SELECT n, label, same, stored, changed, patched FROM lines1 WHERE route = 2 ORDER BY n;
  n |                   label                   | same | stored | changed |    patched    
 ---+-------------------------------------------+------+--------+---------+---------------
- 1 | a pair added                              | t    | t      |       1 | {1,0,1,0,1,0}
- 2 | a pair soft deleted                       | t    | t      |       1 | {1,0,1,0,0,0}
+ 1 | a pair added                              | t    | t      |       1 | {0,0,0,0,1,0}
+ 2 | a pair soft deleted                       | t    | t      |       1 | {0,0,0,0,0,0}
  3 | a pair deleted                            | t    | t      |       1 | {0,0,0,0,0,0}
  4 | a pair moved to another key               | t    | t      |       1 | {0,0,0,0,0,1}
- 5 | a soft deleted pair restored              | t    | t      |       1 | {1,0,1,0,1,0}
+ 5 | a soft deleted pair restored              | t    | t      |       1 | {0,0,0,0,1,0}
  6 | an update that keeps every column         | t    | t      |       0 | {0,0,0,0,0,0}
- 7 | twenty dim_a_id values of one key deleted | t    | t      |       7 | {1,0,0,0,2,0}
+ 7 | twenty dim_a_id values of one key deleted | t    | t      |       7 | {0,0,0,0,0,0}
 (7 rows)
 
 SELECT count(*) AS states, count(*) FILTER (WHERE a.same IS NOT DISTINCT FROM b.same AND a.stored IS NOT DISTINCT FROM b.stored AND a.changed IS NOT DISTINCT FROM b.changed AND a.patched IS NOT DISTINCT FROM b.patched) AS equal
