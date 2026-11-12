@@ -157,7 +157,8 @@ peers_overlap(const RewriteView *v)
  * rewrite is the build's, not churn. A promotion or merge of new rows that grew to the size of a partition overlaps every partition as well, but taking it out
  * leaves none overlapping, and it is part of the index: its rewrite takes the bytes of all the partitions it meets, KEY_RUNS_SHARE times what it absorbs or more,
  * so it waits for the WAL budget like any other churn and does not rewrite the index each time one grows, nor each time the merges of the overlays leave another.
- * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it.
+ * Two runs of a build are each half of the index, as the segments that must go for none to overlap another are at least half of it. The segment taken out next is the one
+ * that meets the most others for its bytes: pieces over one base partition are the cover (a third of the index), not the base that meets them all (two thirds of it).
  */
 #define KEY_RUNS_SHARE	2
 
@@ -173,19 +174,21 @@ key_runs(const RewriteView *v)
 		all += v->imm[i].bytes;
 	for (;;)
 	{
-		int			worst = -1,
-					most = 0;
+		int			worst = -1;
+		double		most = 0;
 
 		for (int i = 0; i < v->n; i++)
 		{
 			int			meets = 0;
+			double		per_byte;
 
 			for (int j = 0; j < v->n && left[i]; j++)
 				meets += left[j] && j != i && v->klo[i] < v->khi[j] && v->klo[j] < v->khi[i];
-			if (meets > most)
+			per_byte = (double) meets / v->imm[i].bytes;
+			if (per_byte > most)
 			{
 				worst = i;
-				most = meets;
+				most = per_byte;
 			}
 		}
 		if (worst < 0)
