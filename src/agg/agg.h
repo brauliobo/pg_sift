@@ -171,6 +171,9 @@ extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_decor_rows_candidate(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_minmax_sublinks(Query *q, bool apply);
+extern Query *sift_agg_array_sublinks(Query *q);
+/* does the tree read a relation of a scope of a column index of a table of the query level (plan_scope.c) */
+extern bool sift_agg_reads_scope(Query *level, Node *tree);
 extern bool sift_agg_probe_joins(Query *q, bool apply);
 extern void sift_agg_probe_init(void);
 extern bool sift_agg_push_dim_keys(Query *q, bool apply);

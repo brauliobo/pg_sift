@@ -534,7 +534,8 @@ static PlannedStmt *
 plan_flat(SIFT_PLANNER_PARAMS, bool owned)
 {
 	Query	   *first = NULL,
-			   *rows = NULL;
+			   *rows = NULL,
+			   *arrays = NULL;
 	PlannedStmt *stmt,
 			   *alt;
 	CteVerdict	rv = {0};
@@ -551,6 +552,7 @@ plan_flat(SIFT_PLANNER_PARAMS, bool owned)
 			first = copyObject(parse);
 			sift_agg_minmax_sublinks(first, true);
 		}
+		arrays = sift_agg_array_sublinks(parse);
 		if (sift_agg_decor_rows_candidate(parse))
 		{
 			rows = copyObject(parse);
@@ -572,6 +574,8 @@ plan_flat(SIFT_PLANNER_PARAMS, bool owned)
 			stmt = alt;
 		}
 	}
+	if (arrays != NULL)
+		stmt = plan_beside(SIFT_PLANNER_ARGS(arrays), stmt, 1.0);
 	return first == NULL ? stmt : plan_beside(SIFT_PLANNER_ARGS(first), stmt, 1.0);
 }
 

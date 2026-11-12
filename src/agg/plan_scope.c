@@ -35,6 +35,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "access/stratnum.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
@@ -267,6 +268,34 @@ item_strays(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 	return bms_is_empty(c->root->simple_rel_array[rti]->lateral_relids) ?
 		"a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a scope, are read from the units" :
 		"a lateral (correlated) sub-select reads the scope relation";
+}
+
+bool
+sift_agg_reads_scope(Query *level, Node *tree)
+{
+	foreach_node(RangeTblEntry, rte, level->rtable)
+	{
+		Relation	heap;
+
+		if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || !has_column_source(rte->relid))
+			continue;
+		heap = relation_open(rte->relid, AccessShareLock);
+		foreach_oid(ixoid, RelationGetIndexList(heap))
+		{
+			Relation	index = index_open(ixoid, AccessShareLock);
+			ScopeSeen	seen = {rte->relid, sift_col_is_index(index) ? sift_scope_specs(index) : NULL};
+			bool		hit = seen.specs != NULL && scope_seen_walker(tree, &seen);
+
+			index_close(index, NoLock);
+			if (hit)
+			{
+				relation_close(heap, AccessShareLock);
+				return true;
+			}
+		}
+		relation_close(heap, AccessShareLock);
+	}
+	return false;
 }
 
 /*
@@ -731,7 +760,7 @@ scope_strays(AggCtx *c, const FromScan *fs, const SiftScopeSpecs *specs)
 			continue;
 		foreach_ptr(SubPlan, sp, c->root->init_plans)
 			if (sp->plan_id == plan && sp->subLinkType == ARRAY_SUBLINK)
-				return "ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan: write it as IN (SELECT ..) or EXISTS";
+				return "ARRAY(SELECT ..) over the scope relation is an InitPlan the planner runs before the scan, so this plan joins as written; the statement is also planned with IN (SELECT ..) in its place where the sub-select has no ORDER BY, LIMIT, DISTINCT or aggregate, and the cheaper plan runs (sift.explain_why of the IN form says why it is not read from the units)";
 		return "a sub-select over the scope relation is a plan of its own (NOT IN, OR, a scalar sub-select, a MATERIALIZED CTE, the select list): only a join, IN or EXISTS that PostgreSQL pulls up into the join is read from the units";
 	}
 	return NULL;
