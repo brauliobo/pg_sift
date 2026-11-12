@@ -196,13 +196,14 @@ the scan cannot do: the statement keeps the normal plan (`sift.explain_refusals`
 
 ## What it costs
 
-`CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,248 entries for 100,000 rows (0.93 per row); the index grows from 2.4 MB to 4.4 MB (+81%)` (the growth is said
-from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
+`CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,340 entries for 100,000 rows (0.93 per row); the index grows from 1.4 MB to 2.3 MB (+67%)` (the NOTICE counts the bytes of the
+segments, not the file, and says the growth from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
 them again when the journal says that many members changed (`sift.col_connect_refresh_pct`), when the reads that pay for the changed members cost more than the rewrite (a thousand
 reads against the 1,500 instructions an entity row and 680 a column of an entry the rewrite takes: 20 members of a table of 60,000 rows are refreshed, 1 is not) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
 
-The test table of 100,000 events, 5,000 entities and 40 tenants (one scope, a 5-column index): the index is 2,523,136 bytes without the scope and 4,489,216 with it (4,358,144 with `cols(created_at, kind,
-value_num)`), the build takes 250 ms without and 406 ms with it, and writes 2.9 MB of WAL without and 5.2 MB with it. Keys of fewer than 2,048 entries share the units of the scope segments, and the
+The fixture of this page (100,000 events of integer id, member, kind and value and a `timestamptz` over a year; 5,000 members, 4,667 of them in one of 40 tenants, so 0.93 entries a row; a 5-column index with the default choices; one backend, no parallel
+build): the index file is 1,368,064 bytes without the scope and 2,383,872 with it (+74%; 2,252,800 with `cols(created_at, kind, value_num)`, +65%); the build takes 248 to 375 ms without and 321 to 466 ms with it (3 runs on a shared host: the difference is within the
+spread), and writes 1.34 MB of WAL without and 2.27 MB with it (the journal index of the pairs not counted). Keys of fewer than 2,048 entries share the units of the scope segments, and the
 scope segments have no point directory and no global order (`order_array_columns` writes its arrays in the entity segments only: an array lists each row of a segment once, a scope segment holds a
 fact once for each of its keys, and the reads of a key go by unit), which the reads of a key do not use.
 
@@ -216,6 +217,8 @@ fact once for each of its keys, and the reads of a key go by unit), which the re
 | 2,000,000 | 1.05 | 55.3 MB, 10 s | 106.5 MB (+93%) | 11.2 s | 215 MB (55 MB without) |
 | 2,000,000 | 2.7 | 55.3 MB | 192.3 MB (+248%) | 21.4 s | 557 MB |
 | 2,000,000 | 5.4 | 55.3 MB | 335.2 MB (+506%) | 64.8 s | 676 MB |
+
+These rows are of the lab of the reuse measurements below. The growth in percent follows the size of the entity index, which follows the data: a build on the fixture of "What it costs" scaled to 500,000 events (25,000 members, 200 tenants, 2.70 entries a row, one 5-column index, serial build) went from 6,938,624 to 20,152,320 bytes (+190%; 9.8 bytes an entry where the row above has 23), 1.2 s to 3.6 s and 6.9 to 20.2 MB of WAL. The +254% and +255% of the table below are of the lab of the by-address study, whose entity index at 500,000 events is 12.4 MB.
 
 **Writes.** The statements that write the facts cost the same with and without the scope (10,000 inserted, updated or deleted facts, 500,000 events, 2.7 entries a row: 537, 1,021 and 493 M instructions either way); the work is deferred to the promotion that applies the journal, which costs 470 M instructions and 1.1 MB of WAL against 74 M and 0.3 MB (+396 M, +0.8 MB for each 10,000 facts); 100 pairs added to a key cost 0.5 M more. The promotion was measured at 2.7 entries a row only.
 
@@ -252,7 +255,7 @@ up (the join is linear in the table; nothing above 2,000,000 events was measured
 
 | Setting | Default | Gain | Impact | Why the default | Off |
 |---|---|---|---|---|---|
-| `sift.agg_scope` | on | a read of one key from the units: 0.7 to 1.0 million instructions where the entity rows of the members cost 2.6 to 3.4 (100,000 events, 5,000 entities, 40 tenants, the largest tenant); two keys 1.9 million against 2.0 to 3.1 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
+| `sift.agg_scope` | on | a read of one key from the units: 1.0 to 1.1 million instructions where the entity rows of the members cost 1.9 to 2.0 (the fixture of "What it costs", sum and count by kind of one tenant, prepared statement, warm, one backend); two keys 1.55 million against 2.09 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
 | `sift.scope_max_multiplicity` | 3 | `CREATE INDEX` refuses a scope whose members are in more keys than this on average, with the size and growth it would have had; the join answers the reads (see Break-even) | none | the units break even with the join at 2.5 (500,000 events) to 3.0 (2,000,000) entries a row | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
 
 ## Edges
