@@ -14,7 +14,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "copy_flat_col" is column format minor 44, which a library before 4.3 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.copy_flat: 40 rows, 1.33 copies per row of "public.facts" that reaches a key
-DETAIL:  33% of those rows have 2 or more copies, at most 2; the copy takes 0.2 MB with its indexes, +440% over the table and its indexes.
+DETAIL:  33% of those rows have 2 or more copies, at most 2; the copy takes 0.2 MB with its indexes, +450% over the table and its indexes.
 NOTICE:  scope copy public.copy_flat: no sift_col index on "public.facts", all 4 columns carried, table of 0.0 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.
@@ -34,7 +34,7 @@ NOTICE:  sift_col index "copy_part_p2_scope_id_id_dim_a_id_kind_amount_idx": 1 a
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = scope_id, dim_a_id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('copy_part_p2_scope_id_id_dim_a_id_kind_amount_idx');
 NOTICE:  scope copy public.copy_part: 40 rows, 1.33 copies per row of "public.facts" that reaches a key
-DETAIL:  33% of those rows have 2 or more copies, at most 2; the copy takes 0.1 MB with its indexes, +320% over the table and its indexes.
+DETAIL:  33% of those rows have 2 or more copies, at most 2; the copy takes 0.1 MB with its indexes, +300% over the table and its indexes.
 NOTICE:  scope copy public.copy_part: no sift_col index on "public.facts", all 4 columns carried, table of 0.0 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.

@@ -94,7 +94,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "facts_by_tenant_col" is column format minor 38, which a library before 3.7 cannot read
 HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
 NOTICE:  scope copy public.facts_by_tenant: 9150 rows, 1.56 copies per row of "public.facts" that reaches a key
-DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 0.8 MB with its indexes, +151% over the table and its indexes.
+DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 0.8 MB with its indexes, +150% over the table and its indexes.
 NOTICE:  scope copy public.facts_by_tenant: no sift_col index on "public.facts", all 5 columns carried, table of 0.5 MB
 DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
 HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.
