@@ -192,8 +192,7 @@ CREATE INDEX parent_col ON parent USING sift_col (id, grp, state, rank);        
 
 ## Keys above the fact table
 
-A request often carries a key that lives above the fact table: a tenant, a group, a plan. The facts reach it through a *scope relation*, a table of unique `(member key, scope key)` pairs (the ids a tenant sees, the ids of a group). An index keyed by the member answers such a request by expanding the pairs and testing every fact row against the set of ids, so its cost follows the table, not the tenant. A *scope copy* is a copy of the fact table that holds each fact once for every scope key of its member, with a `sift_col` index keyed by the scope key: the cost then follows the rows of the key. The same request can also be answered by a *scope index*, a `sift_col` index that keeps the rows replicated by scope key inside the table's own index
-(EXPERIMENTAL in 5.0, no second table and no triggers on the facts; [COL-SCOPE](COL-SCOPE.md#scope-index-or-scope-copy) says when to use which, with the sizes and the build WAL of both on one fixture).
+A request often carries a key that lives above the fact table: a tenant, a group, a plan. The facts reach it through a *scope relation*, a table of unique `(member key, scope key)` pairs (the ids a tenant sees, the ids of a group). An index keyed by the member answers such a request by expanding the pairs and testing every fact row against the set of ids, so its cost follows the table, not the tenant. The answer is the *scope index*, a `sift_col` index that keeps the rows replicated by scope key inside the table's own index, so the cost follows the rows of the key (EXPERIMENTAL in 5.0, no second table and no triggers on the facts; [COL-SCOPE](COL-SCOPE.md) has the recipe, the shapes the planner answers, what it costs and its edges). This section is the alternative, the *scope copy*: a copy of the fact table that holds each fact once for every scope key of its member, with a `sift_col` index keyed by the scope key, kept by triggers, read by a plain query on a table. [COL-SCOPE](COL-SCOPE.md#the-scope-copy-the-alternative) gives the rule for choosing, with the sizes and the build WAL of both on one fixture.
 
 ```sql
 -- facts(id primary key, dim_a_id, created_at, kind, amount) with an index on dim_a_id; scope_pairs(dim_a_id, tenant_id) with a unique index on both
@@ -490,7 +489,7 @@ and `EXPLAIN` of a read of the scope has `Scope Units` and no `Scope Fallback` o
 
 **Monitor.** `sift.col_maintenance_due('facts_col', false)` says `stale connection` when so many members of the pairs or of the groups changed that a rewrite is cheaper than the patches
 (`sift.col_connect_refresh_pct`, the groups counted by their members) or when a thousand reads of the patches cost more than the rewrite; `Scope Changed Keys` and `Scope Patched Rows` in `EXPLAIN (ANALYZE)` are the work of one read and `too many changed keys` is a read that
-fell to the entity rows (`sift.scope_patch_keys`). The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
+fell to the entity rows (the reader's cap on the changed members). The journals pay a 32-byte record for each row of the three tables an `UPDATE` or `DELETE` ends or an `INSERT` adds; a statement that changes a column no
 index holds (a HOT update) writes none. A time dependent grant (`expires_at`) is a column the application or a scheduled `UPDATE` sets into the predicate (`WHERE deleted_at IS NULL AND NOT expired`): `now()` is refused in an index predicate.
 
 **What it measures.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs, a read of one account (instructions:u of the backend, millions): 6.02 cold and 1.34 warm with nothing changed since the
@@ -501,11 +500,9 @@ columns, else the lowest oid of the plain ones). A rule that is settled by the o
 before it: name the btree with `using` where the choice must not depend on them (`grants(group_id, tenant_id) using grants_group`).
 
 **Two paths or a copy.** The pair table and the scope copy of the sections above are the right choice for arbitrary pair queries (a table anyone can join or filter), a condition on a third table (a group
-that is soft deleted itself, a tenant that is suspended: the view says it, the scope index cannot), a pair that is a view, a time dependent pair swept by `sift.scope_expire_pairs`, or a planner that must
-read the pairs today. The two paths are the right choice for the grants and memberships shape: the incremental maintenance is exact for every edit of the three tables (a grant, a membership, a
+that is soft deleted itself, a tenant that is suspended: the view says it, the scope index cannot), a pair that is a view, or a time dependent pair swept by `sift.scope_expire_pairs`. The two paths are the right choice for the grants and memberships shape: the incremental maintenance is exact for every edit of the three tables (a grant, a membership, a
 member moved, a group emptied), there is no pair table or copy to size, to vacuum and to keep by triggers, and an edit of one group costs the members of that group at the next read (6.5 M
-instructions for 10 members, above) and not a recompute of the account's pairs (164 M for a tenant of 11,884 pairs by key, a different fixture, in [the edit table](#what-an-assignment-edit-costs-by-pair-and-by-key)). The planner's recognition of the join forms is
-not in this release, for the scope index of one path or of two.
+instructions for 10 members, above) and not a recompute of the account's pairs (164 M for a tenant of 11,884 pairs by key, a different fixture, in [the edit table](#what-an-assignment-edit-costs-by-pair-and-by-key)). The planner reads the join forms of the scope index of one path and of two from the units ([COL-SCOPE](COL-SCOPE.md#what-the-planner-recognises)).
 
 ## Totals per key and month: a cube table
 

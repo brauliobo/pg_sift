@@ -302,7 +302,7 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 - [docs/UPGRADING.md](docs/UPGRADING.md): the upgrade preflight (`scripts/upgrade-check.sh`), `ALTER EXTENSION UPDATE`, `pg_upgrade` to a newer PostgreSQL major and going back to an older release.
 - [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md): which `sift_col` indexes to create, what they cost in size and writes, and which btrees to keep.
 - [docs/COL-CONNECT.md](docs/COL-CONNECT.md): connected indexes: declaring a connection, the automatic one, what it costs and its limits.
-- [docs/COL-SCOPE.md](docs/COL-SCOPE.md): the scope index (experimental): declaring a scope, the journal index, `cols(..)`, EXPLAIN lines, fallback reasons and its limits.
+- [docs/COL-SCOPE.md](docs/COL-SCOPE.md): the scope index (experimental): what it is and where it pays, the declaration and the journal index, the shapes the planner answers, EXPLAIN lines and fallback reasons, size, build and WAL, its edges and limits, and the scope copy as the alternative.
 - [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.
 - [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
 

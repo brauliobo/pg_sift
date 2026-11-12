@@ -5,7 +5,27 @@ is "the events of tenant 7", and the tenant is in the pairs of the entity, not i
 time)`, so a read of one tenant reads the units of that tenant and no others, where the join reads the entity of each member. New in 5.0, column format minor 45, opt-in, and EXPERIMENTAL: the
 declaration, the formats and the settings may change in a later release. `sift_table` has no scope.
 
+The alternative to the index is the [scope copy](#the-scope-copy-the-alternative), a second table kept by triggers; this page is about the index, in this order: [the expected case](#the-expected-case), [the declaration](#the-declaration), [what a read does](#what-a-read-does) and [what the planner recognises](#what-the-planner-recognises), [EXPLAIN](#explain) and the refusals, [what it costs](#what-it-costs), [the edges](#edges), what happens [without a scope index](#without-a-scope-index-replicate-or-reuse), and [the copy](#the-scope-copy-the-alternative).
+
+## The expected case
+
+A table of facts that many tenants (or groups) share, most of them small or medium, and requests that aggregate over one tenant or a few: sums and counts by kind or by month, a filter on a measure, distinct members, the top or the latest rows. Without a scope index such a read follows the table: it reads the units that hold a member of the tenant, so its cost grows with the rows of the table. With one it reads the units of the tenant.
+
+Measured on `events` joined to a table of (member, tenant) pairs, 2.7 entries a row, the six requests of a dashboard (geometric mean of the instructions of the backend, shared buffers hit, blocks read cold; the right column is the plain `sift_col` index read by the member keys of the tenant, the better of two layouts of it; [the full table](#without-a-scope-index-replicate-or-reuse) has every size, every tenant and every request):
+
+| events | tenant (of the events) | scope index | no scope index |
+|---:|---:|---|---|
+| 100,000 | 0.1% | 0.90 M instr, 56 hit, 8 cold blocks | 2.32 M, 52, 49 |
+| 500,000 | 3.3% | 1.71 M, 94, 39 | 5.78 M, 198, 167 |
+| 2,000,000 | 0.1% | 1.77 M, 152, 82 | 9.62 M, 502, 452 |
+| 2,000,000 | 3.3% | 3.88 M, 247, 142 | 16.68 M, 648, 584 |
+| 2,000,000 | 33% | 13.12 M, 728, 428 | 51.20 M, 816, 760 |
+
+The scope index read fewer instructions than the member keys in every cell measured, from tenants of 0.1% to 33% of the events, and the rows are the same. The sums and counts by kind gain most (12.7 to 17.8 times fewer instructions at 2,000,000 events, across the four tenants). The price is size, build time and the promotion of the writes ([What it costs](#what-it-costs)): at 2,000,000 events the index grows by 93% at 1.05 entries a row and by 248% at 2.7. Declare a scope when the requests by a key are sums and counts by kind or time and the members are in few keys (up to 3 entries a row, the limit; the growth is what the `NOTICE` says); [the edges](#edges) say where the gain is small and what is not supported.
+
 ## The declaration
+
+The recipe is two statements: a journal index on the table of pairs (it records the pairs that change), then the `scope` option on the index of the facts. `CREATE INDEX` says in a `NOTICE` which btree of the pairs it recorded and how many entries the scope holds and what the index grows by. The queries stay as the application writes them: the planner reads the join forms against the units (below).
 
     CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
     CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
@@ -30,149 +50,6 @@ the member key, the column the units are cut by and the derived key; every other
 (`Scope Fallback: column pad not in the scope units`). The subset is smaller: the scope segments of the generic test table are smaller with `cols(kind, value_num)` than with every column, and
 smaller again with `cols(created_at)`; the entries are the same. A leaf with no chunk is NULL in every row of the unit and its zone says so: VACUUM, a promotion,
 a rewrite, a merge and `sift.col_verify` read the units as they are, whether or not the list names the primary key (test `col_scope_cols_maint`).
-
-## Pairs that are soft deleted: a partial unique btree
-
-The pairs may be the rows of a PARTIAL btree of the relation: the predicate says which rows are pairs, and the rows that satisfy it are unique on the two columns (a partial btree that is not unique makes
-the pairs [a multiset](#pairs-in-several-rows-a-multiset) of the rows that satisfy it). A bridge table that soft
-deletes keeps its all-rows unique btree (the primary key) and adds the one that defines the pairs:
-
-    CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
-    CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
-    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
-      WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
-
-No table exists for the index alone, and the application deletes as it does. An `UPDATE` that sets `deleted_at` ends a pair and one that clears it creates one: the journal records the member of both,
-so a read takes the stored entries of the members that did not change and reads the entity rows of those that did. A statement that updates a column no index holds is a HOT update and writes
-nothing to the journal. The scope entries are the active pairs only (soft deleted rows have none), and the answer is the join on the active rows in every state.
-
-- **Which btree.** `using <index>` after the columns names it (`memberships(dim_a_id, group_id) using memberships_active`); without it, among the unique btrees on exactly the two columns if there is one, else among the
-  non-unique ones, the only partial one, else the lowest oid of the plain ones; two partial ones of that kind are an error that asks for `using`. The `NOTICE` of `CREATE INDEX` and `REINDEX` names it and its predicate; the index records it (the dependency), every read uses it, and one made
-  later changes nothing until `REINDEX` chooses again. `ALTER INDEX` with another `using` than the recorded btree is refused: the segments were written under the recorded one.
-- **Journal index.** A plain one, or a partial one whose predicate the predicate of the pairs' btree implies (`WHERE deleted_at IS NULL` beside the same predicate: a soft delete writes one record). A partial one
-  that a pair can be inserted outside of does not qualify: it never hears of that pair.
-- **What the predicate can be.** What PostgreSQL accepts in an index predicate: immutable, over the columns of the row (`IS NULL`, comparisons with constants, boolean columns). `now()` is refused by PostgreSQL
-  (`functions in index predicate must be marked IMMUTABLE`), so a pair that ends by the clock needs a column the application or a scheduled `UPDATE` sets (`UPDATE grants SET expired = true WHERE expired_at <= now() AND NOT expired`,
-  a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the copy path ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
-
-## Pairs in several rows: a multiset
-
-A table that keeps a row for each source of a pair (a grant for each way a tenant got a dim_a_id, a row for each role that put a dim_a_id in a group) holds a pair in several rows, and its application does not keep a helper
-table only for the index. Declare the scope on a btree that is not unique, plain or partial, on exactly the two columns, in either order:
-
-    CREATE TABLE tenant_pairs (id serial PRIMARY KEY, row_src int NOT NULL, dim_a_id int NOT NULL, tenant_id int NOT NULL);
-    CREATE INDEX tenant_pairs_pair ON tenant_pairs (dim_a_id, tenant_id);
-    CREATE INDEX tenant_pairs_journal ON tenant_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
-      WITH (scope = 'tenant_id: dim_a_id -> tenant_pairs(dim_a_id, tenant_id)');
-    NOTICE:  scope "tenant_id": the pairs of "tenant_pairs" (dim_a_id, tenant_id) are the distinct rows of its non-unique btree "tenant_pairs_pair"
-    DETAIL:  A pair may be several rows: a read with the meaning of IN or EXISTS counts a fact once, a join counts it once for each row and runs as written.
-
-A pair exists while at least one visible row that satisfies the predicate of the btree (if it has one) holds it: the PAIRS are the distinct `(dim_a_id, tenant_id)` of those rows. Deleting one of two rows keeps the pair, deleting the
-last one ends it, a soft delete (a partial btree `WHERE deleted_at IS NULL`) of one of two rows keeps it and of both ends it, and moving the key of one row adds the new pair and keeps the old one while another row holds it. When
-the relation has several btrees on the two columns the choice is: a unique one before a non-unique one, among those the only partial one, else the lowest oid of the plain ones (two partial ones of that kind are an error that asks
-for `using`); `using <index>` names the one, and the `NOTICE` says which.
-
-- **Exact because the journal names at least every changed dim_a_id.** The journal index records the dim_a_id of every row an `UPDATE` or `DELETE` ended and of every row inserted, whether or not the set of distinct pairs of that dim_a_id changed. A read
-  takes the stored entries of the dim_a_id that did not change and reads the rows of the facts of those that did (the patch), expanded by their pairs under the snapshot of the statement. A duplicate row inserted or deleted
-  therefore costs the patch of its dim_a_id, and a pair that did not change is read again from the btree: never a wrong answer. Nothing counts the rows of a pair when it is written (a refinement that skipped the record when
-  another live row exists would be wrong under concurrency: two sessions that each delete one of two rows).
-- **Every list of the pairs lists each once**, through one function (`sift_scope_pairs_distinct`): the fill from the whole relation, the fill that probes the btree for the dim_a_id of each batch, the reader's pairs of the keys and of
-  the changed dim_a_id (the btree probed by key or by dim_a_id, the leaves of the journal index, which hold a row for each row of the relation, the relation read once) and the union of the two paths of a scope of
-  two paths ([where a pair in both, or in several rows of each, is one pair](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)). A pair taken twice would put a fact twice in the units of its key, which `sift.col_verify` and a build refuse
-  (`rows must be added in ascending TID order`), and would count a fact twice in the delta. Tests `col_scope_pairs_multiset` (every state by every read shape), `col_scope_pairs_multiset_fill` (runs of thousands of rows of one pair
-  across the leaf pages of the btree, in either order of its columns, partial, by each way the pairs are known: `sift.test_conn_fill`), `col_scope_pairs_multiset_partial`, `col_scope_pairs_multiset_twohop`.
-- **Which forms are exact.** A read with the meaning of `IN` or `EXISTS` counts a fact once whatever the rows of the pair and is read from the units. A `JOIN` to the relation counts a fact once for each row of a pair, and a read
-  for each pair (`GROUP BY` the scope key, several keys counted for each pair) once for each row too, which the units (one entry for each distinct pair) cannot: those run as written, the plan says why
-  (`sift.explain_why`, arm `scope`: `pairs are a multiset (non-unique btree): a join counts a fact once for each row`; the testing markers `sift.in_scope_pairs` and `sift.in_scope_all` say it as `Scope Fallback`), and their rows are the join's.
-  The planner learns it from the btree the index records (a dependency of the index, so a btree made later changes nothing until `REINDEX`). A scope of two paths defines its pairs as the distinct union, so a read for each pair of it counts each pair once whatever the rows hold.
-- **The scope copy is unaffected.** `sift.scope_create` still needs the unique btree (a pair in two rows would give a fact two copies in one key) and refuses the relation of a multiset with its usual error; the pairs kept by
-  `sift.scope_follow_pairs` are written by sift as the distinct rows of a view.
-- **What it costs.** The same as for unique pairs: the units hold one entry for each distinct pair, a read of a dim_a_id whose rows were not written since the stamps is the stored read. The duplicate insert and delete
-  of the test (1.13 rows a pair) patch the dim_a_id they touch like any other write to the relation.
-
-## Pairs reached by two paths: a direct grant and a group grant
-
-A tenant sees an entity when it has a grant on the entity or on a group the entity belongs to (a subscription). The pairs are not the rows of one relation but the union of two paths, and a
-member can be reached by both. The declaration names the three relations and no table holds the union:
-
-    facts(id, dim_a_id, ..)
-    grants(id, tenant_id, dim_a_id, group_id, deleted_at, ..)     -- a grant names a member or a group; both columns may be NULL
-    memberships(id, group_id, dim_a_id, deleted_at, ..)
-    CREATE UNIQUE INDEX grants_direct  ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
-    CREATE UNIQUE INDEX grants_group   ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
-    CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
-    CREATE INDEX grants_by_member         ON grants      USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-    CREATE INDEX grants_by_group          ON grants      USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
-    CREATE INDEX memberships_by_member    ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
-    CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, value_num)
-      WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
-
-**The grammar.** One alternative after the `->`: `key: fk -> rel(member, key) [using ix] | rel2(via, key) [using ix2] via vrel(via, member) [using ix3] [cols(a, b)]`. The first relation is
-the direct path (the rows of `rel` are pairs), `rel2` the joined path (a row of `rel2` gives its key to every member of its `via` value), and `vrel` lists the members of a `via` value. A text
-that names a second path without `via` and its relation, or a relation with one column, is refused with what is missing. The three sets of columns must differ (`grants(dim_a_id, tenant_id)` twice,
-or reversed, is refused), the columns of one role are of one integer type (`via` in `rel2` and `vrel`, `member` in `rel` and `vrel`, `key` in `rel` and `rel2`), and a relation is a heap table that
-is not the indexed table. The columns of a scope of two paths may be nullable (a grant on a group has no member, a grant on a member no group): a row with a NULL in a column of its path is not a
-pair of that path, as a join drops it; the columns of a scope of one path are still NOT NULL.
-
-**The three btrees.** Each relation has its own recorded btree on exactly its two columns, unique or not, with the rule of the pairs of one relation (above): `CREATE INDEX` and `REINDEX` choose it (a unique one first,
-then the only partial one, else the lowest oid of the plain ones; two partial ones are an error that asks for `using`) and say which, one `NOTICE` for each path (`the direct pairs of "grants" (dim_a_id,
-tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)`, then `the joined pairs` and `the via members`); `ALTER INDEX` is sticky (another `using` than the
-recorded one is refused); `DROP INDEX` of a recorded btree is refused without `CASCADE`, and `REINDEX .. CONCURRENTLY` of it keeps the dependency. The dependencies are told apart by the relation
-and its two columns, so one scope index depends on up to three btrees of the same relation or of several, and an index may hold a scope of two paths beside scopes of one. A scope of one path declared as before is unchanged.
-The relations of a scope of two paths may hold a pair in several rows as well (a grant for each source of it, a row of the via relation for each source of a membership): the pairs are the DISTINCT union either way.
-
-**The pair set.** The pairs of the scope are the DISTINCT `(member, key)` of the direct rows D and of the joined ones J, `J = { (m.member, g.key) : g in rel2, m in vrel, m.via = g.via }`, the rows of each
-that satisfy the predicate of its btree. The SQL that says it:
-
-    SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
-    UNION
-    SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
-     WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
-
-The tests compare every read with a join on this statement after every edit of the three tables.
-
-**Once and per pair.** A member reached directly and through one or several groups is ONE pair: the scope segments store the distinct pairs and no fact row is stored twice for a key. A read with the
-meaning of `IN` or `EXISTS` counts a fact once; a join or `GROUP BY` the key over the `UNION` counts it once for each pair, which is once for a key a member has by any number of paths
-(`Scope Semantics: once`, `per pair`, as for one path). The dedupe across keys, the `work_mem` bound and the per-pair read of several keys that has a changed member are those of the section below.
-`sift.scope_max_multiplicity` applies to the derived set: a member reached by two paths adds no entry, so the figure is the distinct entries for the rows of the table, as the `NOTICE` says it.
-
-**The three journals.** The pairs of a member depend on (1) the rows of `rel` with that member, (2) its rows of `vrel`, and (3) the rows of `rel2` of every group it is in. Each relation needs a
-journal index, a `sift_col` index with `track_changes = 'ctid'` whose first column is the journaled key and that holds the other column, plain or partial with a predicate that the predicate of the
-recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths does
-not require them: a scope with any of the three missing, or one a pair can be inserted outside of (a partial journal), vouches for nothing, the plan says `Scope Fallback: no journal`, and the read is the
-entity rows of the members the three relations list for the keys. The scope index finds the journals when it is created or rebuilt and depends on them: a journal made later is found by the next
-`REINDEX` of the scope index, which starts it before it reads and stamps the segments with it (the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
-`other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
-
-**The members that changed.** A segment of a scope of two paths holds a stamp for each of the three journals. The members whose pairs changed since the stamps are the union of the members of J1, the members of J3
-(the ones that left a group are there), and the members of every group in J2 as the recorded btree of `vrel` lists them for the reader's snapshot (the active rows, the predicate applied). The result is exact: the pairs of
-a member depend on no other row (the three lists above), a row of one of them that changed names the member, or the group whose members are looked up now, in a journal; a member that left a group is in
-J3. The read is the one of one path: the units of the keys less the changed members, plus the entity rows of those that have a pair with a key now (the patch), and the write buffer's
-members the same way. `sift.scope_patch_keys` bounds the changed members (a group with more members than it is `too many changed keys`: the entity rows are read), and the refresh of the maintenance
-counts them against `sift.col_connect_refresh_pct` as it counts those of one path, the members of a changed group included.
-
-**Cost.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs; a read of one key (the account), instructions:u of the backend, cold and warm, in millions:
-
-| | nothing changed | 1 group changed (10 members) | 100 groups changed (1,090 members, 135 patched) | the plain join |
-|---|---|---|---|---|
-| cold | 6.02 | 12.5 | 26.5 | 68.9 |
-| warm | 1.34 | 7.8 | 21.8 | 63.6 |
-
-The changes cost 6.5 M instructions for one group and 20.5 M for 100 groups over the first column, cold and warm alike; the join reads 63.6 M even warm.
-
-**Column format minor 49.** A segment of an index that declares a scope of two paths holds three stamps and is written as column format minor 49 (docs/FORMATS.md); an index whose scopes all have one path
-keeps writing minor 45 with one stamp for each scope. A library before 5.0, and a 5.0 build before minor 49, refuse the index (`Use a newer pg_sift`, `REINDEX`): `CREATE INDEX` says so in a `NOTICE`. A scope
-declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale connection`)
-until `REINDEX`.
-
-**`sift.in_scope` and the planner.** The scan takes the conjunct only from the marker `sift.in_scope(index, key_name, fk, key or keys)` (`sift.in_scope_pairs` for the join meaning), as for one path. The planner reads the paths from `sift_scope_legs(index, scope, legs[2])` (2 legs for this declaration, the second one joined: `via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`) and recognises the `UNION` of the two
-paths as the sub-select of `IN` or `EXISTS` and as the relation of a join (table below): each select reads the relation of its path with the predicate of its btree, both bind the same key by constants or parameters, and no other condition or column
-is read. What else a statement says keeps the join as written, and `sift.explain_why` (arm `scope`) says which select breaks the proof.
-
-**What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a unique btree); a condition on a third table (a group's own soft delete: the memberships of a deleted group
-stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
-into a column, see above); a partitioned table among the three; text or uuid keys; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
 
 ## What a read does
 
@@ -249,9 +126,7 @@ Measured on 120,000 and 150,000 events with 1,200 and 50,000 members, and 300,00
 | 110 members of 55 rows, 10% in two keys | 1 / 10 / 30 / 50 | 3.2 / 7.4 / 13.6 / 19.1 M | 0.46 / 6.4 / 20.4 / 48.2 M | scope / scope / join / join (0.50 / 6.5 / 13.8 / 19.3 M) |
 
 and with changed pairs (the third shape, one tenant of 110 members, join 3.9 M clean): 20 pairs of the tenant changed, scope forced 12.2 M, node 5.1 M (join 4.4); 20 pairs of every tenant, 30 keys: scope forced 141.6 M, node 20.5 M (join 16.6);
-every pair of every tenant, 30 keys: scope forced 501 M, node 26.8 M (join 17.6; the reader lists the changed members before it refuses). The join's price follows within 8% from 3 keys on and 37% at the first key where the
-units of the keys leave some of the table's units out; the units' price is the weaker half (the aggregation of a row and the units' own setup differ with the shape: the node takes the join up to 0.9 M instructions (0.2 ms) late or early in
-the middle of the range, where the two cost the same, and 3 M where a key has many members of few rows). A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
+every pair of every tenant, 30 keys: scope forced 501 M, node 26.8 M (join 17.6; the reader lists the changed members before it refuses). The node's choice is the cheaper of the two prices at the keys of the execution; in the 19 cells of `col_scope_price_terms` the units' price took the cheaper arm every time, and the join's price is read from the plan of the first pass at 1, 3, 10, 30 and 100 keys of the average size. A statement that is nearly one keeps the join and says why in `sift.explain_why` (arm `scope`, slug `scope`). `SET sift.agg_scope = off` turns the recognition off; a top-N, a `GROUP BY` with an
 `ORDER BY .. LIMIT` and the aggregates are the scan's as ever.
 
 **Many to many.** A member may be in several keys: a fact has one entry for each. A read of one key counts each fact of a member that has the pair once. A read of several keys with the meaning of
@@ -270,30 +145,24 @@ Tests `col_scope_changed_pairs` (every state of the pairs, every read shape, eve
 still cannot take the delta of a changed pair or of the buffers (`top-n, changed pairs`).
 
 **The read is priced.** A key that has a pair now has its rows read from the table segments, and an index whose units are cut by time holds some of them in every unit: the read then opens every unit of them beside the scope units.
-Each read counts what its two routes would cost and takes the cheaper, from the figures of `src/col/scope.h` (instructions of the backend, prepared statements, warm, median of 3; the fits are by relative least squares over 43 reads
-of 2 to 50 keys of three shapes, one unit a key with 111, 3 to 150 and 10,000 rows a key, and 28 reads of 5 to 4,775 changed pairs): 450,000 before any unit (the journal's vouch, the directory, the statement), 36,700 a unit read row by
-row or 13,300 a unit its pre-aggregates answer, 18 an entry of the keys plus what the planner counts for the aggregation of a row, 20 more for each entry when pairs changed (the source leaves out their stored entries), 3,300 a changed
-pair (its journal record and its probe), 266,000 a unit of the table segments the rows of the changed keys are read from, 15 a row looked at to find them when no point directory names them, 1,385 a copy of the delta (a changed key's row or
-a buffered row, copied for each pair, made a unit and read), against the entity path (25 a pair of the relation, 36,700 a unit of the rows that may hold a key, 10 a table row the key filter tests and 35 a row it keeps), which says
-`Scope Fallback: patch dearer than the entity path`. The prices are pure functions of the counts of a `SiftScopeCounts` (`sift_scope_patch_price`, `sift_scope_list_price`, `sift_scope_units_price`, `sift_scope_entity_price` and
-`sift_scope_entity_cheaper`: the keys and `once`, the units and entries, the share of the units the pre-aggregates answer, the planner's instructions an entry, the changed pairs, the units and rows the patch reads, the delta rows,
-the pairs and the units and rows of the listed keys), so the executor (from the zones of the units it read) and the planner (from its estimates) decide from the same inputs. A read of several keys counted once (`IN`, `EXISTS`) cannot
-answer a unit from its pre-aggregates: it lists the pairs of the relation whole (39 a pair, whatever the keys) and those of its keys (286 each) to dedupe them, and adds 15 instructions an entry for each key whose rows a drop list thins
-(`Scope Dedupe Keys`). Changed pairs make the units of the keys they are in lose their pre-aggregates: the share of units answered from them falls as `exp(-1.8 changed / keys)`. A patch and a delta that cost less than pricing them
-(1,000,000: listing the keys and counting their rows) are read without it. The changed keys one read lists are bounded by the table rows of the index at 21 over 3,300 for a changed key's probe, and by what the join as written
-saves: the node takes the changed pairs its join leaves room for (its price less the clean read, over 3,300) as the cap of the reader, which refuses (`too many changed keys`) as soon as it has counted one more, without listing the
-pairs, and the read runs the join. The changed keys are counted in a hash table, not sorted. The setting `sift.scope_patch_keys` is gone; the testing setting `sift.test_scope_patch` takes the patch whatever it costs.
-The price is within 8% of the measurement in the 13 cells of the clean reads of the table of acceptance (3 shapes, 1 to 50 keys), and within 10% in 13 of its 16 cells with changed pairs (14.4% at most, over-priced); the price is read from the pure
-function by the test `col_scope_price_terms` (`sift._test_scope_price`), the early refusal by the same test (a read whose changed pairs the join's price does not leave room for says `too many changed keys` and gives the join's rows).
-Measured on the fixture above (a read of one tenant; the join 3.24 million clean, 3.63 and 4.16 with 20 and 200 changed pairs): the clean read costs 1.54 million, with 20 changed pairs the read says why and runs the entity path
-(5.3 million: the join's 3.6 and 1.7 million of decision, the journal's vouch, the changed keys, the pairs of the changed keys and the listing of the tenant's keys) where the patch forced costs 8.2 million (5.2 with a point directory
-of the key column), with 200 changed pairs 7.2 million (the join 4.2; the patch forced 27.0). A key cut index reads only the units of the keys it patches. The delta has a unit of its own for each key: 2,000 buffered rows cost 2.05 million for one tenant (110 blocks hit, none read; join 3.41).
-The reader's part of the decision (`sift_scope_read`: the stamps, the vouch of the journal, the changed keys, the pairs of the changed keys, the plan of the table rows) costs 0.94 million at 20 changed pairs; the reads of every key
-list the pairs of the relation from the leaves of its journal index (0.37 million for the 7,000 pairs of the fixture, where the relation read through its btree costs 3 and had made that read cost 9.4 million with 2,000 buffered rows).
+Each read counts what its two routes would cost and takes the cheaper. The terms are the constants of `src/col/scope.h` (instructions of the backend; the test `col_scope_price_terms` prints each one): 450,000 before any unit (the journal's vouch, the directory, the statement),
+36,700 a unit read row by row or 13,300 a unit its pre-aggregates answer, 18 an entry of the keys plus what the planner counts for the aggregation of a row, 20 more for each entry when pairs changed (the source leaves out their stored entries) and 15 more for each key whose rows a drop list thins.
+A read of several keys counted once (`IN`, `EXISTS`) lists the pairs of the relation whole (39 a pair, whatever the keys) and those of its keys (286 each) to dedupe them (`Scope Dedupe Keys`) and cannot answer a unit from its pre-aggregates.
+A change since the stamp costs the journal 150,000 before its first changed member, then for each changed member 3,300 at 5,500 pairs in the relation (grown by 0.45 log2 of the pairs over 5,500) for the probe of its pairs, or the relations' pairs read whole from the leaves of their journal indexes
+(138 a pair; 300 a pair of a relation whose pairs only its btree lists), whichever is less. The patch is 43,000 a unit of the table segments that holds a row of the changed members, 13 a row looked at to find them where no point directory of the member leaf names them, and 1,600 a copy of the delta
+(a changed member's row or a buffered row, copied for each pair, made a unit and read). The entity path (the join as written) is 25 a pair of the relation read through its journal index (300 through its btree), 36,700 a unit of the rows that may hold a member of the keys, 25 an entity row of them and 70 an entry the key filter keeps;
+the read that costs more says `Scope Fallback: patch dearer than the entity path`. The prices are pure functions of the counts of a `SiftScopeCounts` (`sift_scope_patch_price`, `sift_scope_members_price`, `sift_scope_list_price`, `sift_scope_units_price`, `sift_scope_entity_price` and
+`sift_scope_entity_cheaper`: the keys and `once`, the units and entries, the share of the units the pre-aggregates answer, the planner's instructions an entry, the changed members, the units and rows the patch reads, the delta rows,
+the pairs and the units and rows of the listed keys), so the executor (from the zones of the units it read) and the planner (from its estimates) decide from the same inputs. Changed members make the units of the keys they are in lose their pre-aggregates: the share of units answered from them falls as `exp(-1.8 changed / keys)`.
+A patch and a delta that cost less than pricing them (1,000,000: listing the keys and counting their rows) are read without it. The changed members one read lists are bounded by the table rows of the index at 21 over the probe of a changed member, and by what the join as written
+saves: the node takes the changed pairs its join leaves room for (its price less the clean read, over the probe) as the cap of the reader, which refuses (`too many changed keys`) as soon as it has counted one more, without listing the
+pairs, and the read runs the join. The changed members are counted in a hash table, not sorted; there is no setting for the cap, and the testing setting `sift.test_scope_patch` takes the patch whatever it costs. A key cut index reads only the units of the keys it patches.
+The test `col_scope_price_terms` compares the price with the read measured in 19 cells (instructions of the backend, warm, the scope read forced; shapes of 30 keys of 111 rows, 500 of 3 rows and 110 of 55 rows with a tenth of them in two keys): the arm the price takes is the cheaper one in every cell, the 13 cells of clean reads are priced within 8%
+and the 6 cells with changed pairs from 19% under to 20% over the measurement. The fits that gave the terms were made on fixtures that this page no longer lists; the test is the record of the figures.
 
 **The delta is cheap to expand.** The copies of a read are sorted by (key, address) and the pairs by (key of the fact, tenant): a radix sort of the entries (a few passes over the key ranges) replaces the comparison sort (a call of a
 function for each of some twenty steps of each entry), which were more than half of the read of 2,000 buffered rows for every tenant: 12.3 million instructions (2,190 copies, 4,730 each over the clean read's 1.94) became 7.1 (2,330 a copy; the decode of the buffers is the same
-for the join). The figure of a copy in the price is 1,700, measured on a read of one key whose delta is one unit.
+for the join). The price takes 1,600 instructions a copy.
 
 **Every key, grouped by the key.** A read of every key (`Scope Keys: all`, no key list, `Scope Semantics: per pair`) reads all the scope units, a fact once for each pair of its member, and its group key is the derived leaf
 `<key_name>#scope`: every entry has its key (`Scope Group Key: <key_name>`), so the scan groups by it as the engine groups by any leaf. The units of a key hold that one key (the units of small keys share a unit, a run of keys), so a
@@ -304,9 +173,11 @@ read of every key has no entity path of its own, so only the planner can take th
 5,000 dim_a_ids and 50 tenants (instructions of the backend, warm, median of 5; `sum(amount), count(*)` for every tenant): the read costs 1.99 million instructions (86 units from pre-aggregates, 409 blocks hit; the join 53.0 million, 206 hit),
 with 2,000 buffered rows 7.1 million (2,190 copies; the join 53.6; 12.3 before the copies were sorted by radix), with 20 changed pairs 39.4 million (a unit with a changed key's entries is read row by row; the join 56.2; the
 reader refused it after 0.94 million instructions, which the join added to its 56.7) and with 200 changed pairs 89.5 million (the join 56.6: the delta's 25,140 copies cost more than the join, which the planner will choose).
-The node chooses by itself: a read grouped by the key answers the units that hold no changed member from their pre-aggregates and reads the units of the changed members row by row (143 instructions an entry, 8.5 million for the patch and the delta's setup, the share of the entries in such units 1 - exp(-1.8 changed / keys)), and the join as written costs 110 instructions a row of the keys beyond the first more than the model's operators count (`AGG_ALT_JOIN`). Clean, with 20 and with 200 changed pairs of the same table: the node runs the scope read in 1.4 million instructions (the join 53.0), the scope read in 38.9 (the join 56.0), and the join in 58.2 (`Scope Fallback: join is cheaper for every key`; the scope read forced costs 90.8).
+The node chooses by itself: a read grouped by the key answers the units that hold no changed member from their pre-aggregates and reads the units of the changed members row by row (the terms above; the share of the entries in such units is 1 - exp(-1.8 changed / keys)), and the join as written costs 110 instructions a row of the keys beyond the first more than the model's operators count (`AGG_ALT_JOIN`). Clean, with 20 and with 200 changed pairs of the same table: the node runs the scope read in 1.4 million instructions (the join 53.0), the scope read in 38.9 (the join 56.0), and the join in 58.2 (`Scope Fallback: join is cheaper for every key`; the scope read forced costs 90.8).
 
 ## EXPLAIN
+
+A statement that cannot be read from the units is still answered, by the join as written, and says why. `EXPLAIN` shows `Scope Index` when the units were read and `Scope Fallback: <why>` when they were not; `SELECT * FROM sift.explain_why('<query>')` (arm `scope`) returns the reason without running the statement. `SET sift.agg_scope = off` gives the join as written for a comparison.
 
 `Scope Index`, `Scope Keys` (`all` for every key), `Scope Group Key` (a group key of the scan is the derived key), `Scope Semantics`, `Scope Columns` (kept of all), and when the units were read `Scope Units` (read and skipped), `Scope Entries Read`, `Scope Changed Keys`, `Scope Patched
 Keys`, `Scope Patched Rows` (the rows of the entity segments read for the changed keys that have a pair now), `Scope Delta Rows` (the copies of the rows of the write buffers and of the patched rows the scan reads, one for each pair), `Scope Dedupe Keys`; with a fallback `Scope Fallback: <why>` and `Scope Members Listed`. The reasons (the labels are in [COL-PLAN](COL-PLAN.md)): `disabled`,
@@ -323,12 +194,35 @@ JOIN`: the rows that fail it are output rows), a conjunct over the rows an outer
 it), an expression around it, a key that is not a constant, a second scope (a scan reads one), the setting off. A `WHERE conj` over the nullable side of a `LEFT JOIN` drops the unmatched rows, which
 the scan cannot do: the statement keeps the normal plan (`sift.explain_refusals`: `outer_join`).
 
-## Settings
+## What it costs
 
-| Setting | Default | Gain | Impact | Why the default | Off |
-|---|---|---|---|---|---|
-| `sift.agg_scope` | on | a read of one key from the units: 0.7 to 1.0 million instructions where the entity rows of the members cost 2.6 to 3.4 (100,000 events, 5,000 entities, 40 tenants, the largest tenant); two keys 1.9 million against 2.0 to 3.1 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
-| `sift.scope_max_multiplicity` | 3 | `CREATE INDEX` refuses a scope whose members are in more keys than this on average, with the size and growth it would have had; the join answers the reads (see Break-even) | none | the units break even with the join at 2.5 (500,000 events) to 3.0 (2,000,000) entries a row | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
+`CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,248 entries for 100,000 rows (0.93 per row); the index grows from 2.4 MB to 4.4 MB (+81%)` (the growth is said
+from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
+them again when the journal says that many members changed (`sift.col_connect_refresh_pct`), when the reads that pay for the changed members cost more than the rewrite (a thousand
+reads against the 1,500 instructions an entity row and 680 a column of an entry the rewrite takes: 20 members of a table of 60,000 rows are refreshed, 1 is not) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
+
+The test table of 100,000 events, 5,000 entities and 40 tenants (one scope, a 5-column index): the index is 2,523,136 bytes without the scope and 4,489,216 with it (4,358,144 with `cols(created_at, kind,
+value_num)`), the build takes 250 ms without and 406 ms with it, and writes 2.9 MB of WAL without and 5.2 MB with it. Keys of fewer than 2,048 entries share the units of the scope segments, and the
+scope segments have no point directory and no global order (`order_array_columns` writes its arrays in the entity segments only: an array lists each row of a segment once, a scope segment holds a
+fact once for each of its keys, and the reads of a key go by unit), which the reads of a key do not use.
+
+**Size, build and WAL by entries a row.** The same table as [the expected case](#the-expected-case) (`sift.scope_max_multiplicity` raised for the 5.4 rows; entries a row = multiplicity):
+
+| events | entries a row | entity index | with the scope | build | WAL of the build |
+|---:|---:|---:|---:|---:|---:|
+| 500,000 | 1.05 | 13.0 MB, 1.4 s | 25.4 MB (+95%) | 2.4 s | 50 MB (13 MB without) |
+| 500,000 | 2.7 | 13.0 MB | 44.2 MB (+240%) | 5.0 s | 89 MB |
+| 500,000 | 5.4 | 13.0 MB | 78.0 MB (+500%) | 5.7 s | 157 MB |
+| 2,000,000 | 1.05 | 55.3 MB, 10 s | 106.5 MB (+93%) | 11.2 s | 215 MB (55 MB without) |
+| 2,000,000 | 2.7 | 55.3 MB | 192.3 MB (+248%) | 21.4 s | 557 MB |
+| 2,000,000 | 5.4 | 55.3 MB | 335.2 MB (+506%) | 64.8 s | 676 MB |
+
+**Writes.** The statements that write the facts cost the same with and without the scope (10,000 inserted, updated or deleted facts, 500,000 events, 2.7 entries a row: 537, 1,021 and 493 M instructions either way); the work is deferred to the promotion that applies the journal, which costs 470 M instructions and 1.1 MB of WAL against 74 M and 0.3 MB (+396 M, +0.8 MB for each 10,000 facts); 100 pairs added to a key cost 0.5 M more. The promotion was measured at 2.7 entries a row only.
+
+**Building at the same time.** The build of a `sift_col` index that tracks changes installs the two triggers of its log on the table when it has read it, which takes `ShareRowExclusiveLock`
+while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
+(`sift_col_build_lock`) takes the stronger lock first, so the second build waits at its start; the options a build decides are written under the tuple lock of the catalog row of its index. `REINDEX`
+of two indexes of one table at the same time is not covered by the event trigger (PostgreSQL has none for it).
 
 ## Break-even: the multiplicity limit
 
@@ -351,19 +245,190 @@ A table of 2,048 blocks (16 MB) or more is estimated before its build, so a scop
 places give the entries of their rows as a ratio of their rows, and the build is refused ("about N entries for about N rows (N per row, from a sample)", without the growth) only when the ratio less 3.5 standard
 errors of that ratio of 32 runs (about 99.9% one-sided) is over the limit. Every other scope is built and the exact figure after the build decides, so a scope near the limit is never refused by a sample.
 Above the limit the join answers (the entity path), and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A scope copy flips at 1.84 copies a fact because it carries
-the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity, and a table of 100,000,000 events moves the break-even
-up (the join is linear in the table), which this limit does not price: raise it for such a table, from the figures of the NOTICE.
+the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity. A larger table is expected to move the break-even
+up (the join is linear in the table; nothing above 2,000,000 events was measured), which this limit does not price: raise it for such a table, from the figures of the NOTICE.
 
-## Replicate or reuse
+## Settings
 
-A read of the facts of one key (a tenant, a group) can be served two ways. **Replicate**: the scope index of this page, whose units hold the rows of each key. **Reuse**: no scope index; the plain `sift_col` index of the table is read by the
-member keys of the key, `fact.member IN (SELECT member FROM pairs WHERE key = k)`, which is exact at the time of the statement, keeps no journal, grows nothing and has no limit on the keys of a member. Both give the same rows. The
-planner reads the scope units whenever the scope index exists and the statement has a recognised form (`sift.agg_scope`); where there is none (not declared, or refused above the limit) the join is read by the member keys. The
-table is the measured cost of each, and the rule it leads to.
+| Setting | Default | Gain | Impact | Why the default | Off |
+|---|---|---|---|---|---|
+| `sift.agg_scope` | on | a read of one key from the units: 0.7 to 1.0 million instructions where the entity rows of the members cost 2.6 to 3.4 (100,000 events, 5,000 entities, 40 tenants, the largest tenant); two keys 1.9 million against 2.0 to 3.1 | nothing stored | a scope exists only when the user declares it | `SET sift.agg_scope = off`: the statement is the join as written; no `REINDEX` |
+| `sift.scope_max_multiplicity` | 3 | `CREATE INDEX` refuses a scope whose members are in more keys than this on average, with the size and growth it would have had; the join answers the reads (see Break-even) | none | the units break even with the join at 2.5 (500,000 events) to 3.0 (2,000,000) entries a row | `SET sift.scope_max_multiplicity = 1000000` accepts any figure |
+
+## Edges
+
+The expected case needs nothing of what follows. The edges, each with what happens there:
+
+- [where the gain is small](#where-the-gain-is-small): the requests that gain least, latest-N and top-N while pairs changed, small tables, members in many keys;
+- the shapes of pair tables the declaration also takes: [soft deleted pairs](#pairs-that-are-soft-deleted-a-partial-unique-btree), [a pair in several rows](#pairs-in-several-rows-a-multiset), [two paths](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant) (two hops: a grant on a member or on a group);
+- key types, partitioned tables and the other [limits](#limits).
+
+### Where the gain is small
+
+Tenant size is not a limit: in the table of [the expected case](#the-expected-case) and of [the member keys](#without-a-scope-index-replicate-or-reuse) the scope index read fewer instructions at every tenant share measured, 0.1% to 33% of the events. What differs is the request. At 2,000,000 events and the 33% tenant the member keys cost 13.3 times the instructions of the scope index for sums by kind, 10.2 for the same in one month, 6.9 for the latest 20 and 2.5 for a filter on the value; the gain is smallest for the top 20 members (1.0, a tie) and for distinct members by month (1.4), the requests that read rows of the largest keys. At 0.1% the same two gain 6.6 and 4.6 times.
+
+- **Latest-N and top-N and changed pairs.** A top-N of the scan (`ORDER BY .. LIMIT n`, which is what a latest-N read is) cannot take the patch or the delta of a changed pair: while pairs of the keys changed since the segments were written, or rows of their members wait in the write buffer, it reads the entity rows and says `Scope Fallback: top-n, changed pairs` (test `agg_scope_param_keys`).
+- **Small tables.** At 100,000 events the member keys cost 2.32 to 5.09 M instructions and the scope index 0.90 to 1.93 M (a saving of 1.4 to 3.2 M); [the break-even](#break-even-the-multiplicity-limit) at that size is 2.0 entries a row.
+- **Members in many keys.** Above 3 entries a row `CREATE INDEX` refuses the scope and says the size it would have had; the join answers, at the cost of [the member keys](#without-a-scope-index-replicate-or-reuse) and nothing more. Leave a scope undeclared too when the extra size, build and the 0.8 MB of WAL for each 10,000 facts of promotion are not worth the saving.
+- **The two plans.** With both a scope index and an entity index on a table, the planner chose the scope read in all 48 cells measured (2,000,000 events at 2.7 entries a row and 500,000 at 5.4, four tenants, six requests), and it was never more than 1% dearer than the join read measured on its own (the closest cells: top 20 of the 33% key, 82.8 against 85.3 M instructions at 2,000,000 events, and 22.3 against 22.1 M at 500,000 events and 5.4 entries a row).
+
+### Pairs that are soft deleted: a partial unique btree
+
+The pairs may be the rows of a PARTIAL btree of the relation: the predicate says which rows are pairs, and the rows that satisfy it are unique on the two columns (a partial btree that is not unique makes
+the pairs [a multiset](#pairs-in-several-rows-a-multiset) of the rows that satisfy it). A bridge table that soft
+deletes keeps its all-rows unique btree (the primary key) and adds the one that defines the pairs:
+
+    CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
+    CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
+      WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+
+No table exists for the index alone, and the application deletes as it does. An `UPDATE` that sets `deleted_at` ends a pair and one that clears it creates one: the journal records the member of both,
+so a read takes the stored entries of the members that did not change and reads the entity rows of those that did. A statement that updates a column no index holds is a HOT update and writes
+nothing to the journal. The scope entries are the active pairs only (soft deleted rows have none), and the answer is the join on the active rows in every state.
+
+- **Which btree.** `using <index>` after the columns names it (`memberships(dim_a_id, group_id) using memberships_active`); without it, among the unique btrees on exactly the two columns if there is one, else among the
+  non-unique ones, the only partial one, else the lowest oid of the plain ones; two partial ones of that kind are an error that asks for `using`. The `NOTICE` of `CREATE INDEX` and `REINDEX` names it and its predicate; the index records it (the dependency), every read uses it, and one made
+  later changes nothing until `REINDEX` chooses again. `ALTER INDEX` with another `using` than the recorded btree is refused: the segments were written under the recorded one.
+- **Journal index.** A plain one, or a partial one whose predicate the predicate of the pairs' btree implies (`WHERE deleted_at IS NULL` beside the same predicate: a soft delete writes one record). A partial one
+  that a pair can be inserted outside of does not qualify: it never hears of that pair.
+- **What the predicate can be.** What PostgreSQL accepts in an index predicate: immutable, over the columns of the row (`IS NULL`, comparisons with constants, boolean columns). `now()` is refused by PostgreSQL
+  (`functions in index predicate must be marked IMMUTABLE`), so a pair that ends by the clock needs a column the application or a scheduled `UPDATE` sets (`UPDATE grants SET expired = true WHERE expired_at <= now() AND NOT expired`,
+  a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the copy path ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
+
+### Pairs in several rows: a multiset
+
+A table that keeps a row for each source of a pair (a grant for each way a tenant got a dim_a_id, a row for each role that put a dim_a_id in a group) holds a pair in several rows, and its application does not keep a helper
+table only for the index. Declare the scope on a btree that is not unique, plain or partial, on exactly the two columns, in either order:
+
+    CREATE TABLE tenant_pairs (id serial PRIMARY KEY, row_src int NOT NULL, dim_a_id int NOT NULL, tenant_id int NOT NULL);
+    CREATE INDEX tenant_pairs_pair ON tenant_pairs (dim_a_id, tenant_id);
+    CREATE INDEX tenant_pairs_journal ON tenant_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+    CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
+      WITH (scope = 'tenant_id: dim_a_id -> tenant_pairs(dim_a_id, tenant_id)');
+    NOTICE:  scope "tenant_id": the pairs of "tenant_pairs" (dim_a_id, tenant_id) are the distinct rows of its non-unique btree "tenant_pairs_pair"
+    DETAIL:  A pair may be several rows: a read with the meaning of IN or EXISTS counts a fact once, a join counts it once for each row and runs as written.
+
+A pair exists while at least one visible row that satisfies the predicate of the btree (if it has one) holds it: the PAIRS are the distinct `(dim_a_id, tenant_id)` of those rows. Deleting one of two rows keeps the pair, deleting the
+last one ends it, a soft delete (a partial btree `WHERE deleted_at IS NULL`) of one of two rows keeps it and of both ends it, and moving the key of one row adds the new pair and keeps the old one while another row holds it. When
+the relation has several btrees on the two columns the choice is: a unique one before a non-unique one, among those the only partial one, else the lowest oid of the plain ones (two partial ones of that kind are an error that asks
+for `using`); `using <index>` names the one, and the `NOTICE` says which.
+
+- **Exact because the journal names at least every changed dim_a_id.** The journal index records the dim_a_id of every row an `UPDATE` or `DELETE` ended and of every row inserted, whether or not the set of distinct pairs of that dim_a_id changed. A read
+  takes the stored entries of the dim_a_id that did not change and reads the rows of the facts of those that did (the patch), expanded by their pairs under the snapshot of the statement. A duplicate row inserted or deleted
+  therefore costs the patch of its dim_a_id, and a pair that did not change is read again from the btree: never a wrong answer. Nothing counts the rows of a pair when it is written (a refinement that skipped the record when
+  another live row exists would be wrong under concurrency: two sessions that each delete one of two rows).
+- **Every list of the pairs lists each once**, through one function (`sift_scope_pairs_distinct`): the fill from the whole relation, the fill that probes the btree for the dim_a_id of each batch, the reader's pairs of the keys and of
+  the changed dim_a_id (the btree probed by key or by dim_a_id, the leaves of the journal index, which hold a row for each row of the relation, the relation read once) and the union of the two paths of a scope of
+  two paths ([where a pair in both, or in several rows of each, is one pair](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)). A pair taken twice would put a fact twice in the units of its key, which `sift.col_verify` and a build refuse
+  (`rows must be added in ascending TID order`), and would count a fact twice in the delta. Tests `col_scope_pairs_multiset` (every state by every read shape), `col_scope_pairs_multiset_fill` (runs of thousands of rows of one pair
+  across the leaf pages of the btree, in either order of its columns, partial, by each way the pairs are known: `sift.test_conn_fill`), `col_scope_pairs_multiset_partial`, `col_scope_pairs_multiset_twohop`.
+- **Which forms are exact.** A read with the meaning of `IN` or `EXISTS` counts a fact once whatever the rows of the pair and is read from the units. A `JOIN` to the relation counts a fact once for each row of a pair, and a read
+  for each pair (`GROUP BY` the scope key, several keys counted for each pair) once for each row too, which the units (one entry for each distinct pair) cannot: those run as written, the plan says why
+  (`sift.explain_why`, arm `scope`: `pairs are a multiset (non-unique btree): a join counts a fact once for each row`; the testing markers `sift.in_scope_pairs` and `sift.in_scope_all` say it as `Scope Fallback`), and their rows are the join's.
+  The planner learns it from the btree the index records (a dependency of the index, so a btree made later changes nothing until `REINDEX`). A scope of two paths defines its pairs as the distinct union, so a read for each pair of it counts each pair once whatever the rows hold.
+- **The scope copy is unaffected.** `sift.scope_create` still needs the unique btree (a pair in two rows would give a fact two copies in one key) and refuses the relation of a multiset with its usual error; the pairs kept by
+  `sift.scope_follow_pairs` are written by sift as the distinct rows of a view.
+- **What it costs.** The same as for unique pairs: the units hold one entry for each distinct pair, a read of a dim_a_id whose rows were not written since the stamps is the stored read. The duplicate insert and delete
+  of the test (1.13 rows a pair) patch the dim_a_id they touch like any other write to the relation.
+
+### Pairs reached by two paths: a direct grant and a group grant
+
+A tenant sees an entity when it has a grant on the entity or on a group the entity belongs to (a subscription). The pairs are not the rows of one relation but the union of two paths, and a
+member can be reached by both. The declaration names the three relations and no table holds the union:
+
+    facts(id, dim_a_id, ..)
+    grants(id, tenant_id, dim_a_id, group_id, deleted_at, ..)     -- a grant names a member or a group; both columns may be NULL
+    memberships(id, group_id, dim_a_id, deleted_at, ..)
+    CREATE UNIQUE INDEX grants_direct  ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX grants_group   ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+    CREATE INDEX grants_by_member         ON grants      USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+    CREATE INDEX grants_by_group          ON grants      USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+    CREATE INDEX memberships_by_member    ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+    CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, value_num)
+      WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+
+**The grammar.** One alternative after the `->`: `key: fk -> rel(member, key) [using ix] | rel2(via, key) [using ix2] via vrel(via, member) [using ix3] [cols(a, b)]`. The first relation is
+the direct path (the rows of `rel` are pairs), `rel2` the joined path (a row of `rel2` gives its key to every member of its `via` value), and `vrel` lists the members of a `via` value. A text
+that names a second path without `via` and its relation, or a relation with one column, is refused with what is missing. The three sets of columns must differ (`grants(dim_a_id, tenant_id)` twice,
+or reversed, is refused), the columns of one role are of one integer type (`via` in `rel2` and `vrel`, `member` in `rel` and `vrel`, `key` in `rel` and `rel2`), and a relation is a heap table that
+is not the indexed table. The columns of a scope of two paths may be nullable (a grant on a group has no member, a grant on a member no group): a row with a NULL in a column of its path is not a
+pair of that path, as a join drops it; the columns of a scope of one path are still NOT NULL.
+
+**The three btrees.** Each relation has its own recorded btree on exactly its two columns, unique or not, with the rule of the pairs of one relation (above): `CREATE INDEX` and `REINDEX` choose it (a unique one first,
+then the only partial one, else the lowest oid of the plain ones; two partial ones are an error that asks for `using`) and say which, one `NOTICE` for each path (`the direct pairs of "grants" (dim_a_id,
+tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)`, then `the joined pairs` and `the via members`); `ALTER INDEX` is sticky (another `using` than the
+recorded one is refused); `DROP INDEX` of a recorded btree is refused without `CASCADE`, and `REINDEX .. CONCURRENTLY` of it keeps the dependency. The dependencies are told apart by the relation
+and its two columns, so one scope index depends on up to three btrees of the same relation or of several, and an index may hold a scope of two paths beside scopes of one. A scope of one path declared as before is unchanged.
+The relations of a scope of two paths may hold a pair in several rows as well (a grant for each source of it, a row of the via relation for each source of a membership): the pairs are the DISTINCT union either way.
+
+**The pair set.** The pairs of the scope are the DISTINCT `(member, key)` of the direct rows D and of the joined ones J, `J = { (m.member, g.key) : g in rel2, m in vrel, m.via = g.via }`, the rows of each
+that satisfy the predicate of its btree. The SQL that says it:
+
+    SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+    UNION
+    SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id
+     WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+
+The tests compare every read with a join on this statement after every edit of the three tables.
+
+**Once and per pair.** A member reached directly and through one or several groups is ONE pair: the scope segments store the distinct pairs and no fact row is stored twice for a key. A read with the
+meaning of `IN` or `EXISTS` counts a fact once; a join or `GROUP BY` the key over the `UNION` counts it once for each pair, which is once for a key a member has by any number of paths
+(`Scope Semantics: once`, `per pair`, as for one path). The dedupe across keys, the `work_mem` bound and the per-pair read of several keys that has a changed member are those of the section below.
+`sift.scope_max_multiplicity` applies to the derived set: a member reached by two paths adds no entry, so the figure is the distinct entries for the rows of the table, as the `NOTICE` says it.
+
+**The three journals.** The pairs of a member depend on (1) the rows of `rel` with that member, (2) its rows of `vrel`, and (3) the rows of `rel2` of every group it is in. Each relation needs a
+journal index, a `sift_col` index with `track_changes = 'ctid'` whose first column is the journaled key and that holds the other column, plain or partial with a predicate that the predicate of the
+recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths does
+not require them: a scope with any of the three missing, or one a pair can be inserted outside of (a partial journal), vouches for nothing, the plan says `Scope Fallback: no journal`, and the read is the
+entity rows of the members the three relations list for the keys. The scope index finds the journals when it is created or rebuilt and depends on them: a journal made later is found by the next
+`REINDEX` of the scope index, which starts it before it reads and stamps the segments with it (the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
+`other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
+
+**The members that changed.** A segment of a scope of two paths holds a stamp for each of the three journals. The members whose pairs changed since the stamps are the union of the members of J1, the members of J3
+(the ones that left a group are there), and the members of every group in J2 as the recorded btree of `vrel` lists them for the reader's snapshot (the active rows, the predicate applied). The result is exact: the pairs of
+a member depend on no other row (the three lists above), a row of one of them that changed names the member, or the group whose members are looked up now, in a journal; a member that left a group is in
+J3. The read is the one of one path: the units of the keys less the changed members, plus the entity rows of those that have a pair with a key now (the patch), and the write buffer's
+members the same way. The reader's cap bounds the changed members (a group with more members than the cap is `too many changed keys`: the entity rows are read; [the price](#what-the-planner-recognises)), and the refresh of the maintenance
+counts them against `sift.col_connect_refresh_pct` as it counts those of one path, the members of a changed group included.
+
+**Cost.** 100,000 facts, 2,000 entities, 200 groups, 20 accounts, 3,321 pairs; a read of one key (the account), instructions:u of the backend, cold and warm, in millions:
+
+| | nothing changed | 1 group changed (10 members) | 100 groups changed (1,090 members, 135 patched) | the plain join |
+|---|---|---|---|---|
+| cold | 6.02 | 12.5 | 26.5 | 68.9 |
+| warm | 1.34 | 7.8 | 21.8 | 63.6 |
+
+The changes cost 6.5 M instructions for one group and 20.5 M for 100 groups over the first column, cold and warm alike; the join reads 63.6 M even warm.
+
+**Column format minor 49.** A segment of an index that declares a scope of two paths holds three stamps and is written as column format minor 49 (docs/FORMATS.md); an index whose scopes all have one path
+keeps writing minor 45 with one stamp for each scope. A library before 5.0, and a 5.0 build before minor 49, refuse the index (`Use a newer pg_sift`, `REINDEX`): `CREATE INDEX` says so in a `NOTICE`. A scope
+declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale connection`)
+until `REINDEX`.
+
+**`sift.in_scope` and the planner.** The scan takes the conjunct from the join as an application writes it (the recognition below), or from the testing marker `sift.in_scope(index, key_name, fk, key or keys)` (`sift.in_scope_pairs` for the join meaning), as for one path. The planner reads the paths from `sift_scope_legs(index, scope, legs[2])` (2 legs for this declaration, the second one joined: `via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`) and recognises the `UNION` of the two
+paths as the sub-select of `IN` or `EXISTS` and as the relation of a join (table below): each select reads the relation of its path with the predicate of its btree, both bind the same key by constants or parameters, and no other condition or column
+is read. What else a statement says keeps the join as written, and `sift.explain_why` (arm `scope`) says which select breaks the proof.
+
+**What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a btree on their two columns, unique or not); a condition on a third table (a group's own soft delete: the memberships of a deleted group
+stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
+into a column, see above); a partitioned table among the three; text or uuid keys; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
+
+### Limits
+
+EXPERIMENTAL; the pairs of a scope of one path may be several rows (a non-unique btree) but the scope read, a semi join, counts a pair once: a join or a read for each pair of them keeps the join; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs (the relations of a scope of two paths included); at most one joined path, no third hop; keys are `int2`, `int4` or `int8` (text and uuid keys are not supported); a top-N over changed members reads the entity
+rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) run the join as written where the units cannot answer or cost more, and an array parameter that holds several keys is the same; a join to a table of keys that may hold a key twice keeps the join; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
+by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
+rows still answer.
+
+## Without a scope index: replicate or reuse
+
+Without a scope index (none declared, `sift.agg_scope = off`, or a declaration refused above the limit) the facts of one key are read from the plain `sift_col` index of the table by the member keys of the key, `fact.member IN (SELECT member FROM pairs WHERE key = k)`: **reuse**. The scan takes the keys the pair table lists as a conjunct on the member column of the index (a join key filter, [AGG](AGG.md#join-key-filters-and-shared-lookups): the member column is an integer or date leaf of the index, any `sift_col` index with one). A unit whose zone of the member column holds none of the keys is not read and the other rows are tested as a set, so reuse needs no declaration, no journal and no storage of its own, is exact at the time of the statement, has no limit on the keys of a member, and is chosen by the planner by cost against the plain join (`sift.agg_join_filter = off` restores the plain join). How many units the zones leave depends on the layout of the index: for facts ordered by time most units hold a member of a large key. **Replicate** is the scope index, whose units hold the rows of each key. Both give the same rows. With a scope index the statement is planned both ways and the estimated costs choose (what the planner recognises, above); where there is none the member keys are read. The table is the measured cost of each.
 
 Measured on a table of `events` (member, time, kind, value, quantity) joined to a table of (member, tenant) pairs, 2.7 entries a row, four tenants of 0.1%, 3.3%, 6.6% and 33% of the events, the six requests of a dashboard
 (sum by kind, sum by kind in one month, distinct members by month, top 20 members, a filter on the value, latest 20). Warm: instructions of the backend (geometric mean of the six) and shared buffers hit; cold: blocks read with
-every relation of the statement evicted. Every pair of cells returned the same rows.
+every relation of the statement evicted. Reuse is, in each cell, the better of two layouts of the entity index (units cut by time, or by the member and then time). Every pair of cells returned the same rows.
 
 | events | tenant | replicate: M instr, hit, cold blocks | reuse: M instr, hit, cold blocks | reuse / replicate (instr) |
 |---:|---:|---|---|---:|
@@ -388,54 +453,15 @@ Reuse over replicate for each request at 2,000,000 events (instructions; tenants
 | top 20 members | 6.6x | 2.8x | 2.1x | 1.0x |
 | latest 20 | 1.7x | 1.4x | 2.0x | 6.9x |
 
-Reuse costs about 6 instructions a row of every unit that holds a member of the key, because the member column is decoded to find them, and its member list about 1.9 thousand instructions a member; replicate reads the rows of the key
-and answers sums and counts by kind and month from stored combinations. So reuse grows with the table (about 25 instructions an event for the 33% tenant, about 5 for the 0.1% one), replicate with the tenant. At 10^8 events the
-slopes of the three sizes give about 2.5 G instructions for reuse and 0.65 G for replicate for the 33% tenant, about 0.5 G and 0.09 G for the 0.1% tenant (extrapolated, not measured).
+Reuse costs about 6 instructions a row of every unit that holds a member of the key, because the member column is decoded to find them (a profile of the 500,000-event run of the 6.6% tenant), and its member list about 1.9 thousand instructions a member; replicate reads the rows of the key
+and answers sums and counts by kind and month from stored combinations. At a fixed share of the tenant both grow with the table: from 100,000 to 2,000,000 events (20 times the rows) reuse grew 4.1 times at the 0.1% tenant and 10.1 times at the 33% one, replicate 2.0 and 6.8 times. Reuse comes to about 25 instructions an event at the 33% tenant and about 5 at the 0.1% one (the 2,000,000-event run over its events). Nothing above 2,000,000 events was measured.
 
-What a replicated scope index costs (same table, `sift.scope_max_multiplicity` raised for the 5.4 rows; entries a row = multiplicity):
-
-| events | entries a row | entity index | with the scope | build | WAL of the build |
-|---:|---:|---:|---:|---:|---:|
-| 500,000 | 1.05 | 13.0 MB, 1.4 s | 25.4 MB (+95%) | 2.4 s | 50 MB (13 MB without) |
-| 500,000 | 2.7 | 13.0 MB | 44.2 MB (+240%) | 5.0 s | 89 MB |
-| 500,000 | 5.4 | 13.0 MB | 78.0 MB (+500%) | 5.7 s | 157 MB |
-| 2,000,000 | 1.05 | 55.3 MB, 10 s | 106.5 MB (+93%) | 11.2 s | 215 MB (55 MB without) |
-| 2,000,000 | 2.7 | 55.3 MB | 192.3 MB (+248%) | 21.4 s | 557 MB |
-| 2,000,000 | 5.4 | 55.3 MB | 335.2 MB (+506%) | 64.8 s | 676 MB |
-
-Writes to the facts cost the same with and without the scope (10,000 inserted, updated or deleted facts, 500,000 events: 537, 1,021 and 493 M instructions either way); the promotion that applies the journal costs 470 M
-instructions and 1.1 MB of WAL against 74 M and 0.3 MB (+396 M, +0.8 MB for each 10,000 facts); 100 pairs added to a key cost 0.5 M more. Reuse costs nothing to write. A table of the totals by member, kind and month kept by triggers
+Reuse costs nothing to write. A table of the totals by member, kind and month kept by triggers
 is not an alternative: its cells are 85% of the facts at 25 facts a member over 10 kinds and 12 months, and its writes cost +125% (insert), +73% (update) and +140% (delete) instructions.
 
-**The rule.** Declare a scope (`WITH (scope = ..)`) when the requests by a key are sums and counts by kind or time, the keys are up to about a tenth of the facts, and the members are in few keys (up to 3 entries a row, the
-limit; the growth above is what the `NOTICE` says). Leave it undeclared when the requests are top-N, distinct or latest rows over keys of a third of the facts or more, when the members are in many keys, when the table is small (reuse
-is 2 to 5 M instructions at 100,000 events), or when the extra size, build and 0.8 MB of WAL for each 10,000 facts of promotion are not worth the saving. Above the limit `CREATE INDEX` refuses the
-scope and says the size it would have had; the join answers, at the cost of the table above and nothing more.
+## The scope copy: the alternative
 
-With both a scope index and an entity index on a table, the planner chose the scope read in all 48 cells measured (2,000,000 events at 2.7 entries a row and 500,000 at 5.4, four tenants, six requests), and it was never
-more than 1% dearer than the join read measured on its own (the closest cells: top 20 of the 33% key, 82.8 against 85.3 M instructions at 2,000,000 events, and 22.3 against 22.1 M at 500,000 events and 5.4 entries a row);
-`sift.agg_scope = off` gives the join read for a comparison.
-
-## What it costs
-
-`CREATE INDEX` and `REINDEX` say it for each scope: `NOTICE: scope "tenant_id": 93,248 entries for 100,000 rows (0.93 per row); the index grows from 2.4 MB to 4.4 MB (+81%)` (the growth is said
-from 1 MB of entities). The scope segments are written with the entity segments by the build, the parallel build, a promotion and a merge, in the same switch of the directory; a rewrite fills
-them again when the journal says that many members changed (`sift.col_connect_refresh_pct`), when the reads that pay for the changed members cost more than the rewrite (a thousand
-reads against the 1,500 instructions an entity row and 680 a column of an entry the rewrite takes: 20 members of a table of 60,000 rows are refreshed, 1 is not) or an entity segment lost its flag. The relation of pairs pays the journal index: a 32-byte record for each pair an UPDATE or DELETE ends and each pair inserted.
-
-The test table of 100,000 events, 5,000 entities and 40 tenants (one scope, a 5-column index): the index is 2,523,136 bytes without the scope and 4,489,216 with it (4,358,144 with `cols(created_at, kind,
-value_num)`), the build takes 250 ms without and 406 ms with it, and writes 2.9 MB of WAL without and 5.2 MB with it. Keys of fewer than 2,048 entries share the units of the scope segments, and the
-scope segments have no point directory and no global order (`order_array_columns` writes its arrays in the entity segments only: an array lists each row of a segment once, a scope segment holds a
-fact once for each of its keys, and the reads of a key go by unit), which the reads of a key do not use.
-
-**Building at the same time.** The build of a `sift_col` index that tracks changes installs the two triggers of its log on the table when it has read it, which takes `ShareRowExclusiveLock`
-while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
-(`sift_col_build_lock`) takes the stronger lock first, so the second build waits at its start; the options a build decides are written under the tuple lock of the catalog row of its index. `REINDEX`
-of two indexes of one table at the same time is not covered by the event trigger (PostgreSQL has none for it).
-
-## Scope index or scope copy
-
-Two ways to make a request by a key above the fact table (a tenant, a group) cost what the key holds. Both are exact for the rows and neither needs a change to the query that the planner does not already
+The scope copy is the second way to make a request by a key above the fact table (a tenant, a group) cost what the key holds, and it is kept as the alternative to the index. **To choose: the scope index, unless the pairs are a view, depend on a condition on a third table or on time, or the request must be a plain query on a table of its own (`WHERE tenant_id = k`); then the copy.** Both are exact for the rows and neither needs a change to the query that the planner does not already
 make; they differ in what they keep.
 
 | | scope index (this page) | scope copy ([INDEX-RECIPES](INDEX-RECIPES.md#keys-above-the-fact-table)) |
@@ -443,19 +469,12 @@ make; they differ in what they keep.
 | what is stored | the rows replicated by scope key inside the segments of the index of the table | a second table of the facts, once for each scope key of the member, with a `sift_col` index keyed by the scope key |
 | size (100,000 events, 5,000 entities, tenants and groups: all tables and indexes of the fixture, 13.7 MB with the plain index) | 17.9 MB with one index of two scopes (+4.2 MB) | 35.0 MB with the two copies (+21.3 MB) |
 | WAL of the builds (same fixture; 2.6 MB for the plain index) | 6.7 MB | 24.6 MB |
-| writes to the facts | none beyond the index's (the write buffer of the index; the pairs are read through their journal) | a statement trigger applies the change to the copy in the statement |
+| writes to the facts | the statements cost what the index costs (the write buffer of the index; the pairs are read through their journal); the scope work is deferred to the promotion ([What it costs](#what-it-costs)) | a statement trigger applies the change to the copy in the statement |
 | writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
 | a pair table that is a view | no: the pairs are a table with a unique btree | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
 | the planner uses it | the join forms of the statement, as the application writes them (the recognition above) | the copy is a table: `WHERE tenant_id = k` on it |
-| state | EXPERIMENTAL | released API (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
+| state | EXPERIMENTAL | new in 5.0, EXPERIMENTAL too (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
 
-Use the copy for a request that names the key and wants the rows of the key by a plain query on a table. Use the index when the facts must stay one table (no second copy to size, to vacuum and to
-keep by triggers on the write path). The copy stores a fact once for each key of its member, so it grows with that figure (refused above 3
-copies a fact); the index's growth is said by the `NOTICE` and bounded by `sift.scope_max_multiplicity`.
-
-## Limits
-
-EXPERIMENTAL; the pairs of a scope of one path may be several rows (a non-unique btree) but the scope read, a semi join, counts a pair once: a join or a read for each pair of them keeps the join; one key or a list of keys (constants or parameters) per conjunct, no scope of a partitioned table of pairs (the relations of a scope of two paths included); at most one joined path, no third hop; text keys through a dictionary table; a top-N over changed members reads the entity
-rows; several keys with a per-pair meaning (a join, not `IN` or `EXISTS`) keep the join, whatever an array parameter holds, and so does every key by the key when a changed member has a pair now; a join to a table of keys that may hold a key twice and the planner's recognition of a `GROUP BY` the key are not in this release; at most 4 scopes and 8 connections plus scopes on an index; a library before 5.0 refuses the index. The reserved
-by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity
-rows still answer.
+The copy is for a request that names the key and wants the rows of the key by a plain query on a table. The index is for facts that must stay one table (no second copy to size, to vacuum and to
+keep by triggers on the write path). The copy stores a fact once for each key of its member, so it grows with that figure (refused above 1.8
+copies a fact by default, `max_copies` raises it); the index's growth is said by the `NOTICE` and bounded by `sift.scope_max_multiplicity`.
