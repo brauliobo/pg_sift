@@ -426,25 +426,26 @@ lanes_unread(WbufLane *lane)
 }
 
 /*
- * The xid before which the transactions that inserted the records of f all committed: one past the largest xmin; InvalidTransactionId when a record has no xmin
- * (the row of a speculative insertion, of an index without track_changes, of a buffer written before the xmin was kept) or its transaction had not finished (it may still
- * commit). A segment made of these rows says so with SIFT_SEG_XSTAMP.
+ * Who inserted the records of f (col/xstamp.h): the transactions that committed did so before the xid one past the largest xmin of all of them, and those that had not finished
+ * when the records were read are the ones the stamp waits for. No stamp (top invalid) when a record has no xmin (the row of a speculative insertion, of an index without track_changes, of a buffer written before
+ * the xmin was kept), or there are more of them than a stamp holds. A segment made of these rows says so with SIFT_SEG_XSTAMP, or SIFT_SEG_XPENDING while some have not finished.
  */
-static TransactionId
-fresh_stamp(const Fresh *f)
+static void
+fresh_stamp(const Fresh *f, SiftXWait *w)
 {
-	TransactionId top = InvalidTransactionId;
-
+	*w = (SiftXWait) {InvalidTransactionId};
 	for (int i = 0; i < f->nheld; i++)
 	{
-		if (f->held[i].xst != XST_COMMITTED)
-			return InvalidTransactionId;
-		if (!TransactionIdIsValid(top) || TransactionIdFollows(f->held[i].xmin, top))
-			top = f->held[i].xmin;
+		const Held *h = &f->held[i];
+
+		if ((h->xst != XST_COMMITTED && h->xst != XST_OPEN) || (h->xst == XST_OPEN && !sift_xwait_note(w, h->xmin)))
+		{
+			w->top = InvalidTransactionId;
+			return;
+		}
+		if (!TransactionIdIsValid(w->top) || TransactionIdFollows(h->xmin, w->top))
+			w->top = h->xmin;
 	}
-	if (TransactionIdIsValid(top))
-		TransactionIdAdvance(top);
-	return top;
 }
 
 uint64
@@ -467,7 +468,7 @@ sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entry, const SiftC
 }
 
 SiftColBatch **
-sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, TransactionId *stamp)
+sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer batches", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
@@ -481,7 +482,7 @@ sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchem
 	if (!set_fill(&s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
 	if (stamp)
-		*stamp = fresh_stamp(&f);
+		fresh_stamp(&f, stamp);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*n = s.n;

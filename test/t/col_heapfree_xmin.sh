@@ -5,7 +5,7 @@
 # hot standby. Every answer is compared with the same aggregate with the heap checking every page and with no sift plan at all; the stamp mutant must be wrong where a stamp is needed.
 . "$(dirname "$0")/lib.bash"
 
-plan 25
+plan 26
 ROWS=$(knob SIFT_HF_ROWS 20000 12000)
 CONF="max_prepared_transactions = 5
 autovacuum = off
@@ -83,7 +83,10 @@ check "that segment says nothing, the others do" test "$(stamped)" -lt "$(segs)"
 check "and the heap is read for it" test "$(pages p free)" -gt 0
 sql p "COMMIT PREPARED 'hf1'" >/dev/null
 check "committed: every read is the rows with the transaction's changes" agree p
-check "the segment written in doubt stays silent until it is rebuilt, and the answers do not depend on it" test "$(stamped)" -lt "$(segs)"
+check "the segment written in doubt waits for the transaction until a maintenance step asks the commit log, and the answers do not depend on it" test "$(stamped)" -lt "$(segs)"
+sql p "SELECT sift.col_promote('events_c')" >/dev/null
+settled_ok() { [[ $(stamped) == $(segs) && $(pages p free) == 0 ]] && agree p; }
+check "settled by the next promotion: every segment says its inserters committed, no heap page is read, and the answers agree" settled_ok
 sql p "REINDEX INDEX events_c" >/dev/null
 rebuilt_ok() { [[ $(stamped) == $(segs) && $(pages p free) == 0 ]] && agree p; }
 check "rebuilt: every segment says its inserters committed, no heap page is read, and the answers agree" rebuilt_ok

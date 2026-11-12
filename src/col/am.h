@@ -17,28 +17,8 @@
 #include "core/visibility.h"
 #include "col/wbuf.h"
 #include "col/conn.h"
+#include "col/xstamp.h"
 #include "col/scope.h"
-
-/* The xid before which every transaction that inserted an entry of the segment committed; false when the segment does not say */
-static inline bool
-sift_seg_xstamp(const SiftSegEntry *e, TransactionId *xid)
-{
-	if (!(e->flags & SIFT_SEG_XSTAMP))
-		return false;
-	*xid = e->reserved;
-	return true;
-}
-
-static inline void
-sift_seg_set_xstamp(SiftSegEntry *e, TransactionId xid)
-{
-	e->flags &= ~SIFT_SEG_XSTAMP;
-	if (TransactionIdIsNormal(xid))
-	{
-		e->flags |= SIFT_SEG_XSTAMP;
-		e->reserved = xid;
-	}
-}
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
 #define SIFT_COL_CUT_MAX 4
