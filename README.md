@@ -218,7 +218,7 @@ Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `fre
   - *Top-N by a float key, or by a column that follows the table:* a float sort key goes through the same min/max and compare kernels as an integer one, so units whose best value cannot pass the n-th are not read: `ORDER BY value DESC LIMIT 10` over 1,000,000 readings 47.5 to 0.80 ms (`ts_top_value`, 60x); the newest 10 rows of a time column with no btree 80.6 to 0.22 ms (`hits_latest_time`, 367x).
   - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off (`verdict_shared_report`); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
 - **Joins from the child:** a `sift_col` index on a child table connects to the index of the parent it joins (`WITH (connect = 'fk -> parent(key)')`, made by itself for a validated integer foreign key), so `EXISTS`, `NOT EXISTS` and counting joins to the parent are answered from the child, and a `LEFT JOIN` of two indexed tables groups the child first: 1,000,000 child rows and 100,000 parents, the join count 4.3 ms against 228 ms for the normal plan and `NOT EXISTS` 2.8 ms against 244 ms ([docs/COL-CONNECT.md](docs/COL-CONNECT.md), [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md)).
-- **Reads by a key reached through a join (scope index, experimental):** `WITH (scope = '..')` on a `sift_col` index stores its rows once for each key that a table of (member, key) pairs gives them, so a read of one tenant or group reads the units of that key; the join the application writes is recognised by the planner, and a pair edit is a small journal record that a read reconciles under its own snapshot ([docs/COL-SCOPE.md](docs/COL-SCOPE.md)). The idea is old: [the prior art it is compared with](#scope-index-and-prior-art) is below.
+- **Reads by a key reached through a join (scope index, experimental):** `WITH (scope = '..')` on a `sift_col` index stores its rows once for each key that a table of (member, key) pairs gives them, so a read of one tenant or group reads the units of that key; the join the application writes is recognised by the planner, and a pair edit is a small journal record that a read reconciles under its own snapshot ([docs/COL-SCOPE.md](docs/COL-SCOPE.md)). The idea is old: [the prior art it is compared with](#scope-index-and-prior-art) and [the tuned stock PostgreSQL arms it is measured against](#scope-index-against-tuned-stock-postgresql) are below.
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
@@ -236,8 +236,8 @@ Storing or indexing facts by a key reached through a join is not new. [docs/COL-
 | system | a pair change costs | many-to-many | the application writes |
 |---|---|---|---|
 | scope index | a 32-byte journal record; a read patches the member | yes, up to 3 entries a row | the plain join |
-| copy kept by triggers | rewrites the member's facts (11.8 M instr; 603 M for the largest member) | yes | a query on the copy |
-| pg_ivm 1.17 | updates the view in the transaction (0.5 to 1.3 G instr) | yes | the view, by name |
+| copy kept by triggers | rewrites the member's facts ([measured below](#scope-index-against-tuned-stock-postgresql)) | yes | a query on the copy |
+| pg_ivm 1.17 | updates the view in the transaction ([measured below](#scope-index-against-tuned-stock-postgresql)) | yes | the view, by name |
 | Oracle bitmap join index | not verified | no: the dimension key must be unique | the plain join |
 | Oracle, StarRocks, Doris materialized views | `ON COMMIT` refresh (Oracle) or a refresh later | joins allowed | the plain query, rewritten |
 | SQL Server indexed view | view rows updated in the DML statement | inner joins | the plain query, substituted (specific editions) |
@@ -245,6 +245,97 @@ Storing or indexing facts by a key reached through a join is not new. [docs/COL-
 | ClickHouse materialized view with a join | nothing: stored rows are not updated | join allowed, the left-most table triggers | the target table |
 | Zanzibar Leopard index | update tuples in an incremental layer, merged at query time | yes | the authorization API |
 | PostgreSQL row-level security | nothing; every read pays the join | yes | the plain query |
+
+### Scope index against tuned stock PostgreSQL
+
+The table above compares mechanisms. This section measures what a database administrator would build instead of a scope index in PostgreSQL itself, on one generated fixture: events of members, and tenants that reach members directly or through groups (a member is in about 1.45 tenants). `bench/bench scope-stock` builds each arm in a copy of the fixture, runs nine read classes (sum by month, count by score, the latest 20 rows, the top 20 members, distinct members by month, a total for every member, a selective filter, a date range, count by kind) for each measured tenant, and checks every result against the plain statement by its md5. The arms:
+
+- `stock_default`: a b-tree on the member and the semi join as the application writes it.
+- `semijoin`: the same join with a covering `(member, time, id)` b-tree, a partial b-tree for the filter class and a per-member probe for the latest rows. Nothing is maintained.
+- `denorm_flat`, `denorm_part`: a copy of every event for each tenant that reaches it, as one table or a list partition by tenant, kept by triggers on the events and on the pair tables.
+- `rollup`: totals by member kept by a statement trigger, read through the same semi join (no latest rows).
+- `ivm`: [pg_ivm](https://github.com/sraoss/pg_ivm) 1.17 incremental views of the join (no latest rows); `bench/steps/fetch.sh pg_ivm` builds the pinned release, and without it the arm is skipped with a notice.
+- `sift_reuse`, `sift_scope`: the `sift_col` entity index alone, and with `WITH (scope = ..)` of two paths.
+
+<!-- bench:scope-stock-readme:begin (generated by scripts/gen-docs.py from docs/results/scope-stock.tsv) -->
+2,400,007 events of 2,648 member keys, 32 tenants that reach member keys directly or through groups (3,612 distinct pairs); 9 classes, 8 tenants, warm and cold, one backend of PostgreSQL 18.6 on tmpfs, AMD Ryzen 9 5900XT 16-Core Processor. Measured 2026-11-13 (`bench/bench scope-stock`).
+
+Per rival, over the cells both answer:
+
+| rival | cells | warm: sift_scope faster / tie / rival faster | cold: sift_scope faster / tie / rival faster | where the rival is faster (warm) |
+|---|---:|---:|---:|---|
+| `stock_default` | 72 | 72 / 0 / 0 | 72 / 0 / 0 | - |
+| `semijoin` | 72 | 67 / 0 / 5 | 63 / 3 / 6 | `filtered_count` 4, `latest_20_rows` 1 |
+| `denorm_flat` | 72 | 53 / 1 / 18 | 48 / 3 / 21 | `latest_20_rows` 8, `filtered_count` 8, `sum_by_month` 1, `date_range_count` 1 |
+| `denorm_part` | 72 | 59 / 3 / 10 | 54 / 0 / 18 | `latest_20_rows` 8, `filtered_count` 2 |
+| `rollup` | 64 | 58 / 3 / 3 | 53 / 5 / 6 | `filtered_count` 2, `distinct_members_by_month` 1 |
+| `ivm` | 64 | 35 / 7 / 22 | 33 / 2 / 29 | `count_by_score` 8, `filtered_count` 8, `count_by_kind` 4, `distinct_members_by_month` 2 |
+| `sift_reuse` | 72 | 68 / 1 / 3 | 63 / 2 / 7 | `top_members` 2, `by_member` 1 |
+
+Cells are a tenant and a class (72 of them for `sift_scope`, in warm and in cold milliseconds); a rival is faster in a cell when it is faster by more than 0.1 ms and by more than 10%, and the cell is a tie within either margin. Every answer is md5-equal to the plain statement (700 of 700 cells). Milliseconds are the executor time of `EXPLAIN (ANALYZE, TIMING OFF)`.
+
+Each cell is warm ms / cold ms · warm M instructions · blocks hit warm / blocks read cold; `n/a`: the arm cannot answer the class.
+
+**tenant 1: 1,149 member keys, 49.5% of the events**
+
+| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
+|---|---:|---:|---:|---:|---:|
+| `sum_by_month` | 439 / 425 · 3,788 · 1,135 / 17,663 | 285 / 367 · 2,422 · 7,314 / 5,038 | 329 / 572 · 2,237 · 4,700 / 4,700 | 43.3 / 50.3 · 124 · 3,413 / 3,413 | 1.95 / 9.05 · 7.72 · 752 / 359 |
+| `count_by_score` | 396 / 375 · 3,210 · 1,167 / 17,663 | 258 / 340 · 2,019 · 9,307 / 6,490 | 302 / 266 · 1,696 · 7,153 / 7,153 | 0.22 / 0.29 · 0.25 · 3 / 3 | 0.90 / 5.87 · 2.48 · 252 / 135 |
+| `latest_20_rows` | 531 / 446 · 4,510 · 1,167 / 17,663 | 15.8 / 30.3 · 85.3 · 3,558 / 1,309 | 0.05 / 0.17 · 0.25 · 4 / 4 | n/a | 2.80 / 6.30 · 10.3 · 166 / 195 |
+| `top_members` | 198 / 174 · 1,673 · 4,358 / 1,348 | 264 / 283 · 2,009 · 9,307 / 6,490 | 124 / 117 · 926 · 1,042 / 1,042 | 53.8 / 85.0 · 200 · 3,413 / 3,413 | 16.1 / 37.1 · 50.4 · 1,917 / 1,053 |
+| `distinct_members_by_month` | 761 / 708 · 5,931 · 591 / 17,663 | 636 / 690 · 4,742 · 7,856 / 5,528 | 652 / 650 · 4,524 · 5,385 / 5,385 | 58.4 / 76.1 · 274 · 414 / 414 | 21.0 / 38.8 · 83.4 · 1,347 / 747 |
+| `by_member` | 379 / 439 · 3,366 · 1,167 / 17,663 | 264 / 324 · 2,141 · 9,307 / 6,490 | 317 / 291 · 1,772 · 7,153 / 7,153 | 55.5 / 72.6 · 211 · 3,413 / 3,413 | 23.2 / 35.5 · 62.9 · 2,094 / 1,105 |
+| `filtered_count` | 117 / 150 · 1,360 · 1,167 / 17,663 | 2.27 / 2.94 · 17.7 · 2,314 / 31 | 0.69 / 0.50 · 3.39 · 7 / 7 | 0.09 / 0.17 · 0.25 · 3 / 3 | 7.56 / 30.7 · 35.6 · 862 / 786 |
+| `date_range_count` | 139 / 121 · 1,260 · 1,167 / 17,663 | 37.9 / 60.0 · 179 · 4,014 / 1,765 | 12.6 / 15.9 · 105 · 707 / 707 | 14.4 / 30.4 · 40.4 · 3,204 / 3,200 | 0.67 / 3.06 · 2.10 · 84 / 55 |
+| `count_by_kind` | 350 / 266 · 2,162 · 1,167 / 17,663 | 146 / 247 · 997 · 5,934 / 3,685 | 89.5 / 89.1 · 815 · 3,044 / 3,044 | 0.45 / 2.91 · 0.73 · 94 / 94 | 1.29 / 5.34 · 2.53 · 179 / 102 |
+
+**tenant 4: 268 member keys, 6% of the events**
+
+| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
+|---|---:|---:|---:|---:|---:|
+| `sum_by_month` | 254 / 246 · 1,854 · 1,173 / 17,668 | 49.2 / 48.2 · 303 · 1,278 / 786 | 46.1 / 35.5 · 271 · 572 / 572 | 7.38 / 10.2 · 34.0 · 3,057 / 3,055 | 0.94 / 2.02 · 5.63 · 145 / 95 |
+| `count_by_score` | 239 / 230 · 1,688 · 1,173 / 17,668 | 28.1 / 32.8 · 252 · 1,519 / 1,004 | 24.3 / 27.7 · 206 · 870 / 870 | 0.04 / 0.15 · 0.25 · 3 / 3 | 0.48 / 1.65 · 2.26 · 204 / 140 |
+| `latest_20_rows` | 228 / 188 · 1,820 · 1,173 / 17,668 | 3.83 / 7.75 · 23.0 · 844 / 355 | 0.05 / 0.14 · 0.27 · 5 / 5 | n/a | 0.38 / 0.64 · 2.21 · 46 / 23 |
+| `top_members` | 22.5 / 37.7 · 207 · 913 / 347 | 43.8 / 50.0 · 251 · 1,519 / 1,004 | 22.3 / 16.6 · 113 · 130 / 130 | 12.2 / 19.2 · 51.3 · 3,095 / 3,095 | 1.20 / 3.00 · 6.61 · 288 / 206 |
+| `distinct_members_by_month` | 323 / 246 · 2,153 · 597 / 17,668 | 95.0 / 92.1 · 555 · 1,347 / 850 | 74.4 / 76.0 · 518 · 655 / 655 | 9.26 / 8.82 · 58.4 · 101 / 99 | 2.21 / 2.42 · 13.8 · 180 / 148 |
+| `by_member` | 272 / 380 · 1,706 · 1,173 / 17,668 | 35.1 / 56.2 · 267 · 1,519 / 1,004 | 28.5 / 26.5 · 213 · 870 / 870 | 12.7 / 14.5 · 53.6 · 3,095 / 3,095 | 1.27 / 3.57 · 8.00 · 314 / 228 |
+| `filtered_count` | 158 / 145 · 1,353 · 1,173 / 17,668 | 2.87 / 4.75 · 6.40 · 558 / 36 | 0.10 / 0.13 · 0.65 · 4 / 4 | 0.05 / 0.12 · 0.24 · 3 / 3 | 0.72 / 2.00 · 3.95 · 238 / 134 |
+| `date_range_count` | 168 / 181 · 1,185 · 1,173 / 17,668 | 8.89 / 8.66 · 26.8 · 894 / 405 | 2.11 / 2.03 · 12.9 · 88 / 88 | 2.62 / 6.15 · 11.0 · 1,474 / 1,472 | 0.20 / 0.47 · 2.07 · 58 / 37 |
+| `count_by_kind` | 159 / 257 · 1,492 · 1,173 / 17,668 | 28.5 / 44.1 · 129 · 1,113 / 624 | 13.7 / 21.5 · 98.4 · 370 / 370 | 0.19 / 0.94 · 0.71 · 86 / 86 | 0.28 / 0.98 · 2.23 · 113 / 76 |
+
+**tenant 8: 11 member keys, 0.1% of the events**
+
+| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
+|---|---:|---:|---:|---:|---:|
+| `sum_by_month` | 5.07 / 15.9 · 13.3 · 2,451 / 2,307 | 1.35 / 1.56 · 7.75 · 58 / 41 | 0.77 / 1.01 · 4.99 · 13 / 13 | 0.85 / 2.21 · 2.32 · 423 / 423 | 0.93 / 2.32 · 3.81 · 79 / 55 |
+| `count_by_score` | 4.90 / 9.99 · 11.5 · 2,451 / 2,307 | 1.67 / 1.55 · 6.69 · 63 / 46 | 0.82 / 0.93 · 3.72 · 18 / 18 | 0.07 / 0.14 · 0.25 · 3 / 3 | 0.53 / 1.52 · 1.80 · 82 / 62 |
+| `latest_20_rows` | 4.33 / 11.8 · 11.2 · 2,451 / 2,307 | 0.39 / 0.90 · 3.22 · 52 / 35 | 0.06 / 0.10 · 0.27 · 4 / 4 | n/a | 0.80 / 0.44 · 1.80 · 43 / 23 |
+| `top_members` | 1.33 / 1.53 · 5.91 · 52 / 30 | 1.84 / 1.64 · 6.80 · 63 / 46 | 0.61 / 0.56 · 2.20 · 6 / 6 | 1.21 / 3.23 · 3.36 · 741 / 741 | 0.25 / 1.24 · 2.17 · 82 / 62 |
+| `distinct_members_by_month` | 6.96 / 17.2 · 15.8 · 2,451 / 2,307 | 1.38 / 2.09 · 10.8 · 60 / 43 | 1.77 / 2.11 · 7.84 · 15 / 15 | 0.73 / 0.42 · 2.11 · 8 / 8 | 0.68 / 1.06 · 4.52 · 55 / 33 |
+| `by_member` | 5.29 / 12.8 · 11.9 · 2,451 / 2,307 | 1.31 / 2.11 · 7.01 · 63 / 46 | 0.58 / 1.06 · 3.89 · 18 / 18 | 2.31 / 6.79 · 3.38 · 741 / 741 | 0.56 / 0.73 · 2.02 · 83 / 65 |
+| `filtered_count` | 3.69 / 9.97 · 9.15 · 2,451 / 2,307 | 0.42 / 0.93 · 2.49 · 40 / 21 | 0.06 / 0.10 · 0.26 · 3 / 3 | 0.04 / 0.12 · 0.24 · 3 / 3 | 0.26 / 0.80 · 2.19 · 79 / 50 |
+| `date_range_count` | 2.95 / 8.08 · 9.05 · 2,451 / 2,307 | 0.50 / 1.07 · 2.86 · 52 / 35 | 0.12 / 0.80 · 0.55 · 5 / 5 | 0.29 / 2.43 · 0.79 · 82 / 80 | 0.24 / 0.81 · 1.98 · 50 / 32 |
+| `count_by_kind` | 3.94 / 20.1 · 10.3 · 2,451 / 2,307 | 0.96 / 1.03 · 4.60 · 55 / 38 | 0.44 / 0.68 · 1.99 · 10 / 10 | 0.41 / 1.38 · 0.72 · 88 / 88 | 0.27 / 0.60 · 2.02 · 65 / 46 |
+
+What each arm costs, as milliseconds · M instructions · WAL written of one statement (a pair edit: the mean of 10 member keys of about 400 events, and the largest member apart). `-`: the arm has no such step.
+
+| arm | build · size added | 10,000 inserts | promotion of those | pair grant | pair revoke | pair grant, largest | pair revoke, largest |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `stock_default` | 1.6 s · 17 MB | 116 · 186 · 2.2 MB | - | 3.19 · 0.14 · 323 B | 1.92 · 0.19 · 186 B | 0.59 · 0.12 · 312 B | 0.69 · 0.18 · 184 B |
+| `semijoin` | 2.9 s · 97 MB | 64.1 · 211 · 2.6 MB | - | 1.72 · 0.13 · 323 B | 1.09 · 0.19 · 186 B | 1.02 · 0.12 · 312 B | 0.74 · 0.18 · 184 B |
+| `denorm_flat` | 18.2 s · 453 MB | 120 · 573 · 6.3 MB | - | 6.75 · 11.8 · 105 kB | 1.55 · 1.95 · 23 kB | 135 · 603 · 7.3 MB | 11.8 · 61.0 · 1.2 MB |
+| `ivm` | 19.7 s · 55 MB | 2,714 · 11,766 · 3.9 MB | - | 105 · 510 · 77 kB | 93.6 · 494 · 62 kB | 335 · 1,263 · 99 kB | 302 · 1,159 · 103 kB |
+| `sift_scope` | 9.9 s · 65 MB | 32.8 · 147 · 1.7 MB | 22.5 · 182 · 320 kB | 0.88 · 0.19 · 897 B | 0.82 · 0.34 · 642 B | 0.99 · 0.15 · 584 B | 0.72 · 0.32 · 632 B |
+<!-- bench:scope-stock-readme:end -->
+
+**Where the scope index loses**, and why:
+
+- *Aggregates that a view stores in the shape of the question (pg_ivm).* A view that holds the answer reads a few blocks whatever the size of the tenant: count by score and the selective filter in every tenant, count by kind in some. The scope read opens the summaries of the units of the tenant's members, so its floor is a few hundred blocks for a large tenant. The view pays when data change: every inserted event and every pair edit updates the views inside the transaction (the write table), and it answers no query for rows.
+- *The latest N rows (a copy by tenant).* A `(tenant, time)` b-tree on a copy stops after N entries, while the scope read opens the tail of the units of the tenant's members; a top-N of the scope index also cannot take a changed pair, so the join as written answers until the pair is folded in. The copy pays in size and in every pair edit, which rewrites the member's events.
+- *A selective filter (the tuned semi join, the copy and the views).* A partial b-tree or a table keyed by the filter reaches the matching rows directly, and the scope read decodes the filter columns of the tenant's entries. For the tenant with about half of the events the planner prices the join as written as the cheaper plan for it (`Scope Fallback: join is cheaper for 1 key`), so there the scope index does not read the units at all.
+
+What is not measured: updates and deletes of events, concurrent writers, and a pair edit while a read is in flight for the stock arms (their triggers and indexes need more work for those, so the write table shows their cheapest case); parallel workers (one backend, `max_parallel_workers_per_gather = 0`); a data directory on a device (it is on tmpfs, so a cold read is a copy from memory and the blocks read, not the milliseconds, say how much a device would serve). The scope index is experimental, refuses a member in more than 3 keys by default, and its figures are those of a generated fixture. The whole tables, all arms and all tenants, the classes the other arms answer better and the reasons in instructions: [docs/COL-SCOPE.md](docs/COL-SCOPE.md#against-tuned-stock-postgresql).
 
 ## SQLite and MariaDB
 
