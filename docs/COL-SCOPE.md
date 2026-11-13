@@ -490,6 +490,23 @@ older libraries refuse). A build or a rewrite of scope segments interns the keys
 of the statement, and its pairs come from the delta like those of any key. The planner takes the same forms as for an integer key (`=`, `IN`, `ANY`, a parameter, a table of keys); an equality under a nondeterministic collation keeps the join as written. A group by the key is read from the units: the groups are the codes, and the
 output value comes back through the map of the statement; an `ORDER BY` or `LIMIT` in such a statement keeps the join, because the codes are not in the order of the values.
 
+What it costs, against the integer key on the same data (300,000 facts, 3,000 members, 200 keys, about 2 pairs a member, one `sift_col` index with four columns, PostgreSQL 18, shared buffers 128 MB, one backend;
+instructions are user-space, per statement, mean of 20 runs):
+
+| | int | text | uuid |
+|---|---|---|---|
+| build (`CREATE INDEX`), s | 0.70 | 0.73 | 0.58 |
+| WAL of the build, MB | 3.4 | 3.5 | 3.5 |
+| index file, MB (the store of the key: 0 / 152 KB / 152 KB) | 3.47 | 3.59 | 3.59 |
+| one key, thousand instructions (warm blocks hit / read; cold hit / read) | 1,046 (38 / 0; 403 / 23) | 1,008 (35 / 0; 455 / 27) | 988 (35 / 0; 533 / 27) |
+| one key and a month, thousand instructions | 1,321 | 1,272 | 1,253 |
+| every key grouped by the key, thousand instructions (warm 769 / 864 / 865 blocks hit) | 3,944 | 4,402 | 4,387 |
+| five keys counted once, thousand instructions | 2,100 | 5,936 | 5,869 |
+| one key with 375 changed pairs, thousand instructions (ms) | 87,720 (10.1) | 90,610 (8.7) | 90,679 (6.9) |
+
+The mapping costs nothing a read can see for one key (the key is looked up once in the store, and the units answer). A list of keys counted once is read from the pairs relation by a scan of its btree, where an integer key reads
+the leaves of the journal index of the relation: the strings of a leaf are not the codes of the units, so the scan translates every pair it reads (about 630 instructions a pair, 3.8 million for the 6,000 pairs here).
+
 ### Limits
 
 EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do in 5.0:
