@@ -99,8 +99,9 @@ class Shape:
         self.G = max(6, n_members // 10)
         self.pad = rng.choice([800, 1500, 2400]) if walk else 0
         self.icols = rng.choice(['id, dim_a_id, created_at', 'id, dim_a_id, created_at, kind, amount'])
-        # a time series (created_at grows with the id, as in an append-only table) or a cyclic one
-        self.created = ("timestamptz '2026-01-01' + i * interval '40 seconds'" if rng.random() < 0.5
+        # a time series (created_at grows with the id, as in an append-only table, a few facts to an instant or none) or a cyclic one
+        step = rng.choice([1, 9])
+        self.created = (f"timestamptz '2026-01-01' + (i / {step}) * interval '40 seconds'" if rng.random() < 0.5
                         else "timestamptz '2026-01-01' + (i % 400) * interval '1 hour' + (i % 3600) * interval '1 second'")
         if walk:   # the rows of a member are dated around a date of its own, so the units cut by member have bounds that differ; wide rows make many superblocks
             self.created = (f"timestamptz '2026-01-01' + (hashint4(1 + i % {n_members}) & 2147483647) % 40 * interval '30 days' "
@@ -212,6 +213,13 @@ class Shape:
             ('top_asc_50', f"SELECT f.id, f.created_at FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) ORDER BY f.created_at ASC, f.id ASC LIMIT 50"),
             ('top_join_desc', f"SELECT f.id, f.created_at, p.tenant_id FROM facts f JOIN {jf} WHERE p.tenant_id = {k1}{jw} ORDER BY f.created_at DESC, f.id DESC LIMIT 30"),
             ('aggregates', f"SELECT count(*), sum(f.amount), count(DISTINCT f.dim_a_id), min(f.created_at), max(f.created_at) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)})"),
+            # the summaries of the units of a key and the reads of a unit from its end, with the rows tied on the first key
+            ('by_kind_key', f"SELECT f.kind, count(*), sum(f.amount), min(f.amount), max(f.amount), count(f.amount) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) GROUP BY 1 ORDER BY 1"),
+            ('by_kind_keys', f"SELECT f.kind, count(*), sum(f.amount) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) GROUP BY 1 ORDER BY 1"),
+            ('count_range_key', f"SELECT count(*), sum(f.amount) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) AND f.created_at >= timestamptz '2026-01-03' AND f.created_at < timestamptz '2026-01-12'"),
+            ('top_ties_desc', f"SELECT f.id, f.created_at FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) ORDER BY f.created_at DESC, f.id DESC LIMIT 20"),
+            ('top_ties_mixed', f"SELECT f.id, f.created_at FROM facts f WHERE f.dim_a_id IN ({self.scope_members(K)}) ORDER BY f.created_at DESC, f.id ASC LIMIT 60"),
+            ('top_ties_amount', f"SELECT f.id, f.created_at, f.amount FROM facts f WHERE f.dim_a_id IN ({self.scope_members(k1)}) ORDER BY f.created_at ASC, f.amount DESC, f.id ASC LIMIT 40"),
             ('no_key', f"SELECT count(*) FROM facts f WHERE f.dim_a_id IN ({self.scope_members(str(T + 50))})"),
         ]
 
@@ -399,16 +407,17 @@ def run_seed(a, seed):
         opts = ", key_order = 'dim_a_id, created_at'"
     patch = rng.choice(['on', 'off'])
     seg = rng.choice([0, 64, 256])
+    urows = rng.choice([0, 150, 600])   # the rows a unit aims at (0: from the statistics of the table): a key of many units has superunits
     out = a.out
     log = Gate(a).log
     P, S, B, R = (a.primary, a.standby, a.stock, a.restore)
     root = Pg('admin', P, 'postgres', log, sift=False)
     for n in (P, B, R):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
-    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 8;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '')
+    setup = (f"SET sift.test_scope_patch = {patch}; SET sift.scope_max_multiplicity = 8;" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
-    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg}' >> {out}/summary.txt")
-    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}', flush=True)
+    shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows}' >> {out}/summary.txt")
+    print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}', flush=True)
 
     # the base tables on the primary (with data) and on the stock node; the subscription copies the data
     A = Pg('primary', P, db, log, "CREATE EXTENSION IF NOT EXISTS pg_sift; " + setup)
