@@ -228,6 +228,7 @@ fuse_adapt(Fuse *f, FuseArm *arm)
 	a->nleaves = f->u.nleaves;
 	a->leaves = f->u.leaves;
 	a->recheck = f->u.recheck;
+	a->raw = f->u.raw;
 	a->gate = f->u.gate;
 	a->key = palloc(Max(s->nkeys, 1) * sizeof(SiftAggKey));
 	memcpy(a->key, s->key, s->nkeys * sizeof(SiftAggKey));

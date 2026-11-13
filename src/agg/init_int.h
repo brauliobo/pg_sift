@@ -28,6 +28,7 @@ void recheck_init(AggExec *ex);
 void type_init(AggExec *ex);
 void wide_init(AggExec *ex);
 void numsum_init(AggExec *ex);
+void raw_init(AggExec *ex);
 void tid_init(AggExec *ex, Snapshot snapshot);
 void register_key(AggExec *ex, int ki);
 void register_combos(AggExec *ex);

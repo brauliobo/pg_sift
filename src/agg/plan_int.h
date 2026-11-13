@@ -146,6 +146,7 @@ typedef struct AggCtx
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
 	Bitmapset  *reused;			/* ... of those, the leaves that more than one use_leaf named */
+	Bitmapset  *joinkey;		/* the leaves a join is keyed by (join_clause) */
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	Bitmapset  *jcast;			/* leaves read through the cast function of jsonb to a number or boolean (before PostgreSQL 18 it raises for a JSON null) */
 	List	   *dpctx;			/* deparse context of expr_text */
@@ -449,6 +450,7 @@ extern SiftAggPred *new_pred(AggCtx *c, SiftAggPredKind kind);
 extern char *expr_text(AggCtx *c, Node *n);
 extern const char *cmp_text(int op);
 extern void use_leaf(AggCtx *c, int leaf);
+extern bool leaf_raw_ok(AggCtx *c, int leaf);
 extern void use_matched_leaf(AggCtx *c, int leaf);
 extern SiftAggPred *make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf);
 extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);

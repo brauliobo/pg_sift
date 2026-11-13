@@ -270,6 +270,16 @@ use_leaf(AggCtx *c, int leaf)
 		c->other_group = true;
 }
 
+/* can the source give the leaf as the codes of the dictionary it stores (SiftSrcProvider.set_raw): a uuid or bytea image, whose entries are its datums? */
+bool
+leaf_raw_ok(AggCtx *c, int leaf)
+{
+	const SiftSrcLeaf *lf = leaf_of(c, leaf);
+
+	return lf->wide && (lf->typid == UUIDOID || lf->typid == BYTEAOID) &&
+		sift_colsrc_can_raw(get_rel_relam(OidIsValid(c->indexoid) ? c->indexoid : agg_src_table(c)), OidIsValid(c->indexoid));
+}
+
 SiftAggPred *
 make_leaf_pred(AggCtx *c, SiftAggPredKind kind, int leaf)
 {

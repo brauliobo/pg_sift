@@ -620,7 +620,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
-		if (leaf_of(c, s->leaves[i])->wide)
+		if (leaf_of(c, s->leaves[i])->wide && !s->raw[i])	/* a leaf read as the stored dictionary builds no entries */
 		{
 			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k, sparse));
 			if (numeric_image(c, leaf_of(c, s->leaves[i])))

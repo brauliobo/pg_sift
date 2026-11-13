@@ -796,6 +796,15 @@ numsum_init(AggExec *ex)
 			sift_colsrc_set_numsum(ex->src, s->agg[ai].wsum - 1);
 }
 
+/* A leaf only a join's key reads is given as the codes of the dictionary the unit stores: a combo takes the bytes of an entry when a tuple first reads it */
+void
+raw_init(AggExec *ex)
+{
+	for (int i = 0; i < ex->spec->nleaves; i++)
+		if (ex->spec->raw[i])
+			sift_colsrc_set_raw(ex->src, ex->spec->leaves[i]);
+}
+
 /*
  * The conjuncts on wide leaves (SAP_WIDE) are the source's: their operands are evaluated once, as Datums of the leaf's type (an IN list as the
  * elements of its array, a NULL operand as isnull), and the source returns the rows that pass test k of wide_filters.

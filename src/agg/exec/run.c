@@ -672,6 +672,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	recheck_init(ex);
 	wide_init(ex);
 	numsum_init(ex);
+	raw_init(ex);
 	tid_init(ex, snapshot);
 	str_init(ex);
 	preagg_init(ex);

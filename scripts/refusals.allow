@@ -42,7 +42,6 @@ join.c: combo_same fuse_join fuse_combo fuse_fslots # fusing the arms of a spec:
 pred.c: fuse_posts pred_runs_plan fuse_aggs routable fuse_split # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
 spec_preagg.c: plain_leaf pa_pres sift_pawhy_fixable add_leaf pred_dims in_leaves rows_zone_bound cal_pred cal_tests cal_alt # pre-aggregate decisions: a miss is counted by sift.col_rollup_misses, no refusal
 shape.c: topn_unique_key # a test of the join table's indexes: topn_joins_ok names topn_shape
-keys.c: topn_raw_key # a test of the first key leaf: the scan reads it through the datums of the unit, not as the stored codes, and is no less a top-N
 cost.c: topn_bounds # an early guard of topn_paths: a query without a usable LIMIT is no top-N candidate, so no arm is open to refuse
 shape.c: topn_array_pred topn_array_ok topn_runs_ok # tests of whether the executor reads the order array of the key: a path that fails them is priced as the scan of units it also is, no arm is refused
 keys.c: topn_num_type topn_in_leaf_ok topn_expr_walker topn_key # type tests and the walker of a sort expression (its reason is kept in the walk): topn_paths names topn_shape with it

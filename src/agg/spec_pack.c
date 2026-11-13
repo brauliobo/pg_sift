@@ -563,6 +563,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 	if (c->rd)
 	{
 		s->recheck = palloc0(Max(s->nleaves, 1));
+		s->raw = palloc0(Max(s->nleaves, 1));
 		s->gate = palloc0(Max(s->nleaves, 1) * sizeof(uint64));
 	}
 	for (int i = 0; i < s->nleaves; i++)
@@ -572,6 +573,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 
 		PK(c, s->leaves[i]);
 		PK(c, s->recheck[i]);
+		PK(c, s->raw[i]);
 		pk_int(c, &lo);
 		pk_int(c, &hi);
 		if (c->rd)

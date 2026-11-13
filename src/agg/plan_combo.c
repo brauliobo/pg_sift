@@ -422,6 +422,7 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->wide ? lf->wtypid : lf->typid, -1, lf->vtype == SCV_CODE && !lf->wide ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
 		return false;
 	use_leaf(c, leaf);
+	c->joinkey = bms_add_member(c->joinkey, leaf);
 	j->nkey++;
 	return true;
 }

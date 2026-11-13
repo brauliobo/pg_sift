@@ -102,9 +102,14 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 	s->nleaves = n;
 	sift_sort_i32(s->leaves, n);
 	s->recheck = palloc0(Max(n, 1));
+	s->raw = palloc0(Max(n, 1));
 	s->gate = palloc0(Max(n, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)
+	{
 		s->recheck[i] = s->leaves[i] < c->lay->nleaves ? spec_recheck(c, s, s->leaves[i]) : SRK_NONE;
+		s->raw[i] = bms_is_member(s->leaves[i], c->joinkey) && !bms_is_member(s->leaves[i], c->reused) && !bms_is_member(s->leaves[i], c->elem_used) &&
+			leaf_raw_ok(c, s->leaves[i]);
+	}
 	for (int j = 0; j < s->nvleaf; j++)
 		if (bms_is_member(c->lay->nleaves - c->nvleaf + j, c->used) && OidIsValid(s->vleaf[j].cast = member_recheck(c, s, j)))
 			s->vleaf[j].recheck = SRK_CAST;

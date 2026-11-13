@@ -55,12 +55,14 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 	int			total = 0,
 				k = 0;
 	int		   *leaves;
-	uint8	   *recheck;
+	uint8	   *recheck,
+			   *raw;
 
 	for (int i = 0; i < n; i++)
 		total += m[i]->nleaves;
 	leaves = palloc(Max(total, 1) * sizeof(int));
 	recheck = palloc0(Max(total, 1));
+	raw = palloc0(Max(total, 1));
 	out->gate = palloc0(Max(total, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < m[i]->nleaves; j++)
@@ -79,17 +81,21 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 			{
 				if (recheck[at] != m[i]->recheck[j])
 					return false;
+				raw[at] &= m[i]->raw[j];
 				continue;
 			}
 			memmove(&leaves[at + 1], &leaves[at], (k - at) * sizeof(int));
 			memmove(&recheck[at + 1], &recheck[at], k - at);
+			memmove(&raw[at + 1], &raw[at], k - at);
 			leaves[at] = m[i]->leaves[j];
 			recheck[at] = m[i]->recheck[j];
+			raw[at] = m[i]->raw[j];
 			k++;
 		}
 	out->nleaves = k;
 	out->leaves = leaves;
 	out->recheck = recheck;
+	out->raw = raw;
 	return true;
 }
 

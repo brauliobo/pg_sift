@@ -266,13 +266,7 @@ topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
 bool
 topn_raw_key(AggCtx *c, int leaf, int xkind)
 {
-	const SiftSrcLeaf *lf;
-
-	if (leaf < 0 || xkind != TXK_NONE || bms_is_member(leaf, c->reused))
-		return false;
-	lf = leaf_of(c, leaf);
-	return lf->wide && (lf->typid == UUIDOID || lf->typid == BYTEAOID) &&
-		sift_colsrc_can_raw(get_rel_relam(OidIsValid(c->indexoid) ? c->indexoid : agg_src_table(c)), OidIsValid(c->indexoid));
+	return leaf >= 0 && xkind == TXK_NONE && !bms_is_member(leaf, c->reused) && leaf_raw_ok(c, leaf);
 }
 
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */

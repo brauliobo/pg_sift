@@ -70,6 +70,7 @@ typedef struct SiftAggSpec
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
 	uint8	   *recheck;		/* per entry of leaves: how the query reads the leaf when the source holds a value it cannot store (SiftSrcRecheck, SRK_NONE: such a value is an error) */
+	uint8	   *raw;			/* per entry of leaves: 1 when only a join's key reads the leaf (a uuid or bytea), which the source then gives as the codes of its stored dictionary (SiftSrcProvider.set_raw) */
 	uint64	   *gate;			/* per entry of leaves: the aggregates (bit j: agg[j]) that read the leaf, all of them with a FILTER; a row of a value the leaf cannot store raises only if the FILTER of one holds (0: it raises for every row) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;

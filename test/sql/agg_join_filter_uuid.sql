@@ -80,6 +80,11 @@ SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IN (SELECT k FROM k
 -- a join and the leaf's own condition, two joins on the same leaf
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IN (SELECT k FROM ks) AND acct IN (SELECT k FROM kfew)$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IN (SELECT k FROM ks) AND acct <> '00000000-0000-0000-0000-000000000001' AND amount > 100$$);
+-- a leaf that the query reads besides its join (grouped, counted distinct, as text, in the ON clause) is read as the datums of the unit; the join alone reads the stored dictionary
+SELECT * FROM same($$SELECT acct, count(*) AS n FROM ev WHERE acct IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(DISTINCT acct) AS d, min(acct::text) AS lo, max(acct::text) AS hi FROM ev JOIN ks k ON k.k = ev.acct GROUP BY 1$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN ks k ON k.k = ev.acct AND k.w > length(ev.acct::text) - 30$$);
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IS NOT NULL AND acct IN (SELECT k FROM ks)$$);
 -- more keys than the filter takes (a sixteenth of the rows of the table), a table with no row, a table of keys that match nothing
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IN (SELECT k FROM kmany)$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE acct IN (SELECT k FROM knone)$$);
@@ -98,6 +103,21 @@ SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parall
 SELECT * FROM same($$SELECT grp, count(*) AS n FROM ev WHERE acct IN (SELECT k FROM ks) GROUP BY 1$$);
 RESET max_parallel_workers_per_gather;
 
+-- a sift_table and the partitions of a table read the stored dictionary the same way
+CREATE TABLE evt (id int, acct uuid, grp int, amount int) USING sift_table;
+INSERT INTO evt SELECT * FROM ev;
+VACUUM (FREEZE, ANALYZE) evt;
+CREATE TABLE evp (id int, acct uuid, grp int, amount int) PARTITION BY RANGE (id);
+CREATE TABLE evp1 PARTITION OF evp FOR VALUES FROM (0) TO (60000);
+CREATE TABLE evp2 PARTITION OF evp FOR VALUES FROM (60000) TO (1000000);
+INSERT INTO evp SELECT * FROM ev;
+CREATE INDEX evp_col ON evp USING sift_col (grp, acct, amount);
+VACUUM (FREEZE, ANALYZE) evp;
+SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM evt WHERE acct IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM evt JOIN ks k ON k.k = evt.acct GROUP BY 1$$);
+SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM evp WHERE acct IN (SELECT k FROM ks) GROUP BY 1$$);
+SELECT * FROM same($$SELECT k.w, count(*) AS n FROM evp JOIN ks k ON k.k = evp.acct GROUP BY 1$$);
+
 -- rows written after the index was built (the write buffer) and rows changed or deleted since
 INSERT INTO ev SELECT 200000 + i, '00000000-0000-0000-0000-000000000001', i % 7, i FROM generate_series(1, 300) i;
 INSERT INTO ev SELECT 300000 + i, NULL, i % 7, i FROM generate_series(1, 30) i;
@@ -111,6 +131,6 @@ VACUUM ev;
 SELECT * FROM same($$SELECT grp, count(*) AS n, sum(amount) AS s FROM ev WHERE acct IN (SELECT k FROM ks) GROUP BY 1$$);
 
 DROP FUNCTION same(text), plan_of(text), scanned(text, bool);
-DROP TABLE ev, ks, kuniq, kfew, kmany, knone;
+DROP TABLE ev, evt, evp, ks, kuniq, kfew, kmany, knone;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
