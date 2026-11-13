@@ -59,13 +59,13 @@ SELECT try('DROP INDEX pairs_a') AS drop_recorded;
 INSERT INTO pairs VALUES (401, 7), (402, 7);
 DELETE FROM pairs WHERE dim_a_id = 14;
 SELECT * FROM group_read(7);
--- REINDEX writes the segments again and chooses again by the rule
+-- REINDEX writes the segments again under the recorded btree: the rebuilt one, not the one the rule would choose now (col_scope_reindex_btree)
 SET client_min_messages = notice;
 REINDEX INDEX facts_col;
 SET client_min_messages = warning;
 SELECT edges();
 SELECT * FROM group_read(7);
-SELECT try('DROP INDEX pairs_a') AS drop_no_longer_recorded;
+SELECT try('DROP INDEX pairs_b') AS drop_not_recorded;
 
 DROP TABLE facts, pairs;
 DROP FUNCTION group_read(int), try(text), edges();

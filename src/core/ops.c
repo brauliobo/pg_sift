@@ -9,6 +9,8 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "commands/defrem.h"
+#include "access/reloptions.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/array.h"
@@ -142,6 +144,16 @@ index_reloptions_copy(HeapTuple tuple)
 	return isnull ? NULL : DatumGetArrayTypePCopy(d);
 }
 
+/* The scope option of an index as an options array holds it, NULL when it has none */
+static char *
+scope_option(ArrayType *options)
+{
+	foreach_node(DefElem, opt, untransformRelOptions(options == NULL ? (Datum) 0 : PointerGetDatum(options)))
+		if (strcmp(opt->defname, "scope") == 0)
+			return defGetString(opt);
+	return NULL;
+}
+
 /*
  * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
  * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
@@ -189,9 +201,11 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 		if (!same)
 		{
 			Relation	index = relation_open(objectId, NoLock);
+			char	   *scope = scope_option(after);
+			char	   *was = scope_option(before);
 
 			if (sift_col_is_index(index))
-				sift_col_alter_check(index);
+				sift_col_alter_check(index, scope != NULL && (was == NULL || strcmp(scope, was) != 0));
 			else
 				warn_analyzer_options(index);
 			relation_close(index, NoLock);

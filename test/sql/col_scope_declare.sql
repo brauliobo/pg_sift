@@ -137,7 +137,11 @@ SELECT edges('events_col') AS after_reset;
 REINDEX INDEX events_col;
 SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable';
 SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LIKE '%#scope';
-ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+-- a scope is not declared by ALTER INDEX on an index that has segments (it would stop every scan): the index is made again
+SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 
 -- the btree and the relation cannot go under the index; CASCADE takes the index with them
 SELECT try('DROP INDEX tenant_scope_pkey');
@@ -168,8 +172,8 @@ SELECT sift.col_verify('events_two', true);
 ALTER INDEX events_two SET (connect = 'off');
 SELECT edges('events_two') AS after_connect_off;
 ALTER INDEX events_two SET (connect = 'dim_a_id -> dim_a(id)');
-ALTER INDEX events_two SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
-SELECT edges('events_two') AS after_one_scope_off;
+SELECT try('ALTER INDEX events_two SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')');
+SELECT edges('events_two') AS after_one_scope_refused;
 ALTER INDEX events_two RESET (scope);
 SELECT edges('events_two') AS after_scope_reset;
 DROP INDEX events_two;

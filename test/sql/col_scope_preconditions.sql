@@ -55,27 +55,25 @@ CREATE TABLE part_events_1 PARTITION OF part_events FOR VALUES FROM (0) TO (1000
 CREATE INDEX part_col ON part_events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 DROP TABLE part_events;
 
--- ALTER INDEX declares a scope the segments do not hold: the notice says REINDEX, and the statements over the table run (they did not: the plan read the segments)
-CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount);
-ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+-- ALTER INDEX .. RESET (scope) leaves segments that hold a scope the index no longer declares: the notice says REINDEX, and the statements over the table run
+CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+ALTER INDEX altered_col RESET (scope);
 SELECT count(*) AS by_key FROM events WHERE id = 5;
 SELECT sum(amount) AS total FROM events;
 SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
 SELECT * FROM scope_reasons($q$SELECT sum(e.amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)$q$);
 REINDEX INDEX altered_col;
 SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
--- giving the scope up leaves the same state
-ALTER INDEX altered_col RESET (scope);
-SELECT sum(amount) AS total FROM events;
+DROP INDEX altered_col;
 
 -- the journal of a scope keeps its log; one nothing depends on may be switched off and on
 ALTER INDEX tenant_scope_journal SET (track_changes = 'off');
 ALTER INDEX tenant_scope_journal SET (track_changes = 'ctid');
-ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''off'')') AS journal_off_of_a_scope;
 SELECT try('ALTER INDEX tenant_scope_journal RESET (track_changes)') AS journal_reset_of_a_scope;
 SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''ctid'')') AS journal_kept;
-ALTER INDEX altered_col RESET (scope);
+DROP INDEX altered_col;
 
 DROP TABLE events, tenant_scope, pairs_unjournaled, pairs_rls, grants, memberships CASCADE;
 DROP FUNCTION try(text), scope_reasons(text);

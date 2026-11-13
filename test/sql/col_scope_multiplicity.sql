@@ -25,10 +25,17 @@ SET sift.scope_max_multiplicity = 6;
 SELECT try('CREATE INDEX events_35 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_35(dim_a_id, tenant_id)'')') AS override_6;
 SELECT try('CREATE INDEX events_60 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_60(dim_a_id, tenant_id)'')') AS override_6_at_6;
 RESET sift.scope_max_multiplicity;
-SELECT try('REINDEX INDEX events_35') AS reindex_default;
+-- CREATE INDEX records the limit the scope was accepted under in the option: REINDEX checks that one, whatever its session says
+SELECT c.relname, o AS recorded FROM pg_class c, unnest(c.reloptions) o WHERE c.relname IN ('events_25', 'events_35', 'events_60') AND o LIKE 'scope=%' ORDER BY 1;
+SELECT try('REINDEX INDEX events_35') AS reindex_recorded_6;
 SET sift.scope_max_multiplicity = 2;
-SELECT try('REINDEX INDEX events_25') AS reindex_lowered;
+SELECT try('REINDEX INDEX events_25') AS reindex_session_lowered;
 RESET sift.scope_max_multiplicity;
+-- a declaration that states a lower limit is checked at it
+ALTER INDEX events_25 SET (scope = 'tenant_id: dim_a_id -> pairs_25(dim_a_id, tenant_id) max_multiplicity(2)');
+SELECT try('REINDEX INDEX events_25') AS reindex_declared_2;
+ALTER INDEX events_25 SET (scope = 'tenant_id: dim_a_id -> pairs_25(dim_a_id, tenant_id) max_multiplicity(3)');
+SELECT try('REINDEX INDEX events_25') AS reindex_declared_3;
 SELECT sift.col_verify('events_25'::regclass, true) AS verify_25;
 -- the hint
 SET client_min_messages = notice;

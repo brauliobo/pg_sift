@@ -35,7 +35,7 @@ unread_reason(const PlannedStmt *ps, Oid heap, Oid index)
 	if (!sift_enable_agg)
 		return "sift.enable_agg is off";
 	if (sift_col_index_stale(index))
-		return psprintf("the scope of index %s was declared after its segments were written (ALTER INDEX): REINDEX INDEX %s writes the scope segments, and the index is not scanned until then",
+		return psprintf("the options of index %s changed after its segments were written (ALTER INDEX): REINDEX INDEX %s writes the segments again, and the index is not scanned until then",
 						get_rel_name(index), get_rel_name(index));
 	if (!uses_sift_agg(ps->planTree) && !any_sift_agg(ps->subplans))
 		return psprintf("no SiftAgg scan of \"%s\" is planned, so its join to the scope relation runs as written (the arms index and single say why the scan is not planned)", get_rel_name(heap));

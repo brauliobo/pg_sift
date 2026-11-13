@@ -91,20 +91,20 @@ segs_sum(const SiftSegEntry *segs, int n, bool bytes)
 
 /* The refusal of a scope above the limit, from the finished build (exact) or from the sample before it (estimated, the growth of the index not known) */
 void
-sift_scope_refuse(const char *what, uint64 entries, uint64 rows, bool estimated, double before, double added)
+sift_scope_refuse(const char *what, double limit, uint64 entries, uint64 rows, bool estimated, double before, double added)
 {
 	const char *about = estimated ? "about " : "";
 	char	   *growth = before >= 1000000 ? psprintf(" and would grow the index from %.1f MB to %.1f MB (+%.0f%%)", before / 1e6, (before + added) / 1e6, 100.0 * added / before) : "";
 
-	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("scope \"%s\": %s%s entries for %s%s rows (%.2f per row%s) is over sift.scope_max_multiplicity (%g)%s", what, about,
-					count_text(entries), about, count_text(rows), (double) entries / rows, estimated ? ", from a sample" : "", sift_scope_max_multiplicity, growth),
+	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("scope \"%s\": %s%s entries for %s%s rows (%.2f per row%s) is over the limit of %g entries a row%s", what, about,
+					count_text(entries), about, count_text(rows), (double) entries / rows, estimated ? ", from a sample" : "", limit, growth),
 					errhint("Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). "
-							"SET sift.scope_max_multiplicity raises the limit.")));
+							"max_multiplicity(n) in the scope option raises the limit, as SET sift.scope_max_multiplicity does for the next declaration.")));
 }
 
 /*
  * What a scope costs, said once per scope when the build is done: its entries for the rows of the table (the multiplicity of its scope key: how many keys the member of a row has, on
- * average) and the growth of the index. A multiplicity above sift.scope_max_multiplicity (3: the break-even of the units, docs/COL-SCOPE.md) is refused, with the growth it would have been. The sizes are said from 1 MB of entities: below, they are a few kB that the
+ * average) and the growth of the index. A multiplicity above the limit of the scope (max_multiplicity in its declaration: 3, the break-even of the units, docs/COL-SCOPE.md, unless raised) is refused, with the growth it would have been. The sizes are said from 1 MB of entities: below, they are a few kB that the
  * compressors change from one library version to the next.
  */
 static void
@@ -118,9 +118,10 @@ scope_report(const ColBuild *b, int s)
 	double		per_row = rows > 0 ? (double) entries / rows : 0;
 	const char *name = b->r->schema->cols[b->r->scope_leaf[s]].path;
 	char	   *what = pnstrdup(name, strlen(name) - strlen("#scope"));
+	double		limit = sift_scope_specs(b->index)->s[s]->max_multiplicity;
 
-	if (per_row > sift_scope_max_multiplicity)
-		sift_scope_refuse(what, entries, rows, false, before, added);
+	if (per_row > limit)
+		sift_scope_refuse(what, limit, entries, rows, false, before, added);
 	if (before >= 1000000)
 		ereport(NOTICE, (errmsg("scope \"%s\": %s entries for %s rows (%.2f per row); the index grows from %.1f MB to %.1f MB (+%.0f%%)", what, count_text(entries), count_text(rows),
 								per_row, before / 1e6, (before + added) / 1e6, 100.0 * added / before)));

@@ -316,7 +316,7 @@ sift_conn_build(Relation heap, Relation index)
 	Oid			origin = RelationGetRelid(index);
 	bool		wanted = sift_conn_children(origin) != NIL;
 
-	if (!wanted && (origin = sift_col_track_swap_origin(heap, index)) != InvalidOid)
+	if (!wanted && (origin = sift_col_swap_origin(heap, index, true)) != InvalidOid)
 		wanted = sift_conn_children(origin) != NIL;
 	if (wanted && sift_col_track_on(index))
 	{

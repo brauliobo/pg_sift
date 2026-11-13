@@ -155,13 +155,16 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "part_events_1_id_dim_a_id_amount_idx" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 DROP TABLE part_events;
--- ALTER INDEX declares a scope the segments do not hold: the notice says REINDEX, and the statements over the table run (they did not: the plan read the segments)
-CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount);
-NOTICE:  sift_col index "altered_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = dim_a_id, amount; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
-ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+-- ALTER INDEX .. RESET (scope) leaves segments that hold a scope the index no longer declares: the notice says REINDEX, and the statements over the table run
+CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
+NOTICE:  sift_col index "altered_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
+NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+ALTER INDEX altered_col RESET (scope);
 NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
 SELECT count(*) AS by_key FROM events WHERE id = 5;
@@ -183,42 +186,34 @@ SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT d
 (1 row)
 
 SELECT * FROM scope_reasons($q$SELECT sum(e.amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)$q$);
-                                                                                      scope_reasons                                                                                      
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- the scope of index altered_col was declared after its segments were written (ALTER INDEX): REINDEX INDEX altered_col writes the scope segments, and the index is not scanned until then
-(1 row)
+ scope_reasons 
+---------------
+(0 rows)
 
 REINDEX INDEX altered_col;
-NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
 NOTICE:  sift_col index "altered_col": 2 automatic choices (rollup_columns, track_changes)
 DETAIL:  rollup_columns = dim_a_id, amount; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
-NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3);
  tenant_total 
 --------------
          1400
 (1 row)
 
--- giving the scope up leaves the same state
-ALTER INDEX altered_col RESET (scope);
-NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
-SELECT sum(amount) AS total FROM events;
- total 
--------
-  9000
-(1 row)
-
+DROP INDEX altered_col;
 -- the journal of a scope keeps its log; one nothing depends on may be switched off and on
 ALTER INDEX tenant_scope_journal SET (track_changes = 'off');
 ALTER INDEX tenant_scope_journal SET (track_changes = 'ctid');
 NOTICE:  sift_col index "tenant_scope_journal": track_changes = ctid queues about 42 bytes a changed row
 HINT:  Before a huge UPDATE or DELETE: ALTER INDEX tenant_scope_journal SET (track_changes = 'off'), then 'ctid' again.
-ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
+NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
+NOTICE:  sift_col index "altered_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
+NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
 SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''off'')') AS journal_off_of_a_scope;
                                                                                                                   journal_off_of_a_scope                                                                                                                   
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -237,9 +232,7 @@ SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''ctid'')') AS
  ok
 (1 row)
 
-ALTER INDEX altered_col RESET (scope);
-NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
-HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
+DROP INDEX altered_col;
 DROP TABLE events, tenant_scope, pairs_unjournaled, pairs_rls, grants, memberships CASCADE;
 DROP FUNCTION try(text), scope_reasons(text);
 DROP EXTENSION pg_sift;

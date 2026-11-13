@@ -252,13 +252,22 @@ SELECT btree FROM sift._test_scope_legs('facts_col', 0);
  memberships_active
 (1 row)
 
--- two partial unique btrees: the pairs are a guess, REINDEX says so; USING names the one
+-- a second partial unique btree made later changes nothing: REINDEX keeps the recorded one. Where none is recorded the pairs are a guess, which SET (scope) says; USING names the one
 SELECT try('REINDEX INDEX facts_col') AS two_partial;
-                                                                                                two_partial                                                                                                 
+ two_partial 
+-------------
+ ok
+(1 row)
+
+BEGIN;
+ALTER INDEX facts_col RESET (scope);
+SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS two_partial_guess;
+                                                                                             two_partial_guess                                                                                              
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  scope "group_id": "memberships" has two partial unique btrees on (dim_a_id, group_id) [The predicate of the btree says which rows are pairs: name the one that does with USING <index> after the columns.]
 (1 row)
 
+ROLLBACK;
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id) using memberships_active'')') AS using_active;
  using_active 
 --------------

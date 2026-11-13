@@ -235,13 +235,13 @@ VACUUM tenant_scope;
 SELECT key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor') WHERE key IS NOT NULL;
 SELECT why FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'hor', 0) LIMIT 1;
 
--- the multiplicity of a scope key is said when the index is built and bounded by sift.scope_max_multiplicity
+-- the multiplicity of a scope key is said when the index is built and bounded by the limit of the declaration (max_multiplicity)
 SET client_min_messages = notice;
 REINDEX INDEX events_col;
 SET client_min_messages = warning;
-SET sift.scope_max_multiplicity = 1.0;
+SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(1)'')') AS lowered;
 SELECT try('REINDEX INDEX events_col') AS refused;
-SET sift.scope_max_multiplicity = 8;
+SELECT try('ALTER INDEX events_col SET (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'')') AS raised;
 SELECT * FROM verdict();
 
 SELECT sift.col_verify('events_col', true);

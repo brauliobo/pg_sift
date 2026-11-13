@@ -99,12 +99,12 @@ SELECT count(*) AS surviving_entries_not_in_the_join
 	FROM sift._test_col_scope_entries('events_col') x JOIN events e ON e.ctid = x.tid LEFT JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id AND s.tenant_id = x.key WHERE s.dim_a_id IS NULL;
 SELECT sift.col_verify('events_col', true);
 
--- an index without the scope has no scope segment, and a REINDEX of the scope index builds them again
+-- an index without the scope has no scope segment; the index made with the scope has them (ALTER INDEX .. SET (scope) is refused on an index with segments)
 DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num);
 SELECT (shape()).scope_segments AS scope_segments;
-ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
-REINDEX INDEX events_col;
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT (shape()).scope_segments > 0 AS has_scope_segments, entries_md5() = join_md5() AS entries_are_the_join;
 
 -- keys of a few rows share units: 300 keys of 10 entries (the members of the first 10 keys are also in the next of them, so these keys share facts and each has a unit of its own)

@@ -32,16 +32,16 @@ SELECT pg_relation_size('events') / 8192 > 16 AS events_over_16_blocks;
 (1 row)
 
 SELECT 'default: the table is below 2,048 blocks, so the build says it' AS step, try('pairs_6');
-                              step                              |                                             try                                             
-----------------------------------------------------------------+---------------------------------------------------------------------------------------------
- default: the table is below 2,048 blocks, so the build says it | scope "tenant_id": N entries for N rows (N per row) is over sift.scope_max_multiplicity (N)
+                              step                              |                                           try                                            
+----------------------------------------------------------------+------------------------------------------------------------------------------------------
+ default: the table is below 2,048 blocks, so the build says it | scope "tenant_id": N entries for N rows (N per row) is over the limit of N entries a row
 (1 row)
 
 SET sift.test_scope_sample_blocks = 16;
 SELECT 'sampled: over the limit' AS step, try('pairs_6');
-          step           |                                                          try                                                           
--------------------------+------------------------------------------------------------------------------------------------------------------------
- sampled: over the limit | scope "tenant_id": about N entries for about N rows (N per row, from a sample) is over sift.scope_max_multiplicity (N)
+          step           |                                                         try                                                         
+-------------------------+---------------------------------------------------------------------------------------------------------------------
+ sampled: over the limit | scope "tenant_id": about N entries for about N rows (N per row, from a sample) is over the limit of N entries a row
 (1 row)
 
 SELECT 'sampled: on the limit builds' AS step, try('pairs_mixed_30');
@@ -51,9 +51,9 @@ SELECT 'sampled: on the limit builds' AS step, try('pairs_mixed_30');
 (1 row)
 
 SELECT 'sampled: a little over the limit is left to the build' AS step, try('pairs_mixed_32');
-                         step                          |                                             try                                             
--------------------------------------------------------+---------------------------------------------------------------------------------------------
- sampled: a little over the limit is left to the build | scope "tenant_id": N entries for N rows (N per row) is over sift.scope_max_multiplicity (N)
+                         step                          |                                           try                                            
+-------------------------------------------------------+------------------------------------------------------------------------------------------
+ sampled: a little over the limit is left to the build | scope "tenant_id": N entries for N rows (N per row) is over the limit of N entries a row
 (1 row)
 
 SELECT 'sampled: below the limit builds' AS step, try('pairs_1');

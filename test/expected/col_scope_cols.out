@@ -246,15 +246,15 @@ RESET sift.enable_agg;
 CREATE INDEX events_sub ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num)');
 SELECT regexp_replace(pg_get_indexdef('events_sub'::regclass), '^.* WITH', 'WITH') AS definition;
-                                                                                     definition                                                                                      
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num)', array_lengths='on', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
+                                                                                               definition                                                                                                
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num) max_multiplicity(3)', array_lengths='on', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
 (1 row)
 
 SELECT pg_get_indexdef('events_sub'::regclass) AS ddl \gset
 DROP INDEX events_sub;
 SELECT :'ddl' AS restore \gexec
-CREATE INDEX events_sub ON public.events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags) WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num)', array_lengths='on', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
+CREATE INDEX events_sub ON public.events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags) WITH (scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num) max_multiplicity(3)', array_lengths='on', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
 SELECT (r).same, (r).stored, (r).why, (r).kept
 FROM (SELECT scope_run('SELECT kind, sum(value_num) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3) GROUP BY kind ORDER BY kind',
 					   'SELECT kind, sum(value_num) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind ORDER BY kind') r) t;

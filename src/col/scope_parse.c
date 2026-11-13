@@ -64,12 +64,63 @@ parse_rel(const char *p, SiftScopeRel *r, const char *ra, const char *rb, const 
 	return parse_using(p + 1, &r->index_name, err);
 }
 
+/* cols(a, b, c) at p: the list of the columns the scope segments keep; returns after the closing parenthesis */
+static const char *
+parse_cols(const char *p, SiftScopeSpec *s, const char **err)
+{
+	p = sift_conn_skip_ws(p + 4) + 1;
+	for (;;)
+	{
+		char	   *col;
+
+		if ((p = sift_conn_read_name(sift_conn_skip_ws(p), &col, err)) == NULL)
+			return NULL;
+		s->cols = lappend(s->cols, col);
+		p = sift_conn_skip_ws(p);
+		if (*p == ',')
+		{
+			p++;
+			continue;
+		}
+		if (*p++ != ')')
+		{
+			*err = "expected ',' or ')' in cols(..), the list of the columns the scope segments keep";
+			return NULL;
+		}
+		return sift_conn_skip_ws(p);
+	}
+}
+
+/* max_multiplicity(n) at p: the most entries a row the scope accepts, a number from 1 to 1,000,000 (the range of sift.scope_max_multiplicity) */
+static const char *
+parse_limit(const char *p, SiftScopeSpec *s, const char **err)
+{
+	char	   *end;
+
+	p = sift_conn_skip_ws(p + 16) + 1;
+	s->max_multiplicity = strtod(p, &end);
+	if (end == p || !(s->max_multiplicity >= 1 && s->max_multiplicity <= 1000000))
+	{
+		*err = "expected a number from 1 to 1000000 in max_multiplicity(..), the most entries a row the scope accepts";
+		return NULL;
+	}
+	p = sift_conn_skip_ws(end);
+	if (*p++ != ')')
+	{
+		*err = "expected ')' after the number in max_multiplicity(..)";
+		return NULL;
+	}
+	return sift_conn_skip_ws(p);
+}
+
 /* One scope, from *pp to its end (a ';' or the end of the text); NULL with *err set when it does not parse */
 static SiftScopeSpec *
 parse_one(const char **pp, const char **err)
 {
 	SiftScopeSpec *s = palloc0(sizeof(SiftScopeSpec));
-	const char *p = sift_conn_skip_ws(*pp);
+	const char *start = sift_conn_skip_ws(*pp),
+			   *p = start,
+			   *end;
 
 	if ((p = sift_conn_read_name(p, &s->key_name, err)) == NULL)
 		return NULL;
@@ -103,31 +154,20 @@ parse_one(const char **pp, const char **err)
 		if ((p = parse_rel(p + 3, s->via, "via", "member", err)) == NULL)
 			return NULL;
 	}
-	if (strncmp(p, "cols", 4) == 0 && *sift_conn_skip_ws(p + 4) == '(')
+	for (;;)
 	{
-		p = sift_conn_skip_ws(p + 4) + 1;
-		for (;;)
-		{
-			char	   *col;
-
-			if ((p = sift_conn_read_name(sift_conn_skip_ws(p), &col, err)) == NULL)
-				return NULL;
-			s->cols = lappend(s->cols, col);
-			p = sift_conn_skip_ws(p);
-			if (*p == ',')
-			{
-				p++;
-				continue;
-			}
-			if (*p++ != ')')
-			{
-				*err = "expected ',' or ')' in cols(..), the list of the columns the scope segments keep";
-				return NULL;
-			}
+		if (s->cols == NIL && strncmp(p, "cols", 4) == 0 && *sift_conn_skip_ws(p + 4) == '(')
+			p = parse_cols(p, s, err);
+		else if (s->max_multiplicity == 0 && strncmp(p, "max_multiplicity", 16) == 0 && *sift_conn_skip_ws(p + 16) == '(')
+			p = parse_limit(p, s, err);
+		else
 			break;
-		}
-		p = sift_conn_skip_ws(p);
+		if (p == NULL)
+			return NULL;
 	}
+	for (end = p; end > start && isspace((unsigned char) end[-1]);)
+		end--;
+	s->text = pnstrdup(start, end - start);
 	*pp = p;
 	return s;
 }

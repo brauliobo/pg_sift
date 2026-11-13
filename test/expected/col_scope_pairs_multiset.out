@@ -522,8 +522,8 @@ SET client_min_messages = notice;
 CREATE INDEX decl_facts_col ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_pairs(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "decl_pairs" (dim_a_id, tenant_id) are the distinct rows of its non-unique btree "decl_pairs_a"
 DETAIL:  A pair may be several rows: a read with the meaning of IN or EXISTS counts a fact once, a join counts it once for each row and runs as written.
-ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over sift.scope_max_multiplicity (3)
-HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). SET sift.scope_max_multiplicity raises the limit.
+ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over the limit of 3 entries a row
+HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). max_multiplicity(n) in the scope option raises the limit, as SET sift.scope_max_multiplicity does for the next declaration.
 SET client_min_messages = warning;
 SELECT c.relname AS btree, i.indisunique AS is_unique FROM pg_depend d JOIN pg_class c ON c.oid = d.refobjid JOIN pg_index i ON i.indexrelid = c.oid
 	WHERE d.objid = 'decl_facts_col'::regclass AND d.refclassid = 'pg_class'::regclass AND c.relam = (SELECT oid FROM pg_am WHERE amname = 'btree') ORDER BY 1;
@@ -541,8 +541,8 @@ CREATE INDEX decl_unique_journal ON decl_unique USING sift_col (dim_a_id, tenant
 SET client_min_messages = notice;
 CREATE INDEX decl_facts_col ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_unique(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "decl_unique" are the rows of its unique btree "decl_unique_pair"
-ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over sift.scope_max_multiplicity (3)
-HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). SET sift.scope_max_multiplicity raises the limit.
+ERROR:  scope "tenant_id": 1,000 entries for 300 rows (3.33 per row) is over the limit of 3 entries a row
+HINT:  Above it the join answers the scope reads (the entity path); a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). max_multiplicity(n) in the scope option raises the limit, as SET sift.scope_max_multiplicity does for the next declaration.
 SET client_min_messages = warning;
 DROP INDEX decl_facts_col;
 ERROR:  index "decl_facts_col" does not exist

@@ -2372,12 +2372,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col` · diagnostic · since 5.0 · default 3
 
-- **What it does:** the most scope entries for each fact row (the entries of a scope over the rows of the table) that CREATE INDEX and REINDEX of a scope index accept; a scope above it is refused with its size and growth and the join answers it
+- **What it does:** the default of the most scope entries for each fact row (the entries of a scope over the rows of the table) that a new scope index accepts; CREATE INDEX writes the limit it accepted the scope under into the option (max_multiplicity(n), which a declaration may state), and REINDEX, a restore and the rebuild after pg_upgrade check that limit, not their session's; a scope above it is refused with its size and growth and the join answers it
 - **Gain:** a refusal that keeps the units where they pay: they read 2 to 9 times cheaper than the join (a total up to 22 times, 100,000 to 2,000,000 events) for an index 17% larger of the table and its indexes for each entry a row has
 - **Impact:** index size: -; build, merge and writes: -; other: nothing stored by this setting; the figure is measured from the entries the build wrote, said in a NOTICE with the growth of the index, and in the refusal; a table of 2,048 blocks or more is first estimated from a sample of 32 runs of 8 blocks, and refused before its build when the estimate less 3.5 standard errors is over the limit
-- **When:** CREATE INDEX and REINDEX of an index that declares a scope.
+- **When:** CREATE INDEX of an index that declares a scope without max_multiplicity(n); REINDEX and a restore keep the recorded limit.
 - **Default:** 3 — 3: the units break even with the join at 2.5 entries a row (500,000 events) to 3.0 (2,000,000), and lose above: at 5.4 entries a row the index is 489% larger and the table with its indexes 92%, a fact write costs 107% more, for the same reads; the measured multiplicities of a tenant or a group are 1.0 to 1.1
-- **Turn off:** SET sift.scope_max_multiplicity = 1000000 accepts any figure. No REINDEX.
+- **Turn off:** SET sift.scope_max_multiplicity = 1000000 accepts any figure for a new index (max_multiplicity(1000000) in the declaration of one that exists). No REINDEX.
 - **Upgrade from 4.3:** New in 5.0.
 - **Advice:** Leave at 3. Raise it for a scope whose members are in many scope keys and whose reads are worth the growth the refusal states; the join answers the reads of a scope that is refused, and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A table of 2,048 blocks (16 MB) or more is refused from a sample before its build (the refusal says "from a sample" and not the growth); a scope near the limit is built and the exact figure decides.
 - **Sources:** benchmark `test:col_scope_multiplicity`; [FORMATS](FORMATS.md)

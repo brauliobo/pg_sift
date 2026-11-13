@@ -182,7 +182,7 @@ SELECT sift.col_verify('events_col', true);
  
 (1 row)
 
--- an index without the scope has no scope segment, and a REINDEX of the scope index builds them again
+-- an index without the scope has no scope segment; the index made with the scope has them (ALTER INDEX .. SET (scope) is refused on an index with segments)
 DROP INDEX events_col;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num);
 SELECT (shape()).scope_segments AS scope_segments;
@@ -191,8 +191,8 @@ SELECT (shape()).scope_segments AS scope_segments;
               0
 (1 row)
 
-ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
-REINDEX INDEX events_col;
+DROP INDEX events_col;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 SELECT (shape()).scope_segments > 0 AS has_scope_segments, entries_md5() = join_md5() AS entries_are_the_join;
  has_scope_segments | entries_are_the_join 
 --------------------+----------------------

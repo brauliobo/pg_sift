@@ -295,10 +295,10 @@ sift_col_init(void)
 							 "Off: the planner does not recognise the scope forms, and a scan that carries one reads the entity path (the join as written).",
 							 &sift_agg_scope, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.scope_max_multiplicity",
-							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts.",
+							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts: the limit of a declaration that states no max_multiplicity(n), which the index records.",
 							 "The scope segments hold a row once for each scope key of its member, so the index grows by about 17 percent of the table and its indexes for each entry a row has (its writes cost about 16 percent more for each) "
 							 "while a read gains 2 to 9 times (a total up to 22 times) over the join: past about 3 entries a row the growth costs more than the reads gain. A scope above the limit is refused with the figure, "
-							 "and the join answers it.",
+							 "and the join answers it. CREATE INDEX writes the limit it accepted the scope under into the option scope (max_multiplicity(n)), so REINDEX, a restore and pg_upgrade check that one, not the setting of their session.",
 							 &sift_scope_max_multiplicity, 3.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
 							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
@@ -605,7 +605,7 @@ sift_col_init(void)
 						 "connects this index to the sift_col index of the table it joins: 'fk -> [schema.]parent(key)' names the column of this index that holds the parent key, the parent table (in the schema of this index's table when not qualified) and its key column; the parent columns that queries read come from the parent's own index. The parent index (the one that tracks the key) keeps a journal of the keys its updates and deletes end, and this index depends on it, so DROP INDEX of the parent index needs CASCADE (column format minor 44, which only 4.3 and later read); the key is an int2, int4 or int8 column (default none)",
 						 "", sift_col_validate_connect, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "scope",
-						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key)' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a btree covers (unique, or not: a pair may then be several rows); several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 5.0 and later read; default none)",
+						 "EXPERIMENTAL: declares that the rows of this index are also cut by a key they reach through a table of (member, scope) pairs: 'key_name: fk -> [schema.]relation(member, scope_key) [cols(..)] [max_multiplicity(n)]' names the derived key, the column of this index that holds the member key, the relation (in the schema of this index's table when not qualified) and its two integer columns, which a btree covers (unique, or not: a pair may then be several rows); several scopes are separated by ';' (4 at most). The index depends on that btree, so DROP INDEX of it needs CASCADE; 'off' or RESET removes the declaration (column format minor 45, which only 5.0 and later read; default none)",
 						 "", sift_col_validate_scope, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "projection",
 						 "the named projections (sift.projection_create) this index holds or serves: 'name, name'. sift.projection_index writes it; sift.projection_status says whether the index still holds the columns, the filter and the rollups of each. Only a record: it changes nothing in the segments, ALTER INDEX .. SET (projection = ..) takes effect at once and a definition that is replaced is compared with the index again (default none)",
@@ -809,7 +809,7 @@ COL_OPT_STR(sift_col_options_preagg, preagg, "")
  * again at the next REINDEX (col/keycols/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
  */
 void
-sift_col_alter_check(Relation index)
+sift_col_alter_check(Relation index, bool scope_set)
 {
 	if (!sift_col_is_index(index))
 		return;
@@ -821,7 +821,7 @@ sift_col_alter_check(Relation index)
 	sift_col_track_reconcile(index);
 	sift_conn_alter(index);
 	sift_scope_alter(index);
-	sift_scope_notice_stale(index);
+	sift_scope_notice_stale(index, scope_set);
 }
 
 

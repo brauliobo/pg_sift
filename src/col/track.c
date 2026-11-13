@@ -379,12 +379,12 @@ repack_witness(Relation heap, Relation index, uint32 witness[2])
 }
 
 /*
- * The index that a concurrent build replaces by this copy, on the same table, when it has its two triggers: REINDEX CONCURRENTLY (<name>_ccnew, <name>_ccnew1, ..., not valid yet) and
+ * The index that a concurrent build replaces by this copy, on the same table (triggered: and it has its two triggers): REINDEX CONCURRENTLY (<name>_ccnew, <name>_ccnew1, ..., not valid yet) and
  * pg_repack --only-indexes (index_<oid>, in the schema of the table). They are the triggers of the index after the swap: PostgreSQL moves what depends on the old index to the new one,
- * pg_repack swaps the files and leaves the oids. InvalidOid for any other index, and for an old index that has no triggers of its own, or another key.
+ * pg_repack swaps the files and leaves the oids. InvalidOid for any other index, and for an old index on another key, or (triggered) one that has no triggers of its own.
  */
 Oid
-sift_col_track_swap_origin(Relation heap, Relation index)
+sift_col_swap_origin(Relation heap, Relation index, bool triggered)
 {
 	const char *name = RelationGetRelationName(index);
 	const char *p = strstr(name, "_ccnew");
@@ -416,7 +416,7 @@ sift_col_track_swap_origin(Relation heap, Relation index)
 		memcmp(orig->rd_index->indkey.values, index->rd_index->indkey.values, orig->rd_index->indnkeyatts * sizeof(int16)) == 0)
 	{
 		find_triggers(RelationGetRelid(heap), orig, t, sift_col_track_ctid(orig));
-		if (t[0].n == 1 && t[1].n == 1)
+		if (!triggered || (t[0].n == 1 && t[1].n == 1))
 			origin = RelationGetRelid(orig);
 	}
 	relation_close(orig, AccessShareLock);
@@ -442,7 +442,7 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	if (channel_as_asked(heap, index, log))
 		return;
 	/* the copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
-	if (!concurrent || !OidIsValid(sift_col_track_swap_origin(heap, index)))
+	if (!concurrent || !OidIsValid(sift_col_swap_origin(heap, index, true)))
 	{
 		drop_triggers(heap, index);
 		create_trigger(heap, index, false);

@@ -36,6 +36,8 @@ typedef struct SiftScopeSpec
 	SiftScopeRel *joined;			/* two-hop: | rel2(via, scope_key) via vrel(via, member): the pairs are those of rel and, for each row of rel2, the members of vrel with its via */
 	SiftScopeRel *via;				/* ... vrel; both NULL for a scope of one path */
 	List	   *cols;				/* cols(a, b, c): the columns of the index its scope segments keep (with the member key and the time column of the cut); NIL: all of them */
+	double		max_multiplicity;	/* max_multiplicity(n): the most entries a row the scope accepts, recorded by CREATE INDEX from sift.scope_max_multiplicity when the declaration states none; 0: not stated yet */
+	char	   *text;				/* the declaration of this scope as written, without the separator */
 } SiftScopeSpec;
 
 typedef struct SiftScopeSpecs
@@ -78,7 +80,7 @@ extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop
 extern void sift_scope_journal_drop_unused(void);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
 extern void sift_scope_journal_alter(Relation index);
-extern void sift_scope_notice_stale(Relation index);
+extern void sift_scope_notice_stale(Relation index, bool scope_set);
 /* The scope of the index from its column fk to the relation's columns: its ordinal, the leaf of its derived key and the btree; -1 when the index declares no such scope */
 extern int	sift_scope_find(Relation heap, Relation index, AttrNumber fk, Oid rel, AttrNumber member, AttrNumber scope_key, int *leaf, Oid *btree);
 
@@ -498,8 +500,8 @@ extern PGDLLIMPORT bool sift_test_scope_patch;	/* sift.test_scope_patch: a read 
 extern PGDLLIMPORT double sift_scope_max_multiplicity;
 extern PGDLLIMPORT int sift_col_scope_refresh_pct;
 
-/* Refuses a scope of more than sift.scope_max_multiplicity entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */
-extern void sift_scope_refuse(const char *what, uint64 entries, uint64 rows, bool estimated, double before, double added);
+/* Refuses a scope of more than limit entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */
+extern void sift_scope_refuse(const char *what, double limit, uint64 entries, uint64 rows, bool estimated, double before, double added);
 /* Before the build of an index with a scope: refuses a table whose sample is clearly above the limit */
 extern void sift_scope_precheck(Relation heap, Relation index);
 #ifdef SIFT_TESTING

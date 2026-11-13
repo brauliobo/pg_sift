@@ -481,29 +481,31 @@ check_hops(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2])
 	check_same_type(s, "scope key", rel[0], att[0][1], rel[1], att[1][1]);
 }
 
-/* The btree that defines the rows of relation i of the declaration: the recorded one when sticky (and using, if it names one, must be it), else chosen by the rule, said in a NOTICE */
+/*
+ * The btree that defines the rows of relation i of the declaration: the recorded one, whatever the command (and using, if it names one, must be it). ALTER INDEX leaves it, and REINDEX writes
+ * the scope segments under it, so a btree made since (the rule prefers a partial one) cannot change what the index means. CREATE INDEX, and the first scope of an ALTER INDEX, have none
+ * recorded and choose by the rule; they say which in a NOTICE, as REINDEX does. The recorded btree is always there: the index depends on it, so DROP INDEX of it drops the index, and a
+ * btree that REINDEX CONCURRENTLY replaces is the one that depends now.
+ */
 static Oid
-choose_btree(Relation index, const SiftScopeSpec *s, int i, Relation rel, AttrNumber a, AttrNumber b, bool sticky)
+choose_btree(Oid owner, const SiftScopeSpec *s, int i, Relation rel, AttrNumber a, AttrNumber b, bool sticky)
 {
 	const SiftScopeRel *r = decl_rel(s, i);
-	Oid			btree = sticky ? recorded_btree(RelationGetRelid(index), rel, a, b) : InvalidOid;
+	Oid			recorded = recorded_btree(owner, rel, a, b),
+				btree = recorded;
 
-	if (sticky && r->index_name != NULL)
-	{
-		Oid			named = pair_index(rel, s, r, a, b);
-
-		if (OidIsValid(btree) && named != btree)
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", s->key_name, get_rel_name(btree), r->index_name),
-							errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
-	}
+	if (OidIsValid(btree) && r->index_name != NULL && pair_index(rel, s, r, a, b) != btree)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope segments were written under the pairs of \"%s\", not \"%s\"", s->key_name, get_rel_name(btree), r->index_name),
+						errhint("Change the btree that defines the pairs with DROP INDEX and CREATE INDEX of this index, or REINDEX after RESET (scope) and SET (scope = ..).")));
 	if (!OidIsValid(btree))
 	{
 		btree = pair_index(rel, s, r, a, b);
 		if (!OidIsValid(btree))
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no btree index on (%s, %s)", s->key_name, r->name, r->a, r->b),
 							errhint("CREATE UNIQUE INDEX on %s (%s, %s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).", r->name, r->a, r->b)));
-		notice_btree(s, i, rel, btree);
 	}
+	if (!sticky || !OidIsValid(recorded))
+		notice_btree(s, i, rel, btree);
 	return btree;
 }
 
@@ -531,6 +533,30 @@ require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[
 }
 
 /*
+ * The limit of each scope that states none, max_multiplicity(n) in its declaration, is the session's sift.scope_max_multiplicity at CREATE INDEX, written into the option so that it is the limit the index
+ * was accepted under: REINDEX, a restore of a dump and the rebuild after pg_upgrade (which take no session setting) check the same one, and pay no build for a refusal.
+ */
+static void
+record_limits(Relation index, const SiftScopeSpecs *specs)
+{
+	StringInfoData text;
+	bool		missing = false;
+
+	initStringInfo(&text);
+	for (int i = 0; i < specs->n; i++)
+	{
+		appendStringInfo(&text, "%s%s", i > 0 ? "; " : "", specs->s[i]->text);
+		if (specs->s[i]->max_multiplicity == 0)
+		{
+			appendStringInfo(&text, " max_multiplicity(%g)", sift_scope_max_multiplicity);
+			missing = true;
+		}
+	}
+	if (missing)
+		sift_col_set_option(index, "scope", text.data);
+}
+
+/*
  * CREATE INDEX, REINDEX and ALTER INDEX: finds the btree of each relation of each scope the option names (one for the pairs; a scope of two paths names three) and makes the dependency
  * of the index on it, so that DROP INDEX of the btree or DROP TABLE of the relation needs CASCADE (which drops this index) and a dump orders them first; removes the dependencies when the
  * option is off or not set. The dependency is the record of which btree defines the rows: CREATE INDEX and REINDEX (which write the scope segments) choose it by the rule and say which in a
@@ -540,6 +566,8 @@ void
 sift_scope_resolve(Relation heap, Relation index, bool sticky)
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
+	Oid			origin = specs != NULL ? sift_col_swap_origin(heap, index, false) : InvalidOid;
+	Oid			owner = OidIsValid(origin) ? origin : RelationGetRelid(index);
 	List	   *keep = NIL;
 
 	if (specs != NULL && (!sift_col_is_index(index) || heap->rd_rel->relam != HEAP_TABLE_AM_OID))
@@ -565,7 +593,7 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 			sift_scope_notice_relation(s->key_name, decl_rel(s, h)->name, rel[h]);
 		for (int h = 0; h < npath; h++)
 		{
-			btree[h] = choose_btree(index, s, h, rel[h], att[h][0], att[h][1], sticky);
+			btree[h] = choose_btree(owner, s, h, rel[h], att[h][0], att[h][1], sticky);
 			keep = list_append_unique_oid(keep, btree[h]);
 		}
 		/* the codes of a text or uuid scope key are those of the value store of its column: the index depends on it */
@@ -581,6 +609,8 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 	}
 	sync_edges(RelationGetRelid(index), keep);
 	list_free(keep);
+	if (specs != NULL && !sticky)
+		record_limits(index, specs);
 }
 
 /* After ALTER INDEX of any option of a sift_col index: the scopes follow the option */

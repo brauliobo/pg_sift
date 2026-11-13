@@ -1,7 +1,7 @@
 /*
  * col/scope_sample.c - the multiplicity of a scope before its build (col/scope.h)
  *
- * A scope above sift.scope_max_multiplicity entries a row is refused, and the exact figure is known only when the build has written the scope segments: a table of millions of rows
+ * A scope above its limit (max_multiplicity in its declaration) of entries a row is refused, and the exact figure is known only when the build has written the scope segments: a table of millions of rows
  * spends its build on them before the refusal. The build of a table of SCOPE_SAMPLE_MIN_BLOCKS blocks or more therefore estimates the figure first, from SCOPE_SAMPLE_RUNS runs of
  * SCOPE_SAMPLE_RUN_BLOCKS consecutive blocks at random places (a fixed seed, so a table gives one answer): the entries each run's rows have from the pairs of their member, as a ratio of the
  * entries to the rows of the runs. A run is the unit of the sample (the rows of a block are alike where the table is stored in the order of a key), so the error is that of a ratio of n
@@ -146,10 +146,10 @@ sift_scope_precheck(Relation heap, Relation index)
 		for (int c = 0; c < n; c++)
 			resid += pow(runs[c].entries - ratio * runs[c].rows, 2);
 		se = sqrt(resid / ((double) n * (n - 1))) / (rows / n);
-		if (ratio - SCOPE_SAMPLE_SIGMAS * se > sift_scope_max_multiplicity)
+		if (ratio - SCOPE_SAMPLE_SIGMAS * se > specs->s[s]->max_multiplicity)
 		{
 			scaled_rows = (uint64) (rows / ((double) n * SCOPE_SAMPLE_RUN_BLOCKS) * nblocks);
-			sift_scope_refuse(specs->s[s]->key_name, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);
+			sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);
 		}
 	}
 	ExecDropSingleTupleTableSlot(slot);

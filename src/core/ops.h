@@ -33,7 +33,7 @@ extern void sift_maint_context(ErrorContextCallback *cb, Oid indexoid);
 extern bool sift_maintenance_busy(Relation index);
 
 /* After ALTER INDEX ... SET / RESET (options) of a sift_col index: errors when the options do not fit its leaves (nothing for other indexes) */
-extern void sift_col_alter_check(Relation index);
+extern void sift_col_alter_check(Relation index, bool scope_set);
 
 extern void sift_ops_init(void);
 
