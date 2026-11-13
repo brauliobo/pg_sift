@@ -312,6 +312,8 @@ read from the stored units (a `CREATE INDEX CONCURRENTLY` not yet followed by a 
 sampled key was read from the units and equals the join. It reads each sampled key twice and a third time to learn whether the units were used, and the plain side is the join of the key's members, so run it on a few keys of a large table;
 it changes no setting of the session and no data, and runs with the privileges of the caller. In `REPEATABLE READ` it checks the snapshot of the transaction, on a standby the replayed state (a read-only session). `sift.col_verify(index, true)` checks the structure of the segments against the heap.
 
+**Replication and upgrade.** A physical standby replays the index and reads it (`test/t/col_scope_replica.sh`). The facts and the pairs are heap tables, so a logical subscription carries them: a subscriber that has its own scope index (the facts, the pairs and their journals made there before the subscription copies the rows) keeps it as the apply worker writes the rows, since the journal of the pairs is kept by row triggers that fire for the apply worker, and its reads are the publisher's join; the index itself is not replicated. The oracle gate (`test/t/col_scope_oracle.sh`) compares every read of the primary, a standby, such a subscriber and a restored dump with a node that never loads pg_sift. `pg_upgrade` carries the index with its options and its dependencies on the btrees; the journals and then the scope index are rebuilt after it (`test/t/pg_upgrade.sh`).
+
 ## Settings
 
 | Setting | Default | Gain | Impact | Why the default | Off |
