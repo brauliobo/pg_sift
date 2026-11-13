@@ -10,7 +10,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE vo (id int PRIMARY KEY, tenant int, uid uuid, url text);
 INSERT INTO vo SELECT i, i % 7, md5((i % 3000)::text)::uuid, 'https://example.com/p/' || md5((i % 4000)::text) FROM generate_series(1, 12000) i;
 
-CREATE FUNCTION vo_state() RETURNS TABLE (idx text, stores bigint, read_by_43 bool, tracks bool, heap_free bool) LANGUAGE sql AS
+CREATE FUNCTION vo_state() RETURNS TABLE (idx text, vstore bigint, read_by_43 bool, tracks bool, heap_free bool) LANGUAGE sql AS
 $$ SELECT i.i, (SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'vo'::regclass), (SELECT max(format) <= 44 FROM sift.col_segments(i.i) WHERE kind = 'immutable'),
           t.complete, t.heap_free
    FROM (VALUES ('vo_a'), ('vo_b')) i(i), LATERAL sift.col_tracking(i.i) t $$;
