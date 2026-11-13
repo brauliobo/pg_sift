@@ -71,6 +71,7 @@ sift_scope_buffers(Relation index, const SiftDirSnapshot *dir, int *n)
 		b->roots = (dir->segs[i].flags & SIFT_SEG_ROOTS) != 0;
 		b->lane = true;
 		b->rows = NULL;
+		b->ids = NULL;
 		(*n)++;
 	}
 	return all;
@@ -201,9 +202,12 @@ members_has(const Members *m, int64 member)
 	return off < m->span && (m->bits == NULL || sift_col_bit_test(m->bits, off));
 }
 
-/* The leaves a copy holds: those the scan reads (and their groups), the member key and the scope key, less those the scope segments keep no values of; encoding the others would cost each row a chunk of nothing */
+/*
+ * The leaves a copy holds: those the scan reads (and their groups), the member key and the scope key, less those the scope segments keep no values of; encoding the others would cost each row a chunk of nothing.
+ * The member of a string member is the one of the pairs (an id of the read, SiftScopeBuffer.ids): its string is kept only when the scan reads it, as copying it would intern it again for each row.
+ */
 static void
-delta_kept(Relation index, int scope, int fk, const int *leaves, int nleaves, bool *kept)
+delta_kept(Relation index, int scope, int fk, bool str, const int *leaves, int nleaves, bool *kept)
 {
 	/* check-memory: allow the loops below read memory only */
 	const SiftColRel *r = sift_col_rel(index);
@@ -216,7 +220,7 @@ delta_kept(Relation index, int scope, int fk, const int *leaves, int nleaves, bo
 			if (r->schema->cols[leaves[i]].parent >= 0)
 				kept[r->schema->cols[leaves[i]].parent] = true;
 		}
-	kept[fk] = true;
+	kept[fk] |= !str;
 	for (int i = 0; i < r->schema->ncols; i++)
 		kept[i] &= r->scope_cols[scope][i];
 }
@@ -227,21 +231,19 @@ cmp_member(const void *a, const void *b)
 	return pg_cmp_s64(*(const int64 *) a, *(const int64 *) b);
 }
 
-/* does the unit's zone of the member leaf leave room for one of the members (ascending m[0..n))? */
+/* does the zone z of a unit's member leaf leave room for one of the members (ascending m[0..n))? */
 static bool
-zone_may_hold(SiftColSegment *seg, int fk, uint32 u, const int64 *m, uint32 n)
+zone_may_hold(const SiftCZone *z, const int64 *m, uint32 n)
 {
-	SiftCZone	z;
 	uint32		lo = 0,
 				hi = n;
 
-	sift_cseg_zone(seg, fk, u, &z);
-	if ((z.flags & SIFT_COLZ_OVERFLOW))
+	if ((z->flags & SIFT_COLZ_OVERFLOW))
 		return true;
-	if (z.nvals == z.nnull)
+	if (z->nvals == z->nnull)
 		return false;
-	SIFT_BISECT(uint32, mid, lo, hi, m[mid] < z.min);
-	return lo < n && m[lo] <= z.max;
+	SIFT_BISECT(uint32, mid, lo, hi, m[mid] < z->min);
+	return lo < n && m[lo] <= z->max;
 }
 
 /*
@@ -338,37 +340,140 @@ member_of(const Members *mem, const int64 *m, uint32 n, int64 v)
 	return mem->bits != NULL ? members_has(mem, v) : bsearch(&v, m, n, sizeof(int64), cmp_member) != NULL;
 }
 
-/* the member (the code in mm) of each row of the chunk c of a unit's string member leaf, PG_INT64_MIN for a value mm has none for */
+/*
+ * The members as one segment's units are asked for them. An integer member: its own keys, which the zone and the leaf of a unit hold. A string member (mm): the units of a segment share its
+ * dictionary (a unit with strings of its own, SIFT_COLZ_INLINE, has none), so the members are looked up in it once, and the zone and the leaf, which hold its codes, are asked as an integer's are,
+ * with the member (its code in the map of the read) of each code at hand: nothing is hashed or looked up for a row.
+ */
+typedef struct SegMembers
+{
+	const int64 *m;				/* ascending: the members, or their codes in the dictionary of the segment (str, once made) */
+	uint32		n;
+	Members		mem;			/* of m */
+	SiftKeyMap *mm;
+	const int64 *ids;			/* the members of the read, ascending, and their bitmap: what a unit with strings of its own is asked for */
+	uint32		nids;
+	const Members *ids_mem;
+	int64	   *id;				/* the member of each of the codes m */
+	uint32	   *at;				/* when the codes span few: the place in m of the code first + i, else (NULL) a bisection finds it */
+	bool		coded;			/* m are the codes of the dictionary */
+} SegMembers;
+
+#define SEG_CODES_SPAN_MAX	((uint64) 1 << 20)
+
+static SegMembers
+seg_members(const int64 *members, uint32 n, SiftKeyMap *mm, const Members *mem)
+{
+	return (SegMembers) {.m = members, .n = n, .mem = *mem, .mm = mm, .ids = members, .nids = n, .ids_mem = mem};
+}
+
+typedef struct CodeId
+{
+	int64		code;
+	int64		id;
+} CodeId;
+
+static int
+cmp_code(const void *a, const void *b)
+{
+	return pg_cmp_s64(((const CodeId *) a)->code, ((const CodeId *) b)->code);
+}
+
+/* the members of a string member as codes of the dictionary of the segment: those it has */
 static void
-unit_member_ids(SiftColSegment *seg, uint32 u, int fk, SiftCChunk *c, SiftKeyMap *mm, int64 *ids)
+seg_codes(SegMembers *sm, SiftColSegment *seg, int fk)
+{
+	SiftCDict  *dict;
+	CodeId	   *ci;
+	int64	   *code;
+	uint32		k = 0;
+
+	if (sm->coded)
+		return;
+	dict = sift_cseg_dict(seg, fk);
+	ci = palloc(Max(sm->nids, 1) * sizeof(CodeId));
+	for (uint32 i = 0; i < sm->nids; i++)
+	{
+		uint32		len;
+		const char *str = sift_keymap_bytes(sm->mm, sm->ids[i], &len);
+		int64		c = sift_cdict_find(dict, str, len);
+
+		if (c >= 0)
+			ci[k++] = (CodeId) {c, sm->ids[i]};
+	}
+	qsort(ci, k, sizeof(CodeId), cmp_code);
+	code = palloc(Max(k, 1) * sizeof(int64));
+	sm->id = palloc(Max(k, 1) * sizeof(int64));
+	for (uint32 i = 0; i < k; i++)
+	{
+		code[i] = ci[i].code;
+		sm->id[i] = ci[i].id;
+	}
+	pfree(ci);
+	sm->m = code;
+	sm->n = k;
+	sm->mem = k > 0 ? members_of(code, sizeof(int64), k) : (Members) {0, 0, NULL};
+	if (k > 0 && sm->mem.span <= SEG_CODES_SPAN_MAX)
+	{
+		sm->at = palloc(sm->mem.span * sizeof(uint32));
+		for (uint32 i = 0; i < k; i++)
+			sm->at[code[i] - sm->mem.lo] = i;
+	}
+	sm->coded = true;
+}
+
+/* does unit u of the segment hold a row of a member: its zone of the member leaf leaves room for one (a string member: for the code of one, a unit with strings of its own is read whole) */
+static bool
+unit_may_hold(SegMembers *sm, SiftColSegment *seg, int fk, uint32 u)
 {
 	SiftCZone	z;
+
+	sift_cseg_zone(seg, fk, u, &z);
+	if (sm->mm != NULL)
+	{
+		if (z.flags & SIFT_COLZ_INLINE)
+			return true;
+		seg_codes(sm, seg, fk);
+	}
+	return zone_may_hold(&z, sm->m, sm->n);
+}
+
+/* the member (the code in mm) of each row of the chunk c of the member leaf of a unit with strings of its own, PG_INT64_MIN for a value mm has none for */
+static void
+unit_member_ids(const SegMembers *sm, SiftCChunk *c, int64 *ids)
+{
 	SiftCDict  *dict;
 	SiftCChunk	codes = *c;
 	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 
-	sift_cseg_zone(seg, fk, u, &z);
-	if (z.flags & SIFT_COLZ_INLINE)
-		(void) sift_cchunk_istr_codes(c, CurrentMemoryContext, NULL, 0, &dict, &codes);
-	else
-		dict = sift_cseg_dict(seg, fk);
+	(void) sift_cchunk_istr_codes(c, CurrentMemoryContext, NULL, 0, &dict, &codes);
 	sift_cchunk_decode(&codes, key);
-	sift_keymap_batch_codes(mm, dict, key, c->nulls, c->n, false, ids);
+	sift_keymap_batch_codes(sm->mm, dict, key, c->nulls, c->n, false, ids);
 	pfree(key);
+}
+
+/* the member of the code of the leaf, which is one of those of sm */
+static int64
+member_of_code(const SegMembers *sm, int64 code)
+{
+	if (sm->at != NULL)
+		return sm->id[sm->at[code - sm->mem.lo]];
+	return sm->id[(const int64 *) bsearch(&code, sm->m, sm->n, sizeof(int64), cmp_member) - sm->m];
 }
 
 /*
  * The live rows of unit u (ascending) that may hold a member key: the cand[0..ncand) the point directory lists (rows of the unit), which the caller checks against the values it decodes, or, with no
- * directory (cand NULL), the rows of the unit whose member key is among the members, read from the leaf. NULL when none
+ * directory (cand NULL), the rows of the unit whose member key is among the members, read from the leaf. NULL when none. A string member: *ids the member of each row returned
  */
 static uint32 *
-unit_rows_of(SiftColSegment *seg, uint32 u, int fk, const int64 *m, uint32 n, SiftKeyMap *mm, const Members *mem, const uint32 *cand, uint32 ncand, uint32 *nout)
+unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32 *cand, uint32 ncand, uint32 *nout, int64 **ids)
 {
 	const SiftColSBRef *ur = &seg->sbdir[u];
 	uint32	   *out = palloc(Max(cand != NULL ? ncand : ur->nrows, 1) * sizeof(uint32));
 	uint64	   *live = NULL;
 
 	*nout = 0;
+	*ids = NULL;
 	if (sift_cseg_dirty(seg, u))
 	{
 		live = palloc(SIFT_COL_NWORDS(ur->nrows) * sizeof(uint64));
@@ -384,22 +489,38 @@ unit_rows_of(SiftColSegment *seg, uint32 u, int fk, const int64 *m, uint32 n, Si
 	{
 		SiftCUnitView v;
 		SiftCChunk	c;
+		SiftCZone	z;
 		int64	   *val;
+		bool		own;			/* the strings of the unit are its own: val are the members */
+		const Members *mem;
+		const int64 *m;
+		uint32		n;
 
 		if (!sift_cseg_unit_view(seg, u, &v))
 			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: unit %u of segment %llu does not parse", u, (unsigned long long) seg->entry.gen)));
+		sift_cseg_zone(seg, fk, u, &z);
+		own = sm->mm != NULL && (z.flags & SIFT_COLZ_INLINE);
+		mem = own ? sm->ids_mem : &sm->mem;
+		m = own ? sm->ids : sm->m;
+		n = own ? sm->nids : sm->n;
 		if (v.chunk_len[fk] > 0)
 			sift_cseg_unit_fill(seg, u, v.chunk_off[fk], v.chunk_len[fk]);
 		if (v.chunk_len[fk] > 0 && sift_cunit_chunk(&v, fk, &c))
 		{
 			val = palloc((c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
-			if (mm != NULL)
-				unit_member_ids(seg, u, fk, &c, mm, val);
+			if (own)
+				unit_member_ids(sm, &c, val);
 			else
 				sift_cchunk_decode(&c, val);
 			for (uint32 r = 0; r < c.n; r++)
 				if (member_of(mem, m, n, val[r]) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
 					out[(*nout)++] = r;
+			if (sm->mm != NULL && *nout > 0)
+			{
+				*ids = palloc(*nout * sizeof(int64));
+				for (uint32 j = 0; j < *nout; j++)
+					(*ids)[j] = own ? val[out[j]] : member_of_code(sm, val[out[j]]);
+			}
 			pfree(val);
 		}
 	}
@@ -418,7 +539,7 @@ unit_rows_of(SiftColSegment *seg, uint32 u, int fk, const int64 *m, uint32 n, Si
  * rows were: core/visibility.h), which the scan may take as it takes a stored unit's, and the others, which it checks against the heap
  */
 static void
-add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int nb, uint32 flags, int fk, const int64 *m, uint32 n, SiftKeyMap *mm, const Members *mem)
+add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int64 **ids, int nb, uint32 flags, int fk, const int64 *m, uint32 n, SiftKeyMap *mm, const Members *mem)
 {
 	SiftScopeBuffer set[2];		/* [0] checked against the heap, [1] all-visible */
 
@@ -427,6 +548,7 @@ add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int 
 		set[k] = (SiftScopeBuffer) {.stamp = InvalidTransactionId, .roots = (flags & SIFT_SEG_ROOTS) != 0, .lane = k == 0};
 		set[k].b = palloc(nb * sizeof(SiftColBatch *));
 		set[k].rows = palloc(nb * sizeof(uint64 *));
+		set[k].ids = palloc(nb * sizeof(int64 *));
 	}
 	for (int i = 0; i < nb; i++)
 	{
@@ -435,8 +557,7 @@ add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int 
 		uint64	   *bits = palloc(SIFT_COL_NWORDS(rows) * sizeof(uint64));
 		uint64	   *take[2] = {palloc0(SIFT_COL_NWORDS(rows) * sizeof(uint64)), palloc0(SIFT_COL_NWORDS(rows) * sizeof(uint64))};
 		bool		any[2] = {false, false};
-		const SiftCVals *v = &bs[i]->col[fk];
-		const int64 *member = batch_members(mm, bs[i], fk);
+		const int64 *member = ids[i] != NULL ? ids[i] : batch_members(mm, bs[i], fk);
 
 		for (uint32 r = 0; r < rows; r++)
 			blk[r] = sift_key_block(bs[i]->keys[r]);
@@ -445,7 +566,7 @@ add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int 
 		{
 			int			k = sift_col_bit_test(bits, r) ? 1 : 0;
 
-			if (sift_col_bit_test(v->nulls, r) || !member_of(mem, m, n, member[r]))
+			if ((ids[i] == NULL && sift_col_bit_test(bs[i]->col[fk].nulls, r)) || !member_of(mem, m, n, member[r]))
 				continue;
 			sift_col_bit_set(take[k], r);
 			any[k] = true;
@@ -454,11 +575,12 @@ add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int 
 			if (any[k])
 			{
 				set[k].b[set[k].n] = bs[i];
+				set[k].ids[set[k].n] = ids[i];
 				set[k].rows[set[k].n++] = take[k];
 			}
 		pfree(blk);
 		pfree(bits);
-		if (mm != NULL)
+		if (ids[i] == NULL && mm != NULL)
 			pfree((int64 *) member);
 	}
 	for (int k = 0; k < 2; k++)
@@ -480,11 +602,16 @@ struct SiftScopeSegPlan
 	SegPlan	   *seg;
 	const int64 *members;
 	uint32		n;
-	SiftKeyMap *mm;				/* a string member: the members are codes of this map, and no point directory or zone of the leaf tells where they are */
+	Members		mem;
+	SiftKeyMap *mm;				/* a string member: the members are codes of this map, and no point directory of the leaf tells where they are */
 };
 
+/*
+ * words: the members are the journal words of a string member, not yet its members (the pairs are not listed): no unit can be ruled out, and every one is expected to be read
+ */
 SiftScopeSegPlan *
-sift_scope_segment_plan(Relation index, int scope, const SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, double rows_per_member, uint64 *rows, uint64 *scanned, uint64 *units)
+sift_scope_segment_plan(Relation index, int scope, const SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, bool words, double rows_per_member, uint64 *rows, uint64 *scanned,
+						uint64 *units)
 {
 	SiftScopeSegPlan *plan = palloc0(sizeof(SiftScopeSegPlan));
 
@@ -492,12 +619,14 @@ sift_scope_segment_plan(Relation index, int scope, const SiftDirSnapshot *dir, c
 	plan->fk = fk_leaf(index, scope);
 	plan->members = members;
 	plan->n = n;
+	plan->mem = members_of(members, sizeof(int64), n);
 	plan->mm = mm;
 	plan->seg = palloc(Max(dir->nsegs, 1) * sizeof(SegPlan));
 	for (int i = 0; i < dir->nsegs; i++)
 	{
 		SiftColSegment *seg;
 		SegPlan    *sp = &plan->seg[plan->nseg];
+		SegMembers	sm = seg_members(members, n, mm, &plan->mem);
 		uint64		open = 0;
 
 		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&dir->segs[i]))
@@ -513,7 +642,7 @@ sift_scope_segment_plan(Relation index, int scope, const SiftDirSnapshot *dir, c
 		else
 		{
 			for (uint32 u = 0; u < seg->nsb; u++)
-				if (mm != NULL || zone_may_hold(seg, plan->fk, u, members, n))
+				if (words || unit_may_hold(&sm, seg, plan->fk, u))
 				{
 					open += seg->sbdir[u].nrows;
 					(*units)++;
@@ -529,25 +658,23 @@ sift_scope_segment_plan(Relation index, int scope, const SiftDirSnapshot *dir, c
 
 SiftScopeBuffer *
 sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, Snapshot snap, int scope, const SiftDirSnapshot *dir, SiftScopeBuffer *bufs, int *nbufs,
-						const int *leaves, int nleaves, uint64 *rows)
+						const int *leaves, int nleaves, uint64 *rows, uint64 *units)
 {
 	int			fk = plan->fk;
-	const int64 *members = plan->members;
-	uint32		n = plan->n;
 	bool		kept[SIFT_COL_MAX_COLS];
-	Members		mem;
 	SiftVis		vis;
 
-	*rows = 0;
-	delta_kept(index, scope, fk, leaves, nleaves, kept);
-	mem = members_of(members, sizeof(int64), n);
+	*rows = *units = 0;
+	delta_kept(index, scope, fk, plan->mm != NULL, leaves, nleaves, kept);
 	bufs = repalloc(bufs, (*nbufs + 2 * Max(plan->nseg, 1)) * sizeof(SiftScopeBuffer));
 	sift_vis_begin(&vis, heap, snap, index, dir->version);
 	for (int i = 0; i < plan->nseg; i++)
 	{
 		SegPlan    *sp = &plan->seg[i];
 		SiftColSegment *seg = sift_cseg_open(index, &dir->segs[sp->seg], CurrentMemoryContext);
+		SegMembers	sm = seg_members(plan->members, plan->n, plan->mm, &plan->mem);
 		SiftColBatch **bs = NULL;
+		int64	  **bids = NULL;
 		int			nb = 0,
 					cap = 0;
 
@@ -557,11 +684,13 @@ sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, S
 					   *ords;
 			uint32		ncand = 0,
 						nord;
+			int64	   *ids;
 			SiftColBatch *b1;
 
-			if (sp->listing.found ? !listing_unit(&sp->listing, seg, u, &cand, &ncand) : plan->mm == NULL && !zone_may_hold(seg, fk, u, members, n))
+			if (sp->listing.found ? !listing_unit(&sp->listing, seg, u, &cand, &ncand) : !unit_may_hold(&sm, seg, fk, u))
 				continue;
-			if ((ords = unit_rows_of(seg, u, fk, members, n, plan->mm, &mem, cand, ncand, &nord)) == NULL)
+			(*units)++;
+			if ((ords = unit_rows_of(&sm, seg, u, fk, cand, ncand, &nord, &ids)) == NULL)
 				continue;
 			b1 = sift_cbatch_create(CurrentMemoryContext, seg->schema);
 			sift_cseg_decode_unit_rows(seg, u, kept, ords, nord, b1);
@@ -570,13 +699,15 @@ sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, S
 			{
 				cap = Max(8, cap * 2);
 				bs = bs ? repalloc(bs, cap * sizeof(SiftColBatch *)) : palloc(cap * sizeof(SiftColBatch *));
+				bids = bids ? repalloc(bids, cap * sizeof(int64 *)) : palloc(cap * sizeof(int64 *));
 			}
+			bids[nb] = ids;
 			bs[nb++] = b1;
 			*rows += b1->nrows;
 		}
 		sift_cseg_close(seg);
 		if (nb > 0)
-			add_split(bufs, nbufs, &vis, bs, nb, dir->segs[sp->seg].flags, fk, members, n, plan->mm, &mem);
+			add_split(bufs, nbufs, &vis, bs, bids, nb, dir->segs[sp->seg].flags, fk, plan->members, plan->n, plan->mm, &plan->mem);
 	}
 	sift_vis_end(&vis);
 	return bufs;
@@ -592,7 +723,7 @@ sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftSco
 	*rows = 0;
 	d->scope = scope;
 	d->nsets = nbufs;
-	delta_kept(index, scope, fk, leaves, nleaves, d->kept);
+	delta_kept(index, scope, fk, mm != NULL, leaves, nleaves, d->kept);
 	d->row = palloc0(Max(nbufs, 1) * sizeof(DeltaRow *));
 	d->n = palloc0(Max(nbufs, 1) * sizeof(uint32));
 	d->stamp = palloc(Max(nbufs, 1) * sizeof(TransactionId));
@@ -614,13 +745,13 @@ sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftSco
 		for (int i = 0; i < bufs[s].n; i++)
 		{
 			const SiftColBatch *b = bufs[s].b[i];
-			const SiftCVals *v = &b->col[fk];
-			const int64 *member = batch_members(mm, b, fk);
+			const int64 *ids = bufs[s].ids ? bufs[s].ids[i] : NULL;
+			const int64 *member = ids != NULL ? ids : batch_members(mm, b, fk);
 			const uint64 *take = bufs[s].rows ? bufs[s].rows[i] : NULL;
 
 			for (uint32 r = 0; r < b->nrows; r++)
 			{
-				if ((take != NULL && !sift_col_bit_test(take, r)) || sift_cbatch_dead(b, r) || !members_has(&mem, member[r]) || sift_col_bit_test(v->nulls, r))
+				if ((take != NULL && !sift_col_bit_test(take, r)) || sift_cbatch_dead(b, r) || !members_has(&mem, member[r]) || (ids == NULL && sift_col_bit_test(b->col[fk].nulls, r)))
 					continue;
 				for (uint32 j = first_pair(pairs, npairs, member[r]); j < npairs && pairs[j].member == member[r]; j++)
 				{
@@ -632,7 +763,7 @@ sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftSco
 					d->row[s][d->n[s]++] = (DeltaRow) {pairs[j].key, b->keys[r], b, r};
 				}
 			}
-			if (mm != NULL)
+			if (ids == NULL && mm != NULL)
 				pfree((int64 *) member);
 		}
 		if (d->n[s] > 0)

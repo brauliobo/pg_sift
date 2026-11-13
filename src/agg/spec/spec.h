@@ -34,6 +34,7 @@ typedef struct SiftAggScope
 	const char *key_name;		/* the scope of the index: the leaf "<key_name>#scope" holds its key */
 	Oid			key_type;		/* text, varchar or uuid: the keys are codes of the key map of the statement (col/scope_keys.c, scope_keys_init); InvalidOid: the key is an integer */
 	int			fk;				/* the leaf of the member key (the entity rows of the fallback are read by it) */
+	bool		fk_only;		/* no other part of the spec reads that leaf: the units and the rows of a scope read need no value of it, the rows a patch or a delta copies keep NULL in it (planner: AggCtx.reused) */
 	int			nkeys;			/* with param: what the planner expects of it, until the scan starts */
 	int64	   *keys;			/* sorted, each once */
 	Node	   *param;			/* the keys are the value of this expression of the statement's parameters when the scan starts (scope_keys_init); NULL: they are constants */

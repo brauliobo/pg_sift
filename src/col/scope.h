@@ -216,6 +216,7 @@ typedef struct SiftScopeBuffer
 	bool		roots;
 	bool		lane;			/* the rows are checked against the heap whatever the map says: a write buffer's, or rows decoded from a segment */
 	uint64	  **rows;			/* the rows of b[i] the buffer holds, as bits (NULL: all of them): the buffers made from the rows of a segment share their batches */
+	int64	  **ids;			/* a string member: the member of each row of b[i], its code in the map of the read, when the leaf of the batch holds no string (NULL: read it from the leaf) */
 } SiftScopeBuffer;
 
 struct SiftDirSnapshot;
@@ -233,18 +234,18 @@ extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftSc
  */
 struct SiftScopeSegPlan;
 typedef struct SiftScopeSegPlan SiftScopeSegPlan;
-extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, double rows_per_member, uint64 *rows,
+extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, bool words, double rows_per_member, uint64 *rows,
 												  uint64 *scanned, uint64 *units);
 extern SiftScopeBuffer *sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, Snapshot snap, int scope, const struct SiftDirSnapshot *dir, SiftScopeBuffer *bufs, int *nbufs,
-												 const int *leaves, int nleaves, uint64 *rows);
+												 const int *leaves, int nleaves, uint64 *rows, uint64 *units);
 /* The sets of b after those of a */
 extern struct SiftScopeDelta *sift_scope_delta_merge(const struct SiftScopeDelta *a, const struct SiftScopeDelta *b);
 /* The rows of the buffers whose member has one of the pairs (ascending by member), a copy for each, with the values of the leaves[0..nleaves) the scan reads: *rows of them */
 extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves,
 													  int nleaves, uint64 *rows);
 
-/* The pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), read from the leaves of its sift_col index ix (agg/lookcol.c); false: the index cannot give them */
-extern bool lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n);
+/* The pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), read from the leaves of its sift_col index ix (agg/lookcol.c; a text, varchar or uuid column as the codes of its map mm or km); false: the index cannot give them */
+extern bool lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyMap *mm, SiftKeyMap *km, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n);
 
 typedef struct SiftScopeRead
 {

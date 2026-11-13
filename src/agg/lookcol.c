@@ -666,6 +666,7 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2,
 				ColNeed    *nd = &need[p];
 
 				nd->cx = ux;
+				nd->dcode = NULL;
 				sift_colsrc_read(srcs[nd->ixn], nd->ixn == 0 ? &unit : &unit2, nd->lf->id, &nd->vec);
 				if (nd->lf->vtype == SCV_CODE)
 				{
@@ -778,10 +779,39 @@ typedef struct KeyPairs
 {
 	const int64 *keys;			/* ascending; NULL: every key */
 	int			nkeys;
+	SiftKeyMap *mm;				/* the member and the key column are strings: their values are the codes of these maps (NULL: an integer column) */
+	SiftKeyMap *km;
 	SiftScopePair *pair;
 	uint32		n;
 	uint32		cap;
 } KeyPairs;
+
+/* the code in map m of the string of cell i of a string leaf: looked up once for each string of the dictionary of the unit */
+static int64
+cell_code(ColNeed *nd, int64 i, SiftKeyMap *m)
+{
+	uint32		c = ((const uint32 *) nd->vec.data)[i];
+
+	if (nd->dcode == NULL)
+	{
+		nd->dcode = MemoryContextAlloc(nd->cx, nd->dn * sizeof(int64));
+		nd->dcoded = MemoryContextAllocZero(nd->cx, nd->dn * sizeof(bool));
+	}
+	if (!nd->dcoded[c])
+	{
+		bool		isnull;
+
+		(void) sift_keymap_code(m, lookcol_cell_datum(nd, i, &isnull), &nd->dcode[c]);
+		nd->dcoded[c] = true;
+	}
+	return nd->dcode[c];
+}
+
+static int64
+pair_value(ColNeed *nd, SiftKeyMap *m, int64 i)
+{
+	return m != NULL ? cell_code(nd, i, m) : lookcol_scalar_value(nd, i);
+}
 
 static void
 key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uint64 *rows)
@@ -792,37 +822,49 @@ key_pairs_unit(void *arg, const SiftSrcUnit *unit, ColNeed *need, int nneed, uin
 		for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)
 		{
 			int64		i = (int64) w * 64 + __builtin_ctzll(bits),
-						key = lookcol_scalar_value(&need[1], i);
+						key;
 
 			if ((need[0].vec.isnull != NULL && need[0].vec.isnull[i]) || (need[1].vec.isnull != NULL && need[1].vec.isnull[i]))
 				continue;
+			key = pair_value(&need[1], kp->km, i);
 			if (kp->keys != NULL && (key < kp->keys[0] || key > kp->keys[kp->nkeys - 1] || !bsearch(&key, kp->keys, kp->nkeys, sizeof(int64), sift_cmp_i64)))
 				continue;
 			if (kp->n == kp->cap)
 				kp->pair = kp->pair ? repalloc(kp->pair, (kp->cap *= 2) * sizeof(SiftScopePair)) : palloc((kp->cap = 1024) * sizeof(SiftScopePair));
-			kp->pair[kp->n++] = (SiftScopePair) {lookcol_scalar_value(&need[0], i), key};
+			kp->pair[kp->n++] = (SiftScopePair) {pair_value(&need[0], kp->mm, i), key};
 		}
 }
 
 /*
  * The (member, key) pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), in the order of the leaves, from the leaves of its sift_col index ix: the
- * pairs a scope relation lists for the keys, read as the leaves of the index hold them. False (nothing read) when the index is not one of the whole table or holds a value a leaf
- * cannot store.
+ * pairs a scope relation lists for the keys, read as the leaves of the index hold them. A string column is read as the codes of its map (mm for the member, km for the key: NULL for an integer column).
+ * False (nothing read) when the index is not one of the whole table or holds a value a leaf cannot store.
  */
 bool
-lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n)
+lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyMap *mm, SiftKeyMap *km, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n)
 {
 	Relation	index = index_open(ix, AccessShareLock);
 	ColNeed		need[2] = {0};
-	KeyPairs	kp = {.keys = keys,.nkeys = nkeys};
+	KeyPairs	kp = {.keys = keys,.nkeys = nkeys,.mm = mm,.km = km};
 	bool		ok = (keys == NULL || nkeys > 0) && usable_index(index);
 
 	if (ok)
 	{
 		need[0].lf = column_leaf_any(sift_colsrc_layout(index), member, NULL);
 		need[1].lf = column_leaf_any(sift_colsrc_layout(index), key, NULL);
-		ok = need[0].lf != NULL && need[1].lf != NULL && need[0].lf->vtype != SCV_CODE && need[1].lf->vtype != SCV_CODE &&
-			lookcol_read_units(&(UnitScope) {.snap = snap}, rel, index, NULL, need, 2, key_pairs_unit, &kp);
+		ok = need[0].lf != NULL && need[1].lf != NULL && (need[0].lf->vtype == SCV_CODE) == (mm != NULL) && (need[1].lf->vtype == SCV_CODE) == (km != NULL);
+	}
+	if (ok)
+	{
+		if (mm != NULL)
+			sift_keymap_hold(mm);
+		if (km != NULL)
+			sift_keymap_hold(km);
+		ok = lookcol_read_units(&(UnitScope) {.snap = snap}, rel, index, NULL, need, 2, key_pairs_unit, &kp);
+		if (mm != NULL)
+			sift_keymap_release(mm);
+		if (km != NULL)
+			sift_keymap_release(km);
 	}
 	index_close(index, AccessShareLock);
 	*out = kp.pair;
@@ -837,7 +879,7 @@ lookcol_members(Relation rel, Oid ix, Snapshot snap, int member, int key, const 
 	SiftScopePair *pairs;
 	uint32		np;
 
-	if (!lookcol_pairs(rel, ix, snap, member, key, keys, nkeys, &pairs, &np))
+	if (!lookcol_pairs(rel, ix, snap, member, key, NULL, NULL, keys, nkeys, &pairs, &np))
 		return false;
 	*out = palloc(Max(np, 1) * sizeof(int64));
 	for (uint32 i = 0; i < np; i++)

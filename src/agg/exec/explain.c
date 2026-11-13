@@ -444,6 +444,7 @@ explain_scope(AggExec *ex, ExplainState *es)
 		ExplainPropertyInteger("Scope Changed Keys", NULL, ex->scope_rd->nchanged, es);
 		ExplainPropertyInteger("Scope Patched Keys", NULL, ex->scope_rd->npatch, es);
 		ExplainPropertyInteger("Scope Patched Rows", NULL, ex->scope_rd->patch_rows, es);
+		ExplainPropertyInteger("Scope Patched Units", NULL, ex->scope_rd->patch_units, es);
 	}
 	if (ex->scope_rd->delta_rows > 0)
 		ExplainPropertyInteger("Scope Delta Rows", NULL, ex->scope_rd->delta_rows, es);

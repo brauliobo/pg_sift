@@ -293,6 +293,8 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	if (c->search)
 		s->search = c->search->spec;
 
+	if (s->scope != NULL)
+		s->scope->fk_only = !bms_is_member(s->scope->fk, c->reused);
 	spec_deps(root, s);
 	return true;
 }

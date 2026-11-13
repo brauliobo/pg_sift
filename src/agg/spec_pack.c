@@ -175,6 +175,7 @@ codec_scope(Codec *c, SiftAggScope **sc)
 	PKS((c), (*sc)->key_name);
 	PK(c, (*sc)->key_type);
 	PK(c, (*sc)->fk);
+	PK(c, (*sc)->fk_only);
 	PKN(c, (*sc)->param);
 	PKS_OPT(c, (*sc)->param_desc);
 	PK_COUNT(c, (*sc)->nkeys, (*sc)->keys);

@@ -311,7 +311,7 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 }
 
 /*
- * The leaves of the index the scope read must carry: those the spec reads, and those the leaves after the index's take their values from (the array of a length, the object of
+ * The leaves of the index the scope read must carry: those the spec reads (the member key only when something besides the scope reads it), and those the leaves after the index's take their values from (the array of a length, the object of
  * its members, the lane of a bound, the scalar of a type), which the rows of the patch and of the delta hold only when asked for
  */
 static int *
@@ -321,7 +321,8 @@ read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
 
 	*n = 0;
 	for (int i = 0; i < s->nleaves; i++)
-		out[(*n)++] = s->leaves[i];
+		if (!(s->scope->fk_only && s->leaves[i] == s->scope->fk))
+			out[(*n)++] = s->leaves[i];
 	for (int j = 0; j < s->nvleaf; j++)
 	{
 		const SiftAggVLeaf *v = &s->vleaf[j];

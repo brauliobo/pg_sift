@@ -293,8 +293,7 @@ leaf_pairs(PairScan *ps)
 	SiftScopePair *p;
 	uint32		n;
 
-	/* the leaves of the journal index hold the strings of the key and of the member, not their codes */
-	if (ps->km != NULL || ps->kma != NULL || !OidIsValid(journal) || !lookcol_pairs(ps->rel, journal, ps->snap, ps->member, ps->skey, ps->keys, ps->nkeys, &p, &n))
+	if (!OidIsValid(journal) || !lookcol_pairs(ps->rel, journal, ps->snap, ps->member, ps->skey, ps->kma, ps->km, ps->keys, ps->nkeys, &p, &n))
 		return false;
 	for (uint32 i = 0; i < n; i++)
 		pairs_add(&ps->out, p[i].member, p[i].key);
@@ -333,7 +332,7 @@ probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
 static double
 keys_ns(const PairScan *ps, double rows)
 {
-	double		read = rows * (ps->km == NULL && ps->kma == NULL && OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
+	double		read = rows * (OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
 
 	return ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) ? Min(read, (double) ps->nkeys * PROBE_NS) : read;
 }
@@ -814,7 +813,7 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 		st->rows_per_member = rd->entity_rows / Max((double) st->nrows, 1.0);
 	if (rd->nadded > 0)
 	{
-		rd->est_plan = sift_scope_segment_plan(index, ord, dir, rd->added, rd->nadded, rd->mm, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+		rd->est_plan = sift_scope_segment_plan(index, ord, dir, rd->added, rd->nadded, rd->mm, rd->mm != NULL, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
 		rd->delta_rows = nbuf;
 	}
 }
@@ -870,7 +869,7 @@ stored_pairs(SiftScopeRead *rd)
 		if (rd->est_plan != NULL && st->mm == NULL && rd->npatch == rd->nadded && memcmp(rd->patch, rd->added, rd->npatch * sizeof(int64)) == 0)
 			rd->fill->plan = rd->est_plan;
 		else
-			rd->fill->plan = sift_scope_segment_plan(st->index, st->ord, st->dir, rd->patch, rd->npatch, st->mm, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+			rd->fill->plan = sift_scope_segment_plan(st->index, st->ord, st->dir, rd->patch, rd->npatch, st->mm, false, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
 	}
 	else
 		rd->patch_rows = rd->patch_scan = rd->patch_units = 0;
@@ -895,7 +894,7 @@ sift_scope_read_rows(SiftScopeRead *rd)
 	if (f == NULL || f->plan == NULL)
 		return;
 	nsegs = f->nbufs;
-	segs = sift_scope_segment_rows(f->plan, f->heap, f->index, f->snap, f->ord, f->dir, f->bufs, &nsegs, f->leaves, f->nleaves, &rd->patch_rows);
+	segs = sift_scope_segment_rows(f->plan, f->heap, f->index, f->snap, f->ord, f->dir, f->bufs, &nsegs, f->leaves, f->nleaves, &rd->patch_rows, &rd->patch_units);
 	d = sift_scope_delta_select(f->index, f->ord, f->mm, segs + f->nbufs, nsegs - f->nbufs, f->delta.p, f->delta.n, f->leaves, f->nleaves, &copies);
 	rd->delta = sift_scope_delta_merge(rd->delta, d);
 	rd->delta_rows += copies;

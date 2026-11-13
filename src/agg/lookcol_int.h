@@ -19,6 +19,8 @@ typedef struct ColNeed
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
 	bool	   *dmade;
 	uint32	   *dids;			/* ... and the id of its string among the classes' (lookclass.c), 0 not made yet */
+	int64	   *dcode;			/* ... and its code in a key map (lookcol_pairs), where dcoded says it was made; NULL: not allocated for this unit */
+	bool	   *dcoded;
 	uint32		dn;
 	MemoryContext cx;			/* the unit's: reset with it; the dictionary strings and the numerics of the unit live here */
 } ColNeed;

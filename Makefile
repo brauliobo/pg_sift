@@ -288,6 +288,7 @@ TESTING_REGRESS += col_scope_keyed_patch
 TESTING_REGRESS += col_scope_maint
 TESTING_REGRESS += col_scope_manymany
 TESTING_REGRESS += col_scope_manymany_edit
+TESTING_REGRESS += col_scope_member_lookup
 TESTING_REGRESS += col_scope_own_command
 TESTING_REGRESS += col_scope_pairs_listed
 TESTING_REGRESS += col_scope_pairs_multiset

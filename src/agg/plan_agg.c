@@ -714,6 +714,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		ok = compile_gen(c, a, out, ai);
 	}
 	out->reads = c->used;
+	c->reused = bms_add_members(c->reused, bms_intersect(outer, c->used));
 	c->used = bms_union(outer, c->used);
 	return ok;
 }
