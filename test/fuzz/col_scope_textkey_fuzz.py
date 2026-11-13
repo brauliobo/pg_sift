@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Differential fuzz of a scope whose key is text, varchar or uuid (test/t/col_scope_textkey_fuzz.sh runs it).
+"""Differential fuzz of a scope whose key or member is text, varchar or uuid (test/t/col_scope_textkey_fuzz.sh runs it).
 
-  test/fuzz/col_scope_textkey_fuzz.py [--seeds 1-6] [--rows 8000] [--steps 8]      needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
+  test/fuzz/col_scope_textkey_fuzz.py [--seeds 1-6] [--rows 8000] [--steps 8] [--hash-bits 0]      needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
-A seed (seed % 3: text, varchar, uuid) builds events, a table of (member, key) pairs whose keys are strings that differ in their bytes (a case, an accent, a space, a long one), its journal index and a
+A seed (seed % 4: the key is text, varchar, uuid or an integer; seed // 4 % 4: the member is an integer, text, varchar facts with text pairs, or uuid; the string members are generated columns of an
+integer, so every churn step below moves them as it moves the integer; one of them is the empty string and some facts have none) builds events, a table of (member, key) pairs whose keys are strings that differ in their bytes (a case, an accent, a space, a long one), its journal index and a
 sift_col index with a scope on the pairs, and draws steps: batches of fact INSERTs, DELETEs and UPDATEs (the value, the member), pair INSERTs, DELETEs, key moves, UPDATEs of the key of a pair, pairs with
 keys that are new (the value store has never seen them: their pairs are all delta until the next build), a key that leaves every pair, aborted transactions and savepoints, reads inside a transaction,
 promotion, merge, VACUUM and REINDEX, with a REPEATABLE READ reader opened before the churn. After every step a battery (IN of one key and of a list with a key nobody has, EXISTS, a join for each
@@ -30,11 +31,13 @@ BEGIN
 END $$;
 """
 
-DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|top-n, changed pairs|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
+DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|top-n, changed pairs|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*|text member .*)$')
 
 
 def lit(ktype, n):
     """The key number n as a SQL literal of the seed's type: strings that differ in their bytes."""
+    if ktype == 'int':
+        return str(n)
     if ktype == 'uuid':
         h = hashlib.md5(f'k{n}'.encode()).hexdigest()
         return f"'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}'::uuid"
@@ -45,7 +48,9 @@ def lit(ktype, n):
 class Seed:
     def __init__(self, seed, rows):
         r = self.rng = random.Random(seed * 7919 + 5)
-        self.ktype = ['text', 'varchar', 'uuid'][seed % 3]
+        self.ktype = ['text', 'varchar', 'uuid', 'int'][seed % 4]
+        self.mode = ['int', 'text', 'varchar', 'uuid'][seed // 4 % 4]
+        self.mc = 'dim_a_id' if self.mode == 'int' else 'account'     # the member column of the pairs and of the index
         self.nkeys = r.choice([6, 12, 30])
         self.dim = r.choice([40, 150, 400])
         self.rows = rows
@@ -61,22 +66,39 @@ class Seed:
     def klist(self, ns):
         return ', '.join(self.k(n) for n in ns)
 
+    def member_sql(self):
+        """The function that makes the member of a number, its type on the facts and on the pairs."""
+        if self.mode == 'int':
+            return '', 'int', 'int', ''
+        body = ("CASE WHEN n IS NULL THEN NULL WHEN n = 7 THEN '' WHEN n % 4 = 0 THEN 'acct-' || n WHEN n % 4 = 1 THEN 'Acct ' || n || ' ' WHEN n % 4 = 2 THEN 'ácct-' || n "
+                "ELSE repeat('x', 1 + n % 40) || n END")
+        if self.mode == 'uuid':
+            body = "md5(n::text)::uuid"
+        rt = 'uuid' if self.mode == 'uuid' else 'text'
+        ft = 'varchar(300)' if self.mode == 'varchar' else rt
+        return f"CREATE OR REPLACE FUNCTION acc(n int) RETURNS {rt} LANGUAGE sql IMMUTABLE AS $$ SELECT {body} $$;\n", ft, rt, 'acc'
+
     def setup_sql(self):
         t = self.ktype
+        fn, ft, rt, acc = self.member_sql()
+        mc = self.mc
+        gen = (lambda ty: f", account {ty} GENERATED ALWAYS AS ({acc}(dim_a_id)) STORED") if acc else (lambda ty: '')
         vals = ', '.join(f'({n}, {self.k(n)})' for n in self.keys + self.spare)
         return f"""{f"SET sift.test_col_segment_kb = {self.segkb};" if self.segkb else ""}
 DROP TABLE IF EXISTS events, tenant_scope, keys_n CASCADE;
+DROP FUNCTION IF EXISTS acc(int);
+{fn}
 CREATE TABLE keys_n (n int PRIMARY KEY, k {t} NOT NULL UNIQUE);
 INSERT INTO keys_n VALUES {vals};
-CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id {t} NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id {t} NOT NULL{gen(rt).replace('STORED', 'STORED NOT NULL')}, PRIMARY KEY (dim_a_id, tenant_id){', UNIQUE (account, tenant_id)' if acc else ''}) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT m, k.k FROM generate_series(1, {self.dim}) m CROSS JOIN generate_series(0, 3) j JOIN keys_n k ON k.n = 1 + (m * 5 + j * 13) % {self.nkeys}
 	WHERE m % 7 <> 0 AND j <= m % 4 ON CONFLICT DO NOTHING;
 INSERT INTO tenant_scope SELECT m, k.k FROM generate_series(1, {self.dim}) m JOIN keys_n k ON k.n = 1 + (m * 5) % {self.nkeys} WHERE m % 7 <> 0 ON CONFLICT DO NOTHING;
-CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int, v int, pad text) WITH (autovacuum_enabled = false);
+CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col ({mc}, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int, v int, pad text{gen(ft)}) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT {self.fact_rows(1, self.rows)};
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v)
-	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, {mc}, created_at, kind, v)
+	WITH (scope = 'tenant_id: {mc} -> tenant_scope({mc}, tenant_id)');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n;
 """
@@ -161,20 +183,21 @@ VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n;
         ks = [pick() for _ in range(r.randint(2, 4))] + [self.spare[-1]]
         t = self.ktype
         m1 = r.randint(1, 8)
+        mc = self.mc
         P, E = 'tenant_scope', 'events e'
-        agg = "count(*), sum(v), min(id), max(id), count(DISTINCT dim_a_id)"
+        agg = f"count(*), sum(v), min(id), max(id), count(DISTINCT {mc})"
         return [
-            ('one key', f"SELECT {agg} FROM {E} WHERE e.dim_a_id IN (SELECT dim_a_id FROM {P} WHERE tenant_id = {self.k(a)})"),
-            ('list', f"SELECT {agg} FROM {E} WHERE e.dim_a_id IN (SELECT dim_a_id FROM {P} WHERE tenant_id IN ({self.klist(ks)}))"),
-            ('exists', f"SELECT kind, count(*), sum(v) FROM {E} WHERE EXISTS (SELECT 1 FROM {P} s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = ANY (ARRAY[{self.klist(ks)}]::{t}[])) GROUP BY kind"),
-            ('per pair', f"SELECT kind, count(*), sum(v) FROM {E} JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ({self.klist(ks)}) GROUP BY kind"),
-            ('group key', f"SELECT s.tenant_id, count(*), sum(v), min(id) FROM {E} JOIN {P} s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id"),
-            ('group key list', f"SELECT s.tenant_id, kind, count(*) FROM {E} JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ({self.klist(ks)}) GROUP BY s.tenant_id, kind"),
-            ('table of keys', f"SELECT s.tenant_id, count(*), sum(v) FROM {E} JOIN {P} s ON s.dim_a_id = e.dim_a_id JOIN keys_n k ON k.k = s.tenant_id WHERE k.n IN ({a}, {pick()}) GROUP BY s.tenant_id"),
-            ('time', f"SELECT extract(month FROM created_at) m, count(*), sum(v) FROM {E} WHERE e.dim_a_id IN (SELECT dim_a_id FROM {P} WHERE tenant_id = {self.k(a)}) "
+            ('one key', f"SELECT {agg} FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)})"),
+            ('list', f"SELECT {agg} FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id IN ({self.klist(ks)}))"),
+            ('exists', f"SELECT kind, count(*), sum(v) FROM {E} WHERE EXISTS (SELECT 1 FROM {P} s WHERE s.{mc} = e.{mc} AND s.tenant_id = ANY (ARRAY[{self.klist(ks)}]::{t}[])) GROUP BY kind"),
+            ('per pair', f"SELECT kind, count(*), sum(v) FROM {E} JOIN {P} s ON s.{mc} = e.{mc} WHERE s.tenant_id IN ({self.klist(ks)}) GROUP BY kind"),
+            ('group key', f"SELECT s.tenant_id, count(*), sum(v), min(id) FROM {E} JOIN {P} s ON s.{mc} = e.{mc} GROUP BY s.tenant_id"),
+            ('group key list', f"SELECT s.tenant_id, kind, count(*) FROM {E} JOIN {P} s ON s.{mc} = e.{mc} WHERE s.tenant_id IN ({self.klist(ks)}) GROUP BY s.tenant_id, kind"),
+            ('table of keys', f"SELECT s.tenant_id, count(*), sum(v) FROM {E} JOIN {P} s ON s.{mc} = e.{mc} JOIN keys_n k ON k.k = s.tenant_id WHERE k.n IN ({a}, {pick()}) GROUP BY s.tenant_id"),
+            ('time', f"SELECT extract(month FROM created_at) m, count(*), sum(v) FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)}) "
                      f"AND created_at >= DATE '2026-0{m1}-01' AND created_at < DATE '2026-0{m1 + 1}-01' + 40 GROUP BY 1"),
-            ('top', f"SELECT id, created_at FROM {E} WHERE e.dim_a_id IN (SELECT dim_a_id FROM {P} WHERE tenant_id = {self.k(a)}) ORDER BY created_at DESC, id DESC LIMIT 20"),
-            ('every key', f"SELECT count(*), sum(v) FROM {E} JOIN {P} s ON s.dim_a_id = e.dim_a_id")]
+            ('top', f"SELECT id, created_at FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)}) ORDER BY created_at DESC, id DESC LIMIT 20"),
+            ('every key', f"SELECT count(*), sum(v) FROM {E} JOIN {P} s ON s.{mc} = e.{mc}")]
 
 
 def run_battery(a, qs, stats, label, strict=False, first=None):
@@ -259,7 +282,7 @@ def run_seed(seed, rows, steps, out_dir):
         run_battery(a, s.battery(), stats, 'rebuilt', strict=True)
         if not stats['engaged']:
             raise Fail('no read of the seed took the scope units')
-        return 0, path, f"{s.ktype} reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']}"
+        return 0, path, f"{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']}"
     except Fail as e:
         log.write(f'FAIL {e}\n')
         return 1, path, f'FAIL {str(e)[:600]}'
@@ -274,7 +297,11 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=8000)
     ap.add_argument('--steps', type=int, default=8)
+    ap.add_argument('--hash-bits', type=int, default=0, help='sift.test_member_hash_bits: the low bits kept of the journal word of a string member (members collide)')
     o = ap.parse_args()
+    global FUZZ_SETUP
+    if o.hash_bits:
+        FUZZ_SETUP += f' SET sift.test_member_hash_bits = {o.hash_bits};'
     lo, _, hi = o.seeds.partition('-')
     bad = 0
     for seed in range(int(lo), int(hi or lo) + 1):
