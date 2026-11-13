@@ -1,5 +1,6 @@
 -- ORDER BY x LIMIT n over a key chunk that follows the row order (a delta chunk: rows loaded in key order, a counter, a timestamp that only grows) reads a block of
--- 1024 rows at a time from the end the sort wants, not the whole unit; NULL rows that sort first are the first NULL rows. Every shape runs with and without the top-N
+-- 1024 rows at a time from the end the sort wants, not the whole unit; NULL rows that sort first are the first NULL rows. With several sort keys the walk goes on through the rows tied with the
+-- last row taken on the first key, which the others may order before it. Every shape runs with and without the top-N
 -- scan (sift.enable_agg), after every kind of write, and the rows must be the same; "ends" is the number of units the scan read from their ends.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
