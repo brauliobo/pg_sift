@@ -7,39 +7,6 @@
 #include "core/cmp.h"
 #include "col/preagg_read/preagg_read_int.h"
 
-/* the varints of n values are passed over; eight bytes at a time while they end fewer values than are left (a value that continues into the next eight is counted there) */
-static void
-skip_u(Rd *r, uint32 n)
-{
-	while (n > 8 && r->end - r->p >= 8)
-	{
-		uint64		w,
-					ends;
-		uint32		c;
-
-		memcpy(&w, r->p, sizeof(w));
-		ends = ~w & UINT64CONST(0x8080808080808080);
-		c = (uint32) (((ends >> 7) * UINT64CONST(0x0101010101010101)) >> 56);
-		if (c >= n)
-			break;
-		n -= c;
-		r->p += 8;
-	}
-	while (n-- > 0)
-	{
-		const uint8 *p = r->p;
-
-		while (p < r->end && (*p & 0x80))
-			p++;
-		if (p >= r->end)
-		{
-			r->bad = true;
-			return;
-		}
-		r->p = p + 1;
-	}
-}
-
 static bool
 need_dim(const SiftCRollupNeed *need, int leaf)
 {
@@ -47,16 +14,6 @@ need_dim(const SiftCRollupNeed *need, int leaf)
 		if (need->dim[i] == leaf)
 			return true;
 	return need == NULL;
-}
-
-/* the position of the measure leaf in need, -1 if it is skipped (need NULL: every measure, whole) */
-static int
-need_meas(const SiftCRollupNeed *need, int leaf)
-{
-	for (int i = 0; need && i < need->nmeas; i++)
-		if (need->meas[i].leaf == leaf)
-			return i;
-	return -1;
 }
 
 uint32
@@ -76,16 +33,6 @@ bool
 sift_cpagg_rollup_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCRollup *r)
 {
 	return sift_cpagg_rollup_decode_need(s, blob, len, mcxt, NULL, r);
-}
-
-/* n doubles are passed over; false when the blob ends first */
-static bool
-skip_f8(Rd *r, Size n)
-{
-	if ((Size) (r->end - r->p) < n * sizeof(double))
-		return false;
-	r->p += n * sizeof(double);
-	return true;
 }
 
 /* the count, the dimension and the measure leaves of a rollup */
@@ -151,7 +98,7 @@ read_dim(Rd *rd, SiftCRollup *r, int j, bool want)
 	}
 	if (!want)
 	{
-		skip_u(rd, nt - nnull);
+		cpread_skip_u(rd, nt - nnull);
 		return true;
 	}
 	r->key[j] = palloc0(nt * sizeof(int64));
@@ -194,13 +141,13 @@ read_sums(Rd *rd, SiftCRollup *r, int m, bool fl, bool want)
 
 	if (fl)
 	{
-		if (!skip_f8(rd, nt))
+		if (!cpread_skip_f8(rd, nt))
 			return false;
 		if (want)
 			memcpy(r->sumf[m] = palloc(nt * sizeof(double)), at, nt * sizeof(double));
 	}
 	else if (!want)
-		skip_u(rd, nt);
+		cpread_skip_u(rd, nt);
 	else
 	{
 		r->sum[m] = palloc(nt * sizeof(SiftCI128));
@@ -217,8 +164,8 @@ read_minmax(Rd *rd, SiftCRollup *r, int m, bool fl, bool want, uint32 nnz)
 	if (!want)
 	{
 		if (fl)
-			return skip_f8(rd, (Size) nnz * 2);
-		skip_u(rd, nnz * 2);
+			return cpread_skip_f8(rd, (Size) nnz * 2);
+		cpread_skip_u(rd, nnz * 2);
 		return true;
 	}
 	if (fl)
@@ -238,7 +185,7 @@ read_minmax(Rd *rd, SiftCRollup *r, int m, bool fl, bool want, uint32 nnz)
 				continue;
 			if (!fl)
 				(pass ? r->max[m] : r->min[m])[t] = cpread_get_zz(rd);
-			else if (!skip_f8(rd, 1))
+			else if (!cpread_skip_f8(rd, 1))
 				return false;
 			else
 				memcpy(&(pass ? r->maxf[m] : r->minf[m])[t], rd->p - sizeof(double), sizeof(double));
@@ -250,7 +197,7 @@ static bool
 read_meas(const SiftColSchema *s, Rd *rd, SiftCRollup *r, int m, const SiftCRollupNeed *need)
 {
 	bool		fl = s->cols[r->meas[m]].store == SIFT_COLS_F4 || s->cols[r->meas[m]].store == SIFT_COLS_F8;
-	int			k = need_meas(need, r->meas[m]);
+	int			k = cpread_need_meas(need, r->meas[m]);
 	bool		want = need == NULL || k >= 0;
 	const uint8 *mend = NULL;
 	uint32		nnz;

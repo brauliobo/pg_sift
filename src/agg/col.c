@@ -799,11 +799,11 @@ col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 }
 
 static bool
-col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, h);
+	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, NULL, need, h);
 }
 
 static bool

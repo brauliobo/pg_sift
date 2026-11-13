@@ -34,7 +34,7 @@ hist_net(AggExec *ex, int dim, SiftSrcHist *h)
 
 	if (ex->pa_xleaf >= 0 && !sift_colsrc_unit_except(ex->src, &ex->unit, ex->pa_xleaf))
 		return false;
-	ok = sift_colsrc_unit_hist(ex->src, &ex->unit, dim, h);
+	ok = sift_colsrc_unit_hist(ex->src, &ex->unit, dim, &ex->pa_need, h);
 	if (ex->pa_xleaf >= 0)
 		sift_colsrc_unit_except(ex->src, &ex->unit, -1);
 	return ok;

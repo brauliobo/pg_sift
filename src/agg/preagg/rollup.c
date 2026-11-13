@@ -55,6 +55,40 @@ in_dims(const SiftSrcRollupNeed *n, int leaf)
 	return false;
 }
 
+/* the measure of leaf in the need, with the parts of it the aggregate adds up; every column when the arrays are full */
+static void
+need_meas_add(SiftSrcRollupNeed *n, const SiftAggAgg *a, int leaf)
+{
+	int			m = 0;
+
+	while (m < n->nmeas && n->meas[m].leaf != leaf)
+		m++;
+	if (m == n->nmeas)
+	{
+		if (n->nmeas == lengthof(n->meas))
+		{
+			n->all = true;
+			return;
+		}
+		n->meas[n->nmeas++].leaf = leaf;
+	}
+	n->meas[m].sums |= a->kind != SAA_COUNT && !saa_minmax(a->kind);
+	n->meas[m].minmax |= saa_minmax(a->kind);
+}
+
+/* the measures of the histogram the aggregates read (count(*) and the dim itself need none) */
+void
+hist_need(AggExec *ex)
+{
+	SiftSrcRollupNeed *n = &ex->pa_need;
+	const SiftAggSpec *s = ex->spec;
+
+	memset(n, 0, sizeof(*n));
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (pa_leaf(&s->agg[ai]) >= 0)
+			need_meas_add(n, &s->agg[ai], pa_leaf(&s->agg[ai]));
+}
+
 /* the columns of the rollup the aggregates read: the dims of the shape, the measure of each aggregate with the parts of it the aggregate adds up */
 void
 rollup_need(AggExec *ex)
@@ -68,8 +102,7 @@ rollup_need(AggExec *ex)
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
 		const SiftAggAgg *a = &s->agg[ai];
-		int			leaf = pa_leaf(a),
-					m = 0;
+		int			leaf = pa_leaf(a);
 
 		if (leaf < 0)
 			continue;
@@ -81,19 +114,7 @@ rollup_need(AggExec *ex)
 			else
 				n->dim[n->ndims++] = leaf;
 		}
-		while (m < n->nmeas && n->meas[m].leaf != leaf)
-			m++;
-		if (m == n->nmeas)
-		{
-			if (n->nmeas == lengthof(n->meas))
-			{
-				n->all = true;
-				return;
-			}
-			n->meas[n->nmeas++].leaf = leaf;
-		}
-		n->meas[m].sums |= a->kind != SAA_COUNT && !saa_minmax(a->kind);
-		n->meas[m].minmax |= saa_minmax(a->kind);
+		need_meas_add(n, a, leaf);
 	}
 }
 

@@ -97,7 +97,7 @@ extern bool tbl_whole(void *impl, int leaf, const int *meas, int nmeas);
 extern uint32 tbl_super_span(void *impl);
 extern void tbl_split(void *impl, const SiftSrcUnit *unit);
 extern bool tbl_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
-extern bool tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+extern bool tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
 extern uint32 tbl_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list);
 extern bool tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h);
 extern bool tbl_unit_rollup_miss(void *impl, const SiftSrcUnit *unit);

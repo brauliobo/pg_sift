@@ -280,6 +280,8 @@ preagg_init(AggExec *ex)
 		sift_aggspec_unit_costs(ex->spec, ex->lay, &ex->pa_elem_cost, &ex->pa_tuple_cost);
 		ex->pa_scan_run = 0;
 	}
+	else if (ex->pa_on)
+		hist_need(ex);
 	/* a comparison with NULL keeps no row, and leaves no interval for the zone to lie inside; nor does an IN list with gaps (or a list that prune_init gave no zone) */
 	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(ex->spec, ex->lay, ex->nbase, false))
 	{

@@ -24,6 +24,7 @@ extern bool rollup_net(AggExec *ex, SiftSrcRollup *r);
 extern bool preagg_hist(AggExec *ex);
 
 extern void rollup_need(AggExec *ex);
+extern void hist_need(AggExec *ex);
 extern bool rollup_skip(AggExec *ex);
 extern bool preagg_rollup(AggExec *ex);
 

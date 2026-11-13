@@ -191,9 +191,9 @@ sift_colsrc_unit_presence(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf,
 }
 
 static inline bool
-sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
-	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, h);
+	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, need, h);
 }
 
 static inline bool

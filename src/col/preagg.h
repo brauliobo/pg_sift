@@ -367,8 +367,11 @@ extern bool sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, 
 
 /* false when the bytes are not a cube of this schema; the arrays are palloc'd in mcxt */
 extern bool sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCHist *h);
-/* Decodes only the dim of this leaf: 1 found (out set), 0 the unit has none (the cap, the byte budget, an overflow), -1 the bytes are not a cube of this schema */
-extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out);
+/*
+ * Decodes only the dim of this leaf, and of its measures those of need (NULL: all; a histogram has no dims to ask for, and its sums are always read): 1 found (out set),
+ * 0 the unit has none (the cap, the byte budget, an overflow), -1 the bytes are not a cube of this schema
+ */
+extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, const SiftCRollupNeed *need, SiftCHistDim *out);
 /* The rollup of the list group (-1: of the rows) in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
 extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, int group, uint32 *len);
 /* The dim with this leaf, NULL if the unit has none (the cap, the budget, an overflow) */

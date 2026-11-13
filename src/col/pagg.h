@@ -65,7 +65,7 @@ extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
  * Arrays palloc'd in mcxt. A STR dim's keys are codes of dict (set; NULL for the other dims), the segment's dictionary, valid for the life of the
  * source. false when the unit may not answer or has no histogram of dim (more groups than the cap, the byte budget, an overflow value, inline text).
  */
-extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHistDim *out, SiftColDict *dict);
+extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict);
 
 /*
  * The rollup of a list in the unit (SiftCRollup, docs/COL-PREAGG.md): its tuples of the dims it holds. Arrays palloc'd in mcxt; dict[j] is the dictionary of a

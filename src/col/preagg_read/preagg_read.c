@@ -79,21 +79,76 @@ cpread_get_zz128(Rd *r)
 	return 0;
 }
 
-/* One dim's body (cube blob format above, after the directory): false when it is not consistent with the schema */
+/* the varints of n values are passed over; eight bytes at a time while they end fewer values than are left (a value that continues into the next eight is counted there) */
+void
+cpread_skip_u(Rd *r, uint32 n)
+{
+	while (n > 8 && r->end - r->p >= 8)
+	{
+		uint64		w,
+					ends;
+		uint32		c;
+
+		memcpy(&w, r->p, sizeof(w));
+		ends = ~w & UINT64CONST(0x8080808080808080);
+		c = (uint32) (((ends >> 7) * UINT64CONST(0x0101010101010101)) >> 56);
+		if (c >= n)
+			break;
+		n -= c;
+		r->p += 8;
+	}
+	while (n-- > 0)
+	{
+		const uint8 *p = r->p;
+
+		while (p < r->end && (*p & 0x80))
+			p++;
+		if (p >= r->end)
+		{
+			r->bad = true;
+			return;
+		}
+		r->p = p + 1;
+	}
+}
+
+/* n doubles are passed over; false when the blob ends first */
+bool
+cpread_skip_f8(Rd *r, Size n)
+{
+	if ((Size) (r->end - r->p) < n * sizeof(double))
+		return false;
+	r->p += n * sizeof(double);
+	return true;
+}
+
+/* the position of the measure leaf in need, -1 if it is skipped (need NULL: every measure, whole) */
+int
+cpread_need_meas(const SiftCRollupNeed *need, int leaf)
+{
+	for (int i = 0; need && i < need->nmeas; i++)
+		if (need->meas[i].leaf == leaf)
+			return i;
+	return -1;
+}
+
+/* One dim's body (cube blob format above, after the directory): false when it is not consistent with the schema. need: the measures to keep (NULL: all), the others are passed over */
 static bool
-decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
+decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd, const SiftCRollupNeed *need)
 {
 	uint32		ng,
 				nk;
 	uint8		fl;
+	int			nm;
+	int16		stored[SIFT_PAGG_MAX_MEAS];
 
 	memset(hd, 0, sizeof(*hd));
 	hd->leaf = leaf;
 	if (r->p + 2 > r->end)
 		return false;
-	hd->nmeas = *r->p++;
+	nm = *r->p++;
 	ng = (uint32) cpread_get_u(r);
-	if (r->p >= r->end || hd->nmeas > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
+	if (r->p >= r->end || nm > SIFT_PAGG_MAX_MEAS || ng == 0 || ng > SIFT_PAGG_CUBE_GROUPS)
 		return false;
 	hd->ngroups = ng;
 	fl = *r->p++;
@@ -101,13 +156,13 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 		return false;
 	hd->has_null = (fl & PAGG_NULLGROUP) != 0;
 	hd->minmax = (fl & PAGG_MINMAX) != 0;
-	for (int m = 0; m < hd->nmeas; m++)
+	for (int m = 0; m < nm; m++)
 	{
 		uint64		ml = cpread_get_u(r);
 
 		if (ml >= (uint64) s->ncols)
 			return false;
-		hd->meas[m] = (int16) ml;
+		stored[m] = (int16) ml;
 	}
 	hd->key = palloc0(ng * sizeof(int64));
 	hd->count = palloc(ng * sizeof(uint32));
@@ -120,39 +175,66 @@ decode_dim(const SiftColSchema *s, Rd *r, int leaf, SiftCHistDim *hd)
 			return false;
 	for (uint32 i = 0; i < ng; i++)
 		hd->count[i] = (uint32) cpread_get_u(r);
-	for (int m = 0; m < hd->nmeas; m++)
+	for (int sm = 0; sm < nm; sm++)
 	{
-		const SiftColDef *md = &s->cols[hd->meas[m]];
+		const SiftColDef *md = &s->cols[stored[sm]];
+		int			k = cpread_need_meas(need, stored[sm]),
+					m = hd->nmeas;
+		bool		want = need == NULL || k >= 0,
+					wantmm = need == NULL || (k >= 0 && need->meas[k].minmax),
+					fl = md->store == SIFT_COLS_F4 || md->store == SIFT_COLS_F8;
+		uint32		nnz = 0;
 
+		/* a measure the read does not use is passed over, its non-NULL counts only counted when its minima and maxima follow */
+		if (!want)
+		{
+			if (hd->minmax && !fl)
+				for (uint32 i = 0; i < ng; i++)
+					nnz += cpread_get_u(r) != 0;
+			else
+				cpread_skip_u(r, ng);
+			if (fl && !cpread_skip_f8(r, ng))
+				return false;
+			if (!fl)
+				cpread_skip_u(r, ng + (hd->minmax ? 2 * nnz : 0));
+			continue;
+		}
+		hd->meas[m] = stored[sm];
+		hd->nmeas++;
 		hd->nn[m] = palloc(ng * sizeof(uint32));
 		for (uint32 i = 0; i < ng; i++)
+		{
 			hd->nn[m][i] = (uint32) cpread_get_u(r);
-		if (md->store == SIFT_COLS_F4 || md->store == SIFT_COLS_F8)
+			nnz += hd->nn[m][i] != 0;
+		}
+		if (fl)
 		{
 			if ((Size) (r->end - r->p) < (Size) ng * sizeof(double))
 				return false;
 			hd->sumf[m] = palloc(ng * sizeof(double));
 			memcpy(hd->sumf[m], r->p, ng * sizeof(double));
 			r->p += ng * sizeof(double);
+			continue;
 		}
-		else
+		hd->sum[m] = palloc(ng * sizeof(SiftCI128));
+		for (uint32 i = 0; i < ng; i++)
+			hd->sum[m][i] = cpread_get_zz128(r);
+		if (!hd->minmax)
+			continue;
+		if (!wantmm)
 		{
-			hd->sum[m] = palloc(ng * sizeof(SiftCI128));
-			for (uint32 i = 0; i < ng; i++)
-				hd->sum[m][i] = cpread_get_zz128(r);
-			if (hd->minmax)
-			{
-				hd->min[m] = palloc0(ng * sizeof(int64));
-				hd->max[m] = palloc0(ng * sizeof(int64));
-				for (int pass = 0; pass < 2; pass++)
-					for (uint32 i = 0; i < ng; i++)
-						if (hd->nn[m][i] > 0)
-							(pass ? hd->max[m] : hd->min[m])[i] = cpread_get_zz(r);
-				for (uint32 i = 0; i < ng; i++)
-					if (hd->min[m][i] > hd->max[m][i])
-						return false;
-			}
+			cpread_skip_u(r, 2 * nnz);
+			continue;
 		}
+		hd->min[m] = palloc0(ng * sizeof(int64));
+		hd->max[m] = palloc0(ng * sizeof(int64));
+		for (int pass = 0; pass < 2; pass++)
+			for (uint32 i = 0; i < ng; i++)
+				if (hd->nn[m][i] > 0)
+					(pass ? hd->max[m] : hd->min[m])[i] = cpread_get_zz(r);
+		for (uint32 i = 0; i < ng; i++)
+			if (hd->min[m][i] > hd->max[m][i])
+				return false;
 	}
 	return !r->bad;
 }
@@ -212,7 +294,7 @@ sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryC
 	{
 		Rd			r = {p, p + blen[d], false};
 
-		if (!decode_dim(s, &r, leaf[d], &h->dim[d]) || r.p != r.end)
+		if (!decode_dim(s, &r, leaf[d], &h->dim[d], NULL) || r.p != r.end)
 			goto done;
 		p += blen[d];
 	}
@@ -224,7 +306,7 @@ done:
 }
 
 int
-sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out)
+sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, const SiftCRollupNeed *need, SiftCHistDim *out)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	int			nd,
@@ -243,7 +325,7 @@ sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, Mem
 		{
 			Rd			r = {p, p + blen[d], false};
 
-			res = decode_dim(s, &r, lf[d], out) && r.p == r.end ? 1 : -1;
+			res = decode_dim(s, &r, lf[d], out, need) && r.p == r.end ? 1 : -1;
 			break;
 		}
 		p += blen[d];

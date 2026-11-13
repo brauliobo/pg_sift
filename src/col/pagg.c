@@ -361,7 +361,7 @@ x_rollup(SiftColSegment *seg, uint32 u, int list, MemoryContext mcxt, SiftCRollu
 
 /* The histogram of dim without the rows of the unit's exceptions */
 static bool
-hist_except(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *h)
+hist_except(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *h)
 {
 	SiftCHistDim x;
 	SiftCRollup r;
@@ -374,7 +374,7 @@ hist_except(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHis
 	{
 		if ((blob = x_cube(seg, u, &xl, &len)) == NULL || len == 0)
 			return false;
-		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, &x)) < 0)
+		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, &x)) < 0)
 			corrupt_cube(seg, u);
 		return found > 0 && hist_subtract(h, &x);
 	}
@@ -394,7 +394,7 @@ unit_cube(SiftColSegment *seg, uint32 u, bool net, int dim, uint32 *len)
 
 /* The histogram of dim of a stored unit: from the cube (SIFT_PAGG_CAL + a leaf: the calendar cells of a date or timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
 static bool
-seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, SiftCHistDim *out)
+seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out)
 {
 	uint32		len;
 	const uint8 *blob = unit_cube(seg, u, net, dim, &len);
@@ -405,7 +405,7 @@ seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, S
 		return false;
 	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent < 0)
 	{
-		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
+		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
 			corrupt_cube(seg, u);
 		return found > 0;
 	}
@@ -416,7 +416,7 @@ seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, S
 
 /* The histogram of dim of a superunit: from its merged cube (the dims of lists and the calendar cells are not merged) */
 static bool
-super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, SiftCHistDim *out)
+super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out)
 {
 	uint32		len;
 	const uint8 *blob;
@@ -424,13 +424,13 @@ super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, SiftCHist
 
 	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
 		return false;
-	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
+	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
 		corrupt_cube(seg, k);
 	return found > 0;
 }
 
 bool
-sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHistDim *out, SiftColDict *dict)
+sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict)
 {
 	SiftColSegment *seg;
 	uint32		u;
@@ -445,7 +445,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	}
 	else if (sift_col_unit_super(unit, &seg, &u))
 	{
-		if (!super_hist(seg, u, dim, mcxt, out))
+		if (!super_hist(seg, u, dim, mcxt, need, out))
 			return false;
 	}
 	else
@@ -453,7 +453,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 		if (!sift_col_unit_preagg_ok(unit))
 			return false;
 		sift_col_unit_stored(unit, &seg, &u);
-		if (!seg_hist(seg, u, sift_col_unit_net(unit), dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)) ||
+		if (!seg_hist(seg, u, sift_col_unit_net(unit), dim, mcxt, need, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, need, out)) ||
 			(sift_col_unit_dead_on(unit) && !sift_col_unit_dead_hist(unit, out)))
 			return false;
 	}
@@ -712,7 +712,7 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 		bool		exact;
 		int			slot;
 
-		if (!sift_col_unit_stored(&unit, &seg, &u) || !seg_hist(seg, u, false, dim, CurrentMemoryContext, &hd))
+		if (!sift_col_unit_stored(&unit, &seg, &u) || !seg_hist(seg, u, false, dim, CurrentMemoryContext, NULL, &hd))
 			continue;
 		slot = meas >= 0 ? sift_cpagg_meas_slot(d, meas) : -1;
 		exact = sift_col_unit_preagg_ok(&unit);

@@ -196,9 +196,9 @@ part_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg
 }
 
 bool
-part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
-	if (!sift_colsrc_unit_hist(cur_of(impl), unit_of(impl), dim, h))
+	if (!sift_colsrc_unit_hist(cur_of(impl), unit_of(impl), dim, need, h))
 		return false;
 	h->dict = presented(impl, SLOT_HIST(ps_of(impl), dim), h->dict);
 	return true;

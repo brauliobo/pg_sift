@@ -242,7 +242,7 @@ typedef struct SiftSrcRollup
 	const double *maxf[SIFT_SRC_MAX_MEAS];
 } SiftSrcRollup;
 
-/* The dims and measures of a rollup a unit_rollup caller reads; the arrays of the others may be NULL in the result (the source skips them) */
+/* The dims and measures of a rollup a unit_rollup caller reads, or the measures of a histogram a unit_hist caller reads (no dims); the arrays of the others may be NULL in the result (the source skips them) */
 typedef struct SiftSrcRollupNeed
 {
 	bool		all;			/* more leaves than the arrays hold: every column */

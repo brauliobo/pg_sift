@@ -107,7 +107,8 @@ typedef struct SiftSrcProvider
 	 */
 	bool		(*unit_except) (void *impl, const SiftSrcUnit *unit, int leaf);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
-	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+	/* need: the measures of the histogram the caller reads (its dims are not used; NULL: all); the others may be left out of the result */
+	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
 	/* Optional (NULL: none): the presence of an exact unit's leaf of SiftSrcPreagg.pres, valid until the next call; false when the unit has none */
 	bool		(*unit_presence) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p);
 	/* Optional (NULL: none): the HyperLogLog sketch of an exact unit's leaf of SiftSrcPreagg.hll (col/hll.h), valid until the next call; false when the unit has none */

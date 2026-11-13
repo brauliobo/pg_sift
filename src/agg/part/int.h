@@ -112,7 +112,7 @@ extern bool part_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrc
 extern int part_unit_dead(void *impl, const SiftSrcUnit *unit, int mode);
 extern bool part_unit_exact(void *impl, const SiftSrcUnit *unit);
 extern bool part_unit_except(void *impl, const SiftSrcUnit *unit, int leaf);
-extern bool part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
+extern bool part_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
 extern bool part_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 extern bool part_unit_rollup_miss(void *impl, const SiftSrcUnit *unit);
 extern uint32 part_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list);

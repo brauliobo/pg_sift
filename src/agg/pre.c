@@ -122,15 +122,25 @@ sift_aggpre_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, Si
 }
 
 bool
-sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const SiftColDef *def, const int *leaf_of_col, SiftSrcHist *h)
+sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const SiftColDef *def, const int *col_of_leaf, const int *leaf_of_col,
+					  const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
 	SiftCHistDim d;
 	SiftColDict dict;
+	SiftCRollupNeed cn;
 
 	if (pre->pcx == NULL)
 		pre->pcx = AllocSetContextCreate(pre->cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextReset(pre->pcx);
-	if (!sift_col_unit_hist(unit, col, pre->pcx, &d, &dict))
+	cn.ndims = 0;
+	cn.nmeas = need ? need->nmeas : 0;
+	for (int m = 0; need && !need->all && m < need->nmeas; m++)
+	{
+		cn.meas[m].leaf = col_of_leaf ? col_of_leaf[need->meas[m].leaf] : need->meas[m].leaf;
+		cn.meas[m].sums = need->meas[m].sums;
+		cn.meas[m].minmax = need->meas[m].minmax;
+	}
+	if (!sift_col_unit_hist(unit, col, pre->pcx, need && !need->all ? &cn : NULL, &d, &dict))
 		return false;
 	memset(h, 0, sizeof(*h));
 	h->ngroups = d.ngroups;

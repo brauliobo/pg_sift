@@ -30,9 +30,11 @@ extern bool sift_aggpre_unit_agg(const SiftColUnit *unit, int col, const SiftCol
 /*
  * SiftSrcProvider.unit_hist of the dimension col (definition def) of the unit. The measures of the histogram are columns of the unit's schema;
  * leaf_of_col, when set, gives the leaf of the source for each (a table keeps its leaves in the layout of the table, a segment of an older
- * layout has its own columns); NULL: the same numbers. Memory valid until the next call.
+ * layout has its own columns), col_of_leaf the same the other way (to translate the measures of need); NULL: the same numbers. The measures that need leaves out may be
+ * left out of the result (NULL: all). Memory valid until the next call.
  */
-extern bool sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const SiftColDef *def, const int *leaf_of_col, SiftSrcHist *h);
+extern bool sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const SiftColDef *def, const int *col_of_leaf, const int *leaf_of_col,
+								  const SiftSrcRollupNeed *need, SiftSrcHist *h);
 
 /*
  * SiftSrcProvider.unit_rollup of the list list (a leaf of the source; negative: the rows of the unit) of the unit, whose columns are those of schema.

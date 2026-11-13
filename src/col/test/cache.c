@@ -164,7 +164,7 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 
 		units++;
 		MemoryContextReset(unitcx);
-		if (!sift_col_unit_hist(&unit, dim, unitcx, &d, &dict))
+		if (!sift_col_unit_hist(&unit, dim, unitcx, NULL, &d, &dict))
 			continue;
 		answered++;
 		slot = meas >= 0 ? sift_cpagg_meas_slot(&d, meas) : -1;
