@@ -329,6 +329,7 @@ tap-shell-col_track_restore	20	20
 tap-shell-col_connect_dump	20	20
 tap-shell-col_connect_downgrade	35	35
 tap-shell-col_scope_fuzz	300	300
+tap-shell-col_scope_textkey_fuzz	120	120
 tap-shell-col_scope_crash	60	60
 tap-shell-col_scope_replica	50	50
 tap-shell-col_scope_concurrent_build	30	30

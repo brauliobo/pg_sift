@@ -44,6 +44,7 @@
 ^test/fuzz/txn_fuzz	^difftest-(txn(-shapes)?|scope(-[12])?)$|{ci}
 ^test/fuzz/scope_fuzz	^difftest-scope(-[12])?$|{ci}
 ^test/fuzz/col_scope_fuzz|^test/scope_helpers\.sql$	^tap-shell-col_scope_fuzz$|{ci}
+^test/fuzz/col_scope_textkey_fuzz	^tap-shell-col_scope_textkey_fuzz$|{ci}
 ^test/fuzz/bm25_fuzz	^difftest-bm25$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
