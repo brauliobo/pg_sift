@@ -143,6 +143,15 @@ segments_current(SiftColSource *src)
 	return src->dir_current;
 }
 
+/* A source opens current at the directory version it read, and pins the directory page that segments_current peeks (a table source has none) */
+void
+segments_pin(SiftColSource *src, uint32 flags)
+{
+	src->dir_checked = src->dir.version;
+	src->dir_current = true;
+	src->dirbuf = (flags & COLO_TABLE) ? InvalidBuffer : sift_dir_pin(src->index);
+}
+
 #ifdef SIFT_TESTING
 bool		sift_test_no_heapfree = false;
 bool		sift_test_hf_ignore_tombs = false;

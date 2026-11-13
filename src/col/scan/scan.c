@@ -135,9 +135,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);
 	leader_end = scan_view_load(src, heap, view);
-	src->dir_checked = src->dir.version;
-	src->dir_current = true;
-	src->dirbuf = (flags & COLO_TABLE) ? InvalidBuffer : sift_dir_pin(index);
+	segments_pin(src, flags);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
