@@ -368,7 +368,10 @@ scope() {
 		setup=(-c "CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int)" -c "CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id)"
 			-c "CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id)" -c "CREATE TABLE memberships (group_id int, dim_a_id int, PRIMARY KEY (group_id, dim_a_id))"
 			-c "INSERT INTO grants SELECT m, 1 + m % 9, m, NULL FROM generate_series(1, 200) m" -c "INSERT INTO grants SELECT 200 + g, 1 + g % 9, NULL, g FROM generate_series(1, 20) g"
-			-c "INSERT INTO memberships SELECT 1 + m % 20, m FROM generate_series(1, 210) m")
+			-c "INSERT INTO memberships SELECT 1 + m % 20, m FROM generate_series(1, 210) m"
+			-c "CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')"
+			-c "CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid')"
+			-c "CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')")
 	else
 		fmt=$(colfmt SCOPE)
 		decl='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'
