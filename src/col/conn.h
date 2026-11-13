@@ -289,6 +289,7 @@ extern Datum sift_keymap_datum(SiftKeyMap *m, int64 code);
 /* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation. pred_index: a btree of rel that holds both columns, whose entries are the rows (a partial one: those of its predicate), read as an index only scan; InvalidOid: every row, read from the heap */
 extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 extern bool sift_conn_slot_code(TupleTableSlot *slot, AttrNumber att, SiftKeyMap *km, int64 *k);
+extern bool sift_conn_slot_word(TupleTableSlot *slot, AttrNumber att, int64 *w);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
 extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
 /* ... with km1 and km2 the maps of the columns key and key2 (NULL: an integer column): the values of a mapped column are handed to f as its codes */

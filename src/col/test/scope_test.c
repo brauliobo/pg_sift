@@ -451,7 +451,7 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	stamps_arg(fcinfo, 5, st);
-	why = sift_scope_changed(index, PG_GETARG_INT32(1), st, GetActiveSnapshot(), PG_GETARG_INT32(4), NULL, 0, &keys);
+	why = sift_scope_changed(index, PG_GETARG_INT32(1), st, GetActiveSnapshot(), PG_GETARG_INT32(4), NULL, 0, NULL, &keys);
 	v[0] = CStringGetTextDatum(sift_conn_why_name(why));
 	if (why != SIFT_CONN_OK || keys.n == 0)
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);

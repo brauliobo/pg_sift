@@ -49,7 +49,7 @@ int			sift_test_scope_unit_kind = 0;
  * it NOT NULL (a pair has both keys); on two paths a row with a NULL in a column of its path is not a pair of that path, as a join drops it (a grant on a group has no member, a grant on a member no group).
  */
 static AttrNumber
-relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name)
+relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name, bool via)
 {
 	AttrNumber	att = get_attnum(RelationGetRelid(rel), name);
 	Form_pg_attribute a;
@@ -62,10 +62,10 @@ relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, con
 	if (why != NULL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" %s", s->key_name, name, r->name, why),
 						errhint("The member and scope key columns are int2, int4, int8, text, varchar or uuid columns.")));
-	if (!sift_conn_integer_type(a->atttypid) && s->joined != NULL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is of type %s, which a scope of two paths does not take yet", s->key_name, name, r->name,
+	if (via && !sift_conn_integer_type(a->atttypid))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the group column \"%s\" of \"%s\" is of type %s, which a scope of two paths does not take as a group", s->key_name, name, r->name,
 																	   format_type_be(a->atttypid)),
-						errhint("A text or uuid column is read through a scope of one path.")));
+						errhint("The group column that joins the two relations of the second path is an int2, int4 or int8 column; the member and the scope key may be text, varchar or uuid.")));
 	if (!a->attnotnull && s->joined == NULL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is nullable", s->key_name, name, r->name),
 						errhint("Declare the member and scope key columns NOT NULL: a pair has both keys.")));
@@ -196,8 +196,9 @@ open_table(Relation heap, const SiftScopeSpec *s, const SiftScopeRel *r, Relatio
 static void
 check_columns(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumber *a, AttrNumber *b)
 {
-	*a = relation_column(rel, s, r, r->a);
-	*b = relation_column(rel, s, r, r->b);
+	/* of the two relations of the second path, the group (via) column is the first (a) */
+	*a = relation_column(rel, s, r, r->a, r != &s->rel);
+	*b = relation_column(rel, s, r, r->b, false);
 	if (*a == *b)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
 						errhint("A scope relation has two columns: the member key and the scope key.")));
@@ -463,7 +464,7 @@ check_same_type(const SiftScopeSpec *s, const char *role, Relation x, AttrNumber
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("scope \"%s\": the %s columns \"%s\" of \"%s\" (%s) and \"%s\" of \"%s\" (%s) differ in type", s->key_name, role,
 																	get_attname(RelationGetRelid(x), xa, false), RelationGetRelationName(x), format_type_be(tx),
 																	get_attname(RelationGetRelid(y), ya, false), RelationGetRelationName(y), format_type_be(ty)),
-						errhint("The columns a scope joins are of one integer type: change a column or the declaration.")));
+						errhint("The columns a scope joins are of one type: change a column or the declaration.")));
 }
 
 /* The three relations of a scope of two paths with their columns: the paths are three different sets of columns, and what joins has one type */

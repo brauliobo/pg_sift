@@ -340,7 +340,9 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 		for (int h = 1; h < nsrc; h++)
 		{
 			src[h].btree = sift_scope_hop_index(heap, index, sp, h, &src[h].rel, &src[h].a, &src[h].b);
-			src[h].km = src[h].kma = NULL;
+			/* the scope key of the joined path is the key of the pairs relation (its map), and the member of the via relation is its member (the map of the statement): the group column is an integer */
+			src[h].km = h == 1 ? src[0].km : src[0].kma;
+			src[h].kma = NULL;
 		}
 		/* the stamps come before the first read of the relations */
 		if (sift_scope_take(index, i, f->snap, stamp) != SIFT_CONN_OK)

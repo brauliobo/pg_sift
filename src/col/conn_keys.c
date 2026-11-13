@@ -73,6 +73,24 @@ sift_conn_slot_code(TupleTableSlot *slot, AttrNumber att, SiftKeyMap *km, int64 
 	return !isnull && value_key(TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid, d, km, k);
 }
 
+/* What a journal records of the member column of the row: its integer, or the word of its bytes (sift_member_hash) for a text, varchar or uuid column; false for a NULL */
+bool
+sift_conn_slot_word(TupleTableSlot *slot, AttrNumber att, int64 *w)
+{
+	bool		isnull;
+	Datum		d = slot_getattr(slot, att, &isnull);
+	Oid			typid = TupleDescAttr(slot->tts_tupleDescriptor, att - 1)->atttypid;
+
+	if (isnull)
+		return false;
+	if (sift_keymap_type(typid))
+	{
+		*w = (int64) sift_member_hash(typid, d);
+		return true;
+	}
+	return key_of(typid, d, w);
+}
+
 bool
 sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k)
 {

@@ -244,7 +244,7 @@ member_of_group(void *arg, TupleTableSlot *slot)
 	MemberSet  *ms = ((void **) arg)[1];
 	int64		member;
 
-	if (sift_conn_slot_key(slot, J->member, &member))
+	if (sift_conn_slot_word(slot, J->member, &member))
 		members_add(ms, member);
 	return !ms->over;
 }
@@ -277,6 +277,7 @@ typedef struct GroupTags
 	Snapshot	snap;
 	const int64 *keys;
 	uint32		nkeys;
+	SiftKeyMap *km;				/* the codes of the keys, when they are text, varchar or uuid */
 	const SiftConnStamp *stamp;	/* of the joined relation's journal */
 	const SiftConnKeys *changed;	/* its changed groups of the keys */
 } GroupTags;
@@ -357,7 +358,7 @@ groups_fill(SiftConnTags *t, void *arg)
 	{
 		Relation	heap = table_open(g->J->index->rd_index->indrelid, AccessShareLock);
 		uint32		n;
-		int64	   *now = sift_scope_groups(heap, g->J->index, g->J->scope, g->snap, g->keys, g->nkeys, &n);
+		int64	   *now = sift_scope_groups(heap, g->J->index, g->J->scope, g->km, g->snap, g->keys, g->nkeys, &n);
 
 		table_close(heap, NoLock);
 		sift_conn_tags_add(t, now, n);
@@ -382,12 +383,12 @@ journal_tags(const ScopeJournals *J, int j, const GroupTags *g)
  * members of a changed group are not told apart before their pairs are read, none is expected to have one: a lower bound of the patch).
  */
 static SiftConnWhy
-journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out)
+journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, SiftConnKeys *out)
 {
 	SiftConnKeys k[SIFT_SCOPE_JOURNALS] = {{0}};
 	SiftConnWhy why = SIFT_CONN_OK;
 	MemberSet	ms = {.cap = cap};
-	GroupTags	g = {J, snap, keys, nkeys, &stamp[1], &k[1]};
+	GroupTags	g = {J, snap, keys, nkeys, km, &stamp[1], &k[1]};
 	SiftConnTags *via_tags = NULL;
 
 	for (int j = 0; j < J->n && why == SIFT_CONN_OK; j++)
@@ -436,14 +437,14 @@ journals_changed(const ScopeJournals *J, const SiftConnStamp *stamp, Snapshot sn
 }
 
 SiftConnWhy
-sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out)
+sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, SiftConnKeys *out)
 {
 	ScopeJournals J;
 	SiftConnWhy why = SIFT_CONN_NO_JOURNAL;
 
 	*out = (SiftConnKeys) {0};
 	if (journals_open(index, scope, AccessShareLock, &J))
-		why = journals_changed(&J, stamp, snap, cap, keys, nkeys, out);
+		why = journals_changed(&J, stamp, snap, cap, keys, nkeys, km, out);
 	journals_close(&J);
 	return why;
 }
@@ -571,7 +572,7 @@ sift_scope_stale(SiftScopeStale *st, const SiftColSegment *seg)
 		for (int j = 0; j < J->n; j++)
 			if (stamp[j].lineage != st->s[i].now[j].lineage)
 				return true;
-		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), NULL, 0, &keys) != SIFT_CONN_OK)
+		if (journals_changed(J, stamp, st->snap, (uint32) Max(limit, 1), NULL, 0, NULL, &keys) != SIFT_CONN_OK)
 			return true;
 		many = keys.n >= limit;
 		sift_conn_keys_free(&keys);

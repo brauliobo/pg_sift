@@ -421,15 +421,22 @@ first_of_member(const ScopePairs *ps, int64 member)
 
 /* A relation of the second path ready to read: hop 1 the joined relation, its pairs (via, key); hop 2 the via relation, its pairs (member, via) */
 static void
-hop_scan(Relation heap, Relation index, const SiftScopeSpec *s, int hop, PairScan *p, Snapshot snap, const int64 *keys, uint32 nkeys)
+hop_scan(Relation heap, Relation index, const SiftScopeSpec *s, int hop, PairScan *p, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, SiftKeyMap *mm)
 {
 	p->snap = snap;
 	p->keys = keys;
 	p->nkeys = nkeys;
+	/* the scope key of the joined path is that of the pairs relation, and the member of the via relation is its member: they are coded by the maps of the read; the group column is an integer */
 	if (hop == 1)
+	{
 		p->btree = sift_scope_hop_index(heap, index, s, 1, &p->rel, &p->member, &p->skey);
+		p->km = km;
+	}
 	else
+	{
 		p->btree = sift_scope_hop_index(heap, index, s, 2, &p->rel, &p->skey, &p->member);
+		p->kma = mm;
+	}
 }
 
 /* The distinct values of the member column of the pairs, or of their key column */
@@ -459,18 +466,18 @@ add_joined_pairs(Relation heap, Relation index, const SiftScopeSpec *s, PairScan
 
 	if (members == NULL)
 	{
-		hop_scan(heap, index, s, 1, &g, ps->snap, ps->keys, ps->nkeys);
+		hop_scan(heap, index, s, 1, &g, ps->snap, ps->keys, ps->nkeys, ps->km, ps->kma);
 		pairs_of_keys(&g);
 		vias = pair_values(&g.out, false, &nvia);
-		hop_scan(heap, index, s, 2, &v, ps->snap, vias, nvia);
+		hop_scan(heap, index, s, 2, &v, ps->snap, vias, nvia, ps->km, ps->kma);
 		pairs_of_keys(&v);
 	}
 	else
 	{
-		hop_scan(heap, index, s, 2, &v, ps->snap, NULL, 0);
+		hop_scan(heap, index, s, 2, &v, ps->snap, NULL, 0, ps->km, ps->kma);
 		pairs_of_members(&v, members, nmembers);
 		vias = pair_values(&v.out, true, &nvia);
-		hop_scan(heap, index, s, 1, &g, ps->snap, ps->keys, ps->nkeys);
+		hop_scan(heap, index, s, 1, &g, ps->snap, ps->keys, ps->nkeys, ps->km, ps->kma);
 		pairs_of_members(&g, vias, nvia);
 	}
 	table_close(g.rel, NoLock);
@@ -507,12 +514,12 @@ scope_pairs(Relation heap, Relation index, int ord, SiftKeyMap *km, SiftKeyMap *
 
 /* The groups (the via values) the keys have under snap: the member column of the joined relation's pairs with one of the keys, of a scope of two paths */
 int64 *
-sift_scope_groups(Relation heap, Relation index, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n)
+sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n)
 {
 	PairScan	g = {0};
 	int64	   *groups;
 
-	hop_scan(heap, index, sift_scope_specs(index)->s[ord], 1, &g, snap, keys, nkeys);
+	hop_scan(heap, index, sift_scope_specs(index)->s[ord], 1, &g, snap, keys, nkeys, km, NULL);
 	pairs_of_keys(&g);
 	groups = pair_values(&g.out, false, n);
 	table_close(g.rel, NoLock);
@@ -774,7 +781,7 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 		rd->why = "scope segments do not cover the rows";
 		return;
 	}
-	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, &changed)) != SIFT_CONN_OK)
+	if ((verdict = sift_scope_changed(index, ord, stamp, snap, cap, keys, nkeys, km, &changed)) != SIFT_CONN_OK)
 	{
 		rd->why = sift_conn_why_name(verdict);
 		return;
@@ -935,7 +942,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 		return false;
 	sift_dir_read(index, dir);
 	if (segments_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, &changed) != SIFT_CONN_OK)
+		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, NULL, &changed) != SIFT_CONN_OK)
 		return false;
 	c->changed = changed.n;
 	km = sift_scope_keymap(heap, index, sift_scope_specs(index)->s[scope]->key_name);

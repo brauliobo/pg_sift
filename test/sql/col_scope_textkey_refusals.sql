@@ -1,6 +1,6 @@
 -- What a text, varchar or uuid scope key does not take, and the reason each refusal names (docs/COL-SCOPE.md "Key types"): a column of another type, a nondeterministic collation
--- (equal values may differ in their bytes, which the btree, the store and the codes agree on), a text key in a scope of two paths; the same for a member (a text member qualifies, a char(n), a domain,
--- a nondeterministic collation, an integer paired with a string, a scope of two paths do not); a condition under a nondeterministic collation keeps the join as written.
+-- (equal values may differ in their bytes, which the btree, the store and the codes agree on); the same for a member (a text member qualifies, a char(n), a domain, a nondeterministic collation,
+-- an integer paired with a string do not); a scope of two paths takes a text key or member when its three journals and its group column are integers or of one type; a condition under a nondeterministic collation keeps the join as written.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -48,6 +48,13 @@ CREATE TABLE grants_direct_text (member_text text NOT NULL, tenant_id int NOT NU
 CREATE TABLE grants_group_int (group_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (group_id, tenant_id));
 CREATE TABLE memberships_text (group_id int NOT NULL, member_text text NOT NULL, PRIMARY KEY (group_id, member_text));
 
+CREATE INDEX grants_direct_j ON grants_direct USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_group_j ON grants_group USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_j ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_direct_text_j ON grants_direct_text USING sift_col (member_text, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_group_int_j ON grants_group_int USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_text_j ON memberships_text USING sift_col (member_text, group_id) WITH (track_changes = 'ctid');
+
 CREATE TABLE refusals (n int, what text, opt text);
 INSERT INTO refusals VALUES
 	(1, 'text key', 'tenant_id: dim_a_id -> pairs_text(dim_a_id, tenant_id)'),
@@ -55,15 +62,16 @@ INSERT INTO refusals VALUES
 	(3, 'char(n) key', 'tenant_id: dim_a_id -> pairs_char(dim_a_id, tenant_id)'),
 	(4, 'bytea key', 'tenant_id: dim_a_id -> pairs_bytea(dim_a_id, tenant_id)'),
 	(5, 'text member, text key', 'tenant_id: member_text -> pairs_member_text(member_text, tenant_id)'),
-	(6, 'text key, two paths', 'tenant_id: dim_a_id -> grants_direct(dim_a_id, tenant_id) | grants_group(group_id, tenant_id) via memberships(group_id, dim_a_id)'),
+	(6, 'text key, two paths (qualifies)', 'tenant_id: dim_a_id -> grants_direct(dim_a_id, tenant_id) | grants_group(group_id, tenant_id) via memberships(group_id, dim_a_id)'),
 	(7, 'char(n) member', 'tenant_id: member_char -> pairs_member_char(member_char, tenant_id)'),
 	(8, 'nondeterministic collation, member', 'tenant_id: member_ci -> pairs_member_ci(member_ci, tenant_id)'),
 	(9, 'domain member', 'tenant_id: member_text -> pairs_member_dom(member_dom, tenant_id)'),
 	(10, 'text fact column, integer member', 'tenant_id: member_text -> pairs_text(dim_a_id, tenant_id)'),
 	(11, 'integer fact column, text member', 'tenant_id: dim_a_id -> pairs_member_text(member_text, tenant_id)'),
-	(12, 'text member, two paths', 'tenant_id: member_text -> grants_direct_text(member_text, tenant_id) | grants_group_int(group_id, tenant_id) via memberships_text(group_id, member_text)'),
+	(12, 'text member, two paths (qualifies)', 'tenant_id: member_text -> grants_direct_text(member_text, tenant_id) | grants_group_int(group_id, tenant_id) via memberships_text(group_id, member_text)'),
 	(13, 'char(n) fact column, text member', 'tenant_id: member_char -> pairs_member_text(member_text, tenant_id)'),
-	(14, 'nondeterministic collation, fact column', 'tenant_id: member_ci -> pairs_member_text(member_text, tenant_id)');
+	(14, 'nondeterministic collation, fact column', 'tenant_id: member_ci -> pairs_member_text(member_text, tenant_id)'),
+	(15, 'two paths, the member of the second path is another type', 'tenant_id: member_text -> grants_direct_text(member_text, tenant_id) | grants_group_int(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT n, what, try(format('CREATE INDEX events_col_%s ON events USING sift_col (id, dim_a_id, member_text, member_char, member_ci, created_at, amount) WITH (scope = %L)', n, opt)) AS result FROM refusals ORDER BY n;
 
 -- the text key that qualifies reads like the join, and a condition under a nondeterministic collation does not take the scope

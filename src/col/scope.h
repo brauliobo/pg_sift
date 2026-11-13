@@ -144,7 +144,7 @@ extern SiftConnWhy sift_scope_vouch(Relation index, int scope, const SiftConnSta
  * the journals of the pairs relation and of the via relation and the members of every group of the joined relation's journal that the via relation lists under snap. keys: only the changes of the
  * pairs of those scope keys (ascending, distinct; NULL: any key): a journal made for the scope key column tags its records with the key of their pair, and the pairs of the other keys change no unit of these.
  */
-extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftConnKeys *out);
+extern SiftConnWhy sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, SiftConnKeys *out);
 
 /*
  * Refresh: is a scope segment of the index worth a rewrite for what its stamps say (sift_conn_stale for the scopes)? NULL from begin: the index declares no scope. The reason in
@@ -465,7 +465,7 @@ extern bool sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap
 /* The columns of the index the scope segments of key_name keep values of, of all its columns (EXPLAIN "Scope Columns") */
 extern void sift_scope_columns(Relation index, const char *key_name, int *kept, int *all);
 /* The groups (via values) the joined relation lists under snap for the keys (sorted, distinct), of a scope of two paths */
-extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n);
+extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 /* The map of the codes of the scope key (NULL for an integer key): one for each statement that reads the scope, which every key, pair and group of the read goes through (col/scope_keys.c) */
 extern SiftKeyMap *sift_scope_keymap(Relation heap, Relation index, const char *key_name);
