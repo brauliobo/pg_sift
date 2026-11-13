@@ -51,3 +51,7 @@ FROM (VALUES ('the 10 largest keys, from a table', '(SELECT tenant_id FROM user_
              ('3 small keys, from a table', '(SELECT tenant_id FROM user_keys WHERE user_id = 2)'),
              ('the 30 largest keys, as constants', '(' || (SELECT string_agg(i::text, ', ') FROM generate_series(1, 30) i) || ')')) AS v(label, keys)
 ORDER BY label;
+
+DROP FUNCTION key_table_sql(text), key_table_arm(text), key_table_rows(text, text);
+DROP TABLE events, tenant_scope, user_keys;
+DROP EXTENSION pg_sift;

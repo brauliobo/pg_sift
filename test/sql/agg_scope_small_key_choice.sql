@@ -46,3 +46,7 @@ SELECT label, keys, small_key_arm(keys) AS arm, small_key_rows(keys, 'on') = sma
 FROM (VALUES ('a key of 3 ids', '1'), ('three keys of 3 ids', '1, 2, 3'), ('a key of 30 ids', '21'),
              ('the key of 80 ids', '23'), ('every key', '1, 5, 10, 15, 20, 21, 22, 23')) AS v(label, keys)
 ORDER BY keys;
+
+DROP FUNCTION small_key_sql(text), small_key_arm(text), small_key_rows(text, text);
+DROP TABLE events, tenant_scope;
+DROP EXTENSION pg_sift;

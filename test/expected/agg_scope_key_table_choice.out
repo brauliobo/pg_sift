@@ -55,3 +55,6 @@ ORDER BY label;
  the 30 largest keys, from a table | scope units                       | t
 (5 rows)
 
+DROP FUNCTION key_table_sql(text), key_table_arm(text), key_table_rows(text, text);
+DROP TABLE events, tenant_scope, user_keys;
+DROP EXTENSION pg_sift;

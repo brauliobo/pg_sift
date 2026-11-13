@@ -50,3 +50,6 @@ ORDER BY keys;
  the key of 80 ids   | 23                           | scope units                      | t
 (5 rows)
 
+DROP FUNCTION small_key_sql(text), small_key_arm(text), small_key_rows(text, text);
+DROP TABLE events, tenant_scope;
+DROP EXTENSION pg_sift;
