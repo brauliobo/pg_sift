@@ -1,5 +1,5 @@
 /*
- * col/enc_int.h - shared between the files of L1 of the column engine (enc.c, schema.c, dict.c, batch.c, chunk.c, ctest.c, unit.c).
+ * col/enc_int.h - shared between the files of L1 of the column engine (enc.c, schema.c, dict.c, batch.c, batch_unit.c, chunk.c, ctest.c, unit.c).
  */
 #ifndef SIFT_ENC_INT_H
 #define SIFT_ENC_INT_H
@@ -13,6 +13,13 @@
 
 /* Appends the n values of v, bits each, LSB first, padded to a byte */
 extern void put_packed(StringInfo out, const uint32 *v, uint32 n, int bits);
+
+/* The slots of the leaves of a batch (col/batch.c), which the decoding of a unit (col/batch_unit.c) fills too */
+extern void vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag);
+extern void vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool isnull, bool ovf, uint8 tag);
+extern bool leaf_fits(SiftColBatch *b, int id, const char *s, uint32 len);
+extern void batch_group_end(SiftColBatch *b, int group, uint32 count);
+extern void batch_row_begin(SiftColBatch *b, SiftKey key);
 
 static inline uint32
 words_of(uint32 n)
