@@ -85,7 +85,7 @@ SELECT n, what, try(format('CREATE INDEX events_col_%s ON events USING sift_col 
  12 | text member, two paths (qualifies)                       | ok
  13 | char(n) fact column, text member                         | scope "tenant_id": column "member_char" is a char(n) column, whose values are equal when they differ in blank padding: declare it text or varchar [The member key is an int2, int4, int8, text, varchar or uuid column.]
  14 | nondeterministic collation, fact column                  | scope "tenant_id": column "member_ci" has a nondeterministic collation, whose equal values may differ in their bytes: use a deterministic one (COLLATE "C") [The member key is an int2, int4, int8, text, varchar or uuid column.]
- 15 | two paths, the member of the second path is another type | scope "tenant_id": the member columns "member_text" of "grants_direct_text" (text) and "dim_a_id" of "memberships" (integer) differ in type [The columns a scope joins are of one integer type: change a column or the declaration.]
+ 15 | two paths, the member of the second path is another type | scope "tenant_id": the member columns "member_text" of "grants_direct_text" (text) and "dim_a_id" of "memberships" (integer) differ in type [The columns a scope joins are of one type: change a column or the declaration.]
 (15 rows)
 
 -- the text key that qualifies reads like the join, and a condition under a nondeterministic collation does not take the scope
