@@ -6,6 +6,7 @@
 The nodes: PRIMARY has pg_sift and the scope index (wal_level logical); STANDBY streams from it (physical, hot standby); STOCK never loads pg_sift (a cluster that holds the plain tables only, fed by logical replication of the base
 tables: the oracle, no sift code on its side); RESTORE has pg_sift and takes a dump of the primary.
 
+SIFT_ORACLE_VERIFY_EVERY=1 runs sift.col_scope_verify after every step and window (default 4).
 SIFT_ORACLE_SET is SQL every session of the primary runs first (`SET sift.test_no_track = on;` is a mutant of the tracking that the gate must catch).
 
 A seed draws a shape (one path, soft deleted pairs, a scope of two paths), a size and builds the facts and the pairs. Steps change facts and pairs (inserts, updates, moves of the member, HOT updates, deletes, upserts; pairs
@@ -22,6 +23,7 @@ import argparse, os, random, re, subprocess, sys, time
 ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: error)', re.M)
 TZ = "SET TimeZone = 'UTC'; SET client_min_messages = warning; SET max_parallel_workers_per_gather = 0; SET jit = off; SET lock_timeout = '60s';"
 WHY = {}
+VERIFY_EVERY = int(os.environ.get('SIFT_ORACLE_VERIFY_EVERY', '4'))   # sift.col_scope_verify after every this many steps (1: every step)
 STATS = {'compared': 0, 'scope_reads': 0, 'engaged': 0, 'windows': 0, 'own': 0, 'snapshots': 0, 'verify': 0, 'unverified': 0}
 
 
@@ -635,7 +637,7 @@ def run_seed(a, seed):
             snapshot_window(step)
         if r.random() < 0.4:
             open_writer(step)
-        if step % 4 == 0:
+        if step % VERIFY_EVERY == 0:
             verify(step)
     # windows of concurrent writers, a CREATE INDEX CONCURRENTLY in one of them
     for w in range(a.windows):
@@ -643,8 +645,8 @@ def run_seed(a, seed):
         quiesce(steps + 1 + w, f'after window {w}')
         has2 = A.val("SELECT count(*) FROM pg_class WHERE relname = 'facts_col2'") == '1'
         STATS['cic'] = STATS.get('cic', 0) + bool(cic)
+        verify(steps + 1 + w)
         if has2:
-            verify(steps + 1 + w)
             A.run("DROP INDEX facts_col2;")
     verify(steps + 10)
     # dump and restore: the restored database reads as the stock node does
