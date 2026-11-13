@@ -35,7 +35,7 @@ FROM (VALUES ('25'), ('30'), ('35'), ('60')) v(n) ORDER BY n;
  60           | scope "tenant_id": 120,000 entries for 20,000 rows (6.00 per row) is over sift.scope_max_multiplicity (3)
 (4 rows)
 
-SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY 1::text;
+SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY indexrelid::regclass::text;
    built   
 -----------
  events_25

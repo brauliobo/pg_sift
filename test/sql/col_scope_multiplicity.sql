@@ -18,7 +18,7 @@ SELECT make_scope('pairs_25', 2.5), make_scope('pairs_30', 3), make_scope('pairs
 
 SELECT n AS keys_per_row, try(format('CREATE INDEX events_%s ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_%s(dim_a_id, tenant_id)'')', n, n)) AS default_limit
 FROM (VALUES ('25'), ('30'), ('35'), ('60')) v(n) ORDER BY n;
-SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY 1::text;
+SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY indexrelid::regclass::text;
 
 -- the override builds the refused ones, and a lowered limit refuses what was accepted (a figure on the limit is accepted: the limit is the most)
 SET sift.scope_max_multiplicity = 6;
