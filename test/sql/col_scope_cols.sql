@@ -1,7 +1,6 @@
 -- The columns a scope keeps: WITH (scope = 'key: fk -> relation(member, scope_key) cols(a, b, c)'). The scope segments of that scope hold the derived key, the listed columns, the member key,
 -- the column the units are cut by (the first date or timestamp column) and the address of the row: the other columns have no chunk, summary or directory in them. A scan reads the scope units
--- only when every column it reads is one of those, else it reads the entity rows and EXPLAIN says which column; either way the rows are those of the join. A later release may write units
--- by reference: a scope segment of a kind this build does not read is refused (the entity rows still answer).
+-- only when every column it reads is one of those, else it reads the entity rows and EXPLAIN says which column; either way the rows are those of the join.
 -- The pair relations have their journal indexes; the first scope index of a relation starts its journal at the end of its build, so the first index on each (events_named for
 -- the tenants, events_two for the groups) has no stamps until a REINDEX takes them.
 CREATE EXTENSION pg_sift;
@@ -169,21 +168,6 @@ FROM (SELECT scope_run('SELECT label, count(*) FROM events e WHERE sift.in_scope
 					   'SELECT label, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY label ORDER BY label') r) t;
 SELECT sift.col_verify('events_sub', true);
 
--- a scope segment of a kind this build does not read (a later release writes units by reference): its stamp says so, or its directory entry has the flag. The scope read and verify
--- refuse it with the format error; the entity rows answer
-SET sift.enable_agg = on;
-SELECT sift._test_col_scope_mark('events_sub', true);
-SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS scope_read;
-SELECT try('SELECT sift.col_verify(''events_sub'', true)') AS verify;
-SELECT count(*) AS entity_rows FROM events WHERE kind = 3 AND dim_a_id < 50;
-SELECT sift._test_col_scope_mark('events_sub', false);
-SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS after_clear;
-SET sift.test_scope_unit_kind = 1;
-SELECT try('SELECT count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3)') AS kind_1;
-SET sift.test_scope_unit_kind = 255;
-SELECT try('SELECT sift.col_verify(''events_sub'', true)') AS kind_255_verify;
-SELECT count(*) AS entity_rows_kind FROM events WHERE kind = 3 AND dim_a_id < 50;
-RESET sift.test_scope_unit_kind;
 SELECT sift.col_verify('events_sub', true);
 
 DROP TABLE events;

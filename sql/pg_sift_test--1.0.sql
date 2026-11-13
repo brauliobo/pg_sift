@@ -587,10 +587,6 @@ CREATE FUNCTION sift._test_scope_refresh(rows int8, entries int8, columns int, c
 	OUT refresh_price float8, OUT read_price float8, OUT due bool) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_refresh' LANGUAGE C STRICT;
 
--- sets or clears the by-reference flag in the directory entry of every scope segment of an index, as a later release would write it
-CREATE FUNCTION sift._test_col_scope_mark(index regclass, ref bool) RETURNS void
-	AS 'MODULE_PATHNAME', 'sift_test_col_scope_mark' LANGUAGE C STRICT;
-
 CREATE FUNCTION sift._test_col_log_cache(OUT entries int8, OUT bytes int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_cache' LANGUAGE C STRICT;
 

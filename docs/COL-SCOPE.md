@@ -632,7 +632,6 @@ EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do i
 - **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).
 - **Generic plans.** A condition on the relation that reads a parameter is proved only by a custom plan: a generic plan keeps the join for a relation with a partial btree.
 - **Two builds at once.** `REINDEX` of two indexes of one table at the same time is not covered by the build-lock event trigger.
-- **Format.** The reserved by-reference unit kind (bits 8 to 15 of the scope stamp, directory flag 0x0010) is never written by 5.0: a library that finds one refuses the segment ("Use a newer pg_sift"), and the entity rows still answer.
 
 ## Without a scope index: replicate or reuse
 

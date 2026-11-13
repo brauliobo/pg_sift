@@ -408,9 +408,6 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_scope_sample_blocks",
 							"Testing: the blocks a table needs for the build of a scope index to estimate the multiplicity of its scopes from a sample first (0 = 2,048).",
 							NULL, &sift_test_scope_sample_blocks, 0, 0, 1048576, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_scope_unit_kind",
-							"Testing: the unit kind (bits 8..15 of the stamp) the scope segments of an index are read as having: a segment of a later release, which this build refuses.",
-							NULL, &sift_test_scope_unit_kind, 0, 0, 255, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_member_hash_bits",
 							"Testing: the low bits kept of the word the journal of a scope relation records for a text, varchar or uuid member (0 = all 64), to make members collide.",
 							NULL, &sift_test_member_hash_bits, 0, 0, 64, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

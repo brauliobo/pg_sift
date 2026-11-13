@@ -28,7 +28,6 @@
 PG_FUNCTION_INFO_V1(sift_test_member_hash);
 PG_FUNCTION_INFO_V1(sift_test_scope_expand);
 PG_FUNCTION_INFO_V1(sift_test_col_scope_entries);
-PG_FUNCTION_INFO_V1(sift_test_col_scope_mark);
 
 /* sift._test_member_hash(value): the word a journal records for a text, varchar or uuid member (sift_member_hash) */
 Datum
@@ -516,27 +515,6 @@ sift_test_scope_refresh(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, v, nulls)));
 }
 
-static void
-mark_scope_ref(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
-{
-	bool		ref = *(bool *) arg;
-
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].flags & (SIFT_SEG_SCOPE | SIFT_SEG_SCOPE_REF))
-			dir->segs[i].flags = ref ? dir->segs[i].flags | SIFT_SEG_SCOPE_REF : dir->segs[i].flags & ~SIFT_SEG_SCOPE_REF;
-}
-
-/* sift._test_col_scope_mark(index, ref): sets or clears the by-reference flag (SIFT_SEG_SCOPE_REF) in the directory entry of every scope segment, as a later release would write it */
-Datum
-sift_test_col_scope_mark(PG_FUNCTION_ARGS)
-{
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
-	bool		ref = PG_GETARG_BOOL(1);
-
-	sift_dir_update(index, &(SiftDirChange) {.fn = mark_scope_ref,.arg = &ref,.extra = InvalidBuffer});
-	index_close(index, NoLock);
-	PG_RETURN_VOID();
-}
 /* a predicate as text, NULL when the leg has none */
 static Datum
 pred_text(Oid rel, List *pred, bool *isnull)
