@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: child -> parent -> source; the scope EXISTS goes parent.feed_id -> assignment; child.feed_id repeats parent.feed_id (can go stale)

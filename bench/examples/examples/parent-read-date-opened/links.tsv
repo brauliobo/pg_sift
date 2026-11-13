@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+child	parent_id	parent	id	n:1	tier,opened,region,name

@@ -32,7 +32,7 @@ The union family (a third of the seeds, those with seed % 3 == 0; --family union
 grants of a member and the grants of the groups the member is in. A seed builds a `grants` table (tenant, a member or a group, deleted_at, optionally with CHECK member IS NULL OR group IS NULL, else
 a row may be both), a `memberships` table (group, member, deleted_at), the three partial unique btrees (column order drawn) and the scope
 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'. The three journals (grants by member, grants by group, memberships by member)
-are plain or partial on the pairs' predicate; some seeds omit one, and then no read may be stored and every one says a documented reason. The steps: grants inserted, soft deleted, restored, moved
+are plain or partial on the pairs' predicate; a scope of two paths without one of them is refused when the index is made (test col_scope_twohop_declare). The steps: grants inserted, soft deleted, restored, moved
 between direct and group, group grants on and off, memberships inserted, soft deleted, restored, moved to another group, a member reached by both paths, a group whose dim_b all leave and
 return, HOT updates of a column no btree holds, reload of one table, REINDEX of a journal, besides the steps of the other seeds (aborted, savepoints, reads inside the transaction, promotion,
 merge, VACUUM, REINDEX, the REPEATABLE READ reader). The oracle is the view pair_set, the SQL UNION of the three tables, written once (Seed.pair_set_sql): the plain forms IN, EXISTS and the join
@@ -442,7 +442,6 @@ class UnionSeed(Seed):
         self.soft, self.act, self.jpartial = False, '', None
         self.groups = h.choice([4, 12, 40])
         self.enforced = h.random() < 0.6   # CHECK member IS NULL OR group IS NULL
-        self.omit = h.choice([None] * 9 + [j[0] for j in JOURNALS])   # one in four seeds
         self.partial = {j[0]: h.random() < 0.5 for j in JOURNALS}
         self.btree = {k: h.choice(FIRST) for k in ('direct', 'group', 'member')}
         self.journals = [j[0] for j in JOURNALS if j[0] != self.omit]

@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: event (partitioned by month) -> source: a connected index over a partitioned child has one piece per partition
