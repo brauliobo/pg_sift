@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.3.4 - 2026-11-13
+
 - Fixed: pg_sift: after a package upgrade without a PostgreSQL restart, or after a change of a setting that sets the size of a shared table, a statement could fail with `ERROR: requested DSM segment size does not match size of existing segment`. The server's registry of dynamic shared memory keeps the name and size of the first request until the server restarts and raises that error for a request of the same name at another size; the aggregate read of a joined table or a dimension map, the write-buffer arena and the rollup state asked the registry without a way to go on. The name registered now carries the size asked, in the one helper that asks the registry, so a name is never asked at two sizes; the entries of an earlier release or size are not joined again (they stay in memory until the server restarts), and the rows of the joined tables and the dimension maps are left unshared, with a message in the log, where a table cannot be had. A size of `sift.col_leaf_cache_kb` that no table has yet is a table of its own. Held by the TAP test `col_dsm_registry_stale` (every 4.x release before 4.3.4)
 
 ## 4.3.3 - 2026-11-12
