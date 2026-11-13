@@ -262,6 +262,7 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
     if ERR.search(out):
         raise Fail(f'{label}: {out.strip()[:800]}')
     got = {}
+    empty = strict and a.run("SELECT 'rows', NOT EXISTS (SELECT 1 FROM events);").split('|')[-1].strip() == 't'   # no row, no segment to carry the stamp
     for line in out.strip().splitlines():
         m = re.match(r'^(\d+)\|(true|false)\|(true|false)\|([^|]*)\|(.*)$', line)
         if not m:
@@ -279,7 +280,7 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
             stats['why ' + why] += 1
         if why and not DOCUMENTED.match(why):
             raise Fail(f'{label}: {name}: undocumented fallback reason "{why}"')
-        if strict and name == 'one key' and (not engaged or why):
+        if strict and not empty and name == 'one key' and (not engaged or why):
             raise Fail(f'{label}: {name}: not stored right after a build ({why or "no scope read"})')
         got[i] = h
     if len(got) != len(qs):
