@@ -652,35 +652,16 @@ sift_scope_fill_members(SiftScopeFill *f, int scope, const SiftColBatch *b)
 {
 	ScopeMap   *m = &f->m[scope];
 	const SiftCVals *fk = &b->col[m->fk_leaf];
-	const SiftCDict *dict = b->dict[m->fk_leaf];
-	int64	   *ids;
 
 	if (m->kma == NULL)
 		return fk->key;
 	if (m->idcap < b->nrows)
 	{
+		/* check-memory: allow-allocs the rows of one batch, which the fill bounds */
 		m->ids = m->ids == NULL ? MemoryContextAlloc(f->cx, b->nrows * sizeof(int64)) : repalloc(m->ids, b->nrows * sizeof(int64));
 		m->idcap = b->nrows;
 	}
-	ids = palloc(Max(dict->n, 1) * sizeof(int64));
-	for (uint32 i = 0; i < dict->n; i++)
-		ids[i] = PG_INT64_MIN;
-	for (uint32 r = 0; r < b->nrows; r++)
-	{
-		int64		code = fk->key[r];
-		uint32		len;
-		const char *s;
-
-		if (sift_col_bit_test(fk->nulls, r))
-			continue;
-		if (ids[code] == PG_INT64_MIN)
-		{
-			s = sift_cdict_str(dict, (uint32) code, &len);
-			(void) sift_keymap_code_bytes(m->kma, s, len, &ids[code]);
-		}
-		m->ids[r] = ids[code];
-	}
-	pfree(ids);
+	sift_keymap_batch_codes(m->kma, b->dict[m->fk_leaf], fk->key, fk->nulls, b->nrows, true, m->ids);
 	return m->ids;
 }
 

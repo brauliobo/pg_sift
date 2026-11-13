@@ -519,6 +519,13 @@ arm_of(AggExec *ex, int *total, int sleaf, int fk, const int64 *keys, uint32 nke
 	return left ? lappend(arm, left) : arm;
 }
 
+/* the drop lists the scan tests as conjuncts: those of an integer member (the source leaves out the rows of a string member's, which a conjunct cannot say) */
+static int
+conjunct_drops(const SiftScopeRead *rd)
+{
+	return rd->mm != NULL ? 0 : rd->ndrop;
+}
+
 /* the distinct keys that have no drop list */
 static uint32
 plain_keys(const SiftAggScope *sc, const SiftScopeRead *rd, int64 *out)
@@ -529,7 +536,7 @@ plain_keys(const SiftAggScope *sc, const SiftScopeRead *rd, int64 *out)
 	{
 		bool		skip = false;
 
-		for (int d = 0; d < rd->ndrop; d++)
+		for (int d = 0; d < conjunct_drops(rd); d++)
 			skip |= rd->drop[d].key == sc->keys[i];
 		for (uint32 j = 0; j < n; j++)
 			skip |= out[j] == sc->keys[i];
@@ -561,9 +568,9 @@ stored_filter(AggExec *ex, int *total, List **add, int sleaf)
 	}
 	ex->scope_preds = 0;
 	nplain = plain_keys(sc, rd, plain);
-	if (nplain > 0 || rd->ndrop == 0)
+	if (nplain > 0 || conjunct_drops(rd) == 0)
 		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, plain, nplain, NULL));
-	for (int d = 0; d < rd->ndrop; d++)
+	for (int d = 0; d < conjunct_drops(rd); d++)
 		arms = lappend(arms, arm_of(ex, total, sleaf, sc->fk, &rd->drop[d].key, 1, &rd->drop[d]));
 	if (list_length(arms) == 1)
 	{

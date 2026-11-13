@@ -223,8 +223,8 @@ struct SiftScopeDelta;
 extern void *sift_col_scope_view(Relation heap, const struct SiftDirSnapshot *dir);
 extern SiftScopeBuffer *sift_scope_buffers(Relation index, const struct SiftDirSnapshot *dir, int *n);
 extern uint64 sift_scope_buffers_rows(const SiftScopeBuffer *bufs, int nbufs);
-/* The member keys of the rows of the buffers (not distinct, not sorted); *n of them */
-extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, uint32 *n);
+/* The member keys of the rows of the buffers (not distinct, not sorted); *n of them: for a text, varchar or uuid member (mm, the map of the read) their journal words */
+extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, SiftKeyMap *mm, uint32 *n);
 /*
  * The live rows of the entity segments whose member key is one of the members (ascending), read by member key: first a plan, from the point directory of the member leaf of each segment (the rows it
  * lists) or, for a segment with none, from the zones of the leaf (the units it leaves open are read whole): *rows the rows the members are expected to have there, *scanned those read to find them (rows_per_member
@@ -233,14 +233,15 @@ extern int64 *sift_scope_buffers_members(Relation index, int scope, const SiftSc
  */
 struct SiftScopeSegPlan;
 typedef struct SiftScopeSegPlan SiftScopeSegPlan;
-extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, double rows_per_member, uint64 *rows, uint64 *scanned,
-												  uint64 *units);
+extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, double rows_per_member, uint64 *rows,
+												  uint64 *scanned, uint64 *units);
 extern SiftScopeBuffer *sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, Snapshot snap, int scope, const struct SiftDirSnapshot *dir, SiftScopeBuffer *bufs, int *nbufs,
 												 const int *leaves, int nleaves, uint64 *rows);
 /* The sets of b after those of a */
 extern struct SiftScopeDelta *sift_scope_delta_merge(const struct SiftScopeDelta *a, const struct SiftScopeDelta *b);
 /* The rows of the buffers whose member has one of the pairs (ascending by member), a copy for each, with the values of the leaves[0..nleaves) the scan reads: *rows of them */
-extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves, int nleaves, uint64 *rows);
+extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves,
+													  int nleaves, uint64 *rows);
 
 /* The pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), read from the leaves of its sift_col index ix (agg/lookcol.c); false: the index cannot give them */
 extern bool lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n);
@@ -270,6 +271,7 @@ typedef struct SiftScopeRead
 	uint64		entity_rows;	/* the rows of the entity segments */
 	struct ScopeStage *stage;	/* the second half of the read is still to be made (sift_scope_read_pairs); until then patch_*, delta_rows are the journal's expectation */
 	struct SiftScopeSegPlan *est_plan;	/* the plan made for the members expected */
+	SiftKeyMap *mm;				/* a text, varchar or uuid member: the map of the read, whose codes the pairs, the patch, the delta and the rows of the segments and buffers name a member by (NULL: an integer member); except holds the journal words then */
 } SiftScopeRead;
 
 /*

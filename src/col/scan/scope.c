@@ -201,6 +201,7 @@ typedef struct PairScan
 	Oid			btree;
 	AttrNumber	member;
 	AttrNumber	skey;
+	SiftKeyMap *kma;			/* the member column is text, varchar or uuid: its values are the codes of this map of the statement (NULL: an integer column) */
 	SiftKeyMap *km;				/* the scope key column is text, varchar or uuid: its values are the codes of this map (NULL: an integer column) */
 	Snapshot	snap;
 	const int64 *keys;			/* the scope keys asked for, sorted and distinct; NULL: every key */
@@ -241,7 +242,7 @@ probe_of_key(void *arg, TupleTableSlot *slot)
 	PairScan   *ps = arg;
 	int64		m;
 
-	if (sift_conn_slot_key(slot, ps->member, &m))
+	if (sift_conn_slot_code(slot, ps->member, ps->kma, &m))
 		pairs_add(&ps->out, m, ps->cur);
 	return true;
 }
@@ -253,7 +254,7 @@ probe_of_member(void *arg, TupleTableSlot *slot)
 	int64		m,
 				k;
 
-	if (sift_conn_pred_test(&ps->pred, slot) && sift_conn_slot_key(slot, ps->member, &m) && sift_conn_slot_code(slot, ps->skey, ps->km, &k) && wanted(ps, k))
+	if (sift_conn_pred_test(&ps->pred, slot) && sift_conn_slot_code(slot, ps->member, ps->kma, &m) && sift_conn_slot_code(slot, ps->skey, ps->km, &k) && wanted(ps, k))
 		pairs_add(&ps->out, m, k);
 	return true;
 }
@@ -292,8 +293,8 @@ leaf_pairs(PairScan *ps)
 	SiftScopePair *p;
 	uint32		n;
 
-	/* the leaves of the journal index hold the strings of the key, not its codes */
-	if (ps->km != NULL || !OidIsValid(journal) || !lookcol_pairs(ps->rel, journal, ps->snap, ps->member, ps->skey, ps->keys, ps->nkeys, &p, &n))
+	/* the leaves of the journal index hold the strings of the key and of the member, not their codes */
+	if (ps->km != NULL || ps->kma != NULL || !OidIsValid(journal) || !lookcol_pairs(ps->rel, journal, ps->snap, ps->member, ps->skey, ps->keys, ps->nkeys, &p, &n))
 		return false;
 	for (uint32 i = 0; i < n; i++)
 		pairs_add(&ps->out, p[i].member, p[i].key);
@@ -310,7 +311,7 @@ pairs_of_keys(PairScan *ps)
 	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
 	else if (!leaf_pairs(ps))
-		sift_conn_scan_pairs(ps->rel, ps->btree, ps->member, NULL, ps->skey, ps->km, ps->snap, scan_pair, ps);
+		sift_conn_scan_pairs(ps->rel, ps->btree, ps->member, ps->kma, ps->skey, ps->km, ps->snap, scan_pair, ps);
 	pairs_distinct(&ps->out);
 }
 
@@ -332,7 +333,7 @@ probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
 static double
 keys_ns(const PairScan *ps, double rows)
 {
-	double		read = rows * (ps->km == NULL && OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
+	double		read = rows * (ps->km == NULL && ps->kma == NULL && OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
 
 	return ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) ? Min(read, (double) ps->nkeys * PROBE_NS) : read;
 }
@@ -357,30 +358,42 @@ probe_members(PairScan *ps, const int64 *members, uint32 n)
 	return true;
 }
 
-/* The pairs of the members with one of the keys: probed (probe_members), else the pairs of the keys filtered */
+/*
+ * Is the member of a pair (its member key: the integer, or the code of the map of a text, varchar or uuid member) one of the members, ascending: the integers of the members, or for a text, varchar or
+ * uuid member their journal words (sift_member_hash), which two members may share: the set is of the members the journal names, a superset of them
+ */
+static bool
+in_set(SiftKeyMap *kma, const int64 *members, uint32 n, int64 member)
+{
+	return has_i64(members, n, kma != NULL ? (int64) sift_keymap_member_hash(kma, member) : member);
+}
+
+/* The pairs of the members with one of the keys: probed (probe_members), else the pairs of the keys filtered. The members of a text, varchar or uuid column are known by their words, which no btree asks for */
 static void
 pairs_of_members(PairScan *ps, const int64 *members, uint32 n)
 {
 	uint32		k = 0;
 
-	if (probe_members(ps, members, n))
+	if (ps->kma == NULL && probe_members(ps, members, n))
 		return;
 	pairs_of_keys(ps);
 	for (uint32 i = 0; i < ps->out.n; i++)
-		if (has_i64(members, n, ps->out.p[i].member))
+		if (in_set(ps->kma, members, n, ps->out.p[i].member))
 			ps->out.p[k++] = ps->out.p[i];
 	ps->out.n = k;
 }
 
 /* The scope relation and its btree of a declared scope; the relation is open (AccessShare) */
 static Oid
-scope_relation(Relation heap, Relation index, int ord, SiftKeyMap *km, PairScan *ps, const int64 *keys, uint32 nkeys, Snapshot snap)
+scope_relation(Relation heap, Relation index, int ord, SiftKeyMap *km, SiftKeyMap *mm, PairScan *ps, const int64 *keys, uint32 nkeys, Snapshot snap)
 {
 	SiftScopeSpecs *sp = sift_scope_specs(index);
 	Oid			btree = sift_scope_relation_index(heap, index, sp->s[ord], &ps->rel, &ps->member, &ps->skey);
 
 	ps->btree = btree;
 	ps->km = km;
+	/* the members of a read are one map: the pairs and the rows of the buffers and the segments must give a value one code, so the first call makes it and the next ones are given it */
+	ps->kma = mm != NULL ? mm : sift_keymap_transient(ps->rel, ps->member);
 	ps->snap = snap;
 	ps->keys = keys;
 	ps->nkeys = nkeys;
@@ -472,12 +485,12 @@ add_joined_pairs(Relation heap, Relation index, const SiftScopeSpec *s, PairScan
  * when there are more). Of two paths the pairs are those of the pairs relation and of the joined path.
  */
 static ScopePairs
-scope_pairs(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapshot snap, const int64 *keys, uint32 nkeys, const int64 *members, uint32 nmembers, uint32 max)
+scope_pairs(Relation heap, Relation index, int ord, SiftKeyMap *km, SiftKeyMap *mm, Snapshot snap, const int64 *keys, uint32 nkeys, const int64 *members, uint32 nmembers, uint32 max)
 {
 	const SiftScopeSpec *s = sift_scope_specs(index)->s[ord];
 	PairScan	ps = {0};
 
-	scope_relation(heap, index, ord, km, &ps, keys, nkeys, snap);
+	scope_relation(heap, index, ord, km, mm, &ps, keys, nkeys, snap);
 	ps.out.max = max;
 	if (members == NULL)
 		pairs_of_keys(&ps);
@@ -512,7 +525,7 @@ sift_scope_keymap(Relation heap, Relation index, const char *key_name)
 	PairScan	ps = {0};
 	SiftKeyMap *km;
 
-	(void) scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), NULL, &ps, NULL, 0, NULL);
+	(void) scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), NULL, NULL, &ps, NULL, 0, NULL);
 	km = sift_keymap_open(ps.rel, ps.skey, false);
 	table_close(ps.rel, NoLock);
 	return km;
@@ -523,7 +536,7 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyM
 {
 	uint32		nk;
 	int64	   *sorted = sorted_keys(keys, nkeys, &nk);
-	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal(sift_scope_specs(index), key_name), km, snap, sorted, nk, NULL, 0, 0);
+	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal(sift_scope_specs(index), key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
 
 	return pair_values(&pairs, false, n);
 }
@@ -534,12 +547,13 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 	PairScan	ps = {0};
 	int			ord = scope_ordinal(sift_scope_specs(index), key_name);
 
-	scope_relation(heap, index, ord, NULL, &ps, NULL, 0, NULL);
+	scope_relation(heap, index, ord, NULL, NULL, &ps, NULL, 0, NULL);
 	*rel = ps.rel;
 	*member = ps.member;
 	*skey = ps.skey;
 	/* the leaves of one journal list the pairs of one relation; the members of a scope of two paths are listed by sift_scope_members, and the leaves hold the strings of a text key, not its codes */
-	return sift_scope_specs(index)->s[ord]->joined != NULL || sift_keymap_type(get_atttype(RelationGetRelid(ps.rel), ps.skey)) ? InvalidOid : sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
+	return sift_scope_specs(index)->s[ord]->joined != NULL || ps.kma != NULL || sift_keymap_type(get_atttype(RelationGetRelid(ps.rel), ps.skey)) ? InvalidOid :
+		sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
 /* ---- what the segments of the index say ---- */
@@ -628,14 +642,14 @@ pairs_first(const ScopePairs *ps)
 	return out;
 }
 
-/* The pairs of ps (ascending by member) of the members m[0..n) */
+/* The pairs of ps (ascending by member) of the members m[0..n): a string member (mm) is one of them when its journal word is */
 static ScopePairs
-pairs_of(const ScopePairs *ps, const int64 *m, uint32 n)
+pairs_of(const ScopePairs *ps, SiftKeyMap *mm, const int64 *m, uint32 n)
 {
 	ScopePairs	out = {0};
 
 	for (uint32 i = 0; i < ps->n; i++)
-		if (has_i64(m, n, ps->p[i].member))
+		if (in_set(mm, m, n, ps->p[i].member))
 			pairs_add(&out, ps->p[i].member, ps->p[i].key);
 	return out;
 }
@@ -645,7 +659,7 @@ pairs_of(const ScopePairs *ps, const int64 *m, uint32 n)
  * rd->drop[i] lists, for a key, the members. The members of except are read through the entity path and are in no unit read. False: the lists take more than work_mem.
  */
 static bool
-dedupe_drops(const ScopePairs *all, const int64 *except, uint32 nexcept, SiftScopeRead *rd)
+dedupe_drops(const ScopePairs *all, SiftKeyMap *mm, const int64 *except, uint32 nexcept, SiftScopeRead *rd)
 {
 	ScopePairs	drops = {0};
 	uint32		start = 0;
@@ -654,7 +668,7 @@ dedupe_drops(const ScopePairs *all, const int64 *except, uint32 nexcept, SiftSco
 	{
 		if (i < all->n && all->p[i].member == all->p[start].member)
 			continue;
-		if (i - start > 1 && !has_i64(except, nexcept, all->p[start].member))
+		if (i - start > 1 && !in_set(mm, except, nexcept, all->p[start].member))
 			for (uint32 j = start + 1; j < i; j++)
 				pairs_add(&drops, all->p[start].member, all->p[j].key);
 		start = i;
@@ -698,6 +712,7 @@ typedef struct ScopeFill
 	SiftScopeBuffer *bufs;
 	int			nbufs;
 	ScopePairs	delta;			/* the pairs the rows of the buffers and of the patch are copied by */
+	SiftKeyMap *mm;
 	SiftScopeSegPlan *plan;
 	const int  *leaves;
 	int			nleaves;
@@ -724,6 +739,7 @@ typedef struct ScopeStage
 	uint64		nrows;			/* the rows of the relation of pairs */
 	double		rows_per_member;
 	SiftKeyMap *km;
+	SiftKeyMap *mm;
 } ScopeStage;
 
 /*
@@ -777,15 +793,10 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	rd->buffer_rows = nbuf = sift_scope_buffers_rows(bufs, nbufs);
 	if (rd->nexcept == 0 && nbuf == 0 && !several)
 		return;
-	if (sift_scope_member_text(index, ord))
-	{
-		/* the units are exact for the pairs of the stamp: a member that changed, a row no entry describes or a member of several keys needs its pairs by value, which only the join as written reads */
-		rd->why = rd->nexcept > 0 ? "text member changed" : nbuf > 0 ? "text member in the write buffer" : "text member of several keys";
-		return;
-	}
-	scope_relation(heap, index, ord, km, &ps, keys, nkeys, snap);
+	scope_relation(heap, index, ord, km, NULL, &ps, keys, nkeys, snap);
+	rd->mm = ps.kma;
 	st = rd->stage = palloc(sizeof(ScopeStage));
-	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, topn, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel), 0, km};
+	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, topn, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel), 0, km, rd->mm};
 	table_close(ps.rel, NoLock);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
@@ -796,7 +807,7 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 		st->rows_per_member = rd->entity_rows / Max((double) st->nrows, 1.0);
 	if (rd->nadded > 0)
 	{
-		rd->est_plan = sift_scope_segment_plan(index, ord, dir, rd->added, rd->nadded, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+		rd->est_plan = sift_scope_segment_plan(index, ord, dir, rd->added, rd->nadded, rd->mm, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
 		rd->delta_rows = nbuf;
 	}
 }
@@ -815,44 +826,44 @@ stored_pairs(SiftScopeRead *rd)
 	if (st->several || st->nbuf > 0)
 		max = (work_mem * 1024L) / sizeof(SiftScopePair);
 	if (st->several || (st->nbuf > 0 && !sift_conn_probe_cheaper(st->nbuf, st->nrows)))
-		all = scope_pairs(st->heap, st->index, st->ord, st->km, st->snap, st->keys, st->nkeys, NULL, 0, max);	/* the buffers hold more rows than the pairs of the keys are worth listing members for */
+		all = scope_pairs(st->heap, st->index, st->ord, st->km, st->mm, st->snap, st->keys, st->nkeys, NULL, 0, max);	/* the buffers hold more rows than the pairs of the keys are worth listing members for */
 	else
 	{
 		uint32		nmem = 0,
 					nboth;
-		int64	   *members = st->nbuf > 0 ? sift_scope_buffers_members(st->index, st->ord, st->bufs, st->nbufs, &nmem) : NULL;
+		int64	   *members = st->nbuf > 0 ? sift_scope_buffers_members(st->index, st->ord, st->bufs, st->nbufs, st->mm, &nmem) : NULL;
 		int64	   *both = union_i64(rd->except, rd->nexcept, members, nmem, &nboth);
 
-		all = scope_pairs(st->heap, st->index, st->ord, st->km, st->snap, st->keys, st->nkeys, both, nboth, max);
+		all = scope_pairs(st->heap, st->index, st->ord, st->km, st->mm, st->snap, st->keys, st->nkeys, both, nboth, max);
 	}
 	rd->pairs = all.n;
 	if (all.over)
 		rd->why = st->several ? "dedupe over work_mem" : "write buffer";
-	else if (st->several && !dedupe_drops(&all, rd->except, rd->nexcept, rd))
+	else if (st->several && !dedupe_drops(&all, st->mm, rd->except, rd->nexcept, rd))
 		rd->why = "dedupe over work_mem";
 	if (rd->why != NULL)
 		return;
-	patch = pairs_of(&all, rd->except, rd->nexcept);
+	patch = pairs_of(&all, st->mm, rd->except, rd->nexcept);
 	rd->patch = palloc(Max(patch.n, 1) * sizeof(int64));
 	for (uint32 i = 0; i < patch.n; i++)
 		rd->patch[i] = patch.p[i].member;
 	rd->npatch = sort_unique(rd->patch, patch.n);
 	/* a member of several keys counts once, in its least key, for the rows that have no entry yet as for those that have */
 	delta = st->several ? pairs_first(&all) : all;
-	rd->delta = sift_scope_delta_select(st->index, st->ord, st->bufs, st->nbufs, delta.p, delta.n, st->leaves, st->nleaves, &rd->delta_rows);
+	rd->delta = sift_scope_delta_select(st->index, st->ord, st->mm, st->bufs, st->nbufs, delta.p, delta.n, st->leaves, st->nleaves, &rd->delta_rows);
 	if ((rd->npatch > 0 || rd->delta_rows > 0) && st->topn)
 		rd->why = "top-n, changed pairs";
 	if (rd->why != NULL)
 		return;
 	rd->fill = palloc(sizeof(ScopeFill));
-	*rd->fill = (ScopeFill) {st->heap, st->index, st->snap, st->ord, st->dir, st->bufs, st->nbufs, delta, NULL, st->leaves, st->nleaves};
+	*rd->fill = (ScopeFill) {st->heap, st->index, st->snap, st->ord, st->dir, st->bufs, st->nbufs, delta, st->mm, NULL, st->leaves, st->nleaves};
 	if (rd->npatch > 0)
 	{
 		/* the members expected from the journal are those the pairs give: the plan made for them is the one */
-		if (rd->est_plan != NULL && rd->npatch == rd->nadded && memcmp(rd->patch, rd->added, rd->npatch * sizeof(int64)) == 0)
+		if (rd->est_plan != NULL && st->mm == NULL && rd->npatch == rd->nadded && memcmp(rd->patch, rd->added, rd->npatch * sizeof(int64)) == 0)
 			rd->fill->plan = rd->est_plan;
 		else
-			rd->fill->plan = sift_scope_segment_plan(st->index, st->ord, st->dir, rd->patch, rd->npatch, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
+			rd->fill->plan = sift_scope_segment_plan(st->index, st->ord, st->dir, rd->patch, rd->npatch, st->mm, st->rows_per_member, &rd->patch_rows, &rd->patch_scan, &rd->patch_units);
 	}
 	else
 		rd->patch_rows = rd->patch_scan = rd->patch_units = 0;
@@ -878,7 +889,7 @@ sift_scope_read_rows(SiftScopeRead *rd)
 		return;
 	nsegs = f->nbufs;
 	segs = sift_scope_segment_rows(f->plan, f->heap, f->index, f->snap, f->ord, f->dir, f->bufs, &nsegs, f->leaves, f->nleaves, &rd->patch_rows);
-	d = sift_scope_delta_select(f->index, f->ord, segs + f->nbufs, nsegs - f->nbufs, f->delta.p, f->delta.n, f->leaves, f->nleaves, &copies);
+	d = sift_scope_delta_select(f->index, f->ord, f->mm, segs + f->nbufs, nsegs - f->nbufs, f->delta.p, f->delta.n, f->leaves, f->nleaves, &copies);
 	rd->delta = sift_scope_delta_merge(rd->delta, d);
 	rd->delta_rows += copies;
 }
@@ -928,7 +939,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 		return false;
 	c->changed = changed.n;
 	km = sift_scope_keymap(heap, index, sift_scope_specs(index)->s[scope]->key_name);
-	pairs = scope_pairs(heap, index, scope, km, snap, NULL, 0, changed.keys, changed.n, 0);
+	pairs = scope_pairs(heap, index, scope, km, NULL, snap, NULL, 0, changed.keys, changed.n, 0);
 	sift_conn_keys_free(&changed);
 	if (pairs.n == 0)
 		return true;	/* no changed member has a pair now: nothing to patch */

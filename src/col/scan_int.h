@@ -130,6 +130,14 @@ typedef struct ColSelCache
 	uint32	   *idx;			/* its row positions */
 } ColSelCache;
 
+/* the members whose rows the units of a scope key do not count (a member of several keys counts in the least of them) */
+typedef struct ColDrop
+{
+	int64		key;
+	uint32		n;
+	const int64 *members;		/* ascending */
+} ColDrop;
+
 /* An inline STR chunk of the unit as the codes of a dictionary of its own (the form every reader and test works on), built on first use */
 typedef struct ColInline
 {
@@ -246,6 +254,15 @@ struct SiftColSource
 	uint64	   *sxb;			/* ... as a bitmap over their range when it is not too wide (NULL: bisect sx), sx_span bits */
 	uint64		sx_span;
 	int			sx_leaf;		/* ... and the leaf of the scope segments that holds the member key */
+	bool		sx_str;			/* ... a string leaf: sx holds the journal words of the members (sift_member_hash), which the strings of the leaf are hashed to */
+	bool		sx_on;			/* the units are checked for rows to leave out: members to leave out (nsx), or members a key's units do not count (sd) */
+	const struct SiftCDict *sx_dict;	/* the dictionary of the segment sx_memo and sx_code are of ... */
+	uint8	   *sx_memo;		/* ... and, for each of its codes, 1 + whether its string is of a member the source leaves out (0: not asked) */
+	int64	   *sx_code;		/* ... and the code its string has in sd_map (PG_INT64_MAX: not asked, PG_INT64_MIN: none) */
+	struct ColDrop *sd;			/* a string member counted once in the least of several keys: for each key whose units do not count some members (ascending by key), the members, as codes of sd_map (ascending) */
+	int			nsd;
+	int			sd_leaf;		/* the leaf of the scope segments that holds the scope key */
+	struct SiftKeyMap *sd_map;
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
 	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
@@ -409,7 +426,7 @@ unit_clean(ColUnit *cu)
 		unit_allvisible_vm(cu);
 		SIFT_COL_JITTER();
 		cu->clean = !sift_cseg_dirty(cu->seg, cu->u);
-		if (cu->src->nsx > 0)
+		if (cu->src->sx_on)
 			cu->clean &= !unit_except(cu);
 		cu->clean_ready = true;
 	}

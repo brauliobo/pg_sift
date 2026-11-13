@@ -452,7 +452,7 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	int64		vals[SIFT_GORD_PIN_MAX];
 
 	src->galeaf1 = 0;
-	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->nsx > 0 || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
+	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->sx_on || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
 	for (int i = 0; i < src->nseg; i++)
 		nfree += src->seg[i].gfree = !sift_cseg_gorder_has(src->seg[i].seg, col);

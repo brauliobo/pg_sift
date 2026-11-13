@@ -761,7 +761,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		load_memory(cu, src->order[src->ocur++]);
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
-	else if (!((src->super || src->whole || src->pcnt) && src->nsx == 0 && col_super_take(src, best, cu)))
+	else if (!((src->super || src->whole || src->pcnt) && !src->sx_on && col_super_take(src, best, cu)))
 	{
 		load_stored(cu, best, best->cur);
 		if (sift_cseg_dirty(best->seg, best->cur))

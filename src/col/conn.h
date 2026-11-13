@@ -264,6 +264,7 @@ extern bool sift_keymap_type(Oid typid);
 extern const char *sift_keymap_column_refusal(Oid typid, Oid collation);
 extern bool sift_keymap_same_kind(Oid a, Oid b);
 extern uint64 sift_member_hash(Oid typid, Datum d);
+extern uint64 sift_member_hash_bytes(const char *s, uint32 len);
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT int sift_test_member_hash_bits;
 #endif
@@ -278,6 +279,11 @@ extern void sift_keymap_hold(SiftKeyMap *m);
 extern void sift_keymap_release(SiftKeyMap *m);
 extern bool sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code);
 extern bool sift_keymap_code_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code);
+/* For the codes of a map with no store: the bytes, and the journal word, of the value of a code */
+extern const char *sift_keymap_bytes(SiftKeyMap *m, int64 code, uint32 *len);
+extern uint64 sift_keymap_member_hash(SiftKeyMap *m, int64 code);
+extern bool sift_keymap_find_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code);
+extern void sift_keymap_batch_codes(SiftKeyMap *m, const struct SiftCDict *dict, const int64 *key, const uint64 *nulls, uint32 nrows, bool intern, int64 *out);
 extern Datum sift_keymap_datum(SiftKeyMap *m, int64 code);
 
 /* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation. pred_index: a btree of rel that holds both columns, whose entries are the rows (a partial one: those of its predicate), read as an index only scan; InvalidOid: every row, read from the heap */

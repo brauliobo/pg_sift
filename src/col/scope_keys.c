@@ -103,9 +103,16 @@ sift_member_hash(Oid typid, Datum d)
 {
 	const char *s;
 	uint32		len;
-	uint64		h = UINT64CONST(0xcbf29ce484222325);
 
 	value_bytes(typid, d, &s, &len);
+	return sift_member_hash_bytes(s, len);
+}
+
+uint64
+sift_member_hash_bytes(const char *s, uint32 len)
+{
+	uint64		h = UINT64CONST(0xcbf29ce484222325);
+
 	for (uint32 i = 0; i < len; i++)
 		h = (h ^ (unsigned char) s[i]) * UINT64CONST(0x100000001b3);
 #ifdef SIFT_TESTING
@@ -318,4 +325,66 @@ sift_keymap_datum(SiftKeyMap *m, int64 code)
 		return UUIDPGetDatum(u);
 	}
 	return PointerGetDatum(cstring_to_text_with_len(s, len));
+}
+
+/* The bytes of the value a transient code stands for (a map with no store) */
+const char *
+sift_keymap_bytes(SiftKeyMap *m, int64 code, uint32 *len)
+{
+	Assert(code < 0);
+	return sift_cdict_str(m->extra, (uint32) (-1 - code), len);
+}
+
+/* The journal word of the member a transient code stands for */
+uint64
+sift_keymap_member_hash(SiftKeyMap *m, int64 code)
+{
+	uint32		len;
+	const char *s = sift_keymap_bytes(m, code, &len);
+
+	return sift_member_hash_bytes(s, len);
+}
+
+/* The code of a value the map has one for, as a reader's (false: no pair has the value, the map never gives it a code here) */
+bool
+sift_keymap_find_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code)
+{
+	int64		i = m->extra != NULL ? sift_cdict_find(m->extra, s, len) : -1;
+
+	*code = -1 - i;
+	return i >= 0;
+}
+
+/*
+ * The codes of the rows of a batch whose leaf holds the strings of dict (key: the codes of the dictionary, nulls: bit set = NULL, or NULL): one lookup for each value of the dictionary a row
+ * holds, not for each row. intern: a value the map lacks gets a code (a writer's fill), else it has none (PG_INT64_MIN, as a NULL row has).
+ */
+void
+sift_keymap_batch_codes(SiftKeyMap *m, const SiftCDict *dict, const int64 *key, const uint64 *nulls, uint32 nrows, bool intern, int64 *out)
+{
+	int64	   *memo = palloc(Max(dict->n, 1) * sizeof(int64));
+	int64		none = PG_INT64_MIN + 1;
+
+	for (uint32 i = 0; i < dict->n; i++)
+		memo[i] = none;
+	for (uint32 r = 0; r < nrows; r++)
+	{
+		int64		code = key[r];
+
+		out[r] = PG_INT64_MIN;
+		if (nulls != NULL && sift_col_bit_test(nulls, r))
+			continue;
+		if (memo[code] == none)
+		{
+			uint32		len;
+			const char *s = sift_cdict_str(dict, (uint32) code, &len);
+
+			if (intern)
+				(void) sift_keymap_code_bytes(m, s, len, &memo[code]);
+			else if (!sift_keymap_find_bytes(m, s, len, &memo[code]))
+				memo[code] = PG_INT64_MIN;
+		}
+		out[r] = memo[code];
+	}
+	pfree(memo);
 }
