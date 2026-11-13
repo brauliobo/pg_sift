@@ -360,7 +360,7 @@ probe_members(PairScan *ps, const int64 *members, uint32 n)
 
 /*
  * Is the member of a pair (its member key: the integer, or the code of the map of a text, varchar or uuid member) one of the members, ascending: the integers of the members, or for a text, varchar or
- * uuid member their journal words (sift_member_hash), which two members may share: the set is of the members the journal names, a superset of them
+ * uuid member their journal words (sift_member_hash), which two members may share: the set is of the members the journal names and every other member with one of their words
  */
 static bool
 in_set(SiftKeyMap *kma, const int64 *members, uint32 n, int64 member)
