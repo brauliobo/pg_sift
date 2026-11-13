@@ -152,10 +152,10 @@ delta_copy(size_t bytes)
 }
 
 #define DELTA_KEY(x) ((x)->key)
-#define DELTA_NOKEY(x) 0
-#define DELTA_ADDR(x) ((x)->addr)
-/* the copies come in the order of their rows, which the buffers keep in the order of their addresses: the radix sort by key is stable, and the comparison sort takes any other order */
-SIFT_DEFINE_RADIX_SORT(delta_sort, DeltaRow, DELTA_KEY, DELTA_NOKEY, DELTA_ADDR, delta_copy, pfree, delta_sort_cmp)
+#define DELTA_ADDR(x) ((int64) (x)->addr)
+#define DELTA_NOTIE(x) 0
+/* by key, then address, as DELTA_LESS: the rows of a patch come unit by unit, not in the order of their addresses, which the radix sort does not need */
+SIFT_DEFINE_RADIX_SORT(delta_sort, DeltaRow, DELTA_KEY, DELTA_ADDR, DELTA_NOTIE, delta_copy, pfree, delta_sort_cmp)
 
 /* The first pair of the member in the pairs (ascending by member), n if it has none */
 static uint32
