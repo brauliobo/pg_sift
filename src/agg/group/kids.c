@@ -5,6 +5,8 @@
  */
 #include "postgres.h"
 
+#include "port/pg_bitutils.h"
+
 #include "col/kern.h"
 #include "agg/group/int.h"
 
@@ -76,6 +78,26 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 	*base_out = k->rt.lo;
 }
 
+/* the hash of the ids of one unit's rows (room for a distinct value a row at half full), and its end */
+static void
+wide_begin(AggExec *ex, KeyState *k, int nsel)
+{
+	k->wcap = Max(64, pg_nextpower2_32(4 * (uint32) nsel));
+	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
+	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
+	k->nwide = 0;
+}
+
+static void
+wide_end(KeyState *k)
+{
+	pfree(k->wval);
+	pfree(k->wid);
+	k->wval = NULL;
+	k->wid = NULL;
+	k->wcap = 0;
+}
+
 /*
  * The ids of the integer values vals[0..nsel) of an ident key in its open addressing table (ident_wide_id), 0 for the NULLs. The probe is here for a hit, the
  * one place that adds a value (and may grow the table) is ident_wide_id; the rows of one value that follow each other (the elements of one row's array, the
@@ -86,14 +108,20 @@ wide_ids(AggExec *ex, KeyState *k, const uint8 *isnull, const uint32 *idx, int n
 {
 	int32		last = 0;
 	uint32		lastid = 0;
+	uint32		nullid = 0;
+	bool		once = k->wcap == 0;	/* the hash is for this unit alone (key_cover) */
 
+	if (once)
+		wide_begin(ex, k, nsel);
+	if (isnull && ex->spec->key[k - ex->ks].kind == SAK_LUT)
+		nullid = key_null_id(ex, (int) (k - ex->ks));
 	for (int i = 0; i < nsel; i++)
 	{
 		int32		x = (int32) vals[i];
 
 		if (isnull && isnull[idx[i]])
 		{
-			vals[i] = 0;
+			vals[i] = nullid;
 			continue;
 		}
 		if (lastid != 0 && x == last)
@@ -114,12 +142,17 @@ wide_ids(AggExec *ex, KeyState *k, const uint8 *isnull, const uint32 *idx, int n
 		last = x;
 		vals[i] = lastid;
 	}
+	if (once)
+		wide_end(k);
 }
 
 /*
  * The ids of the integer values in [mn, mx] of key ki, of nsel rows, are made; false: the key keeps its ids in a hash table instead of the
  * range table (ident_wide_id), which is too wide (a lookup key's too: a date column holding both infinities spans 2^32 values) or would be filled
- * with many more values than the rows have (the ids of a column clustered by another, whose units hold few values far apart).
+ * with many more values than the rows have (the ids of a column clustered by another, whose units hold few values far apart). A key that is an
+ * expression (date_trunc of a day, a modulo) evaluates it for each value the table is filled with, which costs a thousand instructions and more: the
+ * rows of a unit that has fewer than the values to add (a tenant's few hundred rows over years of days) have their distinct values evaluated in a
+ * hash that lives for that unit, and the table is left as it is for the units that fill it.
  */
 bool
 key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel)
@@ -136,6 +169,8 @@ key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel)
 			ident_go_wide(ex, k);
 		return false;
 	}
+	if (any && ex->spec->key[ki].kind == SAK_LUT && added > nsel)
+		return false;
 	old = MemoryContextSwitchTo(ex->tcxt);
 	/* only NULLs (!any): any covered value will do for the kernel, the rows are corrected afterwards */
 	rt_cover(&k->rt, any ? mn : 0, any ? mx : 0, key_range_fill, &f);

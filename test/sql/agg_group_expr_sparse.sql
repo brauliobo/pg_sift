@@ -1,0 +1,34 @@
+-- A group key that is an expression of an integer or date column (date_trunc of a day, a division) is given an id for each value of the column its unit holds, from a table over
+-- the range of the values. Evaluating the expression for every value of the range costs a thousand instructions a value: a unit whose few rows are spread over many values (a
+-- tenant's hundreds of rows over years of days) evaluates the expression for the distinct values of its rows in a hash that lives for the unit, and leaves the table to the units that
+-- fill it. The groups are those of the plain plan, the NULL rows too (also for an expression that gives a value for NULL), whatever unit takes the hash and whatever the table holds.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+SET sift.test_col_unit_rows = 400;
+
+-- 3,000 rows in units of 400: the first units hold a day each of 400 values over a range of 6,000 days, the last a few rows over the same range
+CREATE TABLE gs_facts (id int, d date, v int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO gs_facts SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE date '2010-01-01' + (i * 61) % 6000 END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 997) % 60000 END, i % 50 FROM generate_series(1, 3000) i;
+INSERT INTO gs_facts SELECT 10000 + i, date '2026-01-01' + i, 5000 * i, i FROM generate_series(1, 7) i;
+CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, d, v, amount);
+VACUUM (FREEZE, ANALYZE) gs_facts;
+
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_scan_kind_rows_and_differences(q) $$;
+
+-- a month and a year of a date, over all rows and over the few the filter leaves
+SELECT * FROM same_rows('SELECT date_trunc(''month'', d) AS m, count(*) AS n, sum(amount) AS s FROM gs_facts GROUP BY 1');
+SELECT * FROM same_rows('SELECT date_trunc(''month'', d) AS m, count(*) AS n, sum(amount) AS s FROM gs_facts WHERE id % 211 = 0 GROUP BY 1');
+SELECT * FROM same_rows('SELECT extract(year FROM d) AS y, count(*) AS n, count(DISTINCT v) AS dv FROM gs_facts WHERE amount = 7 GROUP BY 1');
+SELECT * FROM same_rows('SELECT date_trunc(''month'', d) AS m, count(DISTINCT id) AS n FROM gs_facts WHERE id > 2900 GROUP BY 1');
+-- a division of an integer, with NULL rows, and an expression that gives a value for NULL (that value is a group of the values it equals)
+SELECT * FROM same_rows('SELECT v / 5000 AS k, count(*) AS n, sum(amount) AS s FROM gs_facts WHERE id % 97 = 0 GROUP BY 1');
+SELECT * FROM same_rows('SELECT coalesce(v, -1) / 5000 AS k, count(*) AS n, sum(amount) AS s FROM gs_facts WHERE id % 97 = 0 GROUP BY 1');
+SELECT * FROM same_rows('SELECT coalesce(v, -1) / 5000 AS k, count(*) AS n, sum(amount) AS s FROM gs_facts GROUP BY 1');
+SELECT * FROM same_rows('SELECT coalesce(d, date ''2000-01-01'') AS k, count(*) AS n FROM gs_facts WHERE id % 53 = 0 GROUP BY 1');
+
+DROP FUNCTION same_rows(text);
+DROP TABLE gs_facts;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
