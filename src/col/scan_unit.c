@@ -122,7 +122,7 @@ unit_dict(ColUnit *cu, int col)
 bool
 segments_current(SiftColSource *src)
 {
-	uint32		v = sift_dir_version(src->index);
+	uint32		v = sift_dir_version_peek(src->dirbuf);
 
 	if (v != src->dir_checked)
 	{

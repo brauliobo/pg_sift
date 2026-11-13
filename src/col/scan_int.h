@@ -232,6 +232,7 @@ struct SiftColSource
 	const SiftColSchema *schema;
 	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
 	bool		dir_current;
+	Buffer		dirbuf;			/* the directory page, pinned while the source is open: segments_current reads its version without a buffer access */
 	SiftVis		vis;
 	SiftColVisibility visibility;
 	/*

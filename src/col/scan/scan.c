@@ -137,6 +137,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	leader_end = scan_view_load(src, heap, view);
 	src->dir_checked = src->dir.version;
 	src->dir_current = true;
+	src->dirbuf = (flags & COLO_TABLE) ? InvalidBuffer : sift_dir_pin(index);
 	col_hf_open(src);
 	SIFT_COL_OPEN_GATE();
 	if (!(src->dir.meta.flags & SIFT_COL_META_FLAG) || src->dir.meta.analyzer_hash != src->schema->hash)
@@ -168,6 +169,7 @@ sift_col_close(SiftColSource *src)
 		sift_cseg_close(src->seg[i].seg);
 	if (src->flags & COLO_TABLE)		/* a table source stays usable: its owner frees the memory, and parks it between uses */
 		return;
+	ReleaseBuffer(src->dirbuf);
 	sift_vis_end(&src->vis);
 	if (!(src->flags & SIFT_COLO_SNAP_HELD))
 		UnregisterSnapshot(src->snap);
