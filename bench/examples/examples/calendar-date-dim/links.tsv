@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+sale	day	calendar	day	n:1	dow,month,quarter,is_holiday
