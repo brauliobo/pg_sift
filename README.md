@@ -218,6 +218,7 @@ Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `fre
   - *Top-N by a float key, or by a column that follows the table:* a float sort key goes through the same min/max and compare kernels as an integer one, so units whose best value cannot pass the n-th are not read: `ORDER BY value DESC LIMIT 10` over 1,000,000 readings 47.5 to 0.80 ms (`ts_top_value`, 60x); the newest 10 rows of a time column with no btree 80.6 to 0.22 ms (`hits_latest_time`, 367x).
   - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off (`verdict_shared_report`); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
 - **Joins from the child:** a `sift_col` index on a child table connects to the index of the parent it joins (`WITH (connect = 'fk -> parent(key)')`, made by itself for a validated integer foreign key), so `EXISTS`, `NOT EXISTS` and counting joins to the parent are answered from the child, and a `LEFT JOIN` of two indexed tables groups the child first: 1,000,000 child rows and 100,000 parents, the join count 4.3 ms against 228 ms for the normal plan and `NOT EXISTS` 2.8 ms against 244 ms ([docs/COL-CONNECT.md](docs/COL-CONNECT.md), [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md)).
+- **Reads by a key reached through a join (scope index, experimental):** `WITH (scope = '..')` on a `sift_col` index stores its rows once for each key that a table of (member, key) pairs gives them, so a read of one tenant or group reads the units of that key; the join the application writes is recognised by the planner, and a pair edit is a small journal record that a read reconciles under its own snapshot ([docs/COL-SCOPE.md](docs/COL-SCOPE.md)). The idea is old: [the prior art it is compared with](#scope-index-and-prior-art) is below.
 - **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
 - **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
 - **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
@@ -227,6 +228,23 @@ Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `fre
 Feature facts checked against each project's own documentation on 2026-10-18; `?` is not verified. Analytics (pg_sift against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB) and search (against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch) tables, a note per row, sources and the unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
 
 pg_sift is weaker in text analysis (one key per index; case and accent folding, a `keyword` analyzer, `term*` prefixes and the stemmers and stop words of any PostgreSQL text search configuration, `stemmer = 'german'`, are there; n-gram and CJK tokenizers are not) and where its column engine is narrow: joins are accelerated for small tables only, and `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates ([where it is weaker](docs/COMPARISON.md#where-pg_sift-is-weaker)).
+
+### Scope index and prior art
+
+Storing or indexing facts by a key reached through a join is not new. [docs/COL-SCOPE.md](docs/COL-SCOPE.md#prior-art-what-exists-and-what-differs) compares the scope index with seventeen systems and techniques from their own documentation (read 2026-11-13; with the sources, the version read of each, what is not new in the scope index, what is particular to it as far as those pages show, and where the others are better). The first three rows are measured on one generated fixture; the others compare mechanisms, and `not verified` marks what the documentation read does not say.
+
+| system | a pair change costs | many-to-many | the application writes |
+|---|---|---|---|
+| scope index | a 32-byte journal record; a read patches the member | yes, up to 3 entries a row | the plain join |
+| copy kept by triggers | rewrites the member's facts (11.8 M instr; 603 M for the largest member) | yes | a query on the copy |
+| pg_ivm 1.17 | updates the view in the transaction (0.5 to 1.3 G instr) | yes | the view, by name |
+| Oracle bitmap join index | not verified | no: the dimension key must be unique | the plain join |
+| Oracle, StarRocks, Doris materialized views | `ON COMMIT` refresh (Oracle) or a refresh later | joins allowed | the plain query, rewritten |
+| SQL Server indexed view | view rows updated in the DML statement | inner joins | the plain query, substituted (specific editions) |
+| PostgreSQL materialized view | nothing until `REFRESH` | any query | the view, by name |
+| ClickHouse materialized view with a join | nothing: stored rows are not updated | join allowed, the left-most table triggers | the target table |
+| Zanzibar Leopard index | update tuples in an incremental layer, merged at query time | yes | the authorization API |
+| PostgreSQL row-level security | nothing; every read pays the join | yes | the plain query |
 
 ## SQLite and MariaDB
 
