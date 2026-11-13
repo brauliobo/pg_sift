@@ -285,12 +285,13 @@ of two indexes of one table at the same time is not covered by the event trigger
 buffers, from its snapshot), puts that decision and the directory it read in the shared memory of the statement, and each participant claims units from the one list (a worker opens the same directory and takes the keys
 and the changed members from the leader; it asks the journal nothing). The join a scope read falls back to runs in the participants as the plan holds it. The rows of the write buffers and of the changed members
 (the delta) are read by the leader after the units, so a read that is ordered or a top-N over a delta stays in one process. The planner prices a scope read from the statistics of its scope segments (their zones, the exact fraction of their pre-aggregates, the leaf statistics, folded and cached beside those of the entity segments), not from those of the entity units, and with the model of an entity read for the workers
-(`sift.agg_par_min_rows`, the start cost of a worker: 3 ms and 0.5 ms for each); a read the pre-aggregates of the scope segments answer without reading their rows stays in one process (`Serial Because: the pre-aggregates of the index answer it without reading its rows`). At execution the leader launches none when its
-price of the units, shared among the participants, is less than the cost of starting them, so a tenant of a few units reads in one process (the tables below: no read of a fixture of 2.4 million events launched a worker). `EXPLAIN` says `Workers Planned` and `Workers Launched` as for an entity read; the answers are those of the read in one process
+(`sift.agg_par_min_rows`, the start cost of a worker: 3 ms and 0.5 ms for each); a read the pre-aggregates of the scope segments answer without reading their rows stays in one process (`Serial Because: the pre-aggregates of the index answer it without reading its rows`). At execution the leader launches none unless the workers
+shorten the read by 10%: it prices the read in instructions (6 million a millisecond) and the read with workers as the launch, the start of the workers while the leader scans alone, the rest shared at the slower pace of new processes and the wait for their exit, so a tenant of a few units reads in one process (the tables below: no read of a fixture of 2.4 million events launched a worker, nor did any of the 19.6% tenant at 10 million). `EXPLAIN` says `Workers Planned` and `Workers Launched` as for an entity read; the answers are those of the read in one process
 and of the join (tests `col_scope_workers`, `col_scope_par_edits`, and the oracle gate with every setting forced).
 
 Measured on the fixtures of `bench/steps/scope_stock_arms.py` of 2.4 and 10 million events (a tenant of 49.5% and one of 19.6% of the events; 7 query shapes of the scope arm: sums by month, counts, distincts, top-N, by member, filtered; `max_parallel_workers_per_gather` 0, 2 and 4;
-ms are `EXPLAIN (ANALYZE)` executor time, the median of 5 warm runs taken in turn over the worker counts, instructions the leader's and the workers' together, blocks the database's `blks_hit + blks_read`, cold after the buffers were evicted). The first table is the default prices (the sum of the 7 shapes):
+ms are `EXPLAIN (ANALYZE)` executor time, the median of 7 warm runs taken in turn over the worker counts, instructions the leader's and the workers' together, blocks the database's `blks_hit + blks_read`, cold after the buffers were evicted, the median of 3). The host was shared with other
+builds (a load average of 70 on 32 cores), so the milliseconds are about twice those of a quiet host and two runs of the same plan differ by 15% (the 19.6% tenant, which launches nothing, reads in 71.5, 81.3 and 67.8 ms); the ratios of the second table are of reads taken back to back, which cancels most of it. The first table is the default prices (the sum of the 7 shapes):
 
 | events | tenant | workers | shapes with workers launched | warm ms | warm M instr | warm blocks | cold ms | cold blocks read |
 |---|---|---|---|---|---|---|---|---|
@@ -300,37 +301,36 @@ ms are `EXPLAIN (ANALYZE)` executor time, the median of 5 warm runs taken in tur
 | 2.4 M | 19.6% | 0 | 0 | 22.0 | 98.6 | 3867 | 56.8 | 2207 |
 | 2.4 M | 19.6% | 2 | 0 | 18.0 | 100.2 | 3867 | 62.0 | 2207 |
 | 2.4 M | 19.6% | 4 | 0 | 18.9 | 100.2 | 3867 | 52.0 | 2207 |
-| 10 M | 49.5% | 0 | 0 | 191.1 | 1062.2 | 28375 | 491.9 | 15241 |
-| 10 M | 49.5% | 2 | 3 | 143.5 | 1096.6 | 31691 | 399.7 | 16294 |
-| 10 M | 49.5% | 4 | 3 | 122.8 | 1127.6 | 34507 | 484.9 | 16259 |
-| 10 M | 19.6% | 0 | 0 | 43.8 | 344.4 | 14619 | 115.5 | 7279 |
-| 10 M | 19.6% | 2 | 2 | 39.6 | 366.2 | 16671 | 104.0 | 7795 |
-| 10 M | 19.6% | 4 | 2 | 41.3 | 385.6 | 18530 | 207.1 | 7754 |
+| 10 M | 49.5% | 0 | 0 | 240.7 | 1054.4 | 28242 | 507.1 | 15146 |
+| 10 M | 49.5% | 2 | 3 | 200.3 | 1088.5 | 31536 | 437.0 | 16212 |
+| 10 M | 49.5% | 4 | 3 | 184.6 | 1119.8 | 34314 | 473.2 | 16207 |
+| 10 M | 19.6% | 0 | 0 | 71.5 | 344.3 | 14619 | 235.7 | 7279 |
+| 10 M | 19.6% | 2 | 0 | 81.3 | 346.1 | 14619 | 207.4 | 7279 |
+| 10 M | 19.6% | 4 | 0 | 67.8 | 346.1 | 14619 | 193.7 | 7279 |
 
-Every shape returned the same rows with 0, 2 and 4 workers. At 2.4 million events no read launches a worker by price (the reads take 1 to 14 ms in one process, and with every price at zero, `parallel_setup_cost`, `parallel_tuple_cost` and `sift.agg_par_min_rows`, none gains: the workers cost 5 to 8 ms more than they save).
-At 10 million the three reads that launched (by member, top members, filtered count of the 49.5% tenant) went from 128 to 84 ms with two workers and 67 with four (the sum of the shapes: 191 to 144 and 123 ms, instructions 3% and 6% more, blocks 12% and 22% more, since every participant reads its own pages). The reads, with the prices at zero, of 10 ms or more in one process
-(median ms, the best run in brackets):
+Every shape returned the same rows with 0, 2 and 4 workers. At 2.4 million events and for the 19.6% tenant at 10 million no read launches a worker by price (the reads take 1 to 14 ms in one process at 2.4 million, and with `sift.agg_par_min_rows` at 0 the workers
+would cost 5 to 8 ms more than they save). At 10 million the three reads that launched (by member, top members, filtered count of the 49.5% tenant) cost 3% and 6% more instructions and 12% and 22% more blocks with two and four workers (every participant reads its own pages), and ran faster
+in every pair of runs taken back to back, warm and cold (median of 21 warm and 9 cold pairs; in brackets the first quartile of the ratio of the read in one process to the read with workers):
 
-| events | tenant | shape | 0 workers | 2 workers | 4 workers | M instr 0 / 2 / 4 |
-|---|---|---|---|---|---|---|
-| 10 M | 49.5% | by member | 49.2 (40.0) | 25.2 (23.3), 1.95x | 20.4 (17.1), 2.4x | 256 / 267 / 278 |
-| 10 M | 49.5% | distinct by month | 45.5 (38.7) | 25.1 (21.5), 1.8x | 23.2 (20.0), 2.0x | 419 / 448 / 468 |
-| 10 M | 49.5% | top members | 27.5 (22.2) | 16.9 (13.8), 1.6x | 14.5 (12.8), 1.9x | 204 / 215 / 225 |
-| 10 M | 49.5% | filtered count | 22.9 (16.5) | 30.9 (19.6), 0.7x | 32.2 (18.6), 0.7x | 123 / 147 / 162 |
-| 10 M | 19.6% | distinct by month | 20.4 (15.9) | 17.6 (10.2), 1.2x | 13.8 (11.7), 1.5x | 127 / 143 / 157 |
-| 10 M | 19.6% | by member | 13.2 (11.4) | 11.3 (9.6), 1.2x | 11.4 (9.6), 1.2x | 87 / 98 / 108 |
-| 10 M | 19.6% | top members | 17.6 (16.5) | 16.0 (14.5), 1.1x | 17.3 (16.6), 1.0x | 67 / 78 / 87 |
-| 2.4 M | 49.5% | by member | 14.4 (11.2) | 13.4 (9.7), 1.1x | 16.3 (11.7), 0.9x | 63 / 73 / 83 |
+| 10 M events, 49.5% tenant | one process | 2 workers | 4 workers | ratio warm, 2 / 4 workers | ratio cold, 2 / 4 workers |
+|---|---|---|---|---|---|
+| by member | 88.0 ms | 61.7 ms | 51.4 ms | 1.49 (1.20) / 1.72 (1.38) | 1.63 (1.50) / 2.27 (1.69) |
+| top members | 79.5 ms | 59.6 ms | 57.9 ms | 1.20 (1.02) / 1.27 (1.20) | 1.31 (1.07) / 1.48 (1.39) |
+| filtered count | 52.1 ms | 39.6 ms | 41.6 ms | 1.23 (1.06) / 1.11 (0.95) | 1.35 (1.12) / 1.60 (1.24) |
+
+On a quiet host the by-member and top-members reads took 49 and 27 ms in one process and 1.95x and 1.6x less with two workers (2.4x and 1.9x with four). The reads that do not launch lose or tie when the launch is forced (`sift.agg_par_min_rows = 0`, 15 pairs, median ratio of two / four workers):
+the 19.6% tenant's by member 0.96 / 1.07 and top members 0.95 / 0.85, which is why the price keeps them in one process; the filtered count of the 19.6% tenant and the join of the distinct by month plan no workers. With every PostgreSQL cost at zero
+(`parallel_setup_cost`, `parallel_tuple_cost`) the filtered count of the 49.5% tenant read 0.85x: the lookup subquery of the join it runs then starts workers of its own, which the default prices do not, so the numbers above are those of the default prices.
 
 Where the time goes. A read of 40 to 50 ms in one process is its scan; the participants start 3 ms after the leader launches them (the leader scans meanwhile), and the leader waits 1.3 to 3 ms for the workers to exit after the last item. Phases of the by-member read of the 49.5% tenant at 10 million events with two
 workers, one run on a quiet host (ms): open of the directory 1.3, launch (the shared memory and the queues) 1.4, scan 17.4 in the leader and 13.3 in each worker (user CPU 14.2, 11.4 and 11.9), wait for the exit of the workers 2.6, 22.9 in all against 46 in one process. With four workers 21.5 ms (scan 16.5 in the leader, 11 to 12.7 in each worker, the wait 3.0).
 The 2.4x of the median is the 4 workers' limit here, not a ceiling of the units: the fixed part (open, launch, exit: 5 to 6 ms) does not shrink, and the participants run the same instructions at an IPC of 1.5 where one process ran at 1.8 (cold caches and TLBs of each new process: 142 M cycles alone, 178 with two workers and 190 to 238 with four), so the scan
-of 40 ms of one process takes 40 x 1.3 / 5 = 10.4 ms of the five participants. Fitting the by-member runs (36 ms alone, 20.2 with two workers, 16.3 with four: a fixed 10 ms and 29 ms that share) the least serial time that makes 1.6x with two workers is about 30 ms, and 2.5x with four about 45 ms, so a read below 30 ms gains less than that (the table: 27.5 to 16.9 ms for the top members) and a read below about 15 ms gains nothing: the planner's start cost
-of 4 ms (two workers) to 5 ms (four) and the 25% of CPU the new processes add set the point where a launch pays at about 7 ms of one process, and between 7 and 15 ms the launched reads of this fixture ran within 10% of the read in one process (the 19.6% tenant's top members: 9.0 ms alone, 8.3 with two workers, 9.3 with four, by price). The monthly sums, counts by score
+of 40 ms of one process takes 40 x 1.3 / 5 = 10.4 ms of the five participants. Fitting the by-member runs (36 ms alone, 20.2 with two workers, 16.3 with four: a fixed 10 ms and 29 ms that share) the least serial time that makes 1.6x with two workers is about 30 ms, and 2.5x with four about 45 ms, so a read below 30 ms gains less than that (27.5 to 16.9 ms for the top members on a quiet host) and a read below about 15 ms gains nothing: the leader's price of a launch
+(1.4 ms to launch, 3 ms and 0.5 ms for each worker to start, 3 ms to wait for the exit, the shared part at 1.25 times the time, and 10% to spare) puts the point where it launches at 83 million instructions (about 14 ms of one process) with two workers and 75 with four (test `agg_par_pay`); below it the launched reads of this fixture tied or lost (the 19.6% tenant's by member and top members, forced: 0.85 to 1.07). The monthly sums, counts by score
 and the latest rows stay in one process: the pre-aggregates answer the first two, and the delta of the latest rows is the leader's (with the prices at zero the latest rows launch workers and read in 6 to 12 ms against 1 to 2 ms alone).
 
 The default plan of the distinct count by month of the 49.5% tenant at 10 million events is the join (`Scope Fallback: join is cheaper for 1 key`), and the planner prices it at 3,570 units, under the 4,000 that a priced parallel plan costs at least, for a read that takes 45 to 83 ms: the workers it would launch read it in 25 ms
-(the table), so that read stays in one process by price, not by the workers.
+(on a quiet host, with the workers forced), so that read stays in one process by price, not by the workers.
 
 ## Break-even: the multiplicity limit
 
