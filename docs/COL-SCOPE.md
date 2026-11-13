@@ -3,7 +3,7 @@
 A scope is a key a `sift_col` index cuts its rows by that the rows do not hold: they reach it through a table of `(member, scope key)` pairs. Events of entities, entities in tenants: the question
 is "the events of tenant 7", and the tenant is in the pairs of the entity, not in the event. The scope index stores the rows replicated by scope key in segments of their own, cut by `(scope key,
 time)`, so a read of one tenant reads the units of that tenant and no others, where the join reads the entity of each member. New in 5.0, column format minor 45, opt-in, and EXPERIMENTAL: the
-declaration, the formats and the settings may change in a later release. `sift_table` has no scope.
+declaration, the formats and the settings may change in a later release. `sift_table` has no scope. Unless a figure says otherwise, the figures on this page are user instructions of one backend, warm, on generated lab fixtures of 100,000 to 2,000,000 rows (blocks hit and read where stated): they say how the arms compare on those shapes, not what a real database will measure.
 
 The alternative to the index is the [scope copy](#the-scope-copy-the-alternative), a second table kept by triggers; this page is about the index, in this order: [the expected case](#the-expected-case), [the declaration](#the-declaration), [what a read does](#what-a-read-does) and [what the planner recognises](#what-the-planner-recognises), [EXPLAIN](#explain) and the refusals, [what it costs](#what-it-costs), [the edges](#edges), what happens [without a scope index](#without-a-scope-index-replicate-or-reuse), and [the copy](#the-scope-copy-the-alternative).
 
@@ -105,8 +105,17 @@ partitioned table the role reads without row-level security, that the statement 
 row of the key table, so it is recognised only where the table holds the key once (a primary or unique non-partial index on the key column, the other columns bound by `=`, or a `DISTINCT` / `GROUP BY` sub-select);
 `IN` and `EXISTS` count once and take any number of keys. A key table that is a view, a materialized or foreign table, a sub-select, a table with row-level security, one that is joined to another table or whose columns the
 statement reads, keeps the join and says why in `sift.explain_why`. The price is made of the key table's rows (the estimate of its conditions; 10 for an unbounded set) and the pairs of the average key, so
-a user of the few largest tenants of a skewed set gets a plan priced for average ones: on 300,000 events and 50 tenants the scope read of one key runs in 2.1 million instructions against 7 to 20 million, 3 small tenants 5.3
-against 7.6, the 10 largest 37.8 against 16.6, and 30 keys keep the join.
+a user of the few largest tenants of a skewed set is priced for the average ones. Measured on 300,000 events, 5,000 members and 50 skewed tenants (707 members and 42,420 facts in the largest, 50 and 3,000 in the smallest; `IN (SELECT .. FROM user_keys WHERE user_id = $1)`; instructions of the backend, prepared statement, warm, median of 5):
+
+| keys of the user | node | join as written | scope read forced (constant keys) |
+|---|---|---|---|
+| 3 small tenants | 2.07 M (scope) | 4.42 M | 0.96 M |
+| 1 tenant of average size | 1.46 M (scope) | 4.12 M | 0.35 M |
+| the 10 largest | 12.35 M (join) | 12.14 M | 9.29 M |
+| the 30 largest | 18.27 M (join) | 18.05 M | 15.88 M |
+
+The node ran the join for the 10 largest and the 30 largest tenants (`Scope Fallback: join is cheaper for 10 keys`) where the scope read with constant keys costs less (the forced read has no key table to read, about 1.1 M instructions in the small cells): the choice is not always the cheaper arm for these keys. The same users through
+`JOIN user_keys k ON k.tenant_id = s.tenant_id WHERE k.user_id = $1` read in 1.77, 1.72, 2.30 and 2.78 M against 5.6, 4.4, 24.1 and 39.1 M for the join as written.
 
 **The scope read or the join, for the keys of the execution.** The plan of a scope read holds the join as written too (the first pass's scan, packed with the node), with its price in instructions at 1, 3, 10, 30 and 100 keys of
 the average size and at every key (linear between them: `AGG_ALT_ROW` a row of the table, `AGG_ALT_PAIR` a pair of the relation, `AGG_ALT_OP` an operator of the model beyond the first key's, `src/agg/cost/model.h`). When
