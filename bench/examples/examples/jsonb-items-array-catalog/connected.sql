@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: doc.items[].sku (an element of a jsonb array) -> catalog.sku: the join key is per element, one document joins several catalog rows

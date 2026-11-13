@@ -482,7 +482,7 @@ def run_seed(a, seed):
 
     def verify(step):
         for who, pg in (('primary', A), ('standby', SP), ('logical subscriber', LP)):
-            o = pg.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 6);")
+            o = pg.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 50);")
             STATS['verify'] += 1
             STATS['unverified'] += o.count('unverified')
             if 'differs' in o:
@@ -660,7 +660,7 @@ def run_seed(a, seed):
     stock = answers(SK, 'stock', qs)
     for arm in ('scope', 'planned', 'plain'):
         gate.compare(seed, 'restore', f'restored {arm} vs the stock node', qs, answers(RP, arm, qs), stock, RP, arm, SK, 'stock')
-    o = RP.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 6);")
+    o = RP.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 50);")
     STATS['verify'] += 1
     if 'differs' in o:
         gate.fail(seed, 'restore', 'sift.col_scope_verify on the restored database reports a differing key', 'col_scope_verify', '', o)
