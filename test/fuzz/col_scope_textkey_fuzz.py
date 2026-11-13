@@ -10,7 +10,7 @@ keys that are new (the value store has never seen them: their pairs are all delt
 promotion, merge, VACUUM and REINDEX, with a REPEATABLE READ reader opened before the churn. After every step a battery (IN of one key and of a list with a key nobody has, EXISTS, a join for each
 pair, a group by the key of every key and of a list, a table of keys, a time window, a top-N) must give the rows of sift.enable_agg = off, and sift.col_verify must pass; the reader must read, through the
 scope and through the plain plan, the rows of its first read. A read is either stored from the units or says a documented Scope Fallback reason; right after a build the reads of one key are stored.
-With --two-paths the pairs are the union of the direct pairs (tenant_scope) and the members of the groups a key is granted (grp_scope, memberships: the view pair_set), the index has the scope of two paths, and
+With --two-paths the pairs are the union of the direct pairs (tenant_scope) and the pairs a key gets through the groups it is granted (grp_scope, memberships: the view pair_set), the index has the scope of two paths, and
 the churn also adds, deletes and moves grants of groups and memberships; the three relations have the key or member of the seed's types, the group is an integer.
 """
 import argparse, collections, hashlib, os, random, re, sys, time
@@ -355,7 +355,7 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=8000)
     ap.add_argument('--steps', type=int, default=8)
-    ap.add_argument('--two-paths', action='store_true', help='a scope of two paths: the direct pairs and the members of the groups a key is granted')
+    ap.add_argument('--two-paths', action='store_true', help='a scope of two paths: the direct pairs and the pairs through the groups a key is granted')
     ap.add_argument('--hash-bits', type=int, default=0, help='sift.test_member_hash_bits: the low bits kept of the journal word of a string member (string values collide)')
     o = ap.parse_args()
     global FUZZ_SETUP, TWO
