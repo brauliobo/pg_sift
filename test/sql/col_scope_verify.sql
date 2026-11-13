@@ -27,8 +27,8 @@ DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id = (SELECT min(dim_a_id
 UPDATE tenant_scope SET tenant_id = 12 WHERE tenant_id = 5 AND dim_a_id = (SELECT min(dim_a_id) FROM tenant_scope WHERE tenant_id = 5);
 RESET sift.test_no_track;
 SELECT 'mutant, every key' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('events_col', 100) ORDER BY scope_key;
-SELECT 'mutant, other keys' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', keys => ARRAY[1, 2, 4, 6, 7, 99]);
-SELECT 'mutant, named key' AS state, scope_key, problem FROM sift.col_scope_verify('events_col', keys => ARRAY[3]);
+SELECT 'mutant, other keys' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', keys => ARRAY['1', '2', '4', '6', '7', '99']);
+SELECT 'mutant, named key' AS state, scope_key, problem FROM sift.col_scope_verify('events_col', keys => ARRAY['3']);
 REINDEX INDEX events_col;
 SELECT 'after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', 100);
 
@@ -62,14 +62,14 @@ INSERT INTO facts SELECT i, 1 + (i * 7) % 60, timestamptz '2026-01-01' + i * int
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via group_members(group_id, dim_a_id)');
 VACUUM (FREEZE, ANALYZE) facts, grants, group_members;
-SELECT 'two paths, clean' AS state, scope, scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]) ORDER BY scope_key;
+SELECT 'two paths, clean' AS state, scope, scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY['1', '2', '3', '4']) ORDER BY scope_key;
 SET sift.test_no_track = on;
 DELETE FROM group_members WHERE group_id = 2 AND dim_a_id = 12;
 DELETE FROM grants WHERE id = 5;
 RESET sift.test_no_track;
-SELECT 'two paths, mutant' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]) ORDER BY scope_key;
+SELECT 'two paths, mutant' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY['1', '2', '3', '4']) ORDER BY scope_key;
 REINDEX INDEX facts_col;
-SELECT 'two paths, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('facts_col', 100, ARRAY[1, 2, 3, 4]);
+SELECT 'two paths, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('facts_col', 100, ARRAY['1', '2', '3', '4']);
 
 -- the first scope index of a relation of pairs made concurrently has segments with no stamp: its reads are the entity rows, which the verifier says instead of calling it clean
 CREATE TABLE tenant_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
@@ -79,6 +79,29 @@ CREATE INDEX CONCURRENTLY events_concurrent ON events USING sift_col (id, dim_a_
 SELECT 'concurrent' AS state, problem, detail, count(*) AS keys FROM sift.col_scope_verify('events_concurrent', 4) GROUP BY problem, detail;
 REINDEX INDEX events_concurrent;
 SELECT 'concurrent, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_concurrent', 4);
+
+-- a text and a uuid key: the keys are drawn from the pairs, and named as text
+CREATE TABLE text_pairs (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO text_pairs SELECT m, 'tenant-' || (1 + (m * 5 + j * 3) % 12) FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
+CREATE INDEX text_pairs_journal ON text_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_text ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> text_pairs(dim_a_id, tenant_id)');
+CREATE TABLE uuid_pairs (dim_a_id int NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO uuid_pairs SELECT m, md5('tenant-' || (1 + (m * 5 + j * 3) % 12))::uuid FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
+CREATE INDEX uuid_pairs_journal ON uuid_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX events_uuid ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> uuid_pairs(dim_a_id, tenant_id)');
+VACUUM (FREEZE, ANALYZE) events, text_pairs, uuid_pairs;
+SELECT 'text, clean' AS state, count(*) AS rows FROM sift.col_scope_verify('events_text', 100);
+SELECT 'uuid, clean' AS state, count(*) AS rows FROM sift.col_scope_verify('events_uuid', 100);
+SET sift.test_no_track = on;
+DELETE FROM text_pairs WHERE tenant_id = 'tenant-3' AND dim_a_id = (SELECT min(dim_a_id) FROM text_pairs WHERE tenant_id = 'tenant-3');
+DELETE FROM uuid_pairs WHERE tenant_id = md5('tenant-3')::uuid AND dim_a_id = (SELECT min(dim_a_id) FROM uuid_pairs WHERE tenant_id = md5('tenant-3')::uuid);
+RESET sift.test_no_track;
+SELECT 'text, mutant' AS state, scope_key, problem FROM sift.col_scope_verify('events_text', 100, ARRAY['tenant-3', 'tenant-4', 'nobody']) ORDER BY scope_key;
+SELECT 'uuid, mutant' AS state, scope_key = md5('tenant-3') AS the_key, problem FROM sift.col_scope_verify('events_uuid', 100, ARRAY[md5('tenant-3'), md5('tenant-4')]) ORDER BY scope_key;
+SELECT 'text, mutant, every key' AS state, scope_key, problem FROM sift.col_scope_verify('events_text', 100) ORDER BY scope_key;
+REINDEX INDEX events_text;
+REINDEX INDEX events_uuid;
+SELECT 'text and uuid, after REINDEX' AS state, (SELECT count(*) FROM sift.col_scope_verify('events_text', 100)) + (SELECT count(*) FROM sift.col_scope_verify('events_uuid', 100)) AS rows;
 
 -- the caller's settings stay as they were
 SET sift.enable_agg = off;
@@ -91,6 +114,6 @@ CREATE INDEX events_plain ON events USING sift_col (id, kind);
 SELECT * FROM sift.col_scope_verify('events_plain');
 SELECT * FROM sift.col_scope_verify('events_pkey');
 
-DROP TABLE facts, grants, group_members, events, memberships, tenant_pairs, tenant_scope;
+DROP TABLE facts, grants, group_members, events, memberships, tenant_pairs, tenant_scope, text_pairs, uuid_pairs;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

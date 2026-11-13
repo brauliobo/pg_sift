@@ -3,7 +3,7 @@
 -- the count and the signature of the first column of the index for each member, and reports the members that differ. A key whose answer was not read from the stored units is 'unverified'
 -- with the reason; no row: every sampled key was read from the units and is the join. The keys are drawn at random from the pairs that exist now (keys: the ones named instead).
 -- The statement of sift.col_scope_verify with its key, run for its plan: NULL when the scope units were read, else the reason the scan gave (EXPLAIN needs a volatile function)
-CREATE FUNCTION sift._col_scope_unread(stmt text, k bigint) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION sift._col_scope_unread(stmt text, k text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	plan jsonb;
 BEGIN
@@ -12,8 +12,8 @@ BEGIN
 	RETURN coalesce(jsonb_path_query_first(plan, '$.**."Scope Fallback"') #>> '{}', 'the statement was not planned as a scope read');
 END $$;
 
-CREATE FUNCTION sift.col_scope_verify(index regclass, sample int DEFAULT 10, keys bigint[] DEFAULT NULL)
-RETURNS TABLE (scope text, scope_key bigint, problem text, scope_rows bigint, join_rows bigint, detail text) LANGUAGE plpgsql STABLE AS $$
+CREATE FUNCTION sift.col_scope_verify(index regclass, sample int DEFAULT 10, keys text[] DEFAULT NULL)
+RETURNS TABLE (scope text, scope_key text, problem text, scope_rows bigint, join_rows bigint, detail text) LANGUAGE plpgsql STABLE AS $$
 DECLARE
 	tbl      regclass;
 	schema   text;
@@ -34,8 +34,9 @@ DECLARE
 	pred     text;
 	rel      regclass;
 	ix       regclass;
-	ks       bigint[];
-	k        bigint;
+	ks       text[];
+	k        text;
+	ktype    text;
 	stmt     text;
 	why      text;
 	a        jsonb;
@@ -83,13 +84,14 @@ BEGIN
 			cols := (SELECT string_agg(regexp_replace(quote_ident(attname), '([.^$|*+?(){}\[\]\\])', '\\\1', 'g'), '|') FROM pg_attribute WHERE attrelid = rel AND attnum > 0 AND NOT attisdropped);
 			quals := quals || regexp_replace(coalesce(pred, 'true'), '(?<![\w."])(' || cols || ')(?![\w"(])', '{alias}.\1', 'g');
 		END LOOP;
+		SELECT format_type(atttypid, atttypmod) INTO ktype FROM pg_attribute WHERE attrelid = rels[1]::regclass AND attname = trim(both '"' from bb[1]);
 		IF array_length(rels, 1) = 1 THEN
-			pair_sql := format('SELECT p.%s FROM %s p WHERE p.%s = $1 AND %s', aa[1], rels[1], bb[1], replace(quals[1], '{alias}', 'p'));
-			pool_sql := format('SELECT %s FROM %s WHERE %s', bb[1], rels[1], preds[1]);
+			pair_sql := format('SELECT p.%s FROM %s p WHERE p.%s = $1::%s AND %s', aa[1], rels[1], bb[1], ktype, replace(quals[1], '{alias}', 'p'));
+			pool_sql := format('SELECT %s::text FROM %s WHERE %s', bb[1], rels[1], preds[1]);
 		ELSIF array_length(rels, 1) = 3 THEN
-			pair_sql := format('SELECT p.%s FROM %s p WHERE p.%s = $1 AND %s UNION SELECT v.%s FROM %s g JOIN %s v ON v.%s = g.%s WHERE g.%s = $1 AND %s AND %s',
-				aa[1], rels[1], bb[1], replace(quals[1], '{alias}', 'p'), bb[3], rels[2], rels[3], aa[3], aa[2], bb[2], replace(quals[2], '{alias}', 'g'), replace(quals[3], '{alias}', 'v'));
-			pool_sql := format('SELECT %s FROM %s WHERE %s UNION SELECT %s FROM %s WHERE %s', bb[1], rels[1], preds[1], bb[2], rels[2], preds[2]);
+			pair_sql := format('SELECT p.%s FROM %s p WHERE p.%s = $1::%s AND %s UNION SELECT v.%s FROM %s g JOIN %s v ON v.%s = g.%s WHERE g.%s = $1::%s AND %s AND %s',
+				aa[1], rels[1], bb[1], ktype, replace(quals[1], '{alias}', 'p'), bb[3], rels[2], rels[3], aa[3], aa[2], bb[2], ktype, replace(quals[2], '{alias}', 'g'), replace(quals[3], '{alias}', 'v'));
+			pool_sql := format('SELECT %s::text FROM %s WHERE %s UNION SELECT %s::text FROM %s WHERE %s', bb[1], rels[1], preds[1], bb[2], rels[2], preds[2]);
 		ELSE
 			RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause);
 		END IF;
@@ -127,4 +129,4 @@ BEGIN
 	PERFORM set_config('sift.agg_scope', saved[3], true);
 END $$;
 
-COMMENT ON FUNCTION sift.col_scope_verify(regclass, int, bigint[]) IS 'Checks the scope index of a sift_col index against the plain join for a sample of scope keys (or the keys named), in the snapshot of the caller: the rows differ (problem differs: members whose rows differ) or the key was not read from the stored units (unverified, with the reason); no row: every sampled key was read from the units and equals the join';
+COMMENT ON FUNCTION sift.col_scope_verify(regclass, int, text[]) IS 'Checks the scope index of a sift_col index against the plain join for a sample of scope keys (or the keys named), in the snapshot of the caller: the rows differ (problem differs: members whose rows differ) or the key was not read from the stored units (unverified, with the reason); no row: every sampled key was read from the units and equals the join';

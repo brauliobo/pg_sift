@@ -353,12 +353,12 @@ up (the join is linear in the table; nothing above 2,000,000 events was measured
 
     SELECT * FROM sift.col_scope_verify('events_col');                  -- 10 random keys; no row: consistent
     SELECT * FROM sift.col_scope_verify('events_col', 50);              -- 50 keys
-    SELECT * FROM sift.col_scope_verify('events_col', keys => ARRAY[7]); -- the key named
+    SELECT * FROM sift.col_scope_verify('events_col', keys => ARRAY['7']); -- the key named
 
 `sift.col_scope_verify(index, sample, keys)` runs, for each key and each scope of the index, the statement the planner recognises (`f.fk IN (SELECT member FROM rel WHERE key = k AND <predicate>)`, or the union of the two paths) twice in the
 snapshot of the caller: through the scope units (`sift.enable_agg` on, `sift.agg_force`) and through the plain plan (`sift.enable_agg` off, the executor of PostgreSQL alone). Each side answers the number of rows and a signature of the first
 column of the index for each member, and the function reports the keys whose two answers differ: `problem = 'differs'`, `scope_rows` and `join_rows` (the rows of each side) and `detail` (how many members differ and the first). The keys are
-drawn at random among those that have a pair now (`sample`, default 10), or are the ones named by `keys`, which may also name a key with no pair: the check that the units hold nothing for a key whose pairs all went. A key whose answer was not
+drawn at random among those that have a pair now (`sample`, default 10), or are the ones named by `keys` (text, cast to the type of the key: integer, text, varchar or uuid), which may also name a key with no pair: the check that the units hold nothing for a key whose pairs all went. A key whose answer was not
 read from the stored units (a `CREATE INDEX CONCURRENTLY` not yet followed by a `REINDEX` says `unfilled`, a `Scope Fallback` says its reason) has `problem = 'unverified'` and the reason in `detail`: nothing was compared for it. No row means every
 sampled key was read from the units and equals the join. It reads each sampled key twice and a third time to learn whether the units were used, and the plain side is the join of the key's members, so run it on a few keys of a large table;
 it changes no setting of the session and no data, and runs with the privileges of the caller. In `REPEATABLE READ` it checks the snapshot of the transaction, on a standby the replayed state (a read-only session). `sift.col_verify(index, true)` checks the structure of the segments against the heap.
