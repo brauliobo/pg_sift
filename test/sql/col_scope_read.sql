@@ -30,7 +30,7 @@ BEGIN
 	units_read := coalesce(jsonb_path_query_first(p, '$.**."Scope Units Read"')::text::int, 0);
 	units_skipped := coalesce(jsonb_path_query_first(p, '$.**."Scope Units Skipped"')::text::int, 0);
 	entries := coalesce(jsonb_path_query_first(p, '$.**."Scope Entries Read"')::text::int, 0);
-	workers := jsonb_path_exists(p, '$.**."Workers Launched"');
+	workers := coalesce(jsonb_path_query_first(p, '$.**."Workers Launched"')::text::int, 0) > 0;
 END $$;
 
 -- 12 tenants; 300 entities, each in one to three tenants, one with none; padded events in a random heap order, some without an entity, some with an entity that has no pair
@@ -68,7 +68,7 @@ $$;
 SELECT * FROM phase();
 
 -- a scope read is decided once, by the leader (the verdict, the changed members and the patch are made from the snapshot of the statement): with workers allowed and the price of a
--- Gather at zero it still runs in one process, and answers as the join
+-- Gather at zero a read of this size still runs in one process (col_scope_workers launches them), and answers as the join
 SET max_parallel_workers_per_gather = 4;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
