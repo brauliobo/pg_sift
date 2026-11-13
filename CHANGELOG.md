@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+## 4.3.3 - 2026-11-12
+
 - Fixed: pg_sift: a merge of a `sift_col` index (`sift.col_merge`, the maintenance worker, or the merge inside `VACUUM`) that took the maintenance lock while a rewrite of the same index was still to commit, and that rewrite had chosen `key_cut` again (the option is written in the rewrite's transaction), failed with `sift index "<name>" is corrupted` (`Segment N is not in the order of the TIDs`): the lock was let go before the option was committed, so the merge read the segments the rewrite had cut by the key with the options of before, as if they were in the order of the TIDs. It fails before it replaces a segment and a retry succeeds; a `VACUUM` or a worker step that met it stopped with that error and was retried. A transaction that wrote an option of the index now keeps the maintenance lock to its end, and the next holder reads the options again. Held by the isolation test `col_key_cut_merge_lock` (4.0.0 to 4.3.2)
 - Changed: tests: the plan checks of the test suite accept the plans PostgreSQL 18.7 makes; no change to the extension
 
