@@ -735,7 +735,6 @@ typedef struct ScopeStage
 	const int64 *keys;
 	uint32		nkeys;
 	bool		once;
-	bool		topn;
 	bool		several;
 	const int  *leaves;
 	int			nleaves;
@@ -755,7 +754,7 @@ typedef struct ScopeStage
  * pairs of the members are asked of the relation, which is most of what the changed members cost. Sets rd->why when the stored read is not exact; rd->stage when the second half is to be done.
  */
 static void
-stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap *km, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, bool topn, const int *leaves, int nleaves,
+stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap *km, const SiftDirSnapshot *dir, const int64 *keys, uint32 nkeys, bool once, const int *leaves, int nleaves,
 			   uint32 max_changed, SiftScopeRead *rd)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
@@ -802,7 +801,7 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	scope_relation(heap, index, ord, km, NULL, &ps, keys, nkeys, snap);
 	rd->mm = ps.kma;
 	st = rd->stage = palloc(sizeof(ScopeStage));
-	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, topn, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel), 0, km, rd->mm};
+	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel), 0, km, rd->mm};
 	table_close(ps.rel, NoLock);
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
@@ -859,8 +858,6 @@ stored_pairs(SiftScopeRead *rd)
 	/* a member of several keys counts once, in its least key, for the rows that have no entry yet as for those that have */
 	delta = st->several ? pairs_first(&all) : all;
 	rd->delta = sift_scope_delta_select(st->index, st->ord, st->mm, st->bufs, st->nbufs, delta.p, delta.n, st->leaves, st->nleaves, &rd->delta_rows);
-	if ((rd->npatch > 0 || rd->delta_rows > 0) && st->topn)
-		rd->why = "top-n, changed pairs";
 	if (rd->why != NULL)
 		return;
 	rd->fill = palloc(sizeof(ScopeFill));
@@ -952,7 +949,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 	if (pairs.n == 0)
 		return true;	/* no changed member has a pair now: nothing to patch */
 	key = commonest_key(&pairs);
-	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, km, &key, 1, true, false, NULL, 0, PG_UINT32_MAX, false);
+	rd = sift_scope_read(heap, index, snap, sift_scope_specs(index)->s[scope]->key_name, km, &key, 1, true, NULL, 0, PG_UINT32_MAX, false);
 	if (rd->why != NULL)
 		return false;
 	c->patch_units = rd->patch_units;
@@ -962,7 +959,7 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 }
 
 SiftScopeRead *
-sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once, bool topn, const int *leaves, int nleaves,
+sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once, const int *leaves, int nleaves,
 				uint32 max_changed, bool lazy)
 {
 	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
@@ -988,7 +985,7 @@ sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_na
 	sift_dir_read(index, dir);
 	rd->view = sift_col_scope_view(heap, dir);
 	SIFT_COL_OPEN_GATE();
-	stored_changed(heap, index, snap, ord, km, dir, sorted, nk, once, topn, leaves, nleaves, max_changed, rd);
+	stored_changed(heap, index, snap, ord, km, dir, sorted, nk, once, leaves, nleaves, max_changed, rd);
 	if (!lazy)
 		sift_scope_read_pairs(rd);
 	return rd;

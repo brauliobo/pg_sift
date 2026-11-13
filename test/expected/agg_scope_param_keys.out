@@ -375,7 +375,7 @@ SELECT * FROM states('inserted pairs');
  inserted pairs | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  inserted pairs | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  inserted pairs | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
+ inserted pairs | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
 (4 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
@@ -385,7 +385,7 @@ SELECT * FROM states('facts of a member of three keys moved, write buffer');
  facts of a member of three keys moved, write buffer | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  facts of a member of three keys moved, write buffer | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  facts of a member of three keys moved, write buffer | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
+ facts of a member of three keys moved, write buffer | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
 (4 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
@@ -395,7 +395,7 @@ SELECT * FROM states('every pair of a member ended');
  every pair of a member ended | IN, $1       | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
  every pair of a member ended | IN, ANY ($1) | Keys: $1 (3 keys); Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  every pair of a member ended | join, $1     | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
- every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Fallback: top-n, changed pairs                   | t
+ every pair of a member ended | latest 5, $1 | Keys: $1 (1 keys); Changed Keys: 2; Patched Keys: 2                 | t
 (4 rows)
 
 SET sift.test_scope_patch = off;

@@ -34,7 +34,7 @@ BEGIN
 END $$;
 """
 
-DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|top-n, changed pairs|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
+DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
 
 
 def lit(ktype, n):

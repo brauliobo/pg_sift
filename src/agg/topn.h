@@ -83,6 +83,8 @@ extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const b
 
 /* The columns of the joined tables the rows of the page read: for each, the combination of its table, its column there, and the position and the type of the key in the row (sift_topn_spec) */
 extern List *sift_topn_lookups(Node *spec);
+/* The leaves the scan reads for its keys, sort expressions and outputs (those its conditions do not name) */
+extern List *sift_topn_leaves(Node *spec);
 
 /* The Limit node above has this OFFSET: does the scan skip it (TOPN_SKIP_OFFSET, the same OFFSET)? If the Limit keeps it, sift_topn_keep_offset: the scan returns those rows too */
 extern bool sift_topn_skips_offset(Node *spec, const Node *limit_offset);

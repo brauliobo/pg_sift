@@ -1,7 +1,7 @@
 -- A scope read and the join as written (the first pass of the planner) are two ways to answer one statement, and the one that costs less is the one the node runs. The plan holds both: the
 -- scope read, and the join priced at several key counts; the node counts the entries of the keys it really has when it starts (a constant list, a parameter of a prepared statement, the
 -- array of a parameter, a table of keys), prices the scope read with the model of the reader (col/scope.h) and runs the join where it costs less (EXPLAIN: Scope Fallback: join is cheaper for
--- N keys). A refusal of the reader (a top-n over changed pairs) is the same choice with its reason, never an error: the join counts a row for each pair of a member in several keys and the
+-- N keys). A refusal of the reader (`dedupe keys`, `too many changed keys`) is the same choice with its reason, never an error: the join counts a row for each pair of a member in several keys and the
 -- units cannot, once the pairs of the member changed. The rows are those of the join and of the normal plan in every form, key count, plan mode and state of the pairs.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

@@ -221,7 +221,7 @@ SELECT * FROM states('inserted pairs');
  inserted pairs | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  inserted pairs | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
  inserted pairs | join             | Changed Keys: 1; Patched Keys: 1                 | t
- inserted pairs | latest 5         | Fallback: top-n, changed pairs                   | t
+ inserted pairs | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
  inserted pairs | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 
@@ -234,7 +234,7 @@ SELECT * FROM states('facts of a member of two keys moved, write buffer');
  facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
  facts of a member of two keys moved, write buffer | join             | Changed Keys: 1; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | latest 5         | Fallback: top-n, changed pairs                   | t
+ facts of a member of two keys moved, write buffer | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
  facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 
@@ -247,7 +247,7 @@ SELECT * FROM states('every pair of a member ended');
  every pair of a member ended | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
  every pair of a member ended | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
  every pair of a member ended | join             | Changed Keys: 1; Patched Keys: 1                 | t
- every pair of a member ended | latest 5         | Fallback: top-n, changed pairs                   | t
+ every pair of a member ended | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
  every pair of a member ended | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
 (7 rows)
 

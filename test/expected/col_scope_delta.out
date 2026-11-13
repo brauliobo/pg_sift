@@ -124,13 +124,13 @@ SELECT apply(1) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | f
- 2 | IN list of keys                   | same    | units                | within the rows read | f
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | f
- 4 | a row for each pair of three keys | same    | units                | within the rows read | f
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | f
+ 2 | IN list of keys                   | same    | units | within the rows read | f
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | f
+ 4 | a row for each pair of three keys | same    | units | within the rows read | f
+ 5 | listing of one key                | same    | units | within the rows read | f
 (5 rows)
 
 SELECT apply(2) AS state
@@ -140,13 +140,13 @@ SELECT apply(2) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | f
- 2 | IN list of keys                   | same    | units                | within the rows read | f
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | f
- 4 | a row for each pair of three keys | same    | units                | within the rows read | f
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | f
+ 2 | IN list of keys                   | same    | units | within the rows read | f
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | f
+ 4 | a row for each pair of three keys | same    | units | within the rows read | f
+ 5 | listing of one key                | same    | units | within the rows read | f
 (5 rows)
 
 SELECT apply(3) AS state
@@ -156,13 +156,13 @@ SELECT apply(3) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | f
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | f
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | f
 (5 rows)
 
 SELECT apply(4) AS state
@@ -172,13 +172,13 @@ SELECT apply(4) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | f
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | f
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | f
 (5 rows)
 
 SELECT apply(5) AS state
@@ -188,13 +188,13 @@ SELECT apply(5) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | t
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | t
 (5 rows)
 
 SELECT apply(6) AS state
@@ -204,13 +204,13 @@ SELECT apply(6) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | t
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | t
 (5 rows)
 
 SELECT apply(7) AS state
@@ -220,13 +220,13 @@ SELECT apply(7) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | t
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | t
 (5 rows)
 
 SELECT apply(8) AS state
@@ -236,13 +236,13 @@ SELECT apply(8) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | t
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | t
 (5 rows)
 
 SELECT apply(9) AS state
@@ -252,13 +252,13 @@ SELECT apply(9) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |        route         |        delta         | patched 
----+-----------------------------------+---------+----------------------+----------------------+---------
- 1 | one key, count and sum            | same    | units                | within the rows read | t
- 2 | IN list of keys                   | same    | units                | within the rows read | t
- 3 | EXISTS, dim_b in several keys     | same    | units                | within the rows read | t
- 4 | a row for each pair of three keys | same    | units                | within the rows read | t
- 5 | listing of one key                | same    | top-n, changed pairs | none                 | f
+ n |               label               | verdict | route |        delta         | patched 
+---+-----------------------------------+---------+-------+----------------------+---------
+ 1 | one key, count and sum            | same    | units | within the rows read | t
+ 2 | IN list of keys                   | same    | units | within the rows read | t
+ 3 | EXISTS, dim_b in several keys     | same    | units | within the rows read | t
+ 4 | a row for each pair of three keys | same    | units | within the rows read | t
+ 5 | listing of one key                | same    | units | within the rows read | t
 (5 rows)
 
 SELECT sift.col_verify('facts_col', true);

@@ -194,7 +194,6 @@ extern bool sift_scope_covered(Relation index, int scope);
  * of that key's units are not counted, and the delta copies a row for the least key only. why != NULL: the scan reads the entity rows of the members the scope relation lists for the keys
  * (sift_scope_members) instead; the word is what EXPLAIN prints after "Scope Fallback". keys NULL (with !once): every key, a row for each of its member's pairs, which a scan groups by the derived leaf
  * "<key_name>#scope" (every row the scan reads has its key then). A leaf the scan reads (leaves[0..nleaves)) that the scope segments keep no values of (cols(..) of the scope) is a fallback.
- * topn: the scan is a top-N, which does not read the units of both families as one.
  */
 typedef struct SiftScopeDrop
 {
@@ -464,7 +463,7 @@ sift_scope_entity_cheaper(const SiftScopeCounts *c)
 /* The rows of the patch (sift_scope_segment_rows): the delta takes them after the price of the read was taken (patch_rows and patch_scan are only expected until then); a read that is not to be made frees what the plan holds */
 extern void sift_scope_read_rows(SiftScopeRead *rd);
 /* lazy: the read stops after the journal (the changed members, the write buffers and what the patch is expected to cost): the caller decides whether the pairs are worth asking for, and asks (sift_scope_read_pairs) */
-extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once, bool topn,
+extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot snap, const char *key_name, SiftKeyMap *km, const int64 *keys, int nkeys, bool once,
 									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
 extern void sift_scope_read_pairs(SiftScopeRead *rd);
 /*

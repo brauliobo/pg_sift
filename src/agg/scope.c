@@ -316,13 +316,14 @@ patch_dearer(AggExec *ex, Snapshot snapshot)
 }
 
 /*
- * The leaves of the index the scope read must carry: those the spec reads (the member key only when something besides the scope reads it), and those the leaves after the index's take their values from (the array of a length, the object of
+ * The leaves of the index the scope read must carry: those the spec reads (the member key only when something besides the scope reads it), those its top-N sorts by and gives as output, and those the leaves after the index's take their values from (the array of a length, the object of
  * its members, the lane of a bound, the scalar of a type), which the rows of the patch and of the delta hold only when asked for
  */
 static int *
 read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
 {
-	int		   *out = palloc((s->nleaves + s->nvleaf * (1 + lay->nleaves)) * sizeof(int));
+	List	   *top = s->topn != NULL ? sift_topn_leaves(s->topn) : NIL;
+	int		   *out = palloc((s->nleaves + s->nvleaf * (1 + lay->nleaves) + list_length(top)) * sizeof(int));
 
 	*n = 0;
 	for (int i = 0; i < s->nleaves; i++)
@@ -340,6 +341,8 @@ read_leaves(const SiftAggSpec *s, const SiftSrcLayout *lay, int *n)
 			if (lay->leaf[i].parent == v->obj)
 				out[(*n)++] = i;
 	}
+	foreach_int(leaf, top)
+		out[(*n)++] = leaf;
 	return out;
 }
 
@@ -463,7 +466,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		max_changed = changed_limit(sc, &c);
 	}
 	rd = ex->scope_rd = sift_scope_read(ex->heap, ex->index, snapshot, sc->key_name, ex->scope_km, sc->all ? NULL : sc->keys, sc->nkeys, sc->once,
-										ex->spec->topn != NULL, leaves, nleaves, max_changed, priced);
+										leaves, nleaves, max_changed, priced);
 	if (priced && rd->why == NULL && rd->stage != NULL)
 	{
 		/* the journal alone says what the changed members cost: a join that costs less by more than the error of that is run without asking for their pairs */

@@ -185,16 +185,16 @@ SELECT why, key FROM sift._test_scope_journal_changes('events_col', 0, :lin, :'h
 (4 rows)
 
 SELECT * FROM verdict();
- all_same | stored |       reasons        
-----------+--------+----------------------
- t        |      3 | top-n, changed pairs
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 VACUUM tenant_scope;
 SELECT * FROM verdict();
- all_same | stored |       reasons        
-----------+--------+----------------------
- t        |      3 | top-n, changed pairs
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 REINDEX INDEX events_col;
@@ -271,9 +271,9 @@ SELECT * FROM verdict();
 
 INSERT INTO tenant_scope VALUES (3, 3), (5, 4) ON CONFLICT (dim_a_id, tenant_id) DO UPDATE SET tenant_id = 13;
 SELECT * FROM verdict();
- all_same | stored |       reasons        
-----------+--------+----------------------
- t        |      3 | top-n, changed pairs
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 REINDEX INDEX events_col;
@@ -361,16 +361,16 @@ ROLLBACK;
 DELETE FROM events WHERE id % 13 = 0;
 UPDATE events SET v = v + 1 WHERE id % 17 = 0;
 SELECT * FROM verdict();
- all_same | stored |       reasons        
-----------+--------+----------------------
- t        |      3 | top-n, changed pairs
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 VACUUM events;
 SELECT * FROM verdict();
- all_same | stored |       reasons        
-----------+--------+----------------------
- t        |      3 | top-n, changed pairs
+ all_same | stored | reasons 
+----------+--------+---------
+ t        |      4 | -
 (1 row)
 
 -- TRUNCATE of the scope relation and REINDEX of its journal index make another journal: the stamp names the old one

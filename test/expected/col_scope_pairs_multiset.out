@@ -90,14 +90,14 @@ SELECT 2 AS n, 'a duplicate row of pairs that exist (dim_a_id with events, in on
 
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 3, dim_a_id, tenant_id FROM tenant_pairs WHERE dim_a_id IN (20, 30, 35, 42) AND row_src = 1
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 3 AS n, 'one of two duplicate rows deleted: the pair stays' AS state
@@ -108,14 +108,14 @@ SELECT 3 AS n, 'one of two duplicate rows deleted: the pair stays' AS state
 
 DELETE FROM tenant_pairs WHERE id IN (SELECT min(id) FROM tenant_pairs WHERE dim_a_id IN (3, 31) GROUP BY dim_a_id, tenant_id HAVING count(*) > 1)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 4 AS n, 'the last row of a pair deleted: the pair is gone' AS state
@@ -126,14 +126,14 @@ SELECT 4 AS n, 'the last row of a pair deleted: the pair is gone' AS state
 
 DELETE FROM tenant_pairs WHERE dim_a_id IN (10, 11)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 5 AS n, 'a duplicate added, then the first row deleted: the pair stays' AS state
@@ -144,14 +144,14 @@ SELECT 5 AS n, 'a duplicate added, then the first row deleted: the pair stays' A
 
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 4, dim_a_id, tenant_id FROM tenant_pairs WHERE dim_a_id IN (51, 52); DELETE FROM tenant_pairs WHERE id IN (SELECT min(id) FROM tenant_pairs WHERE dim_a_id IN (51, 52) GROUP BY dim_a_id, tenant_id)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 6 AS n, 'the key of one of two duplicate rows moved: the old key stays, the new one is added' AS state
@@ -162,14 +162,14 @@ SELECT 6 AS n, 'the key of one of two duplicate rows moved: the old key stays, t
 
 UPDATE tenant_pairs SET tenant_id = 1 + tenant_id % 10 WHERE id IN (SELECT max(id) FROM tenant_pairs WHERE dim_a_id IN (17, 24) GROUP BY dim_a_id, tenant_id HAVING count(*) > 1)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 7 AS n, 'a column that no btree holds updated on a duplicate row: nothing changes' AS state
@@ -180,14 +180,14 @@ SELECT 7 AS n, 'a column that no btree holds updated on a duplicate row: nothing
 
 UPDATE tenant_pairs SET row_src = 9 WHERE dim_a_id IN (38, 45)
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 8 AS n, 'buffered events of dim_a_id with duplicate rows, of ones whose pairs changed and of ones that did not' AS state
@@ -198,14 +198,14 @@ SELECT 8 AS n, 'buffered events of dim_a_id with duplicate rows, of ones whose p
 
 INSERT INTO events SELECT 6000 + i, CASE i % 4 WHEN 0 THEN 3 WHEN 1 THEN 17 WHEN 2 THEN 30 ELSE 100 + i % 50 END, timestamptz '2026-02-05', 4, 'u' FROM generate_series(1, 120) i
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 9 AS n, 'promoted (the buffers are in the segments; the changed pairs still leave their dim_a_id out of the units)' AS state
@@ -221,14 +221,14 @@ SELECT sift.col_promote('events_col')
 (1 row)
 
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 10 AS n, 'merged' AS state
@@ -244,14 +244,14 @@ SELECT sift.col_merge('events_col', true)
 (1 row)
 
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 11 AS n, 'the btree of the pairs rebuilt (the index keeps the one it recorded)' AS state
@@ -262,14 +262,14 @@ SELECT 11 AS n, 'the btree of the pairs rebuilt (the index keeps the one it reco
 
 REINDEX INDEX tenant_pairs_pair
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | patch | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | patch | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 12 AS n, 'rebuilt (nothing changed since the stamp)' AS state
@@ -298,14 +298,14 @@ SELECT 13 AS n, 'a duplicate after the rebuild, and a buffered event of it' AS s
 
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) VALUES (5, 5, 6), (5, 5, 6), (5, 301, 6); INSERT INTO events VALUES (7000, 5, timestamptz '2026-02-06', 1, 'v'), (7001, 301, timestamptz '2026-02-06', 1, 'v')
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | none  | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | none  | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -320,14 +320,14 @@ SELECT c FROM generate_series(1, 2) m, LATERAL unnest(ARRAY[format('SET sift.tes
 	'SELECT * FROM probe(''events'', ''events_col'', ''tenant_pairs'')', 'SELECT sift.col_verify(''events_col'', true)']) WITH ORDINALITY u(c, o) ORDER BY m, o \gexec
 SET sift.test_conn_fill = 1
 SELECT * FROM probe('events', 'events_col', 'tenant_pairs')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | none  | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | none  | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 REINDEX INDEX events_col

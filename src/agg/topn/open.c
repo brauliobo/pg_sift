@@ -129,6 +129,33 @@ sift_topn_keep_offset(Node *spec)
 	llast_int(SPEC_KEYS(spec)) &= ~TOPN_SKIP_OFFSET;
 }
 
+/*
+ * The leaves a top-N reads besides those of its conditions: its sort keys, the leaves a sort expression reads and the output columns the units give (the layout of sift_topn_spec: nine integers a key,
+ * then the outputs as an attribute and a leaf each). A source that holds only some leaves, or copies of rows that hold only those the scan reads, must have these among them.
+ */
+List *
+sift_topn_leaves(Node *spec)
+{
+	List	   *l = SPEC_KEYS(spec),
+			   *out = NIL;
+	int			i = 0,
+				nkey = list_nth_int(l, i++);
+
+	for (int j = 0; j < nkey; j++, i += 9)
+	{
+		int			leaf = list_nth_int(l, i);
+
+		if (leaf >= 0)
+			out = lappend_int(out, leaf);
+		if (list_nth_int(l, i + 5) == TXK_EXPR)
+			out = list_concat(out, list_copy(lsecond(list_nth(SPEC_EXPRS(spec), list_nth_int(l, i + 6)))));
+	}
+	for (int c = 0, nout = list_nth_int(l, i++); c < nout; c++, i += 2)
+		if (list_nth_int(l, i + 1) >= 0)
+			out = lappend_int(out, list_nth_int(l, i + 1));
+	return out;
+}
+
 /* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
 char *
 sift_topn_limit_text(Node *spec)

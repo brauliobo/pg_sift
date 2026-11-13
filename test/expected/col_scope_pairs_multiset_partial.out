@@ -87,14 +87,14 @@ SELECT 2 AS n, 'one of two active rows soft deleted: the pair stays' AS state
 
 UPDATE soft_pairs SET deleted_at = now() WHERE id IN (SELECT min(id) FROM soft_pairs WHERE dim_a_id IN (5, 15) AND deleted_at IS NULL GROUP BY dim_a_id, tenant_id)
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | none  | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | none  | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 3 AS n, 'both active rows soft deleted: the pair is gone' AS state
@@ -105,14 +105,14 @@ SELECT 3 AS n, 'both active rows soft deleted: the pair is gone' AS state
 
 UPDATE soft_pairs SET deleted_at = now() WHERE dim_a_id IN (20, 25) AND deleted_at IS NULL
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | none  | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | none  | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 4 AS n, 'one soft deleted row restored: the pair is back' AS state
@@ -123,14 +123,14 @@ SELECT 4 AS n, 'one soft deleted row restored: the pair is back' AS state
 
 UPDATE soft_pairs SET deleted_at = NULL WHERE id IN (SELECT min(id) FROM soft_pairs WHERE dim_a_id IN (20, 11) GROUP BY dim_a_id)
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | none  | t
- 2 | one key EXISTS, count and sum | same    | units                | none  | t
- 3 | a list of keys IN             | same    | units                | none  | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | none  | t
+ 2 | one key EXISTS, count and sum | same    | units | none  | t
+ 3 | a list of keys IN             | same    | units | none  | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 5 AS n, 'a second active row of a pair whose only row is soft deleted: the pair is back' AS state
@@ -141,14 +141,14 @@ SELECT 5 AS n, 'a second active row of a pair whose only row is soft deleted: th
 
 INSERT INTO soft_pairs (row_src, dim_a_id, tenant_id) VALUES (3, 22, 3), (3, 33, 4), (3, 33, 4)
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 6 AS n, 'a duplicate active row inserted and one soft deleted in the same statement' AS state
@@ -159,14 +159,14 @@ SELECT 6 AS n, 'a duplicate active row inserted and one soft deleted in the same
 
 WITH d AS (INSERT INTO soft_pairs (row_src, dim_a_id, tenant_id) SELECT 4, dim_a_id, tenant_id FROM soft_pairs WHERE dim_a_id IN (40, 50) AND deleted_at IS NULL RETURNING 1) UPDATE soft_pairs SET deleted_at = now() WHERE dim_a_id = 40 AND row_src = 1
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 7 AS n, 'a row deleted, not soft deleted: the other keeps the pair' AS state
@@ -177,14 +177,14 @@ SELECT 7 AS n, 'a row deleted, not soft deleted: the other keeps the pair' AS st
 
 DELETE FROM soft_pairs WHERE id IN (SELECT min(id) FROM soft_pairs WHERE dim_a_id IN (30, 35) AND deleted_at IS NULL GROUP BY dim_a_id, tenant_id HAVING count(*) > 1)
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 8 AS n, 'the key of a soft deleted row changed: still no pair' AS state
@@ -195,14 +195,14 @@ SELECT 8 AS n, 'the key of a soft deleted row changed: still no pair' AS state
 
 UPDATE soft_pairs SET tenant_id = 1 + tenant_id % 10 WHERE deleted_at IS NOT NULL AND dim_a_id < 40
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 9 AS n, 'buffered events' AS state
@@ -213,14 +213,14 @@ SELECT 9 AS n, 'buffered events' AS state
 
 INSERT INTO events SELECT 6000 + i, CASE i % 4 WHEN 0 THEN 5 WHEN 1 THEN 20 WHEN 2 THEN 33 ELSE 100 + i % 50 END, timestamptz '2026-02-05', 4, 'u' FROM generate_series(1, 120) i
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         |  delta  | bounded 
----+-------------------------------+---------+----------------------+---------+---------
- 1 | one key IN, count and sum     | same    | units                | patch   | t
- 2 | one key EXISTS, count and sum | same    | units                | patch   | t
- 3 | a list of keys IN             | same    | units                | patch   | t
- 4 | one key, min and max          | same    | units                | buffers | t
- 5 | ten keys IN, min and max      | same    | units                | patch   | t
- 6 | top 5                         | same    | top-n, changed pairs | none    | t
+ n |             label             | verdict | route |  delta  | bounded 
+---+-------------------------------+---------+-------+---------+---------
+ 1 | one key IN, count and sum     | same    | units | patch   | t
+ 2 | one key EXISTS, count and sum | same    | units | patch   | t
+ 3 | a list of keys IN             | same    | units | patch   | t
+ 4 | one key, min and max          | same    | units | buffers | t
+ 5 | ten keys IN, min and max      | same    | units | patch   | t
+ 6 | top 5                         | same    | units | patch   | t
 (6 rows)
 
 SELECT 10 AS n, 'promoted' AS state
@@ -236,14 +236,14 @@ SELECT sift.col_promote('events_col')
 (1 row)
 
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 11 AS n, 'merged' AS state
@@ -259,14 +259,14 @@ SELECT sift.col_merge('events_col', true)
 (1 row)
 
 SELECT * FROM probe('events', 'events_col', '(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)')
- n |             label             | verdict |        route         | delta | bounded 
----+-------------------------------+---------+----------------------+-------+---------
- 1 | one key IN, count and sum     | same    | units                | patch | t
- 2 | one key EXISTS, count and sum | same    | units                | patch | t
- 3 | a list of keys IN             | same    | units                | patch | t
- 4 | one key, min and max          | same    | units                | none  | t
- 5 | ten keys IN, min and max      | same    | units                | patch | t
- 6 | top 5                         | same    | top-n, changed pairs | none  | t
+ n |             label             | verdict | route | delta | bounded 
+---+-------------------------------+---------+-------+-------+---------
+ 1 | one key IN, count and sum     | same    | units | patch | t
+ 2 | one key EXISTS, count and sum | same    | units | patch | t
+ 3 | a list of keys IN             | same    | units | patch | t
+ 4 | one key, min and max          | same    | units | none  | t
+ 5 | ten keys IN, min and max      | same    | units | patch | t
+ 6 | top 5                         | same    | units | patch | t
 (6 rows)
 
 SELECT 12 AS n, 'rebuilt' AS state

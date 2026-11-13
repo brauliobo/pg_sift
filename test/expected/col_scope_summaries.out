@@ -93,12 +93,12 @@ SELECT c.n, r.same, r.scope_units FROM cases c, LATERAL probe(c.stmt) r ORDER BY
   4 | t    | t
   5 | t    | t
   6 | t    | t
-  7 | t    | f
-  8 | t    | f
-  9 | t    | f
- 10 | t    | f
- 11 | t    | f
- 12 | t    | f
+  7 | t    | t
+  8 | t    | t
+  9 | t    | t
+ 10 | t    | t
+ 11 | t    | t
+ 12 | t    | t
 (12 rows)
 
 SELECT sift.col_promote('events_col') IS NOT NULL AND sift.col_promote('events_t_col') IS NOT NULL AS promoted;
@@ -116,12 +116,12 @@ SELECT c.n, r.same, r.scope_units FROM cases c, LATERAL probe(c.stmt) r ORDER BY
   4 | t    | t
   5 | t    | t
   6 | t    | t
-  7 | t    | f
+  7 | t    | t
   8 | t    | t
   9 | t    | t
- 10 | t    | f
- 11 | t    | f
- 12 | t    | f
+ 10 | t    | t
+ 11 | t    | t
+ 12 | t    | t
 (12 rows)
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('events_t_col', true);

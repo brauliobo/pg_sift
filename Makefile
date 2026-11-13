@@ -97,6 +97,7 @@ TESTING_REGRESS += agg_scope_param_keys
 TESTING_REGRESS += agg_scope_preserved
 TESTING_REGRESS += agg_scope_recognition
 TESTING_REGRESS += agg_scope_small_key_choice
+TESTING_REGRESS += agg_scope_topn_delta
 TESTING_REGRESS += agg_scope_twohop_recognition
 TESTING_REGRESS += agg_scope_union_group
 TESTING_REGRESS += agg_scope_virtual_leaf

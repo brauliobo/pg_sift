@@ -83,9 +83,9 @@ SELECT sift.col_verify('events_col', true);
 -- rows in the write buffer have no entries: the entity path reads them with the members of the key; the segments still cover the rows they hold
 INSERT INTO events SELECT 20000 + i, 1 + i % 300, timestamptz '2026-02-01' + i * interval '1 hour', i % 10, 'y' FROM generate_series(1, 400) i;
 SELECT state, covered, entity_segs, scope_segs, same, stored, why FROM state('write buffer');
-    state     | covered | entity_segs | scope_segs | same | stored |         why          
---------------+---------+-------------+------------+------+--------+----------------------
- write buffer | t       |           1 |          1 | t    | f      | top-n, changed pairs
+    state     | covered | entity_segs | scope_segs | same | stored | why 
+--------------+---------+-------------+------------+------+--------+-----
+ write buffer | t       |           1 |          1 | t    | t      | 
 (1 row)
 
 -- promoted: the entity segment and the scope segments of the rows come in one switch of the directory (one more of each); the rows of the buffer have their entries
@@ -132,9 +132,9 @@ SELECT family, count(DISTINCT horizon) AS horizons FROM sift._test_col_scope_sta
 -- updates: the new versions are in the buffer (entity path), the old addresses keep their entries until VACUUM
 UPDATE events SET v = v + 1 WHERE id % 7 = 0;
 SELECT state, covered, same, stored, why FROM state('updated');
-  state  | covered | same | stored |         why          
----------+---------+------+--------+----------------------
- updated | t       | t    | f      | top-n, changed pairs
+  state  | covered | same | stored | why 
+---------+---------+------+--------+-----
+ updated | t       | t    | t      | 
 (1 row)
 
 SELECT sift.col_promote('events_col') >= 0 AS promoted_updates;
@@ -269,9 +269,9 @@ SELECT * FROM state('refilled');
 
 UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id % 2 = 0;
 SELECT state, covered, same, stored, why FROM state('pairs edited');
-    state     | covered | same | stored |         why          
---------------+---------+------+--------+----------------------
- pairs edited | t       | t    | f      | top-n, changed pairs
+    state     | covered | same | stored | why 
+--------------+---------+------+--------+-----
+ pairs edited | t       | t    | t      | 
 (1 row)
 
 SELECT sift.col_maintain('events_col') AS rewritten_stale;
