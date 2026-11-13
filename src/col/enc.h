@@ -329,6 +329,14 @@ extern void sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uin
 extern void sift_cbatch_mark_dead(SiftColBatch *b, const SiftKey *keys, int n);
 /* The same with the INT leaf scope_leaf (the derived key of a scope, SIFT_COLD_SCOPE) set to scope_key: a row of a scope segment is the fact row once for each of its scope keys, so the batch that takes them is keyed and unsorted; the leaves of kept (NULL: all) that are not set are NULL in the copy */
 extern void sift_cbatch_add_scoped(SiftColBatch *dst, const SiftColBatch *src, uint32 r, int scope_leaf, int64 scope_key, const bool *kept);
+/* A row of a batch to copy: the batch and its row */
+typedef struct SiftColRowRef
+{
+	const SiftColBatch *b;
+	uint32		row;
+} SiftColRowRef;
+/* The same for n rows, ref[i] the i-th, the refs stride bytes apart (the first member of a larger struct): a leaf at a time, which costs a tenth of a row at a time */
+extern void sift_cbatch_add_scoped_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n, int scope_leaf, int64 scope_key, const bool *kept);
 /* Appends the rows of the sources merged by ascending key (each source ascending, same sb); on a repeated key the earlier source wins */
 extern void sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc);
 /*

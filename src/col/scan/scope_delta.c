@@ -17,18 +17,20 @@
 #include "core/visibility.h"
 #include "col/conn.h"
 #include "col/scan_int.h"
+#include "col/scan/scope_pairs.h"
 #include "col/scope.h"
 #include "col/wbuf.h"
 
 /* the copies of one key make one unit up to this many rows */
 #define DELTA_UNIT_ROWS		32768
+/* the least rows of a run of one key that make a unit of their own: a unit costs about what the sort of this many rows does */
+#define DELTA_RUN_ROWS		512
 
 typedef struct DeltaRow
 {
+	SiftColRowRef ref;			/* first: sift_cbatch_add_scoped_rows takes the rows of a run as refs */
 	int64		key;
 	SiftKey		addr;
-	const SiftColBatch *b;
-	uint32		row;
 } DeltaRow;
 
 typedef struct SiftScopeDelta
@@ -51,6 +53,16 @@ fk_leaf(Relation index, int scope)
 	const SiftColRel *r = sift_col_rel(index);
 
 	return r->first[r->schema->cols[r->scope_leaf[scope]].attno];
+}
+
+/* The leaves of a read and the member leaf of the scope: the drop lists of an integer member are conjuncts of the scan, which test it in the rows of the patch and of the delta as in the units */
+const int *
+sift_scope_leaves_with_member(Relation index, int scope, const int *leaves, int *nleaves)
+{
+	int		   *l = memcpy(palloc((*nleaves + 1) * sizeof(int)), leaves, *nleaves * sizeof(int));
+
+	l[(*nleaves)++] = fk_leaf(index, scope);
+	return l;
 }
 
 SiftScopeBuffer *
@@ -157,57 +169,34 @@ delta_copy(size_t bytes)
 /* by key, then address, as DELTA_LESS: the rows of a patch come unit by unit, not in the order of their addresses, which the radix sort does not need */
 SIFT_DEFINE_RADIX_SORT(delta_sort, DeltaRow, DELTA_KEY, DELTA_ADDR, DELTA_NOTIE, delta_copy, pfree, delta_sort_cmp)
 
-/* The first pair of the member in the pairs (ascending by member), n if it has none */
-static uint32
-first_pair(const SiftScopePair *p, uint32 n, int64 member)
+/* The rows of a set, as they are made, and the places in them where one is before the one ahead of it by (key, address): none when they are in order */
+typedef struct DeltaOut
 {
-	uint32		lo = 0,
-				hi = n;
+	DeltaRow   *row;
+	uint32		n;
+	uint32		cap;
+	uint32		descents;
+} DeltaOut;
 
-	SIFT_BISECT(uint32, m, lo, hi, p[m].member < member);
-	return lo;
-}
-
-/* the member keys as a bitmap over their range, which most rows of a buffer or a unit miss: a row is tested in a few instructions before its pairs are looked for */
-typedef struct Members
+/*
+ * The rows of a set in the order of (key, address). The units of a segment that is cut by key overlap in their addresses, so the rows of a key come as a run of each unit; where each run is long
+ * enough to be a unit of its own (sift_col_scope_delta starts one where the addresses fall) the runs are left as they are, as a unit costs less than the sort of the rows it holds.
+ */
+static void
+delta_order(DeltaOut *o, bool onekey)
 {
-	int64		lo;
-	uint64		span;
-	uint64	   *bits;			/* NULL: the range is too wide for a bitmap, every row looks for its pairs */
-} Members;
-
-#define MEMBERS_BITS_MAX	((uint64) 1 << 24)
-
-/* the ascending member keys that the n entries one stride apart from base start with */
-static Members
-members_of(const void *base, Size stride, uint32 n)
-{
-	int64		first = *(const int64 *) base,
-				last = *(const int64 *) ((const char *) base + (n - 1) * stride);
-	Members		m = {first, (uint64) last - (uint64) first + 1, NULL};
-
-	if (m.span > MEMBERS_BITS_MAX)
-		return m;
-	m.bits = palloc0((m.span + 63) / 64 * sizeof(uint64));
-	for (uint32 i = 0; i < n; i++)
-		sift_col_bit_set(m.bits, (uint64) *(const int64 *) ((const char *) base + i * stride) - (uint64) m.lo);
-	return m;
-}
-
-static bool
-members_has(const Members *m, int64 member)
-{
-	uint64		off = (uint64) member - (uint64) m->lo;
-
-	return off < m->span && (m->bits == NULL || sift_col_bit_test(m->bits, off));
+	if (o->descents == 0 || (onekey && o->n / (o->descents + 1) >= DELTA_RUN_ROWS))
+		return;
+	delta_sort(o->row, o->n);
 }
 
 /*
- * The leaves a copy holds: those the scan reads (and their groups), the member key and the scope key, less those the scope segments keep no values of; encoding the others would cost each row a chunk of nothing.
- * The member of a string member is the one of the pairs (an id of the read, SiftScopeBuffer.ids): its string is kept only when the scan reads it, as copying it would intern it again for each row.
+ * The leaves a copy holds: those the scan reads (and their groups) and the scope key, less those the scope segments keep no values of; encoding the others would cost each row a chunk of nothing.
+ * The member of a row of the patch is the one of the pairs (an id of the read, SiftScopeBuffer.ids): its leaf is kept only when the scan reads it (the leaves say: a conjunct that tests it is one), as
+ * decoding it and copying it would cost a chunk for each unit of the patch.
  */
 static void
-delta_kept(Relation index, int scope, int fk, bool str, const int *leaves, int nleaves, bool *kept)
+delta_kept(Relation index, int scope, const int *leaves, int nleaves, bool *kept)
 {
 	/* check-memory: allow the loops below read memory only */
 	const SiftColRel *r = sift_col_rel(index);
@@ -220,7 +209,6 @@ delta_kept(Relation index, int scope, int fk, bool str, const int *leaves, int n
 			if (r->schema->cols[leaves[i]].parent >= 0)
 				kept[r->schema->cols[leaves[i]].parent] = true;
 		}
-	kept[fk] |= !str;
 	for (int i = 0; i < r->schema->ncols; i++)
 		kept[i] &= r->scope_cols[scope][i];
 }
@@ -512,14 +500,32 @@ unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32
 				unit_member_ids(sm, &c, val);
 			else
 				sift_cchunk_decode(&c, val);
-			for (uint32 r = 0; r < c.n; r++)
-				if (member_of(mem, m, n, val[r]) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
-					out[(*nout)++] = r;
-			if (sm->mm != NULL && *nout > 0)
+			if (mem->flags != NULL)
+				for (uint32 r = 0; r < c.n; r++)
+				{
+					uint64		off = (uint64) val[r] - (uint64) mem->lo;
+
+					if (off < mem->span && mem->flags[off] && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
+						out[(*nout)++] = r;
+				}
+			else if (mem->bits != NULL)
+				for (uint32 r = 0; r < c.n; r++)
+				{
+					uint64		off = (uint64) val[r] - (uint64) mem->lo;
+
+					if (off < mem->span && ((mem->bits[off >> 6] >> (off & 63)) & 1) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) &&
+						(live == NULL || sift_col_bit_test(live, r)))
+						out[(*nout)++] = r;
+				}
+			else
+				for (uint32 r = 0; r < c.n; r++)
+					if (member_of(mem, m, n, val[r]) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
+						out[(*nout)++] = r;
+			if (*nout > 0)
 			{
 				*ids = palloc(*nout * sizeof(int64));
 				for (uint32 j = 0; j < *nout; j++)
-					(*ids)[j] = own ? val[out[j]] : member_of_code(sm, val[out[j]]);
+					(*ids)[j] = sm->mm == NULL || own ? val[out[j]] : member_of_code(sm, val[out[j]]);
 			}
 			pfree(val);
 		}
@@ -562,15 +568,29 @@ add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int6
 		for (uint32 r = 0; r < rows; r++)
 			blk[r] = sift_key_block(bs[i]->keys[r]);
 		sift_vis_blocks_allvisible(vis, blk, rows, bits);
-		for (uint32 r = 0; r < rows; r++)
+		if (ids[i] != NULL)
 		{
-			int			k = sift_col_bit_test(bits, r) ? 1 : 0;
+			/* the rows are those of the members: the pages the map holds all-visible are one set, the others the other */
+			for (uint32 w = 0; w < (rows + 63) / 64; w++)
+			{
+				uint64		valid = rows - w * 64 >= 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (rows - w * 64)) - 1;
 
-			if ((ids[i] == NULL && sift_col_bit_test(bs[i]->col[fk].nulls, r)) || !member_of(mem, m, n, member[r]))
-				continue;
-			sift_col_bit_set(take[k], r);
-			any[k] = true;
+				take[1][w] = bits[w];
+				take[0][w] = ~bits[w] & valid;
+				any[1] |= bits[w] != 0;
+				any[0] |= take[0][w] != 0;
+			}
 		}
+		else
+			for (uint32 r = 0; r < rows; r++)
+			{
+				int			k = sift_col_bit_test(bits, r) ? 1 : 0;
+
+				if (sift_col_bit_test(bs[i]->col[fk].nulls, r) || !member_of(mem, m, n, member[r]))
+					continue;
+				sift_col_bit_set(take[k], r);
+				any[k] = true;
+			}
 		for (int k = 0; k < 2; k++)
 			if (any[k])
 			{
@@ -661,11 +681,12 @@ sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, S
 						const int *leaves, int nleaves, uint64 *rows, uint64 *units)
 {
 	int			fk = plan->fk;
-	bool		kept[SIFT_COL_MAX_COLS];
+	bool		kept[SIFT_COL_MAX_COLS],
+				want[SIFT_COL_MAX_COLS];
 	SiftVis		vis;
 
 	*rows = *units = 0;
-	delta_kept(index, scope, fk, plan->mm != NULL, leaves, nleaves, kept);
+	delta_kept(index, scope, leaves, nleaves, kept);
 	bufs = repalloc(bufs, (*nbufs + 2 * Max(plan->nseg, 1)) * sizeof(SiftScopeBuffer));
 	sift_vis_begin(&vis, heap, snap, index, dir->version);
 	for (int i = 0; i < plan->nseg; i++)
@@ -693,7 +714,10 @@ sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, S
 			if ((ords = unit_rows_of(&sm, seg, u, fk, cand, ncand, &nord, &ids)) == NULL)
 				continue;
 			b1 = sift_cbatch_create(CurrentMemoryContext, seg->schema);
-			sift_cseg_decode_unit_rows(seg, u, kept, ords, nord, b1);
+			/* the rows the point directory listed have no member id yet: it is read from the rows */
+			memcpy(want, kept, sizeof(kept));
+			want[fk] |= ids == NULL;
+			sift_cseg_decode_unit_rows(seg, u, want, ords, nord, b1);
 			pfree(ords);
 			if (nb == cap)
 			{
@@ -713,17 +737,39 @@ sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, S
 	return bufs;
 }
 
+/* The copies of the row r of b, of member member: one for each pair of the member (a NULL member, or a dead row, has none) */
+static inline void
+delta_row(DeltaOut *o, const PairFirsts *f, const SiftScopePair *pairs, uint32 npairs, const SiftColBatch *b, uint32 r, int64 member, const uint64 *nulls)
+{
+	if (sift_cbatch_dead(b, r) || (nulls != NULL && sift_col_bit_test(nulls, r)))
+		return;
+	for (uint32 j = pairs_of_member(f, pairs, npairs, member); j < npairs && pairs[j].member == member; j++)
+	{
+		DeltaRow	row = {{b, r}, pairs[j].key, b->keys[r]};
+
+		if (o->n == o->cap)
+		{
+			o->cap = Max(256, o->cap * 2);
+			o->row = repalloc(o->row, o->cap * sizeof(DeltaRow));
+		}
+		o->descents += o->n > 0 && DELTA_LESS(&row, &o->row[o->n - 1]);
+		o->row[o->n++] = row;
+	}
+}
+
 SiftScopeDelta *
 sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves, int nleaves, uint64 *rows)
 {
 	SiftScopeDelta *d = palloc0(sizeof(SiftScopeDelta));
 	int			fk = fk_leaf(index, scope);
-	Members		mem;
+	PairFirsts	firsts;
+	bool		onekey = true;
+	DeltaOut	o;
 
 	*rows = 0;
 	d->scope = scope;
 	d->nsets = nbufs;
-	delta_kept(index, scope, fk, mm != NULL, leaves, nleaves, d->kept);
+	delta_kept(index, scope, leaves, nleaves, d->kept);
 	d->row = palloc0(Max(nbufs, 1) * sizeof(DeltaRow *));
 	d->n = palloc0(Max(nbufs, 1) * sizeof(uint32));
 	d->stamp = palloc(Max(nbufs, 1) * sizeof(TransactionId));
@@ -737,37 +783,47 @@ sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftSco
 	}
 	if (npairs == 0)
 		return d;
-	mem = members_of(pairs, sizeof(SiftScopePair), npairs);
+	firsts = pairs_firsts(pairs, npairs);
+	for (uint32 i = 1; i < npairs; i++)
+		onekey &= pairs[i].key == pairs[0].key;
 	for (int s = 0; s < nbufs; s++)
 	{
-		uint32		cap = 0;
+		uint32		cap = 1;
 
+		/* a copy for each row of the patch, as most members have one pair: the array is not moved by a growth; the rows of a buffer that match are not known, a few are expected */
+		for (int i = 0; i < bufs[s].n; i++)
+		{
+			const uint64 *take = bufs[s].rows ? bufs[s].rows[i] : NULL;
+
+			cap += take == NULL ? Min(bufs[s].b[i]->nrows, 1024) : (uint32) sift_colk->bits_count(take, (bufs[s].b[i]->nrows + 63) / 64);
+		}
+		o = (DeltaOut) {palloc(cap * sizeof(DeltaRow)), 0, cap, 0};
 		for (int i = 0; i < bufs[s].n; i++)
 		{
 			const SiftColBatch *b = bufs[s].b[i];
 			const int64 *ids = bufs[s].ids ? bufs[s].ids[i] : NULL;
 			const int64 *member = ids != NULL ? ids : batch_members(mm, b, fk);
 			const uint64 *take = bufs[s].rows ? bufs[s].rows[i] : NULL;
+			const uint64 *nulls = ids == NULL ? b->col[fk].nulls : NULL;
 
-			for (uint32 r = 0; r < b->nrows; r++)
-			{
-				if ((take != NULL && !sift_col_bit_test(take, r)) || sift_cbatch_dead(b, r) || !members_has(&mem, member[r]) || (ids == NULL && sift_col_bit_test(b->col[fk].nulls, r)))
-					continue;
-				for (uint32 j = first_pair(pairs, npairs, member[r]); j < npairs && pairs[j].member == member[r]; j++)
-				{
-					if (d->n[s] == cap)
+			if (take == NULL)
+				for (uint32 r = 0; r < b->nrows; r++)
+					delta_row(&o, &firsts, pairs, npairs, b, r, member[r], nulls);
+			else
+				for (uint32 w = 0; w < (b->nrows + 63) / 64; w++)
+					for (uint64 bits = take[w]; bits != 0; bits &= bits - 1)
 					{
-						cap = Max(256, cap * 2);
-						d->row[s] = d->row[s] ? repalloc(d->row[s], cap * sizeof(DeltaRow)) : palloc(cap * sizeof(DeltaRow));
+						uint32		r = w * 64 + pg_rightmost_one_pos64(bits);
+
+						delta_row(&o, &firsts, pairs, npairs, b, r, member[r], nulls);
 					}
-					d->row[s][d->n[s]++] = (DeltaRow) {pairs[j].key, b->keys[r], b, r};
-				}
-			}
 			if (ids == NULL && mm != NULL)
 				pfree((int64 *) member);
 		}
-		if (d->n[s] > 0)
-			delta_sort(d->row[s], d->n[s]);
+		if (o.n > 0)
+			delta_order(&o, onekey);
+		d->row[s] = o.row;
+		d->n[s] = o.n;
 		*rows += d->n[s];
 	}
 	return d;
@@ -857,8 +913,9 @@ sift_col_scope_delta(SiftColSource *src, const SiftScopeRead *rd)
 
 			b->keyed = true;
 			b->sb = src->heap_sbs++;
-			for (e = a; e < n && row[e].key == row[a].key && e - a < DELTA_UNIT_ROWS; e++)
-				sift_cbatch_add_scoped(b, row[e].b, row[e].row, leaf, row[e].key, rd->delta->kept);
+			for (e = a; e < n && row[e].key == row[a].key && e - a < DELTA_UNIT_ROWS && (e == a || row[e].addr > row[e - 1].addr); e++)
+				;
+			sift_cbatch_add_scoped_rows(b, &row[a].ref, sizeof(DeltaRow), e - a, leaf, row[a].key, rd->delta->kept);
 			scan_add_mem(src, b, rd->delta->lane[s], rd->delta->stamp[s], rd->delta->roots[s]);
 		}
 	}

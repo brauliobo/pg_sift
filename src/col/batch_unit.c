@@ -65,6 +65,60 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 	vals_put(dst->mcxt, &dst->col[col], key, isnull, ovf, tag);
 }
 
+/* do the leaves read have no group, and no string that is stored inline or in a dictionary of its own: a leaf of those is decoded a column at a time (unit_emit_columns) */
+static bool
+unit_columns_plain(const SiftColSchema *s, const UnitLeaf *lf, const bool *want)
+{
+	for (int col = 0; col < s->ncols; col++)
+		if (!(want != NULL && !want[col]) && (s->cols[col].parent >= 0 || s->cols[col].kind == SIFT_COLK_GROUP || lf[col].inl || lf[col].voff != NULL))
+			return false;
+	return true;
+}
+
+/* The m rows (ascending) of a unit appended to dst a leaf at a time: what the loop over the rows of unit_decode does, with the per-value work of vals_put left to the leaves that have a NULL, an overflow or a tag */
+static void
+unit_emit_columns(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, const SiftKey *keys, const uint32 *rows, uint32 m, const bool *want)
+{
+	const SiftColSchema *s = dst->schema;
+
+	batch_reserve_rows(dst, m);
+	for (uint32 i = 0; i < m; i++)
+		dst->keys[dst->nrows + i] = keys[rows[i]];
+	batch_check_keys(dst, m, true);
+	for (int col = 0; col < s->ncols; col++)
+	{
+		UnitLeaf   *l = &lf[col];
+		SiftCVals  *v = &dst->col[col];
+
+		if (want != NULL && !want[col])
+			continue;
+		if (l->present && l->remap == NULL)
+		{
+			vals_reserve(dst->mcxt, v, m);
+			for (uint32 i = 0; i < m; i++)
+				v->key[v->n + i] = l->key[rows[i]];
+			for (uint32 i = 0; l->c.nulls != NULL && i < m; i++)
+				if (sift_col_bit_test(l->c.nulls, rows[i]))
+					bitmap_set(dst->mcxt, &v->nulls, v->cap, v->n + i);
+			for (uint32 i = 0; l->c.ovf != NULL && i < m; i++)
+				if (sift_col_bit_test(l->c.ovf, rows[i]))
+					bitmap_set(dst->mcxt, &v->ovf, v->cap, v->n + i);
+			for (uint32 i = 0; l->tag != NULL && i < m; i++)
+				if (l->tag[rows[i]] != SIFT_COLTAG_UNKNOWN)
+				{
+					if (v->otag == NULL)
+						v->otag = MemoryContextAllocZero(dst->mcxt, v->cap);
+					v->otag[v->n + i] = l->tag[rows[i]];
+				}
+			v->n += m;
+		}
+		else
+			for (uint32 i = 0; i < m; i++)
+				unit_emit(dst, dicts, l, col, rows[i]);
+	}
+	dst->nrows += m;
+}
+
 /*
  * rows (NULL: every row that live keeps): the m rows (ascending) to decode, of which only the values of the plain leaves that are read at those positions are decoded: the others are decoded
  * whole, as is the address of every row of a unit cut by key
@@ -142,6 +196,11 @@ unit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const ui
 							errmsg("invalid column unit: group leaf %d has %u values for %u elements", col, lf[col].c.n,
 								   lf[s->cols[col].parent].eoff ? lf[s->cols[col].parent].eoff[v->nrows] : 0)));
 
+	if (rows != NULL && unit_columns_plain(s, lf, want))
+	{
+		unit_emit_columns(dst, dicts, lf, keys, rows, m, want);
+		goto done;
+	}
 	for (uint32 i = 0; i < (rows != NULL ? m : v->nrows); i++)
 	{
 		uint32		r = rows != NULL ? rows[i] : i;
@@ -164,6 +223,7 @@ unit_decode(const SiftCUnitView *v, uint32 sb, SiftCDict *const *dicts, const ui
 		}
 		dst->nrows++;
 	}
+done:
 	for (int col = 0; col < s->ncols; col++)
 	{
 		if (lf[col].key)

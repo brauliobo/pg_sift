@@ -242,6 +242,8 @@ struct SiftScopeSegPlan;
 typedef struct SiftScopeSegPlan SiftScopeSegPlan;
 extern SiftScopeSegPlan *sift_scope_segment_plan(Relation index, int scope, const struct SiftDirSnapshot *dir, const int64 *members, uint32 n, SiftKeyMap *mm, bool words, double rows_per_member, uint64 *rows,
 												  uint64 *scanned, uint64 *units);
+/* leaves and the leaf of the member column of the scope (the one of the index that holds the member key of the facts): a new array, nleaves one more */
+extern const int *sift_scope_leaves_with_member(Relation index, int scope, const int *leaves, int *nleaves);
 extern SiftScopeBuffer *sift_scope_segment_rows(SiftScopeSegPlan *plan, Relation heap, Relation index, Snapshot snap, int scope, const struct SiftDirSnapshot *dir, SiftScopeBuffer *bufs, int *nbufs,
 												 const int *leaves, int nleaves, uint64 *rows, uint64 *units);
 /* The sets of b after those of a */

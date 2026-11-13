@@ -854,6 +854,8 @@ stored_pairs(SiftScopeRead *rd)
 	for (uint32 i = 0; i < patch.n; i++)
 		rd->patch[i] = patch.p[i].member;
 	rd->npatch = sort_unique(rd->patch, patch.n);
+	if (st->mm == NULL && rd->ndrop > 0)
+		st->leaves = sift_scope_leaves_with_member(st->index, st->ord, st->leaves, &st->nleaves);
 	/* a member of several keys counts once, in its least key, for the rows that have no entry yet as for those that have */
 	delta = st->several ? pairs_first(&all) : all;
 	rd->delta = sift_scope_delta_select(st->index, st->ord, st->mm, st->bufs, st->nbufs, delta.p, delta.n, st->leaves, st->nleaves, &rd->delta_rows);
