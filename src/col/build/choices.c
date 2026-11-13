@@ -751,7 +751,7 @@ say_same_layout(Relation heap, Relation index)
 
 		if (oid == RelationGetRelid(index))
 			continue;
-		other = index_open(oid, AccessShareLock);
+		other = sift_col_peer_open(oid);
 		if (other->rd_rel->relam == index->rd_rel->relam && other->rd_index->indisvalid && strcmp(sift_col_final_name(other), name) != 0 &&
 			equal(RelationGetIndexPredicate(other), RelationGetIndexPredicate(index)) && same_layout(other, index))
 			cols = shared_columns(heap, other, index);
@@ -759,7 +759,7 @@ say_same_layout(Relation heap, Relation index)
 			ereport(NOTICE,
 					(errmsg("sift_col index \"%s\" stores columns %s of index \"%s\", which has the same layout", name, cols, RelationGetRelationName(other)),
 					 errhint("One index over the union of their columns is smaller at the same read cost: create it, drop both.")));
-		index_close(other, AccessShareLock);
+		sift_col_peer_close(other);
 		if (cols != NULL)
 			return;
 	}

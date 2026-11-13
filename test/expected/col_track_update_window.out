@@ -54,7 +54,7 @@ SELECT writes();
  writes ok
 (1 row)
 
--- an index of an earlier release: its triggers are found, a REINDEX and an ALTER INDEX keep them (one pair), and its log is trusted
+-- an index of an earlier release: its triggers are found, a REINDEX and an ALTER INDEX keep them as they are (one pair, the form of the earlier release until the update), and its log is trusted
 CREATE INDEX t_old ON t USING sift_col (id, g, v);
 SELECT make_legacy('t_old');
  make_legacy 
@@ -78,7 +78,7 @@ REINDEX INDEX t_old;
 SELECT * FROM state();
  triggers | of_index | on_index | orphans 
 ----------+----------+----------+---------
-        2 |        2 |        0 |       0
+        2 |        0 |        2 |       0
 (1 row)
 
 SELECT triggers, complete, heap_free FROM sift.col_tracking('t_old');
@@ -91,7 +91,7 @@ ALTER INDEX t_old SET (track_changes = 'id');
 SELECT * FROM state();
  triggers | of_index | on_index | orphans 
 ----------+----------+----------+---------
-        2 |        2 |        0 |       0
+        2 |        0 |        2 |       0
 (1 row)
 
 SELECT writes();
@@ -104,7 +104,7 @@ SELECT writes();
 SELECT make_legacy('t_old');
  make_legacy 
 -------------
-           2
+           0
 (1 row)
 
 DROP INDEX t_old;

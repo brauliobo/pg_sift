@@ -272,6 +272,10 @@ extern SiftColRel *sift_col_rel(Relation index);
  * meanwhile may cause one) frees the one sift_col_rel returns, which stays only for what the caller reads before it does either.
  */
 extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
+/* A sibling index of a locked table, read without a lock on it (it may be the one a REINDEX holds), for the layout its options declare */
+extern Relation sift_col_peer_open(Oid indexoid);
+extern void sift_col_peer_close(Relation peer);
+extern SiftColRel *sift_col_peer_rel(Relation peer, MemoryContext mcxt);
 
 /* The index this backend is building: its metapage is written with the end of the build, and a read of it before would leave a stale page in the buffers of a bulk write */
 extern Oid	sift_col_building;

@@ -43,7 +43,7 @@ DROP INDEX t_new;
 SELECT * FROM state();
 SELECT writes();
 
--- an index of an earlier release: its triggers are found, a REINDEX and an ALTER INDEX keep them (one pair), and its log is trusted
+-- an index of an earlier release: its triggers are found, a REINDEX and an ALTER INDEX keep them as they are (one pair, the form of the earlier release until the update), and its log is trusted
 CREATE INDEX t_old ON t USING sift_col (id, g, v);
 SELECT make_legacy('t_old');
 SELECT * FROM state();

@@ -316,9 +316,10 @@ other_tracker(Relation index, Relation heap, AttrNumber hatt)
 
 		if (oid == RelationGetRelid(index))
 			continue;
-		other = index_open(oid, AccessShareLock);
-		same = sift_index_ready(other) && sift_col_is_index(other) && sift_col_row_key_on(other) && other->rd_index->indkey.values[sift_col_rel(other)->rowkey_attno - 1] == hatt;
-		index_close(other, AccessShareLock);
+		other = sift_col_peer_open(oid);
+		same = sift_index_ready(other) && sift_col_is_index(other) && sift_col_row_key_on(other) &&
+			other->rd_index->indkey.values[sift_col_peer_rel(other, CurrentMemoryContext)->rowkey_attno - 1] == hatt;
+		sift_col_peer_close(other);
 		if (same)
 			return true;
 	}

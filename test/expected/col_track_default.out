@@ -35,7 +35,7 @@ SELECT triggers_of('t') AS triggers, complete, heap_free FROM sift.col_tracking(
  sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
 (1 row)
 
--- REINDEX keeps the option and makes the triggers and the baseline again (other oids, so other names)
+-- REINDEX keeps the option and the triggers (a REINDEX of two indexes of one table must not ask the table for a stronger lock than its own) and makes the baseline again
 CREATE TEMP TABLE before_reindex AS SELECT tgname FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
 REINDEX INDEX t_dflt;
 NOTICE:  sift_col index "t_dflt": 1 automatic choice (track_changes)
@@ -50,7 +50,7 @@ SELECT o AS after_reindex FROM pg_class c, unnest(c.reloptions) o WHERE c.relnam
 SELECT (SELECT count(*) FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname IN (SELECT tgname FROM before_reindex)) AS kept_by_reindex, triggers_of('t') AS triggers, complete, heap_free FROM sift.col_tracking('t_dflt');
  kept_by_reindex |                     triggers                      | complete | heap_free 
 -----------------+---------------------------------------------------+----------+-----------
-               0 | sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
+               2 | sift_track_delete_t_dflt sift_track_update_t_dflt | t        | t
 (1 row)
 
 -- turned off by ALTER INDEX: the triggers go, and nothing is complete; turned on again by ALTER INDEX .. SET (a NOTICE, the baseline) and by RESET and REINDEX

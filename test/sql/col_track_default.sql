@@ -17,7 +17,7 @@ CREATE INDEX t_dflt ON t USING sift_col (id, g, v);
 SELECT split_part(o, '=', 1) AS opt, split_part(o, '=', 2) AS val FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^(track_changes|point_tid_columns)' ORDER BY 1;
 SELECT count(*) AS logs FROM sift.col_segments('t_dflt') WHERE kind = 'tombstones';
 SELECT triggers_of('t') AS triggers, complete, heap_free FROM sift.col_tracking('t_dflt');
--- REINDEX keeps the option and makes the triggers and the baseline again (other oids, so other names)
+-- REINDEX keeps the option and the triggers (a REINDEX of two indexes of one table must not ask the table for a stronger lock than its own) and makes the baseline again
 CREATE TEMP TABLE before_reindex AS SELECT tgname FROM pg_trigger WHERE tgrelid = 't'::regclass AND tgname LIKE 'sift%';
 REINDEX INDEX t_dflt;
 SELECT o AS after_reindex FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 't_dflt' AND o ~ '^track_changes';

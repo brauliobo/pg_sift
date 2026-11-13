@@ -441,8 +441,13 @@ sift_col_track_install(Relation heap, Relation index, bool concurrent)
 	}
 	if (channel_as_asked(heap, index, log))
 		return;
-	/* the copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past */
-	if (!concurrent || !OidIsValid(sift_col_swap_origin(heap, index, true)))
+	channel_read(heap, index, present, ok, chan.witness);
+	/*
+	 * The triggers stay when they are what the option made, whatever log they come to: the log names their identities and its baseline is taken under the lock of the caller, so a REINDEX (whose
+	 * new log has no channel yet) needs no stronger lock than its own ShareLock, which a second REINDEX of the table holds as well (DROP TRIGGER takes AccessExclusiveLock: both waited for the
+	 * other). The copy of a concurrent swap has none of its own: dropping the old index would drop them with it, and DROP TRIGGER takes the lock that no writer gets past.
+	 */
+	if (!(ok[0] && ok[1]) && (!concurrent || !OidIsValid(sift_col_swap_origin(heap, index, true))))
 	{
 		drop_triggers(heap, index);
 		create_trigger(heap, index, false);

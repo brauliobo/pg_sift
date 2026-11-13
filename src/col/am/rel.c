@@ -364,6 +364,34 @@ sift_col_rel_private(Relation index, MemoryContext mcxt)
 #endif
 	return r;
 }
+
+/*
+ * A sibling index of the table, read for what its options and catalog rows declare: the rules of a build ask whether another index shares a column, an order or a key. A REINDEX of the
+ * sibling holds AccessExclusiveLock on it from its start to its end, so a lock on it made two REINDEX of two indexes of one table wait for each other (each holds its own and asks for the
+ * other's). The caller holds a lock on the table, which keeps every DDL that drops or alters an index out, and the rows are the committed ones whatever the REINDEX does; its metapage is
+ * not read (the file a REINDEX replaces), which is why sift_col_peer_rel gives the declared layout and not the stored one.
+ */
+Relation
+sift_col_peer_open(Oid indexoid)
+{
+	Relation	peer = RelationIdGetRelation(indexoid);
+
+	SIFT_INVARIANT(RelationIsValid(peer), "sift: index %u of a locked table does not exist", indexoid);
+	return peer;
+}
+
+void
+sift_col_peer_close(Relation peer)
+{
+	RelationClose(peer);
+}
+
+SiftColRel *
+sift_col_peer_rel(Relation peer, MemoryContext mcxt)
+{
+	return build_rel_with(peer, mcxt, sift_col_present_attrs(peer, SIFT_COL_PRESENT_NULLABLE));
+}
+
 #ifdef SIFT_TESTING
 void
 sift_col_test_inval(Relation index)

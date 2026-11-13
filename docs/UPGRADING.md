@@ -273,6 +273,10 @@ Three features write column formats that 4.3 and older refuse (`sift.upgrade_che
 
 `CREATE INDEX` of a scope index makes the journal index of the relation of pairs when it has none, so the statement of the 5.0 development builds that listed the journal first still works and finds it. A journal that exists is used as it is (its name, tablespace and options stay yours). One that the statement made carries a comment, which `pg_dump` keeps, and is dropped with the last scope index that uses it; remove the comment (`COMMENT ON INDEX .. IS NULL`) to keep it. A role that does not own the pairs relation cannot make the journal: its owner makes it first.
 
+## `REINDEX` keeps the triggers of track_changes (5.0)
+
+A `REINDEX` of a `sift_col` index that tracks changes keeps its two triggers when they are what the option made (a trigger that was dropped, disabled or changed is made again, as before), so their names and oids stay and an index of an earlier release keeps the form of its dependencies until `ALTER EXTENSION pg_sift UPDATE` converts them. The new log still names the triggers' identities and its baseline is taken in the same transaction: what a read may trust does not change. Nothing to do.
+
 ## What 5.0 removes
 
 **`sift.col_auto_merge_dirty_pct` is removed.** It was the percent of the units of a `sift_col` index holding a dead row above which the automatic rewrite ran (30). Under churn every unit holds one, so the rule never told a rewrite that pays from one that does not; a unit with a dead row is now the reason and the pace is the one that stayed: `sift.col_auto_merge_wal_pct` (which the reads that have cost half of the rewrite skip) and the snapshots that hold blocks. An index with dead rows in under 30% of its units, which waited for those reads, is rewritten when the budget allows, as one with more was. The index WAL of the write benchmark does not change.

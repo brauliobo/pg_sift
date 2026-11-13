@@ -47,7 +47,7 @@ bool		sift_col_value_store = true;
 char *
 sift_vstore_order(Relation index)
 {
-	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+	const SiftColRel *r = sift_col_peer_rel(index, CurrentMemoryContext);
 	const char *ko = sift_col_options_key_order(index);
 	StringInfoData sig;
 
@@ -118,7 +118,7 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 
 		if (oid == RelationGetRelid(index))
 			continue;
-		o = index_open(oid, AccessShareLock);
+		o = sift_col_peer_open(oid);
 		if (o->rd_rel->relam == index->rd_rel->relam && o->rd_index->indisvalid)
 			for (int i = 0; !holds && i < IndexRelationGetNumberOfKeyAttributes(o); i++)
 				holds = o->rd_index->indkey.values[i] == hatt;
@@ -133,7 +133,7 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 				v->state = SIFT_VSTORE_SHARED;
 				v->other = pstrdup(RelationGetRelationName(o));
 				v->other_order = theirs;
-				index_close(o, AccessShareLock);
+				sift_col_peer_close(o);
 				return;
 			}
 			if (v->state == SIFT_VSTORE_NONE)
@@ -145,7 +145,7 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 				v->saving_bytes = per_row * rows;
 			}
 		}
-		index_close(o, AccessShareLock);
+		sift_col_peer_close(o);
 	}
 	v->order = mine;
 }
@@ -193,7 +193,7 @@ has_peer(Relation heap, Relation index, AttrNumber hatt)
 
 		if (oid == RelationGetRelid(index))
 			continue;
-		o = index_open(oid, AccessShareLock);
+		o = sift_col_peer_open(oid);
 		if (o->rd_rel->relam == index->rd_rel->relam && o->rd_index->indisvalid)
 			for (int i = 0; !holds && i < IndexRelationGetNumberOfKeyAttributes(o); i++)
 				holds = o->rd_index->indkey.values[i] == hatt;
@@ -203,7 +203,7 @@ has_peer(Relation heap, Relation index, AttrNumber hatt)
 				mine = sift_vstore_order(index);
 			found = strcmp(mine, sift_vstore_order(o)) == 0;
 		}
-		index_close(o, AccessShareLock);
+		sift_col_peer_close(o);
 		if (found)
 			break;
 	}
