@@ -311,7 +311,6 @@ sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows, int keycol)
 			w->pt[c].tids = false;
 	if (keycol >= 0 && (w->schema->cols[keycol].flags & SIFT_COLD_SCOPE))
 	{
-		w->pagg.super = 0;
 		w->pagg.dim_rows = SIFT_PAGG_SCOPE_DIM_ROWS;
 		for (int c = 0; w->pt && c < w->schema->ncols; c++)
 			w->pt[c].want = w->pt[c].ord = false;
