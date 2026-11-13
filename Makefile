@@ -76,6 +76,7 @@ TESTING_REGRESS += agg_outer_walks_once
 TESTING_REGRESS += agg_par_blob_chunks
 TESTING_REGRESS += agg_par_join_split
 TESTING_REGRESS += agg_par_partitions
+TESTING_REGRESS += agg_par_pay
 TESTING_REGRESS += agg_par_split
 TESTING_REGRESS += agg_partitions
 TESTING_REGRESS += agg_partitions_many

@@ -1,0 +1,21 @@
+-- The leader of a scope read launches its workers only when the read takes less with them than in one process: it launches them (1.4 ms), scans alone while they start (3 ms and 0.5 ms for each),
+-- shares the rest at the pace of new processes (1.25 times the leader's), waits for them to exit (3 ms), and wants the read 10% shorter. The prices are those of the reads measured on events
+-- of 10 million rows: three reads that the workers cut by 1.2x to 1.9x, and the reads that ran within 10% of one process or slower with them.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+-- the least read, in millions of instructions, that launches the workers asked for
+SELECT n AS workers, min(m) AS least_m_instr
+  FROM generate_series(1, 400) m, (VALUES (1), (2), (4), (8)) w(n)
+ WHERE sift._test_agg_workers_pay(m * 1e6, n)
+ GROUP BY n ORDER BY n;
+
+SELECT read, m_instr, n AS workers, sift._test_agg_workers_pay(m_instr * 1e6, n) AS launches
+  FROM (VALUES ('by member, 49.5% tenant', 178.6), ('top-20 groups, 49.5% tenant', 166.0), ('filtered count, 49.5% tenant', 151.4),
+               ('by member, 19.6% tenant', 71.0), ('top-20 groups, 19.6% tenant', 66.0), ('by member, 2.4 M events', 63.1),
+               ('top-20 groups, 2.4 M events', 50.6), ('filtered count, 19.6% tenant', 28.8)) r(read, m_instr),
+       (VALUES (2), (4)) w(n)
+ ORDER BY m_instr DESC, n;
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

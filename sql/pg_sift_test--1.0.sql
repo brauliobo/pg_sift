@@ -496,6 +496,8 @@ CREATE FUNCTION sift._test_vis_counts(rel regclass, nblocks int8 DEFAULT -1) RET
 	AS 'MODULE_PATHNAME', 'sift_test_vis_counts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_agg_plan_passes(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_agg_plan_passes' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_agg_workers_pay(instr float8, nworkers int4) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_agg_workers_pay' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_agg_key_lists(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_agg_key_lists' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);

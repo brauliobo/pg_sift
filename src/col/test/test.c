@@ -10,6 +10,7 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "agg/agg.h"
+#include "agg/cost/model.h"
 #include "col/am.h"
 #include "col/gorder.h"
 #include "col/pagg.h"
@@ -47,6 +48,7 @@ PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
 PG_FUNCTION_INFO_V1(sift_test_agg_key_lists);
 PG_FUNCTION_INFO_V1(sift_test_vis_counts);
 PG_FUNCTION_INFO_V1(sift_test_agg_plan_passes);
+PG_FUNCTION_INFO_V1(sift_test_agg_workers_pay);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
@@ -393,6 +395,13 @@ sift_test_vis_counts(PG_FUNCTION_ARGS)
 
 /* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_agg_plan_passes, sift_agg_plan_passes)
+
+/* sift._test_agg_workers_pay(instr, nworkers): does a read of instr instructions launch its nworkers (the decision of a scope read at execution) */
+Datum
+sift_test_agg_workers_pay(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(agg_workers_pay(PG_GETARG_FLOAT8(0), PG_GETARG_INT32(1)));
+}
 
 /* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_agg_key_lists, sift_agg_key_lists)

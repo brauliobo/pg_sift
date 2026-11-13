@@ -114,6 +114,10 @@
 #define AGG_START_BASE_MS	3.0		/* the start of the first worker, in ms: 3.0 measured (the fit of 1, 2, 4, 8 and 16 workers over 8 statements: 3.0 + 0.5 a worker) */
 #define AGG_START_WORKER_MS	0.5		/* ... and of each worker: 0.53 ms of wall (a worker of PostgreSQL's own parallel count(*): 0.37; the library, the executor state and the group tables of ours: 0.16) */
 #define AGG_INSTR_PER_MS	6.0e6	/* the instructions a millisecond of a backend runs in a read of scope units (the real-shaped lab: 34.7 million in 6.0 ms, 154.8 in 20.8) */
+#define AGG_LAUNCH_MS		1.4		/* the leader's launch of the workers, in ms: the shared memory of the statement and the queues (1.3 to 1.5 measured on reads of 10 million events) */
+#define AGG_EXIT_MS			3.0		/* the leader's wait for the workers to exit after the last item (2.6 to 3.6 measured; PostgreSQL's own parallel query pays the same) */
+#define AGG_PAR_SLOWDOWN	1.25	/* the time the participants take for the instructions the leader took 1: the new processes run at an IPC of 1.5 where one ran at 1.8, and each reads its own pages */
+#define AGG_PAR_MARGIN		1.1		/* the workers launch when the read takes this much less with them: the reads of 7 to 15 ms ran within 10% of one process, and a launch that loses is worse than one that is not made */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_CUT_SHARE		0.5		/* the share of the index that the keys of a lookup leave, at least, for the normal plan to keep its price: a table of a few units reads them all whatever the key */
@@ -215,11 +219,18 @@ agg_start_ms(int nworkers)
 	return AGG_START_BASE_MS + AGG_START_WORKER_MS * nworkers;
 }
 
-/* do nworkers pay for a read of instr instructions: the participants share it, and the leader works alone while they start */
+/*
+ * do nworkers pay for a read of instr instructions: the leader launches them (the shared memory and the queues), scans alone while they start, then shares what is left with them at the slower
+ * pace of a new process, and waits for them to exit; the read must take AGG_PAR_MARGIN less than in one process
+ */
 static inline bool
 agg_workers_pay(double instr, int nworkers)
 {
-	return instr / AGG_INSTR_PER_MS * nworkers / (nworkers + 1) > agg_start_ms(nworkers);
+	double		serial = instr / AGG_INSTR_PER_MS,
+				start = agg_start_ms(nworkers),
+				par = AGG_LAUNCH_MS + start + AGG_EXIT_MS + Max(serial - start, 0.0) * AGG_PAR_SLOWDOWN / (nworkers + 1);
+
+	return par * AGG_PAR_MARGIN < serial;
 }
 
 #endif							/* SIFT_AGG_COST_MODEL_H */
