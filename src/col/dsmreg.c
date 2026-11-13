@@ -35,6 +35,7 @@ sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 }
 
 #ifdef SIFT_TESTING
+char		sift_dsm_test_build[16];
 SiftDsmDeferred sift_dsm_deferred[SIFT_DSM_DEFERRED_MAX];
 
 /* The tables this backend went without because a statement was writing (sift._test_dsm_deferred): the test that a write statement reached an attach point */

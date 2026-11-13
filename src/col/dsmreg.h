@@ -21,6 +21,9 @@ extern void *sift_dsm_join(const char *name, Size size, SiftDsmInit init);
 extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail);
 
 #ifdef SIFT_TESTING
+/* The identity of the library that asks for a table, as a test sets it (sift._test_dsm_layout): a library of another layout */
+extern char sift_dsm_test_build[16];
+
 #define SIFT_DSM_DEFERRED_MAX	8
 typedef struct SiftDsmDeferred
 {

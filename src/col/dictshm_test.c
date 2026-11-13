@@ -210,4 +210,41 @@ sift_test_dsm_join(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(sift_test_dsm_layout);
+
+typedef struct LayoutProbe
+{
+	int32		stamp;			/* the layout that made the table */
+	int32		pad;
+	int64		calls;			/* the calls that reached the table, from every backend */
+} LayoutProbe;
+
+static int32 layout_probe_stamp;
+
+static void
+layout_probe_init(SIFT_DSM_INIT_ARGS)
+{
+	LayoutProbe *p = ptr;
+
+	memset(p, 0, sizeof(LayoutProbe));
+	p->stamp = layout_probe_stamp;
+}
+
+/*
+ * sift._test_dsm_layout(layout, name, size): the table `name` as the library of layout number `layout` asks for it, a library whose struct has the same size
+ * as another's and a different layout. The result is stamp * 1000000 + calls: the stamp is the layout that made the table, calls count the calls of every
+ * backend that got the same table, so two layouts that share one table read each other's stamp.
+ */
+Datum
+sift_test_dsm_layout(PG_FUNCTION_ARGS)
+{
+	LayoutProbe *p;
+
+	layout_probe_stamp = PG_GETARG_INT32(0);
+	snprintf(sift_dsm_test_build, sizeof(sift_dsm_test_build), "layout%d", layout_probe_stamp);
+	p = sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(1)), PG_GETARG_INT64(2), layout_probe_init);
+	sift_dsm_test_build[0] = '\0';
+	PG_RETURN_INT64((int64) p->stamp * 1000000 + ++p->calls);
+}
+
 #endif							/* SIFT_TESTING */
