@@ -98,13 +98,13 @@ fi
 
 started() { local n; for n in $(seq 200); do [[ -s $1/.run/state ]] && return; sleep 0.05; done; }   # the run has its manifest, so its traps are set: a signal sent before that (a loaded host) kills it with the default action
 d=$T/runs/run-crash
-"$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!
+CELL_SLEEP=30 "$T/work.sh" "$d" k3 >/dev/null 2>&1 & pid=$!   # in its first cell for 30 s: a host that stalls this test between the wait and the signal cannot let the run finish first
 started "$d"; kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 [[ $(cut -f1 "$d/.run/state") == running ]] || fail "a killed run should still say running"
 ( . "$LIBSH"; log() { :; }; RUNS_DIR=$T/runs run_reclaim ) >/dev/null 2>&1
 [[ $(cut -f1 "$d/.run/state") == crashed ]] || fail "a run whose process is gone was not found out"
 d=$T/runs/run-term
-"$T/work.sh" "$d" k4 >/dev/null 2>&1 & pid=$!
+CELL_SLEEP=30 "$T/work.sh" "$d" k4 >/dev/null 2>&1 & pid=$!
 started "$d"; kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
 (( rc == 75 )) || fail "SIGTERM exit status is $rc, not 75"
 [[ $(cut -f1 "$d/.run/state") == interrupted ]] || fail "SIGTERM did not record interrupted"
