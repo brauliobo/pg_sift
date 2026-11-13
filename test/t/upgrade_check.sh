@@ -310,6 +310,17 @@ printf '%s;\n' "CREATE EXTENSION pg_sift" "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]
 	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scopes cannot be set up"
 out=$(uc hop)
 check "a scope of one path is column format 45, one of two paths is column format 49" grep -q -E '^ok +one_col +index +format 1\.[0-9]+, column format 45' <<<"$out" && grep -q -E '^ok +hop_col +index +format 1\.[0-9]+, column format 49' <<<"$out"
+# a scope whose key is text, varchar or uuid is column format 50 (its units are cut by the codes of the key's value store): 4.3 and 5.0 builds before it refuse it, 5.0 reads it
+printf '%s;\n' "CREATE TABLE txt_pairs (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id))" "INSERT INTO txt_pairs SELECT m, 'tenant-' || (1 + m % 12) FROM generate_series(1, 200) m" \
+	"CREATE INDEX txt_pairs_journal ON txt_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
+	"CREATE INDEX txt_col ON one_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant_id: dim_a_id -> txt_pairs(dim_a_id, tenant_id)')" "REINDEX INDEX txt_col" |
+	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d hop -f - >/dev/null || bail "the scope of a text key cannot be set up"
+out=$(uc hop)
+check "a scope of a text key is column format 50" grep -q -E '^ok +txt_col +index +format 1\.[0-9]+, column format 50' <<<"$out"
+out=$(uc --to 4.3 hop)
+check "to 4.3: a scope of a text key is a blocker" test -n "$(row "$out" blocker txt_col)"
+out=$(uc --to 5.0 hop)
+check "to 5.0: a scope of a text key is no blocker" test -z "$(row "$out" blocker txt_col)"
 out=$(uc --to 4.3 hop)
 check "to 4.3: both are blockers" test -n "$(row "$out" blocker one_col)" -a -n "$(row "$out" blocker hop_col)"
 check "to 4.3: the journal indexes and the grants of the scopes, which have no scope, are ok" test -z "$(row "$out" blocker grants_by_member)" -a -z "$(row "$out" blocker memberships_by_member)"
