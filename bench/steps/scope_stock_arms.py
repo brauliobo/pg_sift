@@ -234,6 +234,7 @@ class Cluster:
         self.data = os.path.join(a.dir, 'data')
         self.env = dict(ENV, PGHOST=os.path.join(a.dir, 'sock'), PGPORT=str(a.port), PGUSER='postgres')
         os.environ.update(PGHOST=self.env['PGHOST'], PGPORT=self.env['PGPORT'], PGUSER='postgres')
+        ENV.update(PGHOST=self.env['PGHOST'], PGPORT=self.env['PGPORT'])
         for k in ('PGSERVICE', 'PGSERVICEFILE', 'PGPASSWORD', 'PGHOSTADDR', 'PGDATABASE'):
             os.environ.pop(k, None)
         self.root = os.path.join(a.root, 'usr')
