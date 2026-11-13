@@ -1,7 +1,8 @@
 -- The price of a scope read (col/scope.h) is one pure function of the counts of the read: the units it opens (read row by row or answered from their pre-aggregates), the entries it reads, the pairs it lists
 -- when it counts a row once for several keys, the changed pairs it leaves out of its units, the patch and the delta of them. The executor takes the join as written where it costs less, and tells the reader how many
 -- changed pairs that join leaves it, so that a read that has more refuses before it lists them. The terms are those of the cells of three shapes (instructions of the backend, warm, one backend, the scope read forced:
--- 30 keys of 111 rows, 500 of 3 rows, 110 of 55 rows with a tenth of them in two keys), and the arm the price takes is the one that was cheaper when measured.
+-- 30 keys of 111 rows, 500 of 3 rows, 110 of 55 rows with a tenth of them in two keys; the cells with changed pairs: 300,000 events of 2,500 members, 110 keys of 4,250 pairs, read at 1 and 30 keys), and the
+-- arm the price takes is the one that was cheaper when measured.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -53,12 +54,12 @@ INSERT INTO cells (shape, keys, once, units, entries, preagg, drops, key_pairs, 
 	('55 rows, two keys', 10, true, 11, 66000, 0, 1, 1100, 0, 0, 0, 0, 5500, 44.2, 6.47, 7.39),
 	('55 rows, two keys', 30, true, 33, 198000, 0, 2, 3300, 0, 0, 0, 0, 5500, 44.2, 20.50, 13.58),
 	('55 rows, two keys', 50, true, 55, 330000, 0, 5, 5500, 0, 0, 0, 0, 5500, 44.2, 48.35, 19.08),
-	('20 of 110 pairs changed', 1, false, 2, 12000, 0, 0, 20, 20, 10, 300000, 2400, 5500, 44.2, 12.21, 4.39),
-	('20 of 110 pairs changed', 30, true, 33, 198000, 0, 2, 3300, 20, 10, 300000, 2400, 5500, 44.2, 35.77, 16.55),
-	('20 pairs of every tenant', 1, false, 2, 12000, 0, 0, 30, 950, 10, 300000, 3600, 5500, 44.1, 15.46, 4.61),
-	('20 pairs of every tenant', 30, true, 33, 198000, 0, 2, 3300, 950, 10, 300000, 70800, 5500, 44.1, 140.60, 16.58),
-	('every pair of every tenant', 1, false, 2, 12000, 0, 0, 155, 4775, 10, 300000, 18600, 5500, 43.5, 43.87, 5.71),
-	('every pair of every tenant', 30, true, 33, 198000, 0, 0, 3300, 4775, 10, 300000, 355800, 5500, 43.5, 494.16, 17.59);
+	('one tenant, 20 pairs changed', 1, false, 3, 5040, 0, 0, 39, 20, 10, 300000, 2400, 4250, 44.2, 9.17, 6.92),
+	('one tenant, 20 pairs changed', 30, true, 61, 141720, 0, 7, 1160, 20, 10, 300000, 2400, 4250, 44.2, 43.42, 13.11),
+	('20 pairs of every tenant', 1, false, 3, 5040, 0, 0, 39, 20, 10, 300000, 2400, 4250, 44.2, 9.82, 7.48),
+	('20 pairs of every tenant', 30, true, 89, 224400, 0, 7, 1160, 709, 10, 300000, 85080, 4250, 44.2, 130.73, 13.66),
+	('every pair of every tenant', 1, false, 3, 5280, 0, 0, 39, 22, 10, 300000, 2640, 4250, 44.2, 10.30, 7.70),
+	('every pair of every tenant', 30, true, 89, 259680, 0, 0, 1160, 1003, 10, 300000, 120360, 4250, 44.2, 116.22, 13.91);
 
 SELECT shape, keys, round((p / 1e6)::numeric, 1) AS priced_m, measured AS measured_m, round((100 * (p / 1e6 - measured) / measured)::numeric) AS error_percent,
 	(p / 1e6 < join_as_written) = (measured < join_as_written) AS arm_is_the_cheaper

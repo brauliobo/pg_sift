@@ -294,9 +294,11 @@ typedef struct SiftScopeRead
  * for 50 members a key). A change since the stamp costs the journal 150,000 before its first member, then each changed member the probe of its pairs, 3,300 at 5,500 pairs in the relation and 10,000 at 116,000
  * (3,300 (1 + 0.45 log2 (pairs / 5,500))), or the relations' pairs read whole from the leaves of their journal indexes (138 a pair: 16 million at 116,000), whichever is less: it is also what the reader's cap prices,
  * the most it lists before the join costs less. Each entry of the units read row by row costs 20 more (the source leaves out the entries of the changed members). The patch is 43,000 a unit of the entity segments that
- * holds a row of the changed members (of the units the zones leave open, the share the expected rows fall in), 13 an entity row looked at to find them (no point directory of the member leaf tells where they are) and
- * 1,600 a copy of the delta (a changed member's row or a buffered row, copied for each pair, made a unit and read). They are fitted to 12 reads of 1 to 200 changed members of 1,000,000 events (116,000 pairs, 5 rows a member,
- * 25 and 37,000 members a key) and 4 of 300,000 events (55 rows a member), 24% at most; the reads of thousands of changed members have the members' term only.
+ * holds a row of the changed members (of the units the zones leave open, the share the expected rows fall in), 23 an entity row looked at to find them (the member leaf decoded and tested; no point directory of the
+ * member leaf tells where they are) and 550 a copy of the delta (a changed member's row or a buffered row, copied for each pair, made a unit and read: 450 for a read of one key, 700 to 900 for several keys,
+ * whose rows are sorted by key; the member type and a text column change it by less than 10%). They are fitted to 6 reads of 300,000 events (2,500 members of 120 rows, 4,250 pairs of 110 keys; 1 and 30 keys, 20 to
+ * 1,003 changed members: 14 to 23% under for 30 keys, 7% over at most for one) and to 18 of 300,000 events (3,000 members of 100 rows, one key, 375 and 3,000 changed members: 25 and 127 million, the price is 20 to 40% over);
+ * the reads of thousands of changed members have the members' term only.
  * The entity path reads a unit as a unit of the scope does (36,700), and the entity rows, the pairs and the rows kept at the figures of an earlier table (the one of col/conn.h).
  */
 #define SIFT_SCOPE_SETUP_INSTR		450000
@@ -307,7 +309,7 @@ typedef struct SiftScopeRead
 #define SIFT_SCOPE_KEY_PAIR_INSTR	286
 #define SIFT_SCOPE_EXCEPT_INSTR		20
 #define SIFT_SCOPE_PATCH_UNIT_INSTR	43000
-#define SIFT_SCOPE_SCAN_INSTR		13
+#define SIFT_SCOPE_SCAN_INSTR		23
 #define SIFT_SCOPE_ENTITY_INSTR		25
 #define SIFT_SCOPE_MATCH_INSTR		70
 /* a row of a relation of pairs read through its btree (an index only scan) where no journal index lists its pairs, which every scan of the keys and the entity path need: 255 to 305 */
@@ -322,7 +324,7 @@ typedef struct SiftScopeRead
 /* an entity row of an index read whole, against which the changed members one read lists are capped (the figures of a table of 1,000,000 rows and 20,000 members) */
 #define SIFT_SCOPE_CAP_ROW_INSTR	21
 /* a row of a write buffer, or of a changed member, whose member has a pair with the keys, copied for each pair, made a unit and read */
-#define SIFT_SCOPE_DELTA_INSTR		1600
+#define SIFT_SCOPE_DELTA_INSTR		550
 /* pricing a read against the entity path (the members listed, the rows counted) costs about this: a patch and a delta that cost less are read without it */
 #define SIFT_SCOPE_PRICING_INSTR	1000000
 /* the changed members one read lists, at most (8 MB of keys) */
