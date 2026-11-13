@@ -21,6 +21,7 @@
  */
 #include "store_test_int.h"
 #include "agg/agg_int.h"
+#include "executor/instrument.h"
 
 #ifdef SIFT_TESTING
 
@@ -364,6 +365,20 @@ read_bulk(SiftStreamReader *sr, const TestSeg *seg, size_t chunk)
 	return sum == UINT64CONST(0x123456789) ? 0 : seg->size;
 }
 
+/* Buffer lookups of 1000 reads alternating between the first and the last bytes: the pinned pages serve all but two */
+static uint64
+read_alternating(SiftStreamReader *sr, const TestSeg *seg)
+{
+	char		scratch[16];
+	uint64		lookups = pgBufferUsage.shared_blks_hit + pgBufferUsage.shared_blks_read;
+
+	if (seg->size < 2 * sizeof(scratch))
+		elog(ERROR, "segment too small");
+	for (int i = 0; i < 1000; i++)
+		sift_sr_get(sr, i % 2 ? seg->size - sizeof(scratch) : 0, sizeof(scratch), scratch);
+	return pgBufferUsage.shared_blks_hit + pgBufferUsage.shared_blks_read - lookups;
+}
+
 uint64
 read_segment(Relation index, const TestSeg *seg, int mode)
 {
@@ -371,7 +386,9 @@ read_segment(Relation index, const TestSeg *seg, int mode)
 	uint64		n;
 
 	sift_sr_init(&sr, index, seg->extents, seg->nextents, seg->gen);
-	if (mode == 0)
+	if (mode == 5)
+		n = read_alternating(&sr, seg);
+	else if (mode == 0)
 		n = read_replay(index, &sr, seg);
 	else if (mode == 1)
 		n = read_random(index, &sr, seg);

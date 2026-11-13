@@ -24,6 +24,9 @@ SELECT gen, size, nextents, sift._test_seg_read('b_idx', gen) = payload AS repla
 	sift._test_seg_read('b_idx', gen, 4) >= 0 AS ahead
 FROM sift._test_segments('b_idx') ORDER BY gen;
 SELECT sift._test_check('b_idx');
+-- 1000 reads alternating between two distant pages cost two buffer lookups: the reader keeps its recent pages pinned
+SELECT size, sift._test_seg_read('b_idx', gen, 5) <= 4 AS pinned
+FROM sift._test_segments('b_idx') WHERE size >= 1048576 ORDER BY gen;
 REINDEX INDEX b_idx;
 SELECT count(*), bool_and(sift._test_seg_read('b_idx', gen) = payload) FROM sift._test_segments('b_idx');
 

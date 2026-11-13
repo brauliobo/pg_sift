@@ -112,13 +112,20 @@ sr_stream_begin(SiftStreamReader *sr, uint32 first, uint32 end, int flags)
 }
 
 static void
-sr_unpin(SiftStreamReader *sr)
+sr_unlock(SiftStreamReader *sr)
 {
 	if (sr->locked)
 		LockBuffer(sr->buf, BUFFER_LOCK_UNLOCK);
-	if (BufferIsValid(sr->buf))
-		ReleaseBuffer(sr->buf);
 	sr->locked = false;
+}
+
+static void
+sr_unpin(SiftStreamReader *sr)
+{
+	sr_unlock(sr);
+	for (int i = 0; i < SIFT_SR_PINS && BufferIsValid(sr->pin[i]); i++)
+		ReleaseBuffer(sr->pin[i]);
+	memset(sr->pin, 0, sizeof(sr->pin));
 	sr->buf = InvalidBuffer;
 }
 
@@ -288,6 +295,30 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 	return buf;
 }
 
+/* The pinned buffer of block blk: the one an earlier get kept, else fetched; pin[] is ordered by recency and the least recent goes when it is full */
+static Buffer
+sr_pinned(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
+{
+	int			i = 0;
+	Buffer		buf;
+
+	while (i < SIFT_SR_PINS && BufferIsValid(sr->pin[i]) && sr->pin_blk[i] != blk)
+		i++;
+	if (i < SIFT_SR_PINS && BufferIsValid(sr->pin[i]))
+		buf = sr->pin[i];
+	else
+	{
+		buf = sr_fetch(sr, lpage, blk);
+		if (i == SIFT_SR_PINS)
+			ReleaseBuffer(sr->pin[--i]);
+	}
+	memmove(&sr->pin[1], &sr->pin[0], i * sizeof(Buffer));
+	memmove(&sr->pin_blk[1], &sr->pin_blk[0], i * sizeof(BlockNumber));
+	sr->pin[0] = buf;
+	sr->pin_blk[0] = blk;
+	return buf;
+}
+
 /* Bytes [in, in + len) of logical page lpage; the page stays share-locked */
 static const char *
 sr_bytes(SiftStreamReader *sr, uint32 lpage, size_t in, size_t len)
@@ -297,8 +328,8 @@ sr_bytes(SiftStreamReader *sr, uint32 lpage, size_t in, size_t len)
 
 	if (sr->buf == InvalidBuffer || sr->blkno != blk)
 	{
-		sr_unpin(sr);
-		sr->buf = sr_fetch(sr, lpage, blk);
+		sr_unlock(sr);
+		sr->buf = sr_pinned(sr, lpage, blk);
 		sr->blkno = blk;
 	}
 	if (!sr->locked)

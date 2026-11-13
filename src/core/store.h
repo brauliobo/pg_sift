@@ -512,6 +512,9 @@ extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
  */
 typedef bool (*SiftSrAheadFn) (void *arg, uint64 *off, uint64 *len);
 
+/* the pages a reader keeps pinned: a unit's reads go back and forth between its header and the pages of its leaves (7 pages in the units of a scope patch) */
+#define SIFT_SR_PINS	8
+
 /*
  * Stream reader over a segment's extents. sift_sr_get returns a pointer to
  * len bytes at logical offset off: into the buffer page when the range fits
@@ -528,9 +531,11 @@ typedef struct SiftStreamReader
 	const SiftExtent *extents;
 	int			nextents;
 	uint64		gen;
-	Buffer		buf;			/* current page or InvalidBuffer */
+	Buffer		buf;			/* current page or InvalidBuffer: one of pin[] */
 	BlockNumber blkno;
 	bool		locked;			/* buf share-locked */
+	Buffer		pin[SIFT_SR_PINS];	/* the pages gets went to last, most recent first (InvalidBuffer after them): pinned, never locked, so a get back to one is no buffer lookup */
+	BlockNumber pin_blk[SIFT_SR_PINS];
 	int			cur;			/* extent of the last lookup */
 	uint32		npages;
 	uint32	   *pagestart;		/* first logical page of each extent, [nextents + 1] */
