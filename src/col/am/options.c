@@ -365,6 +365,12 @@ sift_col_init(void)
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.col_value_store",
+							 "CREATE INDEX and REINDEX of a sift_col index share the strings of a column with the other indexes of the table that hold it, in a shared value store.",
+							 "On: a text, varchar or uuid leaf that another sift_col index of the table holds with the same key order, and whose sharing spares at least 5 bytes a row and a quarter of the leaf, keeps its strings in the store "
+							 "of its column (column format minor 46, which 4.3 and older refuse). Off: the build keeps the strings in its segments and makes no store, and a REINDEX of a member takes its strings back; "
+							 "change tracking and every other structure are written as usual (column format minor 44 at the most), and the setting changes no existing index.",
+							 &sift_col_value_store, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_dict_shared_cache_kb",
 							"Shared memory, for all backends together, that keeps the parsed dictionaries of sift_col segments (128 kB or more each), so that a new backend or a pooled connection reads a dictionary another backend parsed in place instead of parsing it (0: off, each backend parses and keeps its own, up to the dict_cache_kb of the index).",
 							"The ring of records is allocated, at the size of this setting, by the first backend that keeps a dictionary after the server starts, and its size is recorded for the other backends: a later change turns the use of it on and off (0), never its size, which changes at the next start of the server. "

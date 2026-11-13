@@ -115,6 +115,9 @@ BEGIN
 			ELSIF EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE 'scope=%') THEN
 				-- a scope is written at minor 45 or more (a lowered setting refuses it), and a release before 5.0 refuses the option: the entity rows are what an older release reads
 				adv := format('ALTER INDEX %s RESET (scope), then SET sift.col_format_minor = 14 and REINDEX INDEX %s writes the entities without the scope, which %s reads (the reads of the scope go through the join again)', r.rel, r.rel, tgt);
+			ELSIF hi = 46 AND tgt = '4.3' THEN
+				-- the strings of a column held by a shared value store (5.0): the setting writes them in the segments again and leaves change tracking and the structures of minors 15 to 44 as they are
+				adv := format('SET sift.col_value_store = off, then REINDEX INDEX %s writes the strings in the segments (minor 44 at the most), which %s reads', r.rel, tgt);
 			ELSIF hi >= 33 THEN
 				adv := format('SET sift.col_format_minor = 14, then %s writes the point directories with a power of two of slots, the units of a key_cut index by superblock (and without the sections of minors 15 to 32), which %s reads',
 							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);

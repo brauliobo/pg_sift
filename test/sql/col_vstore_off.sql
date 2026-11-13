@@ -1,0 +1,49 @@
+-- The shared value store (docs/COL-VSTORE.md) has a switch of its own, sift.col_value_store (on): with it off a build keeps the strings in its segments (the format 4.3 reads, minors up to 44), makes no store
+-- relation, and still tracks changes and writes every other structure of minors 15 and above; the setting names no existing index (it is read by CREATE INDEX and REINDEX). sift.test_vstore_columns forces
+-- the sharing the rule would not choose for this small table, and the switch is stronger than it.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.test_vstore_columns = 'uid,url';
+SET sift.async_maintenance = off;
+
+CREATE TABLE vo (id int PRIMARY KEY, tenant int, uid uuid, url text);
+INSERT INTO vo SELECT i, i % 7, md5((i % 3000)::text)::uuid, 'https://example.com/p/' || md5((i % 4000)::text) FROM generate_series(1, 12000) i;
+
+CREATE FUNCTION vo_state() RETURNS TABLE (idx text, stores bigint, read_by_43 bool, tracks bool, heap_free bool) LANGUAGE sql AS
+$$ SELECT i.i, (SELECT count(*) FROM sift.col_value_store_status WHERE table_name = 'vo'::regclass), (SELECT max(format) <= 44 FROM sift.col_segments(i.i) WHERE kind = 'immutable'),
+          t.complete, t.heap_free
+   FROM (VALUES ('vo_a'), ('vo_b')) i(i), LATERAL sift.col_tracking(i.i) t $$;
+
+-- off: no store, the format 4.3 reads (44 at the most: a segment that holds a shared string is 46), change tracking complete, every answer the heap's
+SET sift.col_value_store = off;
+CREATE INDEX vo_a ON vo USING sift_col (id, tenant, uid, url);
+CREATE INDEX vo_b ON vo USING sift_col (id, uid, url);
+SELECT * FROM vo_state() ORDER BY 1;
+SELECT sift.col_verify('vo_a', true), sift.col_verify('vo_b', true);
+SET sift.agg_force = on;
+CREATE TEMP TABLE answers AS SELECT 'sift' AS arm, count(*) AS n, count(DISTINCT url) AS urls, sum(tenant) AS tenants FROM vo WHERE url LIKE 'https://example.com/p/%';
+SET sift.enable_agg = off;
+INSERT INTO answers SELECT 'heap', count(*), count(DISTINCT url), sum(tenant) FROM vo WHERE url LIKE 'https://example.com/p/%';
+RESET sift.enable_agg;
+SELECT count(DISTINCT (n, urls, tenants)) AS answers_of_both_arms FROM answers;
+DELETE FROM vo WHERE id % 5 = 0;
+SELECT sift.col_verify('vo_a', true), sift.col_verify('vo_b', true);
+
+-- on (the default): the next build shares, and says so in the segments (46)
+RESET sift.col_value_store;
+REINDEX INDEX vo_a;
+REINDEX INDEX vo_b;
+SELECT * FROM vo_state() ORDER BY 1;
+
+-- off again: a REINDEX of each member holds its strings again and the last one takes the store with it
+SET sift.col_value_store = off;
+REINDEX INDEX vo_a;
+REINDEX INDEX vo_b;
+SELECT * FROM vo_state() ORDER BY 1;
+SELECT sift.col_verify('vo_a', true), sift.col_verify('vo_b', true);
+
+DROP FUNCTION vo_state();
+DROP TABLE vo;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

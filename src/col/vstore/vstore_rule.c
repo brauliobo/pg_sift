@@ -33,6 +33,8 @@
 #include "col/pg.h"
 #include "col/vstore/vstore.h"
 
+bool		sift_col_value_store = true;
+
 #define VSTORE_MIN_BYTES	5.0		/* bytes a row that sharing spares, at the least: a short or repeated string costs about as much as its reference */
 #define VSTORE_MIN_SAVED	0.25	/* the share of the bytes of the leaf (strings, references and codes) that sharing spares, at the least */
 #define VSTORE_ENTRY_BYTES	4.0		/* the bytes a string takes in a dictionary beyond its width: its offset (the order array comes with the form chosen) */
@@ -102,6 +104,8 @@ sift_vstore_verdict(Relation heap, Relation index, const SiftColDef *d, SiftVSto
 			v->state = SIFT_VSTORE_SHARED;
 		return;
 	}
+	if (!sift_col_value_store)
+		return;
 	if (!keycols_col_stats(heap, hatt, &nd, &corr, &width))
 		return;
 	saving(rows, nd, width, &per_row, &share);
@@ -269,7 +273,7 @@ sift_vstore_auto(Relation heap, Relation index)
 		bool		share = sift_vstore_pays(heap, index, d);
 
 #ifdef SIFT_TESTING
-		share |= test_forced(heap, index, d);
+		share |= sift_col_value_store && test_forced(heap, index, d);
 #endif
 		if (share)
 			(void) sift_vstore_ensure(heap, index, hatt);

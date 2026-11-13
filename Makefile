@@ -372,6 +372,7 @@ TESTING_REGRESS += col_vstore_garbage
 TESTING_REGRESS += col_vstore_left
 TESTING_REGRESS += col_vstore_lifecycle
 TESTING_REGRESS += col_vstore_names
+TESTING_REGRESS += col_vstore_off
 TESTING_REGRESS += col_vstore_runs
 TESTING_REGRESS += col_vstore_segments
 TESTING_REGRESS += col_wbuf

@@ -34,7 +34,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 100 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the rule for a default it failed (or why the rule does not cover it) |
 | [diagnostic](#diagnostic) | 41 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 20 | a limit or guard on memory, locks, I/O or replicas |
@@ -1456,6 +1456,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Advice:** Leave on. Turn it off for a session or a database where an index must not depend on the index of another table; connect = 'off' on one index, or connect = 'auto' when the setting is off and one index should connect.
 - **Sources:** benchmark `test:col_conn_auto`; [COL-CONNECT](COL-CONNECT.md#automatic-connections)
 
+#### sift.col_value_store
+
+`sift_col` · default · since 5.0 · default on
+
+- **What it does:** CREATE INDEX and REINDEX share the distinct strings of a text, varchar or uuid column between the sift_col indexes of the table that hold it with the same key order, in a relation of their own, and the segments refer to them by code
+- **Gain:** reads as cheap: equality on a 62-byte URL 1.0 M instructions warm either way, a range +3.3% warm (2,174 to 2,245 M), an IN of 100 URLs +8.7 M warm (52.1 to 60.8 M); 2,000,000 rows, three indexes
+- **Impact:** index size: -8% (100,000 rows), -12% (500,000) and -18% (2,000,000) of three indexes that hold the column; the one member left holds the store as well as its codes (+26% to +38%) until its REINDEX; build, merge and writes: builds 1.0 to 1.45 times as long (2,000,000 rows), the WAL of a build is the same; other: a relation more for each shared column (`<table>_<column>_sift_values`, never populated) and the lock protocol of its writers; the segments that refer to it are column format minor 46, which 4.3 and older refuse; a build that adopts a store takes 1.0 to 1.45 times as long
+- **When:** A table with two or more sift_col indexes that hold the same string column with the same key order, where sharing spares at least 5 bytes a row and a quarter of the leaf; nothing else is shared.
+- **Default:** on — On because the gain is large when two indexes of the table hold the column and the rule shares only then; the reads are as cheap and the builds within 1.5 times. Off writes what 4.3 reads, and does not stop change tracking or the structures of minors 15 and above, which sift.col_format_minor = 14 does.
+- **Turn off:** SET sift.col_value_store = off before CREATE INDEX or REINDEX; sift.col_format_minor = 14 also turns off change tracking and every structure of minor 15 and above
+- **Upgrade from 4.3:** No existing index changes: a member that shares keeps the store until its REINDEX (with the setting off, the REINDEX takes its strings back and the last member takes the store with it).
+- **Advice:** Leave on. Turn it off for a session or a database where the indexes must be readable by 4.3 and older (the strings stay in the segments, change tracking and the other structures are written as usual), then REINDEX the members that already share.
+- **Sources:** benchmark `test:col_vstore_off`; [COL-VSTORE](COL-VSTORE.md#why-on-and-the-off-switch)
+
 #### sift.col_connect_refresh_pct
 
 `sift_col` · default · since 4.3 · default 10
@@ -2737,7 +2751,7 @@ all · deprecated · since 3.3 · default ''
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
+No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicity`, `sift.col_value_store`, `sift_col(scope)`, `sift_col(projection)`, `sift.table_key_order`.
 
 | Option | 4.3 | 5.0 | Column format | What a 4.3 user gets after the update |
 |---|---|---|---|---|
@@ -2754,6 +2768,7 @@ No default changed since 4.3; new: `sift.agg_scope`, `sift.scope_max_multiplicit
 | `sift_col(connect)` | '' | '' | minor 44 | A new option: nothing changes for an index without it. The parent index of a connection is column format minor 44, which only 4.3 and later read. |
 | `sift_col(projection)` | new | '' |  | A new option: nothing changes for an index without it. ALTER EXTENSION UPDATE creates the definitions table and the status; an index that already lists a name is reported broken as not defined until the projection is created. No REINDEX. |
 | `sift.col_auto_connect` | on | on |  | An index built before 4.3 is connected by its next REINDEX if the foreign keys qualify; a restore of a dump keeps what the dump says. |
+| `sift.col_value_store` | new | on |  | No existing index changes: a member that shares keeps the store until its REINDEX (with the setting off, the REINDEX takes its strings back and the last member takes the store with it). |
 | `sift.col_connect_refresh_pct` | 10 | 10 |  | New in 4.3. |
 | `sift_col(scope)` | new | '' | minor 45, unreadable by 4.3 | A new option: nothing changes for an index without it. An index with a scope is column format minor 45, which only 5.0 and later read; REINDEX after ALTER INDEX .. SET (scope = ..) writes the segments. |
 | `sift.agg_scope` | new | on |  | New in 5.0. |

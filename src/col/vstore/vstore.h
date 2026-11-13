@@ -89,6 +89,7 @@ extern bool sift_vstore_old_epochs(SiftVStore *vs);
 extern uint32 sift_vstore_current_epoch(uint32 store);
 extern void sift_vstore_vacuum(Relation index);
 extern PGDLLIMPORT int sift_vstore_gc_kb;
+extern PGDLLIMPORT bool sift_col_value_store;	/* sift.col_value_store: CREATE INDEX and REINDEX share the strings of a column that the rule selects */
 extern int	sift_vstore_retire(SiftVStore *vs, const Bitmapset *in_use);
 extern uint64 sift_vstore_dir_codes(Relation rel, uint64 *epoch);
 extern void sift_vstore_usage(Oid store, uint64 *epoch, uint64 *total, uint64 *live, Bitmapset **epochs);
