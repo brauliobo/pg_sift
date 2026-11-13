@@ -10,7 +10,7 @@ VULKAN=1 scripts/pgtest.sh install
 ```
 
 - Only `-ldl` is linked. `libvulkan.so.1` is opened with `dlopen` the first time a backend uses the device, never in the postmaster. A host without a Vulkan loader or driver runs the CPU path and says so once (NOTICE).
-- Vulkan declarations are a generated subset of the Khronos `vulkan_core.h` (`src/agg/vk_min.h`) and the shader is checked in as SPIR-V (`src/agg/vk_spv.h`): no Vulkan SDK or shader compiler needed. After editing `src/agg/vk.comp` (needs `glslc`) or `agg/vk.c`, `make gpu-shaders` regenerates both; `scripts/gen-aggvk-min.py --check` and `scripts/gen-aggvk-spv.sh --check` report stale files.
+- Vulkan declarations are a generated subset of the Khronos `vulkan_core.h` (`src/agg/vk_min.h`) and the shader is checked in as SPIR-V (`src/agg/vk_spv.h`): no Vulkan SDK or shader compiler needed. After editing `src/agg/vk.comp` (needs `glslc`) or `agg/vk/`, `make gpu-shaders` regenerates both; `scripts/gen-aggvk-min.py --check` and `scripts/gen-aggvk-spv.sh --check` report stale files.
 - Without `VULKAN=1` the settings below exist and are forced off: `SET sift.gpu = on` gives one NOTICE per session and the query runs on the CPU, never an error. Packages and CI build without it; no job builds with `VULKAN=1`.
 
 ## Settings
@@ -82,7 +82,7 @@ Reading the table:
 
 ## Code layout
 
-`SiftAgg` talks to its backends through one interface, `src/agg/back.h` (`init`, `begin`, `run_unit`, `stopped`, `finish`, `explain`). The CPU kernels of `agg/agg.c` are the default; the Vulkan backend is `src/agg/gpu.c` (settings, device context, plan cache, job queue, EXPLAIN) over the device layer `agg/vk.c` and the chunk plans of `src/col/gpu.c`. A backend sees a narrow view of the scan, is offered every unit after the pre-aggregates and hands back exact sums (`sift_agg_fold_sums`). Without `VULKAN=1` `agg/gpu.c` is only the settings and the NOTICE; `agg/vk.c` is empty.
+`SiftAgg` talks to its backends through one interface, `src/agg/back.h` (`init`, `begin`, `run_unit`, `stopped`, `finish`, `explain`). The CPU kernels of `agg/kern.c` are the default; the Vulkan backend is `src/agg/gpu.c` (settings, device context, plan cache, job queue, EXPLAIN) over the device layer `agg/vk/` and the chunk plans of `src/col/gpu.c`. A backend sees a narrow view of the scan, is offered every unit after the pre-aggregates and hands back exact sums (`sift_agg_fold_sums`). Without `VULKAN=1` `agg/gpu.c` is only the settings and the NOTICE; `agg/vk.c` is empty.
 
 ## Limits
 
