@@ -279,7 +279,7 @@ A tenant that received members is the case where the planner chose the scope rea
 **Building at the same time.** The build of a `sift_col` index that tracks changes installs the two triggers of its log on the table when it has read it, which takes `ShareRowExclusiveLock`
 while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
 (`sift_col_build_lock`) takes the stronger lock first, so the second build waits at its start; the options a build decides are written under the tuple lock of the catalog row of its index. `REINDEX`
-of two indexes of one table at the same time is not covered by the event trigger (PostgreSQL has none for it).
+of two indexes of one table at the same time is not covered by the event trigger (PostgreSQL has none for it) and can deadlock: the build drops and makes the two triggers of its log again, which takes `AccessExclusiveLock` of the table while the other holds the `ShareLock` of its `REINDEX` (PostgreSQL ends one of them with `deadlock detected`; run it again). The event triggers cost a statement of DDL: 10,000 statements (`CREATE TABLE`, `CREATE INDEX`, `DROP INDEX`, `DROP TABLE` in a row, one backend, median of five runs) took 0.94 ms for each four with none, 1.20 with the build lock, 1.26 with the drop sweep and 1.45 with the four event triggers of the library: 0.13 ms for each statement, 1.3 s for the 10,000.
 
 **Workers.** A scope read runs under the `Gather` of a plan that has workers, as an entity read does: the leader decides the read once (the keys, the changed members, the patch and the pairs of the write
 buffers, from its snapshot), puts that decision and the directory it read in the shared memory of the statement, and each participant claims units from the one list (a worker opens the same directory and takes the keys
@@ -636,7 +636,7 @@ EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do i
 - **An empty table.** A scope index built on a table without rows (or rebuilt after every row was deleted) has no segment to carry its stamp, so the reads say `unfilled` (the join answers) until the rows that arrive are vacuumed or `sift.col_maintain` runs (the test `col_scope_empty_build`).
 - **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).
 - **Generic plans.** A condition on the relation that reads a parameter is proved only by a custom plan: a generic plan keeps the join for a relation with a partial btree.
-- **Two builds at once.** `REINDEX` of two indexes of one table at the same time is not covered by the build-lock event trigger.
+- **Two builds at once.** `REINDEX` of two indexes of one table at the same time is not covered by the build-lock event trigger and can end with `deadlock detected` (one of them: run it again); `CREATE INDEX` of two is.
 
 ## Without a scope index: replicate or reuse
 
