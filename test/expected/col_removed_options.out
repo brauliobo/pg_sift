@@ -1,4 +1,4 @@
--- key_cut_rows, point_columns and order_columns, the options that 4.3 deprecated, were removed in 5.0. They stay accepted and are ignored, so that an index that stores
+-- key_cut_rows, point_columns and order_columns, the options that 4.3 deprecated, are ignored since 5.0. They stay accepted and are ignored, so that an index that stores
 -- one, a dump that names one and an ALTER INDEX of another option of such an index keep working: the layout is the one of an index without the option, a NOTICE says
 -- so where it is written, and RESET drops it.
 CREATE EXTENSION pg_sift;
@@ -22,15 +22,15 @@ NOTICE:  sift_col index "ro_plain": 1 advice (track_changes)
 SELECT format('CREATE INDEX ro_%1$s ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = ''tenant_id'', point_tid_columns = ''off'', order_array_columns = ''off'', %1$s = %2$s)', opt, val)
 FROM ro_opts \gexec
 CREATE INDEX ro_key_cut_rows ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = 'tenant_id', point_tid_columns = 'off', order_array_columns = 'off', key_cut_rows = 64)
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
 NOTICE:  sift_col index "ro_key_cut_rows" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_key_cut_rows": 1 advice (track_changes)
 CREATE INDEX ro_point_columns ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = 'tenant_id', point_tid_columns = 'off', order_array_columns = 'off', point_columns = 'uid')
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
 NOTICE:  sift_col index "ro_point_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_point_columns": 1 advice (track_changes)
 CREATE INDEX ro_order_columns ON ro USING sift_col (id, tenant_id, uid, ts) WITH (key_cut = 'tenant_id', point_tid_columns = 'off', order_array_columns = 'off', order_columns = 'ts')
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 NOTICE:  sift_col index "ro_order_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_order_columns": 1 advice (track_changes)
 SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout, (SELECT reloptions FROM pg_class WHERE relname = 'ro_' || opt) AS stored FROM ro_opts ORDER BY opt;
@@ -54,23 +54,23 @@ SELECT opt, (SELECT count(*) || '/' || min(id) FROM ro WHERE uid = 7919) AS rows
 RESET enable_seqscan; RESET enable_bitmapscan;
 SELECT format('ALTER INDEX ro_%s SET (cube_minmax = true)', opt) FROM ro_opts UNION ALL SELECT 'ALTER INDEX ro_plain SET (cube_minmax = true)' \gexec
 ALTER INDEX ro_key_cut_rows SET (cube_minmax = true)
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
 ALTER INDEX ro_point_columns SET (cube_minmax = true)
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
 ALTER INDEX ro_order_columns SET (cube_minmax = true)
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 ALTER INDEX ro_plain SET (cube_minmax = true)
 SELECT format('REINDEX INDEX ro_%s', opt) FROM ro_opts \gexec
 REINDEX INDEX ro_key_cut_rows
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
 NOTICE:  sift_col index "ro_key_cut_rows" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_key_cut_rows": 1 advice (track_changes)
 REINDEX INDEX ro_point_columns
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
 NOTICE:  sift_col index "ro_point_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_point_columns": 1 advice (track_changes)
 REINDEX INDEX ro_order_columns
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 NOTICE:  sift_col index "ro_order_columns" stores columns id, tenant_id, uid, ts of index "ro_plain", which has the same layout
 NOTICE:  sift_col index "ro_order_columns": 1 advice (track_changes)
 SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout_after_reindex, sift.col_verify(('ro_' || opt)::regclass, true) IS NOT NULL AS verified FROM ro_opts ORDER BY opt;
@@ -84,14 +84,14 @@ SELECT opt, ro_layout('ro_' || opt) = ro_layout('ro_plain') AS same_layout_after
 -- written by ALTER INDEX: said again, and stored
 SELECT format('ALTER INDEX ro_plain SET (%s = %s)', opt, val) FROM ro_opts \gexec
 ALTER INDEX ro_plain SET (key_cut_rows = 64)
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
 ALTER INDEX ro_plain SET (point_columns = 'uid')
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
 ALTER INDEX ro_plain SET (order_columns = 'ts')
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 SELECT reloptions FROM pg_class WHERE relname = 'ro_plain';
                                                                        reloptions                                                                       
 --------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -99,8 +99,8 @@ SELECT reloptions FROM pg_class WHERE relname = 'ro_plain';
 (1 row)
 
 -- sift.upgrade_commands() lists the RESET of an index that holds one, and no REINDEX for a point_columns that writes nothing
-SELECT object::text, kind, command, required, reason ~ '^removed in 5.0 and ignored' AS says_removed FROM sift.upgrade_commands() WHERE object::text ~ '^ro_' ORDER BY 1;
-      object      | kind  |                                     command                                     | required | says_removed 
+SELECT object::text, kind, command, required, reason ~ '^deprecated and ignored' AS says_ignored FROM sift.upgrade_commands() WHERE object::text ~ '^ro_' ORDER BY 1;
+      object      | kind  |                                     command                                     | required | says_ignored 
 ------------------+-------+---------------------------------------------------------------------------------+----------+--------------
  ro_key_cut_rows  | reset | ALTER INDEX public.ro_key_cut_rows RESET (key_cut_rows);                        | f        | t
  ro_order_columns | reset | ALTER INDEX public.ro_order_columns RESET (order_columns);                      | f        | t
@@ -112,9 +112,9 @@ SELECT object::text, kind, command, required, reason ~ '^removed in 5.0 and igno
 SELECT pg_get_indexdef('ro_plain'::regclass) AS dumped \gset
 DROP INDEX ro_plain;
 :dumped;
-NOTICE:  reloption "key_cut_rows" was removed in 5.0 and is ignored
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "key_cut_rows" is deprecated and ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 NOTICE:  sift_col index "ro_plain" stores columns id, tenant_id, uid, ts of index "ro_key_cut_rows", which has the same layout
 NOTICE:  sift_col index "ro_plain": 1 advice (track_changes)
 SELECT ro_layout('ro_plain') = ro_layout('ro_key_cut_rows') AS same_layout_as_dumped;
@@ -126,10 +126,10 @@ SELECT ro_layout('ro_plain') = ro_layout('ro_key_cut_rows') AS same_layout_as_du
 -- RESET drops them
 SELECT format('ALTER INDEX ro_plain RESET (%s)', opt) FROM ro_opts \gexec
 ALTER INDEX ro_plain RESET (key_cut_rows)
-NOTICE:  reloption "point_columns" was removed in 5.0 and is ignored
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "point_columns" is deprecated and ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 ALTER INDEX ro_plain RESET (point_columns)
-NOTICE:  reloption "order_columns" was removed in 5.0 and is ignored
+NOTICE:  reloption "order_columns" is deprecated and ignored
 ALTER INDEX ro_plain RESET (order_columns)
 SELECT format('ALTER INDEX ro_%1$s RESET (%1$s)', opt) FROM ro_opts \gexec
 ALTER INDEX ro_key_cut_rows RESET (key_cut_rows)

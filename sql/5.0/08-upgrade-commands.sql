@@ -66,7 +66,7 @@ BEGIN
 	LOOP
 		CONTINUE WHEN r.removed IS NULL;
 		object := r.relid; command := format('ALTER INDEX %s RESET (%s);', r.name, r.removed);
-		reason := format('removed in 5.0 and ignored (%s): a build does what an index without them does, and point_tid_columns lists the heap addresses that point_columns listed by value', r.removed);
+		reason := format('deprecated and ignored (%s): a build does what an index without them does, and point_tid_columns lists the heap addresses that point_columns listed by value', r.removed);
 		RETURN NEXT;
 	END LOOP;
 	kind := 'rewrite';

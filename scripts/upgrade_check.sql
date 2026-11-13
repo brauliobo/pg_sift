@@ -162,7 +162,7 @@ BEGIN
 		LOOP
 			CONTINUE WHEN NOT EXISTS (SELECT 1 FROM unnest(r.opts) o WHERE o LIKE dep.opt || '=%');
 			kind := 'option'; detected := dep.opt; status := 'warn';
-			advice := format('removed in 5.0 and ignored (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
+			advice := format('deprecated and ignored (%s): ALTER INDEX %s RESET (%s)', dep.what, r.rel, dep.opt);
 			RETURN NEXT;
 		END LOOP;
 	END LOOP;

@@ -166,10 +166,10 @@ typedef struct SiftColOptions
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
 	int			key_cut;		/* offset of the "key_cut" string, 0 = none */
-	int			key_cut_rows;	/* removed in 5.0: parsed so that a stored value and a dump load, never read */
-	int			order_columns;	/* removed in 5.0: parsed so that a stored value and a dump load, never read */
+	int			key_cut_rows;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
+	int			order_columns;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
-	int			point_columns;	/* removed in 5.0: parsed so that a stored value and a dump load, never read */
+	int			point_columns;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */

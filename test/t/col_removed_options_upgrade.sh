@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# key_cut_rows, point_columns and order_columns, deprecated in 4.3, are removed in 5.0 and stay accepted and ignored: an index that the released 4.3.0
+# key_cut_rows, point_columns and order_columns, deprecated in 4.3, are ignored since 5.0 and stay accepted: an index that the released 4.3.0
 # library wrote with each of them kept opens in this tree, answers as the heap, takes ALTER INDEX of another option, REINDEX and REINDEX CONCURRENTLY, survives
 # ALTER EXTENSION UPDATE, and the dump of the old database restores into this tree. RESET drops them.
 . "$(dirname "$0")/lib.bash"
@@ -46,7 +46,7 @@ check "ALTER INDEX of another option on an index that holds the removed ones" \
 	test "$(sql us "ALTER INDEX ev_all SET (cube_minmax = true)" "ALTER INDEX ev_kcr SET (cube_minmax = true)" 2>&1 | grep -c ERROR)" == 0
 out=$(for ix in $IXS; do sql us "SET client_min_messages = notice" "REINDEX INDEX $ix" 2>&1; done)
 check "REINDEX of each index: no error, no NOTICE, the options stay kept" \
-	test "$(grep -c -E 'ERROR|removed in 5.0' <<<"$out")|$(kept | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l)" == "0|6"
+	test "$(grep -c -E 'ERROR|is deprecated and ignored' <<<"$out")|$(kept | grep -o -E 'key_cut_rows|point_columns|order_columns' | wc -l)" == "0|6"
 check "REINDEX INDEX CONCURRENTLY of an index that holds them" test "$(sql us "REINDEX INDEX CONCURRENTLY ev_pc" 2>&1 | grep -c ERROR)" == 0
 check "each index answers as the heap after the REINDEX" test "$(for ix in $IXS; do ans_ix "$ix"; done | sort -u | tr '\n' ' ')" == "$want "
 dump=$TAPDIR/dump.sql
@@ -70,5 +70,5 @@ check "... and the four indexes are there with their options" \
 sql us "ALTER INDEX ev_all RESET (key_cut_rows, point_columns, order_columns)" "ALTER INDEX ev_kcr RESET (key_cut_rows)" "ALTER INDEX ev_pc RESET (point_columns)" "ALTER INDEX ev_oc RESET (order_columns)" >/dev/null 2>&1
 check "RESET drops them" test "$(kept | grep -c -E 'key_cut_rows|point_columns|order_columns')" == 0
 check "a CREATE INDEX that names one is accepted and says so" \
-	test "$(sql us "SET client_min_messages = notice" "CREATE INDEX ev_new ON ev USING sift_col (id, ts) WITH (point_columns = 'id')" 2>&1 | grep -c 'was removed in 5.0 and is ignored')" == 1
+	test "$(sql us "SET client_min_messages = notice" "CREATE INDEX ev_new ON ev USING sift_col (id, ts) WITH (point_columns = 'id')" 2>&1 | grep -c 'is deprecated and ignored')" == 1
 finish

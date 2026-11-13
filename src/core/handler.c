@@ -398,7 +398,7 @@ sift_relopt_removed_notice(const char *name)
 {
 	if (relopt_first_mention(name))
 		ereport(NOTICE,
-				(errmsg("reloption \"%s\" was removed in 5.0 and is ignored", name),
+				(errmsg("reloption \"%s\" is deprecated and ignored", name),
 				 errhint("Drop it from the index with ALTER INDEX <index> RESET (%s).", name)));
 }
 
