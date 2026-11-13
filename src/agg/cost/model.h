@@ -113,6 +113,7 @@
 #define AGG_START_MS		600.0	/* a millisecond in this path's estimates, for starting workers: scans the estimate puts at 2,000 to 7,700 units ran 1.7 to 22 ms alone, 358 to 1,180 units a ms (scalar aggregate 512, float sums by tenant 559, count(DISTINCT) 557, expression sums by two keys 358), and 400 to 1,000 for the scans of 3 to 12 ms (best of 25 runs, 1,000,000 rows). A worker takes the same 3.4 ms whatever it scans, so workers pay from a scan of 6 times this start in units (2 or 3 workers): at 500 the scans of 2.8 to 4.4 ms priced 2,600 to 3,600 units took them and ran 4.9 to 5.0 against 2.8 to 4.4 alone; at 600 they stay in one process and the scans of 600,000 rows that gain 12 to 32% (agg_par_cost) and those of 7.7 to 11.6 ms keep theirs; 700 loses the first, 1,100 all of them */
 #define AGG_START_BASE_MS	3.0		/* the start of the first worker, in ms: 3.0 measured (the fit of 1, 2, 4, 8 and 16 workers over 8 statements: 3.0 + 0.5 a worker) */
 #define AGG_START_WORKER_MS	0.5		/* ... and of each worker: 0.53 ms of wall (a worker of PostgreSQL's own parallel count(*): 0.37; the library, the executor state and the group tables of ours: 0.16) */
+#define AGG_INSTR_PER_MS	6.0e6	/* the instructions a millisecond of a backend runs in a read of scope units (the real-shaped lab: 34.7 million in 6.0 ms, 154.8 in 20.8) */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_CUT_SHARE		0.5		/* the share of the index that the keys of a lookup leave, at least, for the normal plan to keep its price: a table of a few units reads them all whatever the key */
@@ -206,5 +207,19 @@
 
 /* a tuple of a bucket key: the number of its step, the lookup of the id */
 #define AGG_BUCKET_ROW		3.0
+
+/* what starting the nworkers of a scan costs the wall clock of the statement, in ms: the planner charges it to the path (cost_parallel), the node to a read it knows the work of (agg_workers_pay) */
+static inline double
+agg_start_ms(int nworkers)
+{
+	return AGG_START_BASE_MS + AGG_START_WORKER_MS * nworkers;
+}
+
+/* do nworkers pay for a read of instr instructions: the participants share it, and the leader works alone while they start */
+static inline bool
+agg_workers_pay(double instr, int nworkers)
+{
+	return instr / AGG_INSTR_PER_MS * nworkers / (nworkers + 1) > agg_start_ms(nworkers);
+}
 
 #endif							/* SIFT_AGG_COST_MODEL_H */

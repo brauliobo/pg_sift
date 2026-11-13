@@ -85,14 +85,6 @@ sift_topn_walks_alone(const SiftAggSpec *s)
 	return s->naggs == 0 && s->group < 0 && s->ncombo == 0 && s->search == NULL;
 }
 
-/* how the leader reads a scope conjunct, which the workers read the same way (agg/scope.c scope_share_build) */
-enum
-{
-	SCOPE_SHARE_UNITS,			/* the units of the scope segments, less the members that changed */
-	SCOPE_SHARE_ENTITY,			/* the entity rows of the members listed */
-	SCOPE_SHARE_JOIN			/* the join as written, the alternative of the node's spec */
-};
-
 typedef struct AggExec
 {
 	CustomScanState css;

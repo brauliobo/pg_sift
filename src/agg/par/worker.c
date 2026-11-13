@@ -41,14 +41,15 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	char	   *subtxt,
 			   *inittxt;
 
+	SIFT_TEST_GATE(sift_test_par_gate, 10);
 	if (shm_toc_lookup(toc, KEY_DICTSHM, true) != NULL)
 		sift_dictshm_join();
 	shm_mq_set_sender(mq, MyProc);
 	ex->mqh = shm_mq_attach(mq, seg, NULL);
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
-	/* a scope read: the participants read what the leader decided, the join as written (the spec the leader runs in the place of the node's) included */
+	/* a scope read: the participants read what the leader decided for the conjunct (scope_keys_init), or run the join it runs in the node's place */
 	ex->scope_share = shm_toc_lookup(toc, KEY_SCOPE, true);
-	if (ex->scope_share != NULL && *(const int64 *) ex->scope_share == SCOPE_SHARE_JOIN)
+	if (ex->scope_share != NULL && scope_share_is_join(ex->scope_share))
 		ex->spec = ex->spec->scope->alt;
 	ex->pmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
 	ex->pfmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));

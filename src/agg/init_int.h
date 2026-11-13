@@ -43,7 +43,7 @@ void scope_keys_init(AggExec *ex);
 bool scope_open(AggExec *ex, Snapshot snapshot);
 struct StringInfoData *scope_share_build(AggExec *ex);
 void scope_share_adopt(AggExec *ex);
-bool scope_workers_pay(const AggExec *ex);
+bool scope_share_is_join(const void *share);
 void sift_agg_scope_init(void);
 void scope_filter(AggExec *ex, int *total, List **add);
 void table_init(AggExec *ex);

@@ -674,14 +674,15 @@ scope_filter(AggExec *ex, int *total, List **add)
 /*
  * What the workers of a scan take from the leader for the scope conjunct. The verdict, the members that changed, the lists of the dedupe and the members listed are made from the snapshot of the
  * statement and from the pairs of the relations at that moment: a worker that made them again could find another (a pair edited in between, a code of a transient map given in another order), and the items of
- * the scan mean what the leader's directory says (col/scan/view.c). So the leader decides once and the participants read what it decided: the mode (the units of the scope segments, the entity rows of the members
- * listed, or the join as written, which a worker runs in the place of the node's spec), the scope keys, and for the units the members whose stored entries the source leaves out, the drop lists and the values the
+ * the scan mean what the leader's directory says (col/scan/view.c). So the leader decides once and the participants read what it decided: the units of the scope segments or the entity rows of the members
+ * listed (a read that runs the join as written has no scope conjunct: the workers get the spec of that join), the scope keys, and for the units the members whose stored entries the source leaves out, the drop lists and the values the
  * map of a text or uuid member has codes for, in the order of their codes. The delta (the rows of the buffers and of the changed members, copied for each pair) stays with the leader: its units are numbered after
  * those of the scope segments, which the items of the workers cover (SiftAggExec.delta_units).
  */
 typedef struct ScopeShare
 {
-	int64		mode;			/* SCOPE_SHARE_*: first, which a worker reads before it unpacks anything else */
+	int64		join;			/* the join as written, the alternative of the node's spec, which the leader runs in its place: nothing follows */
+	int64		entity;			/* the entity rows of the members listed (scope_why), not the units of the scope segments */
 	int64		scope;
 	int64		nkeys;
 	int64		nexcept;
@@ -719,9 +720,15 @@ scope_share_build(AggExec *ex)
 
 	if (sc == NULL)
 		return NULL;
-	h.mode = ex->spec->scope == NULL ? SCOPE_SHARE_JOIN : ex->scope_why != NULL ? SCOPE_SHARE_ENTITY : SCOPE_SHARE_UNITS;
+	h.join = ex->spec->scope == NULL;
+	if (h.join)
+	{
+		appendBinaryStringInfo(b, (const char *) &h, sizeof(h));
+		return b;
+	}
+	h.entity = ex->scope_why != NULL;
 	h.nkeys = sc->nkeys;
-	if (h.mode == SCOPE_SHARE_UNITS)
+	if (!h.entity)
 	{
 		h.scope = rd->scope;
 		h.nexcept = rd->nexcept;
@@ -730,10 +737,10 @@ scope_share_build(AggExec *ex)
 		h.mm_collation = rd->mm != NULL ? sift_keymap_collation(rd->mm) : InvalidOid;
 		h.nmm = rd->mm != NULL ? sift_keymap_transient_n(rd->mm) : 0;
 	}
-	h.nlisted = h.mode == SCOPE_SHARE_ENTITY ? ex->scope_members : 0;
+	h.nlisted = h.entity ? ex->scope_members : 0;
 	appendBinaryStringInfo(b, (const char *) &h, sizeof(h));
 	put_i64s(b, sc->keys, sc->nkeys);
-	if (h.mode == SCOPE_SHARE_UNITS)
+	if (!h.entity)
 	{
 		put_i64s(b, rd->except, rd->nexcept);
 		for (int i = 0; i < h.ndrop; i++)
@@ -752,9 +759,16 @@ scope_share_build(AggExec *ex)
 			appendBinaryStringInfo(b, s, len);
 		}
 	}
-	if (h.mode == SCOPE_SHARE_ENTITY)
+	if (h.entity)
 		put_i64s(b, ex->scope_listed, ex->scope_members);
 	return b;
+}
+
+/* does the leader run the join as written in the place of the node's spec */
+bool
+scope_share_is_join(const void *share)
+{
+	return ((const ScopeShare *) share)->join != 0;
 }
 
 /* A worker takes the leader's decision (scope_keys_init: with the keys, which a statement with parameters evaluates in the leader only) */
@@ -769,7 +783,6 @@ scope_share_adopt(AggExec *ex)
 
 	memcpy(&h, p, sizeof(h));
 	p += sizeof(h);
-	SIFT_INVARIANT(h.mode != SCOPE_SHARE_JOIN, "sift: a worker that runs the join as written has no scope conjunct");
 	old = MemoryContextSwitchTo(GetMemoryChunkContext(sc));
 	sc->keys = take_i64s(&p, h.nkeys);
 	sc->nkeys = h.nkeys;
@@ -777,8 +790,8 @@ scope_share_adopt(AggExec *ex)
 	ex->scope_rd = rd;
 	rd->scope = h.scope;
 	rd->view = (void *) ex->view;
-	ex->scope_why = h.mode == SCOPE_SHARE_ENTITY ? "the members listed by the leader" : NULL;
-	if (h.mode == SCOPE_SHARE_ENTITY)
+	ex->scope_why = h.entity ? "the members listed by the leader" : NULL;
+	if (h.entity)
 	{
 		ex->scope_members = h.nlisted;
 		ex->scope_listed = take_i64s(&p, h.nlisted);
@@ -807,16 +820,4 @@ scope_share_adopt(AggExec *ex)
 		SIFT_INVARIANT(code == -1 - i, "sift: a worker's map of the scope members has other codes than its leader's");
 		p += sizeof(len) + len;
 	}
-}
-
-/* the instructions a millisecond of the backend runs in a read of the scope units (the real-shaped lab: 34.7 million in 6.0 ms, 154.8 in 20.8) */
-#define SCOPE_INSTR_PER_MS	6.0e6
-
-/* Do the workers pay for a read the model prices at ex->scope_price instructions: the participants share it, and starting them costs what the planner charges for it (agg/cost/model.h) */
-bool
-scope_workers_pay(const AggExec *ex)
-{
-	int			nw = ex->spec->nworkers;
-
-	return ex->scope_price / SCOPE_INSTR_PER_MS * nw / (nw + 1) > AGG_START_BASE_MS + AGG_START_WORKER_MS * nw;
 }

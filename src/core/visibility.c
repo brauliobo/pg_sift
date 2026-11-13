@@ -41,6 +41,7 @@ bool		sift_test_release_gate = false;
 bool		sift_test_export_gate = false;
 bool		sift_test_drop_gate = false;
 bool		sift_test_build_gate = false;
+bool		sift_test_par_gate = false;
 static int	test_masks = 0;
 
 /* Waits until the test lets go of advisory lock (0x51F7, key) */

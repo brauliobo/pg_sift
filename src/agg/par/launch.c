@@ -13,6 +13,7 @@
 #include "agg/memo.h"
 #include "agg/init_int.h"
 #include "agg/par/int.h"
+#include "agg/cost/model.h"
 
 /* does the packed spec (its expressions are Nodes among Integers and Strings) start a sub-plan? */
 static bool
@@ -59,7 +60,7 @@ par_scan_small(AggExec *ex)
 	SkipMap    *m;
 
 	if (ex->scope_price > 0)
-		return sift_agg_par_min_rows > 0 && !scope_workers_pay(ex);
+		return sift_agg_par_min_rows > 0 && !agg_workers_pay(ex->scope_price, ex->spec->nworkers);
 	if (ex->spec->wide_unit_rows <= 0 && !(ex->unpacked != NULL && ex->unpacked->scope != NULL))
 		return false;
 	m = skip_map(ex);
@@ -71,6 +72,16 @@ void
 par_forget_memo(AggExec *ex)
 {
 	memset(ex->cmemo, 0, Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
+}
+
+/* A copy of len bytes in the shared memory of the statement, under key */
+static void
+put_chunk(ParallelContext *pcxt, uint64 key, const void *data, Size len)
+{
+	char	   *p = shm_toc_allocate(pcxt->toc, len);
+
+	memcpy(p, data, len);
+	shm_toc_insert(pcxt->toc, key, p);
 }
 
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
@@ -208,9 +219,7 @@ par_launch(AggExec *ex)
 	/* the participants split the groups by the key the plan chose when the scan can: a worker takes the share of its number + 1, the leader that of the workers that did not start too */
 	ps->gpart_n = split_run_ok(ex) ? nw + 1 : 0;
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
-	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
-	strcpy(p, spec_txt);
-	shm_toc_insert(pcxt->toc, KEY_SPEC, p);
+	put_chunk(pcxt, KEY_SPEC, spec_txt, strlen(spec_txt) + 1);
 	p = shm_toc_allocate(pcxt->toc, plen);
 	shm_toc_insert(pcxt->toc, KEY_PARAMS, p);
 	SerializeParamList(ex->params, &p);
@@ -218,11 +227,7 @@ par_launch(AggExec *ex)
 	SerializeSnapshot(ex->snap, p);
 	shm_toc_insert(pcxt->toc, KEY_SNAP, p);
 	if (scope_txt)
-	{
-		p = shm_toc_allocate(pcxt->toc, scope_txt->len);
-		memcpy(p, scope_txt->data, scope_txt->len);
-		shm_toc_insert(pcxt->toc, KEY_SCOPE, p);
-	}
+		put_chunk(pcxt, KEY_SCOPE, scope_txt->data, scope_txt->len);
 	if (vlen > 0)
 	{
 		p = shm_toc_allocate(pcxt->toc, vlen);
@@ -236,10 +241,7 @@ par_launch(AggExec *ex)
 	for (int ji = 0; ji < ex->spec->njoin; ji++)
 		if (child_txt[ji])
 		{
-			char	   *cm = shm_toc_allocate(pcxt->toc, strlen(child_txt[ji]) + 1);
-
-			strcpy(cm, child_txt[ji]);
-			shm_toc_insert(pcxt->toc, KEY_CHILD + ji, cm);
+			put_chunk(pcxt, KEY_CHILD + ji, child_txt[ji], strlen(child_txt[ji]) + 1);
 			ex->cmemo[ji] = shm_toc_allocate(pcxt->toc, memo_size());
 			memo_init(ex->cmemo[ji]);
 			shm_toc_insert(pcxt->toc, KEY_MEMO + ji, ex->cmemo[ji]);
@@ -265,27 +267,11 @@ par_launch(AggExec *ex)
 		ex->lookup_shared += ml[ci].nrow;
 	}
 	if (sub_txt)
-	{
-		char	   *sm = shm_toc_allocate(pcxt->toc, strlen(sub_txt) + 1);
-
-		strcpy(sm, sub_txt);
-		shm_toc_insert(pcxt->toc, KEY_SUB, sm);
-	}
+		put_chunk(pcxt, KEY_SUB, sub_txt, strlen(sub_txt) + 1);
 	if (init_txt)
-	{
-		char	   *im = shm_toc_allocate(pcxt->toc, strlen(init_txt) + 1);
-
-		strcpy(im, init_txt);
-		shm_toc_insert(pcxt->toc, KEY_INITVALS, im);
-	}
+		put_chunk(pcxt, KEY_INITVALS, init_txt, strlen(init_txt) + 1);
 	if (ex->spec->spine)
-	{
-		Size		len = ((const SpineHdr *) ex->spine_buf)->len;
-		char	   *sm = shm_toc_allocate(pcxt->toc, len);
-
-		memcpy(sm, ex->spine_buf, len);
-		shm_toc_insert(pcxt->toc, KEY_SPINE, sm);
-	}
+		put_chunk(pcxt, KEY_SPINE, ex->spine_buf, ((const SpineHdr *) ex->spine_buf)->len);
 	LaunchParallelWorkers(pcxt);
 	if (pcxt->nworkers_launched == 0)
 	{

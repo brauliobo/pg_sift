@@ -41,7 +41,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	for (int j = 0; j < s->nkeys; j++)
 		merge += AGG_MERGE_KEY + (get_typbyval(s->key[j].typid) ? 0.0 : AGG_MERGE_STR);
 	if (priced)
-		setup = Max(setup, (AGG_START_BASE_MS + AGG_START_WORKER_MS * s->nworkers) * AGG_START_MS * k->ms);
+		setup = Max(setup, agg_start_ms(s->nworkers) * AGG_START_MS * k->ms);
 	/* the participants that split the groups by a key each read every row and aggregate a share of the keys, and the leader adds their disjoint tables to its own */
 	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * k->ms * cpu_operator_cost : 0)) *
 		(s->gpart > 0 || s->jpart > 0 ? AGG_SPLIT_SHARE + (1.0 - AGG_SPLIT_SHARE) / parallel_divisor(s->nworkers) : 1.0 / parallel_divisor(s->nworkers)) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * k->ms * cpu_operator_cost +
