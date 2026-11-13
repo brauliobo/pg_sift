@@ -67,6 +67,8 @@ alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel
 	double		srows = srel->rows,
 				irows = input_rel->rows;
 
+	/* the knots are instructions, which the workers share between them and do not spare: the node compares them with the instructions of its units (agg/scope.c join_cheaper) */
+	priced.nworkers = 0;
 	srel->rows = pairs;
 	input_rel->rows = Max(pairs * per_pair, 1.0);
 	pricing_scratch = true;
@@ -154,7 +156,7 @@ alt_pair_instr(AggCtx *c, double *fixed, double *per_pair)
 static bool
 alt_runs(AggCtx *c, const SiftAggSpec *s)
 {
-	if (s->scope != NULL || s->nworkers > 0 || c->level_params != NIL || c->spine != NULL || c->nparts > 0)
+	if (s->scope != NULL || c->level_params != NIL || c->spine != NULL || c->nparts > 0)
 		return false;
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->cpath != NULL && (jc->j.params != NIL || jc->j.subplan > 0 || c->detached))
@@ -245,7 +247,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	if (t == NULL || !t->second || s->scope == NULL)
 		return true;
 	foreach_ptr(ScopeAlt, a, t->alts)
-		if (equal(a->pathkeys, pathkeys) && s->nord == a->spec->nord && (best == NULL || a->total < best->total))
+		if (equal(a->pathkeys, pathkeys) && s->nord == a->spec->nord && a->spec->nworkers <= s->nworkers && (best == NULL || a->total < best->total))
 			best = a;
 	/* a row for each pair of a member in several keys is what the join counts, and the units cannot when the member's pairs changed */
 	if (best == NULL)

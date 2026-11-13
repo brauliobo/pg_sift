@@ -60,10 +60,11 @@ part_flush_on(const AggExec *ex)
 	return ex->spec->part_final && ex->spec->nparts > 0 && ex->spec->nworkers == 0;
 }
 
+/* nsb: the superblocks the items cover */
 void
-shared_init(ScanShared *sh, AggExec *ex)
+shared_init(ScanShared *sh, AggExec *ex, uint32 nsb)
 {
-	sh->nsb = sift_colsrc_nsb(ex->src);
+	sh->nsb = nsb;
 	if (ex->spec->nparts > 0)
 		sift_aggpart_offsets(ex->src, sh->partoff);
 	sh->ordered = sift_aggspec_ordered(ex->spec);
@@ -279,11 +280,11 @@ item_done(AggExec *ex, uint32 item)
 
 bool		sift_test_par_leader_wait = false;
 
-/* Testing: the leader takes one item and holds it until the workers have taken all the others, so that the scan is split between the participants whoever is quicker */
+/* Testing: the leader takes one item and holds it until the workers have taken all the others that hold a unit the zones keep, so that the scan is split between the participants whoever is quicker */
 static void
 test_leader_wait(AggExec *ex)
 {
-	for (int i = 0; sift_test_par_leader_wait && ex->par != NULL && i < 30000 && pg_atomic_read_u32(&ex->shared->next) < ex->shared->nitems; i++)
+	for (int i = 0; sift_test_par_leader_wait && ex->par != NULL && i < 30000 && next_item(ex, pg_atomic_read_u32(&ex->shared->next)) < ex->shared->nitems; i++)
 	{
 		pg_usleep(1000);
 		CHECK_FOR_INTERRUPTS();
@@ -310,5 +311,18 @@ scan_items(AggExec *ex)
 		test_leader_wait(ex);
 		scan_item(ex, item);
 		item_done(ex, item);
+	}
+}
+
+/* The units only the leader holds, the last of its source (the delta of a scope read): after the items, which end before them */
+void
+scan_delta(AggExec *ex)
+{
+	uint32		nsb = sift_colsrc_nsb(ex->src);
+
+	if (ex->par != NULL && ex->delta_units > 0 && !ex->pass_stop)
+	{
+		scan_units(ex, nsb - ex->delta_units, nsb);
+		item_done(ex, ex->shared->nitems);
 	}
 }

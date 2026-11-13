@@ -49,12 +49,13 @@ select_stmt(AggExec *ex, Plan *tree)
  */
 int			sift_agg_par_min_rows = 80000;
 
+/* a scope read has its keys when it runs (a generic plan prices the average key), so its rows are counted for any plan */
 static bool
 par_scan_small(AggExec *ex)
 {
 	SkipMap    *m;
 
-	if (ex->spec->wide_unit_rows <= 0)
+	if (ex->spec->wide_unit_rows <= 0 && !(ex->unpacked != NULL && ex->unpacked->scope != NULL))
 		return false;
 	m = skip_map(ex);
 	return m->ok && m->rows < sift_agg_par_min_rows;
@@ -90,10 +91,14 @@ par_launch(AggExec *ex)
 	char	   *sub_txt = NULL,
 			   *init_txt = NULL;
 	List	   *initvals;
+	StringInfo	scope_txt = NULL;
 
 	/* a scan run again starts from none */
 	ex->gp_n = ex->gp_mine = 0;
 	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
+		return;
+	/* the delta of a scope read is scanned by the leader after the items: the float sums of the lanes and the order of a top-N cannot take rows outside them */
+	if (ex->delta_units > 0 && (sift_aggspec_ordered(ex->spec) || ex->spec->topn))
 		return;
 	vlen = sift_colsrc_view_size(ex->src);
 	spec_txt = nodeToString(ex->pack);
@@ -149,6 +154,7 @@ par_launch(AggExec *ex)
 	}
 	if (msize > SHARE_MAX)
 		return;
+	scope_txt = scope_share_build(ex);
 	dictshm = sift_dictshm_prepare();
 	/* the plans of the children and sub-plans that a worker starts read indexes of their own */
 	sift_col_flush_held();
@@ -180,7 +186,9 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, strlen(init_txt) + 1);
 	if (dictshm)
 		shm_toc_estimate_chunk(&pcxt->estimator, 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm + (vlen > 0));
+	if (scope_txt)
+		shm_toc_estimate_chunk(&pcxt->estimator, scope_txt->len);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + (init_txt != NULL) + dictshm + (vlen > 0) + (scope_txt != NULL));
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -191,7 +199,7 @@ par_launch(AggExec *ex)
 	if (dictshm)
 		shm_toc_insert(pcxt->toc, KEY_DICTSHM, shm_toc_allocate(pcxt->toc, 1));
 	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
-	shared_init(ps, ex);
+	shared_init(ps, ex, sift_colsrc_nsb(ex->src) - ex->delta_units);
 	/* the participants split the groups by the key the plan chose when the scan can: a worker takes the share of its number + 1, the leader that of the workers that did not start too */
 	ps->gpart_n = split_run_ok(ex) ? nw + 1 : 0;
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
@@ -204,6 +212,12 @@ par_launch(AggExec *ex)
 	p = shm_toc_allocate(pcxt->toc, slen);
 	SerializeSnapshot(ex->snap, p);
 	shm_toc_insert(pcxt->toc, KEY_SNAP, p);
+	if (scope_txt)
+	{
+		p = shm_toc_allocate(pcxt->toc, scope_txt->len);
+		memcpy(p, scope_txt->data, scope_txt->len);
+		shm_toc_insert(pcxt->toc, KEY_SCOPE, p);
+	}
 	if (vlen > 0)
 	{
 		p = shm_toc_allocate(pcxt->toc, vlen);

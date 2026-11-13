@@ -43,13 +43,14 @@ extern PGDLLIMPORT int sift_test_item_gate;
 /* par/ */
 Size shared_size(const SiftAggSpec *s, uint32 norder);
 uint32 *shared_order(ScanShared *sh, const SiftAggSpec *s);
-void shared_init(ScanShared *sh, AggExec *ex);
+void shared_init(ScanShared *sh, AggExec *ex, uint32 nsb);
 void scan_units(AggExec *ex, uint32 lo, uint32 hi);
 void empty_set_groups(AggExec *ex);
 void final_checks(AggExec *g, int64 ntuples);
 void lane_fold(AggExec *ex);
 void lanes_sum(AggExec *ex);
 void scan_items(AggExec *ex);
+void scan_delta(AggExec *ex);
 bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);
 void par_finish(AggExec *ex);

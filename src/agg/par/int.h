@@ -37,6 +37,7 @@ typedef struct SkipMap
 #define KEY_CHILD	UINT64CONST(0x53494654C000)	/* + the join: the statement whose plan is its correlated child */
 #define KEY_SUB	UINT64CONST(0x53494654E000)	/* the statement whose sub-plans the expressions of the spec start */
 #define KEY_VIEW	UINT64CONST(0x53494654A009)	/* the directory the leader's source read: every participant's source opens on it (sift_colsrc_view_export) */
+#define KEY_SCOPE	UINT64CONST(0x53494654A00A)	/* the decision of the leader for the scope conjunct: the keys, the members that changed, the dedupe lists, the members listed (agg/scope.c) */
 #define KEY_INITVALS	UINT64CONST(0x53494654A008)	/* the values of the InitPlan outputs the scan reads as constants (init_values) */
 #define KEY_FMAP	UINT64CONST(0x53494654F000)	/* + the combo: the table of a hybrid first-row lookup (agg/first.c) */
 #define KEY_MEMO	UINT64CONST(0x53494654D000)	/* + the join: the rows of its child by parameter values (agg/memo.c) */

@@ -270,6 +270,8 @@ extern PGDLLIMPORT int sift_test_member_hash_bits;
 #endif
 /* A map with no store, for the values of a column that are known by their codes for the length of the map (the members of a scope) */
 extern SiftKeyMap *sift_keymap_transient(Relation rel, AttrNumber att);
+extern SiftKeyMap *sift_keymap_transient_of(Oid typid, Oid collation);
+extern uint32 sift_keymap_transient_n(const SiftKeyMap *m);
 extern SiftKeyMap *sift_keymap_open(Relation rel, AttrNumber att, bool write);
 extern Oid	sift_keymap_collation(const SiftKeyMap *m);
 extern Oid	sift_keymap_typid(const SiftKeyMap *m);

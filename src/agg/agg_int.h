@@ -85,6 +85,14 @@ sift_topn_walks_alone(const SiftAggSpec *s)
 	return s->naggs == 0 && s->group < 0 && s->ncombo == 0 && s->search == NULL;
 }
 
+/* how the leader reads a scope conjunct, which the workers read the same way (agg/scope.c scope_share_build) */
+enum
+{
+	SCOPE_SHARE_UNITS,			/* the units of the scope segments, less the members that changed */
+	SCOPE_SHARE_ENTITY,			/* the entity rows of the members listed */
+	SCOPE_SHARE_JOIN			/* the join as written, the alternative of the node's spec */
+};
+
 typedef struct AggExec
 {
 	CustomScanState css;
@@ -269,6 +277,9 @@ typedef struct AggExec
 	const char *scope_why;		/* ... or why it reads the entity rows of the members the scope relation lists (the word EXPLAIN prints) */
 	uint64		scope_members;	/* ... and how many members it listed */
 	int			scope_preds;	/* the conjuncts scope_filter added to the spec */
+	int64	   *scope_listed;	/* the members the entity rows are read for (scope_filter), which the workers get as listed */
+	uint32		delta_units;	/* the last superblocks of the source are the units of the delta of the scope read, which only the leader holds: the items of the workers end before them */
+	const void *scope_share;	/* a worker: what its leader decided for the scope conjunct (scope_share_build); the leader has none */
 	uint64		lookup_hscan;	/* the rows of the lookup tables read from the heap of the table (a scan or an index fetch), not from the leaves of an index */
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */

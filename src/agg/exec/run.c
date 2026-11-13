@@ -155,7 +155,7 @@ run_scan(AggExec *ex)
 	if (ex->shared == NULL)
 	{
 		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, 0));
-		shared_init(ex->shared, ex);
+		shared_init(ex->shared, ex, sift_colsrc_nsb(ex->src));
 	}
 	/* a join without a row to match leaves no tuple: no item of work to take */
 	if (none)
@@ -182,6 +182,7 @@ run_scan(AggExec *ex)
 				pass_begin(ex);
 		}
 	}
+	scan_delta(ex);
 	scan_tail(ex);
 }
 
@@ -614,8 +615,10 @@ static SiftSrcSource *
 scope_source(AggExec *ex, Snapshot snapshot)
 {
 	SiftSrcSource *src = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, ex->cxt, ex->scope_rd->view);
+	uint32		stored = sift_colsrc_nsb(src);
 
 	sift_colsrc_scope_delta(src, ex->scope_rd);
+	ex->delta_units = sift_colsrc_nsb(src) - stored;
 	return src;
 }
 

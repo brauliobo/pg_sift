@@ -183,18 +183,29 @@ sift_keymap_open(Relation rel, AttrNumber att, bool write)
 
 /* A map of the members of a statement: no store, every value has a code of its own for the length of the map (a negative one, -1 for the first) */
 SiftKeyMap *
+sift_keymap_transient_of(Oid typid, Oid collation)
+{
+	SiftKeyMap *m = palloc0(sizeof(SiftKeyMap));
+
+	m->cx = CurrentMemoryContext;
+	m->typid = typid;
+	m->collation = collation;
+	return m;
+}
+
+SiftKeyMap *
 sift_keymap_transient(Relation rel, AttrNumber att)
 {
 	Form_pg_attribute a = TupleDescAttr(RelationGetDescr(rel), att - 1);
-	SiftKeyMap *m;
 
-	if (!sift_keymap_type(a->atttypid))
-		return NULL;
-	m = palloc0(sizeof(SiftKeyMap));
-	m->cx = CurrentMemoryContext;
-	m->typid = a->atttypid;
-	m->collation = a->attcollation;
-	return m;
+	return sift_keymap_type(a->atttypid) ? sift_keymap_transient_of(a->atttypid, a->attcollation) : NULL;
+}
+
+/* The values a map with no store has a code for, in the order of their codes -1, -2, ...: another process interning them in this order has the same codes */
+uint32
+sift_keymap_transient_n(const SiftKeyMap *m)
+{
+	return m->extra != NULL ? m->extra->n : 0;
 }
 
 Oid

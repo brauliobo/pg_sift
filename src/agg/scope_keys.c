@@ -77,6 +77,11 @@ scope_keys_init(AggExec *ex)
 		return;
 	if (OidIsValid(sc->key_type))
 		ex->scope_km = sift_scope_keymap(ex->heap, ex->index, sc->key_name);
+	if (ex->scope_share != NULL)
+	{
+		scope_share_adopt(ex);
+		return;
+	}
 	if (sc->param == NULL)
 		return;
 	value = ExecEvalExprSwitchContext(operand_state(ex, sc->param), ex->lutcx, &isnull);

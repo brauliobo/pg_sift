@@ -21,7 +21,9 @@
 
 #include "core/cmp.h"
 #include "core/store.h"
+#include "lib/stringinfo.h"
 #include "col/am.h"
+#include "col/conn.h"
 #include "col/scope.h"
 #include "col/seg.h"
 #include "agg/agg_int.h"
@@ -417,10 +419,17 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	uint32		max_changed = PG_UINT32_MAX;
 	bool		priced = sc != NULL && sc->alt != NULL && !sift_test_scope_patch;
 
-	ex->scope_rd = NULL;
-	ex->scope_why = NULL;
+	/* a worker has the leader's decision, taken with the keys (scope_keys_init) */
+	if (ex->scope_share == NULL)
+	{
+		ex->scope_rd = NULL;
+		ex->scope_why = NULL;
+		ex->delta_units = 0;
+	}
 	if (sc == NULL)
 		return false;
+	if (ex->scope_share != NULL)
+		return ex->scope_why == NULL;
 	if (sc->alt != NULL && test_scope_join)
 	{
 		run_join(ex, "sift.test_scope_join");
@@ -618,7 +627,7 @@ void
 scope_filter(AggExec *ex, int *total, List **add)
 {
 	const SiftAggScope *sc = ex->spec->scope;
-	int64	   *members;
+	const int64 *members;
 	uint32		n;
 	int			leaf = ex->scope_why == NULL ? sift_agg_scope_leaf(ex->lay, sc->key_name) : sc->fk;
 
@@ -635,11 +644,154 @@ scope_filter(AggExec *ex, int *total, List **add)
 	if (!sc->once && (sc->all || sc->nkeys > 1))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scope read of several keys that counts a row for each pair needs the join: \"%s\"", ex->scope_why),
 						errhint("Rewrite the statement over the join to the scope relation, or SET sift.agg_scope to off.")));
-	members = listed_members(ex, ex->snap, &n);
-	ex->scope_members = n;
+	if (ex->scope_share == NULL)
+	{
+		ex->scope_listed = listed_members(ex, ex->snap, &n);
+		ex->scope_members = n;
+	}
+	members = ex->scope_listed;
+	n = ex->scope_members;
 	ex->scope_preds = 1;
 	if (n == 0)
 		*add = lappend(*add, pred_node(ex, SAP_FALSE, total, -1, 0, 0, "no member has a pair with the scope keys"));
 	else
 		*add = lappend(*add, pred_in(ex, total, leaf, false, members, n, psprintf("member of scope %s keys (%s)", sc->key_name, keys_text(sc->keys, sc->nkeys))));
+}
+
+/*
+ * What the workers of a scan take from the leader for the scope conjunct. The verdict, the members that changed, the lists of the dedupe and the members listed are made from the snapshot of the
+ * statement and from the pairs of the relations at that moment: a worker that made them again could find another (a pair edited in between, a code of a transient map given in another order), and the items of
+ * the scan mean what the leader's directory says (col/scan/view.c). So the leader decides once and the participants read what it decided: the mode (the units of the scope segments, the entity rows of the members
+ * listed, or the join as written, which a worker runs in the place of the node's spec), the scope keys, and for the units the members whose stored entries the source leaves out, the drop lists and the values the
+ * map of a text or uuid member has codes for, in the order of their codes. The delta (the rows of the buffers and of the changed members, copied for each pair) stays with the leader: its units are numbered after
+ * those of the scope segments, which the items of the workers cover (SiftAggExec.delta_units).
+ */
+typedef struct ScopeShare
+{
+	int64		mode;			/* SCOPE_SHARE_*: first, which a worker reads before it unpacks anything else */
+	int64		scope;
+	int64		nkeys;
+	int64		nexcept;
+	int64		ndrop;
+	int64		nlisted;
+	int64		nmm;
+	int64		mm_typid;		/* InvalidOid: the member is an integer */
+	int64		mm_collation;
+} ScopeShare;
+
+/* the arrays are the int64s that follow the header, the values of the map its last bytes */
+static void
+put_i64s(StringInfo b, const int64 *v, uint32 n)
+{
+	appendBinaryStringInfo(b, (const char *) v, n * sizeof(int64));
+}
+
+static int64 *
+take_i64s(const char **p, int64 n)
+{
+	int64	   *v = palloc(Max(n, 1) * sizeof(int64));
+
+	memcpy(v, *p, n * sizeof(int64));
+	*p += n * sizeof(int64);
+	return v;
+}
+
+StringInfo
+scope_share_build(AggExec *ex)
+{
+	const SiftAggScope *sc = ex->unpacked != NULL ? ex->unpacked->scope : NULL;
+	const SiftScopeRead *rd = ex->scope_rd;
+	StringInfo	b = makeStringInfo();
+	ScopeShare	h = {0};
+
+	if (sc == NULL)
+		return NULL;
+	h.mode = ex->spec->scope == NULL ? SCOPE_SHARE_JOIN : ex->scope_why != NULL ? SCOPE_SHARE_ENTITY : SCOPE_SHARE_UNITS;
+	h.nkeys = sc->nkeys;
+	if (h.mode == SCOPE_SHARE_UNITS)
+	{
+		h.scope = rd->scope;
+		h.nexcept = rd->nexcept;
+		h.ndrop = rd->ndrop;
+		h.mm_typid = rd->mm != NULL ? sift_keymap_typid(rd->mm) : InvalidOid;
+		h.mm_collation = rd->mm != NULL ? sift_keymap_collation(rd->mm) : InvalidOid;
+		h.nmm = rd->mm != NULL ? sift_keymap_transient_n(rd->mm) : 0;
+	}
+	h.nlisted = h.mode == SCOPE_SHARE_ENTITY ? ex->scope_members : 0;
+	appendBinaryStringInfo(b, (const char *) &h, sizeof(h));
+	put_i64s(b, sc->keys, sc->nkeys);
+	if (h.mode == SCOPE_SHARE_UNITS)
+	{
+		put_i64s(b, rd->except, rd->nexcept);
+		for (int i = 0; i < h.ndrop; i++)
+		{
+			int64		head[2] = {rd->drop[i].key, rd->drop[i].n};
+
+			put_i64s(b, head, 2);
+			put_i64s(b, rd->drop[i].members, rd->drop[i].n);
+		}
+		for (int64 i = 0; i < h.nmm; i++)
+		{
+			uint32		len;
+			const char *s = sift_keymap_bytes(rd->mm, -1 - i, &len);
+
+			appendBinaryStringInfo(b, (const char *) &len, sizeof(len));
+			appendBinaryStringInfo(b, s, len);
+		}
+	}
+	if (h.mode == SCOPE_SHARE_ENTITY)
+		put_i64s(b, ex->scope_listed, ex->scope_members);
+	return b;
+}
+
+/* A worker takes the leader's decision (scope_keys_init: with the keys, which a statement with parameters evaluates in the leader only) */
+void
+scope_share_adopt(AggExec *ex)
+{
+	const char *p = ex->scope_share;
+	ScopeShare	h;
+	SiftAggScope *sc = ex->spec->scope;
+	MemoryContext old;
+	SiftScopeRead *rd = palloc0(sizeof(SiftScopeRead));
+
+	memcpy(&h, p, sizeof(h));
+	p += sizeof(h);
+	SIFT_INVARIANT(h.mode != SCOPE_SHARE_JOIN, "sift: a worker that runs the join as written has no scope conjunct");
+	old = MemoryContextSwitchTo(GetMemoryChunkContext(sc));
+	sc->keys = take_i64s(&p, h.nkeys);
+	sc->nkeys = h.nkeys;
+	MemoryContextSwitchTo(old);
+	ex->scope_rd = rd;
+	rd->scope = h.scope;
+	rd->view = (void *) ex->view;
+	ex->scope_why = h.mode == SCOPE_SHARE_ENTITY ? "the members listed by the leader" : NULL;
+	if (h.mode == SCOPE_SHARE_ENTITY)
+	{
+		ex->scope_members = h.nlisted;
+		ex->scope_listed = take_i64s(&p, h.nlisted);
+		return;
+	}
+	rd->nexcept = h.nexcept;
+	rd->except = take_i64s(&p, h.nexcept);
+	rd->ndrop = h.ndrop;
+	rd->drop = palloc(Max(h.ndrop, 1) * sizeof(SiftScopeDrop));
+	for (int i = 0; i < h.ndrop; i++)
+	{
+		int64	   *head = take_i64s(&p, 2);
+
+		rd->drop[i] = (SiftScopeDrop) {.key = head[0], .n = head[1]};
+		rd->drop[i].members = take_i64s(&p, head[1]);
+	}
+	if (OidIsValid((Oid) h.mm_typid))
+		rd->mm = sift_keymap_transient_of(h.mm_typid, h.mm_collation);
+	for (int64 i = 0; i < h.nmm; i++)
+	{
+		uint32		len;
+		int64		code;
+
+		memcpy(&len, p, sizeof(len));
+		(void) sift_keymap_code_bytes(rd->mm, p + sizeof(len), len, &code);
+		SIFT_INVARIANT(code == -1 - i, "sift: a worker's map of the scope members has other codes than its leader's");
+		p += sizeof(len) + len;
+	}
 }

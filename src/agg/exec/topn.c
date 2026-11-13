@@ -154,7 +154,7 @@ topn_parallel(AggExec *ex)
 	if (ex->shared == NULL)
 	{
 		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, ex->nvorder));
-		shared_init(ex->shared, ex);
+		shared_init(ex->shared, ex, sift_colsrc_nsb(ex->src));
 	}
 	sift_topn_share(ex->topn, &ex->shared->topn_bound);
 	if (ex->par == NULL || parallel_leader_participation)
