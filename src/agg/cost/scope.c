@@ -57,9 +57,9 @@ scope_tests(const SiftAggSpec *s)
  * is every key, and below the first knot. entry_instr is the same operators for each entry of the scope units, which they aggregate as the join does.
  */
 
-/* the operators of the first pass's scan, as the executor spends them, for `pairs` rows of the scope relation (srel) and the join rows in proportion */
+/* the operators of the first pass's scan, as the executor spends them, for `pairs` rows of the scope relation (srel) and the join rows, each pair bringing `per_pair` of them */
 static double
-alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel, double pairs, double rows_out)
+alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel, double pairs, double per_pair, double rows_out)
 {
 	SiftAggSpec priced = *s;
 	Path		p = {0};
@@ -67,7 +67,7 @@ alt_ops(AggCtx *c, const SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *srel
 				irows = input_rel->rows;
 
 	srel->rows = pairs;
-	input_rel->rows = Max(irows * pairs / Max(srows, 1.0), 1.0);
+	input_rel->rows = Max(pairs * per_pair, 1.0);
 	pricing_scratch = true;
 	PG_TRY();
 	{
@@ -126,17 +126,27 @@ plan_node_rows(Path *p, double *scans, double *others)
 		plan_node_rows(k, scans, others);
 }
 
-/* what a pair of the scope relation costs the join as written: AGG_ALT_PAIR for a scan of the relation, and for the rows the nodes of the plan that makes the relation (a view of a union and a join) hand up, AGG_ALT_NODE each */
-static double
-alt_pair_instr(AggCtx *c, double pairs)
+/*
+ * What the join as written pays for the relation that makes the pairs of the scope. Where it is a table the lookup reads and loads the pairs of its keys: AGG_ALT_PAIR for each. Where
+ * PostgreSQL makes it (a view of a union and a join, a join to a table of keys) the plan runs whole, whatever the keys: its scans read the rows of the relations (AGG_ALT_SCAN each, the same
+ * for 3 pairs or 3,000), and the nodes above them hand up the pairs of the keys, AGG_ALT_NODE a row for each node (the rows that nodes other than scans hand up, over those the plan gives:
+ * the nodes a pair passes). *fixed: the instructions of the scans; *per_pair: those of each pair of the keys.
+ */
+static void
+alt_pair_instr(AggCtx *c, double *fixed, double *per_pair)
 {
 	double		scans = 0,
-				others = 0;
+				others = 0,
+				out = 0;
 
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->cpath != NULL)
+		{
 			plan_node_rows(jc->cpath, &scans, &others);
-	return Max(AGG_ALT_PAIR, (AGG_ALT_PAIR * scans + AGG_ALT_NODE * others) / Max(pairs, 1.0));
+			out += jc->cpath->rows;
+		}
+	*fixed = AGG_ALT_SCAN * scans;
+	*per_pair = (out > 0 ? AGG_ALT_PLAN_PAIR : AGG_ALT_PAIR) + AGG_ALT_NODE * others / Max(out, 1.0);
 }
 
 /* does the node of the second pass run this spec in the place of its own: the plans its joins read are children it can hold (no parameter of an enclosing level, none of a query level of its own), and it has no spine */
@@ -160,18 +170,22 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	RelOptInfo *srel;
 	RangeTblEntry *rte;
 	Index		rti;
-	AttrNumber	att;
+	AttrNumber	att,
+				fk;
 	Oid			type,
 				coll;
 	int32		typmod;
 	double		kall,
 				per,
+				nd,
+				per_pair,
 				pairs,
+				fixed,
 				pair_instr,
 				ops,
 				ops0 = 0;
 
-	if (t == NULL || t->second || !t->try || !alt_runs(c, s) || !sift_agg_scope_item(c, &rti, &att))
+	if (t == NULL || t->second || !t->try || !alt_runs(c, s) || !sift_agg_scope_item(c, &rti, &att, &fk))
 		return;
 	srel = c->root->simple_rel_array[rti];
 	rte = planner_rt_fetch(rti, c->root);
@@ -192,12 +206,16 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	a->pathkeys = pathkeys;
 	a->startup = p->startup_cost;
 	a->total = p->total_cost;
-	a->knot_rows = Max(input_rel->rows * per / Max(srel->rows, 1.0), 1.0);
+	/* the rows a pair brings (those of its member) from the statistics of the member column, not from the ratio of the join's estimate to the scope relation's, which holds the keys the statement
+	 * names only where it names them as constants: a table of keys leaves the relation whole and the join its rows, and the ratio was the rows of a key divided by the pairs of all of them */
+	nd = column_distinct(c, makeVar(c->relid, fk, InvalidOid, -1, InvalidOid, 0), false);
+	per_pair = Max(c->rel->rows, 1.0) / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT);
+	a->knot_rows = Max(per * per_pair, 1.0);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->cpath != NULL)
 			a->children = lappend(a->children, jc->cpath);
 	a->entry_instr = 0;
-	pair_instr = alt_pair_instr(c, srel->rows);
+	alt_pair_instr(c, &fixed, &pair_instr);
 	for (int i = 0; i <= lengthof(counts); i++)
 	{
 		double		k = i < lengthof(counts) ? counts[i] : kall;
@@ -205,10 +223,10 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 		if (k > kall || (a->nknot > 0 && k <= a->knot_k[a->nknot - 1]))
 			continue;
 		pairs = Min(k * per, Max(srel->tuples, 1.0));
-		ops = alt_ops(c, s, input_rel, srel, pairs, s->est_groups);
+		ops = alt_ops(c, s, input_rel, srel, pairs, per_pair, s->est_groups);
 		ops0 = a->nknot == 0 ? ops : ops0;
 		a->knot_k[a->nknot] = k;
-		a->knot_instr[a->nknot++] = AGG_ALT_ROW * Max(c->rel->tuples, 1.0) + pair_instr * pairs + AGG_ALT_OP * Max(ops - ops0, 0.0);
+		a->knot_instr[a->nknot++] = AGG_ALT_ROW * Max(c->rel->tuples, 1.0) + fixed + pair_instr * pairs + AGG_ALT_OP * Max(ops - ops0, 0.0);
 		a->entry_instr = a->nknot > 1 ? AGG_ALT_OP * (ops - ops0) / ((k - a->knot_k[0]) * a->knot_rows) : 0.0;
 	}
 	t->alts = lappend(t->alts, a);

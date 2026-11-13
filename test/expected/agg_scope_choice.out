@@ -316,7 +316,7 @@ RESET plan_cache_mode;
 SELECT f.name, o.* FROM cforms f, LATERAL outcome(f, 'force_generic_plan', karg(f, 10)) o WHERE f.name IN ('IN, table of keys, a plan of its own', 'join, table of keys, a row for each pair', 'join, ANY ($1), a row for each pair') ORDER BY f.name COLLATE "C";
                    name                   | chosen |             why             | same_rows 
 ------------------------------------------+--------+-----------------------------+-----------
- IN, table of keys, a plan of its own     | join   | too many changed keys       | t
+ IN, table of keys, a plan of its own     | join   | join is cheaper for 10 keys | t
  join, ANY ($1), a row for each pair      | join   | join is cheaper for 10 keys | t
  join, table of keys, a row for each pair | join   | join is cheaper for 10 keys | t
 (3 rows)

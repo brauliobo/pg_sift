@@ -91,6 +91,7 @@ TESTING_REGRESS += agg_root_key_exists
 TESTING_REGRESS += agg_rows_group_memory
 TESTING_REGRESS += agg_scope_choice
 TESTING_REGRESS += agg_scope_group_key
+TESTING_REGRESS += agg_scope_key_table_choice
 TESTING_REGRESS += agg_scope_param_keys
 TESTING_REGRESS += agg_scope_preserved
 TESTING_REGRESS += agg_scope_recognition

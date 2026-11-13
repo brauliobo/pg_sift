@@ -753,7 +753,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 }
 
 bool
-sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
+sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key, AttrNumber *fk)
 {
 	Relation	index = index_open(c->indexoid, AccessShareLock);
 	SiftScopeSpecs *specs = sift_col_is_index(index) ? sift_scope_specs(index) : NULL;
@@ -768,6 +768,7 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 		{
 			*rti = jc->rti;
 			*key = get_attnum(rte->relid, sp->rel.b);
+			*fk = get_attnum(c->heapoid, sp->fk);
 			return true;
 		}
 		if (rte->rtekind == RTE_SUBQUERY && rte->subquery->setOperations != NULL)
@@ -779,6 +780,7 @@ sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key)
 				{
 					*rti = jc->rti;
 					*key = i;
+					*fk = get_attnum(c->heapoid, it.sp->fk);
 					return true;
 				}
 		}
@@ -820,7 +822,8 @@ sift_agg_scope_wanted(AggCtx *c, const FromScan *fs)
 	SiftScopeSpecs *specs;
 	const char *why;
 	Index		rti;
-	AttrNumber	key;
+	AttrNumber	key,
+				fk;
 
 	if (!sift_agg_scope || !OidIsValid(c->indexoid) || (c->joins == NIL && c->root->glob->subroots == NIL))
 		return false;
@@ -833,7 +836,7 @@ sift_agg_scope_wanted(AggCtx *c, const FromScan *fs)
 		scope_miss(why);
 	if (c->nparts > 0)
 	{
-		if (sift_agg_scope_item(c, &rti, &key))
+		if (sift_agg_scope_item(c, &rti, &key, &fk))
 			scope_miss("a scan of partitions reads no scope");
 		return false;
 	}

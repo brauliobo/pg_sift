@@ -631,8 +631,8 @@ extern bool sift_agg_scope_key_coded(AggCtx *c, int leaf);
 extern Node *sift_agg_scope_key_codes(Node *key);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);
-/* the item of the FROM list that is the scope relation of the index, and its key column (false: the scan has none) */
-extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key);
+/* the item of the FROM list that is the scope relation of the index, its key column and the member column of the scanned table (false: the scan has none) */
+extern bool sift_agg_scope_item(AggCtx *c, Index *rti, AttrNumber *key, AttrNumber *fk);
 /* the column of the table that column att of the item is, through the column map of a view over it (plan_scope.c); InvalidAttrNumber: none */
 extern AttrNumber item_attno(const AttrNumber *map, int nmap, AttrNumber att);
 /*
