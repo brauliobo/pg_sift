@@ -34,24 +34,13 @@ int			sift_agg_dimmap_kb = 64 * 1024;
 #define LOOKSHM_WAIT_MS		30000
 #define LOOKSHM_POLL_MS		5
 
-/* set when the segment of a table could not be created (no room in /dev/shm): the automatic budget is off for the backend */
+/* set when the directory or the segment of a table could not be had (no room in /dev/shm): the backend goes without shared tables, and does not try again */
 static bool shm_failed[LOOK_POOLS];
 
 /* the registry names of the pools: the directory of the rows of the joined tables, and the one of the dimension maps (agg/lookdim.c) */
 static const char *const pool_name[LOOK_POOLS] = {"sift_agg_lookup", "sift_agg_dimmap"};
-
-/* the budget in bytes: the setting, or for the rows when it is -1 the smaller of the cache of a backend and a twentieth of shared_buffers */
-Size
-lookshm_bytes(LookPool pool)
-{
-	if (pool == LOOK_DIM)
-		return shm_failed[pool] ? 0 : (Size) sift_agg_dimmap_kb * 1024;
-	if (sift_agg_lookup_shared_kb >= 0)
-		return (Size) sift_agg_lookup_shared_kb * 1024;
-	if (shm_failed[pool])
-		return 0;
-	return Min((Size) sift_agg_lookup_cache_kb * 1024, (Size) NBuffers * BLCKSZ / 20);
-}
+static const char *const pool_what[LOOK_POOLS] = {"the rows of the joined tables", "the dimension maps"};
+static const char *const pool_guc[LOOK_POOLS] = {"sift.agg_lookup_shared_kb", "sift.agg_dimmap_kb"};
 
 typedef struct LookShmEnt
 {
@@ -121,9 +110,28 @@ shm_init(SIFT_DSM_INIT_ARGS)
 static LookShm *
 shm_get(LookPool pool)
 {
-	if (shm[pool] == NULL)
-		shm[pool] = sift_dsm_join(pool_name[pool], sizeof(LookShm), shm_init);
+	/* a parallel operation cannot start the subtransaction of the attach: it joins the directory its leader found */
+	if (shm[pool] == NULL && !shm_failed[pool])
+		shm[pool] = IsInParallelMode() ? sift_dsm_join(pool_name[pool], sizeof(LookShm), shm_init) :
+			sift_dsm_attach(pool_name[pool], sizeof(LookShm), shm_init, &shm_failed[pool], pool_what[pool], pool_guc[pool], false);
 	return shm[pool];
+}
+
+/* the budget in bytes: the setting, or for the rows when it is -1 the smaller of the cache of a backend and a twentieth of shared_buffers; 0 where the directory is not there for this backend */
+Size
+lookshm_bytes(LookPool pool)
+{
+	Size		bytes;
+
+	if (pool == LOOK_DIM)
+		bytes = shm_failed[pool] ? 0 : (Size) sift_agg_dimmap_kb * 1024;
+	else if (sift_agg_lookup_shared_kb >= 0)
+		bytes = (Size) sift_agg_lookup_shared_kb * 1024;
+	else if (shm_failed[pool])
+		bytes = 0;
+	else
+		bytes = Min((Size) sift_agg_lookup_cache_kb * 1024, (Size) NBuffers * BLCKSZ / 20);
+	return bytes > 0 && shm_get(pool) != NULL ? bytes : 0;
 }
 
 static uint64

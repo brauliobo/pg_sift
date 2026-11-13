@@ -1,5 +1,6 @@
 /*
- * col/dsmreg.h - a named table in the dynamic shared memory registry that a cache must not fail for (agg/verdict.c, col/leafshm.c, col/dictshm.c).
+ * col/dsmreg.h - a named table in the dynamic shared memory registry that a cache must not fail for (agg/verdict.c, col/leafshm.c, col/dictshm.c). The only
+ * code that asks the registry: it registers the name with the size appended (col/dsmreg.c).
  */
 #ifndef SIFT_COL_DSMREG_H
 #define SIFT_COL_DSMREG_H

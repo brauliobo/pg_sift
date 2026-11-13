@@ -2,8 +2,14 @@
  * col/dsmreg.c - see dsmreg.h.
  *
  * The registry is the first backend that asks creating the table (nothing is allocated at postmaster start). A cache must not turn into an error:
- * whatever fails here (no room in /dev/shm, no more segments, a segment of another size) is caught in a subtransaction, which also gives back the
- * locks the registry holds, and the backend goes without the table.
+ * whatever fails here (no room in /dev/shm, no more segments) is caught in a subtransaction, which also gives back the locks the registry holds, and the
+ * backend goes without the table.
+ *
+ * The registry keeps the name and size of the first request until the postmaster restarts, and raises an error for a request of the name at another size: a
+ * library replaced under a running server, or a setting that sets the size, would ask for it. The name registered is the one asked with the size appended, so a
+ * name is never asked at two sizes: a layout of another size is a table of its own, and the entries of other sizes (or of an older release, which used the name
+ * as asked) are never joined. They stay until the postmaster restarts: one entry for each size ever asked of a name. A layout change that keeps the size
+ * changes the name asked (the number in it).
  */
 #include "postgres.h"
 
@@ -17,12 +23,14 @@
 void *
 sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 {
+	char		registered[64];
 	bool		found;
 
+	snprintf(registered, sizeof(registered), "%s_%zu", name, size);
 #if PG_VERSION_NUM >= 190000
-	return GetNamedDSMSegment(name, size, init, &found, NULL);
+	return GetNamedDSMSegment(registered, size, init, &found, NULL);
 #else
-	return GetNamedDSMSegment(name, size, init, &found);
+	return GetNamedDSMSegment(registered, size, init, &found);
 #endif
 }
 
