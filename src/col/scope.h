@@ -408,7 +408,10 @@ sift_scope_changed_price(const SiftScopeCounts *c)
  * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
  * entity row and 680 a column of an entry is within 2% of the four; the WAL is the 9 bytes an entry the segments have). A read pays for the changed members the price above, every time: the refresh is due
  * when SIFT_SCOPE_REFRESH_READS of them cost more than it does. The reads an index sees between two refreshes are not known to the maintenance, which sees no statement: a thousand is a dashboard that reads
- * once a minute for an afternoon, and an index read less often than that is not worth the 2.5 seconds of a table of a million rows.
+ * once a minute for an afternoon, and an index read less often than that is not worth the 2.5 seconds of a table of a million rows. A measured rate is not free: the scans the statistics count of
+ * an index (idx_scan) are cumulative since the last reset of the statistics of the database, with no time of their own, and the scans are not the reads that patch a scope; a rate needs two
+ * samples of the counter and their times kept by the worker, which a restart or a reset of the statistics loses and a first decision cannot have, so the constant would stay as its start. The due
+ * point is linear in it (twice the reads, half the refresh price that is worth paying), and a refresh that comes late costs the reads in between their patch, which the price above bounds.
  */
 #define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
 #define SIFT_SCOPE_REFRESH_ENTRY_INSTR	680
