@@ -531,9 +531,9 @@ What it costs, against the integer member on the same data (300,000 facts, 3,000
 | one key with 375 changed pairs, thousand instructions (ms) | 87,608 (11.0) | 112,579 (10.7) | 112,093 (15.2) |
 | five keys counted once with 375 changed pairs | 89,186 (8.5) | 114,360 (11.7) | 113,950 (12.5) |
 | one key with 375 changed pairs and 3,000 facts in the write buffer | 88,251 (8.3) | 114,616 (12.6) | 113,961 (14.1) |
-| the same, the join as written (`sift.agg_scope = off`) | 5,707 (1.2) | 9,851 (1.4) | 334,728 (33.1) |
+| the same, the join as written (`sift.agg_scope = off`) | 5,707 (1.2) | 9,851 (1.4) | 44,231 (3.6) |
 
-The text member's index is 11% larger (each row of a scope unit holds its member string, where an integer member holds the integer). With changed pairs a string member costs 1.3 times the instructions of the integer member (the leave-out hashes the strings of every unit read, and the patch reads the member leaf of every entity unit), with none the read is the same. The units are priced against the join as written: at this size the planner's price of the patch is above the join's, and the figures of the scope rows are those of a forced read (`sift.agg_force`), as for an integer member. The join a node holds runs the lookup join of the sift aggregate node, which costs 311 ms for the five uuid keys here with the scope index or without it (`sift.agg_scope = off`), against 19 ms of the plain hash join that the planner chooses when `sift.agg_force` is not set: the figures of the join rows are those of the forced node.
+The text member's index is 11% larger (each row of a scope unit holds its member string, where an integer member holds the integer). With changed pairs a string member costs 1.3 times the instructions of the integer member (the leave-out hashes the strings of every unit read, and the patch reads the member leaf of every entity unit), with none the read is the same. The units are priced against the join as written: at this size the planner's price of the patch is above the join's, and the figures of the scope rows are those of a forced read (`sift.agg_force`), as for an integer member. The join a node holds runs the lookup join of the sift aggregate node (the figures of the join rows are those of the forced node); a join by a uuid column reads only the units and rows that hold a key, which cut its 335 million instructions here to 44 million.
 
 ### Two paths with text, varchar or uuid keys and members
 
@@ -559,10 +559,10 @@ What it costs, against the integer scope of the same data (300,000 facts, 3,000 
 | five keys counted once with 375 changed pairs | 91,281 (19.8) | 116,194 (14.5) | 116,432 (18.2) |
 | one key with a changed group grant and 40 changed memberships on top | 101,412 (14.3) | 131,747 (17.2) | 132,058 (20.1) |
 | the same and 3,000 facts in the write buffer | 100,461 (15.8) | 128,786 (20.1) | 129,101 (20.5) |
-| the same, the join as written (`sift.agg_scope = off`) | 7,818 (2.6) | 11,933 (2.0) | 324,161 (39.5) |
+| the same, the join as written (`sift.agg_scope = off`) | 7,818 (2.6) | 11,933 (2.0) | 46,388 (4.0) |
 
 Unchanged, a string key or member reads as the integer one (the five keys are read from the pairs by a scan of their btree, which translates each pair, as for one path); with changed pairs it costs 1.3 times the instructions, the figure of one path. The figures of the reads with changed pairs are those of a forced read
-(`sift.agg_force`): the join as written costs less at this size for any type and the planner prices the patch against it, as for an integer scope. The uuid join is the slow one of the aggregate node's lookup join (see [Member types](#member-types)).
+(`sift.agg_force`): the join as written costs less at this size for any type and the planner prices the patch against it, as for an integer scope. (The uuid join is the node's lookup join over the units and rows that hold a key, as in [Member types](#member-types).)
 
 ### Limits
 
