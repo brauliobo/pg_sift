@@ -3,6 +3,7 @@
 -- segment and of the stock plan, whichever backend parsed them, and a segment a merge or VACUUM rewrote (a new generation) must never be read from the bytes
 -- of the old one. \c is a new backend.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 CREATE TABLE ds (id int, k text, g text, w text, v int, ip inet) WITH (autovacuum_enabled = false);
@@ -50,6 +51,13 @@ BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
+-- a ring that threw out more than it found, as the tests before this one leave it, skips the next writes (src/col/dictshm.c): the backends below would keep nothing
+SELECT sift._test_col_dict_shared_hold(0) IS NOT NULL AS ring_open;
+ ring_open 
+-----------
+ t
+(1 row)
+
 -- not shared: nothing is kept or found
 SET sift.col_dict_shared_cache_kb = 0;
 SELECT snap('off');
@@ -247,4 +255,5 @@ SELECT shape FROM seen WHERE label IN ('stock', 'no_table') GROUP BY shape HAVIN
 
 DROP FUNCTION snap(text), shared(), explain_has(text, text);
 DROP TABLE seen, shapes, ds;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
