@@ -15,6 +15,7 @@ typedef struct ColNeed
 	bool		feeder;			/* read only to compute an expression column (CompCol), not a column of the join */
 	int			ixn;			/* the index of the load whose units hold the leaf: 0 the first, 1 the second (lookcol_load_index) */
 	const SiftSrcLeaf *lf;
+	bool		raw;			/* a uuid or bytea leaf is read as the codes of the dictionary the unit stores, not through the per-unit dictionary of datums (the cells are made from its strings) */
 	SiftSrcVec	vec;
 	Datum	   *dval;			/* a text leaf: the value of each entry of the unit's dictionary made so far */
 	bool	   *dmade;

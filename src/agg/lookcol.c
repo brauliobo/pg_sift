@@ -618,6 +618,9 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2,
 	srcs[0] = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view);
 	if (ix2 != NULL)
 		srcs[1] = sift_colsrc_open(rel, ix2, sc->snap, ucx, NULL);
+	for (int p = 0; p < nneed; p++)
+		if (need[p].raw)
+			sift_colsrc_set_raw(srcs[need[p].ixn], need[p].lf->id);
 	while (ok && more)
 	{
 		if (sc->claim == NULL)
@@ -786,7 +789,7 @@ typedef struct KeyPairs
 	uint32		cap;
 } KeyPairs;
 
-/* the code in map m of the string of cell i of a string leaf: looked up once for each string of the dictionary of the unit */
+/* the code in map m of the string of cell i of a string leaf (the bytes of its dictionary entry, no datum is made of them): looked up once for each string of the dictionary of the unit */
 static int64
 cell_code(ColNeed *nd, int64 i, SiftKeyMap *m)
 {
@@ -799,9 +802,11 @@ cell_code(ColNeed *nd, int64 i, SiftKeyMap *m)
 	}
 	if (!nd->dcoded[c])
 	{
-		bool		isnull;
+		char		buf[SIFT_SRC_DICT_ENTRY];
+		uint32		len;
+		const char *str = sift_srcdict_str(nd->vec.dict, c, &len, buf);
 
-		(void) sift_keymap_code(m, lookcol_cell_datum(nd, i, &isnull), &nd->dcode[c]);
+		(void) sift_keymap_code_bytes(m, str, len, &nd->dcode[c]);
 		nd->dcoded[c] = true;
 	}
 	return nd->dcode[c];
@@ -854,6 +859,9 @@ lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyM
 		need[1].lf = column_leaf_any(sift_colsrc_layout(index), key, NULL);
 		ok = need[0].lf != NULL && need[1].lf != NULL && (need[0].lf->vtype == SCV_CODE) == (mm != NULL) && (need[1].lf->vtype == SCV_CODE) == (km != NULL);
 	}
+	/* the pairs are made from the strings of a uuid leaf: its stored dictionary has them, the per-unit dictionary of datums would hash each row for them */
+	for (int p = 0; ok && p < 2; p++)
+		need[p].raw = need[p].lf->wide && need[p].lf->typid == UUIDOID && sift_colsrc_can_raw(index->rd_rel->relam, true);
 	if (ok)
 	{
 		if (mm != NULL)
