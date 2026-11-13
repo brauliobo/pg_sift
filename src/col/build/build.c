@@ -94,8 +94,8 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	return res;
 }
 
-IndexBuildResult *
-sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
+static IndexBuildResult *
+build_index(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
 	bool		chosen,
@@ -170,6 +170,25 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);
 	sift_col_choices_say(heap, index, SIFT_CHOICE_AUTO | SIFT_CHOICE_ADVICE | SIFT_CHOICE_CAP, true);
+	return res;
+}
+
+IndexBuildResult *
+sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
+{
+	Oid			outer = sift_col_building;
+	IndexBuildResult *res;
+
+	sift_col_building = RelationGetRelid(index);
+	PG_TRY();
+	{
+		res = build_index(heap, index, info);
+	}
+	PG_FINALLY();
+	{
+		sift_col_building = outer;
+	}
+	PG_END_TRY();
 	return res;
 }
 

@@ -16,6 +16,8 @@
 #include "col/conn.h"
 #include "col/scope.h"
 
+Oid			sift_col_building = InvalidOid;
+
 COL_OPT_STR_KO(sift_col_options_order_array_group, order_array_group, ko_group)
 
 /* NULL while it is not set (the build chooses); '' is the user's none */
@@ -301,7 +303,8 @@ build_rel(Relation index, MemoryContext mcxt)
 	SiftColRel *r = build_rel_with(index, mcxt, layout[0]);
 	uint32		hash,
 				flags;
-	bool		stored = sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG);
+	bool		stored = RelationGetRelid(index) != sift_col_building &&
+						 sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG);
 
 	if (stored && r->schema->hash != hash && (layout[0] != layout[1] || layout[0] != layout[2]))
 		for (int i = 1; i < 3; i++)

@@ -270,6 +270,9 @@ extern SiftColRel *sift_col_rel(Relation index);
  */
 extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 
+/* The index this backend is building: its metapage is written with the end of the build, and a read of it before would leave a stale page in the buffers of a bulk write */
+extern Oid	sift_col_building;
+
 /* Key-cut units */
 extern bool sift_col_index_keyed(Oid indexoid);
 extern bool sift_col_index_stale(Oid indexoid);
