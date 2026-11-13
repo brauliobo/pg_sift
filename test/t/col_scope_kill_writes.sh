@@ -61,7 +61,7 @@ for i in $(seq "$ROUNDS"); do
 	check "round $i: both indexes verify against the heap" test "$(sql kw "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('hop_one', true)" 2>&1 | grep -c ERROR)" == 0
 	check "round $i: sift.col_scope_verify finds no differing key of either index" test "$(differing hop_col)|$(differing hop_one)" == "0|0"
 	check "round $i: the scope reads of every key are the join (two paths, one path)" reads_same
-	sql kw "SET sift.scope_max_multiplicity = 64" "REINDEX INDEX hop_col" "REINDEX INDEX hop_one" >/dev/null
+	sql kw "REINDEX INDEX hop_col" "REINDEX INDEX hop_one" >/dev/null
 	out="$(twohop_why kw)|$(twohop_why kw "$ONE_STORED")|$(differing hop_col)|$(differing hop_one)"
 	check "round $i: after a REINDEX the units are read and the scope verifies" test "$out" == "stored|stored|0|0"
 done

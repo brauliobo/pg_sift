@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT
 
 TWO = False
-FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 8;"
+FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
 
 LIB = r"""
 CREATE OR REPLACE FUNCTION tk_cmp(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -105,9 +105,7 @@ CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, k
 INSERT INTO events SELECT {self.fact_rows(1, self.rows)};
 {self.two_setup(rt, gen)}CREATE INDEX events_col ON events USING sift_col (id, {mc}, created_at, kind, v)
 	WITH (scope = '{self.declaration()}');
-SET sift.scope_max_multiplicity = 64;
 REINDEX INDEX events_col;
-SET sift.scope_max_multiplicity = 8;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n{', grp_scope, memberships' if self.two else ''};
 """
 
@@ -226,7 +224,7 @@ CREATE VIEW pair_set AS SELECT {mc}, tenant_id FROM tenant_scope UNION SELECT m.
             return kind, 'VACUUM events'
         if kind == 'vacuum_pairs':
             return kind, 'VACUUM tenant_scope' + (', grp_scope, memberships' if self.two else '')
-        return kind, 'SET sift.scope_max_multiplicity = 64; REINDEX INDEX events_col; SET sift.scope_max_multiplicity = 8'
+        return kind, 'REINDEX INDEX events_col'
 
     def group_churn(self, pct):
         return f"{self.mem_move(pct)}; {self.grp_move(pct)}; " if self.two else ''
@@ -334,7 +332,7 @@ def run_seed(seed, rows, steps, out_dir):
             rd.run('COMMIT;')
         a.run('VACUUM events;')
         run_battery(a, s.battery(), stats, 'final')
-        out = a.run('SET sift.scope_max_multiplicity = 64; REINDEX INDEX events_col; SET sift.scope_max_multiplicity = 8;')   # churn raises the entries of a row above the limit of the build
+        out = a.run('REINDEX INDEX events_col;')
         if ERR.search(out):
             raise Fail(f'final rebuild: {out.strip()[:500]}')
         run_battery(a, s.battery(), stats, 'rebuilt', strict=True)

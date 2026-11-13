@@ -68,18 +68,18 @@ hopstate() { # DB: of both indexes, the option, the edges to the btrees and the 
 	echo "${out}refused $(dbq "$db" "DO \$\$ DECLARE b text; BEGIN FOREACH b IN ARRAY ARRAY['grants_direct', 'grants_direct_all'] LOOP BEGIN EXECUTE 'DROP INDEX ' || b; EXCEPTION WHEN dependent_objects_still_exist THEN RAISE WARNING 'refused'; END; END LOOP; END \$\$" 2>&1 | grep -c refused)"
 }
 SRC=$(state src)
-WANT="scope=tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8) | tenant_scope_journal tenant_scope_pkey | entries t | reads same | refused 1"
+WANT="scope=tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64) | tenant_scope_journal tenant_scope_pkey | entries t | reads same | refused 1"
 check "the source: the option, the dependencies on the journal index and the btree of the pairs, the entries are the join, the reads are the join's" test "$SRC" == "$WANT"
 TWO="SELECT count(*) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_two'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'"
 check "the index with two scopes depends on both btrees and both journal indexes" test "$(dbq src "$TWO")" == 4
 HOP=$(hopstate src)
 check "the source: both scopes of two paths depend on the three btrees (the rule's, and the one that using names) and the three journals, the entries and the reads are the join's" test "$HOP" == \
-	"hop_col: scope=$TWOHOP_SCOPE max_multiplicity(8) | grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member | entries t | reads same; hop_using: scope=tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(8) | grants_by_group grants_by_member grants_direct_all grants_group memberships_active memberships_by_member | entries t | reads same; refused 2"
+	"hop_col: scope=$TWOHOP_SCOPE max_multiplicity(64) | grants_by_group grants_by_member grants_direct grants_group memberships_active memberships_by_member | entries t | reads same; hop_using: scope=tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_all | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(64) | grants_by_group grants_by_member grants_direct_all grants_group memberships_active memberships_by_member | entries t | reads same; refused 2"
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
-check "pg_dump writes the text of the option" test "$(grep -c "scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'" "$D/src.sql")" == 1
+check "pg_dump writes the text of the option" test "$(grep -c "scope='tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(64)'" "$D/src.sql")" == 1
 line() { grep -n "$1" "$D/src.sql" | head -n 1 | cut -d: -f1; }
-check "pg_dump writes the text of both scopes of two paths, with the using of one" test "$(grep -c "scope='$TWOHOP_SCOPE max_multiplicity(8)'" "$D/src.sql")" == 1 -a "$(grep -c "using grants_direct_all | grants(group_id" "$D/src.sql")" == 1
+check "pg_dump writes the text of both scopes of two paths, with the using of one" test "$(grep -c "scope='$TWOHOP_SCOPE max_multiplicity(64)'" "$D/src.sql")" == 1 -a "$(grep -c "using grants_direct_all | grants(group_id" "$D/src.sql")" == 1
 check "the btrees of the pairs are made before the indexes that read them" \
 	test "$(line 'tenant_scope_pkey PRIMARY KEY')" -lt "$(line 'CREATE INDEX events_col ')" -a "$(line 'group_scope_group_id_dim_a_id_key')" -lt "$(line 'CREATE INDEX events_two ')"
 check "the index that journals the pairs is made before the index that reads them" test "$(line 'CREATE INDEX tenant_scope_journal')" -lt "$(line 'CREATE INDEX events_col ')"

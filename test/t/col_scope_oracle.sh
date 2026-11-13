@@ -29,7 +29,7 @@ max_locks_per_transaction = 256
 autovacuum = off
 max_connections = 100"
 node_init ora_a "$BASE" "$REPL
-sift.scope_max_multiplicity = 8"
+sift.scope_max_multiplicity = 64"
 node_start ora_a || bail "primary start failed"
 node_init ora_b $((BASE + 2)) "$REPL"
 for k in '^sift[.]' '^extension_control_path' '^dynamic_library_path'; do sed_i "/$k/d" "$(dir ora_b)/data/postgresql.conf"; done

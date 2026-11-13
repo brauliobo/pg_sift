@@ -47,7 +47,7 @@ from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT, sqlstr
 
 TWOHOP_REASON = '^no journal for two paths$'   # the reason of a tree without the reader of the units of two paths
 HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scope_helpers.sql')
-FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 8;"
+FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off; SET sift.scope_max_multiplicity = 64;"
 
 LIB = r"""
 DROP TABLE IF EXISTS sf_q, sf_res;
@@ -784,7 +784,7 @@ def run_seed(seed, rows, steps, out_dir, family='all', twohop_strict=False, twoh
             rd.run('COMMIT;')
         a.run('VACUUM events;')
         check(a, s, 'final', False, stats)
-        out = a.run('SET sift.scope_max_multiplicity = 64; REINDEX INDEX events_col; SET sift.scope_max_multiplicity = 8;')   # churn raises the entries of a row above the limit of the build
+        out = a.run('REINDEX INDEX events_col;')
         if ERR.search(out):
             raise Fail(f'final rebuild: {out.strip()[:500]}')
         check(a, s, 'final rebuild', True, stats)

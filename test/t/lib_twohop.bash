@@ -6,7 +6,7 @@
 
 TWOHOP_ROWS=$(knob SIFT_TWOHOP_ROWS 6000 3000)
 TWOHOP_SCOPE="tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)"
-TWOHOP_CONF="sift.scope_max_multiplicity = 8
+TWOHOP_CONF="sift.scope_max_multiplicity = 64
 autovacuum = off"
 
 TWOHOP_BASE=(

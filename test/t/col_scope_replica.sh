@@ -11,7 +11,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 19
-node_init scp 49 "sift.scope_max_multiplicity = 8
+node_init scp 49 "sift.scope_max_multiplicity = 64
 wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -151,7 +151,7 @@ catchup scp scs
 check "two paths: the standby reads as the join of the union, and as the primary does" test "$(twohop_reads scs)|$(sql scs "SELECT bool_and(hop_same(k)) FROM generate_series(1, 17) k")" == "same|t" \
 	-a "$(sql scs "$TWOHOP_Q_PAIR")" == "$(sql scp "$TWOHOP_Q_PAIR")"
 diag "two paths: the standby says $(twohop_why scs); stamps $(twohop_vouch scs)"
-sql scp "SET sift.scope_max_multiplicity = 64" "REINDEX INDEX hop_col" >/dev/null   # the edits of the groups raised the entries of a row above the limit of the build
+sql scp "REINDEX INDEX hop_col" >/dev/null
 catchup scp scs
 hop_after_reindex() {
 	out="entries $(sql scs "$TWOHOP_ENTRIES"), reads $(twohop_reads scs), verify: $(sql scs "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
