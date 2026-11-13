@@ -1,0 +1,74 @@
+-- A latest-N read (ORDER BY a column that does not follow the table, LIMIT) walks the superblocks of its source by the bounds of their zones, and the backend keeps that order for the next
+-- read of the same index and keys. The scope segments of the index have the same file, the same directory and, when they hold fewer superblocks than the table, the same number of
+-- superblocks as the entities, but other units in them: a scope read that took the order of an entity read in the same session stopped the walk at the units that were never the newest
+-- of its key and returned older rows. Every tenant's latest 5 rows, read by the join as written and then from the scope units, are those of stock PostgreSQL.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+-- 200 members, each in the group of one of 10 tenants; a member's rows are dated around a date of its own, so the units that are cut by member have bounds that differ;
+-- a wide row makes a page hold about 5 rows: 40000 rows are 40 superblocks
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, pad text DEFAULT repeat('x', 1500)) WITH (autovacuum_enabled = false);
+ALTER TABLE facts ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO memberships (group_id, dim_a_id) SELECT 1 + m % 10, m FROM generate_series(1, 200) m;
+INSERT INTO grants (tenant_id, group_id) SELECT t, t FROM generate_series(1, 10) t;
+INSERT INTO facts (id, dim_a_id, created_at)
+	SELECT i, 1 + i % 200, timestamptz '2026-01-01' + (hashint4(1 + i % 200) & 2147483647) % 40 * interval '30 days' + (hashint4(i) & 2147483647) % 20000 * interval '1 minute'
+	FROM generate_series(1, 40000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at)
+	WITH (key_order = 'dim_a_id, created_at', scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+VACUUM (FREEZE, ANALYZE) facts;
+VACUUM (ANALYZE) grants, memberships;
+CREATE VIEW tenant_pairs AS
+	SELECT g.dim_a_id AS member, g.tenant_id FROM grants g WHERE g.deleted_at IS NULL
+	UNION
+	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE FUNCTION latest_stmt(t int) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT format('SELECT id, created_at FROM facts WHERE dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = %s) ORDER BY created_at DESC, id DESC LIMIT 5', t) $$;
+CREATE FUNCTION latest_ids(t int) RETURNS int[] LANGUAGE plpgsql AS
+$$ DECLARE r int[]; BEGIN EXECUTE 'SELECT array_agg(id ORDER BY created_at DESC, id DESC) FROM (' || latest_stmt(t) || ') x' INTO r; RETURN r; END $$;
+-- the statement reads the scope units, and walks the superblocks by the zones
+CREATE FUNCTION latest_plan(t int, OUT scope_read bool, OUT walked bool) LANGUAGE plpgsql AS
+$$ DECLARE line text; plan text := ''; BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || latest_stmt(t) LOOP plan := plan || line || E'\n'; END LOOP;
+	scope_read := plan ~ 'Scope Index: facts_col'; walked := plan ~ 'Top-N Run: [1-9]'; END $$;
+SET sift.enable_agg = off;
+CREATE TABLE stock AS SELECT t, latest_ids(t) AS ids FROM generate_series(1, 10) t;
+RESET sift.enable_agg;
+SET sift.agg_scope = off;
+CREATE TABLE joined AS SELECT t, latest_ids(t) AS ids FROM generate_series(1, 10) t;
+SET sift.agg_scope = on;
+CREATE TABLE scoped AS SELECT t, latest_ids(t) AS ids FROM generate_series(1, 10) t;
+SELECT t, j.ids = s.ids AS join_ok, c.ids = s.ids AS scope_ok FROM stock s JOIN joined j USING (t) JOIN scoped c USING (t) ORDER BY t;
+ t  | join_ok | scope_ok 
+----+---------+----------
+  1 | t       | t
+  2 | t       | t
+  3 | t       | t
+  4 | t       | t
+  5 | t       | t
+  6 | t       | t
+  7 | t       | t
+  8 | t       | t
+  9 | t       | t
+ 10 | t       | t
+(10 rows)
+
+SELECT bool_and(scope_read) AS scope_read, bool_and(walked) AS walked FROM generate_series(1, 10) t, latest_plan(t);
+ scope_read | walked 
+------------+--------
+ t          | t
+(1 row)
+
+DROP VIEW tenant_pairs;
+DROP FUNCTION latest_plan(int), latest_ids(int), latest_stmt(int);
+DROP TABLE stock, joined, scoped, facts, grants, memberships;
+DROP EXTENSION pg_sift;

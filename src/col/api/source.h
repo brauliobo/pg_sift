@@ -591,6 +591,7 @@ typedef struct SiftColWalkStamp
 	Oid			index;
 	uint32		file;
 	uint32		version;
+	uint32		scope;			/* the zones are those of the scope segments, not of the entity segments */
 } SiftColWalkStamp;
 extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);

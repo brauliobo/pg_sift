@@ -653,9 +653,9 @@ sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi
 }
 
 /*
- * What the zones of the segments of an index source depend on: its file and the version of the directory it read. The superblocks that hold rows of the
- * write buffers are listed in mem (ascending, nmem of them); false when the source is not that of an index, its buffers are not loaded, or more than cap
- * superblocks hold such rows.
+ * What the zones of the segments of an index source depend on: its file, the version of the directory it read and whether it reads the scope
+ * segments. The superblocks that hold rows of the write buffers are listed in mem (ascending, nmem of them); false when the source is not
+ * that of an index, its buffers are not loaded, or more than cap superblocks hold such rows.
  */
 bool
 sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem)
@@ -679,6 +679,7 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 	st->index = RelationGetRelid(src->index);
 	st->file = src->index->rd_locator.relNumber;
 	st->version = src->dir.version;
+	st->scope = (src->flags & SIFT_COLO_SCOPE) != 0;
 	return true;
 }
 

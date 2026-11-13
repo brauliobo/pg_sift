@@ -631,7 +631,7 @@ col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem
 
 	if (!sift_col_walk_stamp(((ColSource *) impl)->cs, &cs, mem, cap, nmem))
 		return false;
-	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version};
+	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version,.scope = cs.scope};
 	return true;
 }
 

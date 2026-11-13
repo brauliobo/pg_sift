@@ -54,6 +54,26 @@ DROP TABLE IF EXISTS sf_q, sf_res;
 CREATE TABLE sf_q (qid int PRIMARY KEY, class text, q text, plain text, sql_form bool, stored_wanted bool, engage_wanted bool, want_why text);
 CREATE TABLE sf_res (stage text, qid int, class text, ok bool, stored bool, why text, detail text);
 
+-- the rows of a latest-N read after the same session read the join as written and the scope units: the backend keeps what a top-N read learned of the units of the index (the order of its walk),
+-- and what it kept from one source is not the other's
+CREATE OR REPLACE FUNCTION sf_alternate(q text, plain text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text; d text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO c;
+	SET LOCAL sift.agg_scope = on;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO d;
+	SET LOCAL sift.enable_agg = on;
+	RETURN a = d AND b = d AND c = d;
+END $$;
+
 -- the statements of sf_q through the scope path, the planned plan and the plain plan, and the verdict of the reader
 DROP FUNCTION IF EXISTS sf_run(text, bool, bool);
 CREATE OR REPLACE FUNCTION sf_run(stage text, strict bool, planner bool, ok_why text DEFAULT NULL, no_stored bool DEFAULT false) RETURNS void LANGUAGE plpgsql AS $$
@@ -62,6 +82,12 @@ BEGIN
 	FOR d IN SELECT * FROM sf_q ORDER BY qid LOOP
 		det := NULL; st := false; wh := NULL; ok := true;
 		BEGIN
+			IF d.class = 'latest alternation' THEN
+				st := true;
+				IF NOT sf_alternate(d.q, d.plain) THEN ok := false; det := 'rows differ after the other arm of sift.agg_scope'; END IF;
+				INSERT INTO sf_res VALUES (stage, d.qid, d.class, ok, st, wh, det || ' ' || left(d.q, 200));
+				CONTINUE;
+			END IF;
 			IF d.class = 'group key' THEN
 				SELECT * INTO r FROM scope_group_run(d.q);
 			ELSE
@@ -176,6 +202,9 @@ class Seed:
         self.grng = random.Random(f'{seed}group')   # its own stream: the draws of the other classes stay
         sr = random.Random(seed * 7919 + 13)   # its own stream: the seeds that are not soft draw what they drew before
         self.soft = seed % 3 == 2   # a third of the seeds, and seed 2 of the quick tier
+        self.pad = 60
+        if seed % 3 == 1:   # a row a page: the table has the 16 superblocks a latest-N read walks by the zones of its units (a third of the seeds, and seed 1 of the quick tier)
+            self.pad, self.n, self.next_id = 5000, rows, rows + 1
         self.pk2 = sr.choice(['dim_a_id, tenant_id', 'tenant_id, dim_a_id'])
         self.jpartial = self.soft and sr.random() < 0.5
         self.steps = STEPS + SOFT_STEPS if self.soft else STEPS
@@ -222,6 +251,7 @@ INSERT INTO tenant_scope (dim_a_id, tenant_id, deleted_at) SELECT m, 1 + (m * 31
         return f"""{f"SET sift.test_col_segment_kb = {self.seg_kb};" if self.seg_kb else ""}
 DROP TABLE IF EXISTS events, tenant_scope, grants, memberships CASCADE;
 {self.pair_sql()}CREATE TABLE events (id int PRIMARY KEY, dim_a_id {self.mtype}, created_at {self.ttype}, kind smallint NOT NULL, v int NOT NULL, pad text) WITH (autovacuum_enabled = off, fillfactor = 80);
+ALTER TABLE events ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO events SELECT {self.fact_rows(1, self.n)};
 UPDATE events SET pad = 'h' WHERE id % 10 = 0;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = {sqlstr(self.scope_text())}{trk});
@@ -232,7 +262,7 @@ VACUUM (ANALYZE) {self.tables};"""
     # facts: some without an entity, some of an unknown one, a hot head, the rest spread
     def fact_rows(self, a, b):
         m = (f"CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN {self.dim_b + 1000} WHEN i % 3 = 0 THEN 1 + i % 20 ELSE 1 + (i * 7919) % {self.dim_b} END")
-        return f"i, {m}, DATE '2026-01-01' + (i * 7919) % 300, i % 7, i % 10, repeat('x', 60) FROM generate_series({a}, {b}) i"
+        return f"i, {m}, DATE '2026-01-01' + (i * 7919) % 300, i % 7, i % 10, repeat('x', {self.pad}) FROM generate_series({a}, {b}) i"
 
     # ---- the steps: (kind, sql, effect); effect: facts, pairs, aborted, in_txn, maint, vacuum, rebuild, none
     def window(self, pct, col='id'):
@@ -380,6 +410,9 @@ VACUUM (ANALYZE) {self.tables};"""
             subset = self.kept is None or need <= self.kept   # the read needs the columns it aggregates, and no other: it is stored where the index keeps those
             gq = f"SELECT {aggs} FROM events e JOIN {P} s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY[{lst(ks2)}]::int8[]){self.act}{by}"
             qs.append(('group key', gq, gq, False, False, False, None if subset or self.union else '^column .* not in the scope units$'))
+        lq = ("SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM %s s WHERE tenant_id = %d%s) ORDER BY created_at DESC, id DESC LIMIT 20"
+              % (P, self.grng.choice(keys) if keys else self.miss(), self.act))
+        qs.append(('latest alternation', lq, lq, True, False, False, None))
         for q, engage in [("SELECT s.tenant_id, count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id%s GROUP BY 1 ORDER BY 1" % (P, self.act), False),
                           ("SELECT count(*), sum(v) FROM events e JOIN %s s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (%s)%s" % (P, lst([pick() for _ in range(3)]), self.act), False),
                           ("SELECT count(*), sum(v), count(DISTINCT e.dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM %s s WHERE tenant_id = %d%s)" % (P, pick(), self.act), True),

@@ -152,6 +152,7 @@ typedef struct SiftSrcWalkStamp
 	Oid			index;
 	uint32		file;
 	uint32		version;
+	uint32		scope;
 } SiftSrcWalkStamp;
 
 #endif							/* SIFT_AGG_COLSRC_META_H */
