@@ -262,6 +262,13 @@ extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
 typedef struct SiftKeyMap SiftKeyMap;
 extern bool sift_keymap_type(Oid typid);
 extern const char *sift_keymap_column_refusal(Oid typid, Oid collation);
+extern bool sift_keymap_same_kind(Oid a, Oid b);
+extern uint64 sift_member_hash(Oid typid, Datum d);
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_member_hash_bits;
+#endif
+/* A map with no store, for the values of a column that are known by their codes for the length of the map (the members of a scope) */
+extern SiftKeyMap *sift_keymap_transient(Relation rel, AttrNumber att);
 extern SiftKeyMap *sift_keymap_open(Relation rel, AttrNumber att, bool write);
 extern Oid	sift_keymap_collation(const SiftKeyMap *m);
 extern Oid	sift_keymap_typid(const SiftKeyMap *m);
@@ -270,6 +277,7 @@ extern void sift_keymap_collect(SiftKeyMap *m, bool on);
 extern void sift_keymap_hold(SiftKeyMap *m);
 extern void sift_keymap_release(SiftKeyMap *m);
 extern bool sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code);
+extern bool sift_keymap_code_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code);
 extern Datum sift_keymap_datum(SiftKeyMap *m, int64 code);
 
 /* Calls f(arg, k, k2) for every visible row of rel whose integer column key (and column key2, InvalidAttrNumber: none, k2 is 0) is not NULL; the keys of a parent table and the pairs of a scope relation. pred_index: a btree of rel that holds both columns, whose entries are the rows (a partial one: those of its predicate), read as an index only scan; InvalidOid: every row, read from the heap */
@@ -277,8 +285,8 @@ extern bool sift_conn_slot_key(TupleTableSlot *slot, AttrNumber att, int64 *k);
 extern bool sift_conn_slot_code(TupleTableSlot *slot, AttrNumber att, SiftKeyMap *km, int64 *k);
 typedef void (*SiftConnKeyFn) (void *arg, int64 k, int64 k2);
 extern void sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg);
-/* ... with km2 the map of the column key2 (NULL: it is an integer): its values are handed to f as codes */
-extern void sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg);
+/* ... with km1 and km2 the maps of the columns key and key2 (NULL: an integer column): the values of a mapped column are handed to f as its codes */
+extern void sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, SiftKeyMap *km1, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg);
 /* The predicate of a partial btree (InvalidOid, or a plain one: none), tested on the rows of its table: a row that fails it is no row of the btree */
 typedef struct SiftConnPred
 {

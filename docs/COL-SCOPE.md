@@ -31,8 +31,8 @@ The recipe is two statements: a journal index on the table of pairs (it records 
     CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
       WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 
-`key_name: fk -> [schema.]relation(member, scope_key)`: the name of the derived key, the column of the index that holds the member key (`int2`, `int4`, `int8`), and the relation of pairs with its
-two integer columns. Up to 4 scopes, separated by `;`, each with its own name. The relation is a heap table (not a view, not the indexed table), with an immediate btree on exactly `(member,
+`key_name: fk -> [schema.]relation(member, scope_key)`: the name of the derived key, the column of the index that holds the member key (`int2`, `int4`, `int8`, `text`, `varchar` or `uuid`), and the relation of pairs with its
+two columns, integers or [text, varchar or uuid](#key-types). Up to 4 scopes, separated by `;`, each with its own name. The relation is a heap table (not a view, not the indexed table), with an immediate btree on exactly `(member,
 scope_key)` in either order, unique (a primary key or a unique constraint) or not ([a pair may be several rows](#pairs-in-several-rows-a-multiset)), both columns NOT NULL; an unqualified name is in the schema of the indexed table. The index depends on that btree: `DROP INDEX`
 of it, or `DROP TABLE` of the relation, needs `CASCADE`, which drops the index. The dependency is also the record of which btree defines the pairs: `CREATE INDEX` and `REINDEX`
 choose it (a unique one before a non-unique one, then the lowest oid of those that qualify) and say which in a NOTICE, every read uses that one, and a btree made or rebuilt (`REINDEX .. CONCURRENTLY`) afterwards changes nothing until the next
@@ -480,7 +480,7 @@ is read. What else a statement says keeps the join as written, and `sift.explain
 
 **What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a btree on their two columns, unique or not); a condition on a third table (a group's own soft delete: the memberships of a deleted group
 stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
-into a column, see above); a partitioned table among the three; text or uuid members, and text or uuid keys in a scope of two paths; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
+into a column, see above); a partitioned table among the three; text or uuid members and keys in a scope of two paths; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
 
 ### Key types
 
@@ -507,15 +507,43 @@ instructions are user-space, per statement, mean of 20 runs):
 The mapping costs nothing a read can see for one key (the key is looked up once in the store, and the units answer). A list of keys counted once is read from the pairs relation by a scan of its btree, where an integer key reads
 the leaves of the journal index of the relation: the strings of a leaf are not the codes of the units, so the scan translates every pair it reads (about 630 instructions a pair, 3.8 million for the 6,000 pairs here).
 
+### Member types
+
+The member may be a `text`, `varchar` or `uuid` column too, on both sides: the column of the indexed table and the member of the pairs relation are of one kind (text with varchar, uuid with uuid, an integer with an integer), under a deterministic collation, so that equal
+values have equal bytes (`char(n)`, whose values are equal when they differ in blank padding, `citext`, a domain and a nondeterministic collation are refused at the declaration, with the column and the fix). A member is not coded in a store: the build, and a reader, give each value of the pairs and of a batch of
+facts one code for the length of the statement (a map with no store), so the units are those of an integer member. The journal of the pairs relation, which a reader asks for the members that changed since the units were written, records for a member the 64-bit word of its bytes:
+FNV-1a (offset basis 14695981039346656037, prime 1099511628211, over the bytes of the text, or the 16 bytes of the uuid), a fixed function with no seed, so the records a standby reads or a restore brings back are the ones written (the test `col_scope_textmember` pins
+`''`, `'a'`, `'foobar'` and two uuids to their values, which an arm64 build must give too). The word is a filter, not an identity: a member whose word is another's is read as changed, which can only widen what is re-read. A `NULL` member of a fact has no pair, as for an integer; the empty string is a member like another.
+
+**What this covers today, plainly.** A scope with a text, varchar or uuid member answers from the units only when nothing changed in the pairs since the units were written, the write buffer holds none of the rows of the table, and the read is one key or one row for each pair. As soon as a pair changes or a row is inserted or updated (and waits in the write buffer for the next promotion), the statement runs the join as written, which is the cost of having no scope index. "Supported" here means exact, not fast under writes: the units that skip those states (leaving out the changed members, the patch of their pairs and the delta of the buffer, which an integer member has) are not written for strings yet. Otherwise the node runs the join as written and says why (`Scope Fallback: text member changed`, `text member in the write buffer`,
+`text member of several keys`); the rows are those of the join in every state (`col_scope_textmember`, and a fuzz that draws every kind of key and member, `col_scope_textkey_fuzz`), and a `REINDEX` of the scope index or the rewrite of the maintenance reads the units again.
+
+What it costs, against the integer member on the same data (300,000 facts, 3,000 members, 200 keys, an integer key, about 2 pairs a member, one `sift_col` index with four columns, PostgreSQL 18, shared buffers 128 MB, one backend; user-space instructions per statement, mean of 20 runs):
+
+| | int | text | uuid |
+|---|---|---|---|
+| build (`CREATE INDEX`), s | 0.62 | 0.71 | 0.58 |
+| WAL of the build, MB | 3.4 | 3.7 | 3.3 |
+| index file, MB | 3.47 | 3.84 | 3.52 |
+| one key, thousand instructions (warm blocks hit / read; cold hit / read) | 1,105 (38 / 0; 403 / 23) | 1,384 (30 / 0; 415 / 24) | 938 (31 / 0; 488 / 24) |
+| one key and a month, thousand instructions | 1,379 | 1,673 | 1,226 |
+| every key grouped by the key, thousand instructions | 3,977 | 4,357 | 4,298 |
+| five keys counted once, thousand instructions | 2,189 | 6,725 (the join as written) | 4,042,759 (the join as written) |
+| one key with 375 changed pairs, thousand instructions (ms) | 87,776 (8.2) | 9,622 (1.1, the join) | 333,379 (24, the join) |
+
+The text member's index is 11% larger (each row of a scope unit holds its member string, where an integer member holds the integer). The join a node holds runs the lookup join of the sift aggregate node, which costs 311 ms for the five uuid keys here with the scope index or without it (`sift.agg_scope = off`), against 19 ms of the plain hash join that the planner chooses when `sift.agg_force` is not set: the figures of the join rows are those of the forced node.
+
 ### Limits
 
 EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do in 5.0:
 
-- **Declaration.** The member key and the columns of the relations are `int2`, `int4` or `int8` (`is not an integer`); the scope key may also be `text`, `varchar` or `uuid` of a deterministic collation, in a scope of one path
-  (a coded key: see [Key types](#key-types)). A relation is a heap table that is not partitioned, not a view and not the indexed
+- **Declaration.** The member key and the columns of the relations are `int2`, `int4` or `int8`, or `text`, `varchar` or `uuid` of a deterministic collation in a scope of one path (a coded key or member: see
+  [Key types](#key-types) and [Member types](#member-types); `char(n)`, `citext`, a domain and a nondeterministic collation are refused with their reason, and the member of the pairs and the column of the index are of one kind). A relation is a heap table that is not partitioned, not a view and not the indexed
   table; a scope of one path has both columns NOT NULL. At most 4 scopes and 8 connections on an index, and a scan reads one scope. At most one joined path and no third hop; no deny rows; no condition on a third table and no predicate that depends on time.
 - **Forms.** A statement that is not in the table of recognised forms keeps the join (`sift.explain_why`, arm `scope`): among them a join or a read for each pair over the pairs of a non-unique btree, a join to a table of keys that may hold a key twice,
   a key in an expression, a range of keys, `ROLLUP` / `CUBE` / grouping sets over the key. A top-N cannot take the patch or the delta of a changed pair (`top-n, changed pairs`): the join answers.
+- **Text, varchar and uuid members.** The units answer only a read in which nothing changed since they were written and the write buffer holds no row of the table (a table that takes writes is in the second state most of the time); any other read (a member that changed since the build, a row of the write buffer, a member of several keys counted once) runs
+  the join as written, at the cost of having no scope index, and says why (`text member changed`, `text member in the write buffer`, `text member of several keys`), until a `REINDEX` of the scope index or the rewrite the maintenance makes.
 - **No parallel workers.** A scope read is decided once, by the leader (test `col_scope_read` launches none); the join the node falls back to runs serial in the leader. The builds do run in parallel.
 - **`CREATE INDEX CONCURRENTLY`** starts the journal at the end of its build, so the scope segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the scope index or the rewrite the maintenance makes.
 - **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).

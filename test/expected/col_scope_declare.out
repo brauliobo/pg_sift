@@ -53,7 +53,7 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('five scopes', 'a: dim_a_id -> tenant_scope(dim_a_id, tenant_id); b: dim_a_id -> tenant_scope(dim_a_id, tenant_id); c: dim_a_id -> tenant_scope(dim_a_id, tenant_id); d: dim_a_id -> tenant_scope(dim_a_id, tenant_id); e: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'),
 	('fk not in the index', 'tenant_id: pad -> tenant_scope(dim_a_id, tenant_id)'),
 	('fk not a column', 'tenant_id: nothing -> tenant_scope(dim_a_id, tenant_id)'),
-	('fk not an integer', 'tenant_id: label -> tenant_scope(dim_a_id, tenant_id)'),
+	('text fk, integer member', 'tenant_id: label -> tenant_scope(dim_a_id, tenant_id)'),
 	('name of a column of the index', 'kind: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'),
 	('relation missing', 'tenant_id: dim_a_id -> nowhere(dim_a_id, tenant_id)'),
 	('relation is the table', 'tenant_id: dim_a_id -> events(id, kind)'),
@@ -62,7 +62,7 @@ INSERT INTO bad_scopes (why, opt) VALUES
 	('member column missing', 'tenant_id: dim_a_id -> tenant_scope(nothing, tenant_id)'),
 	('scope key column missing', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, nothing)'),
 	('same column twice', 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, dim_a_id)'),
-	('member not an integer', 'tenant_id: dim_a_id -> pairs_text(m, s)'),
+	('text member, integer fk', 'tenant_id: dim_a_id -> pairs_text(m, s)'),
 	('scope key not an integer, text or uuid', 'tenant_id: dim_a_id -> pairs_numeric(m, s)'),
 	('text scope key, no journal index', 'tenant_id: dim_a_id -> pairs_text(s, m)'),
 	('nullable columns', 'tenant_id: dim_a_id -> pairs_nullable(m, s)'),
@@ -90,7 +90,7 @@ NOTICE:  scope "tenant_id": the pairs of "pairs_partial" are the rows of its uni
  11 | five scopes                            | invalid scope option "a: dim_a_id -> tenant_scope(dim_a_id, tenant_id); b: dim_a_id -> tenant_scope(dim_a_id, tenant_id); c: dim_a_id -> tenant_scope(dim_a_id, tenant_id); d: dim_a_id -> tenant_scope(dim_a_id, tenant_id); e: dim_a_id -> tenant_scope(dim_a_id, tenant_id)": too many scopes (4 at most in an index) []
  12 | fk not in the index                    | scope "tenant_id": "pad" is not a column of this index [Name the column of the index that holds the member key.]
  13 | fk not a column                        | scope "tenant_id": "nothing" is not a column of this index [Name the column of the index that holds the member key.]
- 14 | fk not an integer                      | scope "tenant_id": column "label" is not an integer [The member key is an int2, int4 or int8 column.]
+ 14 | text fk, integer member                | scope "tenant_id": the member column "dim_a_id" of "tenant_scope" (integer) and the column "label" of the index (text) are not of one kind [Both are integers, both text or varchar, or both uuid: their values are equal when their bytes are.]
  15 | name of a column of the index          | scope "kind": the name of the derived key is a column of this index [Give the derived key a name that no column of the index has: key_order names a column or a derived key.]
  16 | relation missing                       | relation "public.nowhere" does not exist []
  17 | relation is the table                  | scope "tenant_id": the scope relation is the table of the index [Name the table of (member, scope key) pairs.]
@@ -99,8 +99,8 @@ NOTICE:  scope "tenant_id": the pairs of "pairs_partial" are the rows of its uni
  20 | member column missing                  | scope "tenant_id": relation "tenant_scope" has no column "nothing" []
  21 | scope key column missing               | scope "tenant_id": relation "tenant_scope" has no column "nothing" []
  22 | same column twice                      | scope "tenant_id": the member and scope key columns are the same column [A scope relation has two columns: the member key and the scope key.]
- 23 | member not an integer                  | scope "tenant_id": column "m" of "pairs_text" is not an integer [The member column is int2, int4 or int8.]
- 24 | scope key not an integer, text or uuid | scope "tenant_id": column "s" of "pairs_numeric" is not an integer, text, varchar or uuid column [The scope key column is an int2, int4, int8, text, varchar or uuid column; the member column is int2, int4 or int8.]
+ 23 | text member, integer fk                | scope "tenant_id": the member column "m" of "pairs_text" (text) and the column "dim_a_id" of the index (integer) are not of one kind [Both are integers, both text or varchar, or both uuid: their values are equal when their bytes are.]
+ 24 | scope key not an integer, text or uuid | scope "tenant_id": column "s" of "pairs_numeric" is not an integer, text, varchar or uuid column [The member and scope key columns are int2, int4, int8, text, varchar or uuid columns.]
  25 | text scope key, no journal index       | scope "tenant_id": "pairs_text" has no sift_col index that journals its changes [CREATE INDEX ON pairs_text USING sift_col (s, m) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
  26 | nullable columns                       | scope "tenant_id": column "m" of "pairs_nullable" is nullable [Declare the member and scope key columns NOT NULL: a pair has both keys.]
  27 | no btree                               | scope "tenant_id": "pairs_plain" has no btree index on (m, s) [CREATE UNIQUE INDEX on pairs_plain (m, s), or make them its primary key: an immediate btree on exactly those two columns (a non-unique one makes the pairs a multiset of rows).]

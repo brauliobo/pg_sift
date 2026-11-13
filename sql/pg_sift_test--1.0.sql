@@ -546,6 +546,10 @@ CREATE FUNCTION sift._test_col_conn_stamps(index regclass, OUT gen int8, OUT ord
 CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT records int8, OUT trim_below xid) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_conn_gen' LANGUAGE C STRICT;
 
+-- the 64-bit word a journal records for a text, varchar or uuid member of a scope relation (FNV-1a over its bytes)
+CREATE FUNCTION sift._test_member_hash(member anyelement) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_member_hash' LANGUAGE C STRICT;
+
 -- the scope entries (ordinal in fks, scope key) of the member keys of fks, by the fill of a scope index (col/scope_fill.c): rel is the scope relation, btree its unique index on (member, key)
 CREATE FUNCTION sift._test_scope_expand(rel regclass, btree regclass, member text, key text, fks int8[], OUT ordinal int4, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_expand' LANGUAGE C STRICT;

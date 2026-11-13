@@ -16,3 +16,4 @@ test/t/upgrade_check.sh	42	the minor of the option the check is about, in the te
 test/t/upgrade_check.sh	44	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	45	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
 test/t/upgrade_check.sh	49	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/upgrade_check.sh	50	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)

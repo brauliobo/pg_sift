@@ -57,6 +57,7 @@ typedef struct ScopeSrc
 	AttrNumber	a;
 	AttrNumber	b;
 	SiftKeyMap *km;				/* column b is a text, varchar or uuid column: its values are handed on as the codes of this map, interned (a writer) */
+	SiftKeyMap *kma;			/* column a is: its values are handed on as the codes of this map, which has no store (the codes of the statement) */
 } ScopeSrc;
 
 typedef struct ScopeList
@@ -83,6 +84,9 @@ typedef struct ScopeMap
 	int			njournals;		/* the stamps of the scope: 1, or one for each journal of two paths */
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS];
 	int			fk_leaf;		/* the leaf of the fact index that holds the member key */
+	SiftKeyMap *kma;			/* the member of the pairs is a text, varchar or uuid value: the code the map of the fill gives it is its member key */
+	int64	   *ids;			/* the member keys of the batch in hand (sift_scope_fill_members) */
+	uint32		idcap;
 	SiftScopePair *pairs;			/* the key set: every pair, sorted and distinct (NULL: the probes) */
 	uint64		npairs;
 	MemoryContext cx;
@@ -126,7 +130,7 @@ list_load(ScopeList *l, MemoryContext cx, const ScopeSrc *src, Snapshot snap, Si
 	/* the counting scan meets every key of the relation: a map has them interned together, one run, before the scan that lists the pairs reads their codes */
 	if (src->km != NULL)
 		sift_keymap_collect(src->km, true);
-	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->b, src->km, snap, count_pair, &n);
+	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->kma, src->b, src->km, snap, count_pair, &n);
 	if (src->km != NULL)
 		sift_keymap_collect(src->km, false);
 	if (n > *budget / sizeof(SiftScopePair))
@@ -135,7 +139,7 @@ list_load(ScopeList *l, MemoryContext cx, const ScopeSrc *src, Snapshot snap, Si
 	/* check-memory: allow the bytes were checked against the budget of the caller (maintenance_work_mem / 2) above */
 	l->p = MemoryContextAllocExtended(cx, Max(n, 1) * sizeof(SiftScopePair), MCXT_ALLOC_HUGE);
 	l->n = 0;
-	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->b, src->km, snap, add_pair, l);
+	sift_conn_scan_pairs(src->rel, src->btree, src->a, src->kma, src->b, src->km, snap, add_pair, l);
 	l->n = sift_scope_pairs_distinct(l->p, l->n);
 	return true;
 }
@@ -229,9 +233,11 @@ probe_begin(ScopeProbe *p, MemoryContext cx, const ScopeSrc *src, AttrNumber by,
 	p->cx = cx;
 	p->probe = sift_conn_probe_begin_on(cx, src->rel, src->btree, by, snap);
 	p->out = out;
-	p->km = out == src->b ? src->km : NULL;
+	p->km = out == src->b ? src->km : out == src->a ? src->kma : NULL;
 	if (by == src->b && src->km != NULL)
 		sift_conn_probe_codec(p->probe, src->km);
+	if (by == src->a && src->kma != NULL)
+		sift_conn_probe_codec(p->probe, src->kma);
 	p->seen = seen_new(cx);
 }
 
@@ -249,6 +255,7 @@ map_begin(SiftScopeFill *f, ScopeMap *m, const ScopeSrc *src, int nsrc, Snapshot
 	m->njournals = nsrc == 3 ? SIFT_SCOPE_JOURNALS : 1;
 	memcpy(m->stamp, stamp, m->njournals * sizeof(SiftConnStamp));
 	m->hops = nsrc == 3;
+	m->kma = src[0].kma;
 	for (int i = 0; i < nsrc; i++)
 		parent_rows += sift_conn_rows_of(src[i].rel);
 	if (sift_conn_probe_cheaper(rows, parent_rows) || !pairs_load(m, f->cx, src, nsrc, snap, (Size) maintenance_work_mem * 1024 / 2))
@@ -327,12 +334,13 @@ sift_scope_fill_begin(Relation index, MemoryContext mcxt, uint64 rows)
 			MemoryContext old = MemoryContextSwitchTo(mcxt);
 
 			src[0].km = sift_keymap_open(src[0].rel, src[0].b, true);
+			src[0].kma = sift_keymap_transient(src[0].rel, src[0].a);
 			MemoryContextSwitchTo(old);
 		}
 		for (int h = 1; h < nsrc; h++)
 		{
 			src[h].btree = sift_scope_hop_index(heap, index, sp, h, &src[h].rel, &src[h].a, &src[h].b);
-			src[h].km = NULL;
+			src[h].km = src[h].kma = NULL;
 		}
 		/* the stamps come before the first read of the relations */
 		if (sift_scope_take(index, i, f->snap, stamp) != SIFT_CONN_OK)
@@ -353,7 +361,7 @@ SiftScopeFill *
 sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows)
 {
 	SiftScopeFill *f = fill_new(mcxt, 1);
-	ScopeSrc	src = {rel, btree, member, key, NULL};
+	ScopeSrc	src = {rel, btree, member, key, NULL, NULL};
 
 	fill_snapshot(f);
 	map_begin(f, &f->m[0], &src, 1, f->snap, rows, &(SiftConnStamp) {.xmin = f->snap->xmin});
@@ -620,6 +628,60 @@ member_pairs(const ScopeMap *m, int64 member, SiftScopePair **pairs, uint64 *cap
 		append_pairs(pairs, cap, &n, member, m->g.pool + e->start, e->n);
 	}
 	return sift_scope_pairs_distinct(*pairs, n);
+}
+
+/* The member key of a value of the member column (of type) of the fact table: its integer, or the code the map of the scope gives it */
+int64
+sift_scope_fill_member(SiftScopeFill *f, int scope, Oid type, Datum d)
+{
+	int64		k;
+
+	if (f->m[scope].kma != NULL)
+		(void) sift_keymap_code(f->m[scope].kma, d, &k);
+	else
+		k = type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+	return k;
+}
+
+/*
+ * The member keys of the rows of a batch, for sift_scope_fill_expand: the integers of its member leaf, or for a text, varchar or uuid member the code the map of the scope gives its value (one
+ * lookup for each value of the dictionary of the batch that a row holds, not for each row). A NULL row has none.
+ */
+const int64 *
+sift_scope_fill_members(SiftScopeFill *f, int scope, const SiftColBatch *b)
+{
+	ScopeMap   *m = &f->m[scope];
+	const SiftCVals *fk = &b->col[m->fk_leaf];
+	const SiftCDict *dict = b->dict[m->fk_leaf];
+	int64	   *ids;
+
+	if (m->kma == NULL)
+		return fk->key;
+	if (m->idcap < b->nrows)
+	{
+		m->ids = m->ids == NULL ? MemoryContextAlloc(f->cx, b->nrows * sizeof(int64)) : repalloc(m->ids, b->nrows * sizeof(int64));
+		m->idcap = b->nrows;
+	}
+	ids = palloc(Max(dict->n, 1) * sizeof(int64));
+	for (uint32 i = 0; i < dict->n; i++)
+		ids[i] = PG_INT64_MIN;
+	for (uint32 r = 0; r < b->nrows; r++)
+	{
+		int64		code = fk->key[r];
+		uint32		len;
+		const char *s;
+
+		if (sift_col_bit_test(fk->nulls, r))
+			continue;
+		if (ids[code] == PG_INT64_MIN)
+		{
+			s = sift_cdict_str(dict, (uint32) code, &len);
+			(void) sift_keymap_code_bytes(m->kma, s, len, &ids[code]);
+		}
+		m->ids[r] = ids[code];
+	}
+	pfree(ids);
+	return m->ids;
 }
 
 uint32

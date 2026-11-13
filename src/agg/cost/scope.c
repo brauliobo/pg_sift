@@ -16,6 +16,7 @@
 #include "utils/selfuncs.h"
 
 #include "core/compat.h"
+#include "col/conn.h"
 #include "col/pg.h"
 #include "agg/agg.h"
 #include "agg/cost/int.h"
@@ -248,7 +249,7 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 			best = a;
 	/* a row for each pair of a member in several keys is what the join counts, and the units cannot when the member's pairs changed */
 	if (best == NULL)
-		return s->scope->once || (!s->scope->all && s->scope->nkeys <= 1 && !t->key_read);
+		return !sift_keymap_type(t->fk->vartype) && (s->scope->once || (!s->scope->all && s->scope->nkeys <= 1 && !t->key_read));
 	sc = memcpy(palloc(sizeof(SiftAggScope)), s->scope, sizeof(SiftAggScope));
 	sc->alt = agg_spec_keep(best->spec);
 	sc->alt->join = memcpy(palloc(best->spec->njoin * sizeof(SiftAggJoin)), best->spec->join, best->spec->njoin * sizeof(SiftAggJoin));

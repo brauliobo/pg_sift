@@ -310,7 +310,7 @@ pairs_of_keys(PairScan *ps)
 	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
 	else if (!leaf_pairs(ps))
-		sift_conn_scan_pairs(ps->rel, ps->btree, ps->member, ps->skey, ps->km, ps->snap, scan_pair, ps);
+		sift_conn_scan_pairs(ps->rel, ps->btree, ps->member, NULL, ps->skey, ps->km, ps->snap, scan_pair, ps);
 	pairs_distinct(&ps->out);
 }
 
@@ -777,6 +777,12 @@ stored_changed(Relation heap, Relation index, Snapshot snap, int ord, SiftKeyMap
 	rd->buffer_rows = nbuf = sift_scope_buffers_rows(bufs, nbufs);
 	if (rd->nexcept == 0 && nbuf == 0 && !several)
 		return;
+	if (sift_scope_member_text(index, ord))
+	{
+		/* the units are exact for the pairs of the stamp: a member that changed, a row no entry describes or a member of several keys needs its pairs by value, which only the join as written reads */
+		rd->why = rd->nexcept > 0 ? "text member changed" : nbuf > 0 ? "text member in the write buffer" : "text member of several keys";
+		return;
+	}
 	scope_relation(heap, index, ord, km, &ps, keys, nkeys, snap);
 	st = rd->stage = palloc(sizeof(ScopeStage));
 	*st = (ScopeStage) {heap, index, snap, ord, dir, keys, nkeys, once, topn, several, leaves, nleaves, bufs, nbufs, nbuf, (uint64) sift_conn_rows_of(ps.rel), 0, km};
@@ -914,6 +920,8 @@ sift_scope_patch_counts(Relation heap, Relation index, Snapshot snap, int scope,
 	int64		key;
 
 	*c = (SiftScopeCounts) {.nkeys = 1,.once = true};
+	if (sift_scope_member_text(index, scope))
+		return false;
 	sift_dir_read(index, dir);
 	if (segments_stamp(index, dir, scope, stamp) != NULL || sift_scope_vouch(index, scope, stamp, snap) != SIFT_CONN_OK ||
 		sift_scope_changed(index, scope, stamp, snap, SIFT_SCOPE_CHANGED_MAX, NULL, 0, &changed) != SIFT_CONN_OK)

@@ -54,7 +54,7 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 		for (int i = 0; i < nb; i++)
 		{
 			const SiftCVals *fk = &batches[i]->col[sift_scope_fill_fk_leaf(sf, s)];
-			uint32		entries = sift_scope_fill_expand(sf, s, fk->key, fk->nulls, batches[i]->nrows, &row, &key, &cap);
+			uint32		entries = sift_scope_fill_expand(sf, s, sift_scope_fill_members(sf, s, batches[i]), fk->nulls, batches[i]->nrows, &row, &key, &cap);
 
 			for (uint32 e = 0; e < entries; e++)
 				sift_cbatch_add_scoped(rep, batches[i], row[e], r->scope_leaf[s], key[e], r->scope_cols[s]);

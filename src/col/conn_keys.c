@@ -145,7 +145,7 @@ itup_key(IndexScanDesc scan, int pos, SiftKeyMap *km, int64 *k)
 
 /* The rows of the btree, which holds both columns, as an index only scan reads them: the entries of its partial predicate are its rows, and the heap is asked only for those on a page the map does not hold all-visible */
 static void
-scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
+scan_btree_keys(Relation rel, Oid btree, AttrNumber key, SiftKeyMap *km1, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
 	Relation	idx = index_open(btree, AccessShareLock);
 	IndexScanDesc scan = sift_index_beginscan(rel, idx, snap, 0);
@@ -169,7 +169,7 @@ scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, SiftKe
 		}
 		else
 			PredicateLockPage(rel, blk, snap);
-		if (itup_key(scan, pos, NULL, &k) && (pos2 == 0 || itup_key(scan, pos2, km2, &k2)))
+		if (itup_key(scan, pos, km1, &k) && (pos2 == 0 || itup_key(scan, pos2, km2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -183,24 +183,15 @@ scan_btree_keys(Relation rel, Oid btree, AttrNumber key, AttrNumber key2, SiftKe
 void
 sift_conn_scan_keys(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
-	sift_conn_scan_pairs(rel, pred_index, key, key2, NULL, snap, f, arg);
+	sift_conn_scan_pairs(rel, pred_index, key, NULL, key2, NULL, snap, f, arg);
 }
 
-void
-sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
+static void
+scan_heap_keys(Relation rel, AttrNumber key, SiftKeyMap *km1, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
 {
 	TableScanDesc scan;
 	TupleTableSlot *slot;
 
-	if (km2 != NULL)
-		sift_keymap_hold(km2);
-	if (OidIsValid(pred_index))
-	{
-		scan_btree_keys(rel, pred_index, key, key2, km2, snap, f, arg);
-		if (km2 != NULL)
-			sift_keymap_release(km2);
-		return;
-	}
 	scan = sift_table_beginscan(rel, snap, 0, NULL);
 	slot = table_slot_create(rel, NULL);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -208,12 +199,27 @@ sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber ke
 		int64		k,
 					k2 = 0;
 
-		if (sift_conn_slot_key(slot, key, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_code(slot, key2, km2, &k2)))
+		if (sift_conn_slot_code(slot, key, km1, &k) && (key2 == InvalidAttrNumber || sift_conn_slot_code(slot, key2, km2, &k2)))
 			f(arg, k, k2);
 		CHECK_FOR_INTERRUPTS();
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
+}
+
+void
+sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, SiftKeyMap *km1, AttrNumber key2, SiftKeyMap *km2, Snapshot snap, SiftConnKeyFn f, void *arg)
+{
+	if (km1 != NULL)
+		sift_keymap_hold(km1);
+	if (km2 != NULL)
+		sift_keymap_hold(km2);
+	if (OidIsValid(pred_index))
+		scan_btree_keys(rel, pred_index, key, km1, key2, km2, snap, f, arg);
+	else
+		scan_heap_keys(rel, key, km1, key2, km2, snap, f, arg);
+	if (km1 != NULL)
+		sift_keymap_release(km1);
 	if (km2 != NULL)
 		sift_keymap_release(km2);
 }

@@ -42,7 +42,7 @@ typedef struct SampleRun
 
 /* The member keys of the rows of one run of blocks, and their number: *fk and *nulls grow as the run needs */
 static uint32
-read_run(Relation heap, Snapshot snap, TupleTableSlot *slot, BlockNumber start, AttrNumber attno, Oid type, int64 **fk, uint64 **nulls, uint32 *cap)
+read_run(struct SiftScopeFill *fill, int scope, Relation heap, Snapshot snap, TupleTableSlot *slot, BlockNumber start, AttrNumber attno, Oid type, int64 **fk, uint64 **nulls, uint32 *cap)
 {
 	TableScanDesc scan = table_beginscan_strat(heap, snap, 0, NULL, true, false);
 	uint32		n = 0;
@@ -64,7 +64,7 @@ read_run(Relation heap, Snapshot snap, TupleTableSlot *slot, BlockNumber start, 
 		if (isnull)
 			(*nulls)[n / 64] |= UINT64CONST(1) << (n % 64);
 		else
-			(*fk)[n] = type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+			(*fk)[n] = sift_scope_fill_member(fill, scope, type, d);
 		n++;
 	}
 	table_endscan(scan);
@@ -129,7 +129,7 @@ sift_scope_precheck(Relation heap, Relation index)
 		for (int c = 0; c < SCOPE_SAMPLE_RUNS; c++)
 		{
 			BlockNumber start = (BlockNumber) pg_prng_uint64_range(&prng, 0, nblocks - SCOPE_SAMPLE_RUN_BLOCKS);
-			uint32		nrows = read_run(heap, snap, slot, start, attno, type, &fk, &nulls, &fkcap);
+			uint32		nrows = read_run(fill, s, heap, snap, slot, start, attno, type, &fk, &nulls, &fkcap);
 
 			CHECK_FOR_INTERRUPTS();
 			if (nrows == 0)

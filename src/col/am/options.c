@@ -411,6 +411,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_scope_unit_kind",
 							"Testing: the unit kind (bits 8..15 of the stamp) the scope segments of an index are read as having: a segment of a later release, which this build refuses.",
 							NULL, &sift_test_scope_unit_kind, 0, 0, 255, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_member_hash_bits",
+							"Testing: the low bits kept of the word the journal of a scope relation records for a text, varchar or uuid member (0 = all 64), to make members collide.",
+							NULL, &sift_test_member_hash_bits, 0, 0, 64, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_floor_sbs",
 							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
 							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

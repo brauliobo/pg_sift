@@ -126,8 +126,9 @@ fk_leaf(AggCtx *c, Node *fk, const char *key_name, const char **why)
 	if (leaf < 0)
 		return (*why = "scope qual is not on the scanned relation", -1);
 	lf = leaf_of(c, leaf);
-	if (lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->path != NIL || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64))
-		return (*why = "member key is not an integer column of the index", -1);
+	if (lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->path != NIL ||
+		(lf->vtype != SCV_I32 && lf->vtype != SCV_I64 && !(lf->vtype == SCV_CODE && sift_keymap_type(exprType(strip_relabel(fk))))))
+		return (*why = "member key is not an integer, text, varchar or uuid column of the index", -1);
 	if (!declared_on(c->indexoid, key_name, lf->attno))
 		return (*why = "no scope of that name is declared on the member key", -1);
 	return leaf;
@@ -412,7 +413,7 @@ member_equality(AggCtx *c, Index rti, Node *q, Var **theirs, Var **ours)
 {
 	OpExpr	   *op = (OpExpr *) q;
 
-	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !integer_eq(op->opno))
+	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !key_eq(op->opno, op->inputcollid))
 		return false;
 	*theirs = item_var(linitial(op->args), rti);
 	*ours = item_var(lsecond(op->args), c->relid);

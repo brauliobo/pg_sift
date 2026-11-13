@@ -25,9 +25,21 @@
 #include "col/scope.h"
 #include "col/test/test_int.h"
 
+PG_FUNCTION_INFO_V1(sift_test_member_hash);
 PG_FUNCTION_INFO_V1(sift_test_scope_expand);
 PG_FUNCTION_INFO_V1(sift_test_col_scope_entries);
 PG_FUNCTION_INFO_V1(sift_test_col_scope_mark);
+
+/* sift._test_member_hash(value): the word a journal records for a text, varchar or uuid member (sift_member_hash) */
+Datum
+sift_test_member_hash(PG_FUNCTION_ARGS)
+{
+	Oid			typid = get_fn_expr_argtype(fcinfo->flinfo, 0);
+
+	if (!sift_keymap_type(typid))
+		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("a member is a text, varchar or uuid value")));
+	PG_RETURN_INT64((int64) sift_member_hash(typid, PG_GETARG_DATUM(0)));
+}
 
 /*
  * sift._test_scope_expand(rel, btree, member, key, fks): the scope entries the fill gives for the member keys of fks (NULLs kept), one row (ordinal, key) per entry; the

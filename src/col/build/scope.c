@@ -50,7 +50,7 @@ colb_scope_feed(ColBuild *b, const SiftColBatch *src)
 	{
 		ColBuild   *sb = b->scope[s];
 		const SiftCVals *fk = &src->col[sift_scope_fill_fk_leaf(b->sfill, s)];
-		uint32		n = sift_scope_fill_expand(b->sfill, s, fk->key, fk->nulls, src->nrows, &b->srow, &b->skey, &b->scap);
+		uint32		n = sift_scope_fill_expand(b->sfill, s, sift_scope_fill_members(b->sfill, s, src), fk->nulls, src->nrows, &b->srow, &b->skey, &b->scap);
 
 		/* the entries of a fact are not in the order of its address, nor are those of one batch the rows of one superblock: the run sorts them */
 		sb->batch->keyed = sb->batch->unsorted = true;

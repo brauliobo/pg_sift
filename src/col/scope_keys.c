@@ -12,6 +12,7 @@
 
 #include "access/table.h"
 #include "catalog/pg_type_d.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/uuid.h"
@@ -21,6 +22,10 @@
 #include "col/conn.h"
 #include "col/scope.h"
 #include "col/vstore/vstore.h"
+
+#ifdef SIFT_TESTING
+int			sift_test_member_hash_bits = 0;
+#endif
 
 struct SiftKeyMap
 {
@@ -42,17 +47,33 @@ sift_keymap_type(Oid typid)
 	return typid == TEXTOID || typid == VARCHAROID || typid == UUIDOID;
 }
 
-/* A column a scope joins by: an integer, or a text-like or uuid column of a deterministic collation (what sift_keymap_type names); the reason it is not, NULL when it is */
+/*
+ * A column a scope joins by: an integer, or a text-like or uuid column of a deterministic collation (what sift_keymap_type names); the reason it is not, NULL when it is. The values of a string
+ * column are equal when their bytes are, so a type whose equality is not that (blank padded, case folded, a domain that may add a check or a collation of its own) is refused, with the fix.
+ */
 const char *
 sift_keymap_column_refusal(Oid typid, Oid collation)
 {
 	if (sift_conn_integer_type(typid))
 		return NULL;
+	if (typid == BPCHAROID)
+		return "is a char(n) column, whose values are equal when they differ in blank padding: declare it text or varchar";
+	if (getBaseType(typid) != typid)
+		return "is a domain: declare the column with its base type, an integer, text, varchar or uuid";
 	if (!sift_keymap_type(typid))
-		return "is not an integer, text, varchar or uuid column";
+		return strcmp(format_type_be(typid), "citext") == 0 ? "is a citext column, whose values are equal when they differ in case: declare it text with a deterministic collation" :
+			"is not an integer, text, varchar or uuid column";
 	if (typid != UUIDOID && OidIsValid(collation) && !get_collation_isdeterministic(collation))
-		return "has a nondeterministic collation: equal values may differ in their bytes";
+		return "has a nondeterministic collation, whose equal values may differ in their bytes: use a deterministic one (COLLATE \"C\")";
 	return NULL;
+}
+
+/* Do two columns of a scope hold values that are equal when their bytes are, of one kind: text with varchar, uuid with uuid, an integer with an integer */
+bool
+sift_keymap_same_kind(Oid a, Oid b)
+{
+	return (sift_conn_integer_type(a) && sift_conn_integer_type(b)) || (a == UUIDOID && b == UUIDOID) ||
+		(a != UUIDOID && b != UUIDOID && sift_keymap_type(a) && sift_keymap_type(b));
 }
 
 static void
@@ -70,6 +91,28 @@ value_bytes(Oid typid, Datum d, const char **s, uint32 *len)
 		*s = VARDATA_ANY(v);
 		*len = VARSIZE_ANY_EXHDR(v);
 	}
+}
+
+/*
+ * The word a journal of the scope relation records for a text, varchar or uuid member: 64-bit FNV-1a of its bytes (the 16 of a uuid), the same on every platform and every release, because
+ * the records are persisted, read on a standby and after a dump and restore. It is a filter, not an identity: two members with one word are both read as changed, which only widens what the
+ * reader re-reads. sift.test_member_hash_bits keeps the low bits of it, to make that happen.
+ */
+uint64
+sift_member_hash(Oid typid, Datum d)
+{
+	const char *s;
+	uint32		len;
+	uint64		h = UINT64CONST(0xcbf29ce484222325);
+
+	value_bytes(typid, d, &s, &len);
+	for (uint32 i = 0; i < len; i++)
+		h = (h ^ (unsigned char) s[i]) * UINT64CONST(0x100000001b3);
+#ifdef SIFT_TESTING
+	if (sift_test_member_hash_bits > 0 && sift_test_member_hash_bits < 64)
+		h &= (UINT64CONST(1) << sift_test_member_hash_bits) - 1;
+#endif
+	return h;
 }
 
 /* The store, open for one operation (its view is the backend's: the lock is held to the end of the transaction) */
@@ -90,14 +133,14 @@ store_close(const SiftKeyMap *m, SiftVStore *vs)
 void
 sift_keymap_hold(SiftKeyMap *m)
 {
-	if (m->holds++ == 0)
+	if (OidIsValid(m->store) && m->holds++ == 0)
 		m->held = store_open(m);
 }
 
 void
 sift_keymap_release(SiftKeyMap *m)
 {
-	if (--m->holds == 0)
+	if (OidIsValid(m->store) && --m->holds == 0)
 	{
 		sift_vstore_close(m->held);
 		m->held = NULL;
@@ -128,6 +171,22 @@ sift_keymap_open(Relation rel, AttrNumber att, bool write)
 	vs = store_open(m);
 	sift_vstore_refresh(vs);
 	store_close(m, vs);
+	return m;
+}
+
+/* A map of the members of a statement: no store, every value has a code of its own for the length of the map (a negative one, -1 for the first) */
+SiftKeyMap *
+sift_keymap_transient(Relation rel, AttrNumber att)
+{
+	Form_pg_attribute a = TupleDescAttr(RelationGetDescr(rel), att - 1);
+	SiftKeyMap *m;
+
+	if (!sift_keymap_type(a->atttypid))
+		return NULL;
+	m = palloc0(sizeof(SiftKeyMap));
+	m->cx = CurrentMemoryContext;
+	m->typid = a->atttypid;
+	m->collation = a->attcollation;
 	return m;
 }
 
@@ -165,6 +224,8 @@ intern_batch(SiftKeyMap *m, SiftCDict *batch)
 void
 sift_keymap_collect(SiftKeyMap *m, bool on)
 {
+	if (!OidIsValid(m->store))
+		return;
 	Assert(m->write);
 	if (on)
 	{
@@ -176,16 +237,13 @@ sift_keymap_collect(SiftKeyMap *m, bool on)
 	m->pending = NULL;
 }
 
-bool
-sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
+/* The code the store of the key has for the value, appended first by a writer (or, collecting, remembered to be: 0); -1 for a reader's value the store lacks */
+static int64
+stored_code(SiftKeyMap *m, const char *s, uint32 len)
 {
-	const char *s;
-	uint32		len;
 	SiftVStore *vs = store_open(m);
-	int64		c;
+	int64		c = sift_vstore_find_code(vs, s, len);
 
-	value_bytes(m->typid, d, &s, &len);
-	c = sift_vstore_find_code(vs, s, len);
 	if (c < 0 && m->pending == NULL)
 	{
 		/* a code in a segment of the directory the statement read was appended before that segment was published: the store as it is now has it */
@@ -196,9 +254,9 @@ sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
 	if (c < 0 && m->pending != NULL)
 	{
 		(void) sift_cdict_intern(m->pending, s, len);
-		c = 0;
+		return 0;
 	}
-	else if (c < 0 && m->write)
+	if (c < 0 && m->write)
 	{
 		SiftCDict  *one = sift_cdict_create(CurrentMemoryContext);
 
@@ -208,7 +266,26 @@ sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
 		c = sift_vstore_find_code(vs, s, len);
 		store_close(m, vs);
 	}
-	else if (c < 0)
+	return c;
+}
+
+bool
+sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
+{
+	const char *s;
+	uint32		len;
+
+	value_bytes(m->typid, d, &s, &len);
+	return sift_keymap_code_bytes(m, s, len, code);
+}
+
+bool
+sift_keymap_code_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code)
+{
+	int64		c;
+
+	c = OidIsValid(m->store) ? stored_code(m, s, len) : -1;
+	if (c < 0)
 	{
 		if (m->extra == NULL)
 			m->extra = sift_cdict_create(m->cx);

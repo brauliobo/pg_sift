@@ -127,8 +127,9 @@ extern Oid	sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumbe
 extern bool sift_scope_has_journal(Relation index, int scope);
 /* Does the index declare a scope of two paths (column format minor 49) */
 extern bool sift_scope_two_paths(Relation index);
-/* Does the index declare a scope whose key is a text, varchar or uuid column (column format minor 50) */
+/* Does the index declare a scope whose key or member is a text, varchar or uuid column (column format minor 50) */
 extern bool sift_scope_coded(Relation index);
+extern bool sift_scope_member_text(Relation index, int scope);
 /*
  * The journals of the scopes of the index, made with the writers of the scope relations held out to the end of the statement. read_after: the build reads the relations under snapshots it takes
  * after this call, so that it stamps the segments with the journal it makes here (else the first scope index of a relation says "unfilled" until a REINDEX)
@@ -171,6 +172,8 @@ extern int	sift_scope_fill_fk_leaf(const struct SiftScopeFill *f, int scope);
 struct SiftColFill;
 extern struct SiftColFill *sift_scope_fill_hook(struct SiftScopeFill *f, struct SiftColFill *conn, int nconn);
 /* The scope entries of the first nrows fk values (nulls: bit set = NULL): fills row[] (index of the fact row in the batch) and key[] with the pairs, returns their number; *cap is grown through repalloc */
+extern int64 sift_scope_fill_member(struct SiftScopeFill *f, int scope, Oid type, Datum d);
+extern const int64 *sift_scope_fill_members(struct SiftScopeFill *f, int scope, const struct SiftColBatch *b);
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
 /* Does every entity segment of the directory have its scope entries in the scope segments (SIFT_SEG_SCOPED; rows of a write buffer are the reader's: it reads them through the entity path) */

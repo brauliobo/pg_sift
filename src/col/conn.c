@@ -83,12 +83,24 @@ key64(Oid typid, Datum d, int64 *out)
 	}
 }
 
+/* What a journal records of a member: its integer, or for a text, varchar or uuid member (a scope relation's) the word of its bytes (sift_member_hash) */
 static bool
-journal_record(Relation index, Oid keytype, Datum key, SiftTombKind kind, uint16 flags, SiftTomb *rec)
+journal_word(Oid typid, Datum d, bool member, int64 *out)
+{
+	if (member && sift_keymap_type(typid))
+	{
+		*out = (int64) sift_member_hash(typid, d);
+		return true;
+	}
+	return key64(typid, d, out);
+}
+
+static bool
+journal_record(Relation index, Oid keytype, Datum key, bool member, SiftTombKind kind, uint16 flags, SiftTomb *rec)
 {
 	int64		k;
 
-	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !key64(keytype, key, &k))
+	if (!sift_col_track_on(index) || journal_lineage(index) == 0 || !journal_word(keytype, key, member, &k))
 		return false;
 	*rec = (SiftTomb) {.key = SIFT_TOMB_KEYS_KEY,.xid = GetCurrentTransactionId(),.cid = sift_col_stmt_cid(),.succ = (uint64) k,.kind = kind,.flags = flags};
 	return true;
@@ -97,7 +109,7 @@ journal_record(Relation index, Oid keytype, Datum key, SiftTombKind kind, uint16
 bool
 sift_conn_record(Relation index, Oid keytype, Datum key, bool kept, SiftTomb *rec)
 {
-	return journal_record(index, keytype, key, SIFT_TOMB_KEYCHG, kept ? SIFT_TOMB_KEPT : 0, rec);
+	return journal_record(index, keytype, key, false, SIFT_TOMB_KEYCHG, kept ? SIFT_TOMB_KEPT : 0, rec);
 }
 
 /*
@@ -116,7 +128,7 @@ journal_row(Relation index, Relation heap, SiftTombKind kind, Datum key, bool is
 
 	if (tagatt != InvalidAttrNumber && !tagnull && key64(TupleDescAttr(RelationGetDescr(heap), tagatt - 1)->atttypid, tagkey, &tagval))
 		flags = sift_conn_key_tag(tagval) << SIFT_TOMB_TAG_SHIFT;
-	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, kind, flags, &rec))
+	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, true, kind, flags, &rec))
 		sift_col_tomb_hold_rec(index, &rec);
 }
 
@@ -225,7 +237,9 @@ check_key(Relation heap, Relation index)
 						errhint("Connect to an index with track_changes naming the unique key of its table.")));
 	hatt = sift_col_track_ctid(index) ? index->rd_index->indkey.values[0] : index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1];
 	typid = TupleDescAttr(RelationGetDescr(heap), hatt - 1)->atttypid;
-	if (typid != INT2OID && typid != INT4OID && typid != INT8OID)
+	/* the journal of a scope relation (track_changes ctid) is led by its member, which may be a text, varchar or uuid column: its records hold the word of its bytes (sift_member_hash) */
+	if (typid != INT2OID && typid != INT4OID && typid != INT8OID &&
+		!(sift_col_track_ctid(index) && sift_keymap_column_refusal(typid, TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attcollation) == NULL))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" cannot be connected: its key column is not an integer", RelationGetRelationName(index)),
 						errhint("The key of the parent index is an int2, int4 or int8 column.")));
 }
