@@ -31,9 +31,11 @@ INSERT INTO pairs SELECT e, 1 + e % 20 FROM generate_series(1, 400) e;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 20000) i;
 
--- a partial journal index is the only candidate: refused with a hint
+-- a partial journal index is the only candidate: it does not qualify, and the build makes a journal of its own beside it
 CREATE INDEX pairs_partial ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE group_id < 10;
-SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS only_partial;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> pairs(dim_a_id, group_id)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS only_partial FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'facts_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX facts_col;
 
 -- a plain one beside it: the scope index depends on the plain one only
 CREATE INDEX pairs_journal ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');

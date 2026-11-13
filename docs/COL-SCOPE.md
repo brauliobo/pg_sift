@@ -25,9 +25,8 @@ The scope index read fewer instructions than the member keys in every cell measu
 
 ## The declaration
 
-The recipe is two statements: a journal index on the table of pairs (it records the pairs that change), then the `scope` option on the index of the facts. `CREATE INDEX` says in a `NOTICE` which btree of the pairs it recorded and how many entries the scope holds and what the index grows by. The queries stay as the application writes them: the planner reads the join forms against the units (below).
+The recipe is one statement: the `scope` option on the index of the facts. `CREATE INDEX` makes the journal index of the table of pairs (it records the pairs that change) when the table has none, and says in a `NOTICE` which one it made, which btree of the pairs it recorded, how many entries the scope holds and what the index grows by. The queries stay as the application writes them: the planner reads the join forms against the units (below).
 
-    CREATE INDEX tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
     CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num)
       WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 
@@ -40,10 +39,18 @@ choose it (a unique one before a non-unique one, then the lowest oid of those th
 The time cut of the scope units is the first `date`, `timestamp` or `timestamptz` column of the index, else none.
 A scope may also be the union of this relation and a relation joined through a second one ([two paths](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)).
 
-**The journal index.** The relation of pairs must have a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
-outside its predicate, so it does not qualify). Without one `CREATE INDEX` is refused with a hint. The first scope index declared on a relation starts its journal before its build reads anything and stamps its segments with it: the writers of the relation of pairs wait
-for the statement, as those of the table do for a `CREATE INDEX`. A `CREATE INDEX CONCURRENTLY` starts it at the end of its build instead, so its segments carry no stamp and the reads say
-`unfilled` until a `REINDEX` of the scope index (or the rewrite the maintenance makes) takes it.
+**The journal index.** The relation of pairs needs a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
+outside its predicate, so it does not qualify). `CREATE INDEX` uses the first one the relation has (a scope of two paths needs one for each of its three relations). When there is none, a plain `CREATE INDEX` makes it, as the statement
+you would write, named by the rule of PostgreSQL for an index (`tenant_scope_dim_a_id_tenant_id_sift_journal`), owned by the owner of the table of pairs (a role that does not own it is refused, with the statement for the owner in the hint), and says so in a `NOTICE`. The
+index carries a comment that a dump keeps, and goes with the last scope index that depends on it: `DROP INDEX`, `DROP TABLE`, `ALTER TABLE .. DROP COLUMN` or `ALTER INDEX .. RESET (scope)` of that scope index drops it in the same transaction, unless
+another scope index still uses it. A journal made by hand, or one whose comment you change, is yours and stays. The writers of the table of pairs wait until the statement ends, as for any `CREATE INDEX` on it (the statement takes
+`SHARE ROW EXCLUSIVE` on the table first, so that two builds that make or use its journal do not deadlock); to name the journal, put it in a tablespace, build it without blocking the writers or keep it, make it first:
+
+    CREATE INDEX CONCURRENTLY tenant_pairs_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+
+A `CREATE INDEX CONCURRENTLY` of the scope index makes the journal with the same plain statement (the writers of the pairs wait for the journal, not for the build of the facts: make the journal with `CONCURRENTLY` first when they must not). The first scope index
+declared on a relation starts its journal before its build reads anything and stamps its segments with it, and the writers of the relation of pairs wait for the statement, as those of the table do for a `CREATE INDEX`. A `CREATE INDEX CONCURRENTLY` starts it at the end of its build instead, so its segments carry no stamp and the reads say
+`unfilled` until a `REINDEX` of the scope index (or the rewrite the maintenance makes) takes it. A restore brings the journal back as the index it is, before the scope index that reads it.
 
 **`cols(..)`.** `scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(created_at, kind, value_num)'`: the scope segments of that scope keep only the listed columns of the index,
 the member key, the column the units are cut by and the derived key; every other leaf has no chunk in them. A statement that reads a column outside the list reads the entity rows instead
@@ -499,8 +506,7 @@ meaning of `IN` or `EXISTS` counts a fact once; a join or `GROUP BY` the key ove
 **The three journals.** The pairs of a member depend on (1) the rows of `rel` with that member, (2) its rows of `vrel`, and (3) the rows of `rel2` of every group it is in. Each relation needs a
 journal index, a `sift_col` index with `track_changes = 'ctid'` whose first column is the journaled key and that holds the other column, plain or partial with a predicate that the predicate of the
 recorded btree implies (the rule of the journal index above): J1 on `rel` is `(member, key)`, J2 on `rel2` is `(via, key)`, J3 on `vrel` is `(member, via)`. `CREATE INDEX` of a scope of two paths, as of one path,
-is refused when any of the three is missing, or is a partial journal that a pair can be inserted outside of: the error names the first relation without one and the sift_col index it has that is not
-a journal, and the hint has the `CREATE INDEX` of each missing journal. The scope index finds the journals when it is created or rebuilt and depends on them (a journal made later is found by
+makes the missing ones (a role that does not own a relation without one is refused, and the hint has the `CREATE INDEX` for its owner). The scope index finds the journals when it is created or rebuilt and depends on them (a journal made later is found by
 the next `REINDEX` of the scope index, which starts it before it reads and stamps the segments with it: the reads say `unfilled` until then). A journal rebuilt (`REINDEX` of it) is another lineage: the reads say
 `other lineage` until the scope index is rebuilt, and the maintenance sees the segments as stale. Each journal has its own stamp.
 
@@ -813,8 +819,8 @@ Each line is checked when the index is made (`CREATE INDEX`, `REINDEX`) or alter
 | The relation of pairs is a plain permanent heap table, not the indexed table | `ERROR`: not a plain heap table (a view, a materialized view, a partitioned or foreign table), the table of the index, a temporary table (the index would be dropped with it when the session ends) | name a permanent table of pairs; a view is read by the statements, not declared |
 | Its member and scope key columns are of one kind on every path (integers, `text` with `varchar`, or `uuid`; the group column of two paths an integer), `NOT NULL` on a scope of one path | `ERROR`: of an unsupported type, nullable, the same column, kinds that differ | `ALTER TABLE .. SET NOT NULL`; change a column or the declaration |
 | An immediate btree on exactly `(member, scope_key)`, in either order | `ERROR`: no btree, or only a deferrable or `INCLUDE` one; two partial ones of one kind (name the one that defines the pairs with `using`) | `CREATE UNIQUE INDEX ON pairs (member, scope_key)`; `using <index>` |
-| The journal index: a `sift_col` index of the relation with `track_changes = 'ctid'`, the member first, holding the scope key, valid, without a `WHERE` (unless the btree of the pairs implies it) | `ERROR`: none, or the first `sift_col` index of the relation names what it lacks (no `track_changes = 'ctid'`, the member not first, no scope key, not valid, partial) | `CREATE INDEX ON pairs USING sift_col (member, scope_key) WITH (track_changes = 'ctid')` |
-| A scope of two paths has the journals of its three relations (as a scope of one path has its journal) | `ERROR` naming the first relation without one and what its sift_col index lacks, the hint has the statement that makes each missing journal | the `CREATE INDEX` of the hint, for each |
+| The journal index: a `sift_col` index of the relation with `track_changes = 'ctid'`, the member first, holding the scope key, valid, without a `WHERE` (unless the btree of the pairs implies it) | `NOTICE`: none qualifies, and the statement made it (named by the rule, commented, dropped with the last scope index that uses it). `ERROR`: the role does not own the relation of pairs, and the hint has the statement for its owner | the statement of the hint, run by the owner; `CREATE INDEX CONCURRENTLY ON pairs USING sift_col (member, scope_key) WITH (track_changes = 'ctid')` first, to name it or keep the writers of the pairs running |
+| A scope of two paths has the journals of its three relations (as a scope of one path has its journal) | as above, for each relation without one; the `ERROR` names the first and the hint has the statement for each | the same |
 | The journal stays a journal | `ALTER INDEX journal SET (track_changes = ..)` to another value, or `RESET`, is refused while a scope index depends on it | `ALTER INDEX scope_index RESET (scope)` first |
 | At most `sift.scope_max_multiplicity` entries for each row | `ERROR` with the size and the growth, after the build | raise the setting, or leave the table without the scope |
 | `ALTER INDEX .. SET (scope = ..)` or `RESET (scope)` on an index that has segments | `NOTICE`: the segments were written without the declaration, and the index is not scanned (every statement over the table runs on its other plans) until a `REINDEX` writes them | `REINDEX INDEX` |

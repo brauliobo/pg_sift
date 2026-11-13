@@ -45,6 +45,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/scope.h"
 #include "col/vstore/vstore.h"
 #include "core/store.h"
 
@@ -502,6 +503,7 @@ sift_col_value_store_drop_unused(PG_FUNCTION_ARGS)
 	HeapTuple	tup;
 	List	   *heaps = NIL;
 
+	sift_scope_journal_drop_unused();
 	if (!OidIsValid(am))
 		PG_RETURN_VOID();
 	drel = table_open(DependRelationId, AccessShareLock);
@@ -632,6 +634,7 @@ gone_xact(XactEvent event, void *arg)
 	int			kept = 0;
 	List	   *heaps = NIL,
 			   *swapped = NIL;
+	bool		dropped = false;
 
 	if (event == XACT_EVENT_ABORT)
 		ngone = 0;
@@ -641,7 +644,7 @@ gone_xact(XactEvent event, void *arg)
 	for (int i = 0; i < ngone; i++)
 		if (!gone[i].released && SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].index)))
 			gone[kept++] = gone[i];
-		else if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].heap)))
+		else if (dropped |= !gone[i].released, SearchSysCacheExists1(RELOID, ObjectIdGetDatum(gone[i].heap)))
 		{
 			heaps = list_append_unique_oid(heaps, gone[i].heap);
 			if (gone[i].swapped_out)
@@ -649,6 +652,8 @@ gone_xact(XactEvent event, void *arg)
 		}
 	ngone = kept;
 	PushActiveSnapshot(GetTransactionSnapshot());	/* the commit of a VACUUM has none, and the catalog deletes want one */
+	if (dropped)
+		sift_scope_journal_drop_unused();
 	foreach_oid(heapoid, heaps)
 	{
 		Relation	heap = try_table_open(heapoid, AccessShareLock);
@@ -662,7 +667,7 @@ gone_xact(XactEvent event, void *arg)
 		table_close(heap, NoLock);
 	}
 	PopActiveSnapshot();
-	if (heaps != NIL)
+	if (heaps != NIL || dropped)
 		CommandCounterIncrement();
 }
 

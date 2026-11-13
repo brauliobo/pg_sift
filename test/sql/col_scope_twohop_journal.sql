@@ -61,15 +61,14 @@ INSERT INTO journal_ddl VALUES
 	(3, 'memberships_by_member', 'CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = ''ctid'')');
 CREATE TABLE scope_ddl AS SELECT 'CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')' AS ddl;
 
--- no journal at all, then each of the three missing in turn: the scope index is refused until the journal exists; built, it vouches with the three, and the next REINDEX stamps the segments again
+-- no journal at all (the scope index makes the three and they go with it), then each of the three missing in turn (the scope index makes that one beside the two made by hand): built, it vouches with the three, and the next REINDEX stamps the segments again
 SELECT ddl AS scope_index FROM scope_ddl \gset
 :scope_index;
+DROP INDEX facts_col;
 SELECT stmt FROM (
 	SELECT m.n, 0 AS k, 'DROP INDEX IF EXISTS facts_col' AS stmt FROM generate_series(1, 3) m(n)
 	UNION ALL SELECT m.n, 1, 'DROP INDEX IF EXISTS grants_by_member, grants_by_group, memberships_by_member' FROM generate_series(1, 3) m(n)
 	UNION ALL SELECT m.n, 2, j.ddl FROM generate_series(1, 3) m(n), journal_ddl j WHERE j.n <> m.n
-	UNION ALL SELECT m.n, 3, ddl FROM generate_series(1, 3) m(n), scope_ddl
-	UNION ALL SELECT m.n, 4, j.ddl FROM generate_series(1, 3) m(n), journal_ddl j WHERE j.n = m.n
 	UNION ALL SELECT m.n, 5, ddl FROM generate_series(1, 3) m(n), scope_ddl
 	UNION ALL SELECT m.n, 6, format('SELECT %L AS missing, ''built'' AS step, * FROM journals() j, probe() p', (SELECT name FROM journal_ddl WHERE n = m.n)) FROM generate_series(1, 3) m(n)
 	UNION ALL SELECT m.n, 7, 'REINDEX INDEX facts_col' FROM generate_series(1, 3) m(n)

@@ -61,14 +61,21 @@ extern void sift_scope_relation(Relation heap, Relation index, const SiftScopeSp
 extern Oid	sift_scope_relation_index(Relation heap, Relation index, const SiftScopeSpec *s, Relation *rel, AttrNumber *member, AttrNumber *scope_key);
 /* ... and those of the joined path and of the members of its via column of a scope of two paths (hop 1, 2): their columns (via, scope key) and (via, member) and their recorded btrees */
 extern Oid	sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int hop, Relation *rel, AttrNumber *a, AttrNumber *b);
-/* CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it */
+/*
+ * CREATE INDEX, REINDEX (sticky false: chooses the btree by the rule and records it) and ALTER INDEX (sticky true: leaves the recorded one): resolves the declaration, writes the dependency, or removes it.
+ * A relation of pairs without a journal index gets one
+ */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky);
 /* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
 extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* col/scope_guard.c: what the declaration needs of its relations and journals, said when the index is made or altered */
-extern char *sift_scope_journal_unfit(Relation rel, AttrNumber member, AttrNumber key, List *serving);
+/* The sift_col indexes with a scope that depend on the index (they took it for the journal or the btree of a relation of their scopes) */
+extern List *sift_scope_users(Oid index);
+/* col/scope_make.c: the journal index of a relation of pairs that has none, made by CREATE INDEX of the scope index (named by the rule, owned by the table's owner, marked by its comment); dropped with the last scope index that uses it */
+extern Oid	sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumber member, AttrNumber key, Oid btree);
+extern void sift_scope_journal_drop_unused(void);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
 extern void sift_scope_journal_alter(Relation index);
 extern void sift_scope_notice_stale(Relation index);
@@ -118,7 +125,6 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
 #define sift_scope_njournals(s) ((s)->joined != NULL ? SIFT_SCOPE_JOURNALS : 1)
 /* The journal index of the relation for the pairs defined by pair_btree: a plain index, or one whose predicate the predicate of pair_btree implies (every pair is in it); InvalidOid when it has none */
 extern List *sift_scope_index_predicate(Oid indexoid);
-extern Oid	sift_scope_journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree, bool unfit);
 extern Oid	sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);
 /* ... and the one whose leaves list exactly the pairs, InvalidOid when there is none */
 extern Oid	sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree);

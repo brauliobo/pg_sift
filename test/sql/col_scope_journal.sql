@@ -38,12 +38,16 @@ CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
--- a scope relation with no journal index: refused
-SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS no_journal_index;
--- the journal index leads with the member, tracks by ctid and holds the scope key: these do not qualify
+-- a scope relation with no journal index: the build makes it (test col_scope_journal_auto), and it goes with the index
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+DROP INDEX events_col;
+-- the journal index leads with the member, tracks by ctid and holds the scope key: these do not qualify, and the build makes a journal of its own
 CREATE INDEX tenant_scope_wrong_order ON tenant_scope USING sift_col (tenant_id, dim_a_id) WITH (track_changes = 'ctid');
 CREATE INDEX tenant_scope_no_key ON tenant_scope USING sift_col (dim_a_id) WITH (track_changes = 'ctid');
-SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS not_qualifying;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
+	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;   -- not_qualifying: a journal is made beside them
+DROP INDEX events_col;
 DROP INDEX tenant_scope_wrong_order, tenant_scope_no_key;
 
 -- the journal index, then the scope index: no journal exists until a scope index is declared on the relation

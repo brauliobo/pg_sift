@@ -85,8 +85,7 @@ INSERT INTO bad_decls SELECT row_number() OVER (), why, opt FROM (VALUES
 	('using an index of another relation', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) using memberships_active via memberships(group_id, dim_a_id)'),
 	('using an index that is not there', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) using nowhere'),
 	('cols names a column that is not in the index', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) cols(nothing)'),
-	('a scope of one path: nullable member', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id)'),
-	('a scope of one path: no journal index', 'tenant_id: dim_a_id -> pairs_one(dim_a_id, tenant_id)')) v(why, opt);
+	('a scope of one path: nullable member', 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id)')) v(why, opt);
 SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = %L)', opt)) AS result FROM bad_decls ORDER BY n;
  n  |                     why                      |                                                                                                                                               result                                                                                                                                                
 ----+----------------------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -110,8 +109,7 @@ SELECT n, why, try(format('CREATE INDEX bad ON facts USING sift_col (id, dim_a_i
  18 | using an index that is not there             | scope "tenant_id": "memberships" has no index "nowhere" [USING names a btree of the scope relation.]
  19 | cols names a column that is not in the index | scope "tenant_id": cols(..) names "nothing", which is not a column of this index [Name columns of the index: the scope segments keep those, the member key and the column the units are cut by.]
  20 | a scope of one path: nullable member         | scope "tenant_id": column "dim_a_id" of "grants" is nullable [Declare the member and scope key columns NOT NULL: a pair has both keys.]
- 21 | a scope of one path: no journal index        | scope "tenant_id": "pairs_one" has no sift_col index that journals its changes [CREATE INDEX ON pairs_one USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
-(21 rows)
+(20 rows)
 
 SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
  leftover_indexes 
@@ -119,22 +117,32 @@ SELECT count(*) AS leftover_indexes FROM pg_class WHERE relname = 'bad';
                 0
 (1 row)
 
--- no journal index: refused, with the CREATE INDEX of each of the three
-SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS no_journals;
-                                                                                                                                                                                                                                                                  no_journals                                                                                                                                                                                                                                                                   
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+-- no journal index: the statement makes the three, and they go with the index
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT edges('facts_col') AS journals_made;
+                                                                             journals_made                                                                              
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ grants_dim_a_id_tenant_id_sift_journal grants_direct grants_group grants_group_id_tenant_id_sift_journal memberships_active memberships_dim_a_id_group_id_sift_journal
 (1 row)
 
--- one of them that is not a journal says what it lacks
+DROP INDEX facts_col;
+SELECT count(*) AS journals_left FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relam = (SELECT oid FROM pg_am WHERE amname = 'sift_col');
+ journals_left 
+---------------
+             0
+(1 row)
+
+-- one of them that is not a journal (a partial one) is left alone: a journal is made beside it
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX grants_by_group_partial ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid') WHERE id > 0;
-SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS journals_missing_and_partial;
-                                                                                                                                                                                                            journals_missing_and_partial                                                                                                                                                                                                             
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT edges('facts_col') AS journals_beside_a_partial;
+                                                            journals_beside_a_partial                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ grants_by_member grants_direct grants_group grants_group_id_tenant_id_sift_journal memberships_active memberships_dim_a_id_group_id_sift_journal
 (1 row)
 
+DROP INDEX facts_col;
 DROP INDEX grants_by_group_partial;
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');

@@ -101,6 +101,9 @@ extern bool sift_col_track_ok(Relation index, Relation heap, Snapshot snap);
 extern uint64 sift_catalog_memo_hits;
 extern bool sift_col_track_ok_log(Relation index, Relation heap, Snapshot snap, SiftTombLog *log);
 extern bool sift_col_track_own(const struct SiftTombLog *log);
+/* The journal index of a relation of pairs that this transaction made, whose log is complete for the snapshots taken from the command after it (sift_col_track_made: the writers of the relation are held out) */
+extern void sift_col_track_made(Oid index);
+extern bool sift_col_track_made_before(Oid index, Snapshot snap);
 extern bool sift_col_track_rebaseline(Relation index, Relation heap);
 extern void sift_col_track_ask(Relation index, Relation heap);
 extern bool sift_col_track_rearmable(Relation index, Relation heap);

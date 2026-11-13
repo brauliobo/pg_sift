@@ -21,13 +21,17 @@ $$ SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') 
 CREATE TEMP TABLE pairs_temp (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 SELECT try('CREATE INDEX temp_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pg_temp.pairs_temp(m, s)'')') AS temp_pairs;
 
--- a sift_col index of the relation that is not its journal says what it lacks
+-- a sift_col index of the relation that is not its journal (track_changes off, or the member second) is left alone: a journal is made beside it
 CREATE TABLE pairs_unjournaled (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 CREATE INDEX pairs_unjournaled_auto ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'off');
-SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_off;
+CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_track_off FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX unjournaled_col;
 DROP INDEX pairs_unjournaled_auto;
 CREATE INDEX pairs_unjournaled_rev ON pairs_unjournaled USING sift_col (s, m) WITH (track_changes = 'ctid');
-SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_member_second;
+CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_member_second FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX unjournaled_col;
 
 -- row-level security of the relation: the statements of a role the policies apply to read the join as written
 CREATE TABLE pairs_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
@@ -36,12 +40,14 @@ CREATE INDEX pairs_rls_journal ON pairs_rls USING sift_col (m, s) WITH (track_ch
 CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_rls(m, s)');
 DROP INDEX rls_col;
 
--- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: refused, with the CREATE INDEX of each
+-- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: the build makes them
 CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
 CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
-SELECT try('CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_paths_no_journals;
+CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS two_paths_journals FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'two_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX two_col;
 
 -- a partition declares its own scope: a statement over the partitioned table reads none
 CREATE TABLE part_events (id int, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) PARTITION BY RANGE (id);

@@ -319,15 +319,12 @@ CREATE TABLE memberships (id bigint PRIMARY KEY, group_id int NOT NULL, dim_a_id
 CREATE UNIQUE INDEX grants_direct      ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX grants_group       ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
--- the three journals, each keyed by what its path depends on: the member, the group, the member again
-CREATE INDEX grants_by_member      ON grants      USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE INDEX grants_by_group       ON grants      USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
-CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id)  WITH (track_changes = 'ctid');
+-- the three journals (each keyed by what its path depends on: the member, the group, the member again) are made by the CREATE INDEX below
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, value_num)
   WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 ```
 
-`CREATE INDEX` says which btree of each path it recorded (one `NOTICE` each) and how many entries the scope holds for the rows. A member that an account reaches directly and through its
+`CREATE INDEX` makes the three journal indexes (one `NOTICE` each; [COL-SCOPE](COL-SCOPE.md#the-declaration) says how to make them first, to name or place them), says which btree of each path it recorded (one `NOTICE` each) and how many entries the scope holds for the rows. A member that an account reaches directly and through its
 groups is one pair, so a fact is in the units of the account once; the entries are the distinct pairs, within `sift.scope_max_multiplicity`.
 
 **Verify.**

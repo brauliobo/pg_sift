@@ -36,10 +36,10 @@ sift_scope_index_predicate(Oid indexoid)
 /*
  * The journal indexes of the scope relation: ready sift_col indexes with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid of those that hear of
  * every pair. A journal records the pairs a statement ends and inserts, so a partial one qualifies only when the predicate of the btree that defines the pairs implies its predicate (every pair
- * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged. unfit: the first one that is not so (for the hint), not a candidate.
+ * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged.
  */
-Oid
-sift_scope_journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree, bool unfit)
+static Oid
+journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
 {
 	List	   *pair_pred = sift_scope_index_predicate(pair_btree);
 
@@ -53,7 +53,7 @@ sift_scope_journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, O
 		{
 			List	   *jpred = RelationGetIndexPredicate(idx);
 
-			ok = (jpred == NIL || predicate_implied_by(jpred, pair_pred, false)) != unfit;
+			ok = jpred == NIL || predicate_implied_by(jpred, pair_pred, false);
 		}
 		index_close(idx, AccessShareLock);
 		if (ok)
@@ -65,7 +65,7 @@ sift_scope_journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, O
 Oid
 sift_scope_journal_index(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
 {
-	return sift_scope_journal_scan(rel, member, scope_key, pair_btree, false);
+	return journal_scan(rel, member, scope_key, pair_btree);
 }
 
 /* The journal index whose leaves list exactly the pairs (its predicate and the one of the btree imply each other): a plain journal of a partial btree holds the soft deleted rows too */
@@ -80,28 +80,7 @@ sift_scope_pairs_journal(Relation rel, AttrNumber member, AttrNumber scope_key, 
 Oid
 sift_scope_hop_journal(Relation rel, int hop, AttrNumber a, AttrNumber b, Oid btree)
 {
-	return hop == 2 ? sift_scope_journal_scan(rel, b, a, btree, false) : sift_scope_journal_scan(rel, a, b, btree, false);
-}
-
-/* What the first sift_col index of the relation lacks to be the journal of its pairs, for the detail of the error; NULL when it has none */
-char *
-sift_scope_journal_unfit(Relation rel, AttrNumber member, AttrNumber key, List *serving)
-{
-	char	   *detail = NULL;
-
-	foreach_oid(ioid, RelationGetIndexList(rel))
-	{
-		Relation	idx = index_open(ioid, AccessShareLock);
-		const char *lack = !sift_col_is_index(idx) || list_member_oid(serving, ioid) ? NULL : !idx->rd_index->indisvalid || !sift_index_ready(idx) ? "is not valid (a concurrent build that failed or runs)" :
-			!sift_col_track_ctid(idx) ? "has no track_changes = 'ctid'" : idx->rd_index->indkey.values[0] != member ? "does not have the member column first" :
-			sift_conn_index_column(idx, key) == InvalidAttrNumber ? "does not hold the scope key column" :
-			RelationGetIndexPredicate(idx) != NIL ? "is partial and the btree of the pairs does not imply its predicate" : NULL;
-
-		if (lack != NULL && detail == NULL)
-			detail = psprintf("The sift_col index \"%s\" of \"%s\" %s.", RelationGetRelationName(idx), RelationGetRelationName(rel), lack);
-		index_close(idx, AccessShareLock);
-	}
-	return detail;
+	return hop == 2 ? journal_scan(rel, b, a, btree) : journal_scan(rel, a, b, btree);
 }
 
 /* What a relation of the declaration has that makes some reads run as written: said at CREATE INDEX and REINDEX, not at each read */
@@ -114,8 +93,8 @@ sift_scope_notice_relation(const char *key_name, const char *name, Relation rel)
 }
 
 /* The sift_col indexes with a scope that depend on the index: the ones that took it for the journal (or the btree) of a relation of their scopes */
-static List *
-scope_users(Oid index)
+List *
+sift_scope_users(Oid index)
 {
 	Relation	drel = table_open(DependRelationId, AccessShareLock);
 	ScanKeyData key[2];
@@ -150,7 +129,7 @@ sift_scope_journal_alter(Relation index)
 {
 	if (sift_col_track_ctid(index))
 		return;
-	foreach_oid(user, scope_users(RelationGetRelid(index)))
+	foreach_oid(user, sift_scope_users(RelationGetRelid(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("index \"%s\" is the journal of a scope of index \"%s\"", RelationGetRelationName(index), get_rel_name(user)),
 						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. ALTER INDEX %s RESET (scope) first to give the scope up.", get_rel_name(user))));
 }

@@ -104,14 +104,18 @@ SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> membershi
 ALTER INDEX facts_col SET (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 DROP INDEX memberships_other;
 
--- a journal index must hear of every pair: partial on the predicate of the pairs is fine, partial on another is not
+-- a journal index must hear of every pair: partial on the predicate of the pairs is fine, partial on another is not (the build makes a journal of its own beside a partial one that does not qualify)
 CREATE INDEX memberships_journal_b ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE group_id < 10;
 DROP INDEX facts_col;
 DROP INDEX memberships_journal;
-SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS journal_other_predicate;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_other_predicate FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'facts_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX facts_col;
 DROP INDEX memberships_journal_b;
 CREATE INDEX memberships_journal_c ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL AND group_id > 0;
-SELECT try('CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''group_id: dim_a_id -> memberships(dim_a_id, group_id)'')') AS journal_weaker_predicate;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_weaker_predicate FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'facts_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+DROP INDEX facts_col;
 DROP INDEX memberships_journal_c;
 
 -- a predicate that is not immutable cannot be the btree's: PostgreSQL refuses it

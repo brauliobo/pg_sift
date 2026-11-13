@@ -27,28 +27,60 @@ SELECT try('CREATE INDEX temp_col ON events USING sift_col (id, dim_a_id, amount
  scope "tenant_id": "pairs_temp" is a temporary table {The index depends on the btree and the journal of the scope relation, so it would be dropped with the table when the session ends.} [Name a permanent table of pairs.]
 (1 row)
 
--- a sift_col index of the relation that is not its journal says what it lacks
+-- a sift_col index of the relation that is not its journal (track_changes off, or the member second) is left alone: a journal is made beside it
 CREATE TABLE pairs_unjournaled (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 CREATE INDEX pairs_unjournaled_auto ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'off');
-SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_off;
+CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
 NOTICE:  scope "tenant_id": the pairs of "pairs_unjournaled" are the rows of its unique btree "pairs_unjournaled_pkey"
-                                                                                                                                                                                           journal_off                                                                                                                                                                                           
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "pairs_unjournaled" has no sift_col index that journals its changes {The sift_col index "pairs_unjournaled_auto" of "pairs_unjournaled" has no track_changes = 'ctid'.} [CREATE INDEX ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
+NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal" stores columns m, s of index "pairs_unjournaled_auto", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
+NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
+NOTICE:  scope "tenant_id": made the journal index "pairs_unjournaled_m_s_sift_journal" of "pairs_unjournaled" (m, s)
+DETAIL:  The writers of "pairs_unjournaled" wait until this statement ends. The index goes with the last scope index that uses it.
+HINT:  To name it, place it or keep it, make it first: CREATE INDEX CONCURRENTLY ON public.pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid').
+NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
+NOTICE:  sift_col index "unjournaled_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('unjournaled_col');
+NOTICE:  sift_col index "unjournaled_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_track_off FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+                 journal_beside_track_off                  
+-----------------------------------------------------------
+ pairs_unjournaled_m_s_sift_journal pairs_unjournaled_pkey
 (1 row)
 
+DROP INDEX unjournaled_col;
 DROP INDEX pairs_unjournaled_auto;
 CREATE INDEX pairs_unjournaled_rev ON pairs_unjournaled USING sift_col (s, m) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "pairs_unjournaled_rev": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_rev');
-SELECT try('CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> pairs_unjournaled(m, s)'')') AS journal_member_second;
+CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
 NOTICE:  scope "tenant_id": the pairs of "pairs_unjournaled" are the rows of its unique btree "pairs_unjournaled_pkey"
-                                                                                                                                                                                         journal_member_second                                                                                                                                                                                          
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "pairs_unjournaled" has no sift_col index that journals its changes {The sift_col index "pairs_unjournaled_rev" of "pairs_unjournaled" does not have the member column first.} [CREATE INDEX ON pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.]
+NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal" stores columns s, m of index "pairs_unjournaled_rev", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
+NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
+DETAIL:  track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
+NOTICE:  scope "tenant_id": made the journal index "pairs_unjournaled_m_s_sift_journal" of "pairs_unjournaled" (m, s)
+DETAIL:  The writers of "pairs_unjournaled" wait until this statement ends. The index goes with the last scope index that uses it.
+HINT:  To name it, place it or keep it, make it first: CREATE INDEX CONCURRENTLY ON public.pairs_unjournaled USING sift_col (m, s) WITH (track_changes = 'ctid').
+NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
+NOTICE:  sift_col index "unjournaled_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('unjournaled_col');
+NOTICE:  sift_col index "unjournaled_col" has a scope: column format minor 45, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_member_second FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+               journal_beside_member_second                
+-----------------------------------------------------------
+ pairs_unjournaled_m_s_sift_journal pairs_unjournaled_pkey
 (1 row)
 
+DROP INDEX unjournaled_col;
 -- row-level security of the relation: the statements of a role the policies apply to read the join as written
 CREATE TABLE pairs_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 ALTER TABLE pairs_rls ENABLE ROW LEVEL SECURITY;
@@ -67,20 +99,48 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
 HINT:  The scope option needs this format: build the index without it for the older library.
 DROP INDEX rls_col;
--- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: refused, with the CREATE INDEX of each
+-- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: the build makes them
 CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
 CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
-SELECT try('CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS two_paths_no_journals;
+CREATE INDEX two_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct"
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group"
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_pkey"
-                                                                                                                                                                                                                                                             two_paths_no_journals                                                                                                                                                                                                                                                              
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- scope "tenant_id": "grants" has no sift_col index that journals its changes [A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: CREATE INDEX ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid'); CREATE INDEX ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').]
+NOTICE:  sift_col index "grants_dim_a_id_tenant_id_sift_journal": 2 automatic choices
+DETAIL:  key_columns = dim_a_id, tenant_id; track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('grants_dim_a_id_tenant_id_sift_journal');
+NOTICE:  scope "tenant_id": made the journal index "grants_dim_a_id_tenant_id_sift_journal" of "grants" (dim_a_id, tenant_id)
+DETAIL:  The writers of "grants" wait until this statement ends. The index goes with the last scope index that uses it.
+HINT:  To name it, place it or keep it, make it first: CREATE INDEX CONCURRENTLY ON public.grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid').
+NOTICE:  sift_col index "grants_group_id_tenant_id_sift_journal" stores columns tenant_id of index "grants_dim_a_id_tenant_id_sift_journal", which has the same layout
+HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
+NOTICE:  sift_col index "grants_group_id_tenant_id_sift_journal": 2 automatic choices
+DETAIL:  key_columns = group_id, tenant_id; track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('grants_group_id_tenant_id_sift_journal');
+NOTICE:  scope "tenant_id": made the journal index "grants_group_id_tenant_id_sift_journal" of "grants" (group_id, tenant_id)
+DETAIL:  The writers of "grants" wait until this statement ends. The index goes with the last scope index that uses it.
+HINT:  To name it, place it or keep it, make it first: CREATE INDEX CONCURRENTLY ON public.grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid').
+NOTICE:  sift_col index "memberships_dim_a_id_group_id_sift_journal": 2 automatic choices
+DETAIL:  key_columns = dim_a_id, group_id; track_changes = ctid
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('memberships_dim_a_id_group_id_sift_journal');
+NOTICE:  scope "tenant_id": made the journal index "memberships_dim_a_id_group_id_sift_journal" of "memberships" (dim_a_id, group_id)
+DETAIL:  The writers of "memberships" wait until this statement ends. The index goes with the last scope index that uses it.
+HINT:  To name it, place it or keep it, make it first: CREATE INDEX CONCURRENTLY ON public.memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid').
+NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
+NOTICE:  sift_col index "two_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('two_col');
+NOTICE:  sift_col index "two_col" has a scope: column format minor 49, which a library before 5.0 cannot read
+HINT:  The scope option needs this format: build the index without it for the older library.
+SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS two_paths_journals FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'two_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
+                                                                          two_paths_journals                                                                          
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ grants_dim_a_id_tenant_id_sift_journal grants_direct grants_group grants_group_id_tenant_id_sift_journal memberships_dim_a_id_group_id_sift_journal memberships_pkey
 (1 row)
 
+DROP INDEX two_col;
 -- a partition declares its own scope: a statement over the partitioned table reads none
 CREATE TABLE part_events (id int, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) PARTITION BY RANGE (id);
 CREATE TABLE part_events_1 PARTITION OF part_events FOR VALUES FROM (0) TO (100000);

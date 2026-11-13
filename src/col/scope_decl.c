@@ -507,60 +507,27 @@ choose_btree(Relation index, const SiftScopeSpec *s, int i, Relation rel, AttrNu
 	return btree;
 }
 
-/* The journal index of the pairs relation (of a scope of one path), which must hear of every pair */
+/* The journal index of the pairs relation (of a scope of one path), which must hear of every pair: the one the relation has, else the one CREATE INDEX makes (sift_scope_journal_make) */
 static Oid
 require_journal(const SiftScopeSpec *s, Relation rel, AttrNumber member, AttrNumber key, Oid btree)
 {
 	Oid			journal = sift_scope_journal_index(rel, member, key, btree);
-	char	   *unfit = OidIsValid(journal) ? NULL : sift_scope_journal_unfit(rel, member, key, NIL);
 
-	if (!OidIsValid(journal) && OidIsValid(sift_scope_journal_scan(rel, member, key, btree, true)))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the journal index of \"%s\" is a partial index", s->key_name, s->rel.name),
-						errhint("A partial index never hears of a pair inserted outside its predicate, unless the predicate of the btree of the pairs implies it: CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid') without a WHERE.",
-								s->rel.name, s->rel.a, s->rel.b)));
-	if (!OidIsValid(journal))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", s->key_name, s->rel.name),
-						unfit ? errdetail("%s", unfit) : 0,
-						errhint("CREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid'): the member column first, so that a read can tell which pairs changed since the scope segments were written.",
-								s->rel.name, s->rel.a, s->rel.b)));
-	return journal;
+	return OidIsValid(journal) ? journal : sift_scope_journal_make(s, rel, 0, member, key, btree);
 }
 
-/* The journal indexes of the three relations of a scope of two paths (added to keep), which must hear of every pair: ERROR naming each relation that has none */
+/* The journal indexes of the three relations of a scope of two paths (added to keep), which must hear of every pair: the ones the relations have, else the ones CREATE INDEX makes */
 static void
 require_journals(const SiftScopeSpec *s, Relation *rel, const AttrNumber (*att)[2], const Oid *btree, List **keep)
 {
-	StringInfoData fix;
-	Oid			journal[3];
-	const char *first = NULL;
-	char	   *detail = NULL;
-
 	for (int h = 0; h < 3; h++)
 	{
-		journal[h] = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
-		if (OidIsValid(journal[h]))
-			*keep = list_append_unique_oid(*keep, journal[h]);
-	}
-	initStringInfo(&fix);
-	for (int h = 0; h < 3; h++)
-	{
-		AttrNumber	member = att[h][h == 2 ? 1 : 0],
-					key = att[h][h == 2 ? 0 : 1];
+		Oid			journal = sift_scope_hop_journal(rel[h], h, att[h][0], att[h][1], btree[h]);
 
-		if (OidIsValid(journal[h]))
-			continue;
-		if (first == NULL)
-		{
-			first = decl_rel(s, h)->name;
-			detail = sift_scope_journal_unfit(rel[h], member, key, *keep);
-		}
-		appendStringInfo(&fix, "%sCREATE INDEX ON %s USING sift_col (%s, %s) WITH (track_changes = 'ctid')", fix.len > 0 ? "; " : "", RelationGetRelationName(rel[h]),
-						 get_attname(RelationGetRelid(rel[h]), member, false), get_attname(RelationGetRelid(rel[h]), key, false));
+		if (!OidIsValid(journal))
+			journal = sift_scope_journal_make(s, rel[h], h, att[h][h == 2 ? 1 : 0], att[h][h == 2 ? 0 : 1], btree[h]);
+		*keep = list_append_unique_oid(*keep, journal);
 	}
-	if (first != NULL)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("scope \"%s\": \"%s\" has no sift_col index that journals its changes", s->key_name, first),
-						detail ? errdetail("%s", detail) : 0,
-						errhint("A scope of two paths needs one for each of its three relations, the member column first, so that a read can tell which pairs changed since the scope segments were written: %s.", fix.data)));
 }
 
 /*
@@ -623,6 +590,7 @@ sift_scope_alter(Relation index)
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 	sift_scope_resolve(heap, index, true);
+	sift_scope_journal_drop_unused();
 	sift_scope_start(heap, index, false);
 	table_close(heap, NoLock);
 }

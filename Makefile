@@ -282,6 +282,7 @@ TESTING_REGRESS += col_scope_fill
 TESTING_REGRESS += col_scope_groupkey
 TESTING_REGRESS += col_scope_hot_chain
 TESTING_REGRESS += col_scope_journal
+TESTING_REGRESS += col_scope_journal_auto
 TESTING_REGRESS += col_scope_journal_partial
 TESTING_REGRESS += col_scope_journal_tags
 TESTING_REGRESS += col_scope_keyed_patch

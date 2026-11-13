@@ -158,6 +158,13 @@ sift_plan_disabled(const Plan *plan, double *cost)
 #define sift_fallthrough	__attribute__((fallthrough))
 #endif
 
+/* DefineIndex of an IndexStmt that CREATE INDEX would run, for a relation the caller has open (so no check that it is not in use): the build is made (19 takes the parse state first) */
+#if PG_VERSION_NUM >= 190000
+#define sift_define_index(relid, stmt)	DefineIndex(make_parsestate(NULL), relid, stmt, InvalidOid, InvalidOid, InvalidOid, -1, false, true, false, false, true)
+#else
+#define sift_define_index(relid, stmt)	DefineIndex(relid, stmt, InvalidOid, InvalidOid, InvalidOid, -1, false, true, false, false, true)
+#endif
+
 /* The checksum of a page about to be written to the file (19 renamed the in-place form) */
 #if PG_VERSION_NUM >= 190000
 #define sift_page_set_checksum	PageSetChecksum
