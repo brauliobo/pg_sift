@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: fact (a sift_table) -> dim (N:1); the dim attributes state, flag, grp, weight are what the queries group and filter by
