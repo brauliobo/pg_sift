@@ -1,0 +1,176 @@
+-- A scope read runs with parallel workers as an entity read does: the leader decides the read once (the units of the scope segments, the entity rows of the members listed, or the join as written), the
+-- participants read its decision and its directory, and take the units of the scope segments as items; the delta (the rows of the write buffers and of the changed members, copied for each pair) is the leader's. The
+-- rows are those of the same read in one process, of the join and of the plain plan, for integer, text and uuid keys and members, one path and two, in every state of the facts and the pairs; EXPLAIN says that the
+-- workers started, and a small read keeps one process.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET jit = off;
+SET sift.agg_force = on;
+SET sift.agg_preagg = off;
+SET sift.scope_max_multiplicity = 8;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET sift.agg_par_min_rows = 0;
+SET max_parallel_workers_per_gather = 2;
+SET sift.test_par_leader_wait = on;
+
+-- one path, integer key and member: 12 tenants, members in one to three of them
+CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
+INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series(1, 600) m, generate_series(0, m % 3) j WHERE m % 25 <> 0 ON CONFLICT DO NOTHING;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 640 END, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 7, i % 10, repeat('x', 60)
+FROM generate_series(1, 30000) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+REINDEX INDEX events_col;
+
+-- two paths: the grants of a member and of a group, and the memberships (soft deleted rows leave the pairs)
+CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz);
+CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
+CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz);
+CREATE UNIQUE INDEX memberships_active ON memberships (group_id, dim_a_id) WHERE deleted_at IS NULL;
+INSERT INTO memberships (group_id, dim_a_id) SELECT 1 + m % 12, m FROM generate_series(1, 600) m;
+INSERT INTO grants (tenant_id, dim_a_id) SELECT 1 + (m * 5 + j * 7) % 12, m FROM generate_series(1, 600) m, generate_series(0, 1) j WHERE m % 25 <> 0 ON CONFLICT DO NOTHING;
+INSERT INTO grants (tenant_id, group_id) SELECT 1 + (g * 5 + j * 3) % 12, g FROM generate_series(1, 12) g, generate_series(0, 1) j ON CONFLICT DO NOTHING;
+CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+CREATE VIEW pair_set (dim_a_id, tenant_id) AS SELECT dim_a_id, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
+	UNION SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
+CREATE TABLE gevents (id int PRIMARY KEY, dim_a_id int, kind int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO gevents SELECT i, 1 + (i * 7919) % 640, i % 7, i % 10, repeat('x', 60) FROM generate_series(1, 30000) i;
+CREATE INDEX gevents_col ON gevents USING sift_col (id, dim_a_id, kind, v)
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+REINDEX INDEX gevents_col;
+
+-- text keys and members, uuid keys and members (the same pairs, by their md5)
+CREATE TABLE t_pairs (account text NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (account, tenant_id));
+INSERT INTO t_pairs SELECT 'acct-' || dim_a_id, 'tenant-' || tenant_id FROM tenant_scope;
+CREATE INDEX t_pairs_journal ON t_pairs USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE t_events (id int PRIMARY KEY, account text, kind int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO t_events SELECT id, 'acct-' || dim_a_id, kind, v, pad FROM events;
+CREATE INDEX t_events_col ON t_events USING sift_col (id, account, kind, v) WITH (scope = 'tenant_id: account -> t_pairs(account, tenant_id)');
+REINDEX INDEX t_events_col;
+CREATE TABLE u_pairs (account uuid NOT NULL, tenant_id uuid NOT NULL, PRIMARY KEY (account, tenant_id));
+INSERT INTO u_pairs SELECT md5(account)::uuid, md5(tenant_id)::uuid FROM t_pairs;
+CREATE INDEX u_pairs_journal ON u_pairs USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE u_events (id int PRIMARY KEY, account uuid, kind int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO u_events SELECT id, md5(account)::uuid, kind, v, pad FROM t_events;
+CREATE INDEX u_events_col ON u_events USING sift_col (id, account, kind, v) WITH (scope = 'tenant_id: account -> u_pairs(account, tenant_id)');
+REINDEX INDEX u_events_col;
+VACUUM (FREEZE, ANALYZE) events, gevents, t_events, u_events;
+VACUUM (ANALYZE) tenant_scope, grants, memberships, t_pairs, u_pairs;
+
+CREATE TABLE forms (name text PRIMARY KEY, q text);
+INSERT INTO forms VALUES
+ ('int IN, one key', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$),
+ ('int IN, a list', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 5, 9)) GROUP BY kind$q$),
+ ('int EXISTS, a month', $q$SELECT count(*) AS n, sum(v) AS total FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope s WHERE s.dim_a_id = e.dim_a_id AND s.tenant_id = 7) AND created_at >= timestamptz '2026-03-01' AND created_at < timestamptz '2026-04-01'$q$),
+ ('int join, a row for each pair', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN (2, 5) GROUP BY kind$q$),
+ ('int group by the key, every key', $q$SELECT s.tenant_id, count(*) AS n, sum(v) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
+ ('two paths IN, one key', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM gevents e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pair_set WHERE tenant_id = 4) GROUP BY kind$q$),
+ ('two paths IN, a list', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM gevents e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pair_set WHERE tenant_id IN (1, 6, 11)) GROUP BY kind$q$),
+ ('two paths, group by the key', $q$SELECT s.tenant_id, count(*) AS n, sum(v) AS total FROM gevents e JOIN pair_set s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
+ ('text IN, a list', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM t_events e WHERE e.account IN (SELECT account FROM t_pairs WHERE tenant_id IN ('tenant-3', 'tenant-8')) GROUP BY kind$q$),
+ ('text group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM t_events e JOIN t_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
+ ('uuid IN, a list', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM u_events e WHERE e.account IN (SELECT account FROM u_pairs WHERE tenant_id IN (md5('tenant-3')::uuid, md5('tenant-8')::uuid)) GROUP BY kind$q$);
+
+-- the rows (as md5) of a statement as written, of the same read in one process, of the join the node falls back to, of the join without a scope and of the plain plan; the workers of the scope read and of the fallback
+CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	DROP TABLE IF EXISTS scope_rows;
+	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
+	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM scope_rows t;
+	DROP TABLE scope_rows;
+	RETURN r;
+END $$;
+CREATE FUNCTION launched(q text, OUT workers int, OUT stored boolean) LANGUAGE plpgsql AS $$
+DECLARE p jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	workers := coalesce(jsonb_path_query_first(p, '$.**."Workers Launched"')::text::int, 0);
+	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+END $$;
+CREATE FUNCTION run_form(q text, OUT same boolean, OUT scope_workers int, OUT stored boolean, OUT join_workers int) LANGUAGE plpgsql AS $$
+DECLARE a text; one text; fallback text; j text; plain text;
+BEGIN
+	SELECT l.workers, l.stored INTO scope_workers, stored FROM launched(q) l;
+	a := rows_md5(q);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	one := rows_md5(q);
+	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+	-- the join the node runs when it costs less than the units
+	PERFORM set_config('sift.test_scope_join', 'on', true);
+	join_workers := (launched(q)).workers;
+	fallback := rows_md5(q);
+	PERFORM set_config('sift.test_scope_join', 'off', true);
+	PERFORM set_config('sift.agg_scope', 'off', true);
+	j := rows_md5(q);
+	PERFORM set_config('sift.agg_scope', 'on', true);
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	plain := rows_md5(q);
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	same := a = one AND one = fallback AND fallback = j AND j = plain;
+END $$;
+-- a state: every form against the others, and how many of the reads had workers
+CREATE FUNCTION state(label text) RETURNS TABLE (state text, differing bigint, units_read bigint, scope_without_workers bigint, join_without_workers bigint, forms bigint) LANGUAGE sql AS $$
+	SELECT label, count(*) FILTER (WHERE NOT r.same), count(*) FILTER (WHERE r.stored), count(*) FILTER (WHERE r.scope_workers = 0), count(*) FILTER (WHERE r.join_workers = 0), count(*)
+	FROM forms f, LATERAL run_form(f.q) r
+$$;
+
+SELECT * FROM state('built');
+-- what the reads are: the units of the scope segments, or the join
+SELECT name, l.stored AS units, l.workers > 0 AS workers FROM forms, LATERAL launched(q) l ORDER BY name COLLATE "C";
+
+-- rows after the build: the write buffers are the leader's delta
+INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 640, timestamptz '2026-02-01', i % 7, 3, 'y' FROM generate_series(1, 400) i;
+INSERT INTO gevents SELECT 30000 + i, 1 + (i * 31) % 640, i % 7, 3, 'y' FROM generate_series(1, 400) i;
+INSERT INTO t_events SELECT id, 'acct-' || dim_a_id, kind, v, pad FROM events WHERE id > 30000;
+INSERT INTO u_events SELECT id, md5(account)::uuid, kind, v, pad FROM t_events WHERE id > 30000;
+SELECT * FROM state('rows in the write buffers');
+
+-- pairs: inserted, deleted, moved, soft deleted, restored, a grant to a group, a membership
+INSERT INTO tenant_scope SELECT m, 3 FROM generate_series(1, 600, 7) m ON CONFLICT DO NOTHING;
+DELETE FROM tenant_scope WHERE tenant_id = 5 AND dim_a_id % 11 = 0;
+UPDATE tenant_scope SET tenant_id = 8 WHERE tenant_id = 2 AND dim_a_id % 13 = 0 AND NOT EXISTS (SELECT 1 FROM tenant_scope t WHERE t.dim_a_id = tenant_scope.dim_a_id AND t.tenant_id = 8);
+INSERT INTO t_pairs SELECT 'acct-' || dim_a_id, 'tenant-' || tenant_id FROM tenant_scope ON CONFLICT DO NOTHING;
+DELETE FROM t_pairs t WHERE NOT EXISTS (SELECT 1 FROM tenant_scope s WHERE 'acct-' || s.dim_a_id = t.account AND 'tenant-' || s.tenant_id = t.tenant_id);
+INSERT INTO u_pairs SELECT md5(account)::uuid, md5(tenant_id)::uuid FROM t_pairs ON CONFLICT DO NOTHING;
+DELETE FROM u_pairs u WHERE NOT EXISTS (SELECT 1 FROM t_pairs t WHERE md5(t.account)::uuid = u.account AND md5(t.tenant_id)::uuid = u.tenant_id);
+UPDATE grants SET deleted_at = now() WHERE tenant_id = 4 AND dim_a_id % 5 = 0;
+INSERT INTO grants (tenant_id, group_id) VALUES (4, 3), (6, 5) ON CONFLICT DO NOTHING;
+UPDATE memberships SET deleted_at = now() WHERE group_id = 5 AND dim_a_id % 4 = 0;
+INSERT INTO memberships (group_id, dim_a_id) VALUES (5, 601), (3, 602);
+SELECT * FROM state('pairs changed');
+
+-- the facts move to another member and are deleted
+UPDATE events SET dim_a_id = 1 + (dim_a_id + 17) % 640 WHERE id % 53 = 0;
+DELETE FROM events WHERE id % 211 = 0;
+UPDATE gevents SET dim_a_id = 1 + (dim_a_id + 17) % 640 WHERE id % 53 = 0;
+SELECT * FROM state('facts changed');
+
+-- a read in a transaction the stored units cannot answer for reads the entity rows of the members listed: the participants read the leader's list
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT (launched($q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 3) GROUP BY kind$q$)).workers > 0 AS entity_rows_with_workers,
+	(run_form($q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 3) GROUP BY kind$q$)).same AS same;
+COMMIT;
+
+-- the changed members' entries are rewritten, the buffers promoted and the segments merged
+SELECT sift.col_promote('events_col') >= 0 AND sift.col_promote('gevents_col') >= 0 AS promoted;
+SELECT sift.col_merge('events_col', true) >= 0 AND sift.col_merge('gevents_col', true) >= 0 AS merged;
+SELECT * FROM state('promoted and merged');
+SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true), sift.col_verify('t_events_col', true), sift.col_verify('u_events_col', true);
+
+-- a small read keeps one process: the units of a key of a few rows are not worth the workers
+RESET sift.agg_par_min_rows;
+SELECT (launched($q$SELECT kind, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$)).workers = 0 AS small_read_has_no_workers;
+
+DROP FUNCTION state(text), run_form(text), launched(text), rows_md5(text);
+DROP VIEW pair_set;
+DROP TABLE forms, events, gevents, t_events, u_events, tenant_scope, grants, memberships, t_pairs, u_pairs CASCADE;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

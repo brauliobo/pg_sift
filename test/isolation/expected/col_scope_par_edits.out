@@ -1,0 +1,81 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2lo s1o s3e s3p s2uo s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sp;
+count
+-----
+30300
+(1 row)
+
+step s2lo: SELECT pg_advisory_lock(7021);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1o: SELECT agree, parallel, stored FROM iso_sp_q(7021, 0); <waiting ...>
+step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
+		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
+		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
+step s3p: SELECT sift.col_promote('iso_sp_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2uo: SELECT pg_advisory_unlock(7021);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1o: <... completed>
+agree|parallel|stored
+-----+--------+------
+t    |t       |t     
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1b s2li s1i s3e s3p s3m s2ui s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sp;
+count
+-----
+30300
+(1 row)
+
+step s2li: SELECT pg_advisory_lock(7022);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1i: SELECT agree, parallel, stored FROM iso_sp_q(0, 7022); <waiting ...>
+step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
+		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
+		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
+step s3p: SELECT sift.col_promote('iso_sp_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3m: SELECT sift.col_merge('iso_sp_idx', true) >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s2ui: SELECT pg_advisory_unlock(7022);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1i: <... completed>
+agree|parallel|stored
+-----+--------+------
+t    |t       |t     
+(1 row)
+
+step s1c: COMMIT;
