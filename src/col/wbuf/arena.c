@@ -49,6 +49,7 @@
 #define ARENA_SLOT_PAGES	(ARENA_DIR_PAGES + ARENA_DATA_PAGES)
 #define ARENA_HEADROOM		((Size) 256 << 10)	/* a slot is full this far below its capacity: the rows written after the seal was asked for still find room */
 #define ARENA_NAME			"sift_col_wbuf_arena_4"
+#define ARENA_GROW_RETRY_MS	1000
 
 typedef struct ArenaSlot
 {
@@ -101,6 +102,7 @@ static bool arena_failed;			/* the directory of the shared tables could not hold
 static char *segmem[ARENA_SEGS];	/* this backend's mapping of each segment */
 static int	nmapped;				/* the segments this backend has mapped, from the first */
 static int	slot_hint;				/* the slot this backend used last */
+static TimestampTz grow_refused_at;	/* when the system last had no memory for a segment of the pool: this backend asks again after ARENA_GROW_RETRY_MS, not at every row */
 static int	rebuilding = -1;		/* the slot this backend holds the rebuild of */
 
 static void
@@ -117,9 +119,10 @@ arena_init(SIFT_DSM_INIT_ARGS)
 }
 
 /*
- * Joined without a subtransaction (sift_dsm_attach goes without the table under a write statement, and the first row of a backend is written by one). NULL where the directory
- * of the shared tables cannot hold it: the backend goes without, its rows are written with their values and it finds no row of another backend's references (the rows of a
- * reference that is not found are built again from the heap)
+ * Joined without a subtransaction (sift_dsm_attach goes without the table under a write statement, and the first row of a backend is written by one). NULL where the table cannot be
+ * had (the directory of the shared tables cannot hold it, or the system has no memory for it: sift_dsm_try catches that): the backend goes without, its rows are written with their
+ * values and it finds no row of another backend's references (the rows of a reference that is not found are built again from the heap). The arena is not a cache of values that cost
+ * a statement to lose, but a shortage of it never fails or waits the statement that writes: it only has the rows carry their values, which is what a buffer without the setting does.
  */
 static Arena *
 arena_get(void)
@@ -156,18 +159,19 @@ seg_map(int i)
 }
 
 /*
- * Maps the segments made since this backend looked, and makes the next one when a page was wanted and none was free. With no spinlock held; joins raise the error of the shortage of
- * dynamic shared memory.
+ * Maps the segments made since this backend looked, and makes the next one when a page was wanted and none was free. With no spinlock held. False when the pool has no page more than
+ * before (the system has no memory for a segment, or this backend asked a moment ago and it had none): the caller goes without.
  */
-static void
+static bool
 arena_sync(Arena *a)
 {
 	int			n;
+	int			mapped = nmapped;
 	bool		grow;
 
 	SpinLockAcquire(&a->mutex);
 	n = a->nsegs;
-	grow = a->want_grow && n < ARENA_SEGS;
+	grow = a->want_grow && n < ARENA_SEGS && (grow_refused_at == 0 || TimestampDifferenceExceeds(grow_refused_at, GetCurrentTimestamp(), ARENA_GROW_RETRY_MS));
 	if (!grow)
 		a->want_grow = false;
 	SpinLockRelease(&a->mutex);
@@ -175,13 +179,16 @@ arena_sync(Arena *a)
 		if (seg_map(nmapped) == NULL)
 			ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED), errmsg("sift: %s", sift_dsm_why())));	/* a segment that exists is found, not made */
 	if (!grow)
-		return;
-	if (seg_map(n) == NULL)		/* the directory is full: the pool stays as it is */
+		return nmapped > mapped;
+	if (seg_map(n) == NULL)		/* the directory is full, or the system has no memory for the segment: the pool stays as it is */
 	{
+		if (grow_refused_at == 0)
+			ereport(LOG, (errmsg("sift: the pool of the write buffer references takes no more memory: %s", sift_dsm_why())));
+		grow_refused_at = GetCurrentTimestamp();
 		SpinLockAcquire(&a->mutex);
 		a->want_grow = false;
 		SpinLockRelease(&a->mutex);
-		return;
+		return nmapped > mapped;
 	}
 	SpinLockAcquire(&a->mutex);
 	if (a->nsegs == n)
@@ -196,6 +203,7 @@ arena_sync(Arena *a)
 	}
 	a->want_grow = false;
 	SpinLockRelease(&a->mutex);
+	return true;
 }
 
 static inline char *
@@ -340,7 +348,8 @@ slot_enter(Arena *a, Relation index, uint64 gen, bool create)
 			}
 		}
 		SpinLockRelease(&a->mutex);
-		arena_sync(a);
+		if (!arena_sync(a))
+			return NULL;
 	}
 }
 
@@ -498,7 +507,8 @@ wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, Transacti
 			return not_stored(a);
 		}
 		SpinLockRelease(&a->mutex);
-		arena_sync(a);
+		if (!arena_sync(a))
+			return not_stored(a);
 	}
 	res = slot_full(s, limit) ? ARENA_FULL : ARENA_STORED;
 	SpinLockRelease(&a->mutex);

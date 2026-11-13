@@ -94,7 +94,7 @@ rollup_init(SIFT_DSM_INIT_ARGS)
 	SpinLockInit(&sh->lock);
 }
 
-/* NULL where the directory of the shared tables cannot hold it: a request for a refresh is not made, and the worker (which asks with sift_dsm_join) says why it cannot work */
+/* NULL where the shared table cannot be had (the directory cannot hold it, or the system has no memory for it): a request for a refresh is not made, and the worker has no queue to serve and ends */
 static RollupShared *
 try_shared(void)
 {
@@ -153,12 +153,27 @@ release_worker(Oid db)
 	SpinLockRelease(&sh->lock);
 }
 
+static bool
+register_worker(void)
+{
+	BackgroundWorker bw = {0};
+	BackgroundWorkerHandle *handle;
+
+	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	bw.bgw_restart_time = BGW_NEVER_RESTART;
+	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
+	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_col_rollup_worker_main");
+	snprintf(bw.bgw_name, BGW_MAXLEN, "sift rollup refresh (database %u)", MyDatabaseId);
+	snprintf(bw.bgw_type, BGW_MAXLEN, "sift rollup refresh");
+	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
+	return RegisterDynamicBackgroundWorker(&bw, &handle);
+}
+
 static void
 launch_worker(void)
 {
 	RollupShared *sh = shared();
-	BackgroundWorker bw = {0};
-	BackgroundWorkerHandle *handle;
 	TimestampTz now = GetCurrentTimestamp();
 	int			slot = -1;
 
@@ -175,19 +190,20 @@ launch_worker(void)
 	else
 		slot = -1;
 	SpinLockRelease(&sh->lock);
-	if (slot < 0)
-		return;
-	bw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	bw.bgw_restart_time = BGW_NEVER_RESTART;
-	snprintf(bw.bgw_library_name, BGW_MAXLEN, "pg_sift");
-	snprintf(bw.bgw_function_name, BGW_MAXLEN, "sift_col_rollup_worker_main");
-	snprintf(bw.bgw_name, BGW_MAXLEN, "sift rollup refresh (database %u)", MyDatabaseId);
-	snprintf(bw.bgw_type, BGW_MAXLEN, "sift rollup refresh");
-	memcpy(bw.bgw_extra, &MyDatabaseId, sizeof(Oid));
-	if (!RegisterDynamicBackgroundWorker(&bw, &handle))
+	if (slot >= 0 && !register_worker())
 		release_worker(MyDatabaseId);
 }
+
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_col_rollup_worker);
+
+/* sift._test_col_rollup_worker(): a worker of this database that no request made, which finds the shared table as the server has it (made by none, or not to be made) */
+Datum
+sift_test_col_rollup_worker(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(register_worker());
+}
+#endif
 
 /* a request of the database (of the index, when given) not taken yet, marked busy; false when there is none */
 static bool
@@ -233,9 +249,11 @@ finish(const RollupReq *r, bool done, uint64 newgen)
 static void
 worker_exit(int code, Datum arg)
 {
-	RollupShared *sh = shared();
+	RollupShared *sh = try_shared();
 	Oid			db = DatumGetObjectId(arg);
 
+	if (sh == NULL)
+		return;
 	/* the requests this worker had taken die with it */
 	SpinLockAcquire(&sh->lock);
 	for (int i = 0; i < sh->nreq;)
@@ -336,6 +354,11 @@ sift_col_rollup_worker_main(Datum main_arg)
 	BackgroundWorkerUnblockSignals();
 	BackgroundWorkerInitializeConnectionByOid(db, InvalidOid, 0);
 	before_shmem_exit(worker_exit, ObjectIdGetDatum(db));
+	if (try_shared() == NULL)
+	{
+		ereport(LOG, (errmsg("sift: the rollup refresh worker has no queue to serve: %s", sift_dsm_why())));
+		return;
+	}
 	while (pop(db, InvalidOid, &r))
 		process(&r);
 }

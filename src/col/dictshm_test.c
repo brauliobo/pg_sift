@@ -22,6 +22,8 @@
 #include "col/dictshm.h"
 #include "col/dictshm_int.h"
 #include "col/dsmreg.h"
+#include "access/xact.h"
+#include "agg/lookup_int.h"
 
 /* The records some backend reads in place, and the pins on them (all backends) */
 void
@@ -208,6 +210,43 @@ sift_test_dsm_join(PG_FUNCTION_ARGS)
 {
 	sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init);
 	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(sift_test_dsm_caller);
+
+/*
+ * sift._test_dsm_caller(caller, parallel): whether the table of a caller of the registry could be had by a backend, as that caller asks for it (inside a parallel operation, where no
+ * subtransaction can start, when parallel). Never an error, which is the point: lookup_rows and lookup_dim (the pools of the lookups, agg/lookshm.c), dictionary (the directory of
+ * the dictionaries), dictionary_ring (its ring) and dictionary_worker (what a parallel worker joins).
+ */
+Datum
+sift_test_dsm_caller(PG_FUNCTION_ARGS)
+{
+	char	   *caller = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	bool		parallel = PG_GETARG_BOOL(1),
+				got = false;
+	Dshm	   *s;
+
+	if (parallel)
+		EnterParallelMode();
+	if (strcmp(caller, "lookup_rows") == 0)
+		got = lookshm_bytes(LOOK_ROWS) > 0;
+	else if (strcmp(caller, "lookup_dim") == 0)
+		got = lookshm_bytes(LOOK_DIM) > 0;
+	else if (strcmp(caller, "dictionary") == 0)
+		got = dshm_get() != NULL;
+	else if (strcmp(caller, "dictionary_ring") == 0)
+		got = (s = dshm_get()) != NULL && ring_get(s);
+	else if (strcmp(caller, "dictionary_worker") == 0)
+	{
+		sift_dictshm_join();
+		got = dshm_get() != NULL;
+	}
+	else
+		elog(ERROR, "unknown caller %s", caller);
+	if (parallel)
+		ExitParallelMode();
+	PG_RETURN_BOOL(got);
 }
 
 PG_FUNCTION_INFO_V1(sift_test_dsm_layout);

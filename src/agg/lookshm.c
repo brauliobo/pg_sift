@@ -110,10 +110,8 @@ shm_init(SIFT_DSM_INIT_ARGS)
 static LookShm *
 shm_get(LookPool pool)
 {
-	/* a parallel operation cannot start the subtransaction of the attach: it joins the directory its leader found */
 	if (shm[pool] == NULL && !shm_failed[pool])
-		shm[pool] = IsInParallelMode() ? sift_dsm_join(pool_name[pool], sizeof(LookShm), shm_init) :
-			sift_dsm_attach(pool_name[pool], sizeof(LookShm), shm_init, &shm_failed[pool], pool_what[pool], pool_guc[pool], false);
+		shm[pool] = sift_dsm_attach(pool_name[pool], sizeof(LookShm), shm_init, &shm_failed[pool], pool_what[pool], pool_guc[pool], false);
 	return shm[pool];
 }
 

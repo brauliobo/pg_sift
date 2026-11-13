@@ -100,20 +100,17 @@ dshm_get(void)
 }
 
 /*
- * The ring of the directory s, at the size the directory records. A parallel worker, or the leader inside the parallel operation, cannot make it (the registry
- * needs a subtransaction): it joins a ring that is there, and goes without one that is not.
+ * The ring of the directory s, at the size the directory records. A parallel worker, or the leader inside the parallel operation, takes a ring that is there and does not make one
+ * (it is made on the first record kept, by a backend that is not in a parallel operation).
  */
 bool
 ring_get(Dshm *s)
 {
 	if (ring != NULL)
 		return true;
-	if (ring_failed)
+	if (ring_failed || (IsInParallelMode() && !s->ring_ready))
 		return false;
-	if (IsInParallelMode())
-		ring = s->ring_ready ? sift_dsm_join(DSHM_RING_NAME, s->size, ring_init) : NULL;
-	else
-		ring = sift_dsm_attach(DSHM_RING_NAME, s->size, ring_init, &ring_failed, "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", false);
+	ring = sift_dsm_attach(DSHM_RING_NAME, s->size, ring_init, &ring_failed, "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", false);
 	return ring != NULL;
 }
 
@@ -131,8 +128,7 @@ sift_dictshm_prepare(void)
 void
 sift_dictshm_join(void)
 {
-	dshm = sift_dsm_join(DSHM_NAME, sizeof(Dshm), dshm_init);
-	if (dshm->ring_ready)
+	if ((dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed, "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", false)) != NULL && dshm->ring_ready)
 		ring_get(dshm);
 }
 

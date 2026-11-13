@@ -12,18 +12,22 @@
  * table (an entry of a library that was replaced under the server, or of a size that a setting left, lasts as long as the backends of that library, and
  * no longer). Every change of the library or of a size is a table of its own; none is an error.
  *
- * A cache must not turn into an error: whatever fails in sift_dsm_attach (no room in /dev/shm, no more segments) is caught in a subtransaction, which also
- * gives back the locks, and the backend goes without the table.
+ * A cache must not turn into an error. The shortage of what a table is made of (no room in /dev/shm, no more segments, a limit of files or memory: SQLSTATE class 53, from the
+ * creation of the segment) is caught where it is raised, in sift_dsm_try: no table, and the reason in sift_dsm_why; the callers go without it, in a parallel worker, in a
+ * background worker and under a statement that writes, none of which can start the subtransaction of sift_dsm_attach, which catches whatever else fails and also gives back the locks.
+ * The directory itself is a segment of the registry of PostgreSQL, made once by the first backend that asks (a shortage there is an error where no subtransaction can be started).
  */
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/dsm.h"
 #include "storage/dsm_registry.h"
 #include "storage/lwlock.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/varlena.h"
 
 #include "col/am.h"
 #include "col/dsmreg.h"
@@ -65,6 +69,29 @@ dir_init(SIFT_DSM_INIT_ARGS)
 
 static const char *why = "";
 static const char *why_hint = NULL;
+static char why_text[256];
+
+#ifdef SIFT_TESTING
+/* sift.test_dsm_fail: parts of table names (comma separated) whose segment cannot be made, as when /dev/shm is full; "bgworker:" before a part: for the background workers only */
+char	   *sift_test_dsm_fail = NULL;
+
+static bool
+test_fails(const char *name)
+{
+	List	   *parts = NIL;
+	bool		fails = false;
+
+	if (sift_test_dsm_fail == NULL || sift_test_dsm_fail[0] == '\0' || !SplitIdentifierString(pstrdup(sift_test_dsm_fail), ',', &parts))
+		return false;
+	foreach_ptr(char, part, parts)
+	{
+		bool		worker = strncmp(part, "bgworker:", 9) == 0;
+
+		fails |= (!worker || MyBackendType == B_BG_WORKER) && strstr(name, part + (worker ? 9 : 0)) != NULL;
+	}
+	return fails;
+}
+#endif
 
 const char *
 sift_dsm_why(void)
@@ -169,6 +196,55 @@ hold(dsm_segment *seg, DirEnt *e)
 	pg_atomic_fetch_add_u32(&e->users, 1);
 }
 
+/*
+ * The segment of a table, NULL where the system cannot make it (why says it). The attempt has a resource owner of its own: the descriptor that a failed creation leaves is released here, and
+ * a transaction that commits does not report it as a leak. Any error that is not a shortage goes on.
+ */
+static dsm_segment *
+create_segment(const char *name, Size size)
+{
+	MemoryContext cx = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner,
+				attempt = ResourceOwnerCreate(owner, "sift shared table");
+	dsm_segment *seg = NULL;
+	uint32		holdoff = InterruptHoldoffCount;
+
+	CurrentResourceOwner = attempt;
+	PG_TRY();
+	{
+#ifdef SIFT_TESTING
+		if (test_fails(name))
+			ereport(ERROR, (errcode(ERRCODE_DISK_FULL), errmsg("could not resize shared memory segment \"/PostgreSQL.0\" to %zu bytes: No space left on device (test)", size)));
+#endif
+		seg = dsm_create(size, 0);
+		dsm_pin_mapping(seg);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(cx);
+		e = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(e->sqlerrcode) != ERRCODE_INSUFFICIENT_RESOURCES)
+		{
+			FreeErrorData(e);
+			PG_RE_THROW();
+		}
+		FlushErrorState();
+		InterruptHoldoffCount = holdoff;	/* errfinish zeroed it, and the caller holds AddinShmemInitLock */
+		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
+		strlcpy(why_text, e->message, sizeof(why_text));
+		why = why_text;
+		why_hint = "Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).";
+		FreeErrorData(e);
+		seg = NULL;
+	}
+	PG_END_TRY();
+	CurrentResourceOwner = owner;
+	ResourceOwnerDelete(attempt);
+	return seg;
+}
+
 void *
 sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 {
@@ -203,7 +279,12 @@ sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 			MemoryContextSwitchTo(cx);
 			return NULL;
 		}
-		seg = dsm_create(size, 0);
+		if ((seg = create_segment(name, size)) == NULL)
+		{
+			LWLockRelease(AddinShmemInitLock);
+			MemoryContextSwitchTo(cx);
+			return NULL;
+		}
 #if PG_VERSION_NUM >= 190000
 		init(dsm_segment_address(seg), NULL);
 #else
@@ -277,6 +358,18 @@ deferred_note(const char *name)
 }
 #endif
 
+/* The backend goes without the table for good: one line says why */
+static void
+shortage(bool *failed, const char *what, const char *guc, const char *message, const char *hint)
+{
+	*failed = true;
+	ereport(LOG,
+			(errmsg("sift: %s are not shared with other backends: %s", what, message),
+			 hint ? errhint("%s", hint)
+			 : guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
+			 : errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).")));
+}
+
 void *
 sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail)
 {
@@ -284,9 +377,14 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 	ResourceOwner owner = CurrentResourceOwner;
 	void	   *volatile s = NULL;
 
-	/* a subtransaction cannot start where there is no transaction or a parallel operation, and must not under a write (sift_col_writing); the next statement of the backend tries again */
+	/* a subtransaction cannot start where there is no transaction or a parallel operation: sift_dsm_try catches the shortage itself, and the backend goes without the table for good, as after a failure below */
 	if (!IsTransactionState() || IsInParallelMode())
-		return NULL;
+	{
+		if ((s = sift_dsm_try(name, size, init)) == NULL)
+			shortage(failed, what, guc, why, why_hint);
+		return s;
+	}
+	/* and one must not start under a write (sift_col_writing): its commit advances the command id under the statement; the next statement of the backend tries again */
 	if (sift_col_writing())
 	{
 #ifdef SIFT_TESTING
@@ -315,13 +413,8 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 		RollbackAndReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(cx);
 		CurrentResourceOwner = owner;
-		*failed = true;
 		s = NULL;
-		ereport(LOG,
-				(errmsg("sift: %s are not shared with other backends: %s", what, e->message),
-				 e->hint ? errhint("%s", e->hint)
-				 : guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
-				 : errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).")));
+		shortage(failed, what, guc, e->message, e->hint);
 		FreeErrorData(e);
 	}
 	PG_END_TRY();

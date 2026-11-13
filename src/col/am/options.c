@@ -8,6 +8,7 @@
 #include "utils/varlena.h"
 #include "col/vstore/vstore.h"
 #include "col/dictshm.h"
+#include "col/dsmreg.h"
 #include "col/leafshm.h"
 #include "col/point.h"
 #include "col/hll.h"
@@ -432,6 +433,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_gkept_fail",
 							 "Testing: extending the kept order of the write buffer's rows fails after its new arrays are made and before the order takes them.",
 							 NULL, &sift_test_col_gkept_fail, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomStringVariable("sift.test_dsm_fail",
+							   "Testing: the shared tables whose name has one of these parts (comma separated; bgworker: before a part: background workers only) cannot be made, as when /dev/shm is full.",
+							   NULL, &sift_test_dsm_fail, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_dict_shared",
 							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = every dictionary shared, 2 = the table cannot be had.",
 							NULL, &sift_test_col_dict_shared, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
