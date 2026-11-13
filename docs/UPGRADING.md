@@ -22,6 +22,7 @@ first release that reads each: [FORMATS.md](FORMATS.md).
 | 4.3 to 4.3.1 | the library and one statement of the extension SQL (`sift.table_option_values` gets its replica identity: with a `FOR ALL TABLES` publication, 4.2.0 to 4.3.0 failed every `DROP INDEX` and `DROP TABLE` of the database, `ALTER EXTENSION pg_sift UPDATE` repairs it), no new object, no format changes; a read inside a statement that deletes rows (an `AFTER ROW` trigger, an `AFTER STATEMENT` trigger that fires before the index's own, a function the statement calls) no longer counts the rows the statement deleted, through a `sift_col` index with `track_changes` (4.0.0 to 4.3.0) | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX`, nothing stored is wrong; until then `ALTER INDEX <index> SET (track_changes = 'off')` on the indexes read that way; going back to 4.3: install its files, restart, `ALTER EXTENSION pg_sift UPDATE TO '4.3'` (the cause returns) ([notes](releases/v4.3.1.md)) |
 | 4.3.1 to 4.3.2 | the library only: the extension SQL goes from 4.3.1 to 4.3.2 with no new object, no format changes; a correlated sub-select over a join with a derived table that PostgreSQL does not pull up (`GROUP BY`, `DISTINCT`, `UNION`, `HAVING`) no longer returns the answer of an earlier outer row (4.0.5, 4.1.4, 4.2.2, 4.3.0 and 4.3.1) | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX`, nothing stored is wrong; until then `SET sift.enable_agg = off` for such a query; going back to 4.3: install its files, restart, `ALTER EXTENSION pg_sift UPDATE TO '4.3'` (the cause returns) ([notes](releases/v4.3.2.md)) |
 | 4.3.2 to 4.3.3 | the library only: the extension SQL goes from 4.3.2 to 4.3.3 with no new object, no format changes; a merge of a `sift_col` index that took the maintenance lock while a rewrite that chose `key_cut` again was still to commit no longer fails with `sift index "<name>" is corrupted` (4.0.0 to 4.3.2) | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX`, nothing stored is known to be wrong; until then a failed `col_merge`, `VACUUM` or maintenance worker step is retried and succeeds; going back to 4.3: install its files, restart, `ALTER EXTENSION pg_sift UPDATE TO '4.3'` (the cause returns) ([notes](releases/v4.3.3.md)) |
+| 4.3 to 5.0 (also from 4.3.1, 4.3.2 and 4.3.3) | a new minor: the scope index and scope copy (experimental), named projections, a shared store for strings, reads under writers without the heap, a rolling rewrite; the extension SQL goes from 4.3 to 5.0 (two event triggers, new functions and tables); new column format minors 45, 46 and 49 (47 is unassigned and 48 reserved; nothing writes either) written only by the features that need them (4.3 and older refuse them); three options ignored and one setting removed | install the files, restart the server (a standby too), then `ALTER EXTENSION pg_sift UPDATE` in each database; no `REINDEX` is needed; reset the ignored options and remove the setting ([what 4.3 deprecates and 5.0 ignores](#what-43-deprecates-and-50-ignores), [what 5.0 removes](#what-50-removes)); going back: [an older release](#4-an-older-release) ([notes](releases/v5.0.0.md)) |
 | a newer PostgreSQL major | `pg_upgrade` copies (or links) the files as they are | [pg_upgrade](#3-a-newer-postgresql-major) |
 | an older pg_sift (a downgrade, or a standby that stays on an older release) | an older library refuses what it cannot read | [preflight with `--to`](#4-an-older-release) |
 
@@ -44,9 +45,9 @@ database has a blocker (or a warning with `--strict`) and 2 when a database coul
 |---|---|---|
 | `version` | `pg_extension` against `sift.version()` | `warn`: the library is newer than the extension (`ALTER EXTENSION pg_sift UPDATE`) or the new release is available; `blocker`: the library is older than the extension scripts |
 | `index`, `table` | the metapage format and the column formats of every `sift` index, `sift_col` index and `sift_table` | `blocker`: this library cannot open it (the error and its hint are the advice); with `--to`, the first release that reads it is newer than the target |
-| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut` or `hll_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
+| `option` | options that only units written afterwards follow | `warn`: `cube_minmax`, `rollup_columns`, `key_columns`, `order_columns`, `point_columns`, `point_tid_columns`, `key_cut` or `hll_columns` on an index with older units, JSON `paths` on segments before column format 6 (the advice is the command from `sift.upgrade_commands()`, which an extension older than 3.3 has after its update; the three removed options below are `reset` rows of it, `ALTER INDEX .. RESET`; a `sift_table` below the format of its schema is a `table` row with `VACUUM FULL`), the deprecated `mutable_limit` |
 | `setting` | `sift.*` in the server configuration, the session, `ALTER DATABASE` and `ALTER ROLE` | `warn`: a setting the library does not define (removed or renamed), a feature switched off (a boolean setting that defaults on), `sift.col_format_minor` kept below the default |
-| `trigger` | with `--to` a release before 3.3: the event triggers of 3.3 | `blocker`: the older library has not their function and would fail every `ALTER TABLE` and `CREATE TRIGGER`; `ALTER EVENT TRIGGER x DISABLE` |
+| `trigger` | with `--to` a release before 3.3: the event triggers of 3.3; before 5.0: `sift_col_build_lock` and `sift_col_value_store_sql_drop` | `blocker`: the older library has not their function and would fail every `ALTER TABLE` and `CREATE TRIGGER` (3.3), every `CREATE INDEX` and every `DROP INDEX` (5.0); `ALTER EVENT TRIGGER x DISABLE`, `ENABLE` when the newer library runs again |
 | `test` | test-only settings and the extension `pg_sift_test` | `warn`: remove them; they need the test build of the library |
 
 Run it before and after the update: the second run must have no `warn` the first one explained.
@@ -204,9 +205,9 @@ runs `pg_sift--4.1--4.2.sql` and the new library reads the indexes of 4.1 and ol
 
 **What to do.**
 
-- Update as in section 2: install, restart (a standby too), `ALTER EXTENSION pg_sift UPDATE` in each database, then `scripts/upgrade-check.sh` (it warns for the three deprecated options below and for the test setting `sift.test_col_legacy_options`; nothing blocks). **Update the standbys and every node that reads the index before the primary**, or set `sift.col_wbuf_ref = off` and `sift.col_auto_connect = off` (and `sift.col_format_minor = 14` for the other sections of minor 44) on the primary until they are updated.
+- Update as in section 2: install, restart (a standby too), `ALTER EXTENSION pg_sift UPDATE` in each database, then `scripts/upgrade-check.sh` (it warns for the three ignored options below; nothing blocks). **Update the standbys and every node that reads the index before the primary**, or set `sift.col_wbuf_ref = off` and `sift.col_auto_connect = off` (and `sift.col_format_minor = 14` for the other sections of minor 44) on the primary until they are updated.
 - `REINDEX INDEX CONCURRENTLY` is worth it for an index with a serial id, for an index whose table is read by `WHERE col = x ORDER BY ts LIMIT n` through a b-tree you want to drop, and for a child table whose foreign key you want connected; not for the rest. Reset the three deprecated options first (below). A `REINDEX` after `ALTER INDEX x SET (connect = 'off')` leaves an index unconnected.
-- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and removed in 4.4: [What 4.3 deprecates and 4.4 removes](#what-43-deprecates-and-44-removes). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
+- The options `order_columns`, `point_columns` and `key_cut_rows` are accepted and ignored or replaced by 4.3 and ignored by 5.0 (the names stay accepted, with a `NOTICE`): [What 4.3 deprecates and 5.0 ignores](#what-43-deprecates-and-50-ignores). `key_order = 'col'` of one column no longer builds the point directory: set `point_tid_columns` on the key for lists of keys.
 
 ### Going back to 4.2
 
@@ -232,22 +233,39 @@ scripts/upgrade-check.sh --to 4.2 app
 psql -d app -c "SELECT sift.col_verify('events_col', true)"
 ```
 
+- **An index with a `scope` (5.0) cannot go back to a release before 5.0:** it refuses the option and the scope segments, and `sift.col_format_minor = 14` cannot write them (the `REINDEX` is refused, naming the reason). The preflight (`sift.upgrade_check('4.3')`) advises `ALTER INDEX x RESET (scope)`, then `SET sift.col_format_minor = 14` and `REINDEX INDEX x`, which writes the entity segments the older release reads; the reads of the scope go through the join again (the scope copy of `sift.scope_create` is a table and needs nothing).
 - The `REINDEX` under `sift.col_format_minor = 14` writes no seekable chunk and no section of minors 15 and above (so no minor 44), and an index built so does not track changes (its `NOTICE` says it), so its reads check the heap. After the 4.2 files run, `ALTER SYSTEM RESET sift.col_format_minor` and `REINDEX` the index again to log its changes again; keep `sift.col_format_minor = 14` while any 4.3 library still writes.
 - `ALTER INDEX x SET (connect = 'off')` drops the dependency on the parent index, and the parent keeps its journal (minor 44) until its own `REINDEX`, which is why step 3 rebuilds the parent too. `sift.col_wbuf_ref = off` does not turn a buffer that holds references into one that does not: the `REINDEX` of step 3 does, or its promotion.
 - A standby that stays on 4.2 needs steps 2 and 3 on its primary before anything is written, and `sift.col_format_minor` set there for every later write.
 - Settings the 4.3 library accepts and 4.2 does not know (`sift.col_wbuf_ref`, `sift.col_auto_connect`, `sift.agg_child_first`, `sift.agg_connect_found`, `sift.agg_dimmap_kb`, `sift.col_connect_refresh_pct`): remove them from `postgresql.conf` and from role and database settings when the 4.2 files are installed, as for any setting a release does not define.
 
-## What 4.3 deprecates and 4.4 removes
+## What 4.3 deprecates and 5.0 ignores
 
-Three `sift_col` options are accepted and ignored by 4.3 and are removed in 4.4, when an `ALTER INDEX .. SET` or a `CREATE INDEX` that names one is refused. A `CREATE INDEX` or a `REINDEX` that names one says so in its `NOTICE`, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
+Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.0, which keeps accepting them so that nothing breaks: an index that stores one opens, takes `REINDEX` and `ALTER INDEX` of another option, and a dump that names one restores. A `CREATE INDEX` or `ALTER INDEX` that names one says so in a `NOTICE` (`reloption-removed`; so does the restore of a dump), `REINDEX` of an index that stores one is silent, and `scripts/upgrade-check.sh` lists each index that carries one as a warning with the `ALTER INDEX .. RESET` that clears it. Indexes built before keep reading as they are; `REINDEX` writes the layout the defaults choose.
 
-| Option | What 4.3 does | What to do before 4.4 |
+| Option | What 4.3 and 5.0 do | What to do |
 |---|---|---|
 | `order_columns` | writes no sorted run; the order arrays (`order_array_columns`, chosen by the build) answer a top-N, a range and an `OFFSET` | `ALTER INDEX .. RESET (order_columns)`; keep `order_array_columns` if you set it |
 | `point_columns` | lists its columns as heap addresses, as `point_tid_columns` does | set `point_tid_columns` to the same columns and reset `point_columns` |
 | `key_cut_rows` | the units aim at the rows of an average superblock | `ALTER INDEX .. RESET (key_cut_rows)` |
 
-`order_layout` and `sift.col_format_minor` stay through 4.4. The setting `sift.test_col_legacy_options`, which makes a build honor the three options and which the test clusters of this project set, is for tests only and goes away with them; do not set it on a server.
+`order_layout` and `sift.col_format_minor` stay.
+
+## What 5.0 writes that 4.3 does not read
+
+Three features write column formats that 4.3 and older refuse (`sift.upgrade_check('4.3')` lists each index with its command; [FORMATS](FORMATS.md)):
+
+| what | column format | to go back to 4.3 | to go back to 4.2 or older |
+|---|---|---|---|
+| a `scope` option | 45 (49 for a scope of two paths) | `ALTER INDEX x RESET (scope)`, `SET sift.col_format_minor = 14` and `REINDEX`, as the preflight advises (the reads of the scope go through the join again) | the same |
+| strings held by a shared value store | 46 | `SET sift.col_value_store = off` and `REINDEX` the members: the strings are written in the segments, change tracking and the structures of minors 15 to 44 stay | `sift.col_format_minor = 14` and `REINDEX` |
+
+`sift.col_value_store = off` is the narrow switch: it stops only the store. `sift.col_format_minor = 14` stops the store too, and with it change tracking (a build says so in a `NOTICE` and its reads check the heap) and every structure of minors 15 and above, so it is for a release before 4.3 only.
+
+## What 5.0 removes
+
+**`sift.col_auto_merge_dirty_pct` is removed.** It was the percent of the units of a `sift_col` index holding a dead row above which the automatic rewrite ran (30). Under churn every unit holds one, so the rule never told a rewrite that pays from one that does not; a unit with a dead row is now the reason and the pace is the one that stayed: `sift.col_auto_merge_wal_pct` (which the reads that have cost half of the rewrite skip) and the snapshots that hold blocks. An index with dead rows in under 30% of its units, which waited for those reads, is rewritten when the budget allows, as one with more was. The index WAL of the write benchmark does not change.
+It is refused and dropped exactly as `sift.enable_col` of item 8 of [what 4.2 changes](#what-42-changes) (`ERROR: invalid configuration parameter name "sift.col_auto_merge_dirty_pct"`, `DETAIL: "sift" is a reserved prefix.`; a stored value in `postgresql.conf`, `postgresql.auto.conf` or a role or database setting does not stop the server or a login and is dropped with a `WARNING` in every session), and the queries and commands of item 8 with that name find and clear it. A `pg_dumpall` of a cluster that stored it as a database or role setting restores with that one `ERROR` for the `ALTER DATABASE .. SET` or `ALTER ROLE .. SET` line (psql goes on); `scripts/upgrade-check.sh` lists each as a blocker, before the update. *Files, `REINDEX`:* no, it is not a reloption and no segment records it. *Off:* not applicable.
 
 ## 3. A newer PostgreSQL major
 
@@ -429,6 +447,8 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 41 (a compact chunk in an order array; `order_layout` auto, the default, writes it for spread keys such as a timestamp) | 4.0; 3.7 and older refuse the segments; `order_layout = 'whole'` and a REINDEX, or `sift.col_format_minor` 14, write what they read |
 | column format 42 (the order array of a text column names its strings by dictionary code) | 4.0; 3.7 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read |
 | column format 44 (the key journal of a connected parent index and the found flags of a connected child, a write buffer of references to heap tuples, seekable and positional order chunks and the packed table of groups of the second order) | 4.3; 4.2 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read, with `connect = 'off'` and `sift.col_wbuf_ref = off` for the connection and the references |
+| column format 45 (a scope index: the derived key of a scope and its scope segments) and 49 (a scope of two paths: three stamps in a segment) | 5.0; 4.3 and older refuse the segments; `ALTER INDEX x RESET (scope)` and `REINDEX` write the entities they read |
+| column format 46 (strings held by a shared value store) | 5.0; 4.3 and older refuse the segments and the store; `SET sift.col_value_store = off` and `REINDEX` write the strings in the segments (minor 44 at the most), `sift.col_format_minor` 14 does it for a release before 4.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 
@@ -468,6 +488,14 @@ SELECT c.oid::regclass AS index FROM pg_class c JOIN pg_am a ON a.oid = c.relam,
 ```
 
 From 4.2 on the maintenance worker, `VACUUM` or a read that has to check the heap repairs it by itself (see the pg_upgrade section above): nothing to run.
+
+## Known issue of 4.0.0 to 4.3.2: a concurrent writer at a promotion left reads on the heap
+
+Fixed in 5.0; no patch release is planned. In 4.0.0 to 4.3.2 a `sift_col` index with `track_changes` that promoted its write buffer while a transaction that had inserted some of the rows was still open wrote the segment without its stamp, and a merge that took such a segment in wrote its output without one too. A read of an unstamped segment decides its rows from the heap, not from the tombstone log, so the reads of an index under concurrent writers cost more (the heap pages of its rows) until a rewrite of the index (`REINDEX`, or a rewrite of those segments). **Answers were never wrong**: an unstamped segment is the safe side, and the three reads (heap-free, heap-checked, no sift plan) agree in every state of an inserter (open, committed, rolled back, subtransactions, prepared).
+
+5.0 keeps the wait in the directory entry of the segment (no new format minor; an older library reads it as an unstamped segment) and turns it into the stamp at the next maintenance step or merge once the transactions it waited for have committed, so install the files and restart; nothing to update in the database. A segment promoted by an older release stays unstamped until its next rewrite (`REINDEX`).
+
+A limit that stays: a transaction that **rolled back** after the promotion that waited for it leaves its segment unstamped until a rewrite of the segment, and so do transactions in doubt more than 63 transaction ids apart or more than 64 distinct ones. The rows a read returns are the heap's in every case.
 
 ## What is tested
 
