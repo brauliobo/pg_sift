@@ -345,6 +345,9 @@ typedef struct SegMembers
 	int64	   *id;				/* the member of each of the codes m */
 	uint32	   *at;				/* when the codes span few: the place in m of the code first + i, else (NULL) a bisection finds it */
 	bool		coded;			/* m are the codes of the dictionary */
+	bool		lut_made;
+	uint64	   *lut;			/* a bit for each integer up to lut_max that is one of m: the lookup kernel tests the member leaf of a unit by it (NULL: none, the rows are tested one by one) */
+	int64		lut_max;
 } SegMembers;
 
 #define SEG_CODES_SPAN_MAX	((uint64) 1 << 20)
@@ -449,6 +452,121 @@ member_of_code(const SegMembers *sm, int64 code)
 	return sm->id[(const int64 *) bsearch(&code, sm->m, sm->n, sizeof(int64), cmp_member) - sm->m];
 }
 
+/* The rows r < n of val whose member key is one of the members (a byte or a bit for each key of their range, else a search), ascending: a row that passes the test is stored and counted without a branch on it */
+static uint32
+rows_of_members(const Members *mem, const int64 *m, uint32 nm, const int64 *val, uint32 n, uint32 *out)
+{
+	const uint64 lo = (uint64) mem->lo,
+				span = mem->span;
+	const uint8 *flags = mem->flags;
+	const uint64 *bits = mem->bits;
+	uint32		k = 0;
+
+	/* the members are read into locals: the store to out would make the compiler load them again for each row */
+	if (flags != NULL)
+		for (uint32 r = 0; r < n; r++)
+		{
+			uint64		off = (uint64) val[r] - lo;
+
+			out[k] = r;
+			k += off < span ? flags[off] : 0;
+		}
+	else if (bits != NULL)
+		for (uint32 r = 0; r < n; r++)
+		{
+			uint64		off = (uint64) val[r] - lo;
+
+			out[k] = r;
+			k += off < span ? (bits[off >> 6] >> (off & 63)) & 1 : 0;
+		}
+	else
+		for (uint32 r = 0; r < n; r++)
+		{
+			out[k] = r;
+			k += member_of(mem, m, nm, val[r]);
+		}
+	return k;
+}
+
+/* The rows (ascending, n of them) that are not NULL in nulls and are live (NULL: all of them are) */
+static uint32
+rows_kept(uint32 *rows, uint32 n, const uint64 *nulls, const uint64 *live)
+{
+	uint32		k = 0;
+
+	for (uint32 j = 0; j < n; j++)
+		if (!(nulls != NULL && sift_col_bit_test(nulls, rows[j])) && (live == NULL || sift_col_bit_test(live, rows[j])))
+			rows[k++] = rows[j];
+	return k;
+}
+
+/* the largest integer a lookup table covers: its bits are the members' ones, 512 KB of them */
+#define SEG_LUT_MAX		((int64) 1 << 22)
+
+/* may the lookup kernel test the member leaf of a unit whose zone is z: its values are integers 0 .. SEG_LUT_MAX, and are not the strings of the unit (SIFT_COLZ_INLINE) */
+static inline bool
+lut_unit(const SiftCZone *z)
+{
+	return !(z->flags & (SIFT_COLZ_OVERFLOW | SIFT_COLZ_INLINE)) && z->nvals > z->nnull && z->min >= 0 && z->max <= SEG_LUT_MAX;
+}
+
+/* The table of the members for the units of a segment that lut_unit passes: the first call makes it, up to the largest value those units hold (the members are the codes of the dictionary for a string member) */
+static void
+seg_lut(SegMembers *sm, SiftColSegment *seg, int fk)
+{
+	int64		max = -1;
+
+	if (sm->lut_made)
+		return;
+	sm->lut_made = true;
+	if (sm->mem.bits == NULL)
+		return;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCZone	z;
+
+		sift_cseg_zone(seg, fk, u, &z);
+		if (lut_unit(&z))
+			max = Max(max, z.max);
+	}
+	if (max < 0)
+		return;
+	sm->lut_max = max;
+	sm->lut = palloc0((max / 64 + 2) * sizeof(uint64));
+	for (uint64 w = 0; w < (sm->mem.span + 63) / 64; w++)
+		for (uint64 b = sm->mem.bits[w]; b != 0; b &= b - 1)
+		{
+			int64		v = sm->mem.lo + (int64) (w * 64 + pg_rightmost_one_pos64(b));
+
+			if (v >= 0 && v <= max)
+				sift_col_bit_set(sm->lut, v);
+		}
+}
+
+/* The live rows of a unit whose member leaf c is tested by the lookup kernel: the codes of the leaf in 32 bits, a bit for each row, the rows of the bits that are not NULL and live, and the member of each */
+static void
+unit_rows_lut(const SegMembers *sm, const SiftCChunk *c, const uint64 *live, uint32 *out, uint32 *nout, int64 **ids)
+{
+	uint32	   *val = palloc(SIFT_CC_CAP32(c->n) * sizeof(uint32));
+	uint64	   *hit = palloc(SIFT_COL_NWORDS(c->n) * sizeof(uint64));
+
+	sift_cchunk_decode_u32(c, val);
+	sift_colk->lut[2](val, c->n, sm->lut, hit);
+	if (c->nulls != NULL)
+		sift_colk->bits_andnot(hit, c->nulls, SIFT_COL_NWORDS(c->n));
+	if (live != NULL)
+		sift_colk->bits_and(hit, live, SIFT_COL_NWORDS(c->n));
+	*nout = sift_colk->bits_to_idx(hit, SIFT_COL_NWORDS(c->n), 0, out);
+	if (*nout > 0)
+	{
+		*ids = palloc(*nout * sizeof(int64));
+		for (uint32 j = 0; j < *nout; j++)
+			(*ids)[j] = sm->mm == NULL ? (int64) val[out[j]] : member_of_code(sm, val[out[j]]);
+	}
+	pfree(hit);
+	pfree(val);
+}
+
 /*
  * The live rows of unit u (ascending) that may hold a member key: the cand[0..ncand) the point directory lists (rows of the unit), which the caller checks against the values it decodes, or, with no
  * directory (cand NULL), the rows of the unit whose member key is among the members, read from the leaf. NULL when none. A string member: *ids the member of each row returned
@@ -457,7 +575,7 @@ static uint32 *
 unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32 *cand, uint32 ncand, uint32 *nout, int64 **ids)
 {
 	const SiftColSBRef *ur = &seg->sbdir[u];
-	uint32	   *out = palloc(Max(cand != NULL ? ncand : ur->nrows, 1) * sizeof(uint32));
+	uint32	   *out = palloc((Max(cand != NULL ? ncand : ur->nrows, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
 	uint64	   *live = NULL;
 
 	*nout = 0;
@@ -495,39 +613,28 @@ unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32
 			sift_cseg_unit_fill(seg, u, v.chunk_off[fk], v.chunk_len[fk]);
 		if (v.chunk_len[fk] > 0 && sift_cunit_chunk(&v, fk, &c))
 		{
-			val = palloc((c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
-			if (own)
-				unit_member_ids(sm, &c, val);
+			if (!own && lut_unit(&z))
+				seg_lut(sm, seg, fk);
+			if (!own && sm->lut != NULL && lut_unit(&z))
+				unit_rows_lut(sm, &c, live, out, nout, ids);
 			else
-				sift_cchunk_decode(&c, val);
-			if (mem->flags != NULL)
-				for (uint32 r = 0; r < c.n; r++)
-				{
-					uint64		off = (uint64) val[r] - (uint64) mem->lo;
-
-					if (off < mem->span && mem->flags[off] && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
-						out[(*nout)++] = r;
-				}
-			else if (mem->bits != NULL)
-				for (uint32 r = 0; r < c.n; r++)
-				{
-					uint64		off = (uint64) val[r] - (uint64) mem->lo;
-
-					if (off < mem->span && ((mem->bits[off >> 6] >> (off & 63)) & 1) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) &&
-						(live == NULL || sift_col_bit_test(live, r)))
-						out[(*nout)++] = r;
-				}
-			else
-				for (uint32 r = 0; r < c.n; r++)
-					if (member_of(mem, m, n, val[r]) && !(c.nulls != NULL && sift_col_bit_test(c.nulls, r)) && (live == NULL || sift_col_bit_test(live, r)))
-						out[(*nout)++] = r;
-			if (*nout > 0)
 			{
-				*ids = palloc(*nout * sizeof(int64));
-				for (uint32 j = 0; j < *nout; j++)
-					(*ids)[j] = sm->mm == NULL || own ? val[out[j]] : member_of_code(sm, val[out[j]]);
+				val = palloc((c.n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+				if (own)
+					unit_member_ids(sm, &c, val);
+				else
+					sift_cchunk_decode(&c, val);
+				*nout = rows_of_members(mem, m, n, val, c.n, out);
+				if (c.nulls != NULL || live != NULL)
+					*nout = rows_kept(out, *nout, c.nulls, live);
+				if (*nout > 0)
+				{
+					*ids = palloc(*nout * sizeof(int64));
+					for (uint32 j = 0; j < *nout; j++)
+						(*ids)[j] = sm->mm == NULL || own ? val[out[j]] : member_of_code(sm, val[out[j]]);
+				}
+				pfree(val);
 			}
-			pfree(val);
 		}
 	}
 	if (live != NULL)
