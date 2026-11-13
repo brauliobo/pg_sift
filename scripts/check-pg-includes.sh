@@ -78,6 +78,7 @@ def compile_failures(root, jobs, flags):
     with tempfile.TemporaryDirectory() as gen:
         os.mkdir(os.path.join(gen, 'core'))  # the Makefile writes core/build_id.h; a fresh checkout has none
         open(os.path.join(gen, 'core', 'build_id.h'), 'w').write('#define SIFT_BUILD_ID "check"\n')
+        open(os.path.join(gen, 'core', 'code_id.h'), 'w').write('#define SIFT_CODE_ID "check"\n')
         cmd = [os.environ.get('CC', 'cc'), '-fsyntax-only', '-Werror=implicit-function-declaration', '-D_GNU_SOURCE',
                '-I' + os.path.join(root, 'src'), '-I' + gen, *flags]
 

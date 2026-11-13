@@ -1,11 +1,13 @@
 /*
- * col/dsmreg.h - a named table in the dynamic shared memory registry that a cache must not fail for (agg/verdict.c, col/leafshm.c, col/dictshm.c). The only
- * code that asks the registry: it registers the name with the size appended (col/dsmreg.c).
+ * col/dsmreg.h - a named table in dynamic shared memory that a cache must not fail for (agg/verdict.c, col/leafshm.c, col/dictshm.c). The only code that
+ * asks the registry of PostgreSQL: it keeps the tables in a directory by name, library identity and size, and gives back the ones nobody maps (col/dsmreg.c).
  */
 #ifndef SIFT_COL_DSMREG_H
 #define SIFT_COL_DSMREG_H
 
 #include "postgres.h"
+
+#include "storage/dsm.h"
 
 #if PG_VERSION_NUM >= 190000
 #define SIFT_DSM_INIT_ARGS		void *ptr, void *arg
@@ -23,6 +25,8 @@ extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool
 #ifdef SIFT_TESTING
 /* The identity of the library that asks for a table, as a test sets it (sift._test_dsm_layout): a library of another layout */
 extern char sift_dsm_test_build[16];
+/* Entry i of the directory of the tables (sift._test_dsm_entries): false past the last; a free entry has the handle DSM_HANDLE_INVALID */
+extern bool sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_handle *handle, uint32 *users);
 
 #define SIFT_DSM_DEFERRED_MAX	8
 typedef struct SiftDsmDeferred

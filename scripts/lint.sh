@@ -27,6 +27,7 @@ CHECKS=(
 	'neutral	scripts/check-neutral.sh'
 	'pgtest-auto-conf	d=$(mktemp -d) && trap "rm -rf $d" EXIT && echo "work_mem = 1GB" >$d/postgresql.auto.conf && scripts/pgtest.sh reset-auto-conf $d 2>/dev/null && [ ! -s $d/postgresql.auto.conf ]'
 	'limits		scripts/gen-limits.sh --check'
+	'code-id		scripts/code-id.sh --selftest'
 	'options		scripts/gen-options.sh --check && scripts/gen-options.sh --selftest'
 	'docs		scripts/lint-cache.sh docs . -- python3 scripts/gen-docs.py --check'
 	'messages	scripts/gen-messages.sh --check && scripts/gen-messages.sh --selftest'

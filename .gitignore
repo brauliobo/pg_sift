@@ -32,6 +32,7 @@ packaging/pg_sift/
 dist/
 !/src/agg/dist/
 src/*/build_id.h
+src/*/code_id.h
 __pycache__/
 *.pyc
 /sql/pg_sift--4.3--5.0.sql

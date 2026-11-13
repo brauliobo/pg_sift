@@ -559,6 +559,11 @@ SIFT_BUILD_ID ?= $(shell $(srcdir)/scripts/build-id.sh $(or $(srcdir),.))
 $(SRC)/core/build_id.h: FORCE
 	@echo '#define SIFT_BUILD_ID "$(SIFT_BUILD_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
 $(SRC)/core/handler.o: $(SRC)/core/build_id.h
+# The identity of the sources and of the options that change them (scripts/code-id.sh): the shared tables of a server are told apart by it (col/dsmreg.c); rewritten only when it changes, so that only dsmreg.o is rebuilt then.
+SIFT_CODE_ID = $(shell $(srcdir)/scripts/code-id.sh $(or $(srcdir),.) '$(filter -DSIFT_%,$(PG_CPPFLAGS))')
+$(SRC)/core/code_id.h: FORCE
+	@echo '#define SIFT_CODE_ID "$(SIFT_CODE_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
+$(SRC)/col/dsmreg.o: $(SRC)/core/code_id.h
 .PHONY: FORCE
 FORCE:
 

@@ -211,6 +211,8 @@ sift_test_dsm_join(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_dsm_layout);
+PG_FUNCTION_INFO_V1(sift_test_dsm_entries);
+PG_FUNCTION_INFO_V1(sift_test_dsm_alive);
 
 typedef struct LayoutProbe
 {
@@ -245,6 +247,39 @@ sift_test_dsm_layout(PG_FUNCTION_ARGS)
 	p = sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(1)), PG_GETARG_INT64(2), layout_probe_init);
 	sift_dsm_test_build[0] = '\0';
 	PG_RETURN_INT64((int64) p->stamp * 1000000 + ++p->calls);
+}
+
+/* sift._test_dsm_entries(): the tables the directory keeps, and how many backends map each */
+Datum
+sift_test_dsm_entries(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	const char *name, *build;
+	uint64		size;
+	dsm_handle	handle;
+	uint32		users;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; sift_dsm_entry(i, &name, &build, &size, &handle, &users); i++)
+	{
+		Datum		v[5] = {CStringGetTextDatum(name), CStringGetTextDatum(build), Int64GetDatum(size), Int64GetDatum(handle), Int32GetDatum(users)};
+		bool		n[5] = {false};
+
+		if (handle != DSM_HANDLE_INVALID)
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, v, n);
+	}
+	return (Datum) 0;
+}
+
+/* sift._test_dsm_alive(handle): the segment of a table is still there (a segment that nobody pins or maps is gone) */
+Datum
+sift_test_dsm_alive(PG_FUNCTION_ARGS)
+{
+	dsm_segment *seg = dsm_attach((dsm_handle) PG_GETARG_INT64(0));
+
+	if (seg != NULL)
+		dsm_detach(seg);
+	PG_RETURN_BOOL(seg != NULL);
 }
 
 #endif							/* SIFT_TESTING */

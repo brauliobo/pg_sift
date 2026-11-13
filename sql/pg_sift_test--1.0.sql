@@ -613,6 +613,10 @@ CREATE FUNCTION sift._test_dsm_join(name text, size int8) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_dsm_join' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dsm_layout(layout int4, name text, size int8) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_dsm_layout' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dsm_entries(OUT name text, OUT build text, OUT size int8, OUT handle int8, OUT users int4) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_dsm_entries' LANGUAGE C;
+CREATE FUNCTION sift._test_dsm_alive(handle int8) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_dsm_alive' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8

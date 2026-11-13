@@ -1,42 +1,206 @@
 /*
  * col/dsmreg.c - see dsmreg.h.
  *
- * The registry is the first backend that asks creating the table (nothing is allocated at postmaster start). A cache must not turn into an error:
- * whatever fails here (no room in /dev/shm, no more segments) is caught in a subtransaction, which also gives back the locks the registry holds, and the
- * backend goes without the table.
+ * The tables are dynamic shared memory segments that a directory, a segment of the registry of PostgreSQL with a name and a size that never change, keeps by
+ * the name asked, the identity of the library that asks (SIFT_CODE_ID, a hash of its sources and of the options that change them: a library that is not
+ * byte for byte the same code never shares a table, whatever the size of its struct) and the size. The first backend that asks makes the table (nothing
+ * is allocated at postmaster start); the others map it.
  *
- * The registry keeps the name and size of the first request until the postmaster restarts, and raises an error for a request of the name at another size: a
- * library replaced under a running server, or a setting that sets the size, would ask for it. The name registered is the one asked with the size appended, so a
- * name is never asked at two sizes: a layout of another size is a table of its own, and the entries of other sizes (or of an older release, which used the name
- * as asked) are never joined. They stay until the postmaster restarts: one entry for each size ever asked of a name. A layout change that keeps the size
- * changes the name asked (the number in it).
+ * The registry of PostgreSQL could not do this: it keeps the name and size of its first request until the postmaster restarts, raises an error for the
+ * name at another size, and shares the entry between libraries whose struct has the same size and another layout. A table here is pinned while it is the one
+ * of its library and given back, by the backend that makes another table of the name, when no backend maps it: the directory counts the backends that map a
+ * table (an entry of a library that was replaced under the server, or of a size that a setting left, lasts as long as the backends of that library, and
+ * no longer). Every change of the library or of a size is a table of its own; none is an error.
+ *
+ * A cache must not turn into an error: whatever fails in sift_dsm_attach (no room in /dev/shm, no more segments) is caught in a subtransaction, which also
+ * gives back the locks, and the backend goes without the table.
  */
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "port/atomics.h"
+#include "storage/dsm.h"
 #include "storage/dsm_registry.h"
+#include "storage/lwlock.h"
+#include "utils/memutils.h"
 #include "utils/resowner.h"
 
 #include "col/am.h"
 #include "col/dsmreg.h"
+#include "core/code_id.h"
+
+/* The directory. Its name, its size and the layout of everything below are fixed forever (a new layout is a new name): it is the one segment that two libraries of any age ask at the same size */
+#define DIR_NAME		"pg_sift_dsm_dir"
+#define DIR_ENTRIES		1024
+
+typedef struct DirEnt
+{
+	char		name[40];
+	char		build[16];
+	uint64		size;
+	dsm_handle	handle;			/* DSM_HANDLE_INVALID: the entry is free */
+	pg_atomic_uint32 users;		/* backends that map the table */
+} DirEnt;
+
+typedef struct Dir
+{
+	uint32		magic;
+	uint32		pad;
+	DirEnt		ent[DIR_ENTRIES];
+} Dir;
+
+StaticAssertDecl(sizeof(DirEnt) == 72 && sizeof(Dir) == 8 + 72 * DIR_ENTRIES, "the directory of the shared tables never changes its layout");
+
+static void
+dir_init(SIFT_DSM_INIT_ARGS)
+{
+	Dir		   *d = ptr;
+
+	memset(d, 0, sizeof(Dir));
+	d->magic = 0x53494654;
+	for (int i = 0; i < DIR_ENTRIES; i++)
+		pg_atomic_init_u32(&d->ent[i].users, 0);
+}
+
+static Dir *
+dir_get(void)
+{
+	static Dir *dir;
+	bool		found;
+
+	if (dir == NULL)
+#if PG_VERSION_NUM >= 190000
+		dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found, NULL);
+#else
+		dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found);
+#endif
+	return dir;
+}
+
+static const char *
+build_id(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_dsm_test_build[0])
+		return sift_dsm_test_build;
+#endif
+	return SIFT_CODE_ID;
+}
+
+static DirEnt *
+dir_find(Dir *d, const char *name, const char *build, Size size)
+{
+	for (int i = 0; i < DIR_ENTRIES; i++)
+	{
+		DirEnt	   *e = &d->ent[i];
+
+		if (e->handle != DSM_HANDLE_INVALID && e->size == size && strcmp(e->name, name) == 0 && strcmp(e->build, build) == 0)
+			return e;
+	}
+	return NULL;
+}
+
+/* A free entry, after the tables of another library, and the ones of the name at another size, that no backend maps are given back */
+static DirEnt *
+dir_claim(Dir *d, const char *name, const char *build)
+{
+	DirEnt	   *free = NULL;
+
+	for (int i = 0; i < DIR_ENTRIES; i++)
+	{
+		DirEnt	   *e = &d->ent[i];
+
+		if (e->handle != DSM_HANDLE_INVALID && pg_atomic_read_u32(&e->users) == 0 &&
+			(strcmp(e->build, build) != 0 || strcmp(e->name, name) == 0))
+		{
+			dsm_unpin_segment(e->handle);
+			e->handle = DSM_HANDLE_INVALID;
+		}
+		if (free == NULL && e->handle == DSM_HANDLE_INVALID)
+			free = e;
+	}
+	if (free == NULL)
+		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("sift: the directory of the shared tables is full")));
+	return free;
+}
+
+static void
+release_users(dsm_segment *seg, Datum users)
+{
+	pg_atomic_fetch_sub_u32((pg_atomic_uint32 *) DatumGetPointer(users), 1);
+}
+
+/* The segments of a backend are detached last to first, so the directory is still mapped when the count of a table goes down */
+static void
+hold(dsm_segment *seg, DirEnt *e)
+{
+	dsm_pin_mapping(seg);
+	on_dsm_detach(seg, release_users, PointerGetDatum(&e->users));
+	pg_atomic_fetch_add_u32(&e->users, 1);
+}
 
 void *
 sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 {
-	char		registered[64];
-	bool		found;
+	Dir		   *d = dir_get();
+	const char *build = build_id();
+	MemoryContext cx = MemoryContextSwitchTo(TopMemoryContext);
+	dsm_segment *seg;
+	DirEnt	   *e;
 
-	snprintf(registered, sizeof(registered), "%s_%zu", name, size);
+	SIFT_INVARIANT(strlen(name) < sizeof(e->name) && strlen(build) < sizeof(e->build), "sift: the name or the build of the shared table %s is too long", name);
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	if ((e = dir_find(d, name, build, size)) != NULL)
+	{
+		/* a mapping is a table this backend holds already */
+		if ((seg = dsm_find_mapping(e->handle)) == NULL)
+		{
+			seg = dsm_attach(e->handle);
+			SIFT_INVARIANT(seg != NULL, "sift: the pinned shared table %s is gone", name);
+			hold(seg, e);
+		}
+	}
+	else
+	{
+		e = dir_claim(d, name, build);
+		seg = dsm_create(size, 0);
 #if PG_VERSION_NUM >= 190000
-	return GetNamedDSMSegment(registered, size, init, &found, NULL);
+		init(dsm_segment_address(seg), NULL);
 #else
-	return GetNamedDSMSegment(registered, size, init, &found);
+		init(dsm_segment_address(seg));
 #endif
+		dsm_pin_segment(seg);
+		strlcpy(e->name, name, sizeof(e->name));
+		strlcpy(e->build, build, sizeof(e->build));
+		e->size = size;
+		pg_atomic_write_u32(&e->users, 0);
+		e->handle = dsm_segment_handle(seg);
+		hold(seg, e);
+	}
+	LWLockRelease(AddinShmemInitLock);
+	MemoryContextSwitchTo(cx);
+	return dsm_segment_address(seg);
 }
 
 #ifdef SIFT_TESTING
 char		sift_dsm_test_build[16];
 SiftDsmDeferred sift_dsm_deferred[SIFT_DSM_DEFERRED_MAX];
+
+bool
+sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_handle *handle, uint32 *users)
+{
+	DirEnt	   *e;
+
+	if (i >= DIR_ENTRIES)
+		return false;
+	e = &dir_get()->ent[i];
+	*name = e->name;
+	*build = e->build;
+	*size = e->size;
+	*handle = e->handle;
+	*users = pg_atomic_read_u32(&e->users);
+	return true;
+}
 
 /* The tables this backend went without because a statement was writing (sift._test_dsm_deferred): the test that a write statement reached an attach point */
 static void
