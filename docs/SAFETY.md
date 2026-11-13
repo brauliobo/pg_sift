@@ -141,6 +141,17 @@ P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct h
 Also: extend sift.verify (src/bm25/segment_sql.c) to run the same Span parsers and the P1-3 popcount check, cross-check DICTIDX against the
 dictionary blocks. Not audited: bm25/docdir.c, core/lane.c, rest of bm25/wbuf.c, bm25/cscan.c, sift_cscan consumers.
 
+## A crash in the kernel log
+
+A backend that dies of SIGSEGV leaves one line in the kernel log (`segfault at ADDR ip IP ... in LIB[OFFSET,BASE+SIZE]`), also when the server log was removed with its scratch directory. A crash of a run is attributed before the run is called done, and the server log, the core and the library of a crashing run are kept until they are read.
+
+- LIB and SIZE name the binary: the text segment of each candidate (`readelf -lW`, the `R E` line, rounded up to a page) is the SIZE of its mapping, so the server of another major, a packaged server and a library of another tree tell apart.
+- OFFSET is the file offset of the instruction: `addr2line -f -e BUILD OFFSET` on the build the run used, or the nearest exported symbol (`nm -D`) for a stripped server. A function that starts with a load through its first argument is a NULL argument.
+- ADDR is 0 or a small number for a NULL pointer and the offset of the member read; an address with no pattern is freed or uninitialised memory.
+- The time: the first crash of a series follows the commit that introduced the code and the last one precedes the commit that fixed it; a series that stops at a fix is the fix's when the fix guards a pointer that was NULL or stale at that place.
+
+What this found in the scope work (the spec of the fix in parentheses, where it has one): a join to a scope relation next to a semi join read the key expression of a join that has none (`agg_scope_recognition`); the rewrite check of an index with no scope read the scope state it does not have (`col_auto_merge_partition`); a lookup table shared with the parallel workers lost its key-only state in the worker (`agg_lookup_index_keys`); the cost of a lookup per element of an EXISTS read past the range table of the planner (`agg_scoped_lookup_cost`); a read with no changed keys passed a null pointer to memcpy; the scope legs memo copied legs it had not initialised. The hosted runs list the crashes of every server they start in the leak gate, so a crash of a parallel worker shows there before it shows anywhere else.
+
 ## Decisions
 
 Decided: assert and valgrind lanes, Coverity Scan, `pointer-overflow` out of `1`, and the fix of F-BM25-2/3 and F-COL-1 (reachable from a corrupt page on the query path) ahead of the full conversion (done: F-BM25-2/3 in 2.0.2, F-COL-1 in 3.0.0). Open:

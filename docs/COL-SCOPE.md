@@ -59,7 +59,7 @@ keeps those whose member did not change, and copies each once for each pair of i
 relation, whichever is cheapest), as the promotion would write them; the scan reads the copies as one more unit of each key, so the visibility check and the tombstones are those of the
 write buffer's rows. A buffered row of a member whose pairs changed is read with the rest of that member's rows by the patch. A statement
 that the scope cannot answer reads the entity rows of the members the relation lists for the keys (a read of every key by the key has no such fallback: below); the answer is the join's in every case (the tests compare md5 against the plain join after every
-state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update). The scan takes the scope conjunct from the join the way an application writes it
+state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update; the reader's own earlier commands, its savepoints and a cursor opened before a change: `col_scope_own_command`). The scan takes the scope conjunct from the join the way an application writes it
 (the recognition below), or from the marker `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join).
 
 ## What the planner recognises
