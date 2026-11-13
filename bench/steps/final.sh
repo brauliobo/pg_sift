@@ -10,6 +10,8 @@
 #   cases        the cases of bench/cases.tsv at the size of the pass, on pg_sift, PostgreSQL and pg_duckdb: tables shared by the cases that read the same one, a lane stops repeating after 20 s
 #   duckdb       the ten questions of the store on pg_duckdb at 1M orders
 #   generic      the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse at 1M rows; pg_sift and PostgreSQL are in the cases stage
+#   scope        (named only in the release pass, whose plan is 120 minutes: `--stages scope`, 37 min measured) the scope index against tuned stock PostgreSQL (steps/scope_stock.sh, docs/results/scope-stock.tsv,
+#                the blocks of README.md and docs/COL-SCOPE.md); in the quick profile (`release-quick`) its quick size, 8 min
 #   sets the set-filter benchmark (synthetic, steps/sets.sh) on the release REF (the release of SIFT_SRC=ref:REF, else this checkout)
 #   scale        (named only, never in the default pass) the cases of bench/cases.tsv at 1x, 10x and 100x of 200,000 orders: bench/results/cases-scale.tsv, the block "Benchmark cases, by size"; 20 million orders at the largest point, for a host with the memory and the hours (`--budget 0`)
 #   extras element rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU (steps/extras.sh), the builds they compare are tags
@@ -44,7 +46,7 @@ while (( $# )); do
   shift
 done
 if [[ -n $QUICK ]]; then   # the headline cases at 300,000 and 100,000 rows, the cost of the default option at 100,000, and the store and updates stages from the cache of competitor cells
-  SIZE=release; [[ -n $STAGES ]] || STAGES='headline slope cost store updates'; [[ -n $BUDGET ]] || BUDGET=60; TAG=quick
+  SIZE=release; [[ -n $STAGES ]] || STAGES='headline slope cost store updates scope'; [[ -n $BUDGET ]] || BUDGET=60; TAG=quick
 else TAG=$SIZE; fi
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 [[ -z $DOCS || -n ${REHEARSAL:-} || $SIZE == standard || $SIZE == release || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard, release or full, not $SIZE"
@@ -104,6 +106,7 @@ s_analytics() { # shellcheck disable=SC2086  # $ch is one flag or nothing
   local ch=--clickhouse; [[ -x ${CH_BIN:-/usr/bin/clickhouse} ]] || { ch=''; log 'analytics: no ClickHouse binary (CH_BIN): its column of the shapes table is n/a'; }
   bench analytics run --engines heap,col,flat,ch --flat $ch ${P_ANALYTICS_ORDERS:+--orders "$P_ANALYTICS_ORDERS"} ${P_ANALYTICS_RUNS:+--runs "$P_ANALYTICS_RUNS"} ${DOCS:+--docs}; }   # the application shapes
 s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
+s_scope() { if [[ -n $QUICK ]]; then bench scope-stock --size quick; else bench scope-stock ${DOCS:+--docs}; fi; }   # the quick size writes nothing of the docs
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }
 cache_warm() { # the cells of the servers that are not under test are in the cache (and this pass does not remeasure them): the store stage measures pg_sift alone
@@ -125,6 +128,7 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     cases) echo "${P_MIN_CASES:-15}" ;;
     duckdb) echo "${P_MIN_DUCKDB:-6}" ;;
     generic) echo "${P_MIN_GENERIC:-3}" ;;
+    scope) [[ -n $QUICK ]] && echo "${P_MIN_QUICK_SCOPE:-8}" || echo "${P_MIN_SCOPE:-37}" ;;   # 2.4 million events, eight arms: 36.9 min (quick: 240,000 events, five arms: 9.3 min with the builds)
     scaling) echo "${P_MIN_SCALING:-12}" ;;
     analytics) echo "${P_MIN_ANALYTICS:-10}" ;;
     sizes) echo "${P_MIN_SIZES:-13}" ;;

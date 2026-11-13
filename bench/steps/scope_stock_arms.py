@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
 """The scope index against tuned stock PostgreSQL on a real-shaped fixture: nine read classes, eight tenants, one arm at a time.
 
-    python3 -I bench/steps/scope_stock_arms.py run --root PREFIX --dir SCRATCH --port N --out RESULTS [--arms a,b] [--facts 2400000]
-    python3 -I bench/steps/scope_stock_arms.py report RESULTS
+    python3 -I bench/steps/scope_stock_arms.py run --root PREFIX [--root PREFIX2] --dir SCRATCH --port N --out RAWDIR [--size quick|standard] [--arms a,b] [--facts N] [--tenants 1,4,8]
+    python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out docs/results/scope-stock.tsv     # the one results file, in the format of steps/extras.py
+    python3 -I bench/steps/scope_stock_arms.py report [RESULTS]                                      # every table of the results file (steps/scope_stock_tables.py)
 
-The fixture (bench/sql/scope_stock/base.sql): 2.4 million events of 2,648 dim_a_id values (log-normal counts, ordered by time), 32 tenants that reach them directly or through groups
-(3,600 distinct pairs, 1.45 tenants a member), the eight measured tenants hold 49, 20, 17, 6, 6, 4, 1 and 0.1% of the events. Each arm is built in a copy of the fixture database and
+`bench/bench scope-stock` runs the three (it builds pg_sift and pg_ivm, makes the cluster, and with --docs rewrites the generated blocks of README.md and docs/COL-SCOPE.md).
+The classes are bench/sql/scope_stock/queries/SLUG.sql, one file each (`--@ events` is the statement over a table of events and its predicate, `--@ lateral`, `--@ rollup` and `--@ ivm`
+the forms of the arms that read another table; a class with no section for an arm is not answerable by it).
+
+The fixture (bench/sql/scope_stock/base.sql), size `standard`: 2.4 million events of 2,648 member keys (log-normal counts, ordered by time), 32 tenants that reach them directly or through groups
+(3,600 distinct pairs, 1.45 tenants a member), the eight measured tenants hold 49, 20, 17, 6, 6, 4, 1 and 0.1% of the events. Size `quick` is 240,000 events and the tenants 1, 4 and 8 (the large,
+a medium and the small one) on the arms stock_default, semijoin, denorm_flat, ivm and sift_scope: minutes, not an hour. Each arm is built in a copy of the fixture database and
 dropped after its reads and writes; the fixture and the arms are on one cluster (a tmpfs directory). Arms:
   stock_default  the b-tree on the member the application has, the semi join as written (the oracle of the md5 of every cell)
   semijoin       covering (member, time) b-tree, partial b-tree for the filter class, per-member LATERAL probe for latest-N; nothing maintained
   denorm_flat    a copy of the events by (tenant, event), b-tree (tenant, time), kept by triggers (events, pair edits)
   denorm_part    the same copy as a list partition by tenant
   rollup         rollups by member kept by a statement trigger; the classes read them through the semi join (latest-N: not answerable)
-  ivm            pg_ivm incremental views of events joined to the maintained pair table (latest-N: not answerable)
+  ivm            pg_ivm incremental views of events joined to the maintained pair table (latest-N: not answerable); skipped, with a notice, when pg_ivm is not installed under a --root
   sift_reuse     the sift_col entity index, the pairs read through the member key
   sift_scope     the same index with the scope of two paths
 The stock arms run on a server without pg_sift loaded; the sift arms on the same data directory restarted with it. Every cell: warm (median of 3 of `instructions:u` of the backend, EXPLAIN
 ANALYZE time and shared blocks hit/read) and cold (shared buffers emptied: one run), the md5 of the rows against the oracle. Writes: 10,000 inserted events (statement), a pair edit
-(grant a member to a tenant, revoke it) for 10 dim_a_id values of ~400 events and for the largest member; the sift arm adds the promotion of the write buffer. Size: bytes of what the arm adds.
+(grant a member to a tenant, revoke it) for 10 member keys of ~400 events and for the largest member; the sift arm adds the promotion of the write buffer. Size: bytes of what the arm adds.
 """
 import argparse
-import csv
-import math
+import datetime
 import os
 import re
 import signal
@@ -31,77 +36,76 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 SQL = os.path.join(HERE, '..', 'sql', 'scope_stock')
 TENANTS = (1, 2, 3, 4, 5, 6, 7, 8)
-EDIT_TENANT = 6    # the tenant whose pairs the edits change; none of the measured reads is on it for its dim_a_id values
+EDIT_TENANT = 6    # the tenant whose pairs the edits change; none of the measured reads is on it for its member keys
 ENV = dict(os.environ, LC_ALL='C')
+SIZES = {'standard': dict(facts=2400000, tenants=TENANTS, arms=None),
+         'quick': dict(facts=240000, tenants=(1, 4, 8), arms=('stock_default', 'semijoin', 'denorm_flat', 'ivm', 'sift_scope'))}
 
 SEMI = 'dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = {t})'
-LATERAL_LATEST = ('SELECT id, created_at FROM (SELECT l.id, l.created_at FROM (SELECT member FROM tenant_pairs WHERE tenant_id = {t}) m, '
-                  'LATERAL (SELECT id, created_at FROM events WHERE dim_a_id = m.member ORDER BY created_at DESC, id DESC LIMIT 20) l) x '
-                  'ORDER BY created_at DESC, id DESC LIMIT 20')
-MONTH = "date_trunc('month', created_at)"
 
 
-def event_classes(src, pred):
-    """the nine classes over a table of events (or of their per-tenant copy) and a predicate"""
-    return {
-        'sum_by_month': f"SELECT {MONTH} m, count(*), sum(amount) FROM {src} WHERE {pred} AND created_at >= '2023-01-01' GROUP BY 1",
-        'count_by_score': f"SELECT score, count(*) FROM {src} WHERE {pred} GROUP BY 1",
-        'latest20': f"SELECT id, created_at FROM {src} WHERE {pred} ORDER BY created_at DESC, id DESC LIMIT 20",
-        'top_members': f"SELECT dim_a_id, count(*) c FROM {src} WHERE {pred} GROUP BY 1 ORDER BY c DESC, 1 LIMIT 20",
-        'distinct_by_month': f"SELECT {MONTH} m, count(DISTINCT dim_a_id) FROM {src} WHERE {pred} AND created_at >= '2022-01-01' GROUP BY 1",
-        'by_member': f"SELECT dim_a_id, count(*), sum(amount) FROM {src} WHERE {pred} GROUP BY 1",
-        'filtered_count': f"SELECT count(*) FROM {src} WHERE {pred} AND channel_id = 9 AND region = 'DE'",
-        'date_range_count': f"SELECT count(*) FROM {src} WHERE {pred} AND created_at >= '2025-06-01' AND created_at < '2026-01-01'",
-        'count_by_kind': f"SELECT kind, count(*) FROM {src} WHERE {pred} AND created_at >= '2025-01-01' GROUP BY 1",
-    }
+def sections(text):
+    """`--@ name` lines cut a file into sections (the text before the first one is the header)"""
+    out, cur = {'': []}, ''
+    for line in text.split('\n'):
+        m = re.match(r'--@ (\w+)$', line)
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        else:
+            out[cur].append(line)
+    return {k: '\n'.join(v).strip() for k, v in out.items()}
+
+
+def load_queries():
+    """{class slug: {section: statement}} of bench/sql/scope_stock/queries, in the `-- order` of the headers"""
+    d = os.path.join(SQL, 'queries')
+    out = {}
+    for f in sorted(os.listdir(d)):
+        text = sql_text(os.path.join('queries', f))
+        out[f[:-4]] = (int(re.search(r'^-- order: (\d+)', text, re.M).group(1)), sections(text))
+    return {k: v[1] for k, v in sorted(out.items(), key=lambda kv: kv[1][0])}
+
+
+def classes_of(section, src='events', pred=SEMI, over=None):
+    """{class: statement with {t}} of the classes that have the section (`over`: the section that replaces it for a class that has it)"""
+    out = {}
+    for name, q in QUERIES.items():
+        text = q.get(over) if over in q else q.get(section)
+        if text:
+            out[name] = text.replace('{src}', src).replace('{pred}', pred)
+    return out
 
 
 def semi_classes():
-    return event_classes('events', SEMI)
+    return classes_of('events')
 
 
 def lateral_classes():
-    return dict(semi_classes(), latest20=LATERAL_LATEST)
+    return classes_of('events', over='lateral')
 
 
 def copy_classes(table):
-    return event_classes(table, 'tenant_id = {t}')
+    return classes_of('events', src=table, pred='tenant_id = {t}')
 
 
 def rollup_classes():
-    """over the member rollups; the semi join picks the dim_a_id values, a month filter is on the month start (every filter of the classes is)"""
-    m = 'dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = {t})'
-    return {
-        'sum_by_month': f"SELECT month::timestamptz m, sum(n), sum(amount_sum) FROM r_month WHERE {m} AND month >= '2023-01-01' GROUP BY month",
-        'count_by_score': f"SELECT score, sum(n) FROM r_score WHERE {m} GROUP BY 1",
-        'top_members': f"SELECT dim_a_id, sum(n) c FROM r_month WHERE {m} GROUP BY 1 ORDER BY c DESC, 1 LIMIT 20",
-        'distinct_by_month': f"SELECT month::timestamptz m, count(DISTINCT dim_a_id) FROM r_month WHERE {m} AND month >= '2022-01-01' GROUP BY month",
-        'by_member': f"SELECT dim_a_id, sum(n), sum(amount_sum) FROM r_month WHERE {m} GROUP BY 1",
-        'filtered_count': f"SELECT coalesce(sum(n), 0) FROM r_chan WHERE {m} AND channel_id = 9 AND region = 'DE'",
-        'date_range_count': f"SELECT coalesce(sum(n), 0) FROM r_month WHERE {m} AND month >= '2025-06-01' AND month < '2026-01-01'",
-        'count_by_kind': f"SELECT kind, sum(n) FROM r_kind WHERE {m} AND month >= '2025-01-01' GROUP BY 1",
-    }
+    return classes_of('rollup')
 
 
 def ivm_classes():
-    t = 'tenant_id = {t}'
-    return {
-        'sum_by_month': f"SELECT month::timestamptz m, sum(n), sum(amount_sum) FROM im_main WHERE {t} AND month >= '2023-01-01' GROUP BY month",
-        'count_by_score': f"SELECT score, n FROM im_score WHERE {t}",
-        'top_members': f"SELECT dim_a_id, sum(n) c FROM im_main WHERE {t} GROUP BY 1 ORDER BY c DESC, 1 LIMIT 20",
-        'distinct_by_month': f"SELECT month::timestamptz m, count(DISTINCT dim_a_id) FROM im_main WHERE {t} AND month >= '2022-01-01' GROUP BY month",
-        'by_member': f"SELECT dim_a_id, sum(n), sum(amount_sum) FROM im_main WHERE {t} GROUP BY 1",
-        'filtered_count': f"SELECT coalesce(sum(n), 0) FROM im_chan WHERE {t} AND channel_id = 9 AND region = 'DE'",
-        'date_range_count': f"SELECT coalesce(sum(n), 0) FROM im_main WHERE {t} AND month >= '2025-06-01' AND month < '2026-01-01'",
-        'count_by_kind': f"SELECT kind, sum(n) FROM im_kind WHERE {t} AND month >= '2025-01-01' GROUP BY 1",
-    }
+    return classes_of('ivm')
 
 
 def sql_text(name):
     with open(os.path.join(SQL, name)) as f:
         return f.read()
+
+
+QUERIES = load_queries()
 
 
 def rollup_ddl():
@@ -237,14 +241,18 @@ class Cluster:
         ENV.update(PGHOST=self.env['PGHOST'], PGPORT=self.env['PGPORT'])
         for k in ('PGSERVICE', 'PGSERVICEFILE', 'PGPASSWORD', 'PGHOSTADDR', 'PGDATABASE'):
             os.environ.pop(k, None)
-        self.root = os.path.join(a.root, 'usr')
+        self.roots = [os.path.join(r, 'usr') for r in a.root]
+
+    def has_extension(self, name):
+        return any(os.path.exists(os.path.join(r, 'share', 'postgresql', 'extension', name + '.control')) for r in self.roots)
 
     def conf(self, preload):
         a = self.a
         lines = [f"port = {a.port}", f"unix_socket_directories = '{os.path.join(a.dir, 'sock')}'", "listen_addresses = ''", "shared_buffers = 512MB", "fsync = off",
                  "full_page_writes = off", "autovacuum = off", "jit = off", "max_wal_size = 1GB", "min_wal_size = 80MB", "checkpoint_timeout = 30min",
                  "max_parallel_workers_per_gather = 0", "max_parallel_maintenance_workers = 0", "work_mem = 256MB", "maintenance_work_mem = 256MB", "timezone = 'UTC'",
-                 f"extension_control_path = '{self.root}/share/postgresql:$system'", f"dynamic_library_path = '{self.root}/lib/postgresql:$libdir'"]
+                 "extension_control_path = '%s:$system'" % ':'.join(f'{r}/share/postgresql' for r in self.roots),
+                 "dynamic_library_path = '%s:$libdir'" % ':'.join(f'{r}/lib/postgresql' for r in self.roots)]
         if preload:
             lines += ["shared_preload_libraries = 'pg_sift'", "sift.col_auto_merge = off"]
         with open(os.path.join(self.data, 'postgresql.auto.conf'), 'w') as f:
@@ -401,15 +409,46 @@ def load_oracle(outdir):
     path = os.path.join(outdir, 'stock_default.cells.tsv')
     if not os.path.exists(path):
         return None
+    return {(int(r['tenant']), r['class']): r['md5'] for r in read_tsv(path)}
+
+
+def read_tsv(path):
     with open(path) as f:
-        rows = [l.rstrip('\n').split('\t') for l in f][1:]
-    return {(int(r[1]), r[2]): r[11] for r in rows}
+        head, *rows = [l.rstrip('\n').split('\t') for l in f]
+    return [dict(zip(head, r)) for r in rows]
+
+
+def fixture_stats(cl, a):
+    """what the fixture is, for the tables: the totals, and for each tenant its member keys and its share of the events"""
+    totals = cl.psql(a.base, '-F', '\t', '-c', "SELECT (SELECT count(*) FROM events), (SELECT count(DISTINCT dim_a_id) FROM events), (SELECT count(*) FROM tenant_pairs), "
+                     "(SELECT count(DISTINCT tenant_id) FROM tenant_pairs), current_setting('server_version')").strip().split('\t')
+    per = cl.psql(a.base, '-F', '\t', '-c', "SELECT p.tenant_id, count(*), sum(c.n), round(100.0 * sum(c.n) / (SELECT count(*) FROM events), 2) "
+                  "FROM tenant_pairs p JOIN (SELECT dim_a_id, count(*) n FROM events GROUP BY 1) c ON c.dim_a_id = p.member GROUP BY 1 ORDER BY 1")
+    with open(os.path.join(a.out, 'fixture.tsv'), 'w') as f:
+        f.write('tenant\tmember_total\tevents\tevents_pct\n' + per)
+    return dict(zip(('facts', 'member_total', 'pairs', 'tenant_total', 'postgresql'), totals))
+
+
+def versions(cl, a):
+    """the build of pg_sift as `control version (build id)` and the version of pg_ivm the control files of the roots give"""
+    v = lambda name: cl.psql('postgres', '-c', f"SELECT default_version FROM pg_available_extensions WHERE name = '{name}'").strip()
+    return dict(pg_sift=f'{v("pg_sift")} ({a.build_id})', pg_ivm=v('pg_ivm') or 'not installed')
 
 
 def cmd_run(a):
+    size = SIZES[a.size]
+    a.facts, a.tenants = a.facts or size['facts'], a.tenants or list(size['tenants'])
+    arms = (a.arms or ','.join(size['arms'] or ORDER)).split(',')
     os.makedirs(a.out, exist_ok=True)
     os.makedirs(os.path.join(a.dir, 'sock'), exist_ok=True)
     cl = Cluster(a)
+    skipped = []
+    if 'ivm' in arms and not cl.has_extension('pg_ivm'):
+        print('NOTICE: the arm ivm is skipped: pg_ivm is not installed under any --root (bench/steps/fetch.sh pg_ivm builds the pinned release)', file=sys.stderr, flush=True)
+        arms.remove('ivm')
+        skipped.append('ivm (pg_ivm not installed)')
+    if 'stock_default' not in arms and load_oracle(a.out) is None:
+        raise SystemExit('the arms need stock_default (the oracle of every md5): add it to --arms or run it first into the same --out')
     if not os.path.exists(os.path.join(cl.data, 'PG_VERSION')):
         subprocess.run(['initdb', '-D', cl.data, '-U', 'postgres', '--no-sync', '-E', 'UTF8', '--locale=C'], check=True, env=cl.env, stdout=subprocess.DEVNULL)
     cl.restart(False)
@@ -419,98 +458,94 @@ def cmd_run(a):
         subprocess.run(['psql', '-X', '-q', '-d', a.base, '-v', f'facts={a.facts}', '-v', f'member_total={a.member_total}', '-f', os.path.join(SQL, 'base.sql')],
                        check=True, env=cl.env, stdout=open(os.path.join(a.out, 'fixture.txt'), 'w'))
         cl.psql('postgres', '-c', 'CHECKPOINT')
-    for name in a.arms.split(','):
+    meta = dict(fixture_stats(cl, a), **versions(cl, a), size=a.size, date=datetime.date.today().isoformat(), arms=','.join(arms), skipped='; '.join(skipped) or 'none',
+                tenants=','.join(map(str, a.tenants)), classes=','.join(QUERIES))
+    for name in arms:
         r = run_arm(cl, a, name, load_oracle(a.out) if name != 'stock_default' else None, a.out)
         save(a.out, r)
     cl.stop()
+    with open(os.path.join(a.out, 'run.meta'), 'w') as f:
+        f.write(''.join(f'{k}\t{v}\n' for k, v in meta.items()))
 
 
-def geomean(xs):
-    xs = [max(x, 1e-6) for x in xs]
-    return math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else float('nan')
+def cpu_model():
+    with open('/proc/cpuinfo') as f:
+        return next((l.split(':', 1)[1].strip() for l in f if l.startswith('model name')), 'unknown cpu')
+
+
+def cmd_collect(a):
+    """the one results file of a run: every cell, build, write and read-after-write of every arm, in the format of steps/extras.py"""
+    import extras
+    raw = a.raw
+    with open(os.path.join(raw, 'run.meta')) as f:
+        meta = dict(l.rstrip('\n').split('\t', 1) for l in f)
+    arms = meta['arms'].split(',')
+    rows = []
+
+    def add(case, arm, metric, value, n='', note=''):
+        rows.append(dict(version=meta['pg_sift'], case=case, arm=arm, metric=metric, value=value, n=n, load=load, note=note))
+
+    load = extras.host_load()
+    for r in read_tsv(os.path.join(raw, 'fixture.tsv')):
+        for m in ('member_total', 'events', 'events_pct'):
+            add('t' + r['tenant'], 'fixture', m, r[m])
+    stock_dirty = {(r['tenant'], r['class']): r['md5'] for r in read_tsv(os.path.join(raw, 'stock_default.dirty.tsv'))}
+    for arm in arms:
+        for r in read_tsv(os.path.join(raw, f'{arm}.cells.tsv')):
+            case = 't%s:%s' % (r['tenant'], r['class'])
+            add(case, arm, 'warm_ms', r['warm_ms'], note=r['plan'])
+            for m in ('warm_minstr', 'warm_hit', 'cold_ms', 'cold_minstr', 'cold_hit', 'cold_read'):
+                add(case, arm, m, r[m])
+            add(case, arm, 'md5_equal', int(r['md5_ok'] == 'ok'))
+        b = read_tsv(os.path.join(raw, f'{arm}.build.tsv'))[0]
+        for m in ('build_s', 'build_wal_bytes', 'added_bytes'):
+            add('build', arm, m, b[m], note=b['note'])
+        for r in read_tsv(os.path.join(raw, f'{arm}.writes.tsv')):
+            for m, c in (('ms', 'ms'), ('minstr', 'minstr'), ('wal_bytes', 'wal_bytes')):
+                add('write:' + r['operation'], arm, m, r[c], n=r['statements'])
+        for r in read_tsv(os.path.join(raw, f'{arm}.dirty.tsv')):
+            case = 'dirty:t%s:%s' % (r['tenant'], r['class'])
+            add(case, arm, 'warm_ms', r['warm_ms'])
+            add(case, arm, 'warm_minstr', r['warm_minstr'])
+            add(case, arm, 'md5_equal', int(r['md5'] == stock_dirty[(r['tenant'], r['class'])]))
+        par = os.path.join(raw, f'{arm}.parallel.tsv')
+        if os.path.exists(par):
+            for r in read_tsv(par):
+                add('t%s:%s' % (r['tenant'], r['class']), arm, 'parallel_ms', r['warm_ms_4_workers'])
+    head = dict(date=meta['date'], cpu=cpu_model(), postgresql='PostgreSQL ' + meta['postgresql'], pg_sift=meta['pg_sift'], pg_ivm=meta['pg_ivm'],
+                size=meta['size'], facts=meta['facts'], member_total=meta['member_total'], pairs=meta['pairs'], tenant_total=meta['tenant_total'], tenants=meta['tenants'],
+                classes=meta['classes'], arms=meta['arms'], skipped=meta['skipped'],
+                method='warm: median of 3 of instructions:u of the backend, EXPLAIN (ANALYZE, BUFFERS, TIMING OFF); cold: shared buffers emptied, one run; one backend, no parallel workers')
+    extras.write(a.out, 'The scope index against tuned stock PostgreSQL (bench/bench scope-stock)', head, rows)
 
 
 def cmd_report(a):
-    def rows(suffix):
-        out = []
-        for name in ORDER:
-            p = os.path.join(a.dir_, f'{name}.{suffix}.tsv')
-            if os.path.exists(p):
-                with open(p) as f:
-                    out += list(csv.DictReader(f, delimiter='\t'))
-        return out
-    cells = rows('cells')
-    arms = [n for n in ORDER if any(r['arm'] == n for r in cells)]
-    classes = list(event_classes('events', ''))
-    tenants = sorted({int(r['tenant']) for r in cells})
-    cell = {(r['arm'], int(r['tenant']), r['class']): r for r in cells}
-    print(f"md5: {sum(r['md5_ok'] == 'ok' for r in cells)} of {len(cells)} cells equal the oracle (stock_default, enable_agg-free plain statement); different: {sum(r['md5_ok'] != 'ok' for r in cells)}\n")
-    print('### Reads, warm: M instr / ms / shared blocks hit; cold: blocks read\n')
-    for t in tenants:
-        print(f'**tenant {t}**\n\n| class | ' + ' | '.join(arms) + ' |\n|---|' + '---|' * len(arms))
-        for c in classes:
-            cols = []
-            for n in arms:
-                r = cell.get((n, t, c))
-                cols.append('n/a' if r is None else f"{float(r['warm_minstr']):.2f} / {float(r['warm_ms']):.2f} / {r['warm_hit']}; {r['cold_read']}")
-            print(f'| {c} | ' + ' | '.join(cols) + ' |')
-        print()
-    common = [c for c in classes if all((n, tenants[0], c) in cell for n in arms)]
-    for what, col, fmt in (('warm ms', 'warm_ms', '{:.2f}'), ('warm M instr', 'warm_minstr', '{:.2f}'), ('cold blocks read', 'cold_read', '{:.0f}')):
-        print(f'### Geometric mean over the {len(common)} classes every arm answers ({what})\n\n| tenant | ' + ' | '.join(arms) + ' |\n|---|' + '---|' * len(arms))
-        for t in tenants:
-            print(f'| {t} | ' + ' | '.join(fmt.format(geomean([float(cell[(n, t, c)][col]) for c in common])) for n in arms) + ' |')
-        print()
-    base = 'sift_scope'
-    print(f'### Cells where another arm is within 10% of {base} in warm ms, or faster (absolute ms; the arm named is the fastest such)\n\n| tenant | class | {base} ms | arm | ms |\n|---|---|---|---|---|')
-    for t in tenants:
-        for c in classes:
-            ref = cell.get((base, t, c))
-            if ref is None:
-                continue
-            best = min((n for n in arms if n != base and (n, t, c) in cell), key=lambda n: float(cell[(n, t, c)]['warm_ms']), default=None)
-            if best and float(cell[(best, t, c)]['warm_ms']) <= 1.1 * float(ref['warm_ms']):
-                print(f"| {t} | {c} | {float(ref['warm_ms']):.2f} | {best} | {float(cell[(best, t, c)]['warm_ms']):.2f} |")
-    print('\n### Build and size\n\n| arm | build s | build WAL MB | added MB | note |\n|---|---|---|---|---|')
-    for r in rows('build'):
-        print(f"| {r['arm']} | {float(r['build_s']):.1f} | {int(r['build_wal_bytes']) / 1e6:.1f} | {int(r['added_bytes']) / 1e6:.1f} | {r['note']} |")
-    print('\n### Writes (mean of the statements)\n\n| arm | operation | n | M instr | ms | WAL bytes |\n|---|---|---|---|---|---|')
-    for r in rows('writes'):
-        print(f"| {r['arm']} | {r['operation']} | {r['statements']} | {float(r['minstr']):.2f} | {float(r['ms']):.1f} | {float(r['wal_bytes']):.0f} |")
-    dirty = rows('dirty')
-    oracle = {(r['tenant'], r['class']): r['md5'] for r in dirty if r['arm'] == 'stock_default'}
-    print(f"\n### Reads after the writes (10,000 new events, committed pair edits): md5 differing from stock_default: {sum(r['md5'] != oracle.get((r['tenant'], r['class'])) for r in dirty)} of {len(dirty)}\n")
-    print('| arm | tenant | geomean M instr | geomean ms |\n|---|---|---|---|')
-    for n in arms:
-        for t in sorted({r['tenant'] for r in dirty}):
-            rs = [r for r in dirty if r['arm'] == n and r['tenant'] == t and r['class'] in common]
-            if rs:
-                print(f"| {n} | {t} | {geomean([float(r['warm_minstr']) for r in rs]):.2f} | {geomean([float(r['warm_ms']) for r in rs]):.2f} |")
-    par = rows('parallel')
-    if par:
-        print('\n### semijoin with 4 parallel workers (warm ms, geometric mean over the classes)\n\n| tenant | serial | 4 workers |\n|---|---|---|')
-        for t in tenants:
-            ser = geomean([float(cell[('semijoin', t, c)]['warm_ms']) for c in classes])
-            print(f"| {t} | {ser:.2f} | {geomean([float(r['warm_ms_4_workers']) for r in par if int(r['tenant']) == t]):.2f} |")
+    import scope_stock_tables
+    print('\n'.join(scope_stock_tables.report(scope_stock_tables.Results(a.results))))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('run')
-    r.add_argument('--root', required=True, help='DESTDIR prefix that holds usr/ with pg_sift (and pg_ivm) installed')
+    r.add_argument('--root', action='append', required=True, help='DESTDIR prefix that holds usr/ with pg_sift (and pg_ivm) installed; repeat for pg_ivm in another prefix')
     r.add_argument('--dir', required=True, help='scratch directory (tmpfs): data directory, socket, log')
     r.add_argument('--port', type=int, required=True)
-    r.add_argument('--out', required=True)
-    r.add_argument('--arms', default=','.join(ORDER))
-    r.add_argument('--facts', type=int, default=2400000)
+    r.add_argument('--out', required=True, help='directory of the raw per-arm tables')
+    r.add_argument('--size', choices=SIZES, default='standard')
+    r.add_argument('--build-id', default='unknown', help='the commit the installed pg_sift was built from, for the results file')
+    r.add_argument('--arms', help='default: every arm (quick: stock_default, semijoin, denorm_flat, ivm, sift_scope)')
+    r.add_argument('--facts', type=int, help='events (default: those of --size)')
     r.add_argument('--member-total', type=int, default=2648)
     r.add_argument('--base', default='base', help='name of the fixture database (built once, the template of every arm)')
-    r.add_argument('--tenants', default=','.join(map(str, TENANTS)), type=lambda v: [int(x) for x in v.split(',')])
+    r.add_argument('--tenants', type=lambda v: [int(x) for x in v.split(',')], help='default: those of --size')
+    c = sub.add_parser('collect')
+    c.add_argument('raw')
+    c.add_argument('--out', required=True)
     p = sub.add_parser('report')
-    p.add_argument('dir_')
+    p.add_argument('results', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'scope-stock.tsv'))
     a = ap.parse_args()
-    cmd_run(a) if a.cmd == 'run' else cmd_report(a)
+    {'run': cmd_run, 'collect': cmd_collect, 'report': cmd_report}[a.cmd](a)
 
 
 if __name__ == '__main__':

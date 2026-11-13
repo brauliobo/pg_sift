@@ -2,6 +2,7 @@
 # Sourced by the benchmarks that run on a scratch PostgreSQL cluster of their own (steps/sets.sh, extras.sh): never an existing cluster or database.
 #
 #   scratch_scope "$@"     re-run the script in a systemd scope (MemoryMax SCRATCH_MEM, 12G; CPUQuota SCRATCH_CPU, 300%; no swap); returns in the scope
+#   scratch_install NAME   only the staged install of SIFT_BUILD's sift into SCRATCH_ROOT/NAME (SIFT_ROOT), for a script that makes its own cluster; scratch_port picks a free port
 #   scratch_up NAME        stage SIFT_BUILD's sift, make the cluster $SCRATCH_ROOT/NAME on a free port of 56150-56250 and start it (autovacuum off, fsync off,
 #                          jit off, SCRATCH_SHARED_BUFFERS 2GB); exports PGHOST, PGPORT, PGUSER and defines `sq` (psql -qAt)
 #   scratch_down           stop it (KEEP=1 keeps the data directory, otherwise it is removed)
@@ -22,8 +23,8 @@ host_load() { # the load averages and the CPU pressure of the host
 	printf 'load %s cpu_pressure %s%%' "$(cut -d' ' -f1-3 /proc/loadavg)" "$(awk -F'[= ]' '/^some/ {print $3}' /proc/pressure/cpu 2>/dev/null || echo NA)"
 }
 
-scratch_up() {
-	local name=$1 port= fs
+scratch_install() { # NAME: the directory SCRATCH_ROOT/NAME and the staged install of SIFT_BUILD in it (SIFT_ROOT), no cluster
+	local name=$1 fs
 	mkdir -p "$SCRATCH_ROOT"
 	fs=$(stat -f -c %T "$SCRATCH_ROOT" 2>/dev/null) || fs=tmpfs   # no stat -f -c (macOS): not checked
 	[[ $fs == tmpfs || ${SIFT_ALLOW_DISK:-} == 1 ]] || { echo "scratch_up: $SCRATCH_ROOT is on $fs, not tmpfs: a scratch cluster wears a disk (SCRATCH_ROOT=a tmpfs directory, or SIFT_ALLOW_DISK=1)" >&2; return 1; }
@@ -37,11 +38,20 @@ scratch_up() {
 	fi
 	[[ -f $SIFT_ROOT/.flavor ]] || SIFT_TESTING= SIFT_TMP=$SIFT_TMP "$PG" install >&2 || return 1
 	[[ -z $own || -z $head ]] || echo "$head" >"$SIFT_ROOT/.build"
+}
+
+scratch_port() { # a free port of 56150-56250 in SIFT_PORT
+	local port=
 	for _ in $(seq 1 60); do
 		port=$((56150 + RANDOM % 101))
 		ss -ltn 2>/dev/null | grep -q ":$port " || break
 	done
 	export SIFT_PORT=$port
+}
+
+scratch_up() {
+	scratch_install "$1" || return 1
+	scratch_port
 	if [[ ! -f $SIFT_TMP/data/PG_VERSION ]]; then
 		mkdir -p "$SIFT_TMP/sock"
 		"$PG" new-data "$SIFT_TMP/data" wal || return 1

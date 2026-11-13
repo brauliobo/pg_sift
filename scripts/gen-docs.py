@@ -8,7 +8,7 @@
 The options regions (scripts/gen-options.sh) are part of it, so `--check` covers them.
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
-  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py, highlights.py, aggregates_page.py; charts.py
+  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py, highlights.py, aggregates_page.py, scope_stock_tables.py; charts.py
                                                           draws docs/img); a block whose
                                                           results file is missing or empty says it is not measured yet
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
@@ -29,9 +29,10 @@ REPO = os.path.dirname(HERE)
 
 # the results file behind each bench block; a block with a missing file is not rendered, it says so
 RESULTS = {n: n + '.tsv' for n in ('sets', 'rollup', 'tablewrites', 'writepath', 'bm25size', 'leaftypes', 'fields', 'buildcost', 'gpu', 'duckdb')}
+RESULTS.update(dict.fromkeys(('scope-stock-readme', 'scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv'))
 RESULTS.update({'store': 'store.json', 'store-updates': 'store.json', 'store-compression': 'store-compression.json',
                 'slim': 'articles.tsv', 'readme': 'articles.tsv', 'summary': 'articles.tsv'})
-BENCH_CMD = dict.fromkeys(('store', 'store-updates', 'store-compression'), 'bench/bench store all --docs') | dict.fromkeys(('slim', 'readme', 'summary'), 'bench/bench all --docs') | {'duckdb': 'bench/bench duckdb --docs'}
+BENCH_CMD = dict.fromkeys(('store', 'store-updates', 'store-compression'), 'bench/bench store all --docs') | dict.fromkeys(('slim', 'readme', 'summary'), 'bench/bench all --docs') | {'duckdb': 'bench/bench duckdb --docs'} | dict.fromkeys(('scope-stock-readme', 'scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'bench/bench scope-stock --docs')
 
 CONTEXT = {'PGC_USERSET': 'any user', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart', 'PGC_BACKEND': 'connection', 'PGC_SU_BACKEND': 'connection'}
 # argument positions after the name: (short, long, var, boot, ...) and where the context and the bounds are
@@ -305,6 +306,8 @@ def generate(root):
         if have(root, 'store'):
             run(*py, os.path.join(steps, 'store.py'), 'render', '--readme', 'README.md', '--benchmarks', 'docs/BENCHMARKS.md')
         run(*py, os.path.join(steps, 'extras.py'), 'render')
+        if have(root, 'scope-stock-readme'):
+            run(*py, os.path.join(steps, 'scope_stock_tables.py'), 'render', '--root', '.')
         if have(root, 'slim'):
             run(*py, os.path.join(steps, 'charts.py'))
         if have(root, 'store'):

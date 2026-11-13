@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Usage: bench/steps/fetch.sh [sift|sift_ref|rum|pg_search|pg_textsearch|bm25|elasticsearch|tantivy ...]
-# (default: sift rum pg_search pg_textsearch). Versions are pinned in bench/versions.env.
+# Usage: bench/steps/fetch.sh [sift|sift_ref|rum|pg_ivm|pg_search|pg_textsearch|bm25|elasticsearch|tantivy ...]
+# (default: sift rum pg_search pg_textsearch; pg_ivm only when named: it is the incremental-view arm of `bench/bench scope-stock`). Versions are pinned in bench/versions.env.
 # Builds or unpacks the engines under $ROOT/engines/<name>, never system-wide: the PGXS extensions (sift from this
 # checkout, rum, pg_textsearch) are installed with DESTDIR into <name>/root, the ParadeDB pg_search package is
 # unpacked there; the cluster finds every */root (bench/steps/lib.sh). Downloads land in <name>/dl.
@@ -55,6 +55,8 @@ fetch_sift() {
 }
 
 fetch_rum() { pgxs_release rum "https://github.com/postgrespro/rum/archive/refs/tags/$RUM_VERSION.tar.gz" "$RUM_SHA256"; }
+
+fetch_pg_ivm() { pgxs_release pg_ivm "https://github.com/sraoss/pg_ivm/archive/refs/tags/v$PG_IVM_VERSION.tar.gz" "$PG_IVM_SHA256"; }
 
 fetch_pg_textsearch() { pgxs_release pg_textsearch "https://github.com/timescale/pg_textsearch/archive/refs/tags/v$PG_TEXTSEARCH_VERSION.tar.gz" "$PG_TEXTSEARCH_SHA256"; }
 
@@ -131,6 +133,7 @@ fetch_key() {
     sift) echo "$(sift_key) ${SIFT_SRC:-worktree} $(pg_key)" ;;
     sift_ref) echo "$SIFT_REF $(git -C "$REPO" rev-parse --verify "$SIFT_REF^{commit}") $(pg_key)" ;;
     rum) echo "$RUM_VERSION $RUM_SHA256 $(pg_key)" ;;
+    pg_ivm) echo "$PG_IVM_VERSION $PG_IVM_SHA256 $(pg_key)" ;;
     pg_textsearch) echo "$PG_TEXTSEARCH_VERSION $PG_TEXTSEARCH_SHA256 $(pg_key)" ;;
     pg_search) echo "$PARADEDB_VERSION" ;;
     elasticsearch|tantivy) echo "$(xbench_key) $(cargo --version)" ;;
