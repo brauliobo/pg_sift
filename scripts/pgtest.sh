@@ -86,9 +86,9 @@ install() {
 	echo "$FLAVOR" >"$ROOT/.flavor"
 }
 
-# The setting only the library of this tree defines: a released library that runs on the data directory of the cluster (scripts/old-lib-check.sh) warns that
+# The setting only the test library of this tree defines (the release library has none): a released library that runs on the data directory of the cluster (scripts/old-lib-check.sh) warns that
 # "sift" is a reserved prefix for it. The cluster of `start` gets it on the command line of the server of this tree, not in its postgresql.conf (`conf common`).
-TREE_CONF='sift.test_scope_patch = on'
+TREE_CONF=${SIFT_TESTING:+sift.test_scope_patch = on}
 
 # The lines that make the staged sift loadable (the server's own install on PostgreSQL 17); `conf common`: those that any release of the library accepts
 conf() {
@@ -101,7 +101,7 @@ conf() {
 	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
 	echo "sift.col_auto_merge_wal_pct = 0"
 	# the tests of the scope index patch the members that changed whatever the patch costs; the test of the price says SET sift.test_scope_patch = off
-	[[ ${1:-} == common ]] || echo "$TREE_CONF"
+	[[ ${1:-} == common || -z $TREE_CONF ]] || echo "$TREE_CONF"
 	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
 	# partitions took 5.6 s to compile and 11 ms to run (PostgreSQL 17 of the CI runners has the library in its package, 18 in another one)
 	echo "jit = off"
@@ -164,7 +164,7 @@ start() {
 		EOF
 	fi
 	reset_auto_conf "$DATA"
-	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" -o "-c ${TREE_CONF// = /=}" -w start >/dev/null )
+	( sanitizer_env; pg_ctl -D "$DATA" -l "$TMP/postgres.log" ${TREE_CONF:+-o "-c ${TREE_CONF// = /=}"} -w start >/dev/null )
 	createdb -U postgres "$DB" 2>/dev/null || true
 	leak_baseline "$DATA"
 }

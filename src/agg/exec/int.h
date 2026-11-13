@@ -7,15 +7,17 @@
 
 #include "agg/agg_int.h"
 
-extern bool sift_test_agg_wait;
 #ifdef SIFT_TESTING
+extern bool sift_test_agg_wait;
 extern int	sift_test_agg_pass_w;
+extern void agg_test_wait(void);
+#else
+#define agg_test_wait() ((void) 0)
 #endif
 extern const CustomExecMethods agg_exec_methods;
 extern void agg_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 extern void run_counters(AggExec *c, SiftSrcCounters *cc);
 
-extern void agg_test_wait(void);
 extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 
 #endif							/* SIFT_AGG_EXEC_DIR_INT_H */

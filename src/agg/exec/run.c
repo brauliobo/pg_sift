@@ -38,7 +38,9 @@ bool		sift_agg_share_lookups = true;
 bool		sift_agg_fuse = true;
 bool		sift_enable_topn = true;
 bool		sift_topn_walk = true;
+#ifdef SIFT_TESTING
 bool		sift_test_agg_wait = false;
+#endif
 int		sift_agg_combo_cache = 1 << 20;
 bool		sift_agg_probe_direct = true;
 bool		sift_agg_float_step = true;
@@ -375,6 +377,7 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 
 /* Windows of superblocks from the end the best values are at (agg/topn.h) */
 
+#ifdef SIFT_TESTING
 /* Testing (sift.test_agg_wait): lets a test run VACUUM or DML after the scan has opened its source (test/t/topn_vacuum_scan.sh) */
 void
 agg_test_wait(void)
@@ -387,6 +390,7 @@ agg_test_wait(void)
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);
 }
+#endif
 
 /* The groups of the scan as the aggregate pass of agg_next ends them */
 void

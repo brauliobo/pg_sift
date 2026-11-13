@@ -480,7 +480,12 @@ extern Oid	sift_scope_pairs_index(Relation heap, Relation index, const char *key
 extern struct SiftScopeFill *sift_scope_fill_begin_rel(MemoryContext mcxt, Relation rel, Oid btree, AttrNumber member, AttrNumber key, uint64 rows);
 #endif
 extern PGDLLIMPORT bool sift_agg_scope;
+#ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_scope_patch;	/* sift.test_scope_patch: a read patches the changed members whatever it costs */
+#define SIFT_TEST_SCOPE_PATCH sift_test_scope_patch
+#else
+#define SIFT_TEST_SCOPE_PATCH false
+#endif
 extern PGDLLIMPORT double sift_scope_max_multiplicity;
 
 /* Refuses a scope of more than sift.scope_max_multiplicity entries a row; estimated: the figures are those of a sample (scope_sample.c), before and added are the bytes of the index and of the scope segments, 0 before the build */

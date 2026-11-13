@@ -14,6 +14,10 @@ Layout (run with `scripts/pgtest.sh regress [test...]`, which starts a throwaway
 | `matrix/` | data-type matrix |
 | `fixtures/` | binary fixtures of old on-disk formats |
 
+## Scope markers of the testing flavour
+
+The test flavour (`SIFT_TESTING=1`, the extension `pg_sift_test`) has two markers that name a scope conjunct without the join an application writes: `sift.in_scope(index, key_name, fk, key or keys)` is the scope read of the keys, and `sift.in_scope_pairs(index, key_name, fk, key or keys)` has the meaning of the join (a fact once for each pair), so that a test can say `EXPLAIN` of a scope plan or compare one with the other. They exist only in `sql/pg_sift_test--1.0.sql`; the release library and the user pages ([docs/COL-SCOPE.md](../docs/COL-SCOPE.md)) know only the join, `IN`, `EXISTS` and the other forms the planner recognises.
+
 ## Synthetic data
 
 Every test builds its data with `generate_series` and a seeded generator. The domain is declared synthetic and stays small: **orders**, **events**, **docs** and

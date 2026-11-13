@@ -18,7 +18,9 @@ sift_agg_init(void)
 	sift_aggcte_init();
 	sift_agg_probe_init();
 	sift_search_init();
+#ifdef SIFT_TESTING
 	sift_agg_scope_init();
+#endif
 	sift_agg_rows_init();
 	sift_agg_refuse_init();
 	DefineCustomBoolVariable("sift.enable_agg",
@@ -221,11 +223,11 @@ sift_agg_init(void)
 							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
 							 NULL, &sift_test_verdict_gate, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-#endif
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+#endif
 	sift_aggbe_init();
 	DefineCustomBoolVariable("sift.agg_probe_direct",
 							 "Probe the btree of a correlated lookup child directly, a batch of keys at a time, instead of running the child for each key.",

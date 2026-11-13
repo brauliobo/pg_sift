@@ -358,9 +358,6 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_unit_rows",
 							"Testing: the rows a key-cut unit aims at (0 = the rows of 256 average heap pages), to get several units out of a small table.",
 							NULL, &sift_col_test_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_scope_patch",
-							 "Testing: a read of a scope key patches the members that changed, however many and whatever it costs, where it reads the entity path when that costs less.",
-							 NULL, &sift_test_scope_patch, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -405,6 +402,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_conn_fill",
 							"Testing: how the fill of the found flags of a connected index knows the keys of the parent: 1 reads the parent, 2 probes its btree, 0 takes the cheaper.",
 							NULL, &sift_test_conn_fill, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_scope_patch",
+							 "Testing: a read of a scope key patches the members that changed, however many and whatever it costs, where it reads the entity path when that costs less.",
+							 NULL, &sift_test_scope_patch, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_scope_sample_blocks",
 							"Testing: the blocks a table needs for the build of a scope index to estimate the multiplicity of its scopes from a sample first (0 = 2,048).",
 							NULL, &sift_test_scope_sample_blocks, 0, 0, 1048576, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

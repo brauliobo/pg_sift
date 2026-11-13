@@ -60,7 +60,7 @@ relation, whichever is cheapest), as the promotion would write them; the scan re
 write buffer's rows. A buffered row of a member whose pairs changed is read with the rest of that member's rows by the patch. A statement
 that the scope cannot answer reads the entity rows of the members the relation lists for the keys (a read of every key by the key has no such fallback: below); the answer is the join's in every case (the tests compare md5 against the plain join after every
 state: edits of pairs, writes, deletes, VACUUM, promotion, merge, rewrite, a crash at each directory update; the reader's own earlier commands, its savepoints and a cursor opened before a change: `col_scope_own_command`). The scan takes the scope conjunct from the join the way an application writes it
-(the recognition below), or from the marker `sift.in_scope(index, key_name, fk, key or keys)` of the testing flavour (`sift.in_scope_pairs` for the meaning of a join).
+(the recognition below).
 
 ## What the planner recognises
 
@@ -445,7 +445,7 @@ for `using`); `using <index>` names the one, and the `NOTICE` says which.
   across the leaf pages of the btree, in either order of its columns, partial, by each way the pairs are known: `sift.test_conn_fill`), `col_scope_pairs_multiset_partial`, `col_scope_pairs_multiset_twohop`.
 - **Which forms are exact.** A read with the meaning of `IN` or `EXISTS` counts a fact once whatever the rows of the pair and is read from the units. A `JOIN` to the relation counts a fact once for each row of a pair, and a read
   for each pair (`GROUP BY` the scope key, several keys counted for each pair) once for each row too, which the units (one entry for each distinct pair) cannot: those run as written, the plan says why
-  (`sift.explain_why`, arm `scope`: `pairs are a multiset (non-unique btree): a join counts a fact once for each row`; the testing marker `sift.in_scope_pairs` says it as `Scope Fallback`), and their rows are the join's.
+  (`sift.explain_why`, arm `scope`: `pairs are a multiset (non-unique btree): a join counts a fact once for each row`), and their rows are the join's.
   The planner learns it from the btree the index records (a dependency of the index, so a btree made later changes nothing until `REINDEX`). A scope of two paths defines its pairs as the distinct union, so a read for each pair of it counts each pair once whatever the rows hold.
 - **The pairs kept by `sift.scope_follow_pairs`** are written by sift as the distinct rows of a view, so they are unique.
 - **What it costs.** The same as for unique pairs: the units hold one entry for each distinct pair, a read of a dim_a_id whose rows were not written since the stamps is the stored read. The duplicate insert and delete
@@ -526,7 +526,7 @@ keeps writing minor 45 with one stamp for each scope. A library before 5.0, and 
 declared with another number of paths than its segments were written with (`ALTER INDEX .. SET (scope = ..)` from one to two paths or back) is not read as stored (`unfilled`, the maintenance says `stale connection`)
 until `REINDEX`.
 
-**`sift.in_scope` and the planner.** The scan takes the conjunct from the join as an application writes it (the recognition below), or from the testing marker `sift.in_scope(index, key_name, fk, key or keys)` (`sift.in_scope_pairs` for the join meaning), as for one path. The planner reads the paths from `sift_scope_legs(index, scope, legs[2])` (2 legs for this declaration, the second one joined: `via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`) and recognises the `UNION` of the two
+**The planner and the legs.** The scan takes the conjunct from the join as an application writes it (the recognition below), as for one path. The planner reads the paths from `sift_scope_legs(index, scope, legs[2])` (2 legs for this declaration, the second one joined: `via_rel`, `via_join`, `via_member`, `via_btree`, `via_pred`) and recognises the `UNION` of the two
 paths as the sub-select of `IN` or `EXISTS` and as the relation of a join (table below): each select reads the relation of its path with the predicate of its btree, both bind the same key by constants or parameters, and no other condition or column
 is read. What else a statement says keeps the join as written, and `sift.explain_why` (arm `scope`) says which select breaks the proof.
 

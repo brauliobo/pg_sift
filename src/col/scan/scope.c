@@ -633,7 +633,7 @@ patch_cap(const SiftDirSnapshot *dir, bool entity_path)
 	for (int i = 0; i < dir->nsegs; i++)
 		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !sift_seg_is_scope(&dir->segs[i]))
 			rows += dir->segs[i].ndocs;
-	return sift_test_scope_patch || !entity_path ? SIFT_SCOPE_CHANGED_MAX : Min(SIFT_SCOPE_CHANGED_MAX, rows * SIFT_SCOPE_CAP_ROW_INSTR / SIFT_SCOPE_MEMBER_INSTR);
+	return SIFT_TEST_SCOPE_PATCH || !entity_path ? SIFT_SCOPE_CHANGED_MAX : Min(SIFT_SCOPE_CHANGED_MAX, rows * SIFT_SCOPE_CAP_ROW_INSTR / SIFT_SCOPE_MEMBER_INSTR);
 }
 
 /* The first pair of each member of ps (ascending by member) */

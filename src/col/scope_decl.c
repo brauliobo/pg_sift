@@ -39,7 +39,9 @@
 
 bool		sift_agg_scope = true;
 double		sift_scope_max_multiplicity = 3.0;
+#ifdef SIFT_TESTING
 bool		sift_test_scope_patch = false;
+#endif
 
 /*
  * The checks of one column of a relation of the scope: it exists and is an integer, or a text, varchar or uuid column of a deterministic collation (col/scope_keys.c). A scope of one path needs

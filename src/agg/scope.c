@@ -30,7 +30,9 @@
 #include "agg/cost/model.h"
 #include "agg/lookcol_int.h"
 
+#ifdef SIFT_TESTING
 static bool test_scope_join;
+#define TEST_SCOPE_JOIN test_scope_join
 
 void
 sift_agg_scope_init(void)
@@ -38,6 +40,9 @@ sift_agg_scope_init(void)
 	DefineCustomBoolVariable("sift.test_scope_join", "Testing: a scope read runs the join the node holds, whatever the units cost.", NULL, &test_scope_join, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 }
+#else
+#define TEST_SCOPE_JOIN false
+#endif
 
 int
 sift_agg_scope_leaf(const SiftSrcLayout *lay, const char *key_name)
@@ -427,7 +432,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	int			nleaves;
 	SiftScopeCounts c;
 	uint32		max_changed = PG_UINT32_MAX;
-	bool		priced = sc != NULL && sc->alt != NULL && !sift_test_scope_patch;
+	bool		priced = sc != NULL && sc->alt != NULL && !SIFT_TEST_SCOPE_PATCH;
 
 	/* a worker has the leader's decision, taken with the keys (scope_keys_init) */
 	if (ex->scope_share == NULL)
@@ -441,7 +446,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 		return false;
 	if (ex->scope_share != NULL)
 		return ex->scope_why == NULL;
-	if (sc->alt != NULL && test_scope_join)
+	if (sc->alt != NULL && TEST_SCOPE_JOIN)
 	{
 		run_join(ex, "sift.test_scope_join", 0.0);
 		return false;
@@ -487,7 +492,7 @@ scope_open(AggExec *ex, Snapshot snapshot)
 	/* what the workers share: the units, not the patch and the delta of the changed members, which the leader reads */
 	ex->scope_price = priced ? sift_scope_units_price(&c) - sift_scope_changed_price(&c) : 0.0;
 	/* a patch and a delta that cost less than the pricing do not call for it; with the join as written to compare with, join_cheaper has priced them */
-	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !sift_test_scope_patch && patch_dearer(ex, snapshot))
+	if (rd->why == NULL && sc->alt == NULL && patch_extra(rd) > SIFT_SCOPE_PRICING_INSTR && (sc->once || sc->nkeys == 1) && !SIFT_TEST_SCOPE_PATCH && patch_dearer(ex, snapshot))
 		rd->why = "patch dearer than the entity path";
 	if (rd->why == NULL)
 		sift_scope_read_rows(rd);

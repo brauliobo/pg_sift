@@ -44,7 +44,9 @@ bool scope_open(AggExec *ex, Snapshot snapshot);
 struct StringInfoData *scope_share_build(AggExec *ex);
 void scope_share_adopt(AggExec *ex);
 bool scope_share_is_join(const void *share);
+#ifdef SIFT_TESTING
 void sift_agg_scope_init(void);
+#endif
 void scope_filter(AggExec *ex, int *total, List **add);
 void table_init(AggExec *ex);
 void table_reset(AggExec *ex);
