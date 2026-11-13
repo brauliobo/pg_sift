@@ -305,6 +305,7 @@ TESTING_REGRESS += col_scope_refresh_price
 TESTING_REGRESS += col_scope_textkey
 TESTING_REGRESS += col_scope_textkey_refusals
 TESTING_REGRESS += col_scope_textmember
+TESTING_REGRESS += col_scope_textmember_collide
 TESTING_REGRESS += col_scope_twohop_build
 TESTING_REGRESS += col_scope_twohop_choice
 TESTING_REGRESS += col_scope_twohop_declare

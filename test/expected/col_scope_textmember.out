@@ -1,6 +1,6 @@
 -- The member of a scope may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the fill gives the members of its batches and of the pairs one code for each value (a map of the statement), the
--- journal of the pairs records the word of a member (FNV-1a of its bytes), and a read that the stored units cannot answer exactly (a member whose pairs changed, a fact in the write buffer, a member
--- of several keys) runs the join as written. The rows are those of the join in every state the integer member is exact in.
+-- journal of the pairs records the word of a member (FNV-1a of its bytes), the stored units leave out the entries of the members whose word the journal names and the read patches their rows by value,
+-- the rows of the write buffer and the members of several keys are read as those of an integer member are. The rows are those of the join in every state the integer member is exact in.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
@@ -26,6 +26,8 @@ SELECT sift._test_member_hash('foobar'::varchar) = sift._test_member_hash('fooba
  t               | -8637869204239850395 | -2999268670487533483
 (1 row)
 
+\ir test/col_scope_textmember_states.sql
+-- shared by col_scope_textmember and col_scope_textmember_collide: the fixtures, the forms and the states of the pairs and of the facts
 CREATE TABLE events (id int PRIMARY KEY, account text, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 -- accounts 'acct-1' to 'acct-400', one in 97 with no account (NULL), one in 89 with the empty account
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN '' ELSE 'acct-' || (1 + (i::bigint * 7919) % 400) END,
@@ -175,11 +177,11 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COL
 (16 rows)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |                  run                  
-------------------------------------------+---------------------------------------
+                   name                   |                       run                        
+------------------------------------------+--------------------------------------------------
  EXISTS                                   | units
  IN, a key nobody has                     | units
- IN, a list                               | Fallback: text member of several keys
+ IN, a list                               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
  IN, one key                              | units
  IN, the tenant of the empty account      | units
  every fact with a pair                   | units
@@ -187,12 +189,12 @@ SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
  group by the key, every key              | units
  join, a list, a row for each pair        | units
  join, one key                            | units
- text members, text key                   | Fallback: text member of several keys
+ text members, text key                   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
  text members, text key, group by the key | units
- uuid members                             | Fallback: text member of several keys
+ uuid members                             | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
  uuid members, group by the key           | units
  varchar facts, group by the key          | units
- varchar facts, text pairs                | Fallback: text member of several keys
+ varchar facts, text pairs                | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
 (16 rows)
 
 CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
@@ -209,12 +211,12 @@ SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, cou
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid members', 'text members, text key') ORDER BY name COLLATE "C";
-               name                |              run              
------------------------------------+-------------------------------
- IN, one key                       | Fallback: text member changed
- join, a list, a row for each pair | Fallback: text member changed
- text members, text key            | Fallback: text member changed
- uuid members                      | Fallback: text member changed
+               name                |                       run                        
+-----------------------------------+--------------------------------------------------
+ IN, one key                       | Changed Keys: 3; Patched Keys: 3
+ join, a list, a row for each pair | Changed Keys: 3; Patched Keys: 3
+ text members, text key            | Changed Keys: 3; Patched Keys: 3; Dedupe Keys: 1
+ uuid members                      | Changed Keys: 3; Patched Keys: 3; Dedupe Keys: 1
 (4 rows)
 
 DELETE FROM pairs WHERE tenant_id = 4 AND account ~ '^acct-[0-9]*5$';
@@ -269,11 +271,11 @@ SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differ
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'varchar facts, text pairs') ORDER BY name COLLATE "C";
-           name            |              run              
----------------------------+-------------------------------
- IN, a list                | Fallback: text member changed
- IN, one key               | Fallback: text member changed
- varchar facts, text pairs | Fallback: text member changed
+           name            |                run                 
+---------------------------+------------------------------------
+ IN, a list                | Changed Keys: 53; Patched Keys: 10
+ IN, one key               | Changed Keys: 48; Patched Keys: 0
+ varchar facts, text pairs | Changed Keys: 53; Patched Keys: 10
 (3 rows)
 
 -- the stored units and the join agree after the pairs are merged into the index (REINDEX), and read the units again
@@ -295,11 +297,11 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |                  run                  
-------------------------------------------+---------------------------------------
+                   name                   |  run  
+------------------------------------------+-------
  EXISTS                                   | units
  IN, a key nobody has                     | units
- IN, a list                               | Fallback: text member of several keys
+ IN, a list                               | units
  IN, one key                              | units
  IN, the tenant of the empty account      | units
  every fact with a pair                   | units
@@ -307,12 +309,12 @@ SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
  group by the key, every key              | units
  join, a list, a row for each pair        | units
  join, one key                            | units
- text members, text key                   | Fallback: text member of several keys
+ text members, text key                   | units
  text members, text key, group by the key | units
- uuid members                             | Fallback: text member of several keys
+ uuid members                             | units
  uuid members, group by the key           | units
  varchar facts, group by the key          | units
- varchar facts, text pairs                | Fallback: text member of several keys
+ varchar facts, text pairs                | units
 (16 rows)
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true), sift.col_verify('txt_events_col', true);

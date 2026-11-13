@@ -31,7 +31,7 @@ BEGIN
 END $$;
 """
 
-DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|top-n, changed pairs|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*|text member .*)$')
+DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|top-n, changed pairs|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
 
 
 def lit(ktype, n):
@@ -220,6 +220,8 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
         stats['reads'] += 1
         stats['engaged'] += engaged
         stats['fallback'] += bool(why)
+        if why:
+            stats['why ' + why] += 1
         if why and not DOCUMENTED.match(why):
             raise Fail(f'{label}: {name}: undocumented fallback reason "{why}"')
         if strict and name == 'one key' and (not engaged or why):
@@ -282,7 +284,8 @@ def run_seed(seed, rows, steps, out_dir):
         run_battery(a, s.battery(), stats, 'rebuilt', strict=True)
         if not stats['engaged']:
             raise Fail('no read of the seed took the scope units')
-        return 0, path, f"{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']}"
+        why = ', '.join(f'{k[4:]} x{v}' for k, v in stats.most_common() if k.startswith('why '))
+        return 0, path, f"{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']} ({why})"
     except Fail as e:
         log.write(f'FAIL {e}\n')
         return 1, path, f'FAIL {str(e)[:600]}'
