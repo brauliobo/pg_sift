@@ -96,7 +96,7 @@ catchup p s || bail "standby catchup failed"
 touch "$D/standby_release"
 wait "$sp"
 check "the standby snapshot older than the commit reads the old rows in the three modes: the settled stamp is not taken for visible to it" \
-	test "$(tr -d ' ' <"$D/standby.out" | sort -u | wc -l)" == 1 -a "$(tr -d ' ' <"$D/standby.out" | sed -n 1p)" == "$(sed -n 1p "$D/standby.base" | tr -d ' ')"
+	test "$(tr -d ' ' <"$D/standby.out" | sort -u | wc -l | tr -d ' ')" == 1 -a "$(tr -d ' ' <"$D/standby.out" | sed -n 1p)" == "$(sed -n 1p "$D/standby.base" | tr -d ' ')"
 check "the standby has the settled stamps" test "$(stamps s)" == "$(stamps p)"
 check "a new snapshot on the standby: free, checked and oracle agree, with the committed rows" agree s
 check "... and it reads fewer heap pages than the checked read, as the primary's stamps say" test "$(pages s free)" -lt "$(pages s checked)"
