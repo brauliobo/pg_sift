@@ -57,7 +57,7 @@ Only a column whose index segments hold a dictionary of strings has something to
 
 Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct values (a row each), three sift_col indexes: A (`id, tenant, uid, url, amount`), B (`url, id`) and C (`uid, tenant`). Shared: the rule's choice. Own: `sift.col_value_store = off`. Instructions are of the backend (`perf stat`), cold the first statement of a session and warm the second.
 
-| rows | all indexes, own strings | all indexes, shared | the only member left |
+| rows | all indexes, own strings | all indexes, shared | the only member left (until its rewrite and a VACUUM) |
 | ---: | ---: | ---: | ---: |
 | 100,000 | 9.2 MB | 8.4 MB (-8%) | 4.7 -> 6.5 MB (+38%) |
 | 500,000 | 47.0 MB | 41.5 MB (-12%) | 24.3 -> 31.9 MB (+31%) |
@@ -86,17 +86,31 @@ Reads, 2,000,000 rows, the three indexes of the lab above with the automatic cho
 | group by the URL (2,000,000 groups) | 9,019 -> 8,993 | 7,574 -> 7,628 (+0.7%) |
 | count(DISTINCT url) | 3,169 -> 3,144 | 1,732 -> 1,780 (+2.8%) |
 
-Buffers touched are equal (range 17,421 -> 17,802 cold). Where the rest goes, from the profile of the cold range (the worst shape): the strings of a segment are rebuilt from the store's runs by code (+67 M: the codes sorted back into runs, the blocks copied, minus the parse of an own dictionary), and the predicate meets the strings in that layout (+45 M); a lookup by value is searched in each of the store's 15 runs (the IN: 100 values, +8.7 M). The block offsets of a run are read one window at a time, as the blocks are: before that, a full read of the strings left the page of the blocks for the page of their offsets and back (62,000 more buffer accesses at 2,000,000 rows, 66 M instructions). The strings of a shared column are fetched through the codes, which an own dictionary does not need, so the worst shape stays about 4% above the own index at this size; against it the lab table keeps 23% less of the indexes (244.4 -> 186.9 MB with the order array of the URL off, 416.8 -> 372.8 MB with it on: the order array is not shared) and the sharing spares 29 bytes a row (57.5 MB of 2,000,000 rows), six times the 5 bytes a row the rule asks.
+Buffers touched are equal (range 17,421 -> 17,802 cold). The strings of a shared column are fetched through the codes (a segment's strings are rebuilt from the runs of the store, a lookup by value is searched in each run), which an own dictionary does not need, so the worst shape, the range, stays about 4% above the own index at this size; against it the lab table keeps 23% less of the indexes (244.4 -> 186.9 MB with the order array of the URL off, 416.8 -> 372.8 MB with it on: the order array is not shared) and the sharing spares 29 bytes a row (57.5 MB of 2,000,000 rows), six times the 5 bytes a row the rule asks.
 
 Builds, 2,000,000 rows: an index that adopts a store builds in 1.0 to 1.45 times the time of one with its strings (B 3.7-5.0 s -> 4.3-7.1 s, C 2.0-2.1 s -> 2.0-2.9 s on a loaded host); the index that creates the stores pays for them once (5.4-7.0 s -> 11.5-13.4 s for two stores of two million strings). WAL of a build is the same.
 
 The stores of the table above take 102.8 MB at 2,000,000 rows (two columns).
 
+At 200,000 rows (the lab above, indexes A, B, C and D with `key_order = 'tenant'`, one backend, `perf stat`; D keeps its own strings under the rule):
+
+| | own strings | shared |
+| --- | ---: | ---: |
+| A, B, C, D and the stores | 29.4 MB | 27.2 MB (-7.5%, 11 bytes a row) |
+| A and B only, A built first | 15.9 MB | 17.6 MB (+11%) until A is rebuilt, then 15.1 MB (-4.8%) |
+| build of A, B, C, REINDEX of A | 0.77, 0.71, 0.20, 0.86 s | 1.13, 1.01, 0.31, 1.17 s (+47%, +42%, +56%, +35%) |
+| equality on the URL, cold / warm | 3.5 / 0.3 M instructions | 3.7 / 0.4 |
+| IN of 100 URLs, cold / warm | 9.8 / 4.0 | 10.6 / 4.7 |
+| range on the URL, cold / warm | 4.7 / 0.8 | 8.5 / 4.5 |
+| A alone after B, C and D are dropped | 10.0 MB | 13.2 MB (+32%) until its rewrite and a VACUUM, then 10.0 MB, the store gone |
+
+The saving is 2.2 MB of 29.4 and the range read costs 3.8 M instructions more (about a millisecond): both grow with the rows, the saving faster (-12% at 500,000, -18% at 2,000,000), and the rule shares nothing below 5 bytes a row. The only member left is not a size to fix in the drop: its maintenance names it due (`sift.col_maintenance_due` says `value store epoch`), the worker rewrites its segments (1.4 s here) and the VACUUM after it gives the pages back and drops the store.
+
 Garbage (see above), 200,000 rows and two indexes: with 10% of the rows replaced each round, 63% of the codes are named by no segment after 20 rounds and the store is 42.0 MB where it began with 11.6 MB; with 50% replaced, 86%. A compaction brings the garbage to 0%; the blocks of the retired epoch go to the free list of the store and later runs use them.
 
 ## Why on, and the off switch
 
-Default on because the gain is large when two indexes of the table hold the column and the rule shares only then; the reads are as cheap and the builds within 1.5 times. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_value_store = off` before the build (the strings stay in the segments; test `col_vstore_off`), or `REINDEX` an index that has no other index with its key order. `sift.col_format_minor = 14` is the rollback to a release before 4.3 and has the side effects above.
+Default on because the rule shares only when another index holds the column with the key order, and then the gain is 5% at 200,000 rows with two indexes, 7.5% with three and 8% to 18% from 100,000 to 2,000,000 rows, for reads that cost 0.1 to 3.8 M instructions more at 200,000 rows and 4% more at 2,000,000, and builds 35% to 56% longer once. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_value_store = off` before the build (the strings stay in the segments; test `col_vstore_off`), or `REINDEX` an index that has no other index with its key order. `sift.col_format_minor = 14` is the rollback to a release before 4.3 and has the side effects above.
 
 ## Limits
 
