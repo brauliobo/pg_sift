@@ -2,11 +2,12 @@
 """Focused slope bench of a scope read in a dirty state: a few changed pairs must not make the read dearer than the join it falls back to.
 
     PGHOST=.. PGPORT=.. python3 -I bench/steps/scope_dirty.py [--paths one|two] [--facts N] [--changed 1,20,200,2000] [--db NAME] [--keys 1,10]
+                                                             [--reads sum|topn] [--states "clean,member big 20,buffer 2000"] [--member-order]
 
 A table of N facts (200,000 by default, on a tmpfs cluster) with its member key, a pairs relation of (member, tenant) with its journal index, and one scope index. For each number of changed
 pairs (the pairs of the first dim_a_id values of the big tenant are deleted and inserted again: a journaled edit that leaves the rows as they were) a fresh fixture is built, and for a tiny and a big tenant, and for a
 read of 1 and of 10 tenants, three arms are measured; --paths two builds the scope of two paths (a tenant is granted dim_a_id values and groups, a group has dim_a_id values) and edits the pairs of a tenant
-no read asks for (other), of the big one and of the tiny one, directly granted (direct) or through a group that holds them (member), for 1 tenant reads: the scope units (`scope`, forced), the join as written (`join`, sift.agg_scope off) and the planner's choice (`chosen`). Each cell reports the
+no read asks for (other), of the big one and of the tiny one, directly granted (direct) or through a group that holds them (member), for 1 tenant reads: the scope units (`scope`, forced), the join as written (`join`, sift.agg_scope off) and the planner's choice (`chosen`). --reads topn measures the latest 20 and the top 20 sums of the scope instead of the aggregates (--paths two), --states only the states named, --member-order keys the segments by member and time. Each cell reports the
 absolute instructions of the backend (perf stat, median of 3), the shared blocks hit / read of a cold run (shared buffers emptied) and of a warm one, and whether the rows are md5-equal to the plain
 statement (sift.enable_agg off). The planner's pick is checked against an absolute bar: `chosen` must cost at most BAR_INSTR instructions and BAR_BLOCKS cold blocks (hit + read) more than the cheaper arm; the exit code is 1 on a
 differing md5 and 2 on a cell over the bar (reported, the run goes on). A change to the pairs of other keys than the read's (`other`, or the other tenant) costs the read nothing: `chosen` must be within BAR_INSTR of the same cell of the first state, which has no change, and RECORD_INSTR instructions for each changed pair (its journal records are read and sorted).
@@ -127,7 +128,7 @@ CREATE INDEX memberships_by_dim_a ON memberships USING sift_col (dim_a_id, group
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + (i::bigint * 7919) % 20000, date '2025-01-01' + i % 365, 'k' || i % 7, i % 100 FROM generate_series(1, @FACTS@) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+	WITH (@ORDER@scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 CREATE VIEW tenant_pairs AS
 	SELECT g.dim_a_id AS member, g.tenant_id FROM grants g WHERE g.dim_a_id IS NOT NULL
 	UNION
@@ -145,7 +146,16 @@ def churn_members(tenant, n):
 
 EDITS_TWO = {'direct other': lambda n: churn_grants(40, n), 'member other': lambda n: churn_members(40, n), 'direct big': lambda n: churn_grants(1, n),
              'member big': lambda n: churn_members(1, n), 'direct tiny': lambda n: churn_grants(2, n), 'member tiny': lambda n: churn_members(2, n)}
-SHAPES_TWO = {'1 tenant': 'SELECT e.kind, sum(e.amount), count(*) FROM sd.facts e WHERE e.dim_a_id IN (SELECT member FROM sd.tenant_pairs WHERE tenant_id = %d) GROUP BY 1'}
+# n new facts (the newest of the table, three dates) of members of the big tenant and of the tiny one, which wait in the write buffer
+def buffered(n, facts):
+    return (f"INSERT INTO sd.facts SELECT {facts} + i, CASE WHEN i % 2 = 0 THEN 1 + i % 2000 ELSE 16000 + 1 + i % 20 END, date '2026-01-01' + i % 3, 'k' || i % 7, i % 100 "
+            f"FROM generate_series(1, {n}) i")
+
+MEMBERS = 'e.dim_a_id IN (SELECT member FROM sd.tenant_pairs WHERE tenant_id = %d)'
+SHAPES_TWO = {'1 tenant': 'SELECT e.kind, sum(e.amount), count(*) FROM sd.facts e WHERE ' + MEMBERS + ' GROUP BY 1'}
+# the top-N reads of a dashboard: the latest rows, and the members with the most
+SHAPES_TOPN = {'1 latest 20': 'SELECT e.id, e.created_at FROM sd.facts e WHERE ' + MEMBERS + ' ORDER BY e.created_at DESC, e.id DESC LIMIT 20',
+               '1 top 20 sums': 'SELECT e.dim_a_id, sum(e.amount) AS total FROM sd.facts e WHERE ' + MEMBERS + ' GROUP BY 1 ORDER BY total DESC, 1 LIMIT 20'}
 
 
 def cell(s, sql):
@@ -164,12 +174,15 @@ def cell(s, sql):
     return out, md5
 
 
-def states(paths, changed):
+def states(paths, changed, facts, reads, only=None):
     """(label, fixture, shapes, tenants, edit) of every state: a fresh fixture, edited once"""
     if paths == 'one':
         return [(str(n), FIXTURE, SHAPES, TENANTS, EDIT % n if n else None) for n in changed]
-    out = [('clean', FIXTURE_TWO, SHAPES_TWO, {'tiny': 2, 'big': 1}, None)]
-    return out + [(f'{label} {n}', FIXTURE_TWO, SHAPES_TWO, {'tiny': 2, 'big': 1}, edit(n)) for label, edit in EDITS_TWO.items() for n in changed if n]
+    shapes = SHAPES_TOPN if reads == 'topn' else SHAPES_TWO
+    edits = dict(EDITS_TWO, buffer=lambda n: buffered(n, facts))
+    out = [('clean', FIXTURE_TWO, shapes, {'tiny': 2, 'big': 1}, None)]
+    out += [(f'{label} {n}', FIXTURE_TWO, shapes, {'tiny': 2, 'big': 1}, edit(n)) for label, edit in edits.items() for n in changed if n]
+    return [st for st in out if only is None or st[0] in only]
 
 
 def main():
@@ -178,15 +191,18 @@ def main():
     ap.add_argument('--facts', type=int, default=200000)
     ap.add_argument('--changed', default='0,1,20,200,2000')
     ap.add_argument('--keys', default='1,10')
+    ap.add_argument('--member-order', action='store_true', help="--paths two: key_order = 'dim_a_id, created_at' (a point directory of the member: the rows of a changed member are found, not scanned for)")
+    ap.add_argument('--states', help='only these states, as the table prints them: "clean,member big 20,buffer 2000"')
+    ap.add_argument('--reads', default='sum', choices=('sum', 'topn'), help='the aggregate of the dashboard, or its top-N reads (latest 20, top 20 sums; --paths two)')
     ap.add_argument('--db', default='scope_dirty')
     a = ap.parse_args()
     subprocess.run(['psql', '-X', '-q', '-U', 'postgres', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {a.db}', '-c', f'CREATE DATABASE {a.db}'], check=True, env=ENV)
     bad = over = 0
     clean = {}
     print('| state | tenant | read | arm | M instr | cold hit/read | warm hit/read | picked |\n|---|---|---|---|---|---|---|---|')
-    for label, fixture, shapes, tenants, edit in states(a.paths, [int(x) for x in a.changed.split(',')]):
+    for label, fixture, shapes, tenants, edit in states(a.paths, [int(x) for x in a.changed.split(',')], a.facts, a.reads, a.states.split(',') if a.states else None):
         s = Sess(a.db)
-        s.run(fixture.replace('@FACTS@', str(a.facts)))
+        s.run(fixture.replace('@FACTS@', str(a.facts)).replace('@ORDER@', "key_order = 'dim_a_id, created_at', " if a.member_order else ''))
         if edit:
             s.run(edit)
         for tn, k in tenants.items():
@@ -207,7 +223,7 @@ def main():
                     over += 1
                     print(f'OVER THE BAR {label} {tn} {shape}: chosen {res["chosen"][0] / 1e6:.2f} M, {blocks("chosen")} blocks; {best} {res[best][0] / 1e6:.2f} M, {blocks(best)} blocks', file=sys.stderr)
                 # a change to the pairs of other keys costs the read of this key nothing: the cell of the first state, which has no change, is its cost
-                edited = None if not edit else 'big' if a.paths == 'one' else label.split()[1]
+                edited = None if not edit or label.startswith('buffer') else 'big' if a.paths == 'one' else label.split()[1]
                 clean.setdefault((tn, shape), res['chosen'][0])
                 if edited not in (None, tn) and res['chosen'][0] > clean[(tn, shape)] + BAR_INSTR + RECORD_INSTR * int(label.split()[-1]):
                     over += 1
