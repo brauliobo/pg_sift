@@ -603,7 +603,8 @@ segments_stamp(Relation index, const SiftDirSnapshot *dir, int ord, SiftConnStam
 
 /*
  * Do the scope segments of the index cover its rows? Every entity segment of the directory says its rows have their entries in them (SIFT_SEG_SCOPED), which the writers keep
- * true: the build and a promotion write the entity segment and the scope segments of its rows together, in one switch of the directory; a merge of entity segments keeps the
+ * true: the build and a promotion write the entity segment and the scope segments of its rows together, in one switch of the directory, and say so only when they wrote one (its stamp
+ * is the one the entries are exact as of: rows with no pair have no scope segment, and a stamp newer than theirs would miss the pairs that came after); a merge of entity segments keeps the
  * addresses, so the entries stay valid, and its output has the flag only if all its inputs had it; a merge of scope segments loses none; VACUUM ends the entries of a dead
  * address in every segment. A row not in an entity segment is in a write buffer, which the reader reads through the entity path. The flag is of the index (all its scopes are filled
  * together), the argument checks the ordinal.

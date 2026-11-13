@@ -55,10 +55,10 @@ check "the pair written after the rows the build read is a changed member of the
 check "the read patches it and is the join" same
 check "the index verifies" test -z "$(sql fs "SELECT sift.col_verify('events_col', true)" 2>&1)"
 
-# a concurrent build stamps nothing at the end of its build, and reads exactly meanwhile
+# a concurrent build fills its scope segments under a stamp at the end of its build, and reads exactly meanwhile
 sql fs "DROP INDEX events_col" "DELETE FROM tenant_scope WHERE dim_a_id = 1 AND tenant_id = 12" "DROP INDEX tenant_scope_journal" \
 	"CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
 	"CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)" >/dev/null
-unfilled_exact() { [[ $(fallback) == "Scope Fallback: unfilled" ]] && same; }
-check "a concurrent build: the read is the join, unfilled until a REINDEX ($(fallback))" unfilled_exact
+stamped_exact() { [[ $(fallback) == units ]] && same; }
+check "a concurrent build: the read is the units and the join's, with no REINDEX ($(fallback))" stamped_exact
 finish

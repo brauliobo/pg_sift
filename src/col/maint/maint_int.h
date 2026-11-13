@@ -154,6 +154,7 @@ extern RollPick maint_roll_pick(const RewriteView *v, bool *take, RollStep *rs);
 extern void maint_roll_merge(Relation index, const SiftSegEntry *sel, int n, const RollStep *rs, int room);
 extern bool maint_scope_merge_step(Relation index, bool force);
 extern bool maint_scope_refill(Relation index);
+extern void maint_scope_uncover_unstamped(Relation index);
 extern bool maint_scope_refill_due(Relation index);
 extern bool maint_scope_merge_due(Relation index, bool force);
 

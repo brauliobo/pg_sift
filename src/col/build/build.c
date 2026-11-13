@@ -165,7 +165,9 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	else
 		sift_col_track_reconcile(index);
 	sift_conn_start(heap, index);
-	sift_scope_start(heap, index, false);
+	sift_scope_start(heap, index, info->ii_Concurrent);
+	if (info->ii_Concurrent && sift_scope_specs(index) != NULL)
+		sift_scope_stamp_concurrent(index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
 	sift_col_vacuum_notice(heap, index);

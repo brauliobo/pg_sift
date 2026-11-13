@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A scope index built on an empty table has no segment to carry its stamp, so its reads say `unfilled` and the join answers; once rows arrive the maintenance the reads ask for writes the
-# scope units, and the answers are the join's before and after.
+# A scope index built on an empty table has no segment, so its reads say `unfilled` (the join answers) while the rows that arrive are in the write buffers; the promotion of the buffers writes the
+# segments with the stamp the journal of the scope gives at that moment, so the first promotion makes the reads stored with no refill, and the answers are the join's before and after.
 . "$(dirname "$0")/lib.bash"
 plan 5
 
@@ -24,8 +24,8 @@ same() { [[ $(sql eb "SET sift.agg_force = on" "$READ" | tail -n 1) == $(sql eb 
 check "on an empty table the read says unfilled" test "$(why)" == unfilled
 sql eb "INSERT INTO ce SELECT i, 1 + (i * 7919) % 210, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'x' FROM generate_series(1, 30000) i" "VACUUM ce" >/dev/null
 check "... and its answer is the join's once rows arrive" same
-filled() { why >/dev/null; [[ $(why) == stored ]]; }
-check "the reads of the table read the scope units within 60 s of its rows" wait_for filled 60
+sql eb "SELECT sift.col_promote('ce_col')" >/dev/null
+check "the first promotion of its rows makes the reads read the scope units, with no refill" test "$(why)" == stored
 check "... with the same answer as the join" same
 check "... and no key differs from the join" test "$(sql eb "SELECT count(*) FROM sift.col_scope_verify('ce_col', 1000) WHERE problem <> 'unverified'" | tail -n 1)" == 0
 finish

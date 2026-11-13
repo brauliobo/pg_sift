@@ -71,14 +71,12 @@ SELECT 'two paths, mutant' AS state, scope_key, problem, scope_rows, join_rows, 
 REINDEX INDEX facts_col;
 SELECT 'two paths, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('facts_col', 100, ARRAY['1', '2', '3', '4']);
 
--- the first scope index of a relation of pairs made concurrently has segments with no stamp: its reads are the entity rows, which the verifier says instead of calling it clean
+-- the first scope index of a relation of pairs made concurrently is stamped at the end of its build: the verifier compares its keys with the join, as for any index
 CREATE TABLE tenant_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_pairs SELECT m, 1 + (m * 5 + j * 3) % 12 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4;
 CREATE INDEX tenant_pairs_journal ON tenant_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX CONCURRENTLY events_concurrent ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_pairs(dim_a_id, tenant_id)');
 SELECT 'concurrent' AS state, problem, detail, count(*) AS keys FROM sift.col_scope_verify('events_concurrent', 4) GROUP BY problem, detail;
-REINDEX INDEX events_concurrent;
-SELECT 'concurrent, after REINDEX' AS state, count(*) AS rows FROM sift.col_scope_verify('events_concurrent', 4);
 
 -- a text and a uuid key: the keys are drawn from the pairs, and named as text
 CREATE TABLE text_pairs (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);

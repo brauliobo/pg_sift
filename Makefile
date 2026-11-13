@@ -328,6 +328,7 @@ TESTING_REGRESS += col_scope_twohop_tags
 TESTING_REGRESS += col_scope_verify
 TESTING_REGRESS += col_scope_verify_order
 TESTING_REGRESS += col_scope_workers
+TESTING_REGRESS += col_scope_zero_entry
 TESTING_REGRESS += col_seg_head
 TESTING_REGRESS += col_seg_mirror
 TESTING_REGRESS += col_set_list_span

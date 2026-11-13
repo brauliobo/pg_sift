@@ -133,10 +133,15 @@ scope_report(const ColBuild *b, int s)
 void
 colb_scope_gather(ColBuild *b)
 {
-	for (int i = 0; b->nscope > 0 && i < b->nsegs; i++)
-		b->segs[i].flags |= SIFT_SEG_SCOPED;
+	bool		stamped = false;
+
 	for (int s = 0; s < b->nscope; s++)
+	{
 		scope_report(b, s);
+		stamped |= b->scope[s]->nsegs > 0;
+	}
+	for (int i = 0; stamped && i < b->nsegs; i++)
+		b->segs[i].flags |= SIFT_SEG_SCOPED;
 	for (int s = 0; s < b->nscope; s++)
 	{
 		const ColBuild *sb = b->scope[s];

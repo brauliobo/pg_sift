@@ -74,26 +74,56 @@ maint_scope_write(Relation index, SiftWriteTarget *wt, struct SiftScopeFill *sf,
 	return n;
 }
 
-/* Are the scope entries something the rewrite is to make again: an entity segment has none, or the journal of the relation says they are stale (sift_scope_stale) */
+static void
+uncover_entities(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+{
+	for (int i = 0; i < dir->nsegs; i++)
+		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			dir->segs[i].flags &= ~SIFT_SEG_SCOPED;
+}
+
+/*
+ * Before a promotion adds the first scope segment of an index that has none (VACUUM took them, or rows with no pair never had one): the entity segments that said they were covered were found to
+ * have no entries under no stamp, and the pairs that came since are older than the stamp of this one, so they are covered no more; the next refill fills them all. Before the switch that adds
+ * it, so that no read sees the new stamp with the old flags.
+ */
+void
+maint_scope_uncover_unstamped(Relation index)
+{
+	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+	bool		stamped = false;
+
+	sift_dir_read(index, dir);
+	for (int i = 0; i < dir->nsegs && !stamped; i++)
+		stamped = sift_seg_is_scope(&dir->segs[i]);
+	pfree(dir);
+	if (!stamped)
+		sift_dir_update(index, &(SiftDirChange) {.fn = uncover_entities,.extra = InvalidBuffer});
+}
+
+/*
+ * Are the scope entries something the rewrite is to make again: an entity segment has none while the index has scope segments (a promotion of rows without a pair writes none, and the
+ * stamp of the others is newer than it: see sift_scope_covered), or the journal of the relation says they are stale (sift_scope_stale). An index with no scope segment reads through the join.
+ */
 bool
 maint_scope_refill_due(Relation index)
 {
 	SiftDirSnapshot *dir;
 	SiftScopeStale *st = sift_scope_stale_begin(index, CurrentMemoryContext);
-	bool		due = false;
+	bool		due = false,
+				covered;
 
 	if (st == NULL)
 		return false;
 	dir = palloc(sizeof(SiftDirSnapshot));
-	for (int s = 0; s < sift_col_rel(index)->nscope && !due; s++)
-		due = !sift_scope_covered(index, s);
+	covered = sift_scope_covered(index, 0);
 	sift_dir_read(index, dir);
 	for (int i = 0; i < dir->nsegs && !due; i++)
 		if (sift_seg_is_scope(&dir->segs[i]))
 		{
 			SiftColSegment *seg = sift_cseg_open(index, &dir->segs[i], CurrentMemoryContext);
 
-			due = sift_scope_stale(st, seg);
+			due = !covered || sift_scope_stale(st, seg);
 			sift_cseg_close(seg);
 		}
 	sift_scope_stale_end(st);
@@ -131,7 +161,7 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	{
 		if (in_gens(rf->old, rf->nold, dir->segs[i].gen))
 			continue;
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && in_gens(rf->ents, rf->nents, dir->segs[i].gen))
+		if (rf->nneu > 0 && dir->segs[i].kind == SIFT_SEG_IMMUTABLE && in_gens(rf->ents, rf->nents, dir->segs[i].gen))
 			dir->segs[i].flags |= SIFT_SEG_SCOPED;
 		dir->segs[n++] = dir->segs[i];
 	}
@@ -236,6 +266,18 @@ maint_scope_refill(Relation index)
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return true;
+}
+
+/*
+ * The end of a CREATE INDEX CONCURRENTLY of a scope index: its segments were written before the journal of the first scope index of the relation existed, so they carry no stamp and the reads
+ * would say unfilled until the maintenance fills them. They are filled here as the rewrite fills a stale set, and merged as the rewrite after a build does.
+ */
+void
+sift_scope_stamp_concurrent(Relation index)
+{
+	if (maint_scope_refill(index))
+		while (maint_scope_merge_step(index, true))
+			;
 }
 
 /*

@@ -138,8 +138,9 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		/* the rows go to the scope segments in the same switch of the directory as their entity segment */
 		if (sf != NULL)
 		{
-			neu[0].flags |= SIFT_SEG_SCOPED;
 			nneu += maint_scope_write(index, wt, sf, fill, batches, nb, idx_rows, format, cx, neu + 1);
+			if (nneu > 1)
+				neu[0].flags |= SIFT_SEG_SCOPED;
 			for (int i = 1; i < nneu; i++)
 				neu[i].flags |= neu[0].flags & SIFT_SEG_ROOTS;
 		}
@@ -150,6 +151,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		sift_wt_finish(wt);
 	}
 	pages = sift_cwbuf_pages(index, sealed, &npages);
+	if (nb > 0 && nneu > 1)
+		maint_scope_uncover_unstamped(index);
 	sift_maint_replace_n(index, &sealed->gen, 1, neu, nb > 0 ? nneu : 0, pages, npages, "promoted a sealed column segment of", start, rows);
 	sift_cwbuf_arena_drop(index, sealed->gen);
 	MemoryContextSwitchTo(old);
