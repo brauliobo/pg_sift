@@ -122,6 +122,7 @@ extern bool sift_conn_gen_equal(const SiftConnGen *a, const SiftConnGen *b);
  */
 extern uint64 sift_conn_inserted_rows(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp);
 extern SiftConnWhy sift_conn_changed(Relation parent_heap, Relation parent_index, const SiftConnStamp *stamp, Snapshot snap, uint32 cap, SiftConnKeys *out);
+typedef struct SiftKeyMap SiftKeyMap;
 /*
  * The same, with the keys of the inserted entries (adds) of a scope relation's journal (col/scope.h) as well, and only of the records of the pairs of the scope keys in tags (NULL: of every key). A
  * record carries the tag of the scope key of its pair when the journal was made for the column the tags are of; a record of no tag, and every record of a journal of another column, is of every key.
@@ -137,8 +138,8 @@ typedef struct SiftConnTags
 } SiftConnTags;
 /* The tag of a scope key (1..SIFT_TOMB_TAG_MAX) */
 extern uint16 sift_conn_key_tag(int64 key);
-/* The tags of the keys of the column att; NULL for too many keys (they would tag most records: the read takes them all) */
-extern SiftConnTags *sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys);
+/* The tags of the keys of the column att (a text, varchar or uuid column: km, the map of the key codes); NULL for too many keys (they would tag most records: the read takes them all) */
+extern SiftConnTags *sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys, SiftKeyMap *km);
 /* Tags of no key yet: fill(tags, arg) adds them (sift_conn_tags_add) when a record of a tag is first looked at */
 extern SiftConnTags *sift_conn_tags_lazy(AttrNumber att, void (*fill) (SiftConnTags *tags, void *arg), void *arg);
 extern void sift_conn_tags_add(SiftConnTags *tags, const int64 *keys, uint32 nkeys);
@@ -259,7 +260,6 @@ extern bool sift_conn_keyset_has_one(const SiftConnKeySet *set, int64 k);
  * sift_keymap_code gives the code of a value in the store; for a value it lacks, a writer interns it and a reader gives it a negative code of the map's own, which no stored unit has; the datum of a code
  * is a palloc'd value of the column's type.
  */
-typedef struct SiftKeyMap SiftKeyMap;
 extern bool sift_keymap_type(Oid typid);
 extern const char *sift_keymap_column_refusal(Oid typid, Oid collation);
 extern bool sift_keymap_same_kind(Oid a, Oid b);
@@ -281,7 +281,7 @@ extern void sift_keymap_hold(SiftKeyMap *m);
 extern void sift_keymap_release(SiftKeyMap *m);
 extern bool sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code);
 extern bool sift_keymap_code_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code);
-/* For the codes of a map with no store: the bytes, and the journal word, of the value of a code */
+/* The bytes of the value of a transient code (a map with no store), and the journal word of the value of any code */
 extern const char *sift_keymap_bytes(SiftKeyMap *m, int64 code, uint32 *len);
 extern uint64 sift_keymap_member_hash(SiftKeyMap *m, int64 code);
 extern bool sift_keymap_find_bytes(SiftKeyMap *m, const char *s, uint32 len, int64 *code);

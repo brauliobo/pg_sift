@@ -126,7 +126,7 @@ journal_row(Relation index, Relation heap, SiftTombKind kind, Datum key, bool is
 	int64		tagval;
 	uint16		flags = 0;
 
-	if (tagatt != InvalidAttrNumber && !tagnull && key64(TupleDescAttr(RelationGetDescr(heap), tagatt - 1)->atttypid, tagkey, &tagval))
+	if (tagatt != InvalidAttrNumber && !tagnull && journal_word(TupleDescAttr(RelationGetDescr(heap), tagatt - 1)->atttypid, tagkey, true, &tagval))
 		flags = sift_conn_key_tag(tagval) << SIFT_TOMB_TAG_SHIFT;
 	if (!isnull && journal_record(index, TupleDescAttr(RelationGetDescr(heap), att - 1)->atttypid, key, true, kind, flags, &rec))
 		sift_col_tomb_hold_rec(index, &rec);
@@ -494,15 +494,27 @@ sift_conn_tags_lazy(AttrNumber att, void (*fill) (SiftConnTags *tags, void *arg)
 	return t;
 }
 
+/* The tags of the records of the scope keys: a record is tagged by the key's integer or, for a text, varchar or uuid key (the codes of km), by the word of its bytes */
 SiftConnTags *
-sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys)
+sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys, SiftKeyMap *km)
 {
 	SiftConnTags *t;
+	int64	   *words = NULL;
 
 	if (nkeys > CONN_TAGS_MAX_KEYS)
 		return NULL;
+	if (km != NULL)
+	{
+		words = palloc(Max(nkeys, 1) * sizeof(int64));
+		sift_keymap_hold(km);
+		for (uint32 i = 0; i < nkeys; i++)
+			words[i] = (int64) sift_keymap_member_hash(km, keys[i]);
+		sift_keymap_release(km);
+	}
 	t = sift_conn_tags_lazy(att, NULL, NULL);
-	sift_conn_tags_add(t, keys, nkeys);
+	sift_conn_tags_add(t, km != NULL ? words : keys, nkeys);
+	if (words != NULL)
+		pfree(words);
 	return t;
 }
 

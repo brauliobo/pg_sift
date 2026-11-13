@@ -346,14 +346,25 @@ sift_keymap_bytes(SiftKeyMap *m, int64 code, uint32 *len)
 	return sift_cdict_str(m->extra, (uint32) (-1 - code), len);
 }
 
-/* The journal word of the member a transient code stands for */
+/* The journal word of the value a code stands for: a transient code (negative: the map's own) or a code of the store */
 uint64
 sift_keymap_member_hash(SiftKeyMap *m, int64 code)
 {
 	uint32		len;
-	const char *s = sift_keymap_bytes(m, code, &len);
+	const char *s;
+	SiftVStore *vs;
+	uint64		h;
 
-	return sift_member_hash_bytes(s, len);
+	if (code < 0)
+	{
+		s = sift_keymap_bytes(m, code, &len);
+		return sift_member_hash_bytes(s, len);
+	}
+	vs = store_open(m);
+	s = sift_vstore_string(vs, (uint32) code, &len);
+	h = sift_member_hash_bytes(s, len);
+	store_close(m, vs);
+	return h;
 }
 
 /* The code of a value the map has one for, as a reader's (false: no pair has the value, the map never gives it a code here) */

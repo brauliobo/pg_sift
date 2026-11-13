@@ -521,13 +521,13 @@ SELECT 18 AS n, 'the empty account in a group' AS state, count(*) FILTER (WHERE 
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'join, a row for each pair', 'uuid member and key', 'integer key, text member') ORDER BY name COLLATE "C";
-           name            |                        run                        
----------------------------+---------------------------------------------------
- IN, a list                | Changed Keys: 8; Patched Keys: 42
- IN, one key               | Changed Keys: 8; Patched Keys: 21
+           name            |                       run                        
+---------------------------+--------------------------------------------------
+ IN, a list                | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
+ IN, one key               | units
  integer key, text member  | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- join, a row for each pair | Changed Keys: 8; Patched Keys: 33
- uuid member and key       | Changed Keys: 7; Patched Keys: 29; Dedupe Keys: 1
+ join, a row for each pair | units
+ uuid member and key       | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
 (5 rows)
 
 -- the facts change: re-assigned accounts, no account, the empty one, new facts, the whole table written again
@@ -548,11 +548,11 @@ SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differ
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'varchar facts') ORDER BY name COLLATE "C";
-     name      |                run                
----------------+-----------------------------------
- IN, a list    | Changed Keys: 8; Patched Keys: 42
- IN, one key   | Changed Keys: 8; Patched Keys: 21
- varchar facts | Changed Keys: 8; Patched Keys: 33
+     name      |                       run                        
+---------------+--------------------------------------------------
+ IN, a list    | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
+ IN, one key   | units
+ varchar facts | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
 (3 rows)
 
 -- keys the value store has never seen get a code of the statement: two such keys in two statements are not the same key (what a backend keeps of the groups of its keys is not shared by them)

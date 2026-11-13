@@ -374,7 +374,7 @@ journal_tags(const ScopeJournals *J, int j, const GroupTags *g)
 {
 	if (g->keys == NULL || J->skey[j] == InvalidAttrNumber)
 		return NULL;
-	return j == 2 ? sift_conn_tags_lazy(J->skey[j], groups_fill, (void *) g) : sift_conn_tags(J->skey[j], g->keys, g->nkeys);
+	return j == 2 ? sift_conn_tags_lazy(J->skey[j], groups_fill, (void *) g) : sift_conn_tags(J->skey[j], g->keys, g->nkeys, g->km);
 }
 
 /*
