@@ -313,10 +313,10 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
 	if (dir == NULL)
 	{
-		sift_col_dir_read(index, &own, false);
+		sift_col_dir_read_segs(index, &own, false);
 		dir = &own;
 	}
-	sift_col_dir_read(index, sdir, true);
+	sift_col_dir_read_segs(index, sdir, true);
 	for (int k = 0; k < 2; k++)
 	{
 		const SiftDirSnapshot *d = k == 0 ? dir : sdir;

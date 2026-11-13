@@ -784,6 +784,13 @@ sift_col_dir_read(Relation index, SiftDirSnapshot *snap, bool scope)
 	sift_col_dir_family(snap, scope);
 }
 
+void
+sift_col_dir_read_segs(Relation index, SiftDirSnapshot *snap, bool scope)
+{
+	sift_dir_read_segs(index, snap);
+	sift_col_dir_family(snap, scope);
+}
+
 /* The dirty bit of the unit's SB, read from the LIVE page now: neither the directory snapshot nor an earlier read may stand for it, because
  * a scan must read liveness after it reads the all-visible mask */
 bool

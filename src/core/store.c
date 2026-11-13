@@ -244,6 +244,20 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	UnlockReleaseBuffer(metabuf);
 }
 
+/* The directory without the metapage: a caller that reads only the segments (one page where sift_dir_read reads two); snap->meta is zero, so a copy of it for a scan that opens the index must be of sift_dir_read */
+void
+sift_dir_read_segs(Relation index, SiftDirSnapshot *snap)
+{
+	Buffer		dirbuf = lock_dir(index, BUFFER_LOCK_SHARE);
+	SiftDirectoryData *dir = DIR(BufferGetPage(dirbuf));
+
+	memset(&snap->meta, 0, sizeof(snap->meta));
+	snap->version = dir->version;
+	snap->nsegs = dir->nsegs;
+	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
+	UnlockReleaseBuffer(dirbuf);
+}
+
 /* The schema hash and the flags the metapage of a column index was written with; false while the index has no page yet (CREATE INDEX has not started to write) and for a partitioned
  * index, which has no storage (PostgreSQL 19 asks it for amcanreturn while it plans a query on the partitioned table) */
 bool

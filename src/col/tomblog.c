@@ -115,7 +115,7 @@ log_ent(Relation index)
 		memset(&e->log, 0, sizeof(e->log));
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
 	}
-	sift_dir_read(index, &e->dir);
+	sift_dir_read_segs(index, &e->dir);
 	return e;
 }
 

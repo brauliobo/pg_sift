@@ -141,6 +141,7 @@ sift_dir_bytes(const SiftDirSnapshot *dir)
 
 /* The caller holds no buffer lock: the metapage comes first in lock order */
 extern void sift_dir_read(Relation index, SiftDirSnapshot *snap);
+extern void sift_dir_read_segs(Relation index, SiftDirSnapshot *snap);
 extern bool sift_store_meta_peek(Relation index, uint32 *hash, uint32 *flags);
 
 /*

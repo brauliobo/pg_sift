@@ -615,7 +615,7 @@ sift_scope_covered(Relation index, int scope)
 	SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
 	bool		covered = scope >= 0 && scope < sift_col_rel(index)->nscope;
 
-	sift_dir_read(index, dir);
+	sift_dir_read_segs(index, dir);
 	for (int i = 0; i < dir->nsegs && covered; i++)
 		covered = dir->segs[i].kind != SIFT_SEG_IMMUTABLE || sift_seg_is_scope(&dir->segs[i]) || sift_seg_is_scoped(&dir->segs[i]);
 	pfree(dir);
