@@ -10,6 +10,7 @@
 #include "col/am.h"
 #include "col/dictshm.h"
 #include "agg/colsrc.h"
+#include "agg/col_int.h"
 #include "col/pagg.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
@@ -28,6 +29,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_pinned);
 
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_catalog_memos);
+PG_FUNCTION_INFO_V1(sift_test_scope_exact);
 
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 
@@ -67,6 +69,20 @@ Datum
 sift_test_catalog_memos(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64((int64) sift_catalog_memo_hits);
+}
+
+/* (index regclass) The share of the scope units of the index the planner takes to answer from their pre-aggregates (the statistics the price of a scope read starts from) */
+Datum
+sift_test_scope_exact(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftSrcStats *st = palloc(sizeof(SiftSrcStats));
+	bool		ok = sift_col_scope_stats(index, st);
+
+	index_close(index, AccessShareLock);
+	if (!ok)
+		PG_RETURN_NULL();
+	PG_RETURN_FLOAT8(st->exact_frac);
 }
 
 Datum

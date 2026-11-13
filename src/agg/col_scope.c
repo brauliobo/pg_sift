@@ -40,7 +40,9 @@ sift_col_scope_stats(Relation index, SiftSrcStats *st)
 		return false;
 	memset(st, 0, sizeof(*st));
 	st->scope = true;
-	st->exact_frac = meta->stats.clean_frac >= 1.0 ? 1.0 : 0.0;
+	/* a unit cut by time holds the rows of a slice of time, the pages of a slice of the heap: the share of the heap's clean superblocks is the share of the units whose pages are all-visible (a heap of rows
+	 * that arrive out of time order makes it an estimate, and the read proves each unit); without a time cut a unit may hold any page and answers only from a clean heap */
+	st->exact_frac = sift_scope_time_leaf(meta->cols, meta->ncols) >= 0 || meta->stats.clean_frac >= 1.0 ? meta->stats.clean_frac : 0.0;
 	sift_colsrc_leaf_stats(meta->cols, meta->ncols, memo.scope_leaves, wovf, wjnull, st);
 	st->zones = col_zones(memo.scope_zones, meta, memo.scope_zones->units);
 	st->miss_pending = true;
