@@ -43,7 +43,7 @@ SELECT t.* FROM base, LATERAL (VALUES
  the same pairs for one key: not listed           |            0 |         0
  a changed pair                                   |      3450000 |      3450
  an entry left out of the units of a changed read |        20000 |        20
- a unit the changed pairs rows fall in            |       430000 |     43000
+ a unit the changed pairs rows fall in            |       110000 |     11000
  a fact row looked at to find them                |        23000 |        23
  a copy of the delta                              |       550000 |       550
 (13 rows)
@@ -98,12 +98,12 @@ ORDER BY n;
  55 rows, two keys            |   10 |      6.5 |       6.47 |             0 | t
  55 rows, two keys            |   30 |     21.1 |       20.5 |             3 | t
  55 rows, two keys            |   50 |     49.5 |      48.35 |             2 | t
- one tenant, 20 pairs changed |    1 |      9.8 |       9.17 |             7 | t
- one tenant, 20 pairs changed |   30 |     38.6 |      43.42 |           -11 | t
- 20 pairs of every tenant     |    1 |      9.8 |       9.82 |             0 | t
- 20 pairs of every tenant     |   30 |    101.1 |     130.73 |           -23 | t
- every pair of every tenant   |    1 |     10.0 |       10.3 |            -3 | t
- every pair of every tenant   |   30 |     99.8 |     116.22 |           -14 | t
+ one tenant, 20 pairs changed |    1 |      9.5 |       9.17 |             4 | t
+ one tenant, 20 pairs changed |   30 |     38.3 |      43.42 |           -12 | t
+ 20 pairs of every tenant     |    1 |      9.5 |       9.82 |            -3 | t
+ 20 pairs of every tenant     |   30 |    100.8 |     130.73 |           -23 | t
+ every pair of every tenant   |    1 |      9.7 |       10.3 |            -6 | t
+ every pair of every tenant   |   30 |     99.5 |     116.22 |           -14 | t
 (19 rows)
 
 -- a read of keys whose pairs changed past what the join leaves it is refused before it lists them: 1,200 dim_a_ids of 40 keys, 100 facts each

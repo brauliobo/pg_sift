@@ -90,7 +90,7 @@ DECLARE
 BEGIN
 	FOR i IN 1..24 LOOP
 		CASE floor(random() * 4)::int
-			WHEN 0 THEN INSERT INTO membership SELECT 1 + floor(random() * 3000)::int, 1 + floor(random() * 30)::int FROM generate_series(1, 1 + floor(random() * 150)::int) ON CONFLICT DO NOTHING;
+			WHEN 0 THEN INSERT INTO membership SELECT 1 + floor(random() * 3000)::int, 1 + floor(random() * 4)::int FROM generate_series(1, 1 + floor(random() * 400)::int) ON CONFLICT DO NOTHING;
 			WHEN 1 THEN DELETE FROM membership WHERE group_id = 1 + floor(random() * 30)::int AND dim_a_id % 40 = floor(random() * 40)::int;
 			WHEN 2 THEN WITH d AS (DELETE FROM membership WHERE dim_a_id % 211 = floor(random() * 211)::int RETURNING dim_a_id, group_id)
 				INSERT INTO membership SELECT dim_a_id, 1 + (group_id + floor(random() * 29)::int) % 30 FROM d ON CONFLICT DO NOTHING;
@@ -99,7 +99,7 @@ BEGIN
 				INSERT INTO facts_time SELECT * FROM facts_member WHERE id BETWEEN 300000 + i * 100 AND 300000 + i * 100 + 99;
 		END CASE;
 		COMMIT;
-		FOR r IN SELECT * FROM scope_run('facts_member', 'by_member', 1 + floor(random() * 30)::int) UNION ALL SELECT * FROM scope_run('facts_time', 'by_time', 1 + floor(random() * 30)::int)
+		FOR r IN SELECT * FROM scope_run('facts_member', 'by_member', 1 + floor(random() * 6)::int) UNION ALL SELECT * FROM scope_run('facts_time', 'by_time', 1 + floor(random() * 6)::int)
 		LOOP
 			reads := reads + 1;
 			mism := mism + (NOT r.same)::int;
