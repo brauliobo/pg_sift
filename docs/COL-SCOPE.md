@@ -123,9 +123,9 @@ the scan starts it counts the entries of the keys it really has (a constant list
 aggregation of a row the planner supplies, the dedupe lists the read made, the patch and the delta of the changed members) and runs the join where it costs less: `Scope Fallback: join is cheaper for 30 keys` (`for every key` for a read of every
 key). The reader's refusals (`top-n, changed pairs`, `dedupe keys`, `too many changed keys`, the journal's words) are the same choice with the reader's reason: the join answers, which counts a row for each pair of a member in several keys
 and the units cannot once the pairs of the member changed, so a read of several keys that counts a row for each pair never raises an error. A rescan decides again; `EXPLAIN` always says which way the node went (the scope lines, or
-`Scope Fallback`). The join runs in the leader as a serial scan (a scope read has no workers). The generic plan has the same alternative: the key count it was priced for is the 10 PostgreSQL assumes for an array, the
+`Scope Fallback`). The join runs with the workers of the plan, as the scan it replaces would (see **Workers**). The generic plan has the same alternative: the key count it was priced for is the 10 PostgreSQL assumes for an array, the
 execution has the real one. No plan holds the alternative where the join as written has no plan of this scan (the keys are the output of an InitPlan array, or the join is to a plan of its own: a table of keys read through a join that is
-not a semi join of one key), where the scope index is on a view, or where workers were planned: those keep the choice of the plan (the estimated costs).
+not a semi join of one key), where the scope index is on a view, or where the join as written has no plan with as few workers as the scan has: those keep the choice of the plan (the estimated costs).
 Measured on 120,000 and 150,000 events with 1,200 and 50,000 members, and 300,000 events with 5,000 members in several of 50 tenants (instructions of the backend, execution of a prepared statement, warm, median of 3):
 
 | shape | keys | join as written | scope read | node |
@@ -193,7 +193,7 @@ Keys`, `Scope Patched Rows` (the rows of the entity segments read for the change
 `no scope index`, `column .. not in the scope units`, `unfilled`, `several stamps`, `scope segments do not cover the rows`, `write buffer` (the pairs of the buffered rows are more than work_mem holds), `top-n, changed pairs` (a top-N cannot take the patch or the delta of a changed pair),
 `dedupe over work_mem`, `dedupe keys`, `patch dearer than the entity path`, `join is cheaper for N keys` (the node ran the join as written), `pairs are a multiset (non-unique btree): a join counts a fact once for each row` (a read for each pair of the pairs of a non-unique btree), and the words of the journal: `no journal`, `log not complete`, `other lineage` (the relation's journal index was rebuilt or truncated: the next `REINDEX` of
 the scope index fills it again), `trimmed`, `snapshot` (a serializable or non-MVCC snapshot), `snapshot older than the stamp`, `stamp aged`, `too many changed keys`. A scope read is decided once, by the
-leader (the verdict, the changed members and the patch are made from the snapshot of the statement): it has no workers.
+leader (the verdict, the changed members and the patch are made from the snapshot of the statement); the workers of a `Gather` read that decision, not their own (see **Workers**).
 
 **Where the conjunct may be.** The scan takes the conjunct when it filters the rows the scan reads: the `WHERE` of the statement (when no outer join of the scan can null the scanned table), the conditions
 inside the nullable input of an outer join (the `ON` conjuncts that read only that input, the `WHERE` of a sub-select or of an inlined CTE: pushing them below the join is exact), a lateral child, a
@@ -273,6 +273,42 @@ A tenant that received members is the case where the planner chose the scope rea
 while `CREATE INDEX` holds `ShareLock`: two such builds on one table that ran together (`pg_restore -j`) each waited for the other. An event trigger before `CREATE INDEX` of a `sift_col` index
 (`sift_col_build_lock`) takes the stronger lock first, so the second build waits at its start; the options a build decides are written under the tuple lock of the catalog row of its index. `REINDEX`
 of two indexes of one table at the same time is not covered by the event trigger (PostgreSQL has none for it).
+
+**Workers.** A scope read runs under the `Gather` of a plan that has workers, as an entity read does: the leader decides the read once (the keys, the changed members, the patch and the pairs of the write
+buffers, from its snapshot), puts that decision and the directory it read in the shared memory of the statement, and each participant claims units from the one list (a worker opens the same directory and takes the keys
+and the changed members from the leader; it asks the journal nothing). The join a scope read falls back to runs in the participants as the plan holds it. The rows of the write buffers and of the changed members
+(the delta) are read by the leader after the units, so a read that is ordered or a top-N over a delta stays in one process. The planner prices the workers of a scope read with the model of an entity read
+(`sift.agg_par_min_rows`, the start cost of a worker); at execution the leader launches none when its price of the units, shared among the participants, is less than the cost of starting them, so a tenant of a few
+units reads in one process (the table below: no read of a tenant of 6% or less launched a worker). `EXPLAIN` says `Workers Planned` and `Workers Launched` as for an entity read; the answers are those of the read in one process
+and of the join (tests `col_scope_workers`, `col_scope_par_edits`, and the oracle gate with every setting forced).
+
+Measured on the 2.4 million events fixture of `bench/steps/scope_stock_arms.py` (a tenant of the share of the events in its first column; 9 query shapes of the scope arm: sums, counts, distincts, top-N, by member, filtered; `max_parallel_workers_per_gather`
+0, 2 and 4; ms are `EXPLAIN (ANALYZE)` executor time, instructions the leader's and the workers' together, blocks the database's `blks_hit + blks_read`; each figure the sum of the 9 shapes, warm the median of three runs, cold after the buffers were
+evicted):
+
+| tenant | workers | shapes with workers launched | warm ms | warm M instr | warm blocks | cold ms | cold blocks read |
+|---|---|---|---|---|---|---|---|
+| 49.5% | 0 | 0 | 64.8 | 305.0 | 9324 | 164.8 | 5449 |
+| 49.5% | 2 | 1 | 93.2 | 316.6 | 10168 | 198.9 | 5584 |
+| 49.5% | 4 | 1 | 67.9 | 321.2 | 11462 | 191.5 | 5583 |
+| 19.6% | 0 | 0 | 25.6 | 103.7 | 4135 | 55.5 | 2405 |
+| 19.6% | 2 | 0 | 25.4 | 105.7 | 4135 | 61.6 | 2406 |
+| 19.6% | 4 | 0 | 28.6 | 105.7 | 4135 | 72.2 | 2405 |
+| 6.0% | 0 | 0 | 10.3 | 49.8 | 1660 | 18.5 | 1129 |
+| 6.0% | 2 | 0 | 9.9 | 51.8 | 1660 | 23.3 | 1129 |
+| 6.0% | 4 | 0 | 8.7 | 51.8 | 1660 | 22.0 | 1129 |
+| 1.1% | 0 | 0 | 4.6 | 30.7 | 752 | 9.7 | 544 |
+| 1.1% | 2 | 0 | 4.9 | 32.7 | 752 | 9.3 | 544 |
+| 1.1% | 4 | 0 | 4.1 | 32.7 | 752 | 10.2 | 544 |
+| 0.1% | 0 | 0 | 3.1 | 25.0 | 692 | 6.6 | 470 |
+| 0.1% | 2 | 0 | 3.3 | 27.1 | 692 | 7.8 | 470 |
+| 0.1% | 4 | 0 | 3.8 | 27.1 | 692 | 7.7 | 470 |
+
+Every shape returned the same rows with 0, 2 and 4 workers. The reads of this fixture take 0.2 to 28 ms in one process, which is about what starting the workers costs (3 ms and 0.5 ms for each worker in the planner's model), so
+the workers do not shorten them: with every price set to zero (`parallel_setup_cost`, `parallel_tuple_cost`, `sift.agg_par_min_rows`), the 49.5% tenant's `distinct_by_month` reads in 9.3 ms with no worker, 8.2 with two and 10.1 with four, and
+its `by_member` in 13.0, 12.0 and 12.7. The one shape that did launch workers by price, the monthly sums of the 49.5% tenant (the plan is `Workers Planned: 2`), reads in 1.2 ms alone and 4 to 5 with two workers (9.3 against 19.3 M
+instructions): the plan prices it for the rows of its units, and the units answer from their pre-aggregates, because the range bound on the date falls on a boundary the statistics of the entity units do not show (the entity read of the same statement
+has the same estimate and reads in 8.2 ms alone and 6.8 with two workers). The workers are for scope reads of a long list of units; the instructions the table counts without launched workers (about 2% more with workers allowed) are the plan the planner makes of the parallel path.
 
 ## Break-even: the multiplicity limit
 
@@ -576,7 +612,7 @@ EXPERIMENTAL; a library before 5.0 refuses the index. What a scope does not do i
 - **Forms.** A statement that is not in the table of recognised forms keeps the join (`sift.explain_why`, arm `scope`): among them a join or a read for each pair over the pairs of a non-unique btree, a join to a table of keys that may hold a key twice,
   a key in an expression, a range of keys, `ROLLUP` / `CUBE` / grouping sets over the key. A top-N cannot take the patch or the delta of a changed pair (`top-n, changed pairs`): the join answers.
 - **Text, varchar and uuid members.** A patch reads the member leaf of every entity unit (no point directory, no zone), and the leave-out of the units hashes the strings of every unit it reads: with changed pairs a read costs 1.3 times an integer member's (table in [Member types](#member-types)), and the planner may keep the join for it. A column of another type is refused. In a scope of two paths a read of one key with any changed pair leaves out and patches the changed members of every key, not of the key read (the records of a string key carry no tag), which an integer key does not.
-- **No parallel workers.** A scope read is decided once, by the leader (test `col_scope_read` launches none); the join the node falls back to runs serial in the leader. The builds do run in parallel.
+- **The copies of the changed pairs are read by the leader.** The workers of a scope read share the units; the rows of the write buffers and of the changed members (the delta) are read by the leader alone, and a read that is ordered or a top-N over a delta stays in one process. A read of a few units is priced as one that starts no workers.
 - **`CREATE INDEX CONCURRENTLY`** starts the journal at the end of its build, so the scope segments carry no stamp and the reads say `unfilled` until a `REINDEX` of the scope index or the rewrite the maintenance makes.
 - **Snapshots.** A `SERIALIZABLE` or non-MVCC snapshot always takes the join (`snapshot`).
 - **Generic plans.** A condition on the relation that reads a parameter is proved only by a custom plan: a generic plan keeps the join for a relation with a partial btree.
