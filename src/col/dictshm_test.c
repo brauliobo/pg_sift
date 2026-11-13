@@ -211,6 +211,8 @@ sift_test_dsm_join(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(sift_test_dsm_layout);
+PG_FUNCTION_INFO_V1(sift_test_dsm_attach);
+PG_FUNCTION_INFO_V1(sift_test_dsm_magic);
 PG_FUNCTION_INFO_V1(sift_test_dsm_entries);
 PG_FUNCTION_INFO_V1(sift_test_dsm_alive);
 
@@ -247,6 +249,22 @@ sift_test_dsm_layout(PG_FUNCTION_ARGS)
 	p = sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(1)), PG_GETARG_INT64(2), layout_probe_init);
 	sift_dsm_test_build[0] = '\0';
 	PG_RETURN_INT64((int64) p->stamp * 1000000 + ++p->calls);
+}
+
+/* sift._test_dsm_attach(name, size): whether a backend that goes without a table where the directory cannot hold it got it (sift_dsm_attach: a cache never fails a statement) */
+Datum
+sift_test_dsm_attach(PG_FUNCTION_ARGS)
+{
+	bool		failed = false;
+
+	PG_RETURN_BOOL(sift_dsm_attach(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init, &failed, "the test tables", NULL, false) != NULL);
+}
+
+/* sift._test_dsm_magic(magic): the magic of the directory of the shared tables set to magic, as a directory of another library has it; the one it had */
+Datum
+sift_test_dsm_magic(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(sift_dsm_test_magic((uint32) PG_GETARG_INT64(0)));
 }
 
 /* sift._test_dsm_entries(): the tables the directory keeps, and how many backends map each */

@@ -31,6 +31,7 @@
 
 /* The directory. Its name, its size and the layout of everything below are fixed forever (a new layout is a new name): it is the one segment that two libraries of any age ask at the same size */
 #define DIR_NAME		"pg_sift_dsm_dir"
+#define DIR_MAGIC		0x53494654
 #define DIR_ENTRIES		1024
 
 typedef struct DirEnt
@@ -57,13 +58,22 @@ dir_init(SIFT_DSM_INIT_ARGS)
 	Dir		   *d = ptr;
 
 	memset(d, 0, sizeof(Dir));
-	d->magic = 0x53494654;
+	d->magic = DIR_MAGIC;
 	for (int i = 0; i < DIR_ENTRIES; i++)
 		pg_atomic_init_u32(&d->ent[i].users, 0);
 }
 
+static const char *why = "";
+static const char *why_hint = NULL;
+
+const char *
+sift_dsm_why(void)
+{
+	return why;
+}
+
 static Dir *
-dir_get(void)
+dir_segment(void)
 {
 	static Dir *dir;
 	bool		found;
@@ -75,6 +85,19 @@ dir_get(void)
 		dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found);
 #endif
 	return dir;
+}
+
+/* The directory, or NULL when the segment of its name is not a directory of this layout (why says it) */
+static Dir *
+dir_get(void)
+{
+	Dir		   *d = dir_segment();
+
+	if (d->magic == DIR_MAGIC)
+		return d;
+	why = "the directory of the shared tables is not one this library can read";
+	why_hint = NULL;
+	return NULL;
 }
 
 static const char *
@@ -100,11 +123,12 @@ dir_find(Dir *d, const char *name, const char *build, Size size)
 	return NULL;
 }
 
-/* A free entry, after the tables of another library, and the ones of the name at another size, that no backend maps are given back */
+/* A free entry, after the tables of another library, and the ones of the name at another size, that no backend maps are given back; else an unmapped table is; NULL when all are mapped */
 static DirEnt *
 dir_claim(Dir *d, const char *name, const char *build)
 {
 	DirEnt	   *free = NULL;
+	DirEnt	   *idle = NULL;
 
 	for (int i = 0; i < DIR_ENTRIES; i++)
 	{
@@ -118,9 +142,15 @@ dir_claim(Dir *d, const char *name, const char *build)
 		}
 		if (free == NULL && e->handle == DSM_HANDLE_INVALID)
 			free = e;
+		if (idle == NULL && e->handle != DSM_HANDLE_INVALID && pg_atomic_read_u32(&e->users) == 0)
+			idle = e;
 	}
-	if (free == NULL)
-		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("sift: the directory of the shared tables is full")));
+	if (free == NULL && idle != NULL)
+	{
+		dsm_unpin_segment(idle->handle);
+		idle->handle = DSM_HANDLE_INVALID;
+		free = idle;
+	}
 	return free;
 }
 
@@ -140,15 +170,18 @@ hold(dsm_segment *seg, DirEnt *e)
 }
 
 void *
-sift_dsm_join(const char *name, Size size, SiftDsmInit init)
+sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 {
 	Dir		   *d = dir_get();
 	const char *build = build_id();
-	MemoryContext cx = MemoryContextSwitchTo(TopMemoryContext);
+	MemoryContext cx;
 	dsm_segment *seg;
 	DirEnt	   *e;
 
+	if (d == NULL)
+		return NULL;
 	SIFT_INVARIANT(strlen(name) < sizeof(e->name) && strlen(build) < sizeof(e->build), "sift: the name or the build of the shared table %s is too long", name);
+	cx = MemoryContextSwitchTo(TopMemoryContext);
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 	if ((e = dir_find(d, name, build, size)) != NULL)
 	{
@@ -162,7 +195,14 @@ sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 	}
 	else
 	{
-		e = dir_claim(d, name, build);
+		if ((e = dir_claim(d, name, build)) == NULL)
+		{
+			why = "the directory of the shared tables is full";
+			why_hint = "Every table is mapped by a backend; the tables are given back when their sessions end.";
+			LWLockRelease(AddinShmemInitLock);
+			MemoryContextSwitchTo(cx);
+			return NULL;
+		}
 		seg = dsm_create(size, 0);
 #if PG_VERSION_NUM >= 190000
 		init(dsm_segment_address(seg), NULL);
@@ -182,6 +222,16 @@ sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 	return dsm_segment_address(seg);
 }
 
+void *
+sift_dsm_join(const char *name, Size size, SiftDsmInit init)
+{
+	void	   *p = sift_dsm_try(name, size, init);
+
+	if (p == NULL)
+		ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED), errmsg("sift: %s", why), why_hint ? errhint("%s", why_hint) : 0));
+	return p;
+}
+
 #ifdef SIFT_TESTING
 char		sift_dsm_test_build[16];
 SiftDsmDeferred sift_dsm_deferred[SIFT_DSM_DEFERRED_MAX];
@@ -193,13 +243,24 @@ sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_h
 
 	if (i >= DIR_ENTRIES)
 		return false;
-	e = &dir_get()->ent[i];
+	e = &dir_segment()->ent[i];
 	*name = e->name;
 	*build = e->build;
 	*size = e->size;
 	*handle = e->handle;
 	*users = pg_atomic_read_u32(&e->users);
 	return true;
+}
+
+/* sift._test_dsm_magic(magic): the magic of the directory, set to magic (a directory another library made); the one it had */
+uint32
+sift_dsm_test_magic(uint32 magic)
+{
+	Dir		   *d = dir_segment();
+	uint32		was = d->magic;
+
+	d->magic = magic;
+	return was;
 }
 
 /* The tables this backend went without because a statement was writing (sift._test_dsm_deferred): the test that a write statement reached an attach point */
@@ -258,7 +319,8 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 		s = NULL;
 		ereport(LOG,
 				(errmsg("sift: %s are not shared with other backends: %s", what, e->message),
-				 guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
+				 e->hint ? errhint("%s", e->hint)
+				 : guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
 				 : errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).")));
 		FreeErrorData(e);
 	}

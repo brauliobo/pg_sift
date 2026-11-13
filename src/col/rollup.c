@@ -94,6 +94,15 @@ rollup_init(SIFT_DSM_INIT_ARGS)
 	SpinLockInit(&sh->lock);
 }
 
+/* NULL where the directory of the shared tables cannot hold it: a request for a refresh is not made, and the worker (which asks with sift_dsm_join) says why it cannot work */
+static RollupShared *
+try_shared(void)
+{
+	if (rollup_shared == NULL)
+		rollup_shared = sift_dsm_try("pg_sift_col_rollup", sizeof(RollupShared), rollup_init);
+	return rollup_shared;
+}
+
 static RollupShared *
 shared(void)
 {
@@ -664,7 +673,8 @@ sift_col_rollup_request(Relation index, uint64 gen)
 	/* a server that writes minor 3 (sift.col_format_minor, for readers of 3.0) is not rewritten to minor 4 behind its back */
 	if (!sift_col_rollup_on_demand || !sift_col_options(index)->rollup_on_demand || RecoveryInProgress() || sift_col_format_minor < SIFT_COL_FORMAT_TAGS)
 		return false;
-	sh = shared();
+	if ((sh = try_shared()) == NULL)
+		return false;
 	hash = options_hash(index);
 	SpinLockAcquire(&sh->lock);
 	if (is_done(sh, RelationGetRelid(index), gen, hash))

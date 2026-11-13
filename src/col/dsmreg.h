@@ -17,7 +17,11 @@
 
 typedef void (*SiftDsmInit) (SIFT_DSM_INIT_ARGS);
 
-/* The table another process made, with no protection against its failure: for a parallel worker, where the leader found that it is there (a subtransaction cannot start there) */
+/* The table, or NULL where the directory cannot hold it (it is full, or it is not the directory of this library: sift_dsm_why says which); the shortage of dynamic shared memory is an ERROR. For a caller that goes without the table */
+extern void *sift_dsm_try(const char *name, Size size, SiftDsmInit init);
+/* Why the last sift_dsm_try of this backend gave NULL */
+extern const char *sift_dsm_why(void);
+/* The table, with no protection against its failure: for a parallel worker, where the leader found that it is there (a subtransaction cannot start there), and for the code that cannot go without it. An ERROR where sift_dsm_try gives NULL */
 extern void *sift_dsm_join(const char *name, Size size, SiftDsmInit init);
 /* NULL (and *failed set, so that the backend does not try again) where the table could not be had; `what` names what is not shared, `guc` the setting that turns it off (NULL: none) */
 extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail);
@@ -26,6 +30,7 @@ extern void *sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool
 /* The identity of the library that asks for a table, as a test sets it (sift._test_dsm_layout): a library of another layout */
 extern char sift_dsm_test_build[16];
 /* Entry i of the directory of the tables (sift._test_dsm_entries): false past the last; a free entry has the handle DSM_HANDLE_INVALID */
+extern uint32 sift_dsm_test_magic(uint32 magic);
 extern bool sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_handle *handle, uint32 *users);
 
 #define SIFT_DSM_DEFERRED_MAX	8

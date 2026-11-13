@@ -97,6 +97,7 @@ typedef struct ArenaRow
 } ArenaRow;
 
 static Arena *arena;
+static bool arena_failed;			/* the directory of the shared tables could not hold the arena: this backend writes values, never references */
 static char *segmem[ARENA_SEGS];	/* this backend's mapping of each segment */
 static int	nmapped;				/* the segments this backend has mapped, from the first */
 static int	slot_hint;				/* the slot this backend used last */
@@ -115,14 +116,22 @@ arena_init(SIFT_DSM_INIT_ARGS)
 		a->slot[i].rebuilder = -1;
 }
 
-/* joined without a subtransaction (sift_dsm_attach goes without the table under a write statement, and the first row of a backend is written by one): the rows of a REF record have no other place */
+/*
+ * Joined without a subtransaction (sift_dsm_attach goes without the table under a write statement, and the first row of a backend is written by one). NULL where the directory
+ * of the shared tables cannot hold it: the backend goes without, its rows are written with their values and it finds no row of another backend's references (the rows of a
+ * reference that is not found are built again from the heap)
+ */
 static Arena *
 arena_get(void)
 {
-	if (arena == NULL)
+	if (arena == NULL && !arena_failed)
 	{
 		Assert(CritSectionCount == 0);	/* the join allocates */
-		arena = sift_dsm_join(ARENA_NAME, sizeof(Arena), arena_init);
+		if ((arena = sift_dsm_try(ARENA_NAME, sizeof(Arena), arena_init)) == NULL)
+		{
+			arena_failed = true;
+			ereport(LOG, (errmsg("sift: the references of the write buffers are not shared with other backends: %s", sift_dsm_why())));
+		}
 	}
 	return arena;
 }
@@ -141,7 +150,7 @@ seg_map(int i)
 		char		name[48];
 
 		snprintf(name, sizeof(name), "%s_seg%d", ARENA_NAME, i);
-		segmem[i] = sift_dsm_join(name, (Size) ARENA_SEG_PAGES * ARENA_PAGE, seg_init);
+		segmem[i] = sift_dsm_try(name, (Size) ARENA_SEG_PAGES * ARENA_PAGE, seg_init);
 	}
 	return segmem[i];
 }
@@ -163,10 +172,17 @@ arena_sync(Arena *a)
 		a->want_grow = false;
 	SpinLockRelease(&a->mutex);
 	for (; nmapped < n; nmapped++)
-		(void) seg_map(nmapped);
+		if (seg_map(nmapped) == NULL)
+			ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED), errmsg("sift: %s", sift_dsm_why())));	/* a segment that exists is found, not made */
 	if (!grow)
 		return;
-	(void) seg_map(n);
+	if (seg_map(n) == NULL)		/* the directory is full: the pool stays as it is */
+	{
+		SpinLockAcquire(&a->mutex);
+		a->want_grow = false;
+		SpinLockRelease(&a->mutex);
+		return;
+	}
 	SpinLockAcquire(&a->mutex);
 	if (a->nsegs == n)
 	{
@@ -450,6 +466,8 @@ wbuf_arena_put(Relation index, uint64 gen, const ItemPointerData *tid, Transacti
 	ArenaPut	res;
 
 	Assert(CritSectionCount == 0);	/* a put may map or make a segment of shared memory, which allocates */
+	if (a == NULL)
+		return ARENA_NOT_STORED;
 	if (a->slots_max == 0 || need > ARENA_PAGE)
 		return not_stored(a);
 	for (;;)
@@ -495,6 +513,8 @@ wbuf_arena_full(Relation index, uint64 gen, Size limit)
 	ArenaSlot  *s;
 	bool		full = false;
 
+	if (a == NULL)
+		return false;
 	SpinLockAcquire(&a->mutex);
 	if ((s = slot_find(a, index, gen, false)) != NULL)
 		full = slot_full(s, limit);
@@ -509,6 +529,8 @@ sift_cwbuf_arena_asked_back(Relation index)
 	Arena	   *a = arena_get();
 	bool		asked = false;
 
+	if (a == NULL)
+		return false;
 	SpinLockAcquire(&a->mutex);
 	for (int i = 0; i < ARENA_SLOTS; i++)
 		asked |= a->slot[i].used && a->slot[i].seal_wanted && a->slot[i].db == index->rd_locator.dbOid && a->slot[i].rel == index->rd_locator.relNumber;
@@ -523,6 +545,8 @@ sift_cwbuf_arena_drop(Relation index, uint64 gen)
 	Arena	   *a = arena_get();
 	ArenaSlot  *s;
 
+	if (a == NULL)
+		return;
 	SpinLockAcquire(&a->mutex);
 	if ((s = slot_find(a, index, gen, false)) != NULL)
 		slot_release(a, s - a->slot);
@@ -544,7 +568,7 @@ wbuf_arena_read(Relation index, uint64 gen, RefRow *rows, int n, StringInfo pay)
 	bool		got = false;
 	Size		start = pay->len;
 
-	if (n == 0)
+	if (n == 0 || a == NULL)
 		return;
 	src = palloc(n * sizeof(char *));	/* before the spinlock: no allocation under it */
 	if ((s = slot_enter(a, index, gen, false)) == NULL)
@@ -625,6 +649,8 @@ wbuf_arena_rebuild_enter(Relation index, uint64 gen)
 	static bool registered;
 	bool		waited = false;
 
+	if (a == NULL)
+		return ARENA_REBUILD_NO_SLOT;
 	if (!registered)
 	{
 		before_shmem_exit(rebuild_release, 0);
@@ -717,6 +743,8 @@ sift_cwbuf_arena_gc(void)
 	bool		squeezed;
 	Relation	index;
 
+	if (a == NULL)
+		return;
 	gc_statement = GetCurrentStatementStartTimestamp();
 	SpinLockAcquire(&a->mutex);
 	a->gc_wanted = false;
@@ -778,6 +806,8 @@ sift_col_arena_status(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
+	if (a == NULL)
+		ereport(ERROR, (errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED), errmsg("sift: the references of the write buffers are not shared: %s", sift_dsm_why())));
 	SpinLockAcquire(&a->mutex);
 	for (int i = 0; i < ARENA_SLOTS; i++)
 	{
@@ -804,6 +834,7 @@ wbuf_arena_test_slots(int n)
 {
 	Arena	   *a = arena_get();
 
+	Assert(a != NULL);
 	SpinLockAcquire(&a->mutex);
 	a->slots_max = Min(n, ARENA_SLOTS);
 	SpinLockRelease(&a->mutex);
