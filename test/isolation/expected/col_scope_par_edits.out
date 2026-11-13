@@ -13,7 +13,7 @@ pg_advisory_lock
                 
 (1 row)
 
-step s1o: SELECT agree, parallel, stored FROM iso_sp_q(7021, 0); <waiting ...>
+step s1o: SELECT agree, parallel, stored FROM iso_sp_q(7021, 0, false); <waiting ...>
 step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
@@ -50,7 +50,7 @@ pg_advisory_lock
                 
 (1 row)
 
-step s1i: SELECT agree, parallel, stored FROM iso_sp_q(0, 7022); <waiting ...>
+step s1i: SELECT agree, parallel, stored FROM iso_sp_q(0, 7022, false); <waiting ...>
 step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
@@ -73,6 +73,50 @@ t
 (1 row)
 
 step s1i: <... completed>
+agree|parallel|stored
+-----+--------+------
+t    |t       |t     
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1b s2lw s1w s3e s3b s3p s3m s2uw s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sp;
+count
+-----
+30300
+(1 row)
+
+step s2lw: SELECT pg_advisory_lock(20983, 10);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1w: SELECT agree, parallel, stored FROM iso_sp_q(0, 0, true); <waiting ...>
+step s3e: INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
+		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
+		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0;
+step s3b: INSERT INTO iso_sp SELECT 40000 + g, 1 + (g * 13) % 400, 3, repeat('w', 60) FROM generate_series(1, 60000) g;
+step s3p: SELECT sift.col_promote('iso_sp_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s3m: SELECT sift.col_merge('iso_sp_idx', true) >= 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s2uw: SELECT pg_advisory_unlock(20983, 10);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1w: <... completed>
 agree|parallel|stored
 -----+--------+------
 t    |t       |t     
