@@ -302,6 +302,7 @@ TESTING_REGRESS += col_scope_pairs_recorded
 TESTING_REGRESS += col_scope_par_estimate
 TESTING_REGRESS += col_scope_parallel
 TESTING_REGRESS += col_scope_patch
+TESTING_REGRESS += col_scope_patch_members
 TESTING_REGRESS += col_scope_patch_price
 TESTING_REGRESS += col_scope_precheck
 TESTING_REGRESS += col_scope_price_terms
