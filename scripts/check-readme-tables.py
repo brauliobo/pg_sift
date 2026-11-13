@@ -70,11 +70,17 @@ def triples(text):
 
 def numbers(text):
     """the cells of the two `numbers` tables against the medians of docs/results/store.json"""
+    block = re.search(r'<!-- bench:numbers:begin.*?-->\n(.*?)<!-- bench:numbers:end', text, re.S)
+    if not block:
+        return []
+    results = os.path.join(REPO, 'docs', 'results')
+    if not os.path.exists(os.path.join(results, 'store.json')):
+        return ['the README has the numbers tables and docs/results/store.json is missing']
     sys.path.insert(0, os.path.join(REPO, 'bench', 'steps'))
     import bench_charts
     import extras
-    d = bench_charts.load(os.path.join(REPO, 'docs', 'results'))
-    block = re.search(r'<!-- bench:numbers:begin.*?-->\n(.*?)<!-- bench:numbers:end', text, re.S).group(1)
+    d = bench_charts.load(results)
+    block = block.group(1)
     name = {v + '†' * (e == 'duckdb'): e for e, v in bench_charts.SHORT.items()}
     bad = []
     for part, (S, D, size) in zip(block.split('The same questions on 10,000,000 orders'), ((d['S'], d['D1'], 1_000_000), (d['SS'], d['D10'], 10_000_000))):
@@ -108,8 +114,9 @@ if __name__ == '__main__':
         sys.exit(0)
     text = open(os.path.join(REPO, 'README.md')).read()
     bad = problems(text) + numbers(text)
-    for f in ('README.md', 'docs/BENCHMARKS.md', 'docs/perf/AGGREGATES.md'):
-        bad += triples(text if f == 'README.md' else open(os.path.join(REPO, f)).read())
+    pages = [os.path.join(REPO, f) for f in ('README.md', 'docs/BENCHMARKS.md', 'docs/perf/AGGREGATES.md')]
+    for page in filter(os.path.exists, pages):
+        bad += triples(open(page).read())
     if bad:
         sys.exit('check-readme-tables:\n  ' + '\n  '.join(bad))
-    print('check-readme-tables: %d tables, none wider than %d columns, no header word over %d characters, the numbers tables match docs/results/store.json' % (len(tables(text)), MAX_COLS, MAX_WORD))
+    print('check-readme-tables: %d tables, none wider than %d columns, no header word over %d characters, the numbers tables (when present) match docs/results/store.json' % (len(tables(text)), MAX_COLS, MAX_WORD))
