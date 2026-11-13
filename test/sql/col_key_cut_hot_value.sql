@@ -9,7 +9,8 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE hv (id int PRIMARY KEY, tenant_id int, grp_id int, day date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO hv SELECT i, 1 + i % 101, CASE WHEN i % 10 < 3 THEN 1 ELSE 2 + i % 101 END, DATE '2010-01-01' + (i * 7919) % 5000, repeat('x', 100) FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) hv;
-SELECT attname, round(max(f)::numeric, 2) AS hottest FROM pg_stats s, unnest(s.most_common_freqs) f WHERE tablename = 'hv' AND attname = 'grp_id' GROUP BY 1 ORDER BY 1;
+-- a sample of 30,000 rows says 0.30 within 0.01 (200 ANALYZEs: 0.294 to 0.306): the range, not the digits of one sample
+SELECT attname, max(f) BETWEEN 0.25 AND 0.35 AS hottest_near_30_percent FROM pg_stats s, unnest(s.most_common_freqs) f WHERE tablename = 'hv' AND attname = 'grp_id' GROUP BY 1 ORDER BY 1;
 
 -- CREATE INDEX stores the count of rows it saw in reltuples (PostgreSQL 17 does): the estimate of a large table is set again before the build and before the decision
 CREATE TEMP TABLE hv_est (n bigint);
