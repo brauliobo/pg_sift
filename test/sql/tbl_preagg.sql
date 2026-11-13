@@ -123,7 +123,7 @@ SELECT * FROM pa_check('tq', 20, 21);
 DELETE FROM tq WHERE id % 10 = 0;
 SELECT * FROM pa_check('tq', 20, 21);
 
--- 10. a dropped column: the histograms of the older segments carry it as a measure, those units are scanned
+-- 10. a dropped column: the histograms of the older segments carry it as a measure; an aggregate that reads other columns leaves it out and is answered from them
 CREATE TABLE tr (id int, g int, amt numeric(10,2)) USING sift_table;
 INSERT INTO tr SELECT i, i % 5, i % 100 FROM generate_series(1, 120000) i;
 VACUUM (DISABLE_PAGE_SKIPPING) tr;
