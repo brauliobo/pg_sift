@@ -163,7 +163,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	const char *leaf = NULL;
 	const char *kgroup = sift_col_options_key_order_group(index);	/* key_order = 'group, key': the group is the only key to cut by */
 
-	/* a table shaped like a scope copy is read by its first column, as if the user had named it the group of a key_order */
+	/* a table shaped like a denormalised copy is read by its first column, as if the user had named it the group of a key_order */
 	if (kgroup == NULL)
 		kgroup = sift_col_scope_key(heap, index, !dry);
 	if (kgroup != NULL)

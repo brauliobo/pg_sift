@@ -124,10 +124,6 @@ REINDEX INDEX events_col;
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
 SELECT sift.col_verify('events_col', true);
 
--- the scope copy (sift.scope_create) keeps each fact once for each pair, and builds its copies from a join with the relation: a pair in several rows would give a fact two copies in one key, so the copy
--- still needs the unique btree and refuses the relation of a multiset
-SELECT sift.scope_create('events_copy', 'events', 'dim_a_id', 'tenant_pairs', 'tenant_id');
-
 -- the declaration: a unique btree before a non-unique one, then the partial rule; USING names the other one; the NOTICE says the pairs are a multiset
 CREATE TABLE decl_facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz);
 INSERT INTO decl_facts SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 300) i;

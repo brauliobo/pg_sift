@@ -42,7 +42,6 @@
 ^test/fuzz/tbl_twin_fuzz	^tap-shell-tbl_twin_fuzz(_[b-h])?$|{ci}
 ^test/fuzz/col_twin_fuzz	^tap-shell-col_twin_fuzz(_b)?$|{ci}
 ^test/fuzz/txn_fuzz	^difftest-(txn(-shapes)?|scope(-[12])?)$|{ci}
-^test/fuzz/scope_fuzz	^difftest-scope(-[12])?$|{ci}
 ^test/fuzz/col_scope_fuzz|^test/scope_helpers\.sql$	^tap-shell-col_scope_fuzz$|{ci}
 ^test/col_scope_textmember_states\.sql$	^installcheck-col_scope_textmember(_collide)?$|{ci}
 ^test/col_scope_texttwohop_states\.sql$	^installcheck-col_scope_texttwohop(_collide)?$|{ci}

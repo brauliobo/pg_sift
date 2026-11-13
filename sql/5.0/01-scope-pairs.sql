@@ -1,7 +1,18 @@
--- Pairs kept from a view: the scope relation of a copy (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
+-- Pairs kept from a view: the pair table of a scope index (or a table read on its own) is a table of unique (member key, scope key) pairs that a view defines over
 -- source tables (assignments, group membership). sift.scope_refresh_pairs recomputes the pairs of named member ids or scope keys from the view and applies the difference;
 -- sift.scope_follow_pairs puts statement triggers on the source tables that call it for the member ids or scope keys a change names, in the transaction of the change,
--- so the pairs stay equal to the view and a copy built on them (sift.scope_create) stays equal to the join.
+-- so the pairs stay equal to the view and a scope index on them stays equal to the join.
+CREATE FUNCTION sift.scope_qualified(rel regclass) RETURNS text LANGUAGE sql STABLE PARALLEL SAFE
+	RETURN (SELECT format('%I.%I', n.nspname, c.relname) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = rel);
+
+COMMENT ON FUNCTION sift.scope_qualified(regclass) IS 'Internal: the schema-qualified, quoted name of a relation';
+
+-- A name for the triggers of followed pairs: stable text, not the oid, so a restore keeps it
+CREATE FUNCTION sift.scope_trigger_name(pairs text, kind text) RETURNS name LANGUAGE sql IMMUTABLE PARALLEL SAFE
+	RETURN format('sift_scope_%s_%s', left(md5(pairs), 12), kind)::name;
+
+COMMENT ON FUNCTION sift.scope_trigger_name(text, text) IS 'Internal: the name of one trigger that keeps pairs equal to their view';
+
 CREATE TABLE sift.scope_follows (
 	pairs         text   NOT NULL,
 	definition    text   NOT NULL,
@@ -209,6 +220,3 @@ COMMENT ON FUNCTION sift.scope_follow_trg() IS 'Internal: the statement trigger 
 COMMENT ON FUNCTION sift.scope_names_sql(sift.scope_follows, text) IS 'Internal: the SELECT of the member ids, scope keys or pairs that the rows of a followed table (a SELECT of its columns) name';
 COMMENT ON FUNCTION sift.scope_refresh_named(sift.scope_follows, bigint[], bigint[]) IS 'Internal: refreshes the member ids, scope keys or pairs that scope_names_sql named';
 COMMENT ON FUNCTION sift.scope_pairs_where(text, name[], boolean, text) IS 'Internal: the condition that names the rows a refresh of the pairs reads';
-COMMENT ON FUNCTION sift.scope_fact_trg() IS 'Internal: the statement trigger of the table of a scope copy; applies the inserted, updated and deleted rows to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
-COMMENT ON FUNCTION sift.scope_pairs_trg() IS 'Internal: the statement trigger of the scope relation of a scope copy; applies the inserted, updated and deleted pairs to the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';
-COMMENT ON FUNCTION sift.scope_truncate_trg() IS 'Internal: the TRUNCATE trigger of the table and of the scope relation of a scope copy; empties the copy; refuses REPEATABLE READ and SERIALIZABLE transactions';

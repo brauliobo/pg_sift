@@ -1,6 +1,6 @@
 -- Named projections: what a sift_col index stores (columns, derived expressions, filter, rollups), defined once and used by several indexes.
 -- sift.projection_index creates the index from the definitions, or, when an index of the table with the same layout already holds them, builds nothing and records that
--- the index serves them: the index lists the names in its option projection, which a dump keeps. The definitions are extension configuration (dumped as data, like the scope copies);
+-- the index serves them: the index lists the names in its option projection, which a dump keeps. The definitions are extension configuration (dumped as data, like sift.scope_follows);
 -- the names are resolved by sift.projection_status, never by CREATE INDEX, because a restore creates the indexes before the data of the definitions is there and pg_upgrade never has it.
 CREATE TABLE sift.projections (
 	name             text   PRIMARY KEY CHECK (name ~ '^[a-z_][a-z0-9_$]*$'),

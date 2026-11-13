@@ -364,9 +364,9 @@ sift.async_maintenance = off'
 		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
 		# the tables of the catalog that the extension of this tree has and 3.2 lacks: their configuration dump finds no relation
-		check "3.2 downgrade: the catalog tables that 3.2 lacks (sift.projections, sift.scope_copies, sift.scope_follows) are the other errors" test "$(grep -o 'relation "sift\.[a-z_]*" does not exist' <<<"$errs" | sort | paste -sd' ' -)" == 'relation "sift.projections" does not exist relation "sift.scope_copies" does not exist relation "sift.scope_follows" does not exist'
+		check "3.2 downgrade: the catalog tables that 3.2 lacks (sift.projections, sift.scope_follows) are the other errors" test "$(grep -o 'relation "sift\.[a-z_]*" does not exist' <<<"$errs" | sort | paste -sd' ' -)" == 'relation "sift.projections" does not exist relation "sift.scope_follows" does not exist'
 		out=$errs
-		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3 + 3))"
+		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3 + 2))"
 		[[ $(grep -c . <<<"$errs") == $((withopt + 3)) ]] || diag "restore errors: $errs"
 		check "3.2 downgrade: those tables are empty in the restored database" test "$(qd rst "SELECT (SELECT count(*) FROM tbl_big) + (SELECT count(*) FROM tbl_wr) + (SELECT count(*) FROM tbl_wr2)")" == 0
 		check "3.2 downgrade: the restored database is at 3.2 with all its rows" test "$(qd rst "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" "SELECT count(*) FROM docs_df" "SELECT count(*) FROM tbl_ca" | tr '\n' ' ')" == \

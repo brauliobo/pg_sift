@@ -1,4 +1,4 @@
--- The build rule for tables shaped like a scope copy (sift.scope_create, or CREATE TABLE AS of a join with (member, key) pairs): the first column of the index is a key of few
+-- The build rule for tables shaped like a denormalised copy (CREATE TABLE AS of a join with (member, key) pairs): the first column of the index is a key of few
 -- values with many rows each, neither a foreign key nor unique, and another key-shaped column has several times its values (the foreign key the rows were copied by). CREATE INDEX
 -- takes the first column for key_order and key_cut, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
 -- the floor of the layout choice (GORD_AUTO_ROWS): the table here is 110,000 rows and the reason is the only one for its size.
@@ -17,7 +17,7 @@ CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (
 INSERT INTO pairs SELECT d, 1 + (hashint4(d) & 2147483647) % 60 FROM generate_series(1, 3000) d;
 INSERT INTO pairs SELECT d, 1 + (hashint4(d + 7) & 2147483647) % 60 FROM generate_series(1, 3000) d WHERE d % 5 = 0 ON CONFLICT DO NOTHING;
 
--- the copy in arrival order and sorted by the key and the time, as the join writes it and as sift.scope_create does; the rows are wide, so that the table has the units a cut by the key is for
+-- the copy in arrival order and sorted by the key and the time, as the join writes it; the rows are wide, so that the table has the units a cut by the key is for
 CREATE TABLE copy_arrival WITH (autovacuum_enabled = false) AS
 	SELECT p.tenant_id, f.id, f.dim_a_id, f.created_at, f.kind, f.amount, repeat('x', 100) AS pad FROM facts f JOIN pairs p USING (dim_a_id) ORDER BY f.id, p.tenant_id;
 CREATE TABLE copy_sorted WITH (autovacuum_enabled = false) AS SELECT * FROM copy_arrival ORDER BY tenant_id, created_at;

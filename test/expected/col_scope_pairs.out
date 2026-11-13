@@ -1,12 +1,7 @@
--- sift.scope_refresh_pairs / scope_follow_pairs: a table of unique (member, scope key) pairs kept equal to a view over links_a and group membership, and a scope copy
--- built on it kept equal to the join. Member ids belong to 0 to 6 scope keys, one of them through a direct assignment and through a group at once; every edit below leaves the
--- pair table equal to the view, the copy equal to the join (sift.scope_verify) and every key answering like the join of the view.
+-- sift.scope_refresh_pairs / scope_follow_pairs: a table of unique (member, scope key) pairs kept equal to a view over links_a and group membership. Member ids belong to 0 to 6
+-- scope keys, one of them through a direct assignment and through a group at once; every edit below leaves the pair table equal to the view.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL)
-	WITH (autovacuum_enabled = false);
-CREATE INDEX ON facts (dim_a_id);
-INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 1 + (i / 2) % 60 ELSE 10 * ((i / 2) % 6) + 1 + (i / 12) % 5 END, timestamptz '2026-01-01' + i * interval '3 hours', i % 5, i % 97 FROM generate_series(1, 6000) i;
 CREATE TABLE group_members (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz, PRIMARY KEY (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
 CREATE TABLE links_a (id serial PRIMARY KEY, tenant_id int NOT NULL, group_id int, dim_a_id int, deleted_at timestamptz, expires_at timestamptz,
 	CHECK ((group_id IS NULL) <> (dim_a_id IS NULL))) WITH (autovacuum_enabled = false);
@@ -86,46 +81,10 @@ SELECT count(*) AS pairs, count(DISTINCT dim_a_id) AS ids, max(n) AS max_keys FR
     57 |  57 |        6
 (1 row)
 
-SELECT sift.scope_create('facts_by_tenant', 'facts', 'dim_a_id', 'scope_pairs', 'tenant_id') AS copy_rows;
-NOTICE:  sift_col index "facts_by_tenant_col": 3 automatic choices, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; key_order = tenant_id, created_at;
-rollup_columns = tenant_id, kind; order_array_columns = created_at (second order only)
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_by_tenant_col');
-NOTICE:  sift_col index "facts_by_tenant_col" is column format minor 38, which a library before 3.7 cannot read
-HINT:  SET sift.col_format_minor = 14 before the build to write a format the older library reads.
-NOTICE:  scope copy public.facts_by_tenant: 9150 rows, 1.56 copies per row of "public.facts" that reaches a key
-DETAIL:  21% of those rows have 2 or more copies, at most 6; the copy takes 0.8 MB with its indexes, +150% over the table and its indexes.
-NOTICE:  scope copy public.facts_by_tenant: no sift_col index on "public.facts", all 5 columns carried, table of 0.5 MB
-DETAIL:  A copy carries the columns of the sift_col index of its table, or every column when there is none, and its indexes come on top of the table.
-HINT:  Drop the copy and build it with columns => ARRAY[..] to carry the columns the reads need.
-NOTICE:  scope copy public.facts_by_tenant: run VACUUM public.facts_by_tenant now
-DETAIL:  VACUUM cannot run inside a function. A copy that is not vacuumed has an empty visibility map: a read checks every row it keeps in the heap.
-HINT:  sift.scope_status shows whether a copy was vacuumed.
- copy_rows 
------------
-      9150
-(1 row)
-
--- the copy is read one key at a time: a fact once in each key of its member, the same count as the join of the view
-SELECT count(*) AS join_rows FROM facts f JOIN visible_dim_a v USING (dim_a_id);
- join_rows 
------------
-      9150
-(1 row)
-
-CREATE FUNCTION answers(k int) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE c text; j text;
-BEGIN
-	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts_by_tenant WHERE tenant_id = %s GROUP BY kind) t', k) INTO c;
-	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (SELECT kind, count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM visible_dim_a WHERE tenant_id = %s) GROUP BY kind) t', k) INTO j;
-	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
-END $$;
-CREATE FUNCTION state(label text) RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint, copy_rows bigint, copy_differing bigint, keys_differing bigint) LANGUAGE sql AS $$
+CREATE FUNCTION state(label text) RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint) LANGUAGE sql AS $$
 	SELECT label, (SELECT count(*) FROM scope_pairs),
 		   (SELECT count(*) FROM ((SELECT dim_a_id, tenant_id FROM visible_dim_a EXCEPT SELECT dim_a_id, tenant_id FROM scope_pairs)
-								  UNION ALL (SELECT dim_a_id, tenant_id FROM scope_pairs EXCEPT SELECT dim_a_id, tenant_id FROM visible_dim_a)) d),
-		   (SELECT count(*) FROM facts_by_tenant), (SELECT count(*) FROM sift.scope_verify('facts_by_tenant')),
-		   (SELECT count(*) FROM generate_series(1, 9) k WHERE answers(k) <> 'same') $$;
+								  UNION ALL (SELECT dim_a_id, tenant_id FROM scope_pairs EXCEPT SELECT dim_a_id, tenant_id FROM visible_dim_a)) d) $$;
 CREATE TABLE edits (n serial, label text, stmt text);
 INSERT INTO edits (label, stmt) VALUES
 	('a tenant is assigned a group', 'INSERT INTO links_a (tenant_id, group_id) VALUES (8, 3)'),
@@ -151,8 +110,6 @@ INSERT INTO edits (label, stmt) VALUES
 	('the memberships return', 'INSERT INTO group_members SELECT g, e FROM generate_series(1, 60) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) g'),
 	('the links_a are truncated', 'TRUNCATE links_a'),
 	('the links_a return', 'INSERT INTO links_a (tenant_id, group_id) SELECT g, g FROM generate_series(1, 6) g'),
-	('a fact of an id in 6 keys is added', 'INSERT INTO facts VALUES (900000, 9, now(), 1, 5)'),
-	('facts of ids that are in no group yet', 'INSERT INTO facts SELECT 910000 + i, 1000 + i, now(), i % 5, i FROM generate_series(1, 20) i'),
 	('a group gains 1,000 ids', 'INSERT INTO group_members SELECT 3, e FROM generate_series(1001, 2000) e'),
 	('1,000 ids are soft deleted', 'UPDATE group_members SET deleted_at = now() WHERE group_id = 3 AND dim_a_id > 1000'),
 	('and restored', 'UPDATE group_members SET deleted_at = NULL WHERE group_id = 3 AND dim_a_id > 1000'),
@@ -164,7 +121,7 @@ INSERT INTO edits (label, stmt) VALUES
 	('a direct assignment names another id', 'UPDATE links_a SET dim_a_id = 31 WHERE tenant_id = 2 AND dim_a_id = 20'),
 	('an assignment of an id its group gives is soft deleted (no pair changes)', 'UPDATE links_a SET deleted_at = now() WHERE tenant_id = 1 AND dim_a_id = 6'),
 	('and restored (no pair changes)', 'UPDATE links_a SET deleted_at = NULL WHERE tenant_id = 1 AND dim_a_id = 6');
-CREATE FUNCTION run_edits() RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint, copy_rows bigint, copy_differing bigint, keys_differing bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION run_edits() RETURNS TABLE (edit text, pairs bigint, pairs_differing bigint) LANGUAGE plpgsql AS $$
 DECLARE e record;
 BEGIN
 	RETURN QUERY SELECT * FROM state('start');
@@ -173,47 +130,44 @@ BEGIN
 		RETURN QUERY SELECT * FROM state(e.label);
 	END LOOP;
 END $$;
--- TRUNCATE rebuilds the index of the copy and says what it chose each time
 SET client_min_messages = warning;
 SELECT * FROM run_edits();
-                                         edit                                         | pairs | pairs_differing | copy_rows | copy_differing | keys_differing 
---------------------------------------------------------------------------------------+-------+-----------------+-----------+----------------+----------------
- start                                                                                |   123 |               0 |      9150 |              0 |              0
- a tenant is assigned a group                                                         |   141 |               0 |     10050 |              0 |              0
- a direct assignment of an id the group already gives (one pair)                      |   143 |               0 |     10350 |              0 |              0
- the group assignment is soft deleted (the direct ones stay)                          |   125 |               0 |      9450 |              0 |              0
- the group assignment is restored                                                     |   143 |               0 |     10350 |              0 |              0
- a direct assignment of an id that also comes through its group goes (the pair stays) |   143 |               0 |     10350 |              0 |              0
- the group membership of that id is soft deleted (the pair goes)                      |   142 |               0 |     10200 |              0 |              0
- the membership is restored                                                           |   143 |               0 |     10350 |              0 |              0
- an id moves to another group                                                         |   143 |               0 |     10350 |              0 |              0
- the group of an id in 6 keys is deleted from its memberships                         |   137 |               0 |     10050 |              0 |              0
- an id in no key joins a group                                                        |   140 |               0 |     10200 |              0 |              0
- a group assignment moves to another tenant                                           |   140 |               0 |     10200 |              0 |              0
- an assignment turns from a group to a member                                         |   135 |               0 |      9950 |              0 |              0
- an update that changes nothing                                                       |   135 |               0 |      9950 |              0 |              0
- an assignment that has already expired gives no pair                                 |   135 |               0 |      9950 |              0 |              0
- an assignment that expires later gives its pairs                                     |   137 |               0 |     10250 |              0 |              0
- links_a and memberships change in one statement                                      |   134 |               0 |     10100 |              0 |              0
- links_a and memberships change in one statement, the other way                       |   122 |               0 |      9500 |              0 |              0
- the memberships are truncated                                                        |    25 |               0 |      2550 |              0 |              0
- the memberships return                                                               |   128 |               0 |      9800 |              0 |              0
- the links_a are truncated                                                            |     0 |               0 |         0 |              0 |              0
- the links_a return                                                                   |   120 |               0 |      9000 |              0 |              0
- a fact of an id in 6 keys is added                                                   |   120 |               0 |      9006 |              0 |              0
- facts of ids that are in no group yet                                                |   120 |               0 |      9006 |              0 |              0
- a group gains 1,000 ids                                                              |  1120 |               0 |      9026 |              0 |              0
- 1,000 ids are soft deleted                                                           |   120 |               0 |      9006 |              0 |              0
- and restored                                                                         |  1120 |               0 |      9026 |              0 |              0
- a group loses 1,000 ids (hard delete)                                                |   120 |               0 |      9006 |              0 |              0
- an id moves between groups (one row)                                                 |   120 |               0 |      9006 |              0 |              0
- a tenant loses a group (hard delete)                                                 |   120 |               0 |      9006 |              0 |              0
- a tenant gains a group again                                                         |   138 |               0 |      9907 |              0 |              0
- a direct assignment moves to another tenant                                          |   138 |               0 |      9907 |              0 |              0
- a direct assignment names another id                                                 |   138 |               0 |      9907 |              0 |              0
- an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0 |      9907 |              0 |              0
- and restored (no pair changes)                                                       |   138 |               0 |      9907 |              0 |              0
-(35 rows)
+                                         edit                                         | pairs | pairs_differing 
+--------------------------------------------------------------------------------------+-------+-----------------
+ start                                                                                |   123 |               0
+ a tenant is assigned a group                                                         |   141 |               0
+ a direct assignment of an id the group already gives (one pair)                      |   143 |               0
+ the group assignment is soft deleted (the direct ones stay)                          |   125 |               0
+ the group assignment is restored                                                     |   143 |               0
+ a direct assignment of an id that also comes through its group goes (the pair stays) |   143 |               0
+ the group membership of that id is soft deleted (the pair goes)                      |   142 |               0
+ the membership is restored                                                           |   143 |               0
+ an id moves to another group                                                         |   143 |               0
+ the group of an id in 6 keys is deleted from its memberships                         |   137 |               0
+ an id in no key joins a group                                                        |   140 |               0
+ a group assignment moves to another tenant                                           |   140 |               0
+ an assignment turns from a group to a member                                         |   135 |               0
+ an update that changes nothing                                                       |   135 |               0
+ an assignment that has already expired gives no pair                                 |   135 |               0
+ an assignment that expires later gives its pairs                                     |   137 |               0
+ links_a and memberships change in one statement                                      |   134 |               0
+ links_a and memberships change in one statement, the other way                       |   122 |               0
+ the memberships are truncated                                                        |    25 |               0
+ the memberships return                                                               |   128 |               0
+ the links_a are truncated                                                            |     0 |               0
+ the links_a return                                                                   |   120 |               0
+ a group gains 1,000 ids                                                              |  1120 |               0
+ 1,000 ids are soft deleted                                                           |   120 |               0
+ and restored                                                                         |  1120 |               0
+ a group loses 1,000 ids (hard delete)                                                |   120 |               0
+ an id moves between groups (one row)                                                 |   120 |               0
+ a tenant loses a group (hard delete)                                                 |   120 |               0
+ a tenant gains a group again                                                         |   138 |               0
+ a direct assignment moves to another tenant                                          |   138 |               0
+ a direct assignment names another id                                                 |   138 |               0
+ an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0
+ and restored (no pair changes)                                                       |   138 |               0
+(33 rows)
 
 RESET client_min_messages;
 -- a refresh named by member ids or scope keys repairs those and no others; the whole refresh repairs all (what a disabled trigger or a COPY with triggers off leaves behind)
@@ -221,10 +175,10 @@ ALTER TABLE links_a DISABLE TRIGGER USER;
 ALTER TABLE group_members DISABLE TRIGGER USER;
 INSERT INTO links_a (tenant_id, group_id) VALUES (8, 1);
 INSERT INTO links_a (tenant_id, dim_a_id) VALUES (9, 40);
-SELECT edit, pairs, pairs_differing, copy_differing FROM state('two edits with the triggers off');
-              edit               | pairs | pairs_differing | copy_differing 
----------------------------------+-------+-----------------+----------------
- two edits with the triggers off |   138 |              37 |              0
+SELECT edit, pairs, pairs_differing FROM state('two edits with the triggers off');
+              edit               | pairs | pairs_differing 
+---------------------------------+-------+-----------------
+ two edits with the triggers off |   138 |              37
 (1 row)
 
 SELECT inserted, deleted FROM sift.scope_refresh_pairs('scope_pairs', 'visible_dim_a', 'key', ARRAY[8]);
@@ -233,10 +187,10 @@ SELECT inserted, deleted FROM sift.scope_refresh_pairs('scope_pairs', 'visible_d
        36 |       0
 (1 row)
 
-SELECT edit, pairs, pairs_differing, copy_differing FROM state('tenant 8 refreshed');
-        edit        | pairs | pairs_differing | copy_differing 
---------------------+-------+-----------------+----------------
- tenant 8 refreshed |   174 |               1 |              0
+SELECT edit, pairs, pairs_differing FROM state('tenant 8 refreshed');
+        edit        | pairs | pairs_differing 
+--------------------+-------+-----------------
+ tenant 8 refreshed |   174 |               1
 (1 row)
 
 SELECT inserted, deleted FROM sift.scope_refresh_pairs('scope_pairs', 'visible_dim_a', 'member', ARRAY[40]);
@@ -245,10 +199,10 @@ SELECT inserted, deleted FROM sift.scope_refresh_pairs('scope_pairs', 'visible_d
         1 |       0
 (1 row)
 
-SELECT edit, pairs, pairs_differing, copy_differing, keys_differing FROM state('member 40 refreshed');
-        edit         | pairs | pairs_differing | copy_differing | keys_differing 
----------------------+-------+-----------------+----------------+----------------
- member 40 refreshed |   175 |               0 |              0 |              0
+SELECT edit, pairs, pairs_differing FROM state('member 40 refreshed');
+        edit         | pairs | pairs_differing 
+---------------------+-------+-----------------
+ member 40 refreshed |   175 |               0
 (1 row)
 
 SELECT inserted, deleted FROM sift.scope_refresh_pairs('scope_pairs', 'visible_dim_a', 'key');
@@ -261,10 +215,10 @@ ALTER TABLE links_a ENABLE TRIGGER USER;
 ALTER TABLE group_members ENABLE TRIGGER USER;
 -- expiry by date with no write: the pair stays until the sweep, which applies what expired since the last one
 INSERT INTO links_a (tenant_id, dim_a_id, expires_at) VALUES (9, 51, clock_timestamp() + interval '1 second'), (9, 52, clock_timestamp() + interval '1 second');
-SELECT edit, pairs, pairs_differing, copy_differing FROM state('two pairs that expire in a second');
-               edit                | pairs | pairs_differing | copy_differing 
------------------------------------+-------+-----------------+----------------
- two pairs that expire in a second |   177 |               0 |              0
+SELECT edit, pairs, pairs_differing FROM state('two pairs that expire in a second');
+               edit                | pairs | pairs_differing 
+-----------------------------------+-------+-----------------
+ two pairs that expire in a second |   177 |               0
 (1 row)
 
 SELECT pg_sleep(1.2);
@@ -273,10 +227,10 @@ SELECT pg_sleep(1.2);
  
 (1 row)
 
-SELECT edit, pairs, pairs_differing, copy_differing FROM state('after the date, before the sweep');
-               edit               | pairs | pairs_differing | copy_differing 
-----------------------------------+-------+-----------------+----------------
- after the date, before the sweep |   177 |               2 |              0
+SELECT edit, pairs, pairs_differing FROM state('after the date, before the sweep');
+               edit               | pairs | pairs_differing 
+----------------------------------+-------+-----------------
+ after the date, before the sweep |   177 |               2
 (1 row)
 
 SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs');
@@ -285,10 +239,10 @@ SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs');
         0 |       2
 (1 row)
 
-SELECT edit, pairs, pairs_differing, copy_differing, keys_differing FROM state('after the sweep');
-      edit       | pairs | pairs_differing | copy_differing | keys_differing 
------------------+-------+-----------------+----------------+----------------
- after the sweep |   175 |               0 |              0 |              0
+SELECT edit, pairs, pairs_differing FROM state('after the sweep');
+      edit       | pairs | pairs_differing 
+-----------------+-------+-----------------
+ after the sweep |   175 |               0
 (1 row)
 
 SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs');
@@ -318,15 +272,14 @@ SELECT inserted, deleted FROM sift.scope_expire_pairs('scope_pairs', interval '3
         0 |       1
 (1 row)
 
-SELECT edit, pairs, pairs_differing, copy_differing, keys_differing FROM state('after the sweep with an overlap');
-              edit               | pairs | pairs_differing | copy_differing | keys_differing 
----------------------------------+-------+-----------------+----------------+----------------
- after the sweep with an overlap |   175 |               0 |              0 |              0
+SELECT edit, pairs, pairs_differing FROM state('after the sweep with an overlap');
+              edit               | pairs | pairs_differing 
+---------------------------------+-------+-----------------
+ after the sweep with an overlap |   175 |               0
 (1 row)
 
 -- the same edits with links_a followed by pair: a row that names its member and its key refreshes that pair, a group row its key, a membership its member
 CREATE FUNCTION seed() RETURNS void LANGUAGE sql AS $$
-	DELETE FROM facts WHERE id >= 900000;
 	TRUNCATE group_members;
 	TRUNCATE links_a RESTART IDENTITY;
 	INSERT INTO group_members SELECT g, e FROM generate_series(1, 60) e, generate_series(1, CASE e % 10 WHEN 0 THEN 0 WHEN 6 THEN 2 WHEN 7 THEN 3 WHEN 8 THEN 4 WHEN 9 THEN 6 ELSE 1 END) g;
@@ -361,44 +314,42 @@ SELECT seed();
 (1 row)
 
 SELECT * FROM run_edits();
-                                         edit                                         | pairs | pairs_differing | copy_rows | copy_differing | keys_differing 
---------------------------------------------------------------------------------------+-------+-----------------+-----------+----------------+----------------
- start                                                                                |   123 |               0 |      9150 |              0 |              0
- a tenant is assigned a group                                                         |   141 |               0 |     10050 |              0 |              0
- a direct assignment of an id the group already gives (one pair)                      |   143 |               0 |     10350 |              0 |              0
- the group assignment is soft deleted (the direct ones stay)                          |   125 |               0 |      9450 |              0 |              0
- the group assignment is restored                                                     |   143 |               0 |     10350 |              0 |              0
- a direct assignment of an id that also comes through its group goes (the pair stays) |   143 |               0 |     10350 |              0 |              0
- the group membership of that id is soft deleted (the pair goes)                      |   142 |               0 |     10200 |              0 |              0
- the membership is restored                                                           |   143 |               0 |     10350 |              0 |              0
- an id moves to another group                                                         |   143 |               0 |     10350 |              0 |              0
- the group of an id in 6 keys is deleted from its memberships                         |   137 |               0 |     10050 |              0 |              0
- an id in no key joins a group                                                        |   140 |               0 |     10200 |              0 |              0
- a group assignment moves to another tenant                                           |   140 |               0 |     10200 |              0 |              0
- an assignment turns from a group to a member                                         |   135 |               0 |      9950 |              0 |              0
- an update that changes nothing                                                       |   135 |               0 |      9950 |              0 |              0
- an assignment that has already expired gives no pair                                 |   135 |               0 |      9950 |              0 |              0
- an assignment that expires later gives its pairs                                     |   137 |               0 |     10250 |              0 |              0
- links_a and memberships change in one statement                                      |   134 |               0 |     10100 |              0 |              0
- links_a and memberships change in one statement, the other way                       |   122 |               0 |      9500 |              0 |              0
- the memberships are truncated                                                        |    25 |               0 |      2550 |              0 |              0
- the memberships return                                                               |   128 |               0 |      9800 |              0 |              0
- the links_a are truncated                                                            |     0 |               0 |         0 |              0 |              0
- the links_a return                                                                   |   120 |               0 |      9000 |              0 |              0
- a fact of an id in 6 keys is added                                                   |   120 |               0 |      9006 |              0 |              0
- facts of ids that are in no group yet                                                |   120 |               0 |      9006 |              0 |              0
- a group gains 1,000 ids                                                              |  1120 |               0 |      9026 |              0 |              0
- 1,000 ids are soft deleted                                                           |   120 |               0 |      9006 |              0 |              0
- and restored                                                                         |  1120 |               0 |      9026 |              0 |              0
- a group loses 1,000 ids (hard delete)                                                |   120 |               0 |      9006 |              0 |              0
- an id moves between groups (one row)                                                 |   120 |               0 |      9006 |              0 |              0
- a tenant loses a group (hard delete)                                                 |   120 |               0 |      9006 |              0 |              0
- a tenant gains a group again                                                         |   138 |               0 |      9907 |              0 |              0
- a direct assignment moves to another tenant                                          |   138 |               0 |      9907 |              0 |              0
- a direct assignment names another id                                                 |   138 |               0 |      9907 |              0 |              0
- an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0 |      9907 |              0 |              0
- and restored (no pair changes)                                                       |   138 |               0 |      9907 |              0 |              0
-(35 rows)
+                                         edit                                         | pairs | pairs_differing 
+--------------------------------------------------------------------------------------+-------+-----------------
+ start                                                                                |   123 |               0
+ a tenant is assigned a group                                                         |   141 |               0
+ a direct assignment of an id the group already gives (one pair)                      |   143 |               0
+ the group assignment is soft deleted (the direct ones stay)                          |   125 |               0
+ the group assignment is restored                                                     |   143 |               0
+ a direct assignment of an id that also comes through its group goes (the pair stays) |   143 |               0
+ the group membership of that id is soft deleted (the pair goes)                      |   142 |               0
+ the membership is restored                                                           |   143 |               0
+ an id moves to another group                                                         |   143 |               0
+ the group of an id in 6 keys is deleted from its memberships                         |   137 |               0
+ an id in no key joins a group                                                        |   140 |               0
+ a group assignment moves to another tenant                                           |   140 |               0
+ an assignment turns from a group to a member                                         |   135 |               0
+ an update that changes nothing                                                       |   135 |               0
+ an assignment that has already expired gives no pair                                 |   135 |               0
+ an assignment that expires later gives its pairs                                     |   137 |               0
+ links_a and memberships change in one statement                                      |   134 |               0
+ links_a and memberships change in one statement, the other way                       |   122 |               0
+ the memberships are truncated                                                        |    25 |               0
+ the memberships return                                                               |   128 |               0
+ the links_a are truncated                                                            |     0 |               0
+ the links_a return                                                                   |   120 |               0
+ a group gains 1,000 ids                                                              |  1120 |               0
+ 1,000 ids are soft deleted                                                           |   120 |               0
+ and restored                                                                         |  1120 |               0
+ a group loses 1,000 ids (hard delete)                                                |   120 |               0
+ an id moves between groups (one row)                                                 |   120 |               0
+ a tenant loses a group (hard delete)                                                 |   120 |               0
+ a tenant gains a group again                                                         |   138 |               0
+ a direct assignment moves to another tenant                                          |   138 |               0
+ a direct assignment names another id                                                 |   138 |               0
+ an assignment of an id its group gives is soft deleted (no pair changes)             |   138 |               0
+ and restored (no pair changes)                                                       |   138 |               0
+(33 rows)
 
 RESET client_min_messages;
 -- random edits of both sources, by key and by pair: the pairs equal the view after every statement
@@ -448,22 +399,13 @@ SELECT * FROM random_edits(300);
         300 |        0
 (1 row)
 
-SELECT edit, pairs_differing, copy_differing, keys_differing FROM state('after the random edits');
-          edit          | pairs_differing | copy_differing | keys_differing 
-------------------------+-----------------+----------------+----------------
- after the random edits |               0 |              0 |              0
+SELECT edit, pairs_differing FROM state('after the random edits');
+          edit          | pairs_differing 
+------------------------+-----------------
+ after the random edits |               0
 (1 row)
 
--- the copy is read by its sift index, with the answers of the normal plan
-CREATE EXTENSION pg_sift_helpers;
-VACUUM (FREEZE, ANALYZE) facts_by_tenant;
-SELECT sift_helpers.differences_agg('SELECT kind, count(*), sum(amount) FROM facts_by_tenant WHERE tenant_id = 3 GROUP BY kind') AS differences;
- differences 
--------------
-           0
-(1 row)
-
--- stop following: the pairs stay, the triggers go, the copy keeps the triggers of its own
+-- stop following: the pairs stay, the triggers go
 SELECT sift.scope_unfollow_pairs('scope_pairs', 'group_members');
  scope_unfollow_pairs 
 ----------------------
@@ -498,20 +440,13 @@ SELECT count(*) AS follow_triggers FROM pg_trigger WHERE NOT tgisinternal AND tg
 (1 row)
 
 DELETE FROM links_a WHERE tenant_id = 8;
-SELECT edit, pairs_differing, copy_differing FROM state('a source change after the unfollow is not seen');
-                      edit                      | pairs_differing | copy_differing 
-------------------------------------------------+-----------------+----------------
- a source change after the unfollow is not seen |              38 |              0
+SELECT edit, pairs_differing FROM state('a source change after the unfollow is not seen');
+                      edit                      | pairs_differing 
+------------------------------------------------+-----------------
+ a source change after the unfollow is not seen |              38
 (1 row)
 
-SELECT sift.scope_drop('facts_by_tenant');
- scope_drop 
-------------
- 
-(1 row)
-
-DROP FUNCTION run_edits(), state(text), answers(int), seed(), random_edits(int);
-DROP TABLE edits, facts, scope_pairs, links_a, group_members CASCADE;
+DROP FUNCTION run_edits(), state(text), seed(), random_edits(int);
+DROP TABLE edits, scope_pairs, links_a, group_members CASCADE;
 NOTICE:  drop cascades to view visible_dim_a
-DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

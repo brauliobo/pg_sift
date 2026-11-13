@@ -5,7 +5,7 @@ is "the events of tenant 7", and the tenant is in the pairs of the entity, not i
 time)`, so a read of one tenant reads the units of that tenant and no others, where the join reads the entity of each member. New in 5.0, column format minor 45, opt-in, and EXPERIMENTAL: the
 declaration, the formats and the settings may change in a later release. `sift_table` has no scope. Unless a figure says otherwise, the figures on this page are user instructions of one backend, warm, on generated lab fixtures of 100,000 to 2,000,000 rows (blocks hit and read where stated): they say how the arms compare on those shapes, not what a real database will measure.
 
-The alternative to the index is the [scope copy](#the-scope-copy-the-alternative), a second table kept by triggers; this page is about the index, in this order: [the expected case](#the-expected-case), [the declaration](#the-declaration), [what a read does](#what-a-read-does) and [what the planner recognises](#what-the-planner-recognises), [EXPLAIN](#explain) and the refusals, [what it costs](#what-it-costs), [the edges](#edges), what happens [without a scope index](#without-a-scope-index-replicate-or-reuse), [the copy](#the-scope-copy-the-alternative), and [the prior art](#prior-art-what-exists-and-what-differs).
+This page is about the index, in this order: [the expected case](#the-expected-case), [the declaration](#the-declaration), [what a read does](#what-a-read-does) and [what the planner recognises](#what-the-planner-recognises), [EXPLAIN](#explain) and the refusals, [what it costs](#what-it-costs), [the edges](#edges), what happens [without a scope index](#without-a-scope-index-replicate-or-reuse), [a denormalised table](#a-denormalised-table-not-shipped), and [the prior art](#prior-art-what-exists-and-what-differs).
 
 ## The expected case
 
@@ -345,7 +345,7 @@ and the refusal says the entries, the rows, and the size and growth the index wo
 A table of 2,048 blocks (16 MB) or more is estimated before its build, so a scope that is clearly over the limit does not spend the build on its segments: 32 runs of 8 consecutive blocks at fixed random
 places give the entries of their rows as a ratio of their rows, and the build is refused ("about N entries for about N rows (N per row, from a sample)", without the growth) only when the ratio less 3.5 standard
 errors of that ratio of 32 runs (about 99.9% one-sided) is over the limit. Every other scope is built and the exact figure after the build decides, so a scope near the limit is never refused by a sample.
-Above the limit the join answers (the entity path), and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A scope copy flips at 1.84 copies a fact because it carries
+Above the limit the join answers (the entity path), and a count or a sum by key is cheaper from a table of them (docs/INDEX-RECIPES.md). A table of copies kept by triggers flips at 1.84 copies a fact because it carries
 the heap rows and their trigger as well; the units live in the index and flip at 3. The reads of the units are not cheaper at a higher multiplicity. A larger table is expected to move the break-even
 up (the join is linear in the table; nothing above 2,000,000 events was measured), which this limit does not price: raise it for such a table, from the figures of the NOTICE.
 
@@ -414,7 +414,7 @@ nothing to the journal. The scope entries are the active pairs only (soft delete
   that a pair can be inserted outside of does not qualify: it never hears of that pair.
 - **What the predicate can be.** What PostgreSQL accepts in an index predicate: immutable, over the columns of the row (`IS NULL`, comparisons with constants, boolean columns). `now()` is refused by PostgreSQL
   (`functions in index predicate must be marked IMMUTABLE`), so a pair that ends by the clock needs a column the application or a scheduled `UPDATE` sets (`UPDATE grants SET expired = true WHERE expired_at <= now() AND NOT expired`,
-  a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the copy path ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
+  a journaled write: exact as of the sweep, so the staleness is the sweep interval), or the pairs kept from a view ([INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view), which has `sift.scope_expire_pairs`).
 
 ### Pairs in several rows: a multiset
 
@@ -447,8 +447,7 @@ for `using`); `using <index>` names the one, and the `NOTICE` says which.
   for each pair (`GROUP BY` the scope key, several keys counted for each pair) once for each row too, which the units (one entry for each distinct pair) cannot: those run as written, the plan says why
   (`sift.explain_why`, arm `scope`: `pairs are a multiset (non-unique btree): a join counts a fact once for each row`; the testing marker `sift.in_scope_pairs` says it as `Scope Fallback`), and their rows are the join's.
   The planner learns it from the btree the index records (a dependency of the index, so a btree made later changes nothing until `REINDEX`). A scope of two paths defines its pairs as the distinct union, so a read for each pair of it counts each pair once whatever the rows hold.
-- **The scope copy is unaffected.** `sift.scope_create` still needs the unique btree (a pair in two rows would give a fact two copies in one key) and refuses the relation of a multiset with its usual error; the pairs kept by
-  `sift.scope_follow_pairs` are written by sift as the distinct rows of a view.
+- **The pairs kept by `sift.scope_follow_pairs`** are written by sift as the distinct rows of a view, so they are unique.
 - **What it costs.** The same as for unique pairs: the units hold one entry for each distinct pair, a read of a dim_a_id whose rows were not written since the stamps is the stored read. The duplicate insert and delete
   of the test (1.13 rows a pair) patch the dim_a_id they touch like any other write to the relation.
 
@@ -532,7 +531,7 @@ paths as the sub-select of `IN` or `EXISTS` and as the relation of a join (table
 is read. What else a statement says keeps the join as written, and `sift.explain_why` (arm `scope`) says which select breaks the proof.
 
 **What stays impossible.** A relation that is a view, a CTE or a function (the three are heap tables with a btree on their two columns, unique or not); a condition on a third table (a group's own soft delete: the memberships of a deleted group
-stay pairs; put the condition on the memberships or use the copy path of [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
+stay pairs; put the condition on the memberships or keep the pairs from a view with [INDEX-RECIPES](INDEX-RECIPES.md#keeping-the-pairs-from-a-view)); a predicate that depends on time (`now()` is refused in an index predicate: sweep it
 into a column, see above); a partitioned table among the three; deny rows (a row that removes a pair another path gives); three or more hops, or more than one joined path.
 
 ### Key types
@@ -672,25 +671,9 @@ and answers sums and counts by kind and month from stored combinations. At a fix
 Reuse costs nothing to write. A table of the totals by member, kind and month kept by triggers
 is not an alternative: its cells are 85% of the facts at 25 facts a member over 10 kinds and 12 months, and its writes cost +125% (insert), +73% (update) and +140% (delete) instructions.
 
-## The scope copy: the alternative
+## A denormalised table: not shipped
 
-The scope copy is the second way to make a request by a key above the fact table (a tenant, a group) cost what the key holds, and it is kept as the alternative to the index. **To choose: the scope index, unless the pairs are a view, depend on a condition on a third table or on time, or the request must be a plain query on a table of its own (`WHERE tenant_id = k`); then the copy.** Both are exact for the rows and neither needs a change to the query that the planner does not already
-make; they differ in what they keep.
-
-| | scope index (this page) | scope copy ([INDEX-RECIPES](INDEX-RECIPES.md#keys-above-the-fact-table)) |
-|---|---|---|
-| what is stored | the rows replicated by scope key inside the segments of the index of the table | a second table of the facts, once for each scope key of the member, with a `sift_col` index keyed by the scope key |
-| size (100,000 events, 5,000 entities, tenants and groups: all tables and indexes of the fixture, 13.7 MB with the plain index) | 17.9 MB with one index of two scopes (+4.2 MB) | 35.0 MB with the two copies (+21.3 MB) |
-| WAL of the builds (same fixture; 2.6 MB for the plain index) | 6.7 MB | 24.6 MB |
-| writes to the facts | the statements cost what the index costs (the write buffer of the index; the pairs are read through their journal); the scope work is deferred to the promotion (+180 to +246 M instructions and +0.15 to +0.22 MB of WAL for each 10,000 facts at 1.05 entries a row, +396 M and +0.8 MB at 2.7: [What it costs](#what-it-costs)) | a statement trigger applies the change to the copy in the statement |
-| writes to the pairs | the journal index of the pairs (a 32-byte record a pair) and a read that patches the changed members, a rewrite when many changed | a statement trigger refreshes the members' rows |
-| a pair table that is a view | no: the pairs are a heap table with a btree on its two columns, unique or not | yes, `sift.scope_follow_pairs` keeps it as the view's answer |
-| the planner uses it | the join forms of the statement, as the application writes them (the recognition above) | the copy is a table: `WHERE tenant_id = k` on it |
-| state | EXPERIMENTAL | new in 5.0, EXPERIMENTAL too (`sift.scope_create`, `sift.scope_verify`, `sift.scope_drop`) |
-
-The copy is for a request that names the key and wants the rows of the key by a plain query on a table. The index is for facts that must stay one table (no second copy to size, to vacuum and to
-keep by triggers on the write path). The copy stores a fact once for each key of its member, so it grows with that figure (refused above 1.8
-copies a fact by default, `max_copies` raises it); the index's growth is said by the `NOTICE` and bounded by `sift.scope_max_multiplicity`.
+A copy of the fact table for each scope key of its member, kept by triggers and read by a plain query on a table (`WHERE tenant_id = k`), is the other way to make a request by a key above the fact table cost what the key holds. 5.0 does not ship a function that builds one: [the comparison below](#against-tuned-stock-postgresql) builds it by the benchmark's own SQL (`denorm_flat`, one table with a `(tenant, time)` covering b-tree, and `denorm_part`, a list partition by tenant) and finds it 13 to 28 times slower than the scope index to read for the tenants of 6% or more and 3 to 4 times dearer to write; it wins only the latest 20 rows of a key and a selective filter. Facts that must stay one table, with no second copy to size, to vacuum and to keep by triggers on the write path, are the scope index's case; pairs that are a view or depend on time are [kept by `sift.scope_follow_pairs` and `sift.scope_expire_pairs`](INDEX-RECIPES.md#keeping-the-pairs-from-a-view). A table built that way takes the first column of its `sift_col` index as the key of `key_order` and `key_cut` by itself (the build rule for tables of that shape).
 
 ## Prior art: what exists and what differs
 
@@ -701,7 +684,6 @@ Reaching facts by a key that they have through a join, and storing or indexing t
 | scope index (this page) | the scope key of a table of (member, key) pairs | yes, up to 3 entries a row by default | a 32-byte journal record (0.19 M instr, 899 B of WAL for a grant); a read patches the member | write buffer, one copy per key at promotion: 146 M + 179 M instr for 10,000 | the reader's snapshot: journal, patch and delta; `SERIALIZABLE` reads the join | the plain join | |
 | tuned semi join, nothing stored | the member, by a covering b-tree | yes | 0.13 M instr, 323 B of WAL (measured) | 211 M instr for 10,000 (measured) | the statement's snapshot | the plain join | nothing more; it is faster for a selective filter (9 of 72 cells) |
 | rollups by member, kept by a statement trigger | the member, read through the semi join | a pair edit does not touch them (0.13 M instr) | none | 1,046 M instr for 10,000, 7.7 MB of WAL (measured) | concurrent writers not measured | the semi join over the rollup table | nothing more: aggregates only, 4 to 12 times slower than the scope read for tenants of 6% or more |
-| copy kept by triggers | the scope key, in a table of copies with its own index | yes: one copy per pair | rewrites the member's facts: 11.8 M instr, 105 kB of WAL (largest member: 603 M, 7.3 MB) (measured) | one row per key: 573 M instr (186 M for the plain table) (measured) | depends on the triggers; concurrent writers not measured | a different query, on the copy | latest-N in 0.04 to 0.06 ms; a selective filter (measured) |
 | pg_ivm 1.17 | the columns of the view | yes (inner joins; outer joins restricted) | view updated in the transaction: 0.5 to 1.3 G instr, 67 to 280 ms (measured) | 10,000 inserts: 11.8 G instr, 1.65 s (measured) | immediate; `ExclusiveLock` on the view in `READ COMMITTED`; an error in `REPEATABLE READ` or `SERIALIZABLE` on a conflict | the view, by name; no rewrite in the documentation | a fitted aggregate in 0.05 ms (measured); no `ORDER BY` or `LIMIT` |
 | Oracle bitmap join index | a column of a dimension table, to rowids of the fact table | no: the dimension join columns must be a primary key or unique | not verified | not verified | one table of the join can be updated concurrently | a plain join | not verified |
 | Oracle materialized view with joins | the columns of the view | guideline: each fact row joins one dimension row; otherwise not verified | `ON COMMIT`: refreshed in the commit, from a log on each table; `ON DEMAND`: stale until refreshed | same | `ON COMMIT`: part of the commit; `ON DEMAND`: stale | the plain query, rewritten by the optimizer | any stored aggregate of the join |

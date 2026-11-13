@@ -224,7 +224,7 @@ sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, 
 }
 
 /*
- * The scope key of a table shaped like a scope copy (sift.scope_create, or CREATE TABLE AS of a join with a table of (member, key) pairs sorted by the key): the first column of the
+ * The scope key of a table shaped like a denormalised copy (CREATE TABLE AS of a join with a table of (member, key) pairs sorted by the key): the first column of the
  * index is an integer of few values (GORD_KEYORDER_ENTITIES to SCOPE_KEY_DISTINCT) with many rows each (SCOPE_KEY_DEPTH), neither a foreign key nor unique, and another key-shaped column
  * has SCOPE_KEY_RATIO times its values or more (unrelated small keys do not make a scope): the column the rows were copied by, which the build would take for the group of key_order and the key of key_cut. The lookups of such a table are by its first
  * column. NULL where the shape does not hold, where key_order is the user's, or where the heap is in the order of the other column (it serves that key already).

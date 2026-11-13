@@ -1,4 +1,4 @@
--- A scope copy is read with the scope key bound by a parameter: a prepared statement (custom plans, then the generic plan from the sixth execution) or a driver's Bind. The generic plan
+-- A denormalised copy (the facts once for each tenant of their id) is read with the tenant bound by a parameter: a prepared statement (custom plans, then the generic plan from the sixth execution) or a driver's Bind. The generic plan
 -- prices the equality like any bound key (the rows of an average key; PostgreSQL's estimate), and on a copy partitioned by the key the scan reads the one partition the parameter
 -- selects when it starts, priced as one partition of the average size, not as all of them. Plans and rows only: every statement keeps the scan, answers equal the normal plan's,
 -- and a prepared statement on the partitioned copy takes its generic plan like one on the single copy.
@@ -22,8 +22,14 @@ INSERT INTO pairs SELECT m, 3 FROM generate_series(181, 183) m;
 INSERT INTO pairs SELECT 190 + t, t FROM generate_series(4, 9) t;
 INSERT INTO pairs VALUES (1, 2), (151, 3);
 SET client_min_messages = warning;
-SELECT sift.scope_create('copy_single', 'facts', 'dim_a_id', 'pairs', 'tenant_id') > 0 AS built_single;
-SELECT sift.scope_create('copy_parts', 'facts', 'dim_a_id', 'pairs', 'tenant_id', partition => true) > 0 AS built_partitioned;
+-- the copy as a single table and as a list partition by tenant, one sift_col index each (one for each partition)
+CREATE TABLE copy_single (tenant_id int NOT NULL, id bigint NOT NULL, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL);
+INSERT INTO copy_single SELECT p.tenant_id, f.id, f.dim_a_id, f.created_at, f.kind, f.amount FROM facts f JOIN pairs p USING (dim_a_id) ORDER BY p.tenant_id, f.created_at;
+CREATE INDEX ON copy_single USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'tenant_id, created_at');
+CREATE TABLE copy_parts (tenant_id int NOT NULL, id bigint NOT NULL, dim_a_id int NOT NULL, created_at timestamptz NOT NULL, kind smallint NOT NULL, amount numeric(8,2) NOT NULL) PARTITION BY LIST (tenant_id);
+SELECT format('CREATE TABLE copy_parts_p%1$s PARTITION OF copy_parts FOR VALUES IN (%1$s)', t) FROM generate_series(1, 9) t \gexec
+INSERT INTO copy_parts SELECT p.tenant_id, f.id, f.dim_a_id, f.created_at, f.kind, f.amount FROM facts f JOIN pairs p USING (dim_a_id) ORDER BY p.tenant_id, f.created_at;
+CREATE INDEX ON copy_parts USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'created_at');
 RESET client_min_messages;
 SET synchronous_commit = on;
 VACUUM (FREEZE, ANALYZE) copy_single, copy_parts;
@@ -106,9 +112,7 @@ BEGIN
 END $$;
 SELECT * FROM bound_plan(:'q', 99) p WHERE "QUERY PLAN" !~ 'Replaces:';
 
-SELECT sift.scope_drop('copy_single');
-SELECT sift.scope_drop('copy_parts');
 DROP FUNCTION plan_kind(text), plan_cost(text), same_exec(text, text), bound_plan(text, int);
-DROP TABLE classes, facts, pairs;
+DROP TABLE classes, copy_single, copy_parts, facts, pairs;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
