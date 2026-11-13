@@ -93,10 +93,10 @@ INSERT INTO forms VALUES
  ('every fact with a pair', $q$SELECT count(*) AS n, sum(amount) AS total FROM events e WHERE EXISTS (SELECT 1 FROM pairs s WHERE s.account = e.account)$q$),
  ('varchar facts, text pairs', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.account IN (SELECT account FROM pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
  ('varchar facts, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM var_events e JOIN pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
- ('uuid members', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.account IN (SELECT account FROM uuid_pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
- ('uuid members, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
- ('text members, text key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM txt_events e WHERE e.account IN (SELECT account FROM txt_pairs WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
- ('text members, text key, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM txt_events e JOIN txt_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$);
+ ('uuid member', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.account IN (SELECT account FROM uuid_pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
+ ('uuid member, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
+ ('text member, text key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM txt_events e WHERE e.account IN (SELECT account FROM txt_pairs WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
+ ('text member, text key, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM txt_events e JOIN txt_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$);
 -- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text; plan text := '';
@@ -144,45 +144,45 @@ BEGIN
 	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
 END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
-                   name                   |                                           plan                                           | same_rows 
-------------------------------------------+------------------------------------------------------------------------------------------+-----------
- EXISTS                                   | scope read, once                                                                         | t
- IN, a key nobody has                     | scope read, once                                                                         | t
- IN, a list                               | scope read, once                                                                         | t
- IN, one key                              | scope read, once                                                                         | t
- IN, the tenant of the empty account      | scope read, once                                                                         | t
- every fact with a pair                   | join, the scope key is not bound by an equality or an IN list of constants or parameters | t
- group by the key and a column            | scope read, per pair                                                                     | t
- group by the key, every key              | scope read, per pair                                                                     | t
- join, a list, a row for each pair        | scope read, per pair                                                                     | t
- join, one key                            | scope read, per pair                                                                     | t
- text members, text key                   | scope read, once                                                                         | t
- text members, text key, group by the key | scope read, per pair                                                                     | t
- uuid members                             | scope read, once                                                                         | t
- uuid members, group by the key           | scope read, per pair                                                                     | t
- varchar facts, group by the key          | scope read, per pair                                                                     | t
- varchar facts, text pairs                | scope read, once                                                                         | t
+                  name                   |                                           plan                                           | same_rows 
+-----------------------------------------+------------------------------------------------------------------------------------------+-----------
+ EXISTS                                  | scope read, once                                                                         | t
+ IN, a key nobody has                    | scope read, once                                                                         | t
+ IN, a list                              | scope read, once                                                                         | t
+ IN, one key                             | scope read, once                                                                         | t
+ IN, the tenant of the empty account     | scope read, once                                                                         | t
+ every fact with a pair                  | join, the scope key is not bound by an equality or an IN list of constants or parameters | t
+ group by the key and a column           | scope read, per pair                                                                     | t
+ group by the key, every key             | scope read, per pair                                                                     | t
+ join, a list, a row for each pair       | scope read, per pair                                                                     | t
+ join, one key                           | scope read, per pair                                                                     | t
+ text member, text key                   | scope read, once                                                                         | t
+ text member, text key, group by the key | scope read, per pair                                                                     | t
+ uuid member                             | scope read, once                                                                         | t
+ uuid member, group by the key           | scope read, per pair                                                                     | t
+ varchar facts, group by the key         | scope read, per pair                                                                     | t
+ varchar facts, text pairs               | scope read, once                                                                         | t
 (16 rows)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |                       run                        
-------------------------------------------+--------------------------------------------------
- EXISTS                                   | units
- IN, a key nobody has                     | units
- IN, a list                               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, one key                              | units
- IN, the tenant of the empty account      | units
- every fact with a pair                   | units
- group by the key and a column            | units
- group by the key, every key              | units
- join, a list, a row for each pair        | units
- join, one key                            | units
- text members, text key                   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- text members, text key, group by the key | units
- uuid members                             | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- uuid members, group by the key           | units
- varchar facts, group by the key          | units
- varchar facts, text pairs                | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+                  name                   |                       run                        
+-----------------------------------------+--------------------------------------------------
+ EXISTS                                  | units
+ IN, a key nobody has                    | units
+ IN, a list                              | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+ IN, one key                             | units
+ IN, the tenant of the empty account     | units
+ every fact with a pair                  | units
+ group by the key and a column           | units
+ group by the key, every key             | units
+ join, a list, a row for each pair       | units
+ join, one key                           | units
+ text member, text key                   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+ text member, text key, group by the key | units
+ uuid member                             | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+ uuid member, group by the key           | units
+ varchar facts, group by the key         | units
+ varchar facts, text pairs               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
 (16 rows)
 
 CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
@@ -198,13 +198,13 @@ SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, cou
  added |         0 |    16
 (1 row)
 
-SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid members', 'text members, text key') ORDER BY name COLLATE "C";
+SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid member', 'text member, text key') ORDER BY name COLLATE "C";
                name                |                        run                        
 -----------------------------------+---------------------------------------------------
  IN, one key                       | Changed Keys: 3; Patched Keys: 24
  join, a list, a row for each pair | Changed Keys: 3; Patched Keys: 38
- text members, text key            | Changed Keys: 3; Patched Keys: 38; Dedupe Keys: 1
- uuid members                      | Changed Keys: 3; Patched Keys: 28; Dedupe Keys: 1
+ text member, text key             | Changed Keys: 3; Patched Keys: 38; Dedupe Keys: 1
+ uuid member                       | Changed Keys: 3; Patched Keys: 28; Dedupe Keys: 1
 (4 rows)
 
 DELETE FROM pairs WHERE tenant_id = 4 AND account ~ '^acct-[0-9]*5$';
@@ -285,24 +285,24 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |  run  
-------------------------------------------+-------
- EXISTS                                   | units
- IN, a key nobody has                     | units
- IN, a list                               | units
- IN, one key                              | units
- IN, the tenant of the empty account      | units
- every fact with a pair                   | units
- group by the key and a column            | units
- group by the key, every key              | units
- join, a list, a row for each pair        | units
- join, one key                            | units
- text members, text key                   | units
- text members, text key, group by the key | units
- uuid members                             | units
- uuid members, group by the key           | units
- varchar facts, group by the key          | units
- varchar facts, text pairs                | units
+                  name                   |  run  
+-----------------------------------------+-------
+ EXISTS                                  | units
+ IN, a key nobody has                    | units
+ IN, a list                              | units
+ IN, one key                             | units
+ IN, the tenant of the empty account     | units
+ every fact with a pair                  | units
+ group by the key and a column           | units
+ group by the key, every key             | units
+ join, a list, a row for each pair       | units
+ join, one key                           | units
+ text member, text key                   | units
+ text member, text key, group by the key | units
+ uuid member                             | units
+ uuid member, group by the key           | units
+ varchar facts, group by the key         | units
+ varchar facts, text pairs               | units
 (16 rows)
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true), sift.col_verify('txt_events_col', true);

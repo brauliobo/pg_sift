@@ -3,7 +3,7 @@
 
   test/fuzz/col_scope_textkey_fuzz.py [--seeds 1-6] [--rows 8000] [--steps 8] [--hash-bits 0]      needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
-A seed (seed % 4: the key is text, varchar, uuid or an integer; seed // 4 % 4: the member is an integer, text, varchar facts with text pairs, or uuid; the string members are generated columns of an
+A seed (seed % 4: the key is text, varchar, uuid or an integer; seed // 4 % 4: the member is an integer, text, varchar facts with text pairs, or uuid; the string member columns are generated columns of an
 integer, so every churn step below moves them as it moves the integer; one of them is the empty string and some facts have none) builds events, a table of (member, key) pairs whose keys are strings that differ in their bytes (a case, an accent, a space, a long one), its journal index and a
 sift_col index with a scope on the pairs, and draws steps: batches of fact INSERTs, DELETEs and UPDATEs (the value, the member), pair INSERTs, DELETEs, key moves, UPDATEs of the key of a pair, pairs with
 keys that are new (the value store has never seen them: their pairs are all delta until the next build), a key that leaves every pair, aborted transactions and savepoints, reads inside a transaction,
@@ -300,7 +300,7 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=8000)
     ap.add_argument('--steps', type=int, default=8)
-    ap.add_argument('--hash-bits', type=int, default=0, help='sift.test_member_hash_bits: the low bits kept of the journal word of a string member (members collide)')
+    ap.add_argument('--hash-bits', type=int, default=0, help='sift.test_member_hash_bits: the low bits kept of the journal word of a string member (string values collide)')
     o = ap.parse_args()
     global FUZZ_SETUP
     if o.hash_bits:

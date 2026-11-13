@@ -57,10 +57,10 @@ INSERT INTO forms VALUES
  ('every fact with a pair', $q$SELECT count(*) AS n, sum(amount) AS total FROM events e WHERE EXISTS (SELECT 1 FROM pairs s WHERE s.account = e.account)$q$),
  ('varchar facts, text pairs', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.account IN (SELECT account FROM pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
  ('varchar facts, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM var_events e JOIN pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
- ('uuid members', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.account IN (SELECT account FROM uuid_pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
- ('uuid members, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
- ('text members, text key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM txt_events e WHERE e.account IN (SELECT account FROM txt_pairs WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
- ('text members, text key, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM txt_events e JOIN txt_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$);
+ ('uuid member', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.account IN (SELECT account FROM uuid_pairs WHERE tenant_id IN (4, 5)) GROUP BY kind$q$),
+ ('uuid member, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
+ ('text member, text key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM txt_events e WHERE e.account IN (SELECT account FROM txt_pairs WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
+ ('text member, text key, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM txt_events e JOIN txt_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$);
 
 -- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -123,7 +123,7 @@ INSERT INTO pairs VALUES ('acct-2', 4), ('acct-new', 4), ('acct-401', 4);
 INSERT INTO uuid_pairs SELECT md5(account)::uuid, tenant_id FROM pairs WHERE account IN ('acct-2', 'acct-new', 'acct-401') AND tenant_id = 4;
 INSERT INTO txt_pairs VALUES ('acct-2', 'tenant-4'), ('acct-new', 'tenant-4'), ('acct-401', 'tenant-4');
 SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
-SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid members', 'text members, text key') ORDER BY name COLLATE "C";
+SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'join, a list, a row for each pair', 'uuid member', 'text member, text key') ORDER BY name COLLATE "C";
 
 DELETE FROM pairs WHERE tenant_id = 4 AND account ~ '^acct-[0-9]*5$';
 DELETE FROM uuid_pairs WHERE tenant_id = 4 AND account IN (SELECT md5('acct-' || i)::uuid FROM generate_series(1, 400) i WHERE i % 10 = 5);

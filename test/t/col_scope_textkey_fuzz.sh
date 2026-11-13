@@ -30,5 +30,5 @@ out=$(PGHOST=$(dir tk)/sock PGPORT=$(port tk) PGUSER=postgres SIFT_FUZZ_OUT=$(di
 	python3 -I "$REPO/test/fuzz/col_scope_textkey_fuzz.py" --seeds "$COLLIDE" --rows "$ROWS" --steps "$STEPS" --hash-bits 3 2>&1)
 rc=$?
 diag "$(grep -E 'FAIL|^seed=' <<<"$out" | cut -c1-400)"
-check "the same when the journal words of the members collide on 3 bits ($COLLIDE)" test "$rc" == 0
+check "the same when the journal words of string values collide on 3 bits ($COLLIDE)" test "$rc" == 0
 finish
