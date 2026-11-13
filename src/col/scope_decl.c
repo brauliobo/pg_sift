@@ -64,7 +64,7 @@ relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, con
 						errhint(key ? "The scope key column is an int2, int4, int8, text, varchar or uuid column; the member column is int2, int4 or int8." :
 								"The member column is int2, int4 or int8.")));
 	if (key && !sift_conn_integer_type(a->atttypid) && s->joined != NULL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is a %s, which a scope of two paths does not take yet", s->key_name, name, r->name,
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is of type %s, which a scope of two paths does not take yet", s->key_name, name, r->name,
 																	   format_type_be(a->atttypid)),
 						errhint("A text or uuid scope key is read through a scope of one path.")));
 	if (!a->attnotnull && s->joined == NULL)

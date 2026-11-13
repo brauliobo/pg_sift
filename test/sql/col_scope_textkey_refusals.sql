@@ -1,0 +1,74 @@
+-- What a text, varchar or uuid scope key does not take, and the reason each refusal names (docs/COL-SCOPE.md "Key types"): a column of another type, a nondeterministic collation
+-- (equal values may differ in their bytes, which the btree, the store and the codes agree on), a text member, a text key in a scope of two paths; a condition under a nondeterministic
+-- collation keeps the join as written.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+
+CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
+   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
+
+CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, member_text text, created_at date, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 50, 'm' || (1 + i % 50), date '2025-01-01' + i % 100, i % 10 FROM generate_series(1, 2000) i;
+
+-- pairs relations, each with its journal index: a text key (the one that qualifies), and what does not
+CREATE TABLE pairs_text (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE pairs_ci (dim_a_id int NOT NULL, tenant_id text COLLATE ci NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE pairs_char (dim_a_id int NOT NULL, tenant_id char(8) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE pairs_bytea (dim_a_id int NOT NULL, tenant_id bytea NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE pairs_member_text (member_text text NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (member_text, tenant_id));
+INSERT INTO pairs_text SELECT i, 't' || (1 + i % 5) FROM generate_series(1, 50) i;
+INSERT INTO pairs_ci SELECT i, 't' || (1 + i % 5) FROM generate_series(1, 50) i;
+INSERT INTO pairs_char SELECT i, 't' || (1 + i % 5) FROM generate_series(1, 50) i;
+INSERT INTO pairs_bytea SELECT i, ('t' || (1 + i % 5))::bytea FROM generate_series(1, 50) i;
+INSERT INTO pairs_member_text SELECT 'm' || i, 't' || (1 + i % 5) FROM generate_series(1, 50) i;
+CREATE INDEX pairs_text_j ON pairs_text USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_ci_j ON pairs_ci USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_char_j ON pairs_char USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_bytea_j ON pairs_bytea USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX pairs_member_text_j ON pairs_member_text USING sift_col (member_text, tenant_id) WITH (track_changes = 'ctid');
+
+-- two paths with a text key: a grant on a member and on a group, the members of a group
+CREATE TABLE grants_direct (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
+CREATE TABLE grants_group (group_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (group_id, tenant_id));
+CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, PRIMARY KEY (group_id, dim_a_id));
+
+CREATE TABLE refusals (n int, what text, opt text);
+INSERT INTO refusals VALUES
+	(1, 'text key', 'tenant_id: dim_a_id -> pairs_text(dim_a_id, tenant_id)'),
+	(2, 'nondeterministic collation', 'tenant_id: dim_a_id -> pairs_ci(dim_a_id, tenant_id)'),
+	(3, 'char(n) key', 'tenant_id: dim_a_id -> pairs_char(dim_a_id, tenant_id)'),
+	(4, 'bytea key', 'tenant_id: dim_a_id -> pairs_bytea(dim_a_id, tenant_id)'),
+	(5, 'text member', 'tenant_id: member_text -> pairs_member_text(member_text, tenant_id)'),
+	(6, 'text key, two paths', 'tenant_id: dim_a_id -> grants_direct(dim_a_id, tenant_id) | grants_group(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+SELECT n, what, try(format('CREATE INDEX events_col_%s ON events USING sift_col (id, dim_a_id, member_text, created_at, amount) WITH (scope = %L)', n, opt)) AS result FROM refusals ORDER BY n;
+
+-- the text key that qualifies reads like the join, and a condition under a nondeterministic collation does not take the scope
+REINDEX INDEX events_col_1;
+VACUUM (FREEZE, ANALYZE) events, pairs_text;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; plan text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Scope Index: ' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg, the join' ELSE 'normal plan' END;
+END $$;
+SELECT plan_of(format('SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pairs_text WHERE tenant_id = %L %s)', 't2', coll)) AS plan, coll
+	FROM (VALUES (''), ('COLLATE "C"'), ('COLLATE ci')) c (coll);
+INSERT INTO pairs_text VALUES (7, 'T2');
+CREATE FUNCTION ci_count() RETURNS bigint LANGUAGE sql AS
+$$ SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pairs_text WHERE tenant_id = 't2' COLLATE ci) $$;
+SELECT ci_count() AS ci, (SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pairs_text WHERE tenant_id = 't2')) AS bytes;
+SET sift.enable_agg = off;
+SELECT ci_count() AS ci_without_sift;
+RESET sift.enable_agg;
+DROP FUNCTION ci_count();
+
+DROP INDEX events_col_1;
+DROP FUNCTION try(text), plan_of(text);
+DROP TABLE refusals, events, pairs_text, pairs_ci, pairs_char, pairs_bytea, pairs_member_text, grants_direct, grants_group, memberships CASCADE;
+DROP COLLATION ci;
+DROP EXTENSION pg_sift;
