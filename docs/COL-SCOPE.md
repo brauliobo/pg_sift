@@ -40,6 +40,13 @@ A declaration may state the most entries a row the scope accepts, for each scope
 The time cut of the scope units is the first `date`, `timestamp` or `timestamptz` column of the index, else none.
 A scope may also be the union of this relation and a relation joined through a second one ([two paths](#pairs-reached-by-two-paths-a-direct-grant-and-a-group-grant)).
 
+**Privileges.** The build reads every pair of the relations of the scope (the segments hold the rows by scope key, and the `NOTICE` and the size of the index say how many), so the role that runs `CREATE INDEX` or `REINDEX` needs what a
+reader of the join needs: `SELECT` on the relation, or on its member and scope key columns and on the columns that the predicate of the btree of the pairs reads, and no row-level security of the relation that applies to it (the segments
+would hold the rows the policies hide from it); otherwise the statement is refused with `permission denied`, naming the column and the `GRANT` (or the role without the policies). `ALTER INDEX` reads nothing and checks nothing: the `REINDEX` that writes
+the segments does. A statement that reads the scope is checked as the join as written is, because PostgreSQL keeps the relation of the pairs in the range table of the statement: a role without `SELECT` on it, one whose `SELECT` was revoked after
+the build and one that has it on a column the statement does not use but not on one it does gets `permission denied` from the scope read and from the join alike, and a role the policies of the relation apply to reads the join as written
+(`sift.explain_why`, arm `scope`). The test is `col_scope_privileges`.
+
 **The journal index.** The relation of pairs needs a `sift_col` index with `track_changes = 'ctid'` whose first column is the member, that holds the scope key and that has no `WHERE` (a partial index never hears of a pair inserted
 outside its predicate, so it does not qualify). `CREATE INDEX` uses the first one the relation has (a scope of two paths needs one for each of its three relations). When there is none, a plain `CREATE INDEX` makes it, as the statement
 you would write, named by the rule of PostgreSQL for an index (`tenant_scope_dim_a_id_tenant_id_sift_journal`), owned by the owner of the table of pairs (a role that does not own it is refused, with the statement for the owner in the hint), and says so in a `NOTICE`. The
@@ -840,5 +847,6 @@ Each line is checked when the index is made (`CREATE INDEX`, `REINDEX`) or alter
 | `ALTER INDEX .. RESET (scope)` (or `SET (scope = 'off')`) on an index that has segments | `NOTICE`: the segments hold a scope the index no longer declares, and the index is not scanned (every statement over the table runs on its other plans) until a `REINDEX` writes them | `REINDEX INDEX`, or `CREATE INDEX CONCURRENTLY` and `DROP INDEX` for no gap |
 | The scope of a partition is declared on the partition | `NOTICE`: a statement over the partitioned table reads no scope | read the partition, or leave the statement as it is |
 | The relation has no row-level security that applies to the reader | `NOTICE`: a role the policies apply to reads the join as written | none needed, or a role the policies do not apply to |
+| The role that builds (`CREATE INDEX`, `REINDEX`) can read the pairs: `SELECT` on the relation or on its member, scope key and predicate columns, and no row-level security that applies to it | `ERROR`: `permission denied for column .. of table ..` with the `GRANT` in the hint, or `row-level security applies to ..` | the `GRANT` shown; build with the owner of the relation or a role with `BYPASSRLS` |
 
 `DROP INDEX` of the btree or the journal, and `DROP TABLE` of the relation, need `CASCADE` and drop the scope index with them (the dependencies are the record of which btree and journal the segments were written under).

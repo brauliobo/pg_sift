@@ -23,8 +23,11 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
+#include "utils/rls.h"
+#include "utils/acl.h"
 #include "utils/ruleutils.h"
 #include "utils/fmgroids.h"
 #include "utils/builtins.h"
@@ -231,6 +234,49 @@ sift_scope_relation(Relation heap, Relation index, const SiftScopeSpec *s, Relat
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("scope \"%s\": the member column \"%s\" of \"%s\" (%s) and the column \"%s\" of the index (%s) are not of one kind", s->key_name,
 																   s->rel.a, s->rel.name, format_type_be(get_atttype(RelationGetRelid(*rel), *member)), s->fk, format_type_be(fkatt->atttypid)),
 						errhint("Both are integers, both text or varchar, or both uuid: their values are equal when their bytes are.")));
+}
+
+/*
+ * CREATE INDEX and REINDEX read every pair of the relations of a scope (the segments hold the rows by scope key, and the NOTICE and the size of the index count them), so the role that
+ * builds needs what the join the index answers needs of its reader: SELECT on the columns of the pairs (the member, the scope key and what the predicate of the btree reads), and no
+ * row-level security that hides rows from it (the segments would hold them). The readers are checked by the executor as for the join (the statement keeps the relation in its range table).
+ */
+static void
+check_select(const SiftScopeSpec *s, Relation rel, AttrNumber att)
+{
+	Oid			role = GetUserId();
+	const char *table = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(rel)), RelationGetRelationName(rel));
+
+	/* the executor's order: the privilege on the table, else the one on the column */
+	if (pg_class_aclcheck(RelationGetRelid(rel), role, ACL_SELECT) == ACLCHECK_OK || pg_attribute_aclcheck(RelationGetRelid(rel), att, role, ACL_SELECT) == ACLCHECK_OK)
+		return;
+	ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					errmsg("scope \"%s\": permission denied for column \"%s\" of table \"%s\"", s->key_name, get_attname(RelationGetRelid(rel), att, false), RelationGetRelationName(rel)),
+					errdetail("A scope index reads the pairs of \"%s\" when it is built (CREATE INDEX, REINDEX): the role that builds it needs SELECT on the columns the scope reads.", RelationGetRelationName(rel)),
+					errhint("GRANT SELECT (%s) ON %s TO %s.", quote_identifier(get_attname(RelationGetRelid(rel), att, false)), table, quote_identifier(GetUserNameFromId(role, false)))));
+}
+
+static void
+check_readable(const SiftScopeSpec *s, Relation rel, AttrNumber a, AttrNumber b)
+{
+	check_select(s, rel, a);
+	check_select(s, rel, b);
+	if (check_enable_rls(RelationGetRelid(rel), InvalidOid, true) == RLS_ENABLED)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("scope \"%s\": row-level security applies to \"%s\" for this role", s->key_name, RelationGetRelationName(rel)),
+						errdetail("The segments of a scope index hold every pair of the relation, which the policies hide from this role."),
+						errhint("Build the index with a role the policies do not apply to (the owner of the relation or a role with BYPASSRLS).")));
+}
+
+/* ... and of the columns that the predicate of the btree that defines the pairs reads */
+static void
+check_predicate(const SiftScopeSpec *s, Relation rel, Oid btree)
+{
+	Bitmapset  *atts = NULL;
+	int			x = -1;
+
+	pull_varattnos((Node *) sift_scope_index_predicate(btree), 1, &atts);
+	while ((x = bms_next_member(atts, x)) >= 0)
+		check_select(s, rel, x + FirstLowInvalidHeapAttributeNumber);
 }
 
 /* The joined path and the members of its via column (hop 1, 2) with their columns; the checks of sift_scope_relation passed for the pairs relation */
@@ -590,10 +636,14 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky)
 		if (npath == 3)
 			check_hops(s, rel, att);
 		for (int h = 0; !sticky && h < npath; h++)
+			check_readable(s, rel[h], att[h][0], att[h][1]);
+		for (int h = 0; !sticky && h < npath; h++)
 			sift_scope_notice_relation(s->key_name, decl_rel(s, h)->name, rel[h]);
 		for (int h = 0; h < npath; h++)
 		{
 			btree[h] = choose_btree(owner, s, h, rel[h], att[h][0], att[h][1], sticky);
+			if (!sticky)
+				check_predicate(s, rel[h], btree[h]);
 			keep = list_append_unique_oid(keep, btree[h]);
 		}
 		/* the codes of a text or uuid scope key are those of the value store of its column: the index depends on it */

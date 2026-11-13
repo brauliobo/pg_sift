@@ -1,0 +1,129 @@
+-- What a scope index lets a role do with a relation of pairs it cannot read. The build reads every pair (the segments hold the rows by scope key, the NOTICE and the size of the index count them),
+-- so the role that creates or reindexes a scope index needs SELECT on the columns of the pairs (the member, the scope key and those the predicate of the btree reads) and no row-level security
+-- that hides rows from it; the error names the column and the GRANT. A statement that reads the scope is checked as the join as written is: PostgreSQL keeps the relation of the pairs in
+-- the range table of the statement, so a role without SELECT on it (also one whose SELECT was revoked after the build, or that has it on some columns only) gets permission denied
+-- from the scope read and from the join alike, and a role the policies of the relation apply to reads the join as written.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DROP ROLE IF EXISTS sp_owner, sp_reader;
+CREATE ROLE sp_owner;
+CREATE ROLE sp_reader;
+CREATE TABLE sp_events (id int PRIMARY KEY, m int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO sp_events SELECT i, 1 + i % 40, i % 10 FROM generate_series(1, 2000) i;
+ALTER TABLE sp_events OWNER TO sp_owner;
+GRANT SELECT ON sp_events TO sp_reader;
+GRANT CREATE ON SCHEMA public TO sp_owner;
+CREATE TABLE sp_pairs (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
+INSERT INTO sp_pairs SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+CREATE INDEX sp_pairs_journal ON sp_pairs USING sift_col (m, s) WITH (track_changes = 'ctid');
+-- pairs some of which are soft deleted: the btree that defines them reads the column deleted
+CREATE TABLE sp_soft (m int NOT NULL, s int NOT NULL, deleted boolean NOT NULL DEFAULT false) WITH (autovacuum_enabled = false);
+INSERT INTO sp_soft SELECT i, 1 + i % 5, i % 7 = 0 FROM generate_series(1, 40) i;
+CREATE UNIQUE INDEX sp_soft_live ON sp_soft (m, s) WHERE NOT deleted;
+CREATE INDEX sp_soft_journal ON sp_soft USING sift_col (m, s) WITH (track_changes = 'ctid');
+CREATE TABLE sp_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
+INSERT INTO sp_rls SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+CREATE INDEX sp_rls_journal ON sp_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
+ALTER TABLE sp_rls ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sp_rls_low ON sp_rls FOR SELECT TO sp_owner, sp_reader USING (m <= 20);
+VACUUM ANALYZE sp_events, sp_pairs, sp_soft, sp_rls;
+
+CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
+$$ DECLARE hint text; detail text; BEGIN EXECUTE stmt; RETURN 'ok';
+   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT, detail = PG_EXCEPTION_DETAIL;
+   RETURN sqlerrm || coalesce(' {' || nullif(detail, '') || '}', '') || coalesce(' [' || hint || ']', ''); END $$;
+-- what a statement does for the role that runs it: the error, or whether the scope units answered and whether the answer is the join's
+CREATE FUNCTION read_as_join(rel text, keycol text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	q text := format('SELECT count(*), sum(e.v) FROM sp_events e JOIN %I p ON p.m = e.m WHERE p.%I = 3', rel, keycol);
+	plan jsonb;
+	a text;
+	b text;
+BEGIN
+	SET LOCAL sift.agg_scope = on;
+	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO b;
+	RETURN CASE WHEN a <> b THEN 'DIFFERENT' ELSE 'same' END || CASE WHEN plan::text LIKE '%"Scope Index"%' THEN ', from the units' ELSE ', as the join' END;
+EXCEPTION WHEN OTHERS THEN
+	RETURN sqlerrm;
+END $$;
+
+-- the role that owns the table and cannot read the pairs: refused, with the column and the GRANT; nothing is left behind
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS no_privilege;
+RESET ROLE;
+GRANT SELECT (m) ON sp_pairs TO sp_owner;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS one_column;
+RESET ROLE;
+SELECT count(*) AS indexes_left FROM pg_class WHERE relname IN ('sp_col');
+GRANT SELECT (s) ON sp_pairs TO sp_owner;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS both_columns;
+RESET ROLE;
+
+-- REINDEX is the same build: the role that lost the privilege cannot rebuild it, one that has it can
+REVOKE SELECT ON sp_pairs FROM sp_owner;
+SET ROLE sp_owner;
+SELECT try('REINDEX INDEX sp_col') AS reindex_after_revoke;
+RESET ROLE;
+GRANT SELECT ON sp_pairs TO sp_owner;
+SET ROLE sp_owner;
+SELECT try('REINDEX INDEX sp_col') AS reindex_with_select;
+RESET ROLE;
+REVOKE SELECT ON sp_pairs FROM sp_owner;
+
+-- a reader: SELECT on the facts only. The scope read and the join as written are both refused by PostgreSQL, the statement does not answer from the units
+GRANT SELECT ON sp_pairs TO sp_reader;
+SET ROLE sp_reader;
+SELECT read_as_join('sp_pairs', 's') AS reader_with_select;
+RESET ROLE;
+REVOKE SELECT ON sp_pairs FROM sp_reader;
+SET ROLE sp_reader;
+SELECT read_as_join('sp_pairs', 's') AS reader_after_revoke;
+RESET ROLE;
+-- a privilege on one column of the join is not enough for the other
+GRANT SELECT (m) ON sp_pairs TO sp_reader;
+SET ROLE sp_reader;
+SELECT read_as_join('sp_pairs', 's') AS reader_with_member_only;
+RESET ROLE;
+GRANT SELECT (s) ON sp_pairs TO sp_reader;
+SET ROLE sp_reader;
+SELECT read_as_join('sp_pairs', 's') AS reader_with_both_columns;
+RESET ROLE;
+
+-- the predicate of the btree that defines the pairs: its columns are read too
+GRANT SELECT (m, s) ON sp_soft TO sp_owner;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_soft_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_soft(m, s)'')') AS predicate_column_missing;
+RESET ROLE;
+GRANT SELECT (deleted) ON sp_soft TO sp_owner;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_soft_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_soft(m, s)'')') AS predicate_column_granted;
+RESET ROLE;
+DROP INDEX sp_soft_col;
+
+-- row-level security of the relation: a role the policies apply to cannot build over rows they hide (the segments would hold them), and reads the join as written
+GRANT SELECT ON sp_rls TO sp_owner, sp_reader;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_rls_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_rls(m, s)'')') AS rls_applies;
+RESET ROLE;
+ALTER ROLE sp_owner BYPASSRLS;
+SET ROLE sp_owner;
+SELECT try('CREATE INDEX sp_rls_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_rls(m, s)'')') AS rls_bypassed;
+RESET ROLE;
+ALTER ROLE sp_owner NOBYPASSRLS;
+SET ROLE sp_reader;
+SELECT read_as_join('sp_rls', 's') AS reader_under_policy;
+RESET ROLE;
+SELECT read_as_join('sp_rls', 's') AS superuser_reads_units;
+
+DROP FUNCTION try(text), read_as_join(text, text);
+DROP TABLE sp_events, sp_pairs, sp_soft, sp_rls CASCADE;
+DROP OWNED BY sp_owner, sp_reader;
+DROP ROLE sp_owner, sp_reader;
+DROP EXTENSION pg_sift;

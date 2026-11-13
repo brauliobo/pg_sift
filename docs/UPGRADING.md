@@ -277,6 +277,10 @@ Three features write column formats that 4.3 and older refuse (`sift.upgrade_che
 
 A `REINDEX` of a `sift_col` index that tracks changes keeps its two triggers when they are what the option made (a trigger that was dropped, disabled or changed is made again, as before), so their names and oids stay and an index of an earlier release keeps the form of its dependencies until `ALTER EXTENSION pg_sift UPDATE` converts them. The new log still names the triggers' identities and its baseline is taken in the same transaction: what a read may trust does not change. Nothing to do.
 
+## A scope index is built by a role that can read its pairs (5.0)
+
+`CREATE INDEX` and `REINDEX` of an index with a `scope` need `SELECT` on the relation of pairs (or on its member and scope key columns and those the predicate of its btree reads) and no row-level security that applies to the role. An existing scope index is unaffected until it is rebuilt: a `REINDEX` by a role without the privilege (the owner of the indexed table is not the owner of the pairs, and was never granted `SELECT` on them) is refused with the `GRANT` in the hint; a superuser, a restore and `pg_upgrade` are not affected. Reads are checked as the join as written was and is. Nothing to do before the upgrade; grant the privilege or `REINDEX` as a role that has it.
+
 ## What 5.0 removes
 
 **`sift.col_auto_merge_dirty_pct` is removed.** It was the percent of the units of a `sift_col` index holding a dead row above which the automatic rewrite ran (30). Under churn every unit holds one, so the rule never told a rewrite that pays from one that does not; a unit with a dead row is now the reason and the pace is the one that stayed: `sift.col_auto_merge_wal_pct` (which the reads that have cost half of the rewrite skip) and the snapshots that hold blocks. An index with dead rows in under 30% of its units, which waited for those reads, is rewritten when the budget allows, as one with more was. The index WAL of the write benchmark does not change.

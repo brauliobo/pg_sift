@@ -197,6 +197,7 @@ SELECT count(*) AS journals_after_drop FROM journals;
 CREATE ROLE journal_facts_owner;
 CREATE ROLE journal_pairs_owner;
 GRANT CREATE ON SCHEMA public TO journal_facts_owner, journal_pairs_owner;
+GRANT SELECT ON tenant_scope TO journal_facts_owner;	-- the role that builds a scope index reads its pairs (col_scope_privileges)
 ALTER TABLE events OWNER TO journal_facts_owner;
 SET ROLE journal_facts_owner;
 SELECT try('CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')') AS not_the_owner;
