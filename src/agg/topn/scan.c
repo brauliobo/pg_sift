@@ -20,7 +20,7 @@ typedef struct SegBest
 
 #define MONO_WIN	1024			/* the rows a delta chunk decodes in one block */
 
-#define MONO_WINS	4				/* blocks a unit has at least for the walk: a shorter one is decoded whole */
+#define MONO_TIES	64				/* rows beyond the limit a walk of several keys has room for before its buffers grow: those tied with the limit-th on the first key */
 
 static int
 trunc_cmp(const void *a, const void *b)
@@ -306,7 +306,8 @@ unit_reset(SiftTopN *t)
  * any chunk that reads a run of rows cheaply. One key and no condition on it (a bound of it is tested later, not in rmask). The walk is chosen before it reads, from
  * the rows that pass and the rows that can win (it expects a quarter more than the limit, so the limit is reached before the unit ends), because it cannot give the unit back: its reads reuse the buffer of the leaf
  * that the executor's vector of the leaf stands on, which a filter on the same column may have filled. Once started it goes on to the limit, the bar or the end of
- * the unit. Rows tied with the limit-th win nothing on one key.
+ * the unit. Rows tied with the limit-th win nothing on one key; on several keys they may win on the others, so the walk goes on through the rows tied with the limit-th
+ * on the first key (the NULL rows of a NULLS FIRST first key are not walked: they all tie).
  */
 static bool
 mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
@@ -326,8 +327,8 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 				m = 0;
 	double		cands;
 
-	if (!(sift_topn_runs && t->nkey == 1 && t->nexpr == 0 && !t->all && !t->sort && !t->revisit && k0->xk == TXK_NONE && k0->leaf >= 0 && !k0->blob && !k0->nenum &&
-		  (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) && t->limit > 0 && nblk > MONO_WINS) || t->kbox.has_lo || t->kbox.has_hi)
+	if (!(sift_topn_runs && t->nexpr == 0 && !t->all && !t->sort && !t->revisit && k0->xk == TXK_NONE && k0->leaf >= 0 && !k0->blob && !k0->nenum &&
+		  (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) && t->limit > 0) || t->kbox.has_lo || t->kbox.has_hi)
 		return false;
 	dir = sift_colsrc_key_order(src, unit, k0->leaf);
 	if (dir == 0)
@@ -337,7 +338,7 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 	if (z.inexact)
 		return false;
 	nulls = k0->nulls_first && z.nnull > 0;
-	if (dir == 2 && !nulls)
+	if ((dir == 2 && !nulls) || (nulls && t->nkey > 1))
 		return false;
 	for (int i = 0; i < (nrow + 63) / 64; i++)
 		npass += pg_popcount64(rmask[i]);
@@ -353,7 +354,7 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 		t->nmono++;
 		return true;
 	}
-	grow_unit_buffers(t, Min(nrow, t->limit), false);
+	grow_unit_buffers(t, Min(nrow, t->limit + MONO_TIES), false);
 	for (uint32 w = 0; w < nblk && !stop; w++)
 	{
 		uint32		blk = front ? w : nblk - 1 - w,
@@ -381,9 +382,16 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 				stop = barstop = true;
 				break;
 			}
+			if (m >= t->limit && key != t->ck[m - 1])
+			{
+				stop = true;
+				break;
+			}
+			if (m == t->ccap)
+				grow_unit_buffers(t, 2 * m, true);
 			t->crow[m] = row;
 			t->ck[m++] = key;
-			stop = m == t->limit;
+			stop = t->nkey == 1 && m == t->limit;
 		}
 	}
 	if (!barstop && m < t->limit)
@@ -410,7 +418,7 @@ mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 	}
 	t->nmono++;
 	if (m > 0)
-		finish_unit(t, src, unit, m);
+		finish_unit(t, src, unit, m, !front);
 	return true;
 }
 
@@ -507,7 +515,7 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		nc++;
 	}
 	if (nc > 0)
-		finish_unit(t, src, unit, nc);
+		finish_unit(t, src, unit, nc, false);
 }
 
 /* The zone of the key's values from the zone of its leaf: coalesce(x, c) is c where x is NULL */

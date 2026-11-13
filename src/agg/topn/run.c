@@ -553,7 +553,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 		t->trunc[t->ntrunc++] = (RunTrunc) {id, unit->sb, w.next, false};
 	}
 	if (m > 0)
-		finish_unit(t, src, unit, m);
+		finish_unit(t, src, unit, m, false);
 	return true;
 }
 

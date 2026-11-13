@@ -110,9 +110,9 @@ out_rows(const SiftTopN *t)
 	return n;
 }
 
-/* The best n of those rows by all the keys go to the heap with their TIDs */
+/* The best n of those rows by all the keys go to the heap with their TIDs. best_last: the rows are in ascending position and the best on the first key is the last (the heap then takes them from the last, and rejects the rest at its root) */
 void
-finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
+finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc, bool best_last)
 {
 	uint16		part;
 	bool		vals;
@@ -128,7 +128,7 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 	}
 	else
 		for (int x = 0; x < nc; x++)
-			heap_push(t, t->lh, &t->ln, &t->ce[x]);
+			heap_push(t, t->lh, &t->ln, &t->ce[best_last ? nc - 1 - x : x]);
 	if (t->ln == 0)
 	{
 		t->lh = lh;

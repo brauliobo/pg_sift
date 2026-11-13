@@ -332,7 +332,7 @@ unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
 	if (oc && !oc->exact && t->nties * 4 > npass)
 		oc->useless = true;
 	if (nc > 0)
-		finish_unit(t, src, unit, nc);
+		finish_unit(t, src, unit, nc, false);
 }
 
 /*
