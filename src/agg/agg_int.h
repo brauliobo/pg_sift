@@ -151,6 +151,7 @@ typedef struct AggExec
 	bool		open_deferred;	/* a top-N whose walk of the global order never reads the combos, the zone tests, the vectors or the group table: engine_open_rest makes them when the walk gives the scan to the units */
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
+	int			child_flags;	/* the executor flags the child plans start with, when the first read of one starts them (agg_children) */
 	int			widen;			/* TOPN_TIES: the scan this engine runs is the widen-th start again (topn_widen) */
 	List	   *retries;		/* ... the engines of the earlier starts' successors, closed with the node */
 	/* groups */
@@ -428,6 +429,8 @@ extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
 extern bool		sift_agg_connect_found;
 extern bool sift_agg_connected(const AggExec *ex);
+/* The states of the node's child plans (a sub-select, VALUES list or function the joins read): started by the first read of one, not by the start of the node */
+extern List *agg_children(AggExec *ex);
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_lookup_columns;

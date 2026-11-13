@@ -90,7 +90,7 @@ spine_fetch(AggExec *ex)
 
 	if (ex->spine_buf)
 		return;
-	child = list_nth(ex->css.custom_ps, sa->child);
+	child = list_nth(agg_children(ex), sa->child);
 	MemoryContextSwitchTo(ex->cxt);
 	initStringInfo(&b);
 	appendBinaryStringInfo(&b, (const char *) &hdr, sizeof(hdr));

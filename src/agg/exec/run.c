@@ -724,6 +724,27 @@ scan_spec(AggExec *ex, MemoryContext parent)
 	ex->spec = ex->unpacked;
 }
 
+/*
+ * The child plans of the joins (a sub-select, VALUES list or function) are the provider's to start and end; the scan reads each once. A read that does not reach them (a scope
+ * read answers from the units, and runs the plan of the pairs only when it falls back to the join) does not pay for starting a plan of several nodes.
+ */
+List *
+agg_children(AggExec *ex)
+{
+	CustomScan *cs = (CustomScan *) ex->css.ss.ps.plan;
+	EState	   *estate = ex->css.ss.ps.state;
+
+	if (ex->css.custom_ps == NIL && cs->custom_plans != NIL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+
+		foreach_ptr(Plan, child, cs->custom_plans)
+			ex->css.custom_ps = lappend(ex->css.custom_ps, ExecInitNode(child, estate, ex->child_flags));
+		MemoryContextSwitchTo(old);
+	}
+	return ex->css.custom_ps;
+}
+
 static void
 agg_begin(CustomScanState *node, EState *estate, int eflags)
 {
@@ -736,11 +757,13 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	ex->rescannable = (eflags & (EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)) != 0;
 	ex->param_scan = cs->custom_exprs != NIL;
 	scan_spec(ex, estate->es_query_cxt);
-	/* the child plans of the joins (a sub-select, VALUES list or function) are the provider's to start and end; the scan reads each once */
-	foreach_ptr(Plan, child, cs->custom_plans)
-		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags & ~(EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
+	ex->child_flags = eflags & ~(EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK);
+	/* EXPLAIN shows the child plans, which only a run that reads one starts */
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+	{
+		(void) agg_children(ex);
 		return;
+	}
 	engine_rels(ex);
 	PredicateLockRelation(ex->heap, estate->es_snapshot);
 	fuse_register(ex);

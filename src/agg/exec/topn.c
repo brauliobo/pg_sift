@@ -496,7 +496,7 @@ topn_widen(AggExec *ex)
 		w->params = ex->params;
 		w->snap = ex->snap;
 		w->css.ss.ps.state = estate;
-		w->css.custom_ps = ex->css.custom_ps;
+		w->css.custom_ps = agg_children(ex);
 		w->widen = ex->widen + 1;
 		engine_contexts(w, estate->es_query_cxt);
 		engine_rels(w);
