@@ -15,6 +15,7 @@
 #include "executor/executor.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
+#include "utils/uuid.h"
 
 #include "agg/lookup/int.h"
 
@@ -172,6 +173,8 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	{
 		if (knull[k])
 			m->kid[kb + k] = 0;
+		else if (j->keytype[k] == UUIDOID)
+			m->kid[kb + k] = kd_text(&m->kd[k], (const char *) DatumGetUUIDP(kv[k])->data, UUID_LEN, m->cxt);
 		else if (m->ktext[k])
 		{
 			struct varlena *v = PG_DETOAST_DATUM_PACKED(kv[k]);
@@ -377,7 +380,7 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 	m->mcol = MemoryContextAllocZero(cxt, Max(j->ncol, 1) * sizeof(MapCol));
 	for (int k = 0; k < j->nkey; k++)
 	{
-		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+		m->ktext[k] = sift_bytes_key_type(j->keytype[k]);
 		m->knull[k] = j->keynull[k];
 	}
 	for (int c = 0; c < j->ncol; c++)

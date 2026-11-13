@@ -47,10 +47,10 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 #define JSTR_MAX_KEYS	65536
 
 /*
- * The same for a text leaf: a tuple of an inner or semi join needs a row of the table with its key, so a unit that holds the key of none is not read and the
+ * The same for a text or uuid leaf: a tuple of an inner or semi join needs a row of the table with its key, so a unit that holds the key of none is not read and the
  * rows of one that holds some are narrowed to those with a key of the table, on the encoded form (the inline strings of the others are never interned or
  * hashed). More keys than the join needs are safe: the join still drops the tuples without a match. Joins by bytes only: the planner takes text keys under a
- * deterministic collation. A leaf of the elements of an array (level 1) keeps the rows with an element that holds a key.
+ * deterministic collation, and a uuid is its 16 bytes. A leaf of the elements of an array (level 1) keeps the rows with an element that holds a key.
  */
 static bool
 join_filter_text(AggExec *ex, int ci, int k, int *leaf)
@@ -66,7 +66,7 @@ join_filter_text(AggExec *ex, int ci, int k, int *leaf)
 		return false;
 	lf = &ex->lay->leaf[*leaf];
 	return lf->kind == SCL_SCALAR && (cb->level == 0 ? lf->parent < 0 : lf->parent >= 0) && lf->vtype == SCV_CODE && !lf->lossy &&
-		(lf->typid == TEXTOID || lf->typid == VARCHAROID);
+		sift_bytes_key_type(lf->wide ? lf->wtypid : lf->typid);
 }
 
 static void

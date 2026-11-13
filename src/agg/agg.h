@@ -44,6 +44,13 @@ sift_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
+/* the types of a join key that the lookup compares by its bytes: a string, a uuid (16 bytes) */
+static inline bool
+sift_bytes_key_type(Oid t)
+{
+	return sift_str_type(t) || t == UUIDOID;
+}
+
 /*
  * An open-addressing table of ids (1..n, 0 = empty) doubled when it fills: slot is allocated again by alloc (it sees the new nslot) and the ids go back in order,
  * each from the slot start gives for id i, probing on by one.

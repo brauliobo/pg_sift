@@ -375,7 +375,17 @@ join_key(JoinCtx *jc, Node *m, bool nullsafe)
 	j->keynull[j->nkey] = nullsafe;
 }
 
-/* `column = leaf` of the joined table: the equality of a dictionary leaf with a text column, of an integer leaf with an integer column */
+/* the equality of a dictionary leaf with a column by the bytes of both: text under a deterministic collation, or uuid (a wide leaf, 16 bytes each) */
+static bool
+join_bytes_key(const SiftSrcLeaf *lf, const OpExpr *op, Oid lt, Oid rt, Oid mt)
+{
+	if (lf->wide)
+		return lf->wtypid == UUIDOID && lt == UUIDOID && rt == UUIDOID && mt == UUIDOID;
+	return lt == TEXTOID && rt == TEXTOID && (mt == TEXTOID || mt == VARCHAROID) && (lf->typid == TEXTOID || lf->typid == VARCHAROID) &&
+		OidIsValid(op->inputcollid) && get_collation_isdeterministic(op->inputcollid);
+}
+
+/* `column = leaf` of the joined table: the equality of a dictionary leaf with a text or uuid column, of an integer leaf with an integer column */
 bool
 join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 {
@@ -402,15 +412,14 @@ join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe)
 		return false;
 	if (lf->vtype == SCV_CODE)
 	{
-		if (lt != TEXTOID || rt != TEXTOID || (mt != TEXTOID && mt != VARCHAROID) || (lf->typid != TEXTOID && lf->typid != VARCHAROID) ||
-			!OidIsValid(op->inputcollid) || !get_collation_isdeterministic(op->inputcollid))
+		if (!join_bytes_key(lf, op, lt, rt, mt))
 			return false;
 	}
 	else if ((lf->vtype != SCV_I32 && lf->typid != INT8OID) || (tc != TC_INT && tc != TC_DATE) || tc != type_class(rt) || tc != type_class(mt) ||
 			 tc != type_class(lf->typid))
 		return false;
 	join_key(jc, m, nullsafe);
-	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->typid, -1, lf->vtype == SCV_CODE ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
+	if ((j->keypos[j->nkey] = combo_leaf(cb, leaf, false, lf->wide ? lf->wtypid : lf->typid, -1, lf->vtype == SCV_CODE && !lf->wide ? DEFAULT_COLLATION_OID : InvalidOid)) < 0)
 		return false;
 	use_leaf(c, leaf);
 	j->nkey++;
