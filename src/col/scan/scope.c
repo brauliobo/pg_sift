@@ -268,11 +268,15 @@ probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnPr
 	if (lead == ps->skey && ps->km != NULL)
 		sift_conn_probe_codec(p, ps->km);
 	sift_conn_probe_open(p, &s);
+	if (ps->km != NULL)
+		sift_keymap_hold(ps->km);
 	for (uint32 i = 0; i < n; i++)
 	{
 		ps->cur = vals[i];
 		sift_conn_probe_key(p, &s, ps->cur, each, ps);
 	}
+	if (ps->km != NULL)
+		sift_keymap_release(ps->km);
 	sift_conn_probe_close(&s);
 }
 

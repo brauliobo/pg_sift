@@ -192,9 +192,13 @@ sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber ke
 	TableScanDesc scan;
 	TupleTableSlot *slot;
 
+	if (km2 != NULL)
+		sift_keymap_hold(km2);
 	if (OidIsValid(pred_index))
 	{
 		scan_btree_keys(rel, pred_index, key, key2, km2, snap, f, arg);
+		if (km2 != NULL)
+			sift_keymap_release(km2);
 		return;
 	}
 	scan = sift_table_beginscan(rel, snap, 0, NULL);
@@ -210,6 +214,8 @@ sift_conn_scan_pairs(Relation rel, Oid pred_index, AttrNumber key, AttrNumber ke
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
+	if (km2 != NULL)
+		sift_keymap_release(km2);
 }
 
 typedef struct KeyStats

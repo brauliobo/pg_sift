@@ -30,6 +30,8 @@ struct SiftKeyMap
 	bool		write;
 	SiftCDict  *pending;		/* collecting: the values the store lacks, to intern together */
 	SiftCDict  *extra;			/* a reader's: the values the store lacks, as the transient codes -1, -2, ... */
+	SiftVStore *held;			/* the store, open for a loop that asks for many codes (sift_keymap_hold) */
+	int			holds;
 	MemoryContext cx;
 	SiftCcPolicy pol;
 };
@@ -74,7 +76,32 @@ value_bytes(Oid typid, Datum d, const char **s, uint32 *len)
 static SiftVStore *
 store_open(const SiftKeyMap *m)
 {
-	return sift_vstore_open(m->store, m->write ? RowExclusiveLock : AccessShareLock);
+	return m->held != NULL ? m->held : sift_vstore_open(m->store, m->write ? RowExclusiveLock : AccessShareLock);
+}
+
+static void
+store_close(const SiftKeyMap *m, SiftVStore *vs)
+{
+	if (vs != m->held)
+		sift_vstore_close(vs);
+}
+
+/* A loop that asks for the code of every row it reads keeps the store open: opening it for each (a lock, the catalog) costs more than the lookup */
+void
+sift_keymap_hold(SiftKeyMap *m)
+{
+	if (m->holds++ == 0)
+		m->held = store_open(m);
+}
+
+void
+sift_keymap_release(SiftKeyMap *m)
+{
+	if (--m->holds == 0)
+	{
+		sift_vstore_close(m->held);
+		m->held = NULL;
+	}
 }
 
 SiftKeyMap *
@@ -100,7 +127,7 @@ sift_keymap_open(Relation rel, AttrNumber att, bool write)
 	sift_cc_policy_default(&m->pol);
 	vs = store_open(m);
 	sift_vstore_refresh(vs);
-	sift_vstore_close(vs);
+	store_close(m, vs);
 	return m;
 }
 
@@ -127,7 +154,7 @@ intern_batch(SiftKeyMap *m, SiftCDict *batch)
 
 	(void) sift_vstore_intern(vs, batch, &m->pol, map, &epoch, &ncodes);
 	sift_vstore_refresh(vs);
-	sift_vstore_close(vs);
+	store_close(m, vs);
 	pfree(map);
 }
 
@@ -165,7 +192,7 @@ sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
 		sift_vstore_refresh(vs);
 		c = sift_vstore_find_code(vs, s, len);
 	}
-	sift_vstore_close(vs);
+	store_close(m, vs);
 	if (c < 0 && m->pending != NULL)
 	{
 		(void) sift_cdict_intern(m->pending, s, len);
@@ -179,7 +206,7 @@ sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code)
 		intern_batch(m, one);
 		vs = store_open(m);
 		c = sift_vstore_find_code(vs, s, len);
-		sift_vstore_close(vs);
+		store_close(m, vs);
 	}
 	else if (c < 0)
 	{
@@ -204,7 +231,7 @@ sift_keymap_datum(SiftKeyMap *m, int64 code)
 		SiftVStore *vs = store_open(m);
 
 		s = sift_vstore_string(vs, (uint32) code, &len);
-		sift_vstore_close(vs);
+		store_close(m, vs);
 	}
 	if (m->typid == UUIDOID)
 	{

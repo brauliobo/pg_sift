@@ -266,6 +266,9 @@ extern SiftKeyMap *sift_keymap_open(Relation rel, AttrNumber att, bool write);
 extern Oid	sift_keymap_collation(const SiftKeyMap *m);
 extern Oid	sift_keymap_typid(const SiftKeyMap *m);
 extern void sift_keymap_collect(SiftKeyMap *m, bool on);
+/* Keeps the store of the map open for a loop that asks for many codes (every hold is released) */
+extern void sift_keymap_hold(SiftKeyMap *m);
+extern void sift_keymap_release(SiftKeyMap *m);
 extern bool sift_keymap_code(SiftKeyMap *m, Datum d, int64 *code);
 extern Datum sift_keymap_datum(SiftKeyMap *m, int64 code);
 

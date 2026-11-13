@@ -490,6 +490,8 @@ probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
 		p->npool = 0;
 	}
 	sift_conn_probe_open(p->probe, &s);
+	if (p->km != NULL)
+		sift_keymap_hold(p->km);
 	for (uint32 i = 0; i < n; i++)
 	{
 		bool		hit;
@@ -508,6 +510,8 @@ probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
 		e->n = sift_scope_pairs_distinct(p->pool + e->start, e->n);
 		p->npool = e->start + e->n;
 	}
+	if (p->km != NULL)
+		sift_keymap_release(p->km);
 	sift_conn_probe_close(&s);
 }
 
