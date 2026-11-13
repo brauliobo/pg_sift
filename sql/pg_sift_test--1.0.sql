@@ -545,6 +545,10 @@ CREATE FUNCTION sift._test_hf_taken(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_taken' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dsm_deferred(OUT name text, OUT asks int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_dsm_deferred' LANGUAGE C;
+CREATE FUNCTION sift._test_dsm_register(name text, size int8) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_dsm_register' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_dsm_join(name text, size int8) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_dsm_join' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_block_hits(reset bool DEFAULT false) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_hf_block_hits' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_hf_pages_asked(reset bool DEFAULT false) RETURNS int8

@@ -10,6 +10,7 @@
 #include "funcapi.h"
 #include "lib/ilist.h"
 #include "storage/bufmgr.h"
+#include "storage/dsm_registry.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
 #include "storage/spin.h"
@@ -177,6 +178,36 @@ sift_test_dsm_deferred(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(sift_test_dsm_register);
+PG_FUNCTION_INFO_V1(sift_test_dsm_join);
+
+static void
+dsm_test_init(SIFT_DSM_INIT_ARGS)
+{
+}
+
+/* sift._test_dsm_register(name, size): a registry entry exactly as an older release left it (its own name and size, none added by sift_dsm_join) */
+Datum
+sift_test_dsm_register(PG_FUNCTION_ARGS)
+{
+	bool		found;
+
+#if PG_VERSION_NUM >= 190000
+	GetNamedDSMSegment(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init, &found, NULL);
+#else
+	GetNamedDSMSegment(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init, &found);
+#endif
+	PG_RETURN_VOID();
+}
+
+/* sift._test_dsm_join(name, size): the table of the code of this release (col/dsmreg.c) */
+Datum
+sift_test_dsm_join(PG_FUNCTION_ARGS)
+{
+	sift_dsm_join(text_to_cstring(PG_GETARG_TEXT_PP(0)), PG_GETARG_INT64(1), dsm_test_init);
+	PG_RETURN_VOID();
 }
 
 #endif							/* SIFT_TESTING */
