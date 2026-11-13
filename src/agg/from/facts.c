@@ -61,6 +61,7 @@ typedef struct SrcFacts
 	bool		read;
 	uint64		memo_seq;		/* the planning (sift_agg_memo_begin) that checked the stamp last */
 	SiftSrcStats stats;			/* as the index gave them: sift.plan_scale is applied to the copy a plan takes */
+	SiftSrcStats *scope_stats;	/* the scope units' (SiftSrcProvider.scope_stats), in facts_cx; NULL: the index has no scope */
 	SiftSrcPreagg pa;
 } SrcFacts;
 
@@ -277,6 +278,13 @@ facts_check(Relation rel, SrcFacts *e, bool found)
 		sift_colsrc_stats_lazy(rel, &fresh);
 		fresh.zones = zones_copy(fresh.zones, facts_cx);
 		e->stats = fresh;
+		e->scope_stats = NULL;
+		if (sift_colsrc_scope_stats_lazy(rel, &fresh))
+		{
+			fresh.zones = zones_copy(fresh.zones, facts_cx);
+			e->scope_stats = MemoryContextAlloc(facts_cx, sizeof(SiftSrcStats));
+			*e->scope_stats = fresh;
+		}
 		sift_colsrc_preagg(rel, &e->pa);
 		e->stamp = stamp;
 		e->read = true;
@@ -306,6 +314,30 @@ index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
 	st->nrows *= sift_plan_scale;
 	st->nunits *= sift_plan_scale;
 	st->bytes *= sift_plan_scale;
+}
+
+/*
+ * The statistics of a read of the scope units of the index over those index_facts gave: what a scope read prices by its units (zones, the sections they hold, the share that answers from
+ * pre-aggregates) are theirs, the rows, units and bytes stay the table's (the share of the scope, agg/cost/scope.c, applies to them)
+ */
+void
+index_facts_scope(Relation rel, int nleaves, SiftSrcStats *st)
+{
+	const SrcFacts *e = hash_search(src_facts, &(Oid) {RelationGetRelid(rel)}, HASH_FIND, NULL);
+	const SiftSrcStats *src = e->scope_stats;
+	size_t		d = Min(nleaves, SIFT_COLSRC_MAX_LEAVES) * sizeof(double);
+
+	if (src == NULL)			/* a scope declared and not built: no scope unit to read */
+		return;
+	st->scope = true;
+	st->exact_frac = src->exact_frac;
+	st->rows_miss = src->rows_miss;
+	st->miss_pending = src->miss_pending;
+	st->zones = src->zones;
+	memcpy(st->dim_miss, src->dim_miss, d);
+	memcpy(st->mm_miss, src->mm_miss, d);
+	memcpy(st->roll_miss, src->roll_miss, d);
+	memcpy(st->zone_span, src->zone_span, d);
 }
 
 static PartCand *

@@ -14,6 +14,16 @@
 #include "agg/from/int.h"
 #include "core/cmp.h"
 
+/* A scan that reads the scope units of its index (c->scope_take) is priced by theirs: what their zones and sections say replaces the entity units' in c->stats */
+void
+scope_facts(AggCtx *c)
+{
+	Relation	rel = index_open(c->indexoid, AccessShareLock);
+
+	index_facts_scope(rel, c->lay->nleaves, &c->stats);
+	index_close(rel, AccessShareLock);
+}
+
 static List *recordset_funcs(AggCtx *c, int grp);
 static Bitmapset *function_columns(AggCtx *c, int grp, RangeTblFunction *f);
 

@@ -67,6 +67,14 @@ sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st)
 	provider_of_rel(rel)->stats(rel, st);
 }
 
+bool
+sift_colsrc_scope_stats_lazy(Relation rel, SiftSrcStats *st)
+{
+	const SiftSrcProvider *prov = provider_of_rel(rel);
+
+	return prov->scope_stats != NULL && prov->scope_stats(rel, st);
+}
+
 void
 sift_colsrc_miss(Relation rel, SiftSrcStats *st)
 {

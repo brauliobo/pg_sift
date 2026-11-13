@@ -39,6 +39,7 @@ extern Node * part_vars_mutator(Node *n, PartVars *pv);
 
 extern void stats_scaled(Relation rel, SiftSrcStats *st);
 extern void index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa);
+extern void index_facts_scope(Relation rel, int nleaves, SiftSrcStats *st);
 extern const PartCand * part_facts(Oid relid, bool table);
 
 extern bool part_source(AggCtx *c);

@@ -62,7 +62,7 @@ heap_row_dead(const ItemPointerData *tid, void *arg)
 void
 maint_reap_overflow(Relation index, Relation heap)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(index);
+	const SiftColLeafStats *ls = sift_col_leaf_stats(index, false);
 	SiftDirSnapshot *snap;
 	HeapDead	h;
 	bool		flagged = false;

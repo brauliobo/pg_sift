@@ -70,7 +70,7 @@ sift_col_ordered_pair_mode(Oid indexoid, double tuples)
 {
 	Relation	irel = index_open(indexoid, NoLock);
 	const int  *first = sift_col_rel(irel)->first;
-	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
 	int			mode = 0;
 
 	if (ls != NULL && first[1] >= 0 && first[2] >= 0 && ls[first[2]].gord_gcol == first[1] && ls[first[2]].gord_grp_rows >= Max(tuples, 1.0) * 0.95 && ls[first[2]].gord_compact_blocks <= 0)

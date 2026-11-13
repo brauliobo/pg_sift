@@ -88,7 +88,7 @@ stats(Derive *d)
 #ifdef SIFT_TESTING
 		sift_col_test_inval(d->index);	/* reading the leaf statistics can take a lock that reloads the entry */
 #endif
-		d->ls = sift_col_leaf_stats(d->index);
+		d->ls = sift_col_leaf_stats(d->index, false);
 	}
 	return d->ls;
 }

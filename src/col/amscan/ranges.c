@@ -221,7 +221,7 @@ param_zones_kept(const SiftColZones *z, int leaf, Oid opfamily, Node *clause)
 double
 zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 {
-	const SiftColZones *z = sift_col_zones(irel);
+	const SiftColZones *z = sift_col_zones(irel, false);
 	IndexOptInfo *index = path->indexinfo;
 	bool	   *alive;
 	bool		tested = false;
@@ -273,7 +273,7 @@ zones_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 double
 sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 
@@ -326,7 +326,7 @@ prefix_clause(const OpExpr *op, int strategy)
 double
 point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid, double *extra)
 {
-	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
+	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
 	IndexOptInfo *index = path->indexinfo;
 	double		kept = 1.0;
 

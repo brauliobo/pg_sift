@@ -297,6 +297,7 @@ TESTING_REGRESS += col_scope_pairs_multiset_partial
 TESTING_REGRESS += col_scope_pairs_multiset_twohop
 TESTING_REGRESS += col_scope_pairs_partial
 TESTING_REGRESS += col_scope_pairs_recorded
+TESTING_REGRESS += col_scope_par_estimate
 TESTING_REGRESS += col_scope_parallel
 TESTING_REGRESS += col_scope_patch
 TESTING_REGRESS += col_scope_patch_price

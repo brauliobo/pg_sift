@@ -16,7 +16,12 @@ typedef struct SiftSrcProvider
 	bool		(*owns_table) (Oid tablerelam);
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
-	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending) */
+	/*
+	 * Optional (NULL: no scope indexes): the statistics of the scope units of an index that has a scope (scope set), the fields a read of those units prices (the zones, the sections the units hold, what answers from
+	 * pre-aggregates); false: the index has no scope segment
+	 */
+	bool		(*scope_stats) (Relation rel, SiftSrcStats *st);
+	/* Optional (NULL: stats reads the *_miss fields): reads them for stats that left them pending (miss_pending); for the scope units when st->scope */
 	void		(*miss) (Relation rel, SiftSrcStats *st);
 	/* Optional, required with open_part: what changes the layout, statistics and pre-aggregates of an index besides its catalog entries and its table's (sift_colsrc_stamp) */
 	void		(*stamp) (Relation index, SiftSrcStamp *stamp);

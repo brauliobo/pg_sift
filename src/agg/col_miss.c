@@ -19,7 +19,7 @@ miss_share(double have, double units)
 void
 sift_col_miss(Relation index, SiftSrcStats *st)
 {
-	const SiftColPreStats *pre = sift_col_pre_stats(index);
+	const SiftColPreStats *pre = sift_col_pre_stats(index, st->scope);
 
 	st->miss_pending = false;
 	st->rows_miss = miss_share(pre->rows, pre->units);

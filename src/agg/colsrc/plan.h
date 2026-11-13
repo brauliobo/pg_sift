@@ -20,6 +20,8 @@ extern SiftSrcLayout *sift_colsrc_layout(Relation rel);
 extern void sift_colsrc_stats(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stats_lazy(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_miss(Relation rel, SiftSrcStats *st);
+/* The statistics of the scope units of the index (SiftSrcStats.scope), the *_miss fields pending; false: it has none */
+extern bool sift_colsrc_scope_stats_lazy(Relation rel, SiftSrcStats *st);
 extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
 
 /*
