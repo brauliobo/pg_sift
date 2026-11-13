@@ -531,17 +531,34 @@ unit_put_directory(StringInfo out, const SiftKey *keys, uint32 nrows, uint32 sb)
 void
 put_packed(StringInfo out, const uint32 *v, uint32 n, int bits)
 {
-	uint64		acc = 0;
+	uint64		acc = 0,
+				total = ((uint64) n * bits + 7) / 8;
 	int			nb = 0;
+	uint8	   *p;
 
-	for (uint32 i = 0; i < n && bits > 0; i++)
+	if (n == 0 || bits <= 0)
+		return;
+	/* the stream is written in place a word at a time: a byte at a time through appendStringInfoChar cost most of a directory */
+	enlargeStringInfo(out, (int) total + 8);
+	p = (uint8 *) out->data + out->len;
+	for (uint32 i = 0; i < n; i++)
 	{
 		acc |= (uint64) v[i] << nb;
-		for (nb += bits; nb >= 8; nb -= 8, acc >>= 8)
-			appendStringInfoChar(out, (char) (acc & 0xFF));
+		nb += bits;
+		if (nb >= 32)
+		{
+			uint32		w = (uint32) acc;
+
+			memcpy(p, &w, sizeof(w));
+			p += sizeof(w);
+			acc >>= 32;
+			nb -= 32;
+		}
 	}
-	if (nb > 0)
-		appendStringInfoChar(out, (char) (acc & 0xFF));
+	for (; nb > 0; nb -= 8, acc >>= 8)
+		*p++ = (uint8) acc;
+	out->len += (int) total;
+	out->data[out->len] = '\0';
 }
 
 static int
@@ -580,12 +597,18 @@ unit_put_directory_keyed(StringInfo out, const SiftKey *keys, uint32 nrows, Stri
 		cnt[np++] = j - r - 1;
 		prev = blk;
 	}
-	for (uint32 i = 0; i + 1 < np; i++)
-		w[0] = Max(w[0], bits_for(delta[i]));
-	for (uint32 i = 0; i < np; i++)
-		w[1] = Max(w[1], bits_for(cnt[i]));
-	for (uint32 i = 0; i < nrows; i++)
-		w[2] = Max(w[2], bits_for(off[i]));
+	{
+		uint32		mx[3] = {0, 0, 0};
+
+		for (uint32 i = 0; i + 1 < np; i++)
+			mx[0] |= delta[i];
+		for (uint32 i = 0; i < np; i++)
+			mx[1] |= cnt[i];
+		for (uint32 i = 0; i < nrows; i++)
+			mx[2] |= off[i];
+		for (int k = 0; k < 3; k++)
+			w[k] = bits_for(mx[k]);
+	}
 	head[0] = COLK_MAGIC;
 	head[1] = nrows;
 	head[2] = np;

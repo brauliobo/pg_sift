@@ -423,11 +423,14 @@ sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, uint32 n, uint
 	if (!v->use_vm)
 		return;
 	TEST_PAUSE();
-	for (uint32 i = 0; i < n; i++)
+	/* the rows come by address, so a page's rows are a run, which has one answer */
+	for (uint32 i = 0, j; i < n; i = j)
 	{
 		uint64		byteno = blocks[i] / 4;
 		BlockNumber mapblk = byteno / VM_MAPSIZE;
 
+		for (j = i + 1; j < n && blocks[j] == blocks[i]; j++)
+			;
 		if (mapblk != curmap)
 		{
 			curmap = mapblk;
@@ -444,7 +447,13 @@ sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, uint32 n, uint
 			}
 		}
 		if (map != NULL && (map[byteno % VM_MAPSIZE] >> ((blocks[i] % 4) * 2)) & 1)
-			bits[i / 64] |= UINT64CONST(1) << (i % 64);
+			for (uint32 r = i; r < j;)
+			{
+				uint32		upto = Min(j, (r | 63) + 1);
+
+				bits[r / 64] |= (upto - r == 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (upto - r)) - 1) << (r % 64);
+				r = upto;
+			}
 	}
 	for (uint32 w = 0; w < (n + 63) / 64; w++)
 		any |= bits[w];

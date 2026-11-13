@@ -797,13 +797,54 @@ sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint3
 
 	if (v->keyed)
 	{
-		sift_cunit_keyed_load(v);		/* before v->blocks is read: the directory is decoded on first use */
-		for (; k < n; k++)
-		{
-			uint32		p = sift_cunit_row_page(v, ords[k]);
+		uint32		bits = (v->kwidths >> 16) & 0xFF,
+					p = 0,
+					*all = NULL;
 
-			out[k] = ((SiftKey) v->blocks[p] << 16) | keyed_page_offsets(v, p)[ords[k] - v->rowstart[p]];
+		sift_cunit_keyed_load(v);		/* before v->blocks is read: the directory is decoded on first use */
+		/* the offset of a row alone, not of its page: the parse has checked that the directory holds nrows values of bits bits. A third of the rows or more are read a word at a time, and the rest, which are few, one by one */
+		if (n * 3 >= v->nrows)
+		{
+			all = palloc(Max(v->nrows, 1) * sizeof(uint32));
+			if (!get_packed(v->koff_bits, v->koff_left, v->nrows, bits, all))
+				sift_cunit_keyed_corrupt();
 		}
+		/* a page at a time: its block is read once, and its offsets must ascend */
+		while (k < n)
+		{
+			SiftKey		blk;
+			uint32		end;
+
+			while (ords[k] >= v->rowstart[p + 1])
+				p++;
+			blk = (SiftKey) v->blocks[p] << 16;
+			end = v->rowstart[p + 1];
+			for (uint32 prev = 0; k < n && ords[k] < end; k++)
+			{
+				uint32		off;
+
+				if (all != NULL)
+					off = all[ords[k]] + 1;
+				else
+				{
+					uint64		bitpos = (uint64) ords[k] * bits,
+								at = bitpos >> 3,
+								w = 0;
+
+					if (at + 8 <= v->koff_left)
+						memcpy(&w, v->koff_bits + at, sizeof(w));
+					else
+						memcpy(&w, v->koff_bits + at, v->koff_left - at);
+					off = (uint32) ((w >> (bitpos & 7)) & ((UINT64CONST(1) << bits) - 1)) + 1;
+				}
+				if (off > MaxHeapTuplesPerPage || off <= prev)
+					sift_cunit_keyed_corrupt();
+				out[k] = blk | off;
+				prev = off;
+			}
+		}
+		if (all != NULL)
+			pfree(all);
 		return;
 	}
 	for (uint32 p = 0; p < v->npages && k < n; p++)
