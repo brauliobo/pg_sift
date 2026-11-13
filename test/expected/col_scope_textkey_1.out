@@ -212,9 +212,9 @@ SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, cou
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'join, a list, a row for each pair') ORDER BY name COLLATE "C";
                name                |               run                
 -----------------------------------+----------------------------------
- IN, a key the store has not       | Changed Keys: 3; Patched Keys: 2
- IN, one key                       | Changed Keys: 3; Patched Keys: 2
- join, a list, a row for each pair | Changed Keys: 3; Patched Keys: 2
+ IN, a key the store has not       | Changed Keys: 2; Patched Keys: 2
+ IN, one key                       | Changed Keys: 2; Patched Keys: 2
+ join, a list, a row for each pair | Changed Keys: 2; Patched Keys: 2
 (3 rows)
 
 DELETE FROM tenant_scope WHERE tenant_id = 'tenant-4' AND dim_a_id % 5 = 0;

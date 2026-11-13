@@ -499,22 +499,23 @@ SiftConnTags *
 sift_conn_tags(AttrNumber att, const int64 *keys, uint32 nkeys, SiftKeyMap *km)
 {
 	SiftConnTags *t;
-	int64	   *words = NULL;
 
 	if (nkeys > CONN_TAGS_MAX_KEYS)
 		return NULL;
-	if (km != NULL)
+	t = sift_conn_tags_lazy(att, NULL, NULL);
+	if (km == NULL)
+		sift_conn_tags_add(t, keys, nkeys);
+	else
 	{
-		words = palloc(Max(nkeys, 1) * sizeof(int64));
 		sift_keymap_hold(km);
 		for (uint32 i = 0; i < nkeys; i++)
-			words[i] = (int64) sift_keymap_member_hash(km, keys[i]);
+		{
+			int64		word = (int64) sift_keymap_member_hash(km, keys[i]);
+
+			sift_conn_tags_add(t, &word, 1);
+		}
 		sift_keymap_release(km);
 	}
-	t = sift_conn_tags_lazy(att, NULL, NULL);
-	sift_conn_tags_add(t, km != NULL ? words : keys, nkeys);
-	if (words != NULL)
-		pfree(words);
 	return t;
 }
 
