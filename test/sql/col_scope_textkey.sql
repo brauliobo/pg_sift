@@ -21,7 +21,7 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind
 REINDEX INDEX events_col;
 
 -- the same shape with a varchar key and with a uuid key
-CREATE TABLE var_scope (dim_a_id int NOT NULL, tenant_id varchar(20) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+CREATE TABLE var_scope (dim_a_id int NOT NULL, tenant_id varchar(2000) NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO var_scope SELECT dim_a_id, tenant_id FROM tenant_scope;
 CREATE INDEX var_scope_journal ON var_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE TABLE var_events (id int PRIMARY KEY, dim_a_id int, kind text, amount int) WITH (autovacuum_enabled = false);
@@ -59,6 +59,14 @@ INSERT INTO forms VALUES
  ('join, one key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 'tenant-4' GROUP BY kind$q$),
  ('join, a list, a row for each pair', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ('tenant-4', 'tenant-5') GROUP BY kind$q$),
  ('join, a table of keys, one key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = 2 GROUP BY kind$q$),
+ ('group by the key, a list', $q$SELECT s.tenant_id, count(*) AS n, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ('tenant-4', 'tenant-5', 'tenant-none') GROUP BY s.tenant_id$q$),
+ ('group by the key, every key', $q$SELECT s.tenant_id, count(*) AS n, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
+ ('group by the key and a column', $q$SELECT s.tenant_id, kind, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id, kind$q$),
+ ('group by the key, a table of keys', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = 1 GROUP BY s.tenant_id$q$),
+ ('miss: group by the key, ordered', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY s.tenant_id$q$),
+ ('miss: group by the key, ordered and limited', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY n DESC, s.tenant_id LIMIT 3$q$),
+ ('group by the key, varchar', $q$SELECT s.tenant_id, count(*) AS n FROM var_events e JOIN var_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
+ ('group by the key, uuid', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('varchar key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
  ('varchar key, a text parameter type', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id = 'tenant-4'::text) GROUP BY kind$q$),
  ('uuid key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id IN (md5('tenant-4')::uuid, md5('tenant-5')::uuid)) GROUP BY kind$q$),

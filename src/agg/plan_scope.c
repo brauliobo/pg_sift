@@ -378,6 +378,25 @@ sift_agg_scope_key_leaf(AggCtx *c, Node *e)
 	return sift_agg_scope_leaf(c->lay, c->scope_key);
 }
 
+/* is the leaf the derived key of a scope whose key is coded (text, varchar, uuid): the groups of it are codes */
+bool
+sift_agg_scope_key_coded(AggCtx *c, int leaf)
+{
+	return c->scope_key != NULL && OidIsValid(c->scope_take->sc.key_type) && leaf == sift_agg_scope_leaf(c->lay, c->scope_key);
+}
+
+/* the column of a coded key as the int8 its leaf holds */
+Node *
+sift_agg_scope_key_codes(Node *key)
+{
+	Var		   *v = (Var *) copyObject(strip_relabel(key));
+
+	v->vartype = INT8OID;
+	v->vartypmod = -1;
+	v->varcollid = InvalidOid;
+	return (Node *) v;
+}
+
 /* n is a plain column of the item rti */
 Var *
 item_var(Node *n, Index rti)
@@ -648,8 +667,8 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 			return "another item of the FROM list reads the scope relation";
 	if ((why = key_above(c, rti, map, nmap, get_attnum(relid, sp->rel.b), lj == NULL, &key_read)) != NULL)
 		return why;
-	if (key_read && OidIsValid(sc.key_type))
-		return "the statement groups by a text or uuid scope key: the groups of a coded key are not read from the units yet";
+	if (key_read && OidIsValid(sc.key_type) && (root->parse->sortClause != NIL || root->parse->limitCount != NULL || root->parse->limitOffset != NULL))
+		return "the statement groups by a text or uuid scope key and orders or limits its rows: the codes of a key are not in the order of its values";
 	own = bms_add_member(bms_make_singleton(rti), c->relid);
 	foreach_ptr(Node, q, pool)
 	{

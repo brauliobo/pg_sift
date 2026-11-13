@@ -4,7 +4,9 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_opfamily_d.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -59,13 +61,16 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
 	expr = normalize_expr(c, inner_key_sub(c, expr));
+	/* the key of a scope with a text or uuid key is grouped by its codes, an int8 (the numeric key of the leaf), and its value is read back through the key map */
+	if ((k->coded = sift_agg_scope_key_coded(c, match_leaf(c, expr))))
+		expr = sift_agg_scope_key_codes(expr);
 	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
 	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
 		return false;
 	k->typid = exprType(expr);
 	k->typmod = exprTypmod(expr);
 	k->collid = exprCollation(expr);
-	k->eqop = sgc->eqop;
+	k->eqop = k->coded ? get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, BTEqualStrategyNumber) : sgc->eqop;
 	/* a float leaf groups by float_key's bits; an expression of one is not a lookup table (too many values) */
 	if ((leaf = match_leaf(c, expr)) >= 0 && (lut_leaf_ok(c, leaf) || (leaf_of(c, leaf)->kind == SCL_SCALAR && leaf_of(c, leaf)->vtype == SCV_F64)))
 	{

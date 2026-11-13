@@ -602,6 +602,7 @@ codec_spec(Codec *c, SiftAggSpec *s)
 		PK(c, k->typmod);
 		PK(c, k->collid);
 		PK(c, k->eqop);
+		PK(c, k->coded);
 		PKS(c, k->desc);
 	}
 	PK_COUNT(c, s->naggs, s->agg);

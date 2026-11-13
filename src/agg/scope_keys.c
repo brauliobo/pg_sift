@@ -73,11 +73,13 @@ scope_keys_init(AggExec *ex)
 	bool		isnull;
 	Datum		value;
 
-	if (sc == NULL || sc->param == NULL)
+	if (sc == NULL)
 		return;
-	value = ExecEvalExprSwitchContext(operand_state(ex, sc->param), ex->lutcx, &isnull);
 	if (OidIsValid(sc->key_type))
 		ex->scope_km = sift_scope_keymap(ex->heap, ex->index, sc->key_name);
+	if (sc->param == NULL)
+		return;
+	value = ExecEvalExprSwitchContext(operand_state(ex, sc->param), ex->lutcx, &isnull);
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	keys = sift_agg_scope_keys(exprType(sc->param), value, isnull, &n, ex->scope_km);
 	MemoryContextSwitchTo(spec_cx);

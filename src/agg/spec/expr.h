@@ -163,6 +163,7 @@ typedef struct SiftAggKey
 	int32		typmod;
 	Oid			collid;
 	Oid			eqop;			/* the grouping equality operator */
+	bool		coded;			/* SAK_LEAF of the derived key of a scope with a text or uuid key: typid is int8, the groups are the codes of the key map, and the output value is the key (key_id_datum) */
 	char	   *desc;
 } SiftAggKey;
 

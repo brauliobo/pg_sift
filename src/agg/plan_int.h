@@ -618,6 +618,8 @@ extern bool sift_agg_scope_wanted(AggCtx *c, const FromScan *fs);
 extern bool sift_agg_reads_scope(Query *level, Node *tree);
 /* the derived leaf of the scope the statement groups by, when e is its key column (match_leaf); -1 when it is not */
 extern int	sift_agg_scope_key_leaf(AggCtx *c, Node *e);
+extern bool sift_agg_scope_key_coded(AggCtx *c, int leaf);
+extern Node *sift_agg_scope_key_codes(Node *key);
 extern bool sift_agg_scope_take(AggCtx *c, FromScan *fs, List **joined);
 extern bool read_above(PlannerInfo *root, Index rti);
 /* the item of the FROM list that is the scope relation of the index, and its key column (false: the scan has none) */

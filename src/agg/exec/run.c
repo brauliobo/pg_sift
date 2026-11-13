@@ -15,6 +15,7 @@
 #include "agg/part.h"
 #include "agg/stats.h"
 #include "col/am.h"
+#include "col/scope.h"
 #include "agg/exec/int.h"
 
 bool		sift_enable_agg = true;
@@ -233,9 +234,19 @@ key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 	return key_id_datum(ex, j, key_id(ex, j, g), isnull);
 }
 
+static Datum key_id_value(AggExec *ex, int j, uint32 id, bool *isnull);
+
 /* the value of id `id` of key j */
 Datum
 key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull)
+{
+	Datum		d = key_id_value(ex, j, id, isnull);
+
+	return ex->spec->key[j].coded && !*isnull ? sift_keymap_datum(ex->scope_km, DatumGetInt64(d)) : d;
+}
+
+static Datum
+key_id_value(AggExec *ex, int j, uint32 id, bool *isnull)
 {
 	KeyState   *k = &ex->ks[j];
 

@@ -432,8 +432,8 @@ into a column, see above); a partitioned table among the three; text or uuid mem
 The scope key may be a `text`, `varchar` or `uuid` column of the pairs relation (a deterministic collation: equal values have equal bytes; `char(n)`, `citext` and nondeterministic collations are refused with their reason). The scope still cuts its
 units by an int8: the code of the key in the shared value store of the key column ([COL-VSTORE](COL-VSTORE.md)), a store that is pinned for the scope, so that a code never moves. The index depends on the store (column format minor 50, which
 older libraries refuse). A build or a rewrite of scope segments interns the keys it meets; a read only looks them up, so a standby can read. A key the store has not seen has no stored unit: the read gives it a code of its own for the length
-of the statement, and its pairs come from the delta like those of any key. The planner takes the same forms as for an integer key (`=`, `IN`, `ANY`, a parameter, a table of keys); an equality under a nondeterministic collation, or a group by
-a coded key, keeps the join as written.
+of the statement, and its pairs come from the delta like those of any key. The planner takes the same forms as for an integer key (`=`, `IN`, `ANY`, a parameter, a table of keys); an equality under a nondeterministic collation keeps the join as written. A group by the key is read from the units: the groups are the codes, and the
+output value comes back through the map of the statement; an `ORDER BY` or `LIMIT` in such a statement keeps the join, because the codes are not in the order of the values.
 
 ### Limits
 
