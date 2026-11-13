@@ -127,8 +127,13 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc, bo
 		t->ln = nc;
 	}
 	else
+	{
+		/* the rows come in position order: when the last sorts before the first, the best are at the end and the heap rejects the others at its root (a unit of a key that ties on its first sort column and follows the table on the next) */
+		bool		from_end = best_last || ent_cmp(t, &t->ce[nc - 1], &t->ce[0]) < 0;
+
 		for (int x = 0; x < nc; x++)
-			heap_push(t, t->lh, &t->ln, &t->ce[best_last ? nc - 1 - x : x]);
+			heap_push(t, t->lh, &t->ln, &t->ce[from_end ? nc - 1 - x : x]);
+	}
 	if (t->ln == 0)
 	{
 		t->lh = lh;
