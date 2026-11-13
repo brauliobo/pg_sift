@@ -18,7 +18,7 @@ At CREATE INDEX and REINDEX a string leaf is shared when all of these hold:
 
 There is no option to turn it on or off for one index. An index whose column another index holds with a **different** key order keeps its own strings, and says so: the NOTICE of CREATE INDEX says how much this one stores again and how much less it would be with the order of the index that holds the column (`sift.index_choices(index)` gives the command that shares it: the same `key_order`), and `sift.col_value_store_members()` reports `own: different key order` with the duplicate size. The first member of a column keeps its own strings until it is rebuilt (`own: not yet rebuilt`).
 
-Off switch: `SET sift.col_format_minor = 14` before the build writes strings in the segments (as before 5.0).
+Off switch: `SET sift.col_value_store = off` before the build (CREATE INDEX or REINDEX) keeps the strings in the segments (as before 5.0) and makes no store; change tracking and every other structure are written as usual and the segments are column format minor 44 at the most, which 4.3 reads. A REINDEX of a member that shares, with the setting off, takes its strings back, and the last member takes the store with it; the setting changes no existing index. `SET sift.col_format_minor = 14` also stops the store, but only as a rollback to a release before 4.3: it stops change tracking too (the build says so in a NOTICE and the reads check the heap) and every structure of minors 15 and above.
 
 ## Reads
 
@@ -55,7 +55,7 @@ Only a column whose index segments hold a dictionary of strings has something to
 
 ## Numbers
 
-Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct values (a row each), three sift_col indexes: A (`id, tenant, uid, url, amount`), B (`url, id`) and C (`uid, tenant`). Shared: the rule's choice. Own: `sift.col_format_minor = 14`. Instructions are of the backend (`perf stat`), cold the first statement of a session and warm the second.
+Lab figures on one table of `id`, `tenant`, a uuid and a 62-byte URL of distinct values (a row each), three sift_col indexes: A (`id, tenant, uid, url, amount`), B (`url, id`) and C (`uid, tenant`). Shared: the rule's choice. Own: `sift.col_value_store = off`. Instructions are of the backend (`perf stat`), cold the first statement of a session and warm the second.
 
 | rows | all indexes, own strings | all indexes, shared | the only member left |
 | ---: | ---: | ---: | ---: |
@@ -96,7 +96,7 @@ Garbage (see above), 200,000 rows and two indexes: with 10% of the rows replaced
 
 ## Why on, and the off switch
 
-Default on because the gain is large when two indexes of the table hold the column and the rule shares only then; the reads are as cheap and the builds within 1.5 times. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_format_minor = 14` before the build (the strings stay in the segments), or `REINDEX` an index that has no other index with its key order.
+Default on because the gain is large when two indexes of the table hold the column and the rule shares only then; the reads are as cheap and the builds within 1.5 times. The cost is a relation more per column and the lock protocol above. Off: `SET sift.col_value_store = off` before the build (the strings stay in the segments; test `col_vstore_off`), or `REINDEX` an index that has no other index with its key order. `sift.col_format_minor = 14` is the rollback to a release before 4.3 and has the side effects above.
 
 ## Limits
 

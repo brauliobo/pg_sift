@@ -250,6 +250,17 @@ Three `sift_col` options are accepted and ignored by 4.3 and still ignored by 5.
 
 `order_layout` and `sift.col_format_minor` stay.
 
+## What 5.0 writes that 4.3 does not read
+
+Three features write column formats that 4.3 and older refuse (`sift.upgrade_check('4.3')` lists each index with its command; [FORMATS](FORMATS.md)):
+
+| what | column format | to go back to 4.3 | to go back to 4.2 or older |
+|---|---|---|---|
+| a `scope` option | 45 (49 for a scope of two paths) | `ALTER INDEX x RESET (scope)`, `SET sift.col_format_minor = 14` and `REINDEX`, as the preflight advises (the reads of the scope go through the join again) | the same |
+| strings held by a shared value store | 46 | `SET sift.col_value_store = off` and `REINDEX` the members: the strings are written in the segments, change tracking and the structures of minors 15 to 44 stay | `sift.col_format_minor = 14` and `REINDEX` |
+
+`sift.col_value_store = off` is the narrow switch: it stops only the store. `sift.col_format_minor = 14` stops the store too, and with it change tracking (a build says so in a `NOTICE` and its reads check the heap) and every structure of minors 15 and above, so it is for a release before 4.3 only.
+
 ## What 5.0 removes
 
 **`sift.col_auto_merge_dirty_pct` is removed.** It was the percent of the units of a `sift_col` index holding a dead row above which the automatic rewrite ran (30). Under churn every unit holds one, so the rule never told a rewrite that pays from one that does not; a unit with a dead row is now the reason and the pace is the one that stayed: `sift.col_auto_merge_wal_pct` (which the reads that have cost half of the rewrite skip) and the snapshots that hold blocks. An index with dead rows in under 30% of its units, which waited for those reads, is rewritten when the budget allows, as one with more was. The index WAL of the write benchmark does not change.
@@ -435,6 +446,8 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 41 (a compact chunk in an order array; `order_layout` auto, the default, writes it for spread keys such as a timestamp) | 4.0; 3.7 and older refuse the segments; `order_layout = 'whole'` and a REINDEX, or `sift.col_format_minor` 14, write what they read |
 | column format 42 (the order array of a text column names its strings by dictionary code) | 4.0; 3.7 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read |
 | column format 44 (the key journal of a connected parent index and the found flags of a connected child, a write buffer of references to heap tuples, seekable and positional order chunks and the packed table of groups of the second order) | 4.3; 4.2 and older refuse the segments; `sift.col_format_minor` 14 and a REINDEX write what they read, with `connect = 'off'` and `sift.col_wbuf_ref = off` for the connection and the references |
+| column format 45 (a scope index: the derived key of a scope and its scope segments) and 49 (a scope of two paths: three stamps in a segment) | 5.0; 4.3 and older refuse the segments; `ALTER INDEX x RESET (scope)` and `REINDEX` write the entities they read |
+| column format 46 (strings held by a shared value store) | 5.0; 4.3 and older refuse the segments and the store; `SET sift.col_value_store = off` and `REINDEX` write the strings in the segments (minor 44 at the most), `sift.col_format_minor` 14 does it for a release before 4.3 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 
