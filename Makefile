@@ -305,6 +305,7 @@ TESTING_REGRESS += col_scope_precheck
 TESTING_REGRESS += col_scope_price_terms
 TESTING_REGRESS += col_scope_read
 TESTING_REGRESS += col_scope_refresh_price
+TESTING_REGRESS += col_scope_summaries
 TESTING_REGRESS += col_scope_textkey
 TESTING_REGRESS += col_scope_textkey_refusals
 TESTING_REGRESS += col_scope_textkey_tags
