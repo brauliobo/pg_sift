@@ -1,0 +1,2 @@
+child_table	child_col	parent_table	parent_col	relation	reads
+fact	target_id	entity	id	n:1	class,region

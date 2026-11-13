@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: event.account_id (uuid) -> account.id (uuid): hash-spread keys without order or zone locality

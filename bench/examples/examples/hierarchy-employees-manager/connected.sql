@@ -1,0 +1,2 @@
+-- slot for the connected variant: the prototypes of the cross-table study define it per design (designs/README.md).
+-- links.tsv lists the joins of this example: timesheet -> employee -> employee (manager): the same table twice; manager attributes are one lookup further
