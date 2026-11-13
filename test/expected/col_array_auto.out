@@ -178,6 +178,8 @@ SELECT leaf, path, type FROM sift.col_leaves('ac_col') ORDER BY leaf;
 
 -- the HINT of the NOTICE: paths = 'auto:' keeps the arrays and leaves the elements out (an empty value is auto, which chooses the elements again)
 ALTER INDEX aa_col SET (paths = 'auto:');
+NOTICE:  sift_col index "aa_col": its segments were written with other options than it has now
+HINT:  REINDEX INDEX aa_col writes them again; until then queries do not scan the index.
 REINDEX INDEX aa_col;
 NOTICE:  sift_col index "aa_col": 1 automatic choice (array_lengths), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; array_lengths = uniq, rep, mid, ids

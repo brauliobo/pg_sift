@@ -144,6 +144,8 @@ SELECT * FROM report('shared after the rollback');
 
 -- the connection switched off: the journal of the dimension stays, and so does its stamp
 ALTER INDEX ev_col SET (connect = 'off');
+NOTICE:  sift_col index "ev_col": its segments were written with other options than it has now
+HINT:  REINDEX INDEX ev_col writes them again; until then queries do not scan the index.
 REINDEX INDEX ev_col;
 NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id

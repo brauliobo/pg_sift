@@ -102,7 +102,7 @@ DETAIL:  rollup_columns = dim_a_id, amount; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
 ALTER INDEX altered_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
 SELECT count(*) AS by_key FROM events WHERE id = 5;
  by_key 
@@ -144,7 +144,7 @@ SELECT sum(e.amount) AS tenant_total FROM events e WHERE e.dim_a_id IN (SELECT d
 
 -- giving the scope up leaves the same state
 ALTER INDEX altered_col RESET (scope);
-NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
 SELECT sum(amount) AS total FROM events;
  total 
@@ -178,7 +178,7 @@ SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''ctid'')') AS
 (1 row)
 
 ALTER INDEX altered_col RESET (scope);
-NOTICE:  sift_col index "altered_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "altered_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX altered_col writes them again; until then queries do not scan the index.
 DROP TABLE events, tenant_scope, pairs_unjournaled, pairs_rls, grants, memberships CASCADE;
 DROP FUNCTION try(text), scope_reasons(text);

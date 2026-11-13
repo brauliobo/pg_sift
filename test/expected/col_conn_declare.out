@@ -118,6 +118,8 @@ SELECT count(*) AS edges FROM pg_depend WHERE classid = 'pg_class'::regclass AND
 
 -- off removes the connection, the text brings it back, RESET removes it again
 ALTER INDEX events_col SET (connect = 'off');
+NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
+HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 SELECT edges('events_col') AS after_off;
  after_off 
 -----------
@@ -134,6 +136,8 @@ SELECT edges('events_col') AS after_set;
 ALTER INDEX events_col SET (connect = 'dim_a_id -> dim_a(nokey)');
 ERROR:  connect: table "dim_a" has no column "nokey"
 ALTER INDEX events_col RESET (connect);
+NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
+HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 SELECT edges('events_col') AS after_reset;
  after_reset 
 -------------

@@ -169,6 +169,8 @@ SELECT child, ordinal, declaration, automatic FROM sift.col_connections WHERE ch
 
 -- the option turned off, then REINDEX: nothing is connected, and the parent can be dropped
 ALTER INDEX facts_col SET (connect = 'off');
+NOTICE:  sift_col index "facts_col": its segments were written with other options than it has now
+HINT:  REINDEX INDEX facts_col writes them again; until then queries do not scan the index.
 REINDEX INDEX facts_col;
 NOTICE:  sift_col index "facts_col" stores columns id, dim_a_id, v of index "facts_off", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.

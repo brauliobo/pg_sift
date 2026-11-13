@@ -326,7 +326,7 @@ SELECT format, kind FROM sift.col_segments('events_col') WHERE kind = 'immutable
 
 -- off removes the declaration (the leaf stays in the segments until the next REINDEX), the text brings it back, RESET removes it again
 ALTER INDEX events_col SET (scope = 'off');
-NOTICE:  sift_col index "events_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 SELECT edges('events_col') AS after_off;
  after_off 
@@ -355,7 +355,7 @@ SELECT edges('events_col') AS after_bad_set;
 (1 row)
 
 ALTER INDEX events_col RESET (scope);
-NOTICE:  sift_col index "events_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 SELECT edges('events_col') AS after_reset;
  after_reset 
@@ -381,7 +381,7 @@ SELECT count(*) AS scope_leaves FROM sift.col_leaves('events_col') WHERE path LI
 
 ALTER INDEX events_col SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  sift_col index "events_col": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_col": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_col writes them again; until then queries do not scan the index.
 -- the btree and the relation cannot go under the index; CASCADE takes the index with them
 SELECT try('DROP INDEX tenant_scope_pkey');
@@ -488,7 +488,7 @@ SELECT sift.col_verify('events_two', true);
 (1 row)
 
 ALTER INDEX events_two SET (connect = 'off');
-NOTICE:  sift_col index "events_two": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_two": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_two writes them again; until then queries do not scan the index.
 SELECT edges('events_two') AS after_connect_off;
                                               after_connect_off                                              
@@ -498,7 +498,7 @@ SELECT edges('events_two') AS after_connect_off;
 
 ALTER INDEX events_two SET (connect = 'dim_a_id -> dim_a(id)');
 ALTER INDEX events_two SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
-NOTICE:  sift_col index "events_two": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_two": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_two writes them again; until then queries do not scan the index.
 SELECT edges('events_two') AS after_one_scope_off;
                after_one_scope_off                
@@ -507,7 +507,7 @@ SELECT edges('events_two') AS after_one_scope_off;
 (1 row)
 
 ALTER INDEX events_two RESET (scope);
-NOTICE:  sift_col index "events_two": the segments were written without this scope declaration
+NOTICE:  sift_col index "events_two": its segments were written with other options than it has now
 HINT:  REINDEX INDEX events_two writes them again; until then queries do not scan the index.
 SELECT edges('events_two') AS after_scope_reset;
  after_scope_reset 

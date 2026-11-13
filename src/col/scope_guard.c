@@ -155,11 +155,11 @@ sift_scope_journal_alter(Relation index)
 						errhint("The journal keeps track_changes = 'ctid': a read of the scope index learns from it which pairs changed. ALTER INDEX %s RESET (scope) first to give the scope up.", get_rel_name(user))));
 }
 
-/* After ALTER INDEX of an option that changed the leaf list of the segments (a scope declared or given up): the index is not scanned until a REINDEX writes them again */
+/* After ALTER INDEX of an option that changed the leaf list of the segments (a scope declared or given up, paths, connect ..): the index is not scanned until a REINDEX writes them again */
 void
 sift_scope_notice_stale(Relation index)
 {
 	if (sift_col_rel(index)->stale)
-		ereport(NOTICE, (errmsg("sift_col index \"%s\": the segments were written without this scope declaration", RelationGetRelationName(index)),
+		ereport(NOTICE, (errmsg("sift_col index \"%s\": its segments were written with other options than it has now", RelationGetRelationName(index)),
 						 errhint("REINDEX INDEX %s writes them again; until then queries do not scan the index.", RelationGetRelationName(index))));
 }
